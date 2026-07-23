@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members  = ["crates/*"]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2024"
+rust-version = "1.97"
+license      = "Apache-2.0"
+repository   = "https://github.com/saffui/saffui"
+authors      = ["Saffui contributors"]
+
+[workspace.dependencies]
+# Internal crates: the path is declared once here; members pull them with
+# `{ workspace = true }`, so adding or moving a crate is a one-line change.
+commons = { path = "crates/commons" }
+crypto  = { path = "crates/crypto" }
+
+# External: one version per dependency across the whole workspace.
+tokio          = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+thiserror      = "2.0.19"
+openssl        = "0.10.81"
+tokio-postgres = "0.7.18"

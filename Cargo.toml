@@ -8,7 +8,7 @@ edition      = "2024"
 rust-version = "1.97"
 license      = "Apache-2.0"
 repository   = "https://github.com/saffui/saffui"
-authors      = ["Saffui contributors"]
+authors      = ["Kodjo Touglo <micheltouglo@gmail.com>"]
 
 [workspace.dependencies]
 # Internal crates: the path is declared once here; members pull them with
@@ -17,7 +17,22 @@ commons = { path = "crates/commons" }
 crypto  = { path = "crates/crypto" }
 
 # External: one version per dependency across the whole workspace.
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 tokio          = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 thiserror      = "2.0.19"
 openssl        = "0.10.81"
 tokio-postgres = "0.7.18"
+
+# --- Secret material ---
+# zeroize wipes buffers on drop; subtle gives constant-time equality. Neither is
+# something to hand-roll: a naive `==` short-circuits on the first differing byte
+# and leaks how much of a secret an attacker guessed correctly.
+zeroize        = { version = "1.8", features = ["derive"] }
+subtle         = "2.6"
+
+# --- Encodings ---
+# HEXLOWER for random identifiers, BASE32_NOPAD for TOTP shared secrets
+# (otpauth:// URIs), BASE64URL_NOPAD for JOSE compact serialization (RFC 7515
+# §2 mandates base64url *without* padding — standard base64 breaks the format).
+data-encoding  = "2.6"

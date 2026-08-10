@@ -30,6 +30,22 @@ jobs:
         run: |
           cargo clippy --workspace --all-targets --features crypto/chacha20 -- -D warnings
           cargo clippy --workspace --all-targets --features crypto/fips-strict -- -D warnings
+      # The exclusion is a compile_error!, so nothing observes it unless someone
+      # builds the pair it forbids - and a guard nobody fires is a guard nobody
+      # notices losing. The failure has to carry the guard's own message: a build
+      # broken for any other reason would otherwise read as the guard holding.
+      - name: fips-strict excludes chacha20
+        run: |
+          if cargo build -p crypto --features fips-strict,chacha20 > "$RUNNER_TEMP/guard.log" 2>&1; then
+            echo "fips-strict + chacha20 built: the compile_error guard is gone." >&2
+            exit 1
+          fi
+          if ! grep -q "feature 'fips-strict' is incompatible with the non-FIPS 'chacha20' cipher" \
+               "$RUNNER_TEMP/guard.log"; then
+            echo "the build failed, but not on the guard:" >&2
+            cat "$RUNNER_TEMP/guard.log" >&2
+            exit 1
+          fi
 
   deny:
     runs-on: ubuntu-latest

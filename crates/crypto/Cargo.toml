@@ -23,8 +23,8 @@ default = []
 chacha20 = []
 
 # Pins the validated FIPS provider. Mutually exclusive with the non-FIPS
-# algorithms above. Enforce that with a `compile_error!` in lib.rs, not with a
-# note in the docs: a binary that claims FIPS while linking ChaCha20 is a
+# algorithms above, and a `compile_error!` in lib.rs enforces it rather than a
+# note in these docs: a binary that claims FIPS while linking ChaCha20 is a
 # contradiction an audit should catch at build time, not at runtime.
 fips-strict = []
 

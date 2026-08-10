@@ -51,63 +51,63 @@ pub enum DerType {
 
 impl DerType {
     pub fn can_primitive(&self) -> bool {
-        match self {
-            DerType::EndOfContents => true,
-            DerType::Boolean => true,
-            DerType::Integer => true,
-            DerType::BitString => true,
-            DerType::OctetString => true,
-            DerType::Null => true,
-            DerType::ObjectIdentifier => true,
-            DerType::ObjectDescriptor => true,
-            DerType::Real => true,
-            DerType::Enumerated => true,
-            DerType::Utf8String => true,
-            DerType::RelativeOid => true,
-            DerType::Time => true,
-            DerType::NumericString => true,
-            DerType::PrintableString => true,
-            DerType::TeletexString => true,
-            DerType::VideotexString => true,
-            DerType::Ia5String => true,
-            DerType::GraphicString => true,
-            DerType::VisibleString => true,
-            DerType::GeneralString => true,
-            DerType::UniversalString => true,
-            DerType::CharacterString => true,
-            DerType::BmpString => true,
-            DerType::Date => true,
-            DerType::TimeOfDay => true,
-            DerType::DateTime => true,
-            DerType::Duration => true,
-            DerType::Other(_, _) => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            DerType::EndOfContents
+                | DerType::Boolean
+                | DerType::Integer
+                | DerType::BitString
+                | DerType::OctetString
+                | DerType::Null
+                | DerType::ObjectIdentifier
+                | DerType::ObjectDescriptor
+                | DerType::Real
+                | DerType::Enumerated
+                | DerType::Utf8String
+                | DerType::RelativeOid
+                | DerType::Time
+                | DerType::NumericString
+                | DerType::PrintableString
+                | DerType::TeletexString
+                | DerType::VideotexString
+                | DerType::Ia5String
+                | DerType::GraphicString
+                | DerType::VisibleString
+                | DerType::GeneralString
+                | DerType::UniversalString
+                | DerType::CharacterString
+                | DerType::BmpString
+                | DerType::Date
+                | DerType::TimeOfDay
+                | DerType::DateTime
+                | DerType::Duration
+                | DerType::Other(_, _)
+        )
     }
 
     pub fn can_constructed(&self) -> bool {
-        match self {
-            DerType::BitString => true,
-            DerType::OctetString => true,
-            DerType::External => true,
-            DerType::EmbeddedPdv => true,
-            DerType::Utf8String => true,
-            DerType::Sequence => true,
-            DerType::Set => true,
-            DerType::NumericString => true,
-            DerType::PrintableString => true,
-            DerType::TeletexString => true,
-            DerType::VideotexString => true,
-            DerType::Ia5String => true,
-            DerType::GraphicString => true,
-            DerType::VisibleString => true,
-            DerType::GeneralString => true,
-            DerType::UniversalString => true,
-            DerType::CharacterString => true,
-            DerType::BmpString => true,
-            DerType::Other(_, _) => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            DerType::BitString
+                | DerType::OctetString
+                | DerType::External
+                | DerType::EmbeddedPdv
+                | DerType::Utf8String
+                | DerType::Sequence
+                | DerType::Set
+                | DerType::NumericString
+                | DerType::PrintableString
+                | DerType::TeletexString
+                | DerType::VideotexString
+                | DerType::Ia5String
+                | DerType::GraphicString
+                | DerType::VisibleString
+                | DerType::GeneralString
+                | DerType::UniversalString
+                | DerType::CharacterString
+                | DerType::BmpString
+                | DerType::Other(_, _)
+        )
     }
 
     pub fn der_class(&self) -> DerClass {

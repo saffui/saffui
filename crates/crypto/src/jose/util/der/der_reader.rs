@@ -291,8 +291,7 @@ impl<R: Read> DerReader<R> {
 
                 let mut value = 0u64;
                 let mut shift_count = 0u8;
-                for i in 0..contents.len() {
-                    let b = contents[i];
+                for b in contents.iter().copied() {
                     shift_count += 8;
                     if shift_count > 64 {
                         return Err(DerError::Overflow);
@@ -315,15 +314,11 @@ impl<R: Read> DerReader<R> {
                     let mut vec = Vec::with_capacity(min_len);
                     if sign && !contents.is_empty() && (contents[0] & 0b10000000) != 0 {
                         vec.push(0b10000000);
-                        for _ in 0..(min_len - contents.len() - 1) {
-                            vec.push(0);
-                        }
+                        vec.resize(min_len - contents.len(), 0);
                         vec.push(contents[0] & 0b01111111);
                         vec.extend_from_slice(&contents[1..]);
                     } else {
-                        for _ in 0..(min_len - contents.len()) {
-                            vec.push(0);
-                        }
+                        vec.resize(min_len - contents.len(), 0);
                         vec.extend_from_slice(contents);
                     }
                     vec
@@ -419,8 +414,7 @@ impl<R: Read> DerReader<R> {
 
                     let mut buf = 0u64;
                     let mut shift_count = 0u8;
-                    for i in 1..contents.len() {
-                        let b = contents[i];
+                    for b in contents.iter().skip(1).copied() {
                         shift_count += 7;
                         if shift_count > 64 {
                             return Err(DerError::Overflow);

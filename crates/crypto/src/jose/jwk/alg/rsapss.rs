@@ -590,9 +590,8 @@ impl RsaPssKeyPair {
                                 _ => break,
                             }
                         } else {
-                            match reader.skip_contents() {
-                                _ => break,
-                            }
+                            let _ = reader.skip_contents();
+                            break;
                         }
                     }
                 }

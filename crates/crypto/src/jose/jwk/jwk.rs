@@ -279,10 +279,9 @@ impl Jwk {
 
     pub fn is_for_key_operation(&self, key_operation: &str) -> bool {
         match self.map.get("key_ops") {
-            Some(Value::Array(vals)) => vals.iter().any(|val| match val {
-                Value::String(val2) if val2 == key_operation => true,
-                _ => false,
-            }),
+            Some(Value::Array(vals)) => vals
+                .iter()
+                .any(|val| matches!(val, Value::String(val2) if val2 == key_operation)),
             Some(_) => false,
             None => true,
         }

@@ -561,11 +561,7 @@ impl JwsContext {
                     vec
                 }
                 Some(_) => bail!("The signatures field must be a array."),
-                None => {
-                    let mut vec = Vec::with_capacity(1);
-                    vec.push(map);
-                    vec
-                }
+                None => vec![map],
             };
 
             for mut sig in signatures {

@@ -497,9 +497,7 @@ impl EcKeyPair {
         let vec = num.to_vec();
         if vec.len() < len {
             let mut tmp = Vec::with_capacity(len);
-            for _ in 0..(len - vec.len()) {
-                tmp.push(0);
-            }
+            tmp.resize(len - vec.len(), 0);
             tmp.extend_from_slice(&vec);
             tmp
         } else {

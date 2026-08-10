@@ -1106,11 +1106,7 @@ impl JweContext {
                     vec
                 }
                 Some(_) => bail!("The recipients field must be a array."),
-                None => {
-                    let mut vec = Vec::with_capacity(1);
-                    vec.push(map);
-                    vec
-                }
+                None => vec![map],
             };
 
             for mut recipient in recipients {
@@ -1198,10 +1194,7 @@ impl JweContext {
                     }
                 }
 
-                let mut full_aad = match protected_b64 {
-                    Some(val) => val,
-                    None => String::new(),
-                };
+                let mut full_aad = protected_b64.unwrap_or_default();
                 if let Some(val) = aad_b64 {
                     full_aad.push('.');
                     full_aad.push_str(&val);

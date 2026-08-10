@@ -19,6 +19,10 @@ use crate::jose::util::oid::{
     OID_SHA512, OID_X448, OID_X25519,
 };
 
+/// The RSASSA-PSS parameters read off an `AlgorithmIdentifier`: message digest,
+/// MGF1 digest, and salt length (RFC 4055 §3.1).
+type RsaPssParams = (Option<HashAlgorithm>, Option<HashAlgorithm>, Option<u8>);
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum KeyAlg {
     Rsa,
@@ -530,9 +534,7 @@ impl KeyInfo {
         Some(key_info)
     }
 
-    fn parse_rsa_pss_params(
-        reader: &mut DerReader<&[u8]>,
-    ) -> Result<(Option<HashAlgorithm>, Option<HashAlgorithm>, Option<u8>), DerError> {
+    fn parse_rsa_pss_params(reader: &mut DerReader<&[u8]>) -> Result<RsaPssParams, DerError> {
         let mut hash = Some(HashAlgorithm::Sha1);
         let mut mgf1_hash = Some(HashAlgorithm::Sha1);
         let mut salt_len = Some(20);
@@ -611,9 +613,7 @@ impl KeyInfo {
                     }
                 } else if i == 2 {
                     match reader.next()? {
-                        Some(DerType::Integer) => match reader.to_u8()? {
-                            val => salt_len = Some(val),
-                        },
+                        Some(DerType::Integer) => salt_len = Some(reader.to_u8()?),
                         _ => break,
                     }
 

@@ -22,6 +22,14 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
+      # chacha20 and fips-strict are off by default, so nothing above compiles
+      # them. Neither gates any code yet, which is exactly when a feature rots
+      # unnoticed: the first cfg written behind one would be the first thing to
+      # break it. Two invocations because the pair is mutually exclusive.
+      - name: features
+        run: |
+          cargo clippy --workspace --all-targets --features crypto/chacha20 -- -D warnings
+          cargo clippy --workspace --all-targets --features crypto/fips-strict -- -D warnings
 
   deny:
     runs-on: ubuntu-latest

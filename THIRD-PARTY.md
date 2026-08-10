@@ -66,6 +66,11 @@ The JOSE layer is vendored from josekit. See the entry below.
      `DerReader::next` (it returns a `Result` and is not an iterator), and
      `unbuffered_bytes` in `DerReader::from_reader` (every construction here
      reads from an in-memory slice, so buffering would allocate for nothing).
+  10. The `crit` header claim read as `crit` on the JSON deserialization path,
+      where upstream reads `critical`. First of the three defects this file
+      already listed to patch after vendoring. A regression test covers both
+      answers: refused by default, accepted once the context declares the
+      extension acceptable.
 - **Verification:** the 144 upstream tests pass unmodified after vendoring, and
   145 after the boxed-equality regression test added with modification 5.
 - **Upstream tracking:** watch https://github.com/hidekatsu-izuno/josekit-rs/releases.
@@ -87,7 +92,7 @@ they are not hypothetical.
 
 | Defect | Location | Effect |
 |---|---|---|
-| The `crit` header claim is read as `"critical"` on the JSON deserialization path | `src/jws/jws_context.rs` (`deserialize_json_with_selector`) | The whole critical-extension validation is dead code. A JWS naming an extension the implementation does not understand is **accepted**, in violation of RFC 7515 §4.1.11. The compact path reads `"crit"` correctly, which is what hides it. |
+| ~~The `crit` header claim is read as `"critical"` on the JSON deserialization path~~ — **patched here**, modification 10 | `src/jws/jws_context.rs` (`deserialize_json_with_selector`) | The whole critical-extension validation is dead code. A JWS naming an extension the implementation does not understand is **accepted**, in violation of RFC 7515 §4.1.11. The compact path reads `"crit"` correctly, which is what hides it. Still present upstream; report it. |
 | `JwkSet::remove_key` does not clear `kid_map` | `src/jwk/jwk_set.rs` | A key removed from the set still resolves through `get(kid)`. Revoking a key does not stop it being selected. |
 | `PartialEq for Box<dyn T>` is written `self == other` | `src/jwe/jwe_algorithm.rs`, `src/jwe/jwe_compression.rs`, `src/jwe/jwe_content_encryption.rs`, `src/jws/jws_algorithm.rs`, `src/jwk/key_pair.rs` | The impl calls itself. Comparing two boxed algorithms, compressions, content encryptions or key pairs recurses until the stack is exhausted and the process dies. Patched here (modification 5); still present upstream. No upstream test covers it, and none could: the test process would go down with it. |
 

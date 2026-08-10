@@ -577,7 +577,13 @@ impl JwsContext {
                 let protected_map: Map<String, Value> = serde_json::from_slice(&protected_vec)?;
 
                 let mut b64 = true;
-                if let Some(Value::Array(vals)) = protected_map.get("critical") {
+                // `crit`, the name RFC 7515 4.1.11 gives the parameter. Upstream
+                // reads `critical` here, a name no JWS carries, so this whole
+                // block never ran on the JSON path: a JWS declaring a critical
+                // extension the implementation does not understand was accepted
+                // instead of rejected. The compact path below reads `crit`, which
+                // is what kept the mistake out of sight.
+                if let Some(Value::Array(vals)) = protected_map.get("crit") {
                     for val in vals {
                         match val {
                             Value::String(name) => {

@@ -344,6 +344,47 @@ mod tests {
         Ok(())
     }
 
+    /// RFC 7515 4.1.11: a `crit` naming an extension the recipient does not
+    /// understand makes the JWS invalid. That is the point of the parameter —
+    /// the sender is saying "refuse this rather than ignore what you cannot
+    /// process".
+    ///
+    /// On the JSON path the check read the protected header for `critical`,
+    /// a name no JWS carries, so it never ran and every unknown extension was
+    /// waved through. The compact path reads `crit` and always has, which is
+    /// why nothing looked wrong.
+    ///
+    /// Both halves matter here. The refusal alone would also pass if the JWS
+    /// were rejected for some unrelated reason, so the same signature is
+    /// verified again against a context that declares the extension
+    /// acceptable: it must then be accepted. One input, two answers, decided
+    /// by the check under test.
+    #[test]
+    fn a_json_jws_naming_an_unknown_critical_extension_is_refused() -> Result<()> {
+        let private_key = load_file("pem/EC_P-256_private.pem")?;
+        let public_key = load_file("pem/EC_P-256_public.pem")?;
+
+        let mut header = JwsHeaderSet::new();
+        header.set_key_id("kid-1", true);
+        header.set_critical(&["urn:example:unsupported"]);
+
+        let signer = ES256.signer_from_pem(&private_key)?;
+        let json = jws::serialize_general_json(b"test payload!", &[(&header, &*signer)])?;
+
+        let verifier = ES256.verifier_from_pem(&public_key)?;
+        assert!(
+            jws::deserialize_json(&json, &verifier).is_err(),
+            "a JWS declaring an unsupported critical extension was accepted"
+        );
+
+        let mut context = jws::JwsContext::new();
+        context.add_acceptable_critical("urn:example:unsupported");
+        let (payload, _) = context.deserialize_json(&json, &verifier)?;
+        assert_eq!(payload, b"test payload!".to_vec());
+
+        Ok(())
+    }
+
     fn load_file(path: &str) -> Result<Vec<u8>> {
         let mut pb = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         pb.push("data");

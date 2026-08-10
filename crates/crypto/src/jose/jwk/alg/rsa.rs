@@ -12,7 +12,7 @@ use anyhow::bail;
 use openssl::pkey::{PKey, Private};
 use openssl::rsa::Rsa;
 
-use crate::jose::jwk::{alg::rsapss::RsaPssKeyPair, Jwk, KeyPair};
+use crate::jose::jwk::{Jwk, KeyPair, alg::rsapss::RsaPssKeyPair};
 use crate::jose::util::der::{DerBuilder, DerReader, DerType};
 use crate::jose::util::oid::OID_RSA_ENCRYPTION;
 use crate::jose::util::{self, HashAlgorithm};
@@ -81,7 +81,7 @@ impl RsaKeyPair {
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Create a RSA key pair from a private key that is a DER encoded PKCS#8 PrivateKeyInfo or PKCS#1 RSAPrivateKey.
@@ -107,7 +107,7 @@ impl RsaKeyPair {
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Create a RSA key pair from a private key of common or traditinal PEM format.
@@ -137,7 +137,7 @@ impl RsaKeyPair {
                 alg => bail!("Inappropriate algorithm: {}", alg),
             };
 
-            let private_key = PKey::private_key_from_der(&pkcs8_der)?;
+            let private_key = PKey::private_key_from_der(pkcs8_der)?;
 
             Ok(Self {
                 private_key,
@@ -145,7 +145,7 @@ impl RsaKeyPair {
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Create a RSA key pair from a private key that is formatted by a JWK of RSA type.
@@ -225,7 +225,7 @@ impl RsaKeyPair {
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn to_raw_private_key(&self) -> Vec<u8> {
@@ -438,7 +438,7 @@ mod tests {
 
     #[test]
     fn test_rsa_jwt() -> Result<()> {
-        for bits in vec![1024, 2048, 4096] {
+        for bits in [1024, 2048, 4096] {
             let key_pair_1 = RsaKeyPair::generate(bits)?;
             let der_private1 = key_pair_1.to_der_private_key();
             let der_public1 = key_pair_1.to_der_public_key();

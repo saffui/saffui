@@ -32,7 +32,7 @@ pub fn random_bytes(len: usize) -> Vec<u8> {
 }
 
 pub(crate) fn ceiling(len: usize, div: usize) -> usize {
-    (len + (div - 1)) / div
+    len.div_ceil(div)
 }
 
 pub(crate) fn is_base64_standard(input: &str) -> bool {

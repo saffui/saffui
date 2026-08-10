@@ -12,9 +12,11 @@ use anyhow::bail;
 use openssl::pkey::{PKey, Private};
 use openssl::rsa::Rsa;
 
-use crate::jose::jwk::{alg::rsa::RsaKeyPair, Jwk, KeyPair};
+use crate::jose::jwk::{Jwk, KeyPair, alg::rsa::RsaKeyPair};
 use crate::jose::util::der::{DerBuilder, DerClass, DerReader, DerType};
-use crate::jose::util::oid::{OID_MGF1, OID_RSASSA_PSS, OID_SHA1, OID_SHA256, OID_SHA384, OID_SHA512};
+use crate::jose::util::oid::{
+    OID_MGF1, OID_RSASSA_PSS, OID_SHA1, OID_SHA256, OID_SHA384, OID_SHA512,
+};
 use crate::jose::util::{self, HashAlgorithm};
 use crate::jose::{JoseError, Value};
 
@@ -95,7 +97,7 @@ impl RsaPssKeyPair {
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Create a RSA-PSS key pair from a private key that is a DER encoded PKCS#8 PrivateKeyInfo or PKCS#1 RSAPrivateKey.
@@ -268,7 +270,7 @@ impl RsaPssKeyPair {
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Create a RSA-PSS key pair from a private key that is formatted by a JWK of RSA type.
@@ -359,7 +361,7 @@ impl RsaPssKeyPair {
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn to_raw_private_key(&self) -> Vec<u8> {
@@ -378,7 +380,7 @@ impl RsaPssKeyPair {
 
         let mut result = String::new();
         result.push_str("-----BEGIN RSA-PSS PRIVATE KEY-----\r\n");
-        for i in 0..((der.len() + 64 - 1) / 64) {
+        for i in 0..der.len().div_ceil(64) {
             result.push_str(&der[(i * 64)..std::cmp::min((i + 1) * 64, der.len())]);
             result.push_str("\r\n");
         }
@@ -507,7 +509,7 @@ impl RsaPssKeyPair {
                                 Ok(Some(DerType::Null)) => match reader.next() {
                                     Ok(Some(DerType::EndOfContents)) => {}
                                     _ => break,
-                                }
+                                },
                                 Ok(Some(DerType::EndOfContents)) => {}
                                 _ => break,
                             }
@@ -560,7 +562,7 @@ impl RsaPssKeyPair {
                                 Ok(Some(DerType::Null)) => match reader.next() {
                                     Ok(Some(DerType::EndOfContents)) => {}
                                     _ => break,
-                                }
+                                },
                                 Ok(Some(DerType::EndOfContents)) => {}
                                 _ => break,
                             }
@@ -717,7 +719,7 @@ impl KeyPair for RsaPssKeyPair {
 
         let mut result = String::new();
         result.push_str("-----BEGIN PRIVATE KEY-----\r\n");
-        for i in 0..((der.len() + 64 - 1) / 64) {
+        for i in 0..der.len().div_ceil(64) {
             result.push_str(&der[(i * 64)..std::cmp::min((i + 1) * 64, der.len())]);
             result.push_str("\r\n");
         }
@@ -731,7 +733,7 @@ impl KeyPair for RsaPssKeyPair {
 
         let mut result = String::new();
         result.push_str("-----BEGIN PUBLIC KEY-----\r\n");
-        for i in 0..((der.len() + 64 - 1) / 64) {
+        for i in 0..der.len().div_ceil(64) {
             result.push_str(&der[(i * 64)..std::cmp::min((i + 1) * 64, der.len())]);
             result.push_str("\r\n");
         }
@@ -773,8 +775,8 @@ mod tests {
 
     #[test]
     fn test_rsa_jwt() -> Result<()> {
-        for bits in vec![1024, 2048, 4096] {
-            for hash in vec![
+        for bits in [1024, 2048, 4096] {
+            for hash in [
                 HashAlgorithm::Sha256,
                 HashAlgorithm::Sha384,
                 HashAlgorithm::Sha512,

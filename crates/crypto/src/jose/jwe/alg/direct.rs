@@ -14,7 +14,7 @@ use anyhow::bail;
 
 use crate::jose::jwe::{JweAlgorithm, JweContentEncryption, JweDecrypter, JweEncrypter, JweHeader};
 use crate::jose::jwk::Jwk;
-use crate::jose::{util, JoseError, Value};
+use crate::jose::{JoseError, Value, util};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum DirectJweAlgorithm {
@@ -30,7 +30,7 @@ impl DirectJweAlgorithm {
         let cencryption_key = input.as_ref();
 
         Ok(DirectJweEncrypter {
-            algorithm: self.clone(),
+            algorithm: *self,
             cencryption_key: cencryption_key.to_vec(),
             key_id: None,
         })
@@ -64,12 +64,12 @@ impl DirectJweAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(DirectJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 cencryption_key: k,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn decrypter_from_bytes(
@@ -79,7 +79,7 @@ impl DirectJweAlgorithm {
         let cencryption_key = input.as_ref();
 
         Ok(DirectJweDecrypter {
-            algorithm: self.clone(),
+            algorithm: *self,
             cencryption_key: cencryption_key.to_vec(),
             key_id: None,
         })
@@ -114,12 +114,12 @@ impl DirectJweAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(DirectJweDecrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 cencryption_key: k,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 }
 
@@ -131,7 +131,7 @@ impl JweAlgorithm for DirectJweAlgorithm {
     }
 
     fn box_clone(&self) -> Box<dyn JweAlgorithm> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -183,7 +183,7 @@ impl JweEncrypter for DirectJweEncrypter {
         cencryption: &dyn JweContentEncryption,
         _merged: &JweHeader,
         _header: &mut JweHeader,
-    ) -> Result<Option<Cow<[u8]>>, JoseError> {
+    ) -> Result<Option<Cow<'_, [u8]>>, JoseError> {
         (|| -> anyhow::Result<Option<Cow<[u8]>>> {
             let actual_len = self.cencryption_key.len();
             if cencryption.key_len() != actual_len {
@@ -196,7 +196,7 @@ impl JweEncrypter for DirectJweEncrypter {
 
             Ok(Some(Cow::Borrowed(&self.cencryption_key)))
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     fn encrypt(
@@ -255,15 +255,15 @@ impl JweDecrypter for DirectJweDecrypter {
         encrypted_key: Option<&[u8]>,
         _cencryption: &dyn JweContentEncryption,
         _header: &JweHeader,
-    ) -> Result<Cow<[u8]>, JoseError> {
+    ) -> Result<Cow<'_, [u8]>, JoseError> {
         (|| -> anyhow::Result<Cow<[u8]>> {
-            if let Some(_) = encrypted_key {
+            if encrypted_key.is_some() {
                 bail!("The encrypted_key must not exist.");
             }
 
             Ok(Cow::Borrowed(&self.cencryption_key))
         })()
-        .map_err(|err| JoseError::InvalidJweFormat(err))
+        .map_err(JoseError::InvalidJweFormat)
     }
 
     fn box_clone(&self) -> Box<dyn JweDecrypter> {
@@ -285,8 +285,8 @@ mod tests {
     use serde_json::json;
 
     use super::DirectJweAlgorithm;
-    use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
     use crate::jose::jwe::JweHeader;
+    use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
     use crate::jose::jwk::Jwk;
 
     #[test]
@@ -302,7 +302,8 @@ mod tests {
             jwk
         };
 
-        for alg in vec![DirectJweAlgorithm::Dir] {
+        {
+            let alg = DirectJweAlgorithm::Dir;
             let mut header = JweHeader::new();
             header.set_content_encryption(enc.name());
 

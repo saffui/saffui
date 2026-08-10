@@ -36,7 +36,26 @@ The JOSE layer is vendored from josekit. See the entry below.
      `jwt/jwt_payload.rs` tests, which edition 2024 rejects inside
      implicitly-borrowing patterns.
   4. A §4(b) modification notice added at the top of every derived file.
-- **Verification:** the 144 upstream tests pass unmodified after vendoring.
+  5. `PartialEq for Box<dyn T>` rewritten in five places. Upstream wrote
+     `self == other`, which resolves to the impl being defined: comparing two
+     boxed values recursed until the stack ran out. It affected
+     `JweAlgorithm`, `JwsAlgorithm`, `JweCompression`, `JweContentEncryption`
+     and `KeyPair`. The four algorithm traits now compare `name()`, the header
+     parameter that identifies them; `KeyPair` compares the DER *public* key,
+     which identifies the pair without a non-constant-time comparison of secret
+     material. Report upstream. See the defect table below.
+  6. Three `for … { …; break }` bodies guarded by `len() == 1` replaced with
+     `into_iter().next()` in `set_audience` (`jwt/jwt_payload.rs`,
+     `jwe/jwe_header.rs`, `jwe/jwe_header_set.rs`). Same behaviour; the loop
+     form is what `clippy::never_loop` rejects, and it is deny-by-default. The
+     dead `vec2` in the `jwt_payload.rs` copy went with it.
+  7. Formatted with this repository's `rustfmt`, and the machine-applicable
+     `clippy` suggestions applied across the vendored tree. This is the largest
+     source of divergence and the one that will cost the most at the next port:
+     it touches almost every file. Taken deliberately, so that the CI can hold
+     the whole tree to one standard rather than carve out an exemption.
+- **Verification:** the 144 upstream tests pass unmodified after vendoring, and
+  145 after the boxed-equality regression test added with modification 5.
 - **Upstream tracking:** watch https://github.com/hidekatsu-izuno/josekit-rs/releases.
   Record every port in this entry, extending the Modifications list.
 
@@ -58,6 +77,7 @@ they are not hypothetical.
 |---|---|---|
 | The `crit` header claim is read as `"critical"` on the JSON deserialization path | `src/jws/jws_context.rs` (`deserialize_json_with_selector`) | The whole critical-extension validation is dead code. A JWS naming an extension the implementation does not understand is **accepted**, in violation of RFC 7515 §4.1.11. The compact path reads `"crit"` correctly, which is what hides it. |
 | `JwkSet::remove_key` does not clear `kid_map` | `src/jwk/jwk_set.rs` | A key removed from the set still resolves through `get(kid)`. Revoking a key does not stop it being selected. |
+| `PartialEq for Box<dyn T>` is written `self == other` | `src/jwe/jwe_algorithm.rs`, `src/jwe/jwe_compression.rs`, `src/jwe/jwe_content_encryption.rs`, `src/jws/jws_algorithm.rs`, `src/jwk/key_pair.rs` | The impl calls itself. Comparing two boxed algorithms, compressions, content encryptions or key pairs recurses until the stack is exhausted and the process dies. Patched here (modification 5); still present upstream. No upstream test covers it, and none could: the test process would go down with it. |
 
 Both are worth reporting upstream rather than only patching locally.
 

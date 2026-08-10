@@ -19,7 +19,7 @@ pub trait JwsAlgorithm: Debug + Send + Sync {
 
 impl PartialEq for Box<dyn JwsAlgorithm> {
     fn eq(&self, other: &Self) -> bool {
-        self == other
+        self.name() == other.name()
     }
 }
 

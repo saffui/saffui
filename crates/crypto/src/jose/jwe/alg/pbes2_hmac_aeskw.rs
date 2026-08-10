@@ -39,19 +39,19 @@ impl Pbes2HmacAeskwJweAlgorithm {
         (|| -> anyhow::Result<Pbes2HmacAeskwJweEncrypter> {
             let private_key = input.as_ref().to_vec();
 
-            if private_key.len() == 0 {
+            if private_key.is_empty() {
                 bail!("The key size must not be empty.");
             }
 
             Ok(Pbes2HmacAeskwJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 salt_len: 8,
                 iter_count: 1000,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn encrypter_from_jwk(&self, jwk: &Jwk) -> Result<Pbes2HmacAeskwJweEncrypter, JoseError> {
@@ -79,21 +79,21 @@ impl Pbes2HmacAeskwJweAlgorithm {
                 None => bail!("A parameter k is required."),
             };
 
-            if k.len() == 0 {
+            if k.is_empty() {
                 bail!("The key size must not be empty.");
             }
 
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(Pbes2HmacAeskwJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key: k,
                 salt_len: 8,
                 iter_count: 1000,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn decrypter_from_bytes(
@@ -103,17 +103,17 @@ impl Pbes2HmacAeskwJweAlgorithm {
         (|| -> anyhow::Result<Pbes2HmacAeskwJweDecrypter> {
             let private_key = input.as_ref().to_vec();
 
-            if private_key.len() == 0 {
+            if private_key.is_empty() {
                 bail!("The key size must not be empty.");
             }
 
             Ok(Pbes2HmacAeskwJweDecrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn decrypter_from_jwk(&self, jwk: &Jwk) -> Result<Pbes2HmacAeskwJweDecrypter, JoseError> {
@@ -142,19 +142,19 @@ impl Pbes2HmacAeskwJweAlgorithm {
                 None => bail!("A parameter k is required."),
             };
 
-            if k.len() == 0 {
+            if k.is_empty() {
                 bail!("The key size must not be empty.");
             }
 
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(Pbes2HmacAeskwJweDecrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key: k,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     fn hash_algorithm(&self) -> HashAlgorithm {
@@ -184,7 +184,7 @@ impl JweAlgorithm for Pbes2HmacAeskwJweAlgorithm {
     }
 
     fn box_clone(&self) -> Box<dyn JweAlgorithm> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -252,7 +252,7 @@ impl JweEncrypter for Pbes2HmacAeskwJweEncrypter {
         _cencryption: &dyn JweContentEncryption,
         _in_header: &JweHeader,
         _out_header: &mut JweHeader,
-    ) -> Result<Option<Cow<[u8]>>, JoseError> {
+    ) -> Result<Option<Cow<'_, [u8]>>, JoseError> {
         Ok(None)
     }
 
@@ -312,7 +312,7 @@ impl JweEncrypter for Pbes2HmacAeskwJweEncrypter {
             };
 
             let mut encrypted_key = vec![0; key.len() + 8];
-            match aes::wrap_key(&aes, None, &mut encrypted_key, &key) {
+            match aes::wrap_key(&aes, None, &mut encrypted_key, key) {
                 Ok(val) => {
                     if val < encrypted_key.len() {
                         encrypted_key.truncate(val);
@@ -323,7 +323,7 @@ impl JweEncrypter for Pbes2HmacAeskwJweEncrypter {
 
             Ok(Some(encrypted_key))
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     fn box_clone(&self) -> Box<dyn JweEncrypter> {
@@ -373,7 +373,7 @@ impl JweDecrypter for Pbes2HmacAeskwJweDecrypter {
         encrypted_key: Option<&[u8]>,
         _cencryption: &dyn JweContentEncryption,
         header: &JweHeader,
-    ) -> Result<Cow<[u8]>, JoseError> {
+    ) -> Result<Cow<'_, [u8]>, JoseError> {
         (|| -> anyhow::Result<Cow<[u8]>> {
             let encrypted_key = match encrypted_key {
                 Some(val) => val,
@@ -427,7 +427,7 @@ impl JweDecrypter for Pbes2HmacAeskwJweDecrypter {
             };
 
             let mut key = vec![0; encrypted_key.len() - 8];
-            match aes::unwrap_key(&aes, None, &mut key, &encrypted_key) {
+            match aes::unwrap_key(&aes, None, &mut key, encrypted_key) {
                 Ok(val) => {
                     if val < key.len() {
                         key.truncate(val);
@@ -438,7 +438,7 @@ impl JweDecrypter for Pbes2HmacAeskwJweDecrypter {
 
             Ok(Cow::Owned(key))
         })()
-        .map_err(|err| JoseError::InvalidJweFormat(err))
+        .map_err(JoseError::InvalidJweFormat)
     }
 
     fn box_clone(&self) -> Box<dyn JweDecrypter> {
@@ -460,8 +460,8 @@ mod tests {
     use serde_json::json;
 
     use super::Pbes2HmacAeskwJweAlgorithm;
-    use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
     use crate::jose::jwe::JweHeader;
+    use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
     use crate::jose::jwk::Jwk;
     use crate::jose::util;
 
@@ -469,7 +469,7 @@ mod tests {
     fn encrypt_and_decrypt_pbes2_hmac() -> Result<()> {
         let enc = AescbcHmacJweEncryption::A128cbcHs256;
 
-        for alg in vec![
+        for alg in [
             Pbes2HmacAeskwJweAlgorithm::Pbes2Hs256A128kw,
             Pbes2HmacAeskwJweAlgorithm::Pbes2Hs384A192kw,
             Pbes2HmacAeskwJweAlgorithm::Pbes2Hs512A256kw,
@@ -506,7 +506,7 @@ mod tests {
     fn reject_pbes2_hmac_with_too_large_p2c() -> Result<()> {
         let enc = AescbcHmacJweEncryption::A128cbcHs256;
 
-        for alg in vec![
+        for alg in [
             Pbes2HmacAeskwJweAlgorithm::Pbes2Hs256A128kw,
             Pbes2HmacAeskwJweAlgorithm::Pbes2Hs384A192kw,
             Pbes2HmacAeskwJweAlgorithm::Pbes2Hs512A256kw,
@@ -535,7 +535,10 @@ mod tests {
             let err = decrypter
                 .decrypt(encrypted_key.as_deref(), &enc, &out_header)
                 .unwrap_err();
-            assert_eq!(format!("{}", err), "Invalid JWE format: The p2c value is too large. This is a possible DoS attack: 1000001");
+            assert_eq!(
+                format!("{}", err),
+                "Invalid JWE format: The p2c value is too large. This is a possible DoS attack: 1000001"
+            );
         }
 
         Ok(())

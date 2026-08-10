@@ -16,7 +16,7 @@ use openssl::{
     symm::{self, Cipher},
 };
 
-use crate::jose::{jwe::JweContentEncryption, JoseError};
+use crate::jose::{JoseError, jwe::JweContentEncryption};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum AescbcHmacJweEncryption {
@@ -46,7 +46,7 @@ impl AescbcHmacJweEncryption {
             let pkey = PKey::hmac(mac_key)?;
             Ok(pkey)
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))?;
+        .map_err(JoseError::InvalidKeyFormat)?;
 
         let signature = (|| -> anyhow::Result<Vec<u8>> {
             let aad_bits = ((aad.len() * 8) as u64).to_be_bytes();
@@ -62,7 +62,7 @@ impl AescbcHmacJweEncryption {
             signature.truncate(tlen);
             Ok(signature)
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))?;
+        .map_err(JoseError::InvalidSignature)?;
 
         Ok(signature)
     }
@@ -117,7 +117,7 @@ impl JweContentEncryption for AescbcHmacJweEncryption {
             let encrypted_message = symm::encrypt(cipher, enc_key, iv, message)?;
             Ok((encrypted_message, mac_key))
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))?;
+        .map_err(JoseError::InvalidKeyFormat)?;
 
         let tag = self.calcurate_tag(aad, iv, &encrypted_message, mac_key)?;
 
@@ -153,7 +153,7 @@ impl JweContentEncryption for AescbcHmacJweEncryption {
             let message = symm::decrypt(cipher, enc_key, iv, encrypted_message)?;
             Ok((message, mac_key))
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))?;
+        .map_err(JoseError::InvalidKeyFormat)?;
 
         (|| -> anyhow::Result<()> {
             let tag = match tag {
@@ -161,20 +161,20 @@ impl JweContentEncryption for AescbcHmacJweEncryption {
                 None => bail!("A tag value is required."),
             };
 
-            let calc_tag = self.calcurate_tag(aad, iv, &encrypted_message, mac_key)?;
+            let calc_tag = self.calcurate_tag(aad, iv, encrypted_message, mac_key)?;
             if calc_tag.as_slice() != tag {
                 bail!("The tag doesn't match.");
             }
 
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))?;
+        .map_err(JoseError::InvalidSignature)?;
 
         Ok(message)
     }
 
     fn box_clone(&self) -> Box<dyn JweContentEncryption> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -204,7 +204,7 @@ mod tests {
         let message = b"abcde12345";
         let aad = b"test";
 
-        for enc in vec![
+        for enc in [
             AescbcHmacJweEncryption::A128cbcHs256,
             AescbcHmacJweEncryption::A192cbcHs384,
             AescbcHmacJweEncryption::A256cbcHs512,

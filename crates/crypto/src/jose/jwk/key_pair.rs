@@ -29,8 +29,11 @@ pub trait KeyPair: Debug + Send + Sync {
 }
 
 impl PartialEq for Box<dyn KeyPair> {
+    // On the public encoding, not the private one: the public key identifies the
+    // pair just as well, and comparing secret material byte by byte is both
+    // unnecessary here and not constant time.
     fn eq(&self, other: &Self) -> bool {
-        self == other
+        self.to_der_public_key() == other.to_der_public_key()
     }
 }
 

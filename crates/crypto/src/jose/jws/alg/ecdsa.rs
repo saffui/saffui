@@ -15,8 +15,8 @@ use openssl::pkey::{PKey, Private, Public};
 use openssl::sign::{Signer, Verifier};
 
 use crate::jose::jwk::{
-    alg::ec::{EcCurve, EcKeyPair},
     Jwk,
+    alg::ec::{EcCurve, EcKeyPair},
 };
 use crate::jose::jws::{JwsAlgorithm, JwsSigner, JwsVerifier};
 use crate::jose::util::der::{DerBuilder, DerReader, DerType};
@@ -76,7 +76,7 @@ impl EcdsaJwsAlgorithm {
     pub fn signer_from_der(&self, input: impl AsRef<[u8]>) -> Result<EcdsaJwsSigner, JoseError> {
         let key_pair = self.key_pair_from_der(input.as_ref())?;
         Ok(EcdsaJwsSigner {
-            algorithm: self.clone(),
+            algorithm: *self,
             private_key: key_pair.into_private_key(),
             key_id: None,
         })
@@ -95,7 +95,7 @@ impl EcdsaJwsAlgorithm {
     pub fn signer_from_pem(&self, input: impl AsRef<[u8]>) -> Result<EcdsaJwsSigner, JoseError> {
         let key_pair = self.key_pair_from_pem(input.as_ref())?;
         Ok(EcdsaJwsSigner {
-            algorithm: self.clone(),
+            algorithm: *self,
             private_key: key_pair.into_private_key(),
             key_id: None,
         })
@@ -131,12 +131,12 @@ impl EcdsaJwsAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(EcdsaJwsSigner {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a public key that is a DER encoded SubjectPublicKeyInfo.
@@ -159,12 +159,12 @@ impl EcdsaJwsAlgorithm {
             let public_key = PKey::public_key_from_der(spki_der)?;
 
             Ok(EcdsaJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a key of common PEM format.
@@ -183,7 +183,7 @@ impl EcdsaJwsAlgorithm {
 
             let spki = match alg.as_str() {
                 "PUBLIC KEY" => {
-                    if let None = EcKeyPair::detect_pkcs8(&data, true) {
+                    if EcKeyPair::detect_pkcs8(&data, true).is_none() {
                         bail!("PEM contents is expected SubjectPublicKeyInfo wrapped key.");
                     }
                     &data
@@ -194,12 +194,12 @@ impl EcdsaJwsAlgorithm {
             let public_key = PKey::public_key_from_der(spki)?;
 
             Ok(EcdsaJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a public key that is formatted by a JWK of EC type.
@@ -256,12 +256,12 @@ impl EcdsaJwsAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(EcdsaJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     fn curve(&self) -> EcCurve {
@@ -302,7 +302,7 @@ impl JwsAlgorithm for EcdsaJwsAlgorithm {
     }
 
     fn box_clone(&self) -> Box<dyn JwsAlgorithm> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -389,7 +389,7 @@ impl JwsSigner for EcdsaJwsSigner {
 
             Ok(signature)
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))
+        .map_err(JoseError::InvalidSignature)
     }
 
     fn box_clone(&self) -> Box<dyn JwsSigner> {
@@ -471,7 +471,7 @@ impl JwsVerifier for EcdsaJwsVerifier {
             }
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))
+        .map_err(JoseError::InvalidSignature)
     }
 
     fn box_clone(&self) -> Box<dyn JwsVerifier> {
@@ -507,10 +507,10 @@ mod tests {
         ] {
             let key_pair = alg.generate_key_pair()?;
 
-            let signer = alg.signer_from_der(&key_pair.to_der_private_key())?;
+            let signer = alg.signer_from_der(key_pair.to_der_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_der(&key_pair.to_der_public_key())?;
+            let verifier = alg.verifier_from_der(key_pair.to_der_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -529,10 +529,10 @@ mod tests {
         ] {
             let key_pair = alg.generate_key_pair()?;
 
-            let signer = alg.signer_from_der(&key_pair.to_raw_private_key())?;
+            let signer = alg.signer_from_der(key_pair.to_raw_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_der(&key_pair.to_der_public_key())?;
+            let verifier = alg.verifier_from_der(key_pair.to_der_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -551,10 +551,10 @@ mod tests {
         ] {
             let key_pair = alg.generate_key_pair()?;
 
-            let signer = alg.signer_from_pem(&key_pair.to_pem_private_key())?;
+            let signer = alg.signer_from_pem(key_pair.to_pem_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_pem(&key_pair.to_pem_public_key())?;
+            let verifier = alg.verifier_from_pem(key_pair.to_pem_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -573,10 +573,10 @@ mod tests {
         ] {
             let key_pair = alg.generate_key_pair()?;
 
-            let signer = alg.signer_from_pem(&key_pair.to_traditional_pem_private_key())?;
+            let signer = alg.signer_from_pem(key_pair.to_traditional_pem_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_pem(&key_pair.to_pem_public_key())?;
+            let verifier = alg.verifier_from_pem(key_pair.to_pem_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -719,10 +719,10 @@ mod tests {
             let signer_key_pair = alg.generate_key_pair()?;
             let verifier_key_pair = alg.generate_key_pair()?;
 
-            let signer = alg.signer_from_der(&signer_key_pair.to_der_private_key())?;
+            let signer = alg.signer_from_der(signer_key_pair.to_der_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_der(&verifier_key_pair.to_der_public_key())?;
+            let verifier = alg.verifier_from_der(verifier_key_pair.to_der_public_key())?;
             verifier
                 .verify(input, &signature)
                 .expect_err("Unmatched signature did not fail");

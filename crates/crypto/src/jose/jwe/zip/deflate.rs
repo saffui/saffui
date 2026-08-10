@@ -10,9 +10,9 @@ use std::fmt::Display;
 use std::io::{self, Read, Write};
 use std::ops::Deref;
 
+use flate2::Compression;
 use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
-use flate2::Compression;
 
 use crate::jose::jwe::JweCompression;
 
@@ -44,7 +44,7 @@ impl JweCompression for DeflateJweCompression {
     }
 
     fn box_clone(&self) -> Box<dyn JweCompression> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 

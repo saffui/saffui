@@ -26,6 +26,12 @@ pub struct JwkSet {
     kid_map: BTreeMap<(String, usize), Arc<Jwk>>,
 }
 
+impl Default for JwkSet {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JwkSet {
     pub fn new() -> Self {
         Self {
@@ -68,7 +74,7 @@ impl JwkSet {
             Ok(Self {
                 keys,
                 params: map,
-                kid_map: kid_map,
+                kid_map,
             })
         })()
         .map_err(|err| match err.downcast::<JoseError>() {
@@ -105,7 +111,7 @@ impl JwkSet {
             Included((key_id.to_string(), 0)),
             Included((key_id.to_string(), usize::MAX)),
         )) {
-            let jwk: &Jwk = &val;
+            let jwk: &Jwk = val;
             vec.push(jwk);
         }
         vec
@@ -151,9 +157,9 @@ impl AsRef<Map<String, Value>> for JwkSet {
     }
 }
 
-impl Into<Map<String, Value>> for JwkSet {
-    fn into(self) -> Map<String, Value> {
-        self.params
+impl From<JwkSet> for Map<String, Value> {
+    fn from(val: JwkSet) -> Self {
+        val.params
     }
 }
 
@@ -166,7 +172,7 @@ impl Display for JwkSet {
                 fmt.write_str(",")?;
             }
 
-            let map: &Map<String, Value> = &jwk.as_ref().as_ref();
+            let map: &Map<String, Value> = jwk.as_ref().as_ref();
             let val = serde_json::to_string(map).map_err(|_e| std::fmt::Error {})?;
             fmt.write_str(&val)?;
         }
@@ -208,7 +214,7 @@ mod tests {
         let key_id = jwks.get("1")[0].key_id();
         assert!(matches!(key_id, Some("1")));
 
-        println!("{}", &jwks);
+        println!("{}", jwks);
 
         Ok(())
     }

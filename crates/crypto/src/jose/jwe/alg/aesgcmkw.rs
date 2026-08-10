@@ -45,12 +45,12 @@ impl AesgcmkwJweAlgorithm {
             }
 
             Ok(AesgcmkwJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn encrypter_from_jwk(&self, jwk: &Jwk) -> Result<AesgcmkwJweEncrypter, JoseError> {
@@ -85,12 +85,12 @@ impl AesgcmkwJweAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(AesgcmkwJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key: k,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn decrypter_from_bytes(
@@ -109,12 +109,12 @@ impl AesgcmkwJweAlgorithm {
             }
 
             Ok(AesgcmkwJweDecrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn decrypter_from_jwk(&self, jwk: &Jwk) -> Result<AesgcmkwJweDecrypter, JoseError> {
@@ -150,12 +150,12 @@ impl AesgcmkwJweAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(AesgcmkwJweDecrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key: k,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     fn key_len(&self) -> usize {
@@ -185,7 +185,7 @@ impl JweAlgorithm for AesgcmkwJweAlgorithm {
     }
 
     fn box_clone(&self) -> Box<dyn JweAlgorithm> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -237,7 +237,7 @@ impl JweEncrypter for AesgcmkwJweEncrypter {
         _cencryption: &dyn JweContentEncryption,
         _in_header: &JweHeader,
         _out_header: &mut JweHeader,
-    ) -> Result<Option<Cow<[u8]>>, JoseError> {
+    ) -> Result<Option<Cow<'_, [u8]>>, JoseError> {
         Ok(None)
     }
 
@@ -253,12 +253,12 @@ impl JweEncrypter for AesgcmkwJweEncrypter {
             let cipher = self.algorithm.cipher();
             let mut tag = [0; 16];
             let encrypted_key =
-                symm::encrypt_aead(cipher, &self.private_key, Some(&iv), b"", &key, &mut tag)?;
+                symm::encrypt_aead(cipher, &self.private_key, Some(&iv), b"", key, &mut tag)?;
 
             let iv = util::encode_base64_urlsafe_nopad(&iv);
             out_header.set_claim("iv", Some(Value::String(iv)))?;
 
-            let tag = util::encode_base64_urlsafe_nopad(&tag);
+            let tag = util::encode_base64_urlsafe_nopad(tag);
             out_header.set_claim("tag", Some(Value::String(tag)))?;
 
             Ok(Some(encrypted_key))
@@ -316,7 +316,7 @@ impl JweDecrypter for AesgcmkwJweDecrypter {
         encrypted_key: Option<&[u8]>,
         _cencryption: &dyn JweContentEncryption,
         header: &JweHeader,
-    ) -> Result<Cow<[u8]>, JoseError> {
+    ) -> Result<Cow<'_, [u8]>, JoseError> {
         (|| -> anyhow::Result<Cow<[u8]>> {
             let encrypted_key = match encrypted_key {
                 Some(val) => val,
@@ -347,7 +347,7 @@ impl JweDecrypter for AesgcmkwJweDecrypter {
 
             Ok(Cow::Owned(key))
         })()
-        .map_err(|err| JoseError::InvalidJweFormat(err))
+        .map_err(JoseError::InvalidJweFormat)
     }
 
     fn box_clone(&self) -> Box<dyn JweDecrypter> {
@@ -369,8 +369,8 @@ mod tests {
     use serde_json::json;
 
     use super::AesgcmkwJweAlgorithm;
-    use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
     use crate::jose::jwe::JweHeader;
+    use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
     use crate::jose::jwk::Jwk;
     use crate::jose::util;
 
@@ -378,7 +378,7 @@ mod tests {
     fn encrypt_and_decrypt_aes_gcm() -> Result<()> {
         let enc = AescbcHmacJweEncryption::A128cbcHs256;
 
-        for alg in vec![
+        for alg in [
             AesgcmkwJweAlgorithm::A128gcmkw,
             AesgcmkwJweAlgorithm::A192gcmkw,
             AesgcmkwJweAlgorithm::A256gcmkw,

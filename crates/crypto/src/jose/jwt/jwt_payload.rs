@@ -82,20 +82,15 @@ impl JwtPayload {
     pub fn set_audience(&mut self, values: Vec<impl Into<String>>) {
         let key = "aud".to_string();
         if values.len() == 1 {
-            for val in values {
-                let val: String = val.into();
-                self.claims.insert(key, Value::String(val));
-                break;
+            if let Some(val) = values.into_iter().next() {
+                self.claims.insert(key, Value::String(val.into()));
             }
         } else if values.len() > 1 {
-            let mut vec1 = Vec::with_capacity(values.len());
-            let mut vec2 = Vec::with_capacity(values.len());
+            let mut vec = Vec::with_capacity(values.len());
             for val in values {
-                let val: String = val.into();
-                vec1.push(Value::String(val.clone()));
-                vec2.push(val);
+                vec.push(Value::String(val.into()));
             }
-            self.claims.insert(key.clone(), Value::Array(vec1));
+            self.claims.insert(key, Value::Array(vec));
         }
     }
 
@@ -151,10 +146,9 @@ impl JwtPayload {
     /// Return the system time for expires at payload claim (exp).
     pub fn expires_at(&self) -> Option<SystemTime> {
         match self.claims.get("exp") {
-            Some(Value::Number(val)) => match val.as_f64() {
-                Some(val) => Some(SystemTime::UNIX_EPOCH + Duration::from_secs_f64(val)),
-                None => None,
-            },
+            Some(Value::Number(val)) => val
+                .as_f64()
+                .map(|val| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(val)),
             _ => None,
         }
     }
@@ -179,10 +173,9 @@ impl JwtPayload {
     /// Return the system time for not before payload claim (nbf).
     pub fn not_before(&self) -> Option<SystemTime> {
         match self.claims.get("nbf") {
-            Some(Value::Number(val)) => match val.as_f64() {
-                Some(val) => Some(SystemTime::UNIX_EPOCH + Duration::from_secs_f64(val)),
-                None => None,
-            },
+            Some(Value::Number(val)) => val
+                .as_f64()
+                .map(|val| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(val)),
             _ => None,
         }
     }
@@ -207,10 +200,9 @@ impl JwtPayload {
     /// Return the time for a issued at payload claim (iat).
     pub fn issued_at(&self) -> Option<SystemTime> {
         match self.claims.get("iat") {
-            Some(Value::Number(val)) => match val.as_f64() {
-                Some(val) => Some(SystemTime::UNIX_EPOCH + Duration::from_secs_f64(val)),
-                None => None,
-            },
+            Some(Value::Number(val)) => val
+                .as_f64()
+                .map(|val| SystemTime::UNIX_EPOCH + Duration::from_secs_f64(val)),
             _ => None,
         }
     }
@@ -253,7 +245,7 @@ impl JwtPayload {
 
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidJwtFormat(err))
+        .map_err(JoseError::InvalidJwtFormat)
     }
 
     /// Return a value for payload claim of a specified key.
@@ -306,7 +298,7 @@ impl JwtPayload {
 
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidJwtFormat(err))
+        .map_err(JoseError::InvalidJwtFormat)
     }
 }
 
@@ -316,9 +308,9 @@ impl AsRef<Map<String, Value>> for JwtPayload {
     }
 }
 
-impl Into<Map<String, Value>> for JwtPayload {
-    fn into(self) -> Map<String, Value> {
-        self.claims
+impl From<JwtPayload> for Map<String, Value> {
+    fn from(val: JwtPayload) -> Self {
+        val.claims
     }
 }
 
@@ -346,7 +338,7 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use anyhow::Result;
-    use serde_json::{json, Number, Value};
+    use serde_json::{Number, Value, json};
 
     use super::JwtPayload;
 

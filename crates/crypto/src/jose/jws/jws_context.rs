@@ -20,6 +20,12 @@ pub struct JwsContext {
     acceptable_criticals: BTreeSet<String>,
 }
 
+impl Default for JwsContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JwsContext {
     pub fn new() -> Self {
         Self {
@@ -88,12 +94,11 @@ impl JwsContext {
     {
         (|| -> anyhow::Result<String> {
             let mut b64 = true;
-            if let Some(vals) = header.critical() {
-                if vals.contains(&"b64") {
-                    if let Some(val) = header.base64url_encode_payload() {
-                        b64 = val;
-                    }
-                }
+            if let Some(vals) = header.critical()
+                && vals.contains(&"b64")
+                && let Some(val) = header.base64url_encode_payload()
+            {
+                b64 = val;
             }
 
             let signer = match selector(header) {
@@ -122,7 +127,7 @@ impl JwsContext {
 
             let mut message = String::with_capacity(capacity);
             util::encode_base64_urlsafe_nopad_buf(header_bytes, &mut message);
-            message.push_str(".");
+            message.push('.');
             if b64 {
                 util::encode_base64_urlsafe_nopad_buf(payload, &mut message);
             } else {
@@ -135,7 +140,7 @@ impl JwsContext {
 
             let signature = signer.sign(message.as_bytes())?;
 
-            message.push_str(".");
+            message.push('.');
             util::encode_base64_urlsafe_nopad_buf(signature, &mut message);
 
             Ok(message)
@@ -213,14 +218,14 @@ impl JwsContext {
                     }
                 }
 
-                if let None = merged.key_id() {
-                    if let Some(key_id) = signer.key_id() {
-                        protected_map.insert("kid".to_string(), Value::String(key_id.to_string()));
-                    }
+                if merged.key_id().is_none()
+                    && let Some(key_id) = signer.key_id()
+                {
+                    protected_map.insert("kid".to_string(), Value::String(key_id.to_string()));
                 }
 
                 if i > 0 {
-                    result.push_str(",");
+                    result.push(',');
                 }
 
                 let protected_bytes = serde_json::to_vec(&protected_map)?;
@@ -228,14 +233,14 @@ impl JwsContext {
 
                 let unprotected_map = header.claims_set(false);
 
-                let message = format!("{}.{}", &protected_b64, &payload_b64);
+                let message = format!("{}.{}", protected_b64, payload_b64);
                 let signature = signer.sign(message.as_bytes())?;
 
                 result.push_str("{\"protected\":\"");
                 result.push_str(&protected_b64);
-                result.push_str("\"");
+                result.push('"');
 
-                if unprotected_map.len() > 0 {
+                if !unprotected_map.is_empty() {
                     let unprotected = serde_json::to_string(&unprotected_map)?;
                     result.push_str(",\"header\":");
                     result.push_str(&unprotected);
@@ -293,19 +298,16 @@ impl JwsContext {
         (|| -> anyhow::Result<String> {
             let protected_map = header.claims_set(true);
             let mut b64 = true;
-            match protected_map.get("crit") {
-                Some(Value::Array(vals)) => {
-                    if vals.iter().any(|val| match val {
-                        Value::String(val2) => val2 == "b64",
-                        _ => false,
-                    }) {
-                        b64 = match protected_map.get("b64") {
-                            Some(Value::Bool(val3)) => *val3,
-                            _ => false,
-                        };
-                    }
-                }
-                _ => {}
+            if let Some(Value::Array(vals)) = protected_map.get("crit")
+                && vals.iter().any(|val| match val {
+                    Value::String(val2) => val2 == "b64",
+                    _ => false,
+                })
+            {
+                b64 = match protected_map.get("b64") {
+                    Some(Value::Bool(val3)) => *val3,
+                    _ => false,
+                };
             }
 
             let merged_map = header.to_map();
@@ -328,10 +330,10 @@ impl JwsContext {
                 }
             }
 
-            if let None = merged.key_id() {
-                if let Some(key_id) = signer.key_id() {
-                    protected_map.insert("kid".to_string(), Value::String(key_id.to_string()));
-                }
+            if merged.key_id().is_none()
+                && let Some(key_id) = signer.key_id()
+            {
+                protected_map.insert("kid".to_string(), Value::String(key_id.to_string()));
             }
 
             let protected_json = serde_json::to_string(&protected_map)?;
@@ -345,24 +347,24 @@ impl JwsContext {
                 std::str::from_utf8(payload)?
             };
 
-            let message = format!("{}.{}", &protected_b64, payload);
+            let message = format!("{}.{}", protected_b64, payload);
             let signature = signer.sign(message.as_bytes())?;
 
             let mut json = String::new();
             json.push_str("{\"protected\":\"");
             json.push_str(&protected_b64);
-            json.push_str("\"");
+            json.push('"');
 
             let unprotected = header.claims_set(false);
-            if unprotected.len() > 0 {
+            if !unprotected.is_empty() {
                 let unprotcted_json = serde_json::to_string(unprotected)?;
                 json.push_str(",\"header\":");
                 json.push_str(&unprotcted_json);
             }
 
             json.push_str(",\"payload\":\"");
-            json.push_str(&payload);
-            json.push_str("\"");
+            json.push_str(payload);
+            json.push('"');
 
             json.push_str(",\"signature\":\"");
             util::encode_base64_urlsafe_nopad_buf(&signature, &mut json);
@@ -411,7 +413,7 @@ impl JwsContext {
             let indexies: Vec<usize> = input
                 .iter()
                 .enumerate()
-                .filter(|(_, b)| **b == b'.' as u8)
+                .filter(|(_, b)| **b == b'.')
                 .map(|(pos, _)| pos)
                 .collect();
             if indexies.len() != 2 {
@@ -444,13 +446,12 @@ impl JwsContext {
                 None => bail!("The JWS alg header claim is required."),
             }
 
-            match verifier.key_id() {
-                Some(expected) => match header.key_id() {
+            if let Some(expected) = verifier.key_id() {
+                match header.key_id() {
                     Some(actual) if expected == actual => {}
                     Some(actual) => bail!("The JWS kid header claim is mismatched: {}", actual),
                     None => bail!("The JWS kid header claim is required."),
-                },
-                None => {}
+                }
             }
 
             let mut b64 = true;
@@ -461,10 +462,10 @@ impl JwsContext {
                             bail!("The critical name '{}' is not supported.", val2);
                         }
 
-                        if val2 == "b64" {
-                            if let Some(val) = header.base64url_encode_payload() {
-                                b64 = val;
-                            }
+                        if val2 == "b64"
+                            && let Some(val) = header.base64url_encode_payload()
+                        {
+                            b64 = val;
                         }
                     }
                 }
@@ -495,10 +496,10 @@ impl JwsContext {
     /// * `input` - The input data.
     /// * `header` - The decoded JWS header claims.
     /// * `verifier` - The JWS verifier.
-    pub fn deserialize_json<'a>(
+    pub fn deserialize_json(
         &self,
         input: impl AsRef<[u8]>,
-        verifier: &'a dyn JwsVerifier,
+        verifier: &dyn JwsVerifier,
     ) -> Result<(Vec<u8>, JwsHeader), JoseError> {
         self.deserialize_json_with_selector(input, |header| {
             match header.algorithm() {
@@ -511,12 +512,11 @@ impl JwsContext {
                 _ => return Ok(None),
             }
 
-            match verifier.key_id() {
-                Some(expected) => match header.key_id() {
+            if let Some(expected) = verifier.key_id() {
+                match header.key_id() {
                     Some(actual) if expected == actual => {}
                     _ => return Ok(None),
-                },
-                None => {}
+                }
             }
 
             Ok(Some(verifier))
@@ -577,7 +577,7 @@ impl JwsContext {
                     None => bail!("The JWS alg header claim must be in protected."),
                 };
 
-                let protected_vec = util::decode_base64_urlsafe_no_pad(&protected_b64)?;
+                let protected_vec = util::decode_base64_urlsafe_no_pad(protected_b64)?;
                 let protected_map: Map<String, Value> = serde_json::from_slice(&protected_vec)?;
 
                 let mut b64 = true;
@@ -619,7 +619,7 @@ impl JwsContext {
                     None => protected_map.clone(),
                 };
 
-                if let None = merged_map.get("alg") {
+                if merged_map.get("alg").is_none() {
                     bail!("The JWS alg header claim must be in protected.");
                 }
 
@@ -646,16 +646,15 @@ impl JwsContext {
                     None => bail!("The JWS alg header claim is required."),
                 }
 
-                match verifier.key_id() {
-                    Some(expected) => match merged.key_id() {
+                if let Some(expected) = verifier.key_id() {
+                    match merged.key_id() {
                         Some(actual) if expected == actual => {}
                         Some(actual) => bail!("The JWS kid header claim is mismatched: {}", actual),
                         None => bail!("The JWS kid header claim is required."),
-                    },
-                    None => {}
+                    }
                 }
 
-                let message = format!("{}.{}", &protected_b64, &payload_b64);
+                let message = format!("{}.{}", protected_b64, payload_b64);
                 verifier.verify(message.as_bytes(), &signature)?;
 
                 let payload = if b64 {

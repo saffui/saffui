@@ -74,15 +74,15 @@ impl<R: Read> DerReader<R> {
             None => return Ok(None),
             Some((DerType::EndOfContents, constructed)) => {
                 if !is_indefinite_parent {
-                    return Err(DerError::InvalidTag(format!(
-                        "End of contents type is not allowed here."
-                    )));
+                    return Err(DerError::InvalidTag(
+                        "End of contents type is not allowed here.".to_string(),
+                    ));
                 }
 
                 if constructed {
-                    return Err(DerError::InvalidTag(format!(
-                        "End of contents type cannot be constructed."
-                    )));
+                    return Err(DerError::InvalidTag(
+                        "End of contents type cannot be constructed.".to_string(),
+                    ));
                 }
 
                 match self.get_length()? {
@@ -94,9 +94,9 @@ impl<R: Read> DerReader<R> {
                         )));
                     }
                     None => {
-                        return Err(DerError::InvalidLength(format!(
-                            "End of contents content length must be 0: indefinite"
-                        )));
+                        return Err(DerError::InvalidLength(
+                            "End of contents content length must be 0: indefinite".to_string(),
+                        ));
                     }
                 }
 
@@ -136,9 +136,9 @@ impl<R: Read> DerReader<R> {
                 let length = match self.get_length()? {
                     Some(val) => val,
                     None => {
-                        return Err(DerError::InvalidLength(format!(
-                            "Primitive type content length cannot be indefinite."
-                        )));
+                        return Err(DerError::InvalidLength(
+                            "Primitive type content length cannot be indefinite.".to_string(),
+                        ));
                     }
                 };
 
@@ -206,7 +206,7 @@ impl<R: Read> DerReader<R> {
     pub fn to_null(&self) -> Result<(), DerError> {
         if let DerType::Null = self.der_type {
             if let Some(contents) = &self.contents {
-                if contents.len() != 0 {
+                if !contents.is_empty() {
                     return Err(DerError::InvalidLength(format!(
                         "Null content length must be 0: {}",
                         contents.len()
@@ -251,7 +251,7 @@ impl<R: Read> DerReader<R> {
     pub fn to_u8(&self) -> Result<u8, DerError> {
         if let DerType::Integer | DerType::Enumerated = self.der_type {
             if let Some(contents) = &self.contents {
-                if contents.len() == 0 {
+                if contents.is_empty() {
                     return Err(DerError::InvalidLength(format!(
                         "{} content length must be 1 or more.",
                         self.der_type
@@ -274,7 +274,7 @@ impl<R: Read> DerReader<R> {
     pub fn to_u64(&self) -> Result<u64, DerError> {
         if let DerType::Integer | DerType::Enumerated = self.der_type {
             if let Some(contents) = &self.contents {
-                if contents.len() == 0 {
+                if contents.is_empty() {
                     return Err(DerError::InvalidLength(format!(
                         "{} content length must be 1 or more.",
                         self.der_type
@@ -305,7 +305,7 @@ impl<R: Read> DerReader<R> {
             if let Some(contents) = &self.contents {
                 if contents.len() < min_len {
                     let mut vec = Vec::with_capacity(min_len);
-                    if sign && contents.len() > 0 && (contents[0] & 0b10000000) != 0 {
+                    if sign && !contents.is_empty() && (contents[0] & 0b10000000) != 0 {
                         vec.push(0b10000000);
                         for _ in 0..(min_len - contents.len() - 1) {
                             vec.push(0);
@@ -319,9 +319,9 @@ impl<R: Read> DerReader<R> {
                         vec.extend_from_slice(contents);
                     }
                     vec
-                } else if contents.len() - 1 >= min_len
+                } else if contents.len() > min_len
                     && !sign
-                    && contents.len() > 0
+                    && !contents.is_empty()
                     && contents[0] == 0
                 {
                     contents[1..].to_vec()
@@ -358,16 +358,16 @@ impl<R: Read> DerReader<R> {
         if let DerType::BitString = self.der_type {
             if let Some(contents) = &self.contents {
                 if contents.len() < 2 {
-                    return Err(DerError::InvalidLength(format!(
-                        "Bit String content length must be 2 or more."
-                    )));
+                    return Err(DerError::InvalidLength(
+                        "Bit String content length must be 2 or more.".to_string(),
+                    ));
                 }
 
                 let unused_bits = contents[0];
                 if unused_bits > 7 {
-                    return Err(DerError::InvalidContents(format!(
-                        "Unused bit count of Bit String must be from 0 to 7."
-                    )));
+                    return Err(DerError::InvalidContents(
+                        "Unused bit count of Bit String must be from 0 to 7.".to_string(),
+                    ));
                 }
 
                 Ok((contents[1..contents.len()].to_vec(), unused_bits))
@@ -404,7 +404,7 @@ impl<R: Read> DerReader<R> {
         if let DerType::ObjectIdentifier = self.der_type {
             if let Some(contents) = &self.contents {
                 let mut oid = Vec::<u64>::new();
-                if contents.len() > 0 {
+                if !contents.is_empty() {
                     let b0 = contents[0];
                     oid.push((b0 / 40) as u64);
                     oid.push((b0 % 40) as u64);

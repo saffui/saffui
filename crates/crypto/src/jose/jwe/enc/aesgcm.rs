@@ -12,8 +12,8 @@ use std::ops::Deref;
 use anyhow::bail;
 use openssl::symm::{self, Cipher};
 
-use crate::jose::jwe::JweContentEncryption;
 use crate::jose::JoseError;
+use crate::jose::jwe::JweContentEncryption;
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum AesgcmJweEncryption {
@@ -72,7 +72,7 @@ impl JweContentEncryption for AesgcmJweEncryption {
             let encrypted_message = symm::encrypt_aead(cipher, key, iv, aad, message, &mut tag)?;
             Ok((encrypted_message, Some(tag.to_vec())))
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     fn decrypt(
@@ -106,11 +106,11 @@ impl JweContentEncryption for AesgcmJweEncryption {
             let message = symm::decrypt_aead(cipher, key, iv, aad, encrypted_message, tag)?;
             Ok(message)
         })()
-        .map_err(|err| JoseError::InvalidJweFormat(err))
+        .map_err(JoseError::InvalidJweFormat)
     }
 
     fn box_clone(&self) -> Box<dyn JweContentEncryption> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -140,7 +140,7 @@ mod tests {
         let message = b"abcde12345";
         let aad = b"test";
 
-        for enc in vec![
+        for enc in [
             AesgcmJweEncryption::A128gcm,
             AesgcmJweEncryption::A192gcm,
             AesgcmJweEncryption::A256gcm,

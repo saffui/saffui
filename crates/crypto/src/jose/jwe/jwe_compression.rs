@@ -24,7 +24,7 @@ pub trait JweCompression: Debug + Send + Sync {
 
 impl PartialEq for Box<dyn JweCompression> {
     fn eq(&self, other: &Self) -> bool {
-        self == other
+        self.name() == other.name()
     }
 }
 
@@ -33,5 +33,33 @@ impl Eq for Box<dyn JweCompression> {}
 impl Clone for Box<dyn JweCompression> {
     fn clone(&self) -> Self {
         self.box_clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::jose::jwe::zip::deflate::DeflateJweCompression;
+
+    /// Comparing two boxed compressions must return, not recurse.
+    ///
+    /// Upstream wrote `self == other` in this impl, which resolves to the impl
+    /// itself: every comparison of two `Box<dyn JweCompression>` recursed until
+    /// the stack ran out. The same shape sits in the JWE and JWS algorithm
+    /// traits, the content encryption trait, and `KeyPair`. Nothing caught it
+    /// because a test that compares would take the process down with it, so
+    /// there was no test.
+    ///
+    /// The equality is over the `zip` header parameter, which is what names a
+    /// compression in a JWE header.
+    /// `assert!` and not `assert_eq!`: the macro compares `*left == *right`,
+    /// which tries to move the value out of the box.
+    #[test]
+    fn boxed_compressions_compare_by_name() {
+        let a: Box<dyn JweCompression> = Box::new(DeflateJweCompression::Def);
+        let b: Box<dyn JweCompression> = Box::new(DeflateJweCompression::Def);
+        assert!(a == b);
+        assert!(a == a.clone());
+        assert_eq!(a.name(), "DEF");
     }
 }

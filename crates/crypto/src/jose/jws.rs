@@ -49,7 +49,7 @@ pub use EcdsaJwsAlgorithm::Es512 as ES512;
 use crate::jose::jws::alg::eddsa::EddsaJwsAlgorithm;
 pub use EddsaJwsAlgorithm::Eddsa as EdDSA;
 
-static DEFAULT_CONTEXT: LazyLock<JwsContext> = LazyLock::new(|| JwsContext::new());
+static DEFAULT_CONTEXT: LazyLock<JwsContext> = LazyLock::new(JwsContext::new);
 
 /// Return a representation of the data that is formatted by compact serialization.
 ///
@@ -188,9 +188,9 @@ where
 /// * `input` - The input data.
 /// * `header` - The decoded JWS header claims.
 /// * `verifier` - The JWS verifier.
-pub fn deserialize_json<'a>(
+pub fn deserialize_json(
     input: impl AsRef<[u8]>,
-    verifier: &'a dyn JwsVerifier,
+    verifier: &dyn JwsVerifier,
 ) -> Result<(Vec<u8>, JwsHeader), JoseError> {
     DEFAULT_CONTEXT.deserialize_json(input, verifier)
 }
@@ -220,8 +220,8 @@ mod tests {
 
     use anyhow::Result;
 
-    use crate::jose::jws::{self, EdDSA, JwsHeader, JwsHeaderSet, JwsVerifier, ES256, RS256};
     use crate::jose::Value;
+    use crate::jose::jws::{self, ES256, EdDSA, JwsHeader, JwsHeaderSet, JwsVerifier, RS256};
 
     #[test]
     fn test_jws_compact_serialization() -> Result<()> {
@@ -326,7 +326,7 @@ mod tests {
 
         let json = jws::serialize_general_json(
             src_payload,
-            &vec![
+            &[
                 (&src_header_1, &*signer_1),
                 (&src_header_2, &*signer_2),
                 (&src_header_3, &*signer_3),

@@ -19,8 +19,8 @@ use crate::jose::jwk::{Jwk, KeyPair};
 use crate::jose::util;
 use crate::jose::util::der::{DerBuilder, DerClass, DerReader, DerType};
 use crate::jose::util::oid::{
-    ObjectIdentifier, OID_ID_EC_PUBLIC_KEY, OID_PRIME256V1, OID_SECP256K1, OID_SECP384R1,
-    OID_SECP521R1,
+    OID_ID_EC_PUBLIC_KEY, OID_PRIME256V1, OID_SECP256K1, OID_SECP384R1, OID_SECP521R1,
+    ObjectIdentifier,
 };
 use crate::jose::{JoseError, Value};
 
@@ -118,7 +118,7 @@ impl EcKeyPair {
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Create a EC key pair from a private key that is a DER encoded PKCS#8 PrivateKeyInfo or ECPrivateKey.
@@ -139,7 +139,7 @@ impl EcKeyPair {
                 },
                 None => match curve {
                     Some(val) => {
-                        pkcs8_der_vec = Self::to_pkcs8(input.as_ref(), false, val);
+                        pkcs8_der_vec = Self::to_pkcs8(input, false, val);
                         (pkcs8_der_vec.as_slice(), val)
                     }
                     None => bail!("A curve is required for raw format."),
@@ -248,7 +248,7 @@ impl EcKeyPair {
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Create a Ec key pair from a private key of common or traditinal PEM format.
@@ -337,7 +337,7 @@ impl EcKeyPair {
             .unwrap();
         if private {
             let d = ec_key.private_key();
-            let d = Self::num_to_vec(&d, self.curve.coordinate_size());
+            let d = Self::num_to_vec(d, self.curve.coordinate_size());
             let d = util::encode_base64_urlsafe_nopad(&d);
 
             jwk.set_parameter("d", Some(Value::String(d))).unwrap();
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_ec_jwt() -> Result<()> {
-        for curve in vec![
+        for curve in [
             EcCurve::P256,
             EcCurve::P384,
             EcCurve::P521,

@@ -10,8 +10,8 @@ use std::ops::Deref;
 
 use anyhow::bail;
 
-use crate::jose::jws::{JwsAlgorithm, JwsSigner, JwsVerifier};
 use crate::jose::JoseError;
+use crate::jose::jws::{JwsAlgorithm, JwsSigner, JwsVerifier};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum UnsecuredJwsAlgorithm {
@@ -20,15 +20,11 @@ pub enum UnsecuredJwsAlgorithm {
 
 impl UnsecuredJwsAlgorithm {
     pub fn signer(&self) -> UnsecuredJwsSigner {
-        UnsecuredJwsSigner {
-            algorithm: self.clone(),
-        }
+        UnsecuredJwsSigner { algorithm: *self }
     }
 
     pub fn verifier(&self) -> UnsecuredJwsVerifier {
-        UnsecuredJwsVerifier {
-            algorithm: self.clone(),
-        }
+        UnsecuredJwsVerifier { algorithm: *self }
     }
 }
 
@@ -38,7 +34,7 @@ impl JwsAlgorithm for UnsecuredJwsAlgorithm {
     }
 
     fn box_clone(&self) -> Box<dyn JwsAlgorithm> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -101,7 +97,7 @@ impl JwsVerifier for UnsecuredJwsVerifier {
 
     fn verify(&self, _message: &[u8], signature: &[u8]) -> Result<(), JoseError> {
         (|| -> anyhow::Result<()> {
-            if signature.len() != 0 {
+            if !signature.is_empty() {
                 bail!(
                     "The length of none algorithm signature must be 0: {}",
                     signature.len()
@@ -110,7 +106,7 @@ impl JwsVerifier for UnsecuredJwsVerifier {
 
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))
+        .map_err(JoseError::InvalidSignature)
     }
 
     fn box_clone(&self) -> Box<dyn JwsVerifier> {

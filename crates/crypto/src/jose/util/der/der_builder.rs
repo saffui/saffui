@@ -15,6 +15,12 @@ pub struct DerBuilder {
     stack: Vec<Vec<u8>>,
 }
 
+impl Default for DerBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DerBuilder {
     pub fn new() -> Self {
         Self {
@@ -60,7 +66,7 @@ impl DerBuilder {
     }
 
     pub fn append_integer_from_be_slice(&mut self, value: &[u8], sign: bool) {
-        let prefix = if sign && value.len() > 0 && value[0] & 0b10000000 != 0 {
+        let prefix = if sign && !value.is_empty() && value[0] & 0b10000000 != 0 {
             Some(0)
         } else {
             None
@@ -90,7 +96,7 @@ impl DerBuilder {
             let mut start = false;
             let mut shift = 9;
             loop {
-                let part = ((n >> 7 * shift) & 0x7F) as u8;
+                let part = ((n >> (7 * shift)) & 0x7F) as u8;
                 if shift == 0 {
                     vec.push(part);
                     break;

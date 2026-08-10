@@ -15,7 +15,7 @@ use openssl::pkey::{PKey, Private};
 use crate::jose::jwk::{Jwk, KeyPair};
 use crate::jose::util;
 use crate::jose::util::der::{DerBuilder, DerReader, DerType};
-use crate::jose::util::oid::{ObjectIdentifier, OID_ED25519, OID_ED448};
+use crate::jose::util::oid::{OID_ED448, OID_ED25519, ObjectIdentifier};
 use crate::jose::{JoseError, Value};
 
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
@@ -34,8 +34,8 @@ impl EdCurve {
 
     pub fn oid(&self) -> &ObjectIdentifier {
         match self {
-            Self::Ed25519 => &*OID_ED25519,
-            Self::Ed448 => &*OID_ED448,
+            Self::Ed25519 => &OID_ED25519,
+            Self::Ed448 => &OID_ED448,
         }
     }
 }
@@ -96,7 +96,7 @@ impl EdKeyPair {
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Create a EdDSA key pair from a private key that is a DER encoded PKCS#8 PrivateKeyInfo.
@@ -165,7 +165,7 @@ impl EdKeyPair {
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Create a EdDSA key pair from a private key that is formatted by a JWK of OKP type.
@@ -208,7 +208,7 @@ impl EdKeyPair {
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn to_traditional_pem_private_key(&self) -> Vec<u8> {
@@ -223,7 +223,7 @@ impl EdKeyPair {
         result.push_str("-----BEGIN ");
         result.push_str(alg);
         result.push_str("-----\r\n");
-        for i in 0..((der.len() + 64 - 1) / 64) {
+        for i in 0..der.len().div_ceil(64) {
             result.push_str(&der[(i * 64)..std::cmp::min((i + 1) * 64, der.len())]);
             result.push_str("\r\n");
         }
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_ed_jwt() -> Result<()> {
-        for curve in vec![EdCurve::Ed25519, EdCurve::Ed448] {
+        for curve in [EdCurve::Ed25519, EdCurve::Ed448] {
             let key_pair_1 = EdKeyPair::generate(curve)?;
             let der_private1 = key_pair_1.to_der_private_key();
             let der_public1 = key_pair_1.to_der_public_key();

@@ -12,7 +12,7 @@ use std::ops::Deref;
 
 use crate::jose::jwe::JweHeader;
 use crate::jose::jwk::Jwk;
-use crate::jose::{util, JoseError, JoseHeader, Map, Value};
+use crate::jose::{JoseError, JoseHeader, Map, Value, util};
 
 /// Represent JWE protected and unprotected header claims
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -52,7 +52,7 @@ impl JweHeaderSet {
     /// Return the value for algorithm header claim (alg).
     pub fn algorithm(&self) -> Option<&str> {
         match self.claim("alg") {
-            Some(Value::String(val)) => Some(&val),
+            Some(Value::String(val)) => Some(val),
             _ => None,
         }
     }
@@ -150,10 +150,7 @@ impl JweHeaderSet {
     /// Return the value for JWK header claim (jwk).
     pub fn jwk(&self) -> Option<Jwk> {
         match self.claim("jwk") {
-            Some(Value::Object(vals)) => match Jwk::from_map(vals.clone()) {
-                Ok(val) => Some(val),
-                Err(_) => None,
-            },
+            Some(Value::Object(vals)) => Jwk::from_map(vals.clone()).ok(),
             _ => None,
         }
     }
@@ -249,10 +246,7 @@ impl JweHeaderSet {
     /// Return the value for X.509 certificate SHA-1 thumbprint header claim (x5t).
     pub fn x509_certificate_sha1_thumbprint(&self) -> Option<Vec<u8>> {
         match self.claim("x5t") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val2) => Some(val2),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -282,10 +276,7 @@ impl JweHeaderSet {
     /// Return the value for X.509 certificate SHA-256 thumbprint header claim (x5t#S256).
     pub fn x509_certificate_sha256_thumbprint(&self) -> Option<Vec<u8>> {
         match self.claim("x5t#S256") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val2) => Some(val2),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -447,10 +438,7 @@ impl JweHeaderSet {
     /// Return the value for nonce header claim (nonce).
     pub fn nonce(&self) -> Option<Vec<u8>> {
         match self.claim("nonce") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val2) => Some(val2),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -476,10 +464,7 @@ impl JweHeaderSet {
     /// Return the value for agreement PartyUInfo header claim (apu).
     pub fn agreement_partyuinfo(&self) -> Option<Vec<u8>> {
         match self.claim("apu") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val2) => Some(val2),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -505,10 +490,7 @@ impl JweHeaderSet {
     /// Return the value for agreement PartyVInfo header claim (apv).
     pub fn agreement_partyvinfo(&self) -> Option<Vec<u8>> {
         match self.claim("apv") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val2) => Some(val2),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -573,7 +555,7 @@ impl JweHeaderSet {
     pub fn set_audience(&mut self, values: Vec<impl Into<String>>, protection: bool) {
         let key = "aud";
         if values.len() == 1 {
-            for val in values {
+            if let Some(val) = values.into_iter().next() {
                 let value = val.into();
                 if protection {
                     self.unprotected.remove(key);
@@ -583,7 +565,6 @@ impl JweHeaderSet {
                     self.unprotected
                         .insert(key.to_string(), Value::String(value));
                 }
-                break;
             }
         } else if values.len() > 1 {
             let mut vec = Vec::with_capacity(values.len());
@@ -722,9 +703,9 @@ mod tests {
     use anyhow::Result;
     use serde_json::json;
 
+    use crate::jose::Value;
     use crate::jose::jwe::JweHeaderSet;
     use crate::jose::jwk::Jwk;
-    use crate::jose::Value;
 
     #[test]
     fn test_new_jwe_header() -> Result<()> {

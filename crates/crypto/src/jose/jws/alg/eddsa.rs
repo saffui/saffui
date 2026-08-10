@@ -14,8 +14,8 @@ use openssl::pkey::{PKey, Private, Public};
 use openssl::sign::{Signer, Verifier};
 
 use crate::jose::jwk::{
-    alg::ed::{EdCurve, EdKeyPair},
     Jwk,
+    alg::ed::{EdCurve, EdKeyPair},
 };
 use crate::jose::jws::{JwsAlgorithm, JwsSigner, JwsVerifier};
 use crate::jose::util;
@@ -71,7 +71,7 @@ impl EddsaJwsAlgorithm {
     pub fn signer_from_der(&self, input: impl AsRef<[u8]>) -> Result<EddsaJwsSigner, JoseError> {
         let key_pair = self.key_pair_from_der(input.as_ref())?;
         Ok(EddsaJwsSigner {
-            algorithm: self.clone(),
+            algorithm: *self,
             curve: key_pair.curve(),
             private_key: key_pair.into_private_key(),
             key_id: None,
@@ -91,7 +91,7 @@ impl EddsaJwsAlgorithm {
     pub fn signer_from_pem(&self, input: impl AsRef<[u8]>) -> Result<EddsaJwsSigner, JoseError> {
         let key_pair = self.key_pair_from_pem(input.as_ref())?;
         Ok(EddsaJwsSigner {
-            algorithm: self.clone(),
+            algorithm: *self,
             curve: key_pair.curve(),
             private_key: key_pair.into_private_key(),
             key_id: None,
@@ -124,13 +124,13 @@ impl EddsaJwsAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(EddsaJwsSigner {
-                algorithm: self.clone(),
+                algorithm: *self,
                 curve,
                 private_key,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a public key that is a DER encoded SubjectPublicKeyInfo.
@@ -150,12 +150,12 @@ impl EddsaJwsAlgorithm {
             let public_key = PKey::public_key_from_der(spki_der)?;
 
             Ok(EddsaJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a key of common PEM format.
@@ -184,12 +184,12 @@ impl EddsaJwsAlgorithm {
             let public_key = PKey::public_key_from_der(spki_der)?;
 
             Ok(EddsaJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a public key that is formatted by a JWK of OKP type.
@@ -233,12 +233,12 @@ impl EddsaJwsAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(EddsaJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 }
 
@@ -248,7 +248,7 @@ impl JwsAlgorithm for EddsaJwsAlgorithm {
     }
 
     fn box_clone(&self) -> Box<dyn JwsAlgorithm> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -310,7 +310,7 @@ impl JwsSigner for EddsaJwsSigner {
             signer.sign_oneshot(&mut signature, message)?;
             Ok(signature)
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))
+        .map_err(JoseError::InvalidSignature)
     }
 
     fn box_clone(&self) -> Box<dyn JwsSigner> {
@@ -363,7 +363,7 @@ impl JwsVerifier for EddsaJwsVerifier {
             }
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))
+        .map_err(JoseError::InvalidSignature)
     }
 
     fn box_clone(&self) -> Box<dyn JwsVerifier> {
@@ -391,14 +391,14 @@ mod tests {
     fn sign_and_verify_eddsa_generated_der() -> Result<()> {
         let input = b"abcde12345";
 
-        for curve in vec![EdCurve::Ed25519, EdCurve::Ed448] {
+        for curve in [EdCurve::Ed25519, EdCurve::Ed448] {
             let alg = EddsaJwsAlgorithm::Eddsa;
             let key_pair = alg.generate_key_pair(curve)?;
 
-            let signer = alg.signer_from_der(&key_pair.to_der_private_key())?;
+            let signer = alg.signer_from_der(key_pair.to_der_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_der(&key_pair.to_der_public_key())?;
+            let verifier = alg.verifier_from_der(key_pair.to_der_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -409,14 +409,14 @@ mod tests {
     fn sign_and_verify_eddsa_generated_pem() -> Result<()> {
         let input = b"abcde12345";
 
-        for curve in vec![EdCurve::Ed25519, EdCurve::Ed448] {
+        for curve in [EdCurve::Ed25519, EdCurve::Ed448] {
             let alg = EddsaJwsAlgorithm::Eddsa;
             let key_pair = alg.generate_key_pair(curve)?;
 
-            let signer = alg.signer_from_pem(&key_pair.to_pem_private_key())?;
+            let signer = alg.signer_from_pem(key_pair.to_pem_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_pem(&key_pair.to_pem_public_key())?;
+            let verifier = alg.verifier_from_pem(key_pair.to_pem_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -427,14 +427,14 @@ mod tests {
     fn sign_and_verify_eddsa_generated_traditional_pem() -> Result<()> {
         let input = b"abcde12345";
 
-        for curve in vec![EdCurve::Ed25519, EdCurve::Ed448] {
+        for curve in [EdCurve::Ed25519, EdCurve::Ed448] {
             let alg = EddsaJwsAlgorithm::Eddsa;
             let key_pair = alg.generate_key_pair(curve)?;
 
-            let signer = alg.signer_from_pem(&key_pair.to_traditional_pem_private_key())?;
+            let signer = alg.signer_from_pem(key_pair.to_traditional_pem_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_pem(&key_pair.to_pem_public_key())?;
+            let verifier = alg.verifier_from_pem(key_pair.to_pem_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -445,7 +445,7 @@ mod tests {
     fn sign_and_verify_eddsa_generated_jwk() -> Result<()> {
         let input = b"abcde12345";
 
-        for curve in vec![EdCurve::Ed25519, EdCurve::Ed448] {
+        for curve in [EdCurve::Ed25519, EdCurve::Ed448] {
             let alg = EddsaJwsAlgorithm::Eddsa;
             let key_pair = alg.generate_key_pair(curve)?;
 
@@ -521,15 +521,15 @@ mod tests {
     fn sign_and_verify_eddsa_mismatch() -> Result<()> {
         let input = b"abcde12345";
 
-        for curve in vec![EdCurve::Ed25519, EdCurve::Ed448] {
+        for curve in [EdCurve::Ed25519, EdCurve::Ed448] {
             let alg = EddsaJwsAlgorithm::Eddsa;
             let signer_key_pair = alg.generate_key_pair(curve)?;
             let verifier_key_pair = alg.generate_key_pair(curve)?;
 
-            let signer = alg.signer_from_der(&signer_key_pair.to_der_private_key())?;
+            let signer = alg.signer_from_der(signer_key_pair.to_der_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_der(&verifier_key_pair.to_der_public_key())?;
+            let verifier = alg.verifier_from_der(verifier_key_pair.to_der_public_key())?;
             verifier
                 .verify(input, &signature)
                 .expect_err("Unmatched signature did not fail");

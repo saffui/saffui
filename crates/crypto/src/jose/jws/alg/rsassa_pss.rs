@@ -15,7 +15,7 @@ use openssl::pkey::{PKey, Private, Public};
 use openssl::rsa::Rsa;
 use openssl::sign::{Signer, Verifier};
 
-use crate::jose::jwk::{alg::rsa::RsaKeyPair, alg::rsapss::RsaPssKeyPair, Jwk};
+use crate::jose::jwk::{Jwk, alg::rsa::RsaKeyPair, alg::rsapss::RsaPssKeyPair};
 use crate::jose::jws::{JwsAlgorithm, JwsSigner, JwsVerifier};
 use crate::jose::util::der::{DerBuilder, DerType};
 use crate::jose::util::{self, HashAlgorithm};
@@ -125,7 +125,7 @@ impl RsassaPssJwsAlgorithm {
     ) -> Result<RsassaPssJwsSigner, JoseError> {
         let key_pair = self.key_pair_from_der(input.as_ref())?;
         Ok(RsassaPssJwsSigner {
-            algorithm: self.clone(),
+            algorithm: *self,
             private_key: key_pair.into_private_key(),
             key_id: None,
         })
@@ -147,7 +147,7 @@ impl RsassaPssJwsAlgorithm {
     ) -> Result<RsassaPssJwsSigner, JoseError> {
         let key_pair = self.key_pair_from_pem(input.as_ref())?;
         Ok(RsassaPssJwsSigner {
-            algorithm: self.clone(),
+            algorithm: *self,
             private_key: key_pair.into_private_key(),
             key_id: None,
         })
@@ -187,12 +187,12 @@ impl RsassaPssJwsAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(RsassaPssJwsSigner {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a public key that is a DER encoded SubjectPublicKeyInfo or PKCS#1 RSAPublicKey.
@@ -219,7 +219,7 @@ impl RsassaPssJwsAlgorithm {
                         bail!("The salt size is mismatched: {}", salt_len);
                     }
 
-                    input.as_ref()
+                    input
                 }
                 None => {
                     let rsa_der_vec;
@@ -251,12 +251,12 @@ impl RsassaPssJwsAlgorithm {
             }
 
             Ok(RsassaPssJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a key of common or traditional PEM format.
@@ -312,12 +312,12 @@ impl RsassaPssJwsAlgorithm {
             }
 
             Ok(RsassaPssJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a public key that is formatted by a JWK of RSA type.
@@ -378,12 +378,12 @@ impl RsassaPssJwsAlgorithm {
             }
 
             Ok(RsassaPssJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     fn hash_algorithm(&self) -> HashAlgorithm {
@@ -413,7 +413,7 @@ impl JwsAlgorithm for RsassaPssJwsAlgorithm {
     }
 
     fn box_clone(&self) -> Box<dyn JwsAlgorithm> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -477,7 +477,7 @@ impl JwsSigner for RsassaPssJwsSigner {
             let signature = signer.sign_to_vec()?;
             Ok(signature)
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))
+        .map_err(JoseError::InvalidSignature)
     }
 
     fn box_clone(&self) -> Box<dyn JwsSigner> {
@@ -537,7 +537,7 @@ impl JwsVerifier for RsassaPssJwsVerifier {
             }
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))
+        .map_err(JoseError::InvalidSignature)
     }
 
     fn box_clone(&self) -> Box<dyn JwsVerifier> {
@@ -572,10 +572,10 @@ mod tests {
         ] {
             let key_pair = alg.generate_key_pair(2048)?;
 
-            let signer = alg.signer_from_der(&key_pair.to_der_private_key())?;
+            let signer = alg.signer_from_der(key_pair.to_der_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_der(&key_pair.to_der_public_key())?;
+            let verifier = alg.verifier_from_der(key_pair.to_der_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -592,10 +592,10 @@ mod tests {
             RsassaPssJwsAlgorithm::Ps384,
             RsassaPssJwsAlgorithm::Ps512,
         ] {
-            let signer = alg.signer_from_der(&key_pair.to_der_private_key())?;
+            let signer = alg.signer_from_der(key_pair.to_der_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_der(&key_pair.to_der_public_key())?;
+            let verifier = alg.verifier_from_der(key_pair.to_der_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -613,10 +613,10 @@ mod tests {
         ] {
             let key_pair = alg.generate_key_pair(2048)?;
 
-            let signer = alg.signer_from_der(&key_pair.to_raw_private_key())?;
+            let signer = alg.signer_from_der(key_pair.to_raw_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_der(&key_pair.to_raw_public_key())?;
+            let verifier = alg.verifier_from_der(key_pair.to_raw_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -634,10 +634,10 @@ mod tests {
         ] {
             let key_pair = alg.generate_key_pair(2048)?;
 
-            let signer = alg.signer_from_pem(&key_pair.to_pem_private_key())?;
+            let signer = alg.signer_from_pem(key_pair.to_pem_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_pem(&key_pair.to_pem_public_key())?;
+            let verifier = alg.verifier_from_pem(key_pair.to_pem_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -655,10 +655,10 @@ mod tests {
         ] {
             let key_pair = alg.generate_key_pair(2048)?;
 
-            let signer = alg.signer_from_pem(&key_pair.to_traditional_pem_private_key())?;
+            let signer = alg.signer_from_pem(key_pair.to_traditional_pem_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_pem(&key_pair.to_pem_public_key())?;
+            let verifier = alg.verifier_from_pem(key_pair.to_pem_public_key())?;
             verifier.verify(input, &signature)?;
         }
 
@@ -780,10 +780,10 @@ mod tests {
             let signer_key_pair = alg.generate_key_pair(2048)?;
             let verifier_key_pair = alg.generate_key_pair(2048)?;
 
-            let signer = alg.signer_from_der(&signer_key_pair.to_der_private_key())?;
+            let signer = alg.signer_from_der(signer_key_pair.to_der_private_key())?;
             let signature = signer.sign(input)?;
 
-            let verifier = alg.verifier_from_der(&verifier_key_pair.to_der_public_key())?;
+            let verifier = alg.verifier_from_der(verifier_key_pair.to_der_public_key())?;
             verifier
                 .verify(input, &signature)
                 .expect_err("Unmatched signature did not fail");

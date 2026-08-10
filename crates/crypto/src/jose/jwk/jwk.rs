@@ -126,12 +126,9 @@ impl Jwk {
                 "oct" => bail!("The key type 'oct' doesn't have public key."),
                 "RSA" => {
                     let mut jwk = Jwk::new("RSA");
-                    match self.map.get("use") {
-                        Some(Value::String(val)) => {
-                            jwk.map
-                                .insert("use".to_string(), Value::String(val.clone()));
-                        }
-                        _ => {}
+                    if let Some(Value::String(val)) = self.map.get("use") {
+                        jwk.map
+                            .insert("use".to_string(), Value::String(val.clone()));
                     }
                     match self.map.get("e") {
                         Some(Value::String(val)) => {
@@ -151,12 +148,9 @@ impl Jwk {
                 }
                 "EC" => {
                     let mut jwk = Jwk::new("EC");
-                    match self.map.get("use") {
-                        Some(Value::String(val)) => {
-                            jwk.map
-                                .insert("use".to_string(), Value::String(val.clone()));
-                        }
-                        _ => {}
+                    if let Some(Value::String(val)) = self.map.get("use") {
+                        jwk.map
+                            .insert("use".to_string(), Value::String(val.clone()));
                     }
                     match self.map.get("crv") {
                         Some(Value::String(val)) => match val.as_str() {
@@ -187,12 +181,9 @@ impl Jwk {
                 }
                 "OKP" => {
                     let mut jwk = Jwk::new("OKP");
-                    match self.map.get("use") {
-                        Some(Value::String(val)) => {
-                            jwk.map
-                                .insert("use".to_string(), Value::String(val.clone()));
-                        }
-                        _ => {}
+                    if let Some(Value::String(val)) = self.map.get("use") {
+                        jwk.map
+                            .insert("use".to_string(), Value::String(val.clone()));
                     }
                     match self.map.get("crv") {
                         Some(Value::String(val)) => match val.as_str() {
@@ -218,7 +209,7 @@ impl Jwk {
             };
             Ok(jwk)
         })()
-        .map_err(|err| JoseError::InvalidJwkFormat(err))
+        .map_err(JoseError::InvalidJwkFormat)
     }
 
     /// Set a value for a key type parameter (kty).
@@ -365,10 +356,7 @@ impl Jwk {
     /// Return a value for a x509 certificate SHA-1 thumbprint parameter (x5t).
     pub fn x509_certificate_sha1_thumbprint(&self) -> Option<Vec<u8>> {
         match self.map.get("x5t") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val) => Some(val),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -387,10 +375,7 @@ impl Jwk {
     /// Return a value for a x509 certificate SHA-256 thumbprint parameter (x5t#S256).
     pub fn x509_certificate_sha256_thumbprint(&self) -> Option<Vec<u8>> {
         match self.map.get("x5t#S256") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val) => Some(val),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -459,10 +444,7 @@ impl Jwk {
     /// Return a value for a key value parameter (k) of a oct type.
     pub fn key_value(&self) -> Option<Vec<u8>> {
         match self.map.get("k") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val) => Some(val),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -480,13 +462,12 @@ impl Jwk {
             }
             None => {
                 (|| -> anyhow::Result<()> {
-                    match key {
-                        "kty" => bail!("The JWK {} parameter must be required.", key),
-                        _ => {}
+                    if key == "kty" {
+                        bail!("The JWK {} parameter must be required.", key)
                     }
                     Ok(())
                 })()
-                .map_err(|err| JoseError::InvalidJwkFormat(err))?;
+                .map_err(JoseError::InvalidJwkFormat)?;
 
                 self.map.remove(key);
             }
@@ -514,7 +495,7 @@ impl Jwk {
             }
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidJwsFormat(err))
+        .map_err(JoseError::InvalidJwsFormat)
     }
 
     fn check_parameter(key: &str, value: &Value) -> Result<(), JoseError> {
@@ -571,7 +552,7 @@ impl Jwk {
 
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidJwkFormat(err))
+        .map_err(JoseError::InvalidJwkFormat)
     }
 }
 
@@ -581,9 +562,9 @@ impl AsRef<Map<String, Value>> for Jwk {
     }
 }
 
-impl Into<Map<String, Value>> for Jwk {
-    fn into(self) -> Map<String, Value> {
-        self.map
+impl From<Jwk> for Map<String, Value> {
+    fn from(val: Jwk) -> Self {
+        val.map
     }
 }
 
@@ -598,8 +579,8 @@ impl Display for Jwk {
 mod tests {
     use anyhow::Result;
 
-    use crate::jose::jwk::Jwk;
     use crate::jose::Value;
+    use crate::jose::jwk::Jwk;
 
     #[test]
     fn test_new_jws_header() -> Result<()> {

@@ -16,7 +16,7 @@ use openssl::pkey::{PKey, Private, Public};
 use openssl::rsa::Padding;
 
 use crate::jose::jwe::{JweAlgorithm, JweContentEncryption, JweDecrypter, JweEncrypter, JweHeader};
-use crate::jose::jwk::{alg::rsa::RsaKeyPair, Jwk};
+use crate::jose::jwk::{Jwk, alg::rsa::RsaKeyPair};
 use crate::jose::util;
 use crate::jose::util::der::{DerBuilder, DerType};
 use crate::jose::{JoseError, Value};
@@ -127,12 +127,12 @@ impl RsaesJweAlgorithm {
             }
 
             Ok(RsaesJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn encrypter_from_pem(
@@ -160,12 +160,12 @@ impl RsaesJweAlgorithm {
             }
 
             Ok(RsaesJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn encrypter_from_jwk(&self, jwk: &Jwk) -> Result<RsaesJweEncrypter, JoseError> {
@@ -218,12 +218,12 @@ impl RsaesJweAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(RsaesJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn decrypter_from_der(
@@ -232,7 +232,7 @@ impl RsaesJweAlgorithm {
     ) -> Result<RsaesJweDecrypter, JoseError> {
         let key_pair = self.key_pair_from_der(input.as_ref())?;
         Ok(RsaesJweDecrypter {
-            algorithm: self.clone(),
+            algorithm: *self,
             private_key: key_pair.into_private_key(),
             key_id: None,
         })
@@ -244,7 +244,7 @@ impl RsaesJweAlgorithm {
     ) -> Result<RsaesJweDecrypter, JoseError> {
         let key_pair = self.key_pair_from_pem(input.as_ref())?;
         Ok(RsaesJweDecrypter {
-            algorithm: self.clone(),
+            algorithm: *self,
             private_key: key_pair.into_private_key(),
             key_id: None,
         })
@@ -266,7 +266,7 @@ impl RsaesJweAlgorithm {
                 Some(val) => bail!("A parameter alg must be {} but {}", self.name(), val),
             }
 
-            let key_pair = RsaKeyPair::from_jwk(&jwk)?;
+            let key_pair = RsaKeyPair::from_jwk(jwk)?;
             if key_pair.key_len() * 8 < 2048 {
                 bail!("key length must be 2048 or more.");
             }
@@ -275,12 +275,12 @@ impl RsaesJweAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(RsaesJweDecrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 }
 
@@ -297,7 +297,7 @@ impl JweAlgorithm for RsaesJweAlgorithm {
     }
 
     fn box_clone(&self) -> Box<dyn JweAlgorithm> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -349,7 +349,7 @@ impl JweEncrypter for RsaesJweEncrypter {
         _cencryption: &dyn JweContentEncryption,
         _in_header: &JweHeader,
         _out_header: &mut JweHeader,
-    ) -> Result<Option<Cow<[u8]>>, JoseError> {
+    ) -> Result<Option<Cow<'_, [u8]>>, JoseError> {
         Ok(None)
     }
 
@@ -365,36 +365,36 @@ impl JweEncrypter for RsaesJweEncrypter {
             let encrypted_key = match self.algorithm {
                 RsaesJweAlgorithm::Rsa1_5 => {
                     let mut encrypted_key = vec![0; rsa.size() as usize];
-                    let len = rsa.public_encrypt(&key, &mut encrypted_key, Padding::PKCS1)?;
+                    let len = rsa.public_encrypt(key, &mut encrypted_key, Padding::PKCS1)?;
                     encrypted_key.truncate(len);
                     encrypted_key
                 }
                 RsaesJweAlgorithm::RsaOaep => {
                     let mut encrypted_key = vec![0; rsa.size() as usize];
-                    let len = rsa.public_encrypt(&key, &mut encrypted_key, Padding::PKCS1_OAEP)?;
+                    let len = rsa.public_encrypt(key, &mut encrypted_key, Padding::PKCS1_OAEP)?;
                     encrypted_key.truncate(len);
                     encrypted_key
                 }
                 RsaesJweAlgorithm::RsaOaep256 => openssl_rsa_oaep::pkey_public_encrypt(
                     &self.public_key,
-                    &key,
+                    key,
                     MessageDigest::sha256(),
                 )?,
                 RsaesJweAlgorithm::RsaOaep384 => openssl_rsa_oaep::pkey_public_encrypt(
                     &self.public_key,
-                    &key,
+                    key,
                     MessageDigest::sha384(),
                 )?,
                 RsaesJweAlgorithm::RsaOaep512 => openssl_rsa_oaep::pkey_public_encrypt(
                     &self.public_key,
-                    &key,
+                    key,
                     MessageDigest::sha512(),
                 )?,
             };
 
             Ok(Some(encrypted_key))
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     fn box_clone(&self) -> Box<dyn JweEncrypter> {
@@ -445,7 +445,7 @@ impl JweDecrypter for RsaesJweDecrypter {
         encrypted_key: Option<&[u8]>,
         _cencryption: &dyn JweContentEncryption,
         _header: &JweHeader,
-    ) -> Result<Cow<[u8]>, JoseError> {
+    ) -> Result<Cow<'_, [u8]>, JoseError> {
         (|| -> anyhow::Result<Cow<[u8]>> {
             let encrypted_key = match encrypted_key {
                 Some(val) => val,
@@ -456,36 +456,36 @@ impl JweDecrypter for RsaesJweDecrypter {
             let key = match self.algorithm {
                 RsaesJweAlgorithm::Rsa1_5 => {
                     let mut key = vec![0; rsa.size() as usize];
-                    let len = rsa.private_decrypt(&encrypted_key, &mut key, Padding::PKCS1)?;
+                    let len = rsa.private_decrypt(encrypted_key, &mut key, Padding::PKCS1)?;
                     key.truncate(len);
                     key
                 }
                 RsaesJweAlgorithm::RsaOaep => {
                     let mut key = vec![0; rsa.size() as usize];
-                    let len = rsa.private_decrypt(&encrypted_key, &mut key, Padding::PKCS1_OAEP)?;
+                    let len = rsa.private_decrypt(encrypted_key, &mut key, Padding::PKCS1_OAEP)?;
                     key.truncate(len);
                     key
                 }
                 RsaesJweAlgorithm::RsaOaep256 => openssl_rsa_oaep::pkey_private_decrypt(
                     &self.private_key,
-                    &encrypted_key,
+                    encrypted_key,
                     MessageDigest::sha256(),
                 )?,
                 RsaesJweAlgorithm::RsaOaep384 => openssl_rsa_oaep::pkey_private_decrypt(
                     &self.private_key,
-                    &encrypted_key,
+                    encrypted_key,
                     MessageDigest::sha384(),
                 )?,
                 RsaesJweAlgorithm::RsaOaep512 => openssl_rsa_oaep::pkey_private_decrypt(
                     &self.private_key,
-                    &encrypted_key,
+                    encrypted_key,
                     MessageDigest::sha512(),
                 )?,
             };
 
             Ok(Cow::Owned(key))
         })()
-        .map_err(|err| JoseError::InvalidJweFormat(err))
+        .map_err(JoseError::InvalidJweFormat)
     }
 
     fn box_clone(&self) -> Box<dyn JweDecrypter> {
@@ -508,8 +508,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::RsaesJweAlgorithm;
-    use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
     use crate::jose::jwe::JweHeader;
+    use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
     use crate::jose::jwk::Jwk;
     use crate::jose::util;
 
@@ -526,7 +526,7 @@ mod tests {
         let mut public_key = Jwk::from_bytes(&public_key)?;
         public_key.set_key_use("enc");
 
-        for alg in vec![
+        for alg in [
             RsaesJweAlgorithm::Rsa1_5,
             RsaesJweAlgorithm::RsaOaep,
             RsaesJweAlgorithm::RsaOaep256,

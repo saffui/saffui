@@ -6,18 +6,18 @@
 // crate as the `jose` module; module paths rewritten from `crate::` to
 // `crate::jose::`. See THIRD-PARTY.md at the repository root.
 
+use crate::jose::jwk::Jwk;
 use crate::jose::jwk::alg::ec::EcCurve;
 use crate::jose::jwk::alg::ecx::EcxCurve;
 use crate::jose::jwk::alg::ed::EdCurve;
-use crate::jose::jwk::Jwk;
 use crate::jose::util;
+use crate::jose::util::HashAlgorithm;
 use crate::jose::util::der::{DerClass, DerError, DerReader, DerType};
 use crate::jose::util::oid::{
-    OID_ED25519, OID_ED448, OID_ID_EC_PUBLIC_KEY, OID_MGF1, OID_PRIME256V1, OID_RSASSA_PSS,
-    OID_RSA_ENCRYPTION, OID_SECP256K1, OID_SECP384R1, OID_SECP521R1, OID_SHA1, OID_SHA256,
-    OID_SHA384, OID_SHA512, OID_X25519, OID_X448,
+    OID_ED448, OID_ED25519, OID_ID_EC_PUBLIC_KEY, OID_MGF1, OID_PRIME256V1, OID_RSA_ENCRYPTION,
+    OID_RSASSA_PSS, OID_SECP256K1, OID_SECP384R1, OID_SECP521R1, OID_SHA1, OID_SHA256, OID_SHA384,
+    OID_SHA512, OID_X448, OID_X25519,
 };
-use crate::jose::util::HashAlgorithm;
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum KeyAlg {
@@ -67,7 +67,7 @@ impl KeyInfo {
 
     pub fn detect(input: &impl AsRef<[u8]>) -> Option<KeyInfo> {
         let input = input.as_ref();
-        if input.len() == 0 {
+        if input.is_empty() {
             return None;
         }
 
@@ -76,7 +76,7 @@ impl KeyInfo {
             b'\x30' => Self::detect_from_der(input)?,
             // PEM
             b'-' => {
-                let (alg, data) = util::parse_pem(input.as_ref()).ok()?;
+                let (alg, data) = util::parse_pem(input).ok()?;
                 match alg.as_str() {
                     "PRIVATE KEY" => {
                         let key_info = Self::detect_from_der(&data)?;
@@ -252,12 +252,12 @@ impl KeyInfo {
                         is_public_key: false,
                     },
                     "RSA" => {
-                        let is_public_key = matches!(jwk.parameter("d"), None);
+                        let is_public_key = jwk.parameter("d").is_none();
 
                         KeyInfo {
                             format: KeyFormat::Jwk,
                             alg: Some(KeyAlg::Rsa),
-                            is_public_key: is_public_key,
+                            is_public_key,
                         }
                     }
                     "EC" => {
@@ -277,7 +277,7 @@ impl KeyInfo {
                             Some(_) => Some(KeyAlg::Ec { curve: None }),
                             None => return None,
                         };
-                        let is_public_key = matches!(jwk.parameter("d"), None);
+                        let is_public_key = jwk.parameter("d").is_none();
 
                         KeyInfo {
                             format: KeyFormat::Jwk,
@@ -302,7 +302,7 @@ impl KeyInfo {
                             Some(_) => None,
                             None => return None,
                         };
-                        let is_public_key = matches!(jwk.parameter("d"), None);
+                        let is_public_key = jwk.parameter("d").is_none();
 
                         KeyInfo {
                             format: KeyFormat::Jwk,
@@ -646,7 +646,7 @@ mod tests {
         let key_info = KeyInfo::detect(&input).unwrap();
         assert_eq!(key_info.format(), KeyFormat::Der { raw: false });
         assert_eq!(key_info.alg(), Some(KeyAlg::Rsa));
-        assert_eq!(key_info.is_public_key(), false);
+        assert!(!key_info.is_public_key());
 
         Ok(())
     }
@@ -658,7 +658,7 @@ mod tests {
         let key_info = KeyInfo::detect(&input).unwrap();
         assert_eq!(key_info.format(), KeyFormat::Der { raw: false });
         assert_eq!(key_info.alg(), Some(KeyAlg::Rsa));
-        assert_eq!(key_info.is_public_key(), true);
+        assert!(key_info.is_public_key());
 
         Ok(())
     }
@@ -670,7 +670,7 @@ mod tests {
         let key_info = KeyInfo::detect(&input).unwrap();
         assert_eq!(key_info.format(), KeyFormat::Der { raw: true });
         assert_eq!(key_info.alg(), Some(KeyAlg::Rsa));
-        assert_eq!(key_info.is_public_key(), false);
+        assert!(!key_info.is_public_key());
 
         Ok(())
     }
@@ -682,7 +682,7 @@ mod tests {
         let key_info = KeyInfo::detect(&input).unwrap();
         assert_eq!(key_info.format(), KeyFormat::Der { raw: true });
         assert_eq!(key_info.alg(), Some(KeyAlg::Rsa));
-        assert_eq!(key_info.is_public_key(), true);
+        assert!(key_info.is_public_key());
 
         Ok(())
     }
@@ -694,7 +694,7 @@ mod tests {
         let key_info = KeyInfo::detect(&input).unwrap();
         assert_eq!(key_info.format(), KeyFormat::Pem { traditional: false });
         assert_eq!(key_info.alg(), Some(KeyAlg::Rsa));
-        assert_eq!(key_info.is_public_key(), false);
+        assert!(!key_info.is_public_key());
 
         Ok(())
     }
@@ -706,7 +706,7 @@ mod tests {
         let key_info = KeyInfo::detect(&input).unwrap();
         assert_eq!(key_info.format(), KeyFormat::Pem { traditional: false });
         assert_eq!(key_info.alg(), Some(KeyAlg::Rsa));
-        assert_eq!(key_info.is_public_key(), true);
+        assert!(key_info.is_public_key());
 
         Ok(())
     }
@@ -718,7 +718,7 @@ mod tests {
         let key_info = KeyInfo::detect(&input).unwrap();
         assert_eq!(key_info.format(), KeyFormat::Pem { traditional: true });
         assert_eq!(key_info.alg(), Some(KeyAlg::Rsa));
-        assert_eq!(key_info.is_public_key(), false);
+        assert!(!key_info.is_public_key());
 
         Ok(())
     }
@@ -730,7 +730,7 @@ mod tests {
         let key_info = KeyInfo::detect(&input).unwrap();
         assert_eq!(key_info.format(), KeyFormat::Pem { traditional: true });
         assert_eq!(key_info.alg(), Some(KeyAlg::Rsa));
-        assert_eq!(key_info.is_public_key(), true);
+        assert!(key_info.is_public_key());
 
         Ok(())
     }
@@ -742,7 +742,7 @@ mod tests {
         let key_info = KeyInfo::detect(&input).unwrap();
         assert_eq!(key_info.format(), KeyFormat::Jwk);
         assert_eq!(key_info.alg(), Some(KeyAlg::Rsa));
-        assert_eq!(key_info.is_public_key(), false);
+        assert!(!key_info.is_public_key());
 
         Ok(())
     }
@@ -754,7 +754,7 @@ mod tests {
         let key_info = KeyInfo::detect(&input).unwrap();
         assert_eq!(key_info.format(), KeyFormat::Jwk);
         assert_eq!(key_info.alg(), Some(KeyAlg::Rsa));
-        assert_eq!(key_info.is_public_key(), true);
+        assert!(key_info.is_public_key());
 
         Ok(())
     }
@@ -773,7 +773,7 @@ mod tests {
                 salt_len: Some(32)
             })
         );
-        assert_eq!(key_info.is_public_key(), false);
+        assert!(!key_info.is_public_key());
 
         Ok(())
     }
@@ -792,7 +792,7 @@ mod tests {
                 salt_len: Some(32)
             })
         );
-        assert_eq!(key_info.is_public_key(), true);
+        assert!(key_info.is_public_key());
 
         Ok(())
     }
@@ -811,7 +811,7 @@ mod tests {
                 salt_len: Some(32)
             })
         );
-        assert_eq!(key_info.is_public_key(), false);
+        assert!(!key_info.is_public_key());
 
         Ok(())
     }
@@ -830,7 +830,7 @@ mod tests {
                 salt_len: Some(32)
             })
         );
-        assert_eq!(key_info.is_public_key(), true);
+        assert!(key_info.is_public_key());
 
         Ok(())
     }
@@ -849,7 +849,7 @@ mod tests {
                 salt_len: Some(32)
             })
         );
-        assert_eq!(key_info.is_public_key(), false);
+        assert!(!key_info.is_public_key());
 
         Ok(())
     }
@@ -872,7 +872,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -896,7 +896,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), true);
+            assert!(key_info.is_public_key());
         }
 
         Ok(())
@@ -920,7 +920,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -944,7 +944,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -968,7 +968,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), true);
+            assert!(key_info.is_public_key());
         }
 
         Ok(())
@@ -992,7 +992,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -1016,7 +1016,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -1040,7 +1040,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), true);
+            assert!(key_info.is_public_key());
         }
 
         Ok(())
@@ -1062,7 +1062,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -1084,7 +1084,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), true);
+            assert!(key_info.is_public_key());
         }
 
         Ok(())
@@ -1103,7 +1103,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -1122,7 +1122,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), true);
+            assert!(key_info.is_public_key());
         }
 
         Ok(())
@@ -1144,7 +1144,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -1163,7 +1163,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -1182,7 +1182,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), true);
+            assert!(key_info.is_public_key());
         }
 
         Ok(())
@@ -1204,7 +1204,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -1226,7 +1226,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), true);
+            assert!(key_info.is_public_key());
         }
 
         Ok(())
@@ -1245,7 +1245,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -1264,7 +1264,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), true);
+            assert!(key_info.is_public_key());
         }
 
         Ok(())
@@ -1286,7 +1286,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -1305,7 +1305,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), false);
+            assert!(!key_info.is_public_key());
         }
 
         Ok(())
@@ -1324,7 +1324,7 @@ mod tests {
                     curve: Some(*curve)
                 })
             );
-            assert_eq!(key_info.is_public_key(), true);
+            assert!(key_info.is_public_key());
         }
 
         Ok(())

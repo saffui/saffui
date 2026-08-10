@@ -9,8 +9,8 @@
 use std::borrow::Cow;
 use std::fmt::Debug;
 
-use crate::jose::jwe::{JweContentEncryption, JweHeader};
 use crate::jose::JoseError;
+use crate::jose::jwe::{JweContentEncryption, JweHeader};
 
 /// Represent a algorithm of JWE alg header claim.
 pub trait JweAlgorithm: Debug + Send + Sync {
@@ -22,7 +22,7 @@ pub trait JweAlgorithm: Debug + Send + Sync {
 
 impl PartialEq for Box<dyn JweAlgorithm> {
     fn eq(&self, other: &Self) -> bool {
-        self == other
+        self.name() == other.name()
     }
 }
 
@@ -54,7 +54,7 @@ pub trait JweEncrypter: Debug + Send + Sync {
         cencryption: &dyn JweContentEncryption,
         in_header: &JweHeader,
         out_header: &mut JweHeader,
-    ) -> Result<Option<Cow<[u8]>>, JoseError>;
+    ) -> Result<Option<Cow<'_, [u8]>>, JoseError>;
 
     /// Return a encypted key.
     ///
@@ -99,7 +99,7 @@ pub trait JweDecrypter: Debug + Send + Sync {
         encrypted_key: Option<&[u8]>,
         cencryption: &dyn JweContentEncryption,
         header: &JweHeader,
-    ) -> Result<Cow<[u8]>, JoseError>;
+    ) -> Result<Cow<'_, [u8]>, JoseError>;
 
     fn box_clone(&self) -> Box<dyn JweDecrypter>;
 }

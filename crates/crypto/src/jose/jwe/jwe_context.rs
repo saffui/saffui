@@ -13,7 +13,9 @@ use std::fmt::Debug;
 
 use anyhow::bail;
 
-use crate::jose::jwe::enc::{A128CBC_HS256, A128GCM, A192CBC_HS384, A192GCM, A256CBC_HS512, A256GCM};
+use crate::jose::jwe::enc::{
+    A128CBC_HS256, A128GCM, A192CBC_HS384, A192GCM, A256CBC_HS512, A256GCM,
+};
 use crate::jose::jwe::zip::Def;
 use crate::jose::jwe::{
     JweCompression, JweContentEncryption, JweDecrypter, JweEncrypter, JweHeader, JweHeaderSet,
@@ -26,6 +28,12 @@ pub struct JweContext {
     acceptable_criticals: BTreeSet<String>,
     compressions: BTreeMap<String, Box<dyn JweCompression>>,
     content_encryptions: BTreeMap<String, Box<dyn JweContentEncryption>>,
+}
+
+impl Default for JweContext {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl JweContext {
@@ -208,18 +216,18 @@ impl JweContext {
             let key_len = cencryption.key_len();
             let key = match encrypter.compute_content_encryption_key(
                 cencryption,
-                &header,
+                header,
                 &mut out_header,
             )? {
                 Some(val) => val,
                 None => Cow::Owned(util::random_bytes(key_len)),
             };
 
-            let encrypted_key = encrypter.encrypt(&key, &header, &mut out_header)?;
-            if let None = header.claim("kid") {
-                if let Some(key_id) = encrypter.key_id() {
-                    out_header.set_key_id(key_id);
-                }
+            let encrypted_key = encrypter.encrypt(&key, header, &mut out_header)?;
+            if header.claim("kid").is_none()
+                && let Some(key_id) = encrypter.key_id()
+            {
+                out_header.set_key_id(key_id);
             }
 
             out_header.set_algorithm(encrypter.algorithm().name());
@@ -261,17 +269,17 @@ impl JweContext {
 
             let mut message = String::with_capacity(capacity);
             message.push_str(&header_b64);
-            message.push_str(".");
+            message.push('.');
             if let Some(val) = &encrypted_key {
                 util::encode_base64_urlsafe_nopad_buf(val, &mut message);
             }
-            message.push_str(".");
+            message.push('.');
             if let Some(val) = iv {
                 util::encode_base64_urlsafe_nopad_buf(val, &mut message);
             }
-            message.push_str(".");
+            message.push('.');
             util::encode_base64_urlsafe_nopad_buf(ciphertext, &mut message);
-            message.push_str(".");
+            message.push('.');
             if let Some(val) = &tag {
                 util::encode_base64_urlsafe_nopad_buf(val, &mut message);
             }
@@ -333,7 +341,7 @@ impl JweContext {
         F: Fn(usize, &JweHeader) -> Option<&'a dyn JweEncrypter>,
     {
         (|| -> anyhow::Result<String> {
-            if recipient_headers.len() == 0 {
+            if recipient_headers.is_empty() {
                 bail!(
                     "A size of recipients must be 1 or more: {}",
                     recipient_headers.len()
@@ -433,10 +441,10 @@ impl JweContext {
                     }
                 }
 
-                if let None = merged.key_id() {
-                    if let Some(key_id) = encrypter.key_id() {
-                        recipient_header.set_key_id(key_id.to_string());
-                    }
+                if merged.key_id().is_none()
+                    && let Some(key_id) = encrypter.key_id()
+                {
+                    recipient_header.set_key_id(key_id.to_string());
                 }
 
                 merged_list.push(merged);
@@ -463,7 +471,7 @@ impl JweContext {
             let protected_b64 = match header {
                 Some(header) => {
                     let protected_map = header.claims_set(true);
-                    if protected_map.len() > 0 {
+                    if !protected_map.is_empty() {
                         let protected_json = serde_json::to_vec(header.claims_set(true))?;
                         let protected_b64 = util::encode_base64_urlsafe_nopad(protected_json);
                         Some(protected_b64)
@@ -474,10 +482,7 @@ impl JweContext {
                 _ => None,
             };
 
-            let aad_b64 = match aad {
-                Some(val) => Some(util::encode_base64_urlsafe_nopad(val)),
-                None => None,
-            };
+            let aad_b64 = aad.map(util::encode_base64_urlsafe_nopad);
 
             let mut full_aad = String::with_capacity({
                 let mut full_aad_capacity = 1;
@@ -490,11 +495,11 @@ impl JweContext {
                 full_aad_capacity
             });
             if let Some(val) = &protected_b64 {
-                full_aad.push_str(&val);
+                full_aad.push_str(val);
             }
             if let Some(val) = &aad_b64 {
-                full_aad.push_str(".");
-                full_aad.push_str(&val);
+                full_aad.push('.');
+                full_aad.push_str(val);
             }
 
             let compressed;
@@ -513,13 +518,13 @@ impl JweContext {
             if let Some(val) = protected_b64 {
                 json.push_str("{\"protected\":\"");
                 json.push_str(&val);
-                json.push_str("\"");
+                json.push('"');
                 writed = true;
             }
 
             if let Some(val) = header {
                 let unprotected_map = val.claims_set(false);
-                if unprotected_map.len() > 0 {
+                if !unprotected_map.is_empty() {
                     let unprotected = serde_json::to_string(unprotected_map)?;
                     json.push_str(if writed { "," } else { "{" });
                     json.push_str("\"unprotected\":");
@@ -532,14 +537,14 @@ impl JweContext {
             json.push_str("\"recipients\":[");
             for i in 0..recipient_headers.len() {
                 if i > 0 {
-                    json.push_str(",");
+                    json.push(',');
                 }
 
                 let merged = &merged_list[i];
-                let mut header = &mut recipient_header_list[i];
+                let header = &mut recipient_header_list[i];
                 let encrypter = encrypter_list[i];
 
-                let encrypted_key = encrypter.encrypt(&key, &merged, &mut header)?;
+                let encrypted_key = encrypter.encrypt(&key, merged, header)?;
 
                 if header.len() == 0 {
                     bail!("The per-recipient header must not be empty");
@@ -551,35 +556,35 @@ impl JweContext {
                 if let Some(val) = encrypted_key {
                     json.push_str(",\"encrypted_key\":\"");
                     util::encode_base64_urlsafe_nopad_buf(&val, &mut json);
-                    json.push_str("\"");
+                    json.push('"');
                 }
-                json.push_str("}");
+                json.push('}');
             }
-            json.push_str("]");
+            json.push(']');
 
             if let Some(val) = aad_b64 {
                 json.push_str(",\"aad\":\"");
                 json.push_str(&val);
-                json.push_str("\"");
+                json.push('"');
             }
 
             json.push_str(",\"iv\":\"");
             if let Some(val) = iv {
                 util::encode_base64_urlsafe_nopad_buf(&val, &mut json);
             }
-            json.push_str("\"");
+            json.push('"');
 
             json.push_str(",\"ciphertext\":\"");
             util::encode_base64_urlsafe_nopad_buf(&ciphertext, &mut json);
-            json.push_str("\"");
+            json.push('"');
 
             json.push_str(",\"tag\":\"");
             if let Some(val) = tag {
                 util::encode_base64_urlsafe_nopad_buf(&val, &mut json);
             }
-            json.push_str("\"");
+            json.push('"');
 
-            json.push_str("}");
+            json.push('}');
 
             Ok(json)
         })()
@@ -704,10 +709,10 @@ impl JweContext {
                 }
             }
 
-            if let None = merged.key_id() {
-                if let Some(key_id) = encrypter.key_id() {
-                    protected.set_key_id(key_id.to_string());
-                }
+            if merged.key_id().is_none()
+                && let Some(key_id) = encrypter.key_id()
+            {
+                protected.set_key_id(key_id.to_string());
             }
 
             let iv_vec;
@@ -726,10 +731,7 @@ impl JweContext {
                 None
             };
 
-            let aad_b64 = match aad {
-                Some(val) => Some(util::encode_base64_urlsafe_nopad(val)),
-                None => None,
-            };
+            let aad_b64 = aad.map(util::encode_base64_urlsafe_nopad);
 
             let mut full_aad = String::with_capacity({
                 let mut full_aad_capacity = 1;
@@ -742,11 +744,11 @@ impl JweContext {
                 full_aad_capacity
             });
             if let Some(val) = &protected_b64 {
-                full_aad.push_str(&val);
+                full_aad.push_str(val);
             }
             if let Some(val) = &aad_b64 {
-                full_aad.push_str(".");
-                full_aad.push_str(&val);
+                full_aad.push('.');
+                full_aad.push_str(val);
             }
 
             let compressed;
@@ -764,13 +766,13 @@ impl JweContext {
             if let Some(val) = protected_b64 {
                 json.push_str("{\"protected\":\"");
                 json.push_str(&val);
-                json.push_str("\"");
+                json.push('"');
                 writed = true;
             }
 
             if let Some(val) = header {
                 let unprotected_map = val.claims_set(false);
-                if unprotected_map.len() > 0 {
+                if !unprotected_map.is_empty() {
                     let unprotected = serde_json::to_string(unprotected_map)?;
                     json.push_str(if writed { "," } else { "{" });
                     json.push_str("\"unprotected\":");
@@ -781,7 +783,7 @@ impl JweContext {
 
             if let Some(val) = recipient_header {
                 let header_map = val.claims_set();
-                if header_map.len() > 0 {
+                if !header_map.is_empty() {
                     let header = serde_json::to_string(header_map)?;
                     json.push_str(if writed { "," } else { "{" });
                     json.push_str("\"header\":");
@@ -792,24 +794,24 @@ impl JweContext {
             if let Some(val) = encrypted_key {
                 json.push_str(",\"encrypted_key\":\"");
                 util::encode_base64_urlsafe_nopad_buf(&val, &mut json);
-                json.push_str("\"");
+                json.push('"');
             }
 
             if let Some(val) = aad_b64 {
                 json.push_str(",\"aad\":\"");
                 json.push_str(&val);
-                json.push_str("\"");
+                json.push('"');
             }
 
             json.push_str(",\"iv\":\"");
             if let Some(val) = iv {
-                util::encode_base64_urlsafe_nopad_buf(&val, &mut json);
+                util::encode_base64_urlsafe_nopad_buf(val, &mut json);
             }
-            json.push_str("\"");
+            json.push('"');
 
             json.push_str(",\"ciphertext\":\"");
             util::encode_base64_urlsafe_nopad_buf(&ciphertext, &mut json);
-            json.push_str("\"");
+            json.push('"');
 
             json.push_str(",\"tag\":\"");
             if let Some(val) = tag {
@@ -858,7 +860,7 @@ impl JweContext {
             let indexies: Vec<usize> = input
                 .iter()
                 .enumerate()
-                .filter(|(_, b)| **b == b'.' as u8)
+                .filter(|(_, b)| **b == b'.')
                 .map(|(pos, _)| pos)
                 .collect();
             if indexies.len() != 4 {
@@ -871,7 +873,7 @@ impl JweContext {
 
             let encrypted_key_b64 = &input[(indexies[0] + 1)..(indexies[1])];
             let encrypted_key_vec;
-            let encrypted_key = if encrypted_key_b64.len() > 0 {
+            let encrypted_key = if !encrypted_key_b64.is_empty() {
                 encrypted_key_vec = util::decode_base64_urlsafe_no_pad(encrypted_key_b64)?;
                 Some(encrypted_key_vec.as_slice())
             } else {
@@ -880,7 +882,7 @@ impl JweContext {
 
             let iv_b64 = &input[(indexies[1] + 1)..(indexies[2])];
             let iv_vec;
-            let iv = if iv_b64.len() > 0 {
+            let iv = if !iv_b64.is_empty() {
                 iv_vec = util::decode_base64_urlsafe_no_pad(iv_b64)?;
                 Some(iv_vec.as_slice())
             } else {
@@ -892,7 +894,7 @@ impl JweContext {
 
             let tag_b64 = &input[(indexies[3] + 1)..];
             let tag_vec;
-            let tag = if tag_b64.len() > 0 {
+            let tag = if !tag_b64.is_empty() {
                 tag_vec = util::decode_base64_urlsafe_no_pad(tag_b64)?;
                 Some(tag_vec.as_slice())
             } else {
@@ -937,13 +939,12 @@ impl JweContext {
                 None => bail!("The JWE alg header claim is required."),
             }
 
-            match decrypter.key_id() {
-                Some(expected) => match merged.key_id() {
+            if let Some(expected) = decrypter.key_id() {
+                match merged.key_id() {
                     Some(actual) if expected == actual => {}
                     Some(actual) => bail!("The JWE kid header claim is mismatched: {}", actual),
                     None => bail!("The JWE kid header claim is required."),
-                },
-                None => {}
+                }
             }
 
             let key = decrypter.decrypt(encrypted_key, cencryption, &merged)?;
@@ -975,10 +976,10 @@ impl JweContext {
     ///
     /// * `input` - The input data.
     /// * `decrypter` - The JWE decrypter.
-    pub fn deserialize_json<'a>(
+    pub fn deserialize_json(
         &self,
         input: impl AsRef<[u8]>,
-        decrypter: &'a dyn JweDecrypter,
+        decrypter: &dyn JweDecrypter,
     ) -> Result<(Vec<u8>, JweHeader), JoseError> {
         self.deserialize_json_with_selector(input, |header| {
             match header.algorithm() {
@@ -991,12 +992,11 @@ impl JweContext {
                 _ => return Ok(None),
             }
 
-            match decrypter.key_id() {
-                Some(expected) => match header.key_id() {
+            if let Some(expected) = decrypter.key_id() {
+                match header.key_id() {
                     Some(actual) if expected == actual => {}
                     _ => return Ok(None),
-                },
-                None => {}
+                }
             }
 
             Ok(Some(decrypter))
@@ -1023,7 +1023,7 @@ impl JweContext {
 
             let (protected, protected_b64) = match map.remove("protected") {
                 Some(Value::String(val)) => {
-                    if val.len() == 0 {
+                    if val.is_empty() {
                         bail!("The protected field must be empty.");
                     }
                     let vec = util::decode_base64_urlsafe_no_pad(&val)?;
@@ -1035,7 +1035,7 @@ impl JweContext {
             };
             let unprotected = match map.remove("unprotected") {
                 Some(Value::Object(val)) => {
-                    if val.len() == 0 {
+                    if val.is_empty() {
                         bail!("The unprotected field must be empty.");
                     }
                     Some(val)
@@ -1045,7 +1045,7 @@ impl JweContext {
             };
             let aad_b64 = match map.remove("aad") {
                 Some(Value::String(val)) => {
-                    if val.len() == 0 {
+                    if val.is_empty() {
                         bail!("The JWE aad field must be empty.");
                     } else if !util::is_base64_urlsafe_nopad(&val) {
                         bail!("The JWE aad field must be a base64 string.");
@@ -1058,7 +1058,7 @@ impl JweContext {
             let iv_vec;
             let iv = match map.remove("iv") {
                 Some(Value::String(val)) => {
-                    if val.len() == 0 {
+                    if val.is_empty() {
                         bail!("The iv field must be empty.");
                     }
                     iv_vec = util::decode_base64_urlsafe_no_pad(&val)?;
@@ -1069,7 +1069,7 @@ impl JweContext {
             };
             let ciphertext = match map.remove("ciphertext") {
                 Some(Value::String(val)) => {
-                    if val.len() == 0 {
+                    if val.is_empty() {
                         bail!("The ciphertext field must be empty.");
                     }
                     util::decode_base64_urlsafe_no_pad(&val)?
@@ -1080,7 +1080,7 @@ impl JweContext {
             let tag_vec;
             let tag = match map.remove("tag") {
                 Some(Value::String(val)) => {
-                    if val.len() == 0 {
+                    if val.is_empty() {
                         bail!("The tag field must be empty.");
                     }
                     tag_vec = util::decode_base64_urlsafe_no_pad(&val)?;
@@ -1092,7 +1092,7 @@ impl JweContext {
 
             let recipients = match map.remove("recipients") {
                 Some(Value::Array(vals)) => {
-                    if vals.len() == 0 {
+                    if vals.is_empty() {
                         bail!("The recipients field must be empty.");
                     }
                     let mut vec = Vec::with_capacity(vals.len());
@@ -1119,10 +1119,10 @@ impl JweContext {
                 let encrypted_key_vec;
                 let encrypted_key = match recipient.get("encrypted_key") {
                     Some(Value::String(val)) => {
-                        if val.len() == 0 {
+                        if val.is_empty() {
                             bail!("The encrypted_key field must be empty.");
                         }
-                        encrypted_key_vec = util::decode_base64_urlsafe_no_pad(&val)?;
+                        encrypted_key_vec = util::decode_base64_urlsafe_no_pad(val)?;
                         Some(encrypted_key_vec.as_slice())
                     }
                     Some(_) => bail!("The encrypted_key field must be a string."),
@@ -1190,13 +1190,12 @@ impl JweContext {
                     None => bail!("The JWE alg header claim is required."),
                 }
 
-                match decrypter.key_id() {
-                    Some(expected) => match merged.key_id() {
+                if let Some(expected) = decrypter.key_id() {
+                    match merged.key_id() {
                         Some(actual) if expected == actual => {}
                         Some(actual) => bail!("The JWE kid header claim is mismatched: {}", actual),
                         None => bail!("The JWE kid header claim is required."),
-                    },
-                    None => {}
+                    }
                 }
 
                 let mut full_aad = match protected_b64 {
@@ -1204,7 +1203,7 @@ impl JweContext {
                     None => String::new(),
                 };
                 if let Some(val) = aad_b64 {
-                    full_aad.push_str(".");
+                    full_aad.push('.');
                     full_aad.push_str(&val);
                 }
 
@@ -1239,8 +1238,8 @@ impl JweContext {
 #[cfg(test)]
 mod tests {
     use crate::jose::jwe::{
-        alg::direct::DirectJweAlgorithm, deserialize_compact, deserialize_json, serialize_compact,
-        serialize_flattened_json, serialize_general_json, JweHeader, JweHeaderSet,
+        JweHeader, JweHeaderSet, alg::direct::DirectJweAlgorithm, deserialize_compact,
+        deserialize_json, serialize_compact, serialize_flattened_json, serialize_general_json,
     };
     use anyhow::Result;
 

@@ -66,12 +66,12 @@ impl HmacJwsAlgorithm {
             let private_key = PKey::hmac(input)?;
 
             Ok(HmacJwsSigner {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a signer from a secret key that is formatted by a JWK of oct type.
@@ -116,12 +116,12 @@ impl HmacJwsAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(HmacJwsSigner {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a secret key.
@@ -147,12 +147,12 @@ impl HmacJwsAlgorithm {
             let private_key = PKey::hmac(input)?;
 
             Ok(HmacJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     /// Return a verifier from a secret key that is formatted by a JWK of oct type.
@@ -198,12 +198,12 @@ impl HmacJwsAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(HmacJwsVerifier {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     fn hash_algorithm(&self) -> HashAlgorithm {
@@ -225,7 +225,7 @@ impl JwsAlgorithm for HmacJwsAlgorithm {
     }
 
     fn box_clone(&self) -> Box<dyn JwsAlgorithm> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -289,7 +289,7 @@ impl JwsSigner for HmacJwsSigner {
             let signature = signer.sign_to_vec()?;
             Ok(signature)
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))
+        .map_err(JoseError::InvalidSignature)
     }
 
     fn box_clone(&self) -> Box<dyn JwsSigner> {
@@ -350,7 +350,7 @@ impl JwsVerifier for HmacJwsVerifier {
             }
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidSignature(err))
+        .map_err(JoseError::InvalidSignature)
     }
 
     fn box_clone(&self) -> Box<dyn JwsVerifier> {

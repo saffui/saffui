@@ -62,7 +62,7 @@ pub use RsaesJweAlgorithm::RsaOaep256 as RSA_OAEP_256;
 pub use RsaesJweAlgorithm::RsaOaep384 as RSA_OAEP_384;
 pub use RsaesJweAlgorithm::RsaOaep512 as RSA_OAEP_512;
 
-static DEFAULT_CONTEXT: LazyLock<JweContext> = LazyLock::new(|| JweContext::new());
+static DEFAULT_CONTEXT: LazyLock<JweContext> = LazyLock::new(JweContext::new);
 
 /// Return a representation of the data that is formatted by compact serialization.
 ///
@@ -225,9 +225,9 @@ where
 /// * `input` - The input data.
 /// * `header` - The decoded JWS header claims.
 /// * `decrypter` - The JWE decrypter.
-pub fn deserialize_json<'a>(
+pub fn deserialize_json(
     input: &str,
-    decrypter: &'a dyn JweDecrypter,
+    decrypter: &dyn JweDecrypter,
 ) -> Result<(Vec<u8>, JweHeader), JoseError> {
     DEFAULT_CONTEXT.deserialize_json(input, decrypter)
 }
@@ -255,17 +255,17 @@ mod tests {
 
     use anyhow::Result;
 
+    use crate::jose::Value;
     use crate::jose::jwe::{
-        self, Dir, JweAlgorithm, JweHeader, JweHeaderSet, ECDH_ES_A128KW, PBES2_HS256_A128KW,
+        self, Dir, ECDH_ES_A128KW, JweAlgorithm, JweHeader, JweHeaderSet, PBES2_HS256_A128KW,
         RSA_OAEP,
     };
     use crate::jose::jwk::Jwk;
     use crate::jose::util;
-    use crate::jose::Value;
 
     #[test]
     fn test_jwe_compact_serialization() -> Result<()> {
-        for enc in vec![
+        for enc in [
             "A128CBC-HS256",
             "A192CBC-HS384",
             "A256CBC-HS512",
@@ -372,7 +372,7 @@ mod tests {
         let json = jwe::serialize_general_json(
             src_payload,
             Some(&src_header),
-            &vec![
+            &[
                 (Some(&src_rheader_1), &*encrypter_1),
                 (Some(&src_rheader_2), &*encrypter_2),
                 (Some(&src_rheader_3), &*encrypter_3),

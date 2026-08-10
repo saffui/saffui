@@ -21,6 +21,12 @@ pub struct JwtContext {
     jwe_context: JweContext,
 }
 
+impl Default for JwtContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JwtContext {
     pub fn new() -> Self {
         Self {
@@ -86,10 +92,10 @@ impl JwtContext {
         signer: &dyn JwsSigner,
     ) -> Result<String, JoseError> {
         (|| -> anyhow::Result<String> {
-            if let Some(vals) = header.critical() {
-                if vals.contains(&"b64") {
-                    bail!("JWT is not support b64 header claim.");
-                }
+            if let Some(vals) = header.critical()
+                && vals.contains(&"b64")
+            {
+                bail!("JWT is not support b64 header claim.");
             }
 
             let payload_bytes = serde_json::to_vec(payload.claims_set()).unwrap();
@@ -132,7 +138,7 @@ impl JwtContext {
     pub fn decode_header(&self, input: impl AsRef<[u8]>) -> Result<Box<dyn JoseHeader>, JoseError> {
         (|| -> anyhow::Result<Box<dyn JoseHeader>> {
             let input = input.as_ref();
-            let parts: Vec<&[u8]> = input.split(|b| *b == '.' as u8).collect();
+            let parts: Vec<&[u8]> = input.split(|b| *b == b'.').collect();
             if parts.len() == 3 {
                 // JWS
                 let header = util::decode_base64_urlsafe_no_pad(parts[0])?;
@@ -200,7 +206,7 @@ impl JwtContext {
                 self.jws_context
                     .deserialize_compact_with_selector(input, |header| {
                         (|| -> anyhow::Result<Option<&'a dyn JwsVerifier>> {
-                            let verifier = match selector(&header)? {
+                            let verifier = match selector(header)? {
                                 Some(val) => val,
                                 None => return Ok(None),
                             };
@@ -293,7 +299,7 @@ impl JwtContext {
             let (payload, header) =
                 self.jwe_context
                     .deserialize_compact_with_selector(input, |header| {
-                        let decrypter = match selector(&header)? {
+                        let decrypter = match selector(header)? {
                             Some(val) => val,
                             None => return Ok(None),
                         };

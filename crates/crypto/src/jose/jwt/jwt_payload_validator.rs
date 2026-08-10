@@ -181,22 +181,22 @@ impl JwtPayloadValidator {
             let min_issued_time = self.min_issued_time().unwrap_or(&SystemTime::UNIX_EPOCH);
             let max_issued_time = self.max_issued_time().unwrap_or(&now);
 
-            if let Some(not_before) = payload.not_before() {
-                if &not_before > current_time {
-                    bail!(
-                        "The token is not yet valid: {}",
-                        time::OffsetDateTime::from(not_before),
-                    );
-                }
+            if let Some(not_before) = payload.not_before()
+                && &not_before > current_time
+            {
+                bail!(
+                    "The token is not yet valid: {}",
+                    time::OffsetDateTime::from(not_before),
+                );
             }
 
-            if let Some(expires_at) = payload.expires_at() {
-                if &expires_at <= current_time {
-                    bail!(
-                        "The token has expired: {}",
-                        time::OffsetDateTime::from(expires_at),
-                    );
-                }
+            if let Some(expires_at) = payload.expires_at()
+                && &expires_at <= current_time
+            {
+                bail!(
+                    "The token has expired: {}",
+                    time::OffsetDateTime::from(expires_at),
+                );
             }
 
             if let Some(issued_at) = payload.issued_at() {
@@ -215,12 +215,11 @@ impl JwtPayloadValidator {
                 }
             }
 
-            if let Some(audience) = &self.audience {
-                if let Some(audiences) = payload.audience() {
-                    if !audiences.contains(&audience.as_str()) {
-                        bail!("Key aud is invalid: {}", audiences.join(", "));
-                    }
-                }
+            if let Some(audience) = &self.audience
+                && let Some(audiences) = payload.audience()
+                && !audiences.contains(&audience.as_str())
+            {
+                bail!("Key aud is invalid: {}", audiences.join(", "));
             }
 
             for (key, value1) in &self.claims {

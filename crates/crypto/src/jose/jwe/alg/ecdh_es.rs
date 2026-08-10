@@ -17,16 +17,16 @@ use openssl::hash::{Hasher, MessageDigest};
 use openssl::pkey::{PKey, Private, Public};
 
 use crate::jose::jwe::{JweAlgorithm, JweContentEncryption, JweDecrypter, JweEncrypter, JweHeader};
+use crate::jose::jwk::Jwk;
 use crate::jose::jwk::alg::{
     ec::{EcCurve, EcKeyPair},
     ecx::{EcxCurve, EcxKeyPair},
 };
-use crate::jose::jwk::Jwk;
 use crate::jose::util;
 use crate::jose::util::der::{DerReader, DerType};
 use crate::jose::util::oid::{
-    OID_ID_EC_PUBLIC_KEY, OID_PRIME256V1, OID_SECP256K1, OID_SECP384R1, OID_SECP521R1, OID_X25519,
-    OID_X448,
+    OID_ID_EC_PUBLIC_KEY, OID_PRIME256V1, OID_SECP256K1, OID_SECP384R1, OID_SECP521R1, OID_X448,
+    OID_X25519,
 };
 use crate::jose::{JoseError, JoseHeader, Map, Value};
 
@@ -154,7 +154,7 @@ impl EcdhEsJweAlgorithm {
             let public_key = PKey::public_key_from_der(spki)?;
 
             Ok(EcdhEsJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_type,
                 key_id: None,
@@ -162,7 +162,7 @@ impl EcdhEsJweAlgorithm {
                 agreement_partyvinfo: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn encrypter_from_pem(
@@ -183,7 +183,7 @@ impl EcdhEsJweAlgorithm {
             let public_key = PKey::public_key_from_der(spki)?;
 
             Ok(EcdhEsJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 public_key,
                 key_type,
                 key_id: None,
@@ -191,7 +191,7 @@ impl EcdhEsJweAlgorithm {
                 agreement_partyvinfo: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn encrypter_from_jwk(&self, jwk: &Jwk) -> Result<EcdhEsJweEncrypter, JoseError> {
@@ -269,7 +269,7 @@ impl EcdhEsJweAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(EcdhEsJweEncrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 key_type,
                 public_key,
                 key_id,
@@ -277,7 +277,7 @@ impl EcdhEsJweAlgorithm {
                 agreement_partyvinfo: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn decrypter_from_der(
@@ -300,13 +300,13 @@ impl EcdhEsJweAlgorithm {
             let private_key = PKey::private_key_from_der(pkcs8_der)?;
 
             Ok(EcdhEsJweDecrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_type,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn decrypter_from_pem(
@@ -345,13 +345,13 @@ impl EcdhEsJweAlgorithm {
             let private_key = PKey::private_key_from_der(pkcs8_der)?;
 
             Ok(EcdhEsJweDecrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_type,
                 key_id: None,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     pub fn decrypter_from_jwk(&self, jwk: &Jwk) -> Result<EcdhEsJweDecrypter, JoseError> {
@@ -390,7 +390,7 @@ impl EcdhEsJweAlgorithm {
                             }
                             None => bail!("A parameter crv is required."),
                         }
-                        let key_pair = EcKeyPair::from_jwk(&jwk)?;
+                        let key_pair = EcKeyPair::from_jwk(jwk)?;
                         let private_key = key_pair.into_private_key();
 
                         (private_key, EcdhEsKeyType::Ec(curve))
@@ -408,7 +408,7 @@ impl EcdhEsJweAlgorithm {
                             }
                             None => bail!("A parameter crv is required."),
                         }
-                        let key_pair = EcxKeyPair::from_jwk(&jwk)?;
+                        let key_pair = EcxKeyPair::from_jwk(jwk)?;
                         let private_key = key_pair.into_private_key();
 
                         (private_key, EcdhEsKeyType::Ecx(curve))
@@ -421,13 +421,13 @@ impl EcdhEsJweAlgorithm {
             let key_id = jwk.key_id().map(|val| val.to_string());
 
             Ok(EcdhEsJweDecrypter {
-                algorithm: self.clone(),
+                algorithm: *self,
                 private_key,
                 key_type,
                 key_id,
             })
         })()
-        .map_err(|err| JoseError::InvalidKeyFormat(err))
+        .map_err(JoseError::InvalidKeyFormat)
     }
 
     fn key_len(&self) -> usize {
@@ -529,7 +529,7 @@ impl EcdhEsJweAlgorithm {
         for i in 0..count {
             let mut hasher = Hasher::new(md)?;
             hasher.update(&((i + 1) as u32).to_be_bytes())?;
-            hasher.update(&derived_key)?;
+            hasher.update(derived_key)?;
             hasher.update(&alg_len_bytes)?;
             hasher.update(alg.as_bytes())?;
             hasher.update(&apu_len_bytes)?;
@@ -567,7 +567,7 @@ impl JweAlgorithm for EcdhEsJweAlgorithm {
     }
 
     fn box_clone(&self) -> Box<dyn JweAlgorithm> {
-        Box::new(self.clone())
+        Box::new(*self)
     }
 }
 
@@ -710,13 +710,9 @@ impl EcdhEsJweEncrypter {
             deriver.set_peer(&self.public_key)?;
             let derived_key = deriver.derive_to_vec()?;
 
-            let shared_key = self.algorithm.concat_kdf(
-                alg,
-                key_len,
-                &derived_key,
-                apu.as_deref(),
-                apv.as_deref(),
-            )?;
+            let shared_key = self
+                .algorithm
+                .concat_kdf(alg, key_len, &derived_key, apu, apv)?;
 
             Ok(shared_key)
         })()
@@ -744,7 +740,7 @@ impl JweEncrypter for EcdhEsJweEncrypter {
         cencryption: &dyn JweContentEncryption,
         _merged: &JweHeader,
         header: &mut JweHeader,
-    ) -> Result<Option<Cow<[u8]>>, JoseError> {
+    ) -> Result<Option<Cow<'_, [u8]>>, JoseError> {
         if let EcdhEsJweAlgorithm::EcdhEs = self.algorithm {
             let shared_key =
                 self.compute_shared_key(header, cencryption.name(), cencryption.key_len())?;
@@ -775,7 +771,7 @@ impl JweEncrypter for EcdhEsJweEncrypter {
                 };
 
                 let mut encrypted_key = vec![0; key.len() + 8];
-                match aes::wrap_key(&aes, None, &mut encrypted_key, &key) {
+                match aes::wrap_key(&aes, None, &mut encrypted_key, key) {
                     Ok(len) => {
                         if len < encrypted_key.len() {
                             encrypted_key.truncate(len);
@@ -841,7 +837,7 @@ impl JweDecrypter for EcdhEsJweDecrypter {
         encrypted_key: Option<&[u8]>,
         cencryption: &dyn JweContentEncryption,
         header: &JweHeader,
-    ) -> Result<Cow<[u8]>, JoseError> {
+    ) -> Result<Cow<'_, [u8]>, JoseError> {
         (|| -> anyhow::Result<Cow<[u8]>> {
             match &self.algorithm {
                 EcdhEsJweAlgorithm::EcdhEs => {
@@ -978,7 +974,7 @@ impl JweDecrypter for EcdhEsJweDecrypter {
                 };
 
                 let mut key = vec![0; encrypted_key.len() - 8];
-                match aes::unwrap_key(&aes, None, &mut key, &encrypted_key) {
+                match aes::unwrap_key(&aes, None, &mut key, encrypted_key) {
                     Ok(len) => {
                         if len < key.len() {
                             key.truncate(len);
@@ -990,7 +986,7 @@ impl JweDecrypter for EcdhEsJweDecrypter {
                 Ok(Cow::Owned(key))
             }
         })()
-        .map_err(|err| JoseError::InvalidJweFormat(err))
+        .map_err(JoseError::InvalidJweFormat)
     }
 
     fn box_clone(&self) -> Box<dyn JweDecrypter> {
@@ -1014,24 +1010,24 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{EcdhEsJweAlgorithm, EcdhEsKeyType};
+    use crate::jose::jwe::JweHeader;
     use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
     use crate::jose::jwe::enc::aesgcm::AesgcmJweEncryption;
-    use crate::jose::jwe::JweHeader;
-    use crate::jose::jwk::alg::{ec::EcCurve, ecx::EcxCurve};
     use crate::jose::jwk::Jwk;
+    use crate::jose::jwk::alg::{ec::EcCurve, ecx::EcxCurve};
     use crate::jose::util;
 
     #[test]
     fn encrypt_and_decrypt_ecdh_es_with_pkcs8_der() -> Result<()> {
         let enc = AescbcHmacJweEncryption::A128cbcHs256;
 
-        for alg in vec![
+        for alg in [
             EcdhEsJweAlgorithm::EcdhEs,
             EcdhEsJweAlgorithm::EcdhEsA128kw,
             EcdhEsJweAlgorithm::EcdhEsA192kw,
             EcdhEsJweAlgorithm::EcdhEsA256kw,
         ] {
-            for key in vec![
+            for key in [
                 EcdhEsKeyType::Ec(EcCurve::P256),
                 EcdhEsKeyType::Ec(EcCurve::P384),
                 EcdhEsKeyType::Ec(EcCurve::P521),
@@ -1087,13 +1083,13 @@ mod tests {
     fn encrypt_and_decrypt_ecdh_es_with_pem() -> Result<()> {
         let enc = AescbcHmacJweEncryption::A128cbcHs256;
 
-        for alg in vec![
+        for alg in [
             EcdhEsJweAlgorithm::EcdhEs,
             EcdhEsJweAlgorithm::EcdhEsA128kw,
             EcdhEsJweAlgorithm::EcdhEsA192kw,
             EcdhEsJweAlgorithm::EcdhEsA256kw,
         ] {
-            for key in vec![
+            for key in [
                 EcdhEsKeyType::Ec(EcCurve::P256),
                 EcdhEsKeyType::Ec(EcCurve::P384),
                 EcdhEsKeyType::Ec(EcCurve::P521),
@@ -1149,13 +1145,13 @@ mod tests {
     fn encrypt_and_decrypt_ecdh_es_with_traditional_pem() -> Result<()> {
         let enc = AesgcmJweEncryption::A128gcm;
 
-        for alg in vec![
+        for alg in [
             EcdhEsJweAlgorithm::EcdhEs,
             EcdhEsJweAlgorithm::EcdhEsA128kw,
             EcdhEsJweAlgorithm::EcdhEsA192kw,
             EcdhEsJweAlgorithm::EcdhEsA256kw,
         ] {
-            for key in vec![
+            for key in [
                 EcdhEsKeyType::Ec(EcCurve::P256),
                 EcdhEsKeyType::Ec(EcCurve::P384),
                 EcdhEsKeyType::Ec(EcCurve::P521),
@@ -1213,13 +1209,13 @@ mod tests {
     fn encrypt_and_decrypt_ecdh_es_with_jwk() -> Result<()> {
         let enc = AescbcHmacJweEncryption::A128cbcHs256;
 
-        for alg in vec![
+        for alg in [
             EcdhEsJweAlgorithm::EcdhEs,
             EcdhEsJweAlgorithm::EcdhEsA128kw,
             EcdhEsJweAlgorithm::EcdhEsA192kw,
             EcdhEsJweAlgorithm::EcdhEsA256kw,
         ] {
-            for key in vec![
+            for key in [
                 EcdhEsKeyType::Ec(EcCurve::P256),
                 EcdhEsKeyType::Ec(EcCurve::P384),
                 EcdhEsKeyType::Ec(EcCurve::P521),

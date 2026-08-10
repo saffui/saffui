@@ -40,7 +40,7 @@ impl JweHeader {
             let claims: Map<String, Value> = serde_json::from_slice(value)?;
             Ok(claims)
         })()
-        .map_err(|err| JoseError::InvalidJson(err))?;
+        .map_err(JoseError::InvalidJson)?;
 
         let header = Self::from_map(claims)?;
         Ok(header)
@@ -73,7 +73,7 @@ impl JweHeader {
     /// Return the value for algorithm header claim (alg).
     pub fn algorithm(&self) -> Option<&str> {
         match self.claim("alg") {
-            Some(Value::String(val)) => Some(&val),
+            Some(Value::String(val)) => Some(val),
             _ => None,
         }
     }
@@ -146,10 +146,7 @@ impl JweHeader {
     /// Return the value for JWK header claim (jwk).
     pub fn jwk(&self) -> Option<Jwk> {
         match self.claims.get("jwk") {
-            Some(Value::Object(vals)) => match Jwk::from_map(vals.clone()) {
-                Ok(val) => Some(val),
-                Err(_) => None,
-            },
+            Some(Value::Object(vals)) => Jwk::from_map(vals.clone()).ok(),
             _ => None,
         }
     }
@@ -220,10 +217,7 @@ impl JweHeader {
     /// Return the value for X.509 certificate SHA-1 thumbprint header claim (x5t).
     pub fn x509_certificate_sha1_thumbprint(&self) -> Option<Vec<u8>> {
         match self.claims.get("x5t") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val2) => Some(val2),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -242,10 +236,7 @@ impl JweHeader {
     /// Return the value for X.509 certificate SHA-256 thumbprint header claim (x5t#S256).
     pub fn x509_certificate_sha256_thumbprint(&self) -> Option<Vec<u8>> {
         match self.claims.get("x5t#S256") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val2) => Some(val2),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -367,10 +358,7 @@ impl JweHeader {
     /// Return the value for nonce header claim (nonce).
     pub fn nonce(&self) -> Option<Vec<u8>> {
         match self.claims.get("nonce") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val2) => Some(val2),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -389,10 +377,7 @@ impl JweHeader {
     /// Return the value for agreement PartyUInfo header claim (apu).
     pub fn agreement_partyuinfo(&self) -> Option<Vec<u8>> {
         match self.claims.get("apu") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val2) => Some(val2),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -411,10 +396,7 @@ impl JweHeader {
     /// Return the value for agreement PartyVInfo header claim (apv).
     pub fn agreement_partyvinfo(&self) -> Option<Vec<u8>> {
         match self.claims.get("apv") {
-            Some(Value::String(val)) => match util::decode_base64_urlsafe_no_pad(val) {
-                Ok(val2) => Some(val2),
-                Err(_) => None,
-            },
+            Some(Value::String(val)) => util::decode_base64_urlsafe_no_pad(val).ok(),
             _ => None,
         }
     }
@@ -465,18 +447,15 @@ impl JweHeader {
     pub fn set_audience(&mut self, values: Vec<impl Into<String>>) {
         let key = "aud".to_string();
         if values.len() == 1 {
-            for val in values {
-                let val: String = val.into();
-                self.claims.insert(key, Value::String(val));
-                break;
+            if let Some(val) = values.into_iter().next() {
+                self.claims.insert(key, Value::String(val.into()));
             }
         } else if values.len() > 1 {
             let mut vec = Vec::with_capacity(values.len());
             for val in values {
-                let val: String = val.into();
-                vec.push(Value::String(val.clone()));
+                vec.push(Value::String(val.into()));
             }
-            self.claims.insert(key.clone(), Value::Array(vec));
+            self.claims.insert(key, Value::Array(vec));
         }
     }
 
@@ -605,7 +584,7 @@ impl JweHeader {
 
             Ok(())
         })()
-        .map_err(|err| JoseError::InvalidJweFormat(err))
+        .map_err(JoseError::InvalidJweFormat)
     }
 }
 
@@ -641,9 +620,9 @@ impl AsRef<Map<String, Value>> for JweHeader {
     }
 }
 
-impl Into<Map<String, Value>> for JweHeader {
-    fn into(self) -> Map<String, Value> {
-        self.into_map()
+impl From<JweHeader> for Map<String, Value> {
+    fn from(val: JweHeader) -> Self {
+        val.into_map()
     }
 }
 

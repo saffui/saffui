@@ -26,7 +26,7 @@ use crate::jose::jwk::{Jwk, JwkSet};
 use crate::jose::jws::{JwsHeader, JwsSigner, JwsVerifier};
 use crate::jose::{JoseError, JoseHeader};
 
-static DEFAULT_CONTEXT: LazyLock<JwtContext> = LazyLock::new(|| JwtContext::new());
+static DEFAULT_CONTEXT: LazyLock<JwtContext> = LazyLock::new(JwtContext::new);
 
 /// Return the string repsentation of the JWT with a "none" algorithm.
 ///
@@ -189,20 +189,20 @@ mod tests {
     use anyhow::Result;
     use serde_json::json;
 
+    use crate::jose::Value;
     #[allow(deprecated)]
     use crate::jose::jwe::{
-        Dir, A128GCMKW, A128KW, A192GCMKW, A192KW, A256GCMKW, A256KW, ECDH_ES, ECDH_ES_A128KW,
+        A128GCMKW, A128KW, A192GCMKW, A192KW, A256GCMKW, A256KW, Dir, ECDH_ES, ECDH_ES_A128KW,
         ECDH_ES_A192KW, ECDH_ES_A256KW, PBES2_HS256_A128KW, PBES2_HS384_A192KW, PBES2_HS512_A256KW,
-        RSA1_5, RSA_OAEP, RSA_OAEP_256,
+        RSA_OAEP, RSA_OAEP_256, RSA1_5,
     };
     use crate::jose::jwk::Jwk;
     use crate::jose::jws::{
-        EdDSA, JwsHeader, ES256, ES256K, ES384, ES512, HS256, HS384, HS512, PS256, PS384, PS512,
+        ES256, ES256K, ES384, ES512, EdDSA, HS256, HS384, HS512, JwsHeader, PS256, PS384, PS512,
         RS256, RS384, RS512,
     };
     use crate::jose::jwt::{self, JwtPayload};
-    use crate::jose::Value;
-    use crate::jose::{util, JoseHeader};
+    use crate::jose::{JoseHeader, util};
 
     #[test]
     fn test_decode_header() -> Result<()> {
@@ -541,7 +541,8 @@ mod tests {
 
     #[test]
     fn test_external_jwt_verify_with_eddsa() -> Result<()> {
-        for alg in &[EdDSA] {
+        {
+            let alg = &EdDSA;
             let jwk = Jwk::from_bytes(&load_file(match alg {
                 EdDSA => "jwk/OKP_Ed25519_public.jwk",
             })?)?;
@@ -566,9 +567,9 @@ mod tests {
 
     #[test]
     fn test_external_jwt_decrypt_with_dir() -> Result<()> {
-        for alg in vec![Dir] {
-            for enc in vec!["A128CBC-HS256", "A256GCM"] {
-                for zip in vec![None, Some("DEF")] {
+        for alg in [Dir] {
+            for enc in ["A128CBC-HS256", "A256GCM"] {
+                for zip in [None, Some("DEF")] {
                     // println!("{} {}", alg.name(), enc);
 
                     let jwk = load_file(match enc {
@@ -609,10 +610,10 @@ mod tests {
 
     #[test]
     fn test_external_jwt_decrypt_with_ecdh_es() -> Result<()> {
-        for alg in vec![ECDH_ES, ECDH_ES_A128KW, ECDH_ES_A192KW, ECDH_ES_A256KW] {
-            for curve in vec!["P-256", "P-384", "P-521", "X25519"] {
-                for enc in vec!["A128CBC-HS256", "A256GCM"] {
-                    for zip in vec![None, Some("DEF")] {
+        for alg in [ECDH_ES, ECDH_ES_A128KW, ECDH_ES_A192KW, ECDH_ES_A256KW] {
+            for curve in ["P-256", "P-384", "P-521", "X25519"] {
+                for enc in ["A128CBC-HS256", "A256GCM"] {
+                    for zip in [None, Some("DEF")] {
                         // println!("{} {} {}", alg.name(), curve, enc);
 
                         let jwk = load_file(match curve {
@@ -659,9 +660,9 @@ mod tests {
 
     #[test]
     fn test_external_jwt_decrypt_with_aeskw() -> Result<()> {
-        for alg in vec![A128KW, A192KW, A256KW] {
-            for enc in vec!["A128CBC-HS256", "A256GCM"] {
-                for zip in vec![None, Some("DEF")] {
+        for alg in [A128KW, A192KW, A256KW] {
+            for enc in ["A128CBC-HS256", "A256GCM"] {
+                for zip in [None, Some("DEF")] {
                     // println!("{} {}", alg.name(), enc);
 
                     let jwk = load_file(match alg {
@@ -702,9 +703,9 @@ mod tests {
 
     #[test]
     fn test_external_jwt_decrypt_with_aesgcmkw() -> Result<()> {
-        for alg in vec![A128GCMKW, A192GCMKW, A256GCMKW] {
-            for enc in vec!["A128CBC-HS256", "A256GCM"] {
-                for zip in vec![None, Some("DEF")] {
+        for alg in [A128GCMKW, A192GCMKW, A256GCMKW] {
+            for enc in ["A128CBC-HS256", "A256GCM"] {
+                for zip in [None, Some("DEF")] {
                     // println!("{} {}", alg.name(), enc);
 
                     let jwk = load_file(match alg {
@@ -745,9 +746,9 @@ mod tests {
 
     #[test]
     fn test_external_jwt_decrypt_with_pbes2_hmac_aeskw() -> Result<()> {
-        for alg in vec![PBES2_HS256_A128KW, PBES2_HS384_A192KW, PBES2_HS512_A256KW] {
-            for enc in vec!["A128CBC-HS256", "A256GCM"] {
-                for zip in vec![None, Some("DEF")] {
+        for alg in [PBES2_HS256_A128KW, PBES2_HS384_A192KW, PBES2_HS512_A256KW] {
+            for enc in ["A128CBC-HS256", "A256GCM"] {
+                for zip in [None, Some("DEF")] {
                     // println!("{} {}", alg.name(), enc);
 
                     let jwk = load_file(match alg {
@@ -789,9 +790,9 @@ mod tests {
     #[test]
     fn test_external_jwt_decrypt_with_rsaes() -> Result<()> {
         #[allow(deprecated)]
-        for alg in vec![RSA1_5, RSA_OAEP, RSA_OAEP_256] {
-            for enc in vec!["A128CBC-HS256", "A256GCM"] {
-                for zip in vec![None, Some("DEF")] {
+        for alg in [RSA1_5, RSA_OAEP, RSA_OAEP_256] {
+            for enc in ["A128CBC-HS256", "A256GCM"] {
+                for zip in [None, Some("DEF")] {
                     // println!("{} {}", alg.name(), enc);
 
                     let jwk = load_file("jwk/RSA_private.jwk")?;

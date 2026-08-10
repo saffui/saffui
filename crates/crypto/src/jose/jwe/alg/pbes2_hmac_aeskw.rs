@@ -57,11 +57,11 @@ impl Pbes2HmacAeskwJweAlgorithm {
     pub fn encrypter_from_jwk(&self, jwk: &Jwk) -> Result<Pbes2HmacAeskwJweEncrypter, JoseError> {
         (|| -> anyhow::Result<Pbes2HmacAeskwJweEncrypter> {
             match jwk.key_type() {
-                val if val == "oct" => {}
+                "oct" => {}
                 val => bail!("A parameter kty must be oct: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "enc" => {}
+                Some("enc") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be enc: {}", val),
             }
@@ -119,11 +119,11 @@ impl Pbes2HmacAeskwJweAlgorithm {
     pub fn decrypter_from_jwk(&self, jwk: &Jwk) -> Result<Pbes2HmacAeskwJweDecrypter, JoseError> {
         (|| -> anyhow::Result<Pbes2HmacAeskwJweDecrypter> {
             match jwk.key_type() {
-                val if val == "oct" => {}
+                "oct" => {}
                 val => bail!("A parameter kty must be oct: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "enc" => {}
+                Some("enc") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be enc: {}", val),
             }

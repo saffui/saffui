@@ -523,13 +523,13 @@ impl<R: Read> DerReader<R> {
 
     fn get_length(&mut self) -> Result<Option<usize>, DerError> {
         let result = match self.get()? {
-            Some(val) if val == 0xFF => {
+            Some(val @ 0xFF) => {
                 return Err(DerError::InvalidLength(format!(
                     "Length 0x{:X} is reserved for possible future extension.",
                     val
                 )));
             }
-            Some(val) if val == 0x80 => None,
+            Some(0x80) => None,
             Some(val) if val < 0x80 => Some(val as usize),
             Some(val) => {
                 let len_size = (val & 0x7F) as usize;

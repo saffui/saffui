@@ -182,7 +182,7 @@ impl EcxKeyPair {
     pub fn from_jwk(jwk: &Jwk) -> Result<Self, JoseError> {
         (|| -> anyhow::Result<Self> {
             match jwk.key_type() {
-                val if val == "OKP" => {}
+                "OKP" => {}
                 val => bail!("A parameter kty must be OKP: {}", val),
             }
             let curve = match jwk.parameter("crv") {

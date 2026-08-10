@@ -155,7 +155,7 @@ impl RsaKeyPair {
     pub fn from_jwk(jwk: &Jwk) -> Result<Self, JoseError> {
         (|| -> anyhow::Result<Self> {
             match jwk.key_type() {
-                val if val == "RSA" => {}
+                "RSA" => {}
                 val => bail!("A parameter kty must be RSA: {}", val),
             }
             let n = match jwk.parameter("n") {

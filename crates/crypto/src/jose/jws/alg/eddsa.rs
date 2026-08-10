@@ -105,7 +105,7 @@ impl EddsaJwsAlgorithm {
     pub fn signer_from_jwk(&self, jwk: &Jwk) -> Result<EddsaJwsSigner, JoseError> {
         (|| -> anyhow::Result<EddsaJwsSigner> {
             match jwk.key_use() {
-                Some(val) if val == "sig" => {}
+                Some("sig") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be sig: {}", val),
             }
@@ -199,11 +199,11 @@ impl EddsaJwsAlgorithm {
     pub fn verifier_from_jwk(&self, jwk: &Jwk) -> Result<EddsaJwsVerifier, JoseError> {
         (|| -> anyhow::Result<EddsaJwsVerifier> {
             match jwk.key_type() {
-                val if val == "OKP" => {}
+                "OKP" => {}
                 val => bail!("A parameter kty must be OKP: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "sig" => {}
+                Some("sig") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be sig: {}", val),
             }

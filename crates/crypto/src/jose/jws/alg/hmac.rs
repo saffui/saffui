@@ -81,11 +81,11 @@ impl HmacJwsAlgorithm {
     pub fn signer_from_jwk(&self, jwk: &Jwk) -> Result<HmacJwsSigner, JoseError> {
         (|| -> anyhow::Result<HmacJwsSigner> {
             match jwk.key_type() {
-                val if val == "oct" => {}
+                "oct" => {}
                 val => bail!("A parameter kty must be oct: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "sig" => {}
+                Some("sig") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be sig: {}", val),
             }
@@ -162,11 +162,11 @@ impl HmacJwsAlgorithm {
     pub fn verifier_from_jwk(&self, jwk: &Jwk) -> Result<HmacJwsVerifier, JoseError> {
         (|| -> anyhow::Result<HmacJwsVerifier> {
             match jwk.key_type() {
-                val if val == "oct" => {}
+                "oct" => {}
                 val => bail!("A parameter kty must be oct: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "sig" => {}
+                Some("sig") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be sig: {}", val),
             }

@@ -56,11 +56,11 @@ impl AesgcmkwJweAlgorithm {
     pub fn encrypter_from_jwk(&self, jwk: &Jwk) -> Result<AesgcmkwJweEncrypter, JoseError> {
         (|| -> anyhow::Result<AesgcmkwJweEncrypter> {
             match jwk.key_type() {
-                val if val == "oct" => {}
+                "oct" => {}
                 val => bail!("A parameter kty must be oct: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "enc" => {}
+                Some("enc") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be enc: {}", val),
             }
@@ -120,11 +120,11 @@ impl AesgcmkwJweAlgorithm {
     pub fn decrypter_from_jwk(&self, jwk: &Jwk) -> Result<AesgcmkwJweDecrypter, JoseError> {
         (|| -> anyhow::Result<AesgcmkwJweDecrypter> {
             match jwk.key_type() {
-                val if val == "oct" => {}
+                "oct" => {}
                 val => bail!("A parameter kty must be oct: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "enc" => {}
+                Some("enc") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be enc: {}", val),
             }

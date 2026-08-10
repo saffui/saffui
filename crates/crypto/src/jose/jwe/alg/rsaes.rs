@@ -171,11 +171,11 @@ impl RsaesJweAlgorithm {
     pub fn encrypter_from_jwk(&self, jwk: &Jwk) -> Result<RsaesJweEncrypter, JoseError> {
         (|| -> anyhow::Result<RsaesJweEncrypter> {
             match jwk.key_type() {
-                val if val == "RSA" => {}
+                "RSA" => {}
                 val => bail!("A parameter kty must be RSA: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "enc" => {}
+                Some("enc") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be enc: {}", val),
             }
@@ -253,7 +253,7 @@ impl RsaesJweAlgorithm {
     pub fn decrypter_from_jwk(&self, jwk: &Jwk) -> Result<RsaesJweDecrypter, JoseError> {
         (|| -> anyhow::Result<RsaesJweDecrypter> {
             match jwk.key_use() {
-                Some(val) if val == "enc" => {}
+                Some("enc") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be enc: {}", val),
             }

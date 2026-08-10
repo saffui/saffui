@@ -160,7 +160,7 @@ impl RsassaPssJwsAlgorithm {
     pub fn signer_from_jwk(&self, jwk: &Jwk) -> Result<RsassaPssJwsSigner, JoseError> {
         (|| -> anyhow::Result<RsassaPssJwsSigner> {
             match jwk.key_use() {
-                Some(val) if val == "sig" => {}
+                Some("sig") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be sig: {}", val),
             }
@@ -327,11 +327,11 @@ impl RsassaPssJwsAlgorithm {
     pub fn verifier_from_jwk(&self, jwk: &Jwk) -> Result<RsassaPssJwsVerifier, JoseError> {
         (|| -> anyhow::Result<RsassaPssJwsVerifier> {
             match jwk.key_type() {
-                val if val == "RSA" => {}
+                "RSA" => {}
                 val => bail!("A parameter kty must be RSA: {}", val),
             };
             match jwk.key_use() {
-                Some(val) if val == "sig" => {}
+                Some("sig") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be sig: {}", val),
             };

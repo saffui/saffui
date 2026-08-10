@@ -108,7 +108,7 @@ impl EcdsaJwsAlgorithm {
     pub fn signer_from_jwk(&self, jwk: &Jwk) -> Result<EcdsaJwsSigner, JoseError> {
         (|| -> anyhow::Result<EcdsaJwsSigner> {
             match jwk.key_use() {
-                Some(val) if val == "sig" => {}
+                Some("sig") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be sig: {}", val),
             }
@@ -211,11 +211,11 @@ impl EcdsaJwsAlgorithm {
             let curve = self.curve();
 
             match jwk.key_type() {
-                val if val == "EC" => {}
+                "EC" => {}
                 val => bail!("A parameter kty must be EC: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "sig" => {}
+                Some("sig") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be sig: {}", val),
             }

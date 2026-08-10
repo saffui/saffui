@@ -169,7 +169,7 @@ impl EcKeyPair {
     pub fn from_jwk(jwk: &Jwk) -> Result<Self, JoseError> {
         (|| -> anyhow::Result<Self> {
             match jwk.key_type() {
-                val if val == "EC" => {}
+                "EC" => {}
                 val => bail!("A parameter kty must be EC: {}", val),
             }
             let curve = match jwk.parameter("crv") {
@@ -377,7 +377,7 @@ impl EcKeyPair {
                 // Version
                 match reader.next() {
                     Ok(Some(DerType::Integer)) => match reader.to_u8() {
-                        Ok(val) if val == 0 => {}
+                        Ok(0) => {}
                         _ => return None,
                     },
                     _ => return None,
@@ -431,7 +431,7 @@ impl EcKeyPair {
             // Version
             match reader.next() {
                 Ok(Some(DerType::Integer)) => match reader.to_u8() {
-                    Ok(val) if val == 1 => {}
+                    Ok(1) => {}
                     _ => return None,
                 },
                 _ => return None,

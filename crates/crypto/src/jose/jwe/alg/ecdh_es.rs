@@ -201,7 +201,7 @@ impl EcdhEsJweAlgorithm {
                 val => bail!("A parameter kty must be EC or OKP: {}", val),
             };
             match jwk.key_use() {
-                Some(val) if val == "enc" => {}
+                Some("enc") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be enc: {}", val),
             }
@@ -361,7 +361,7 @@ impl EcdhEsJweAlgorithm {
                 val => bail!("A parameter kty must be EC or OKP: {}", val),
             };
             match jwk.key_use() {
-                Some(val) if val == "enc" => {}
+                Some("enc") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be enc: {}", val),
             }

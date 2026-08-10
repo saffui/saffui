@@ -39,11 +39,11 @@ impl DirectJweAlgorithm {
     pub fn encrypter_from_jwk(&self, jwk: &Jwk) -> Result<DirectJweEncrypter, JoseError> {
         (|| -> anyhow::Result<DirectJweEncrypter> {
             match jwk.key_type() {
-                val if val == "oct" => {}
+                "oct" => {}
                 val => bail!("A parameter kty must be oct: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "enc" => {}
+                Some("enc") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be enc: {}", val),
             }
@@ -88,11 +88,11 @@ impl DirectJweAlgorithm {
     pub fn decrypter_from_jwk(&self, jwk: &Jwk) -> Result<DirectJweDecrypter, JoseError> {
         (|| -> anyhow::Result<DirectJweDecrypter> {
             match jwk.key_type() {
-                val if val == "oct" => {}
+                "oct" => {}
                 val => bail!("A parameter kty must be oct: {}", val),
             }
             match jwk.key_use() {
-                Some(val) if val == "enc" => {}
+                Some("enc") => {}
                 None => {}
                 Some(val) => bail!("A parameter use must be enc: {}", val),
             }

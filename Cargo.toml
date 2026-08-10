@@ -18,7 +18,10 @@ crypto  = { path = "crates/crypto" }
 
 # External: one version per dependency across the whole workspace.
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+# preserve_order is REQUIRED by the vendored JOSE code: JSON member order is
+# part of the signed material, so a BTreeMap-backed Value would change what gets
+# signed and break RFC 7638 thumbprints.
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
 tokio          = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 thiserror      = "2.0.19"
 openssl        = "0.10.81"
@@ -36,3 +39,10 @@ subtle         = "2.6"
 # (otpauth:// URIs), BASE64URL_NOPAD for JOSE compact serialization (RFC 7515
 # §2 mandates base64url *without* padding — standard base64 breaks the format).
 data-encoding  = "2.6"
+
+# --- Required by the vendored josekit JOSE layer (see THIRD-PARTY.md) ---
+anyhow         = "1"
+regex          = "1"
+base64         = "0.22"
+flate2         = "1"
+time           = "0.3"

@@ -71,6 +71,11 @@ The JOSE layer is vendored from josekit. See the entry below.
       already listed to patch after vendoring. A regression test covers both
       answers: refused by default, accepted once the context declares the
       extension acceptable.
+  11. `JwkSet::remove_key` now rebuilds `kid_map`. Second of the three listed
+      defects. Rebuilt rather than pruned entry by entry, because the map is
+      keyed by `(kid, position in keys)` and a removal shifts every later
+      position; the regression test keeps a key after the removed one for
+      exactly that reason.
 - **Verification:** the 144 upstream tests pass unmodified after vendoring, and
   145 after the boxed-equality regression test added with modification 5.
 - **Upstream tracking:** watch https://github.com/hidekatsu-izuno/josekit-rs/releases.
@@ -93,7 +98,7 @@ they are not hypothetical.
 | Defect | Location | Effect |
 |---|---|---|
 | ~~The `crit` header claim is read as `"critical"` on the JSON deserialization path~~ — **patched here**, modification 10 | `src/jws/jws_context.rs` (`deserialize_json_with_selector`) | The whole critical-extension validation is dead code. A JWS naming an extension the implementation does not understand is **accepted**, in violation of RFC 7515 §4.1.11. The compact path reads `"crit"` correctly, which is what hides it. Still present upstream; report it. |
-| `JwkSet::remove_key` does not clear `kid_map` | `src/jwk/jwk_set.rs` | A key removed from the set still resolves through `get(kid)`. Revoking a key does not stop it being selected. |
+| ~~`JwkSet::remove_key` does not clear `kid_map`~~ — **patched here**, modification 11 | `src/jwk/jwk_set.rs` | A key removed from the set still resolves through `get(kid)`. Revoking a key does not stop it being selected. The index is also keyed by position in `keys`, so a removal invalidates every entry after it. Still present upstream; report it. |
 | `PartialEq for Box<dyn T>` is written `self == other` | `src/jwe/jwe_algorithm.rs`, `src/jwe/jwe_compression.rs`, `src/jwe/jwe_content_encryption.rs`, `src/jws/jws_algorithm.rs`, `src/jwk/key_pair.rs` | The impl calls itself. Comparing two boxed algorithms, compressions, content encryptions or key pairs recurses until the stack is exhausted and the process dies. Patched here (modification 5); still present upstream. No upstream test covers it, and none could: the test process would go down with it. |
 
 Both are worth reporting upstream rather than only patching locally.

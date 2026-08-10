@@ -147,7 +147,26 @@ impl JwkSet {
                 _ => unreachable!(),
             }
             self.keys.remove(index);
+            // The lookup index has to follow, or `get(kid)` keeps handing out a
+            // key this set no longer holds — a revoked key that still verifies.
+            // Rebuilt rather than pruned by entry: the second half of the map's
+            // own key is the position in `keys`, so removing one element shifts
+            // every entry after it.
+            self.reindex();
         }
+    }
+
+    /// Rebuild the key-id index from `keys`, whose order it mirrors.
+    fn reindex(&mut self) {
+        self.kid_map = self
+            .keys
+            .iter()
+            .enumerate()
+            .filter_map(|(i, jwk)| {
+                jwk.key_id()
+                    .map(|kid| ((kid.to_string(), i), Arc::clone(jwk)))
+            })
+            .collect();
     }
 }
 
@@ -217,6 +236,46 @@ mod tests {
         println!("{}", jwks);
 
         Ok(())
+    }
+
+    fn oct_key(kid: &str) -> Jwk {
+        let mut jwk = Jwk::new("oct");
+        jwk.set_key_id(kid);
+        jwk
+    }
+
+    /// Removing a key has to remove it from the lookup index too.
+    ///
+    /// `remove_key` dropped the key from `keys` and from the `keys` parameter
+    /// and left `kid_map` alone, so `get(kid)` kept returning a key the set no
+    /// longer held. For a JWK set that is revocation: the key is gone from
+    /// every listing and still resolves for verification.
+    ///
+    /// The third key is the other half. `kid_map` is keyed by `(kid, position
+    /// in keys)`, so removing an element shifts every entry after it — pruning
+    /// the one entry would have left the survivors pointing at the wrong
+    /// positions. The index is rebuilt instead, and `"c"` is here to prove it.
+    #[test]
+    fn a_removed_key_stops_resolving_by_its_id() {
+        let mut set = JwkSet::new();
+        set.push_key(oct_key("a"));
+        set.push_key(oct_key("b"));
+        set.push_key(oct_key("c"));
+        assert_eq!(set.get("b").len(), 1);
+
+        set.remove_key(&oct_key("b"));
+
+        assert!(
+            set.get("b").is_empty(),
+            "a removed key still resolves by its key id"
+        );
+        assert_eq!(
+            set.get("c").len(),
+            1,
+            "removing a key lost the key that followed it in the index"
+        );
+        assert_eq!(set.get("a").len(), 1);
+        assert_eq!(set.keys().len(), 2);
     }
 
     fn load_file(path: &str) -> Result<File> {

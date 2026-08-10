@@ -84,8 +84,23 @@ The JOSE layer is vendored from josekit. See the entry below.
       cheaper to attack offline than the configuration allowed. Refused rather
       than raised silently — a JWE that states one count while having been
       built with another is worse than one that fails.
-- **Verification:** the 144 upstream tests pass unmodified after vendoring, and
-  148 with the regression tests added by modifications 5, 10, 11 and 12.
+  13. The upstream test vectors under `crates/crypto/data` removed, and with
+      them the 85 tests that read through `CARGO_MANIFEST_DIR/data`. 63 tests
+      remain, including every regression test written for modifications 5, 10,
+      11 and 12 — the `crit` one was rewritten to generate its key rather than
+      load it, so the coverage survives the vectors.
+- **Verification:** the 144 upstream tests passed unmodified at the point of
+  vendoring, which is what established that the port was faithful. That
+  evidence is no longer reproducible from the tree: modification 13 removed the
+  vectors those tests read, so 63 of them remain. Read the claim as a fact
+  about commit 972d82c, not about HEAD.
+
+  The consequence belongs here rather than in a commit message: the next port
+  from upstream cannot be checked the way this one was. Whoever takes josekit
+  0.10.4 will have to restore the vectors from git history — `git show
+  972d82c -- crates/crypto/data` — or regenerate them from the openssl
+  invocations recorded in the `memo.md` that came with them, and run the
+  deleted tests against the merge before deleting them again.
 - **Upstream tracking:** watch https://github.com/hidekatsu-izuno/josekit-rs/releases.
   Record every port in this entry, extending the Modifications list.
 

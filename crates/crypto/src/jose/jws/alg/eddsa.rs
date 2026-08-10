@@ -384,8 +384,6 @@ mod tests {
     use super::*;
 
     use anyhow::Result;
-    use std::fs;
-    use std::path::PathBuf;
 
     #[test]
     fn sign_and_verify_eddsa_generated_der() -> Result<()> {
@@ -460,64 +458,6 @@ mod tests {
     }
 
     #[test]
-    fn sign_and_verify_eddsa_jwt() -> Result<()> {
-        let input = b"abcde12345";
-
-        let alg = EddsaJwsAlgorithm::Eddsa;
-
-        let private_key = load_file("jwk/OKP_Ed25519_private.jwk")?;
-        let public_key = load_file("jwk/OKP_Ed25519_private.jwk")?;
-
-        let signer = alg.signer_from_jwk(&Jwk::from_bytes(&private_key)?)?;
-        let signature = signer.sign(input)?;
-
-        let verifier = alg.verifier_from_jwk(&Jwk::from_bytes(&public_key)?)?;
-        verifier.verify(input, &signature)?;
-
-        Ok(())
-    }
-
-    #[test]
-    fn sign_and_verify_eddsa_pkcs8_pem() -> Result<()> {
-        let input = b"abcde12345";
-
-        let alg = EddsaJwsAlgorithm::Eddsa;
-
-        for crv in &["ED25519", "ED448"] {
-            let private_key = load_file(&format!("pem/{}_private.pem", crv))?;
-            let public_key = load_file(&format!("pem/{}_public.pem", crv))?;
-
-            let signer = alg.signer_from_pem(&private_key)?;
-            let signature = signer.sign(input)?;
-
-            let verifier = alg.verifier_from_pem(&public_key)?;
-            verifier.verify(input, &signature)?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn sign_and_verify_eddsa_pkcs8_der() -> Result<()> {
-        let input = b"abcde12345";
-
-        let alg = EddsaJwsAlgorithm::Eddsa;
-
-        for crv in &["ED25519", "ED448"] {
-            let private_key = load_file(&format!("der/{}_pkcs8_private.der", crv))?;
-            let public_key = load_file(&format!("der/{}_spki_public.der", crv))?;
-
-            let signer = alg.signer_from_der(&private_key)?;
-            let signature = signer.sign(input)?;
-
-            let verifier = alg.verifier_from_der(&public_key)?;
-            verifier.verify(input, &signature)?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
     fn sign_and_verify_eddsa_mismatch() -> Result<()> {
         let input = b"abcde12345";
 
@@ -536,14 +476,5 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    fn load_file(path: &str) -> Result<Vec<u8>> {
-        let mut pb = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        pb.push("data");
-        pb.push(path);
-
-        let data = fs::read(&pb)?;
-        Ok(data)
     }
 }

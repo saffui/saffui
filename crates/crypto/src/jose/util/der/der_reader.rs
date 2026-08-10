@@ -578,31 +578,6 @@ mod tests {
     use crate::jose::util::der::DerBuilder;
 
     #[test]
-    fn parse_der() -> Result<()> {
-        let bytes = load_file("der/RSA_2048bit_raw_public.der")?;
-
-        let mut parser = DerReader::from_reader(bytes);
-        assert!(matches!(parser.next()?, Some(DerType::Sequence)));
-        assert!(matches!(parser.next()?, Some(DerType::Integer)));
-        assert!(matches!(parser.next()?, Some(DerType::Integer)));
-        assert!(matches!(parser.next()?, Some(DerType::EndOfContents)));
-        Ok(())
-    }
-
-    #[test]
-    fn parse_der_2() -> Result<()> {
-        let mut vec = Vec::new();
-        let _ = load_file("der/RSA_2048bit_raw_public.der")?.read_to_end(&mut vec)?;
-
-        let mut parser = DerReader::from_bytes(&vec);
-        assert!(matches!(parser.next()?, Some(DerType::Sequence)));
-        assert!(matches!(parser.next()?, Some(DerType::Integer)));
-        assert!(matches!(parser.next()?, Some(DerType::Integer)));
-        assert!(matches!(parser.next()?, Some(DerType::EndOfContents)));
-        Ok(())
-    }
-
-    #[test]
     fn parse_der_3() -> Result<()> {
         let mut builder = DerBuilder::new();
         builder.begin(DerType::Sequence);

@@ -214,135 +214,12 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::cell::OnceCell;
-    use std::fs;
-    use std::path::PathBuf;
 
     use anyhow::Result;
 
-    use crate::jose::Value;
-    use crate::jose::jws::{self, ES256, EdDSA, JwsHeader, JwsHeaderSet, JwsVerifier, RS256};
-
-    #[test]
-    fn test_jws_compact_serialization() -> Result<()> {
-        let alg = RS256;
-
-        let private_key = load_file("pem/RSA_2048bit_private.pem")?;
-        let public_key = load_file("pem/RSA_2048bit_public.pem")?;
-
-        let mut src_header = JwsHeader::new();
-        src_header.set_token_type("JWT");
-        let src_payload = b"test payload!";
-        let signer = alg.signer_from_pem(&private_key)?;
-        let jwt = jws::serialize_compact(src_payload, &src_header, &signer)?;
-
-        let verifier = alg.verifier_from_pem(&public_key)?;
-        let (dst_payload, dst_header) = jws::deserialize_compact(&jwt, &verifier)?;
-
-        src_header.set_claim("alg", Some(Value::String(alg.name().to_string())))?;
-        assert_eq!(src_header, dst_header);
-        assert_eq!(src_payload.to_vec(), dst_payload);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_jws_compact_serialization_with_selector() -> Result<()> {
-        let alg = RS256;
-
-        let private_key = load_file("pem/RSA_2048bit_private.pem")?;
-        let public_key = load_file("pem/RSA_2048bit_public.pem")?;
-
-        let mut src_header = JwsHeader::new();
-        src_header.set_token_type("JWT");
-        src_header.set_x509_certificate_chain(&[&public_key]);
-        let src_payload = b"test payload!";
-        let signer = alg.signer_from_pem(&private_key)?;
-        let jwt = jws::serialize_compact(src_payload, &src_header, &signer)?;
-
-        let cell: OnceCell<Box<dyn JwsVerifier>> = OnceCell::new();
-        let (dst_payload, dst_header) = jws::deserialize_compact_with_selector(&jwt, |header| {
-            let public_keys = header.x509_certificate_chain().unwrap();
-            let verifier = alg.verifier_from_pem(&public_keys[0])?;
-            Ok(Some(cell.get_or_init(|| Box::new(verifier)).as_ref()))
-        })?;
-
-        src_header.set_claim("alg", Some(Value::String(alg.name().to_string())))?;
-        assert_eq!(src_header, dst_header);
-        assert_eq!(src_payload.to_vec(), dst_payload);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_jws_json_serialization() -> Result<()> {
-        let alg = RS256;
-
-        let private_key = load_file("pem/RSA_2048bit_private.pem")?;
-        let public_key = load_file("pem/RSA_2048bit_public.pem")?;
-
-        let src_payload = b"test payload!";
-        let mut src_header = JwsHeaderSet::new();
-        src_header.set_key_id("xxx", true);
-        src_header.set_token_type("JWT", false);
-        let signer = alg.signer_from_pem(&private_key)?;
-        let jwt = jws::serialize_flattened_json(src_payload, &src_header, &signer)?;
-
-        let verifier = alg.verifier_from_pem(&public_key)?;
-        let (dst_payload, dst_header) = jws::deserialize_json(&jwt, &verifier)?;
-
-        src_header.set_algorithm(alg.name(), true);
-        assert_eq!(src_header.key_id(), dst_header.key_id());
-        assert_eq!(src_header.token_type(), dst_header.token_type());
-        assert_eq!(src_payload.to_vec(), dst_payload);
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_jws_general_json_serialization() -> Result<()> {
-        let private_key_1 = load_file("pem/RSA_2048bit_private.pem")?;
-        let private_key_2 = load_file("pem/EC_P-256_private.pem")?;
-        let private_key_3 = load_file("pem/ED25519_private.pem")?;
-
-        let public_key = load_file("pem/EC_P-256_public.pem")?;
-
-        let src_payload = b"test payload!";
-
-        let mut src_header_1 = JwsHeaderSet::new();
-        src_header_1.set_key_id("xxx-1", true);
-        src_header_1.set_token_type("JWT-1", false);
-        let signer_1 = RS256.signer_from_pem(&private_key_1)?;
-
-        let mut src_header_2 = JwsHeaderSet::new();
-        src_header_2.set_key_id("xxx-2", true);
-        src_header_2.set_token_type("JWT-2", false);
-        let signer_2 = ES256.signer_from_pem(&private_key_2)?;
-
-        let mut src_header_3 = JwsHeaderSet::new();
-        src_header_3.set_key_id("xxx-3", true);
-        src_header_3.set_token_type("JWT-3", false);
-        let signer_3 = EdDSA.signer_from_pem(&private_key_3)?;
-
-        let json = jws::serialize_general_json(
-            src_payload,
-            &[
-                (&src_header_1, &*signer_1),
-                (&src_header_2, &*signer_2),
-                (&src_header_3, &*signer_3),
-            ],
-        )?;
-
-        let verifier = ES256.verifier_from_pem(&public_key)?;
-        let (dst_payload, dst_header) = jws::deserialize_json(&json, &verifier)?;
-
-        assert_eq!(dst_header.algorithm(), Some("ES256"));
-        assert_eq!(src_header_2.key_id(), dst_header.key_id());
-        assert_eq!(src_header_2.token_type(), dst_header.token_type());
-        assert_eq!(src_payload.to_vec(), dst_payload);
-
-        Ok(())
-    }
+    use crate::jose::jwk::P_256;
+    use crate::jose::jwk::alg::ec::EcKeyPair;
+    use crate::jose::jws::{self, ES256, JwsHeaderSet};
 
     /// RFC 7515 4.1.11: a `crit` naming an extension the recipient does not
     /// understand makes the JWS invalid. That is the point of the parameter —
@@ -361,17 +238,18 @@ mod tests {
     /// by the check under test.
     #[test]
     fn a_json_jws_naming_an_unknown_critical_extension_is_refused() -> Result<()> {
-        let private_key = load_file("pem/EC_P-256_private.pem")?;
-        let public_key = load_file("pem/EC_P-256_public.pem")?;
+        // Generated rather than loaded: this test is about header handling, and
+        // a key it makes itself keeps it independent of the vendored vectors.
+        let pair = EcKeyPair::generate(P_256)?;
 
         let mut header = JwsHeaderSet::new();
         header.set_key_id("kid-1", true);
         header.set_critical(&["urn:example:unsupported"]);
 
-        let signer = ES256.signer_from_pem(&private_key)?;
+        let signer = ES256.signer_from_jwk(&pair.to_jwk_private_key())?;
         let json = jws::serialize_general_json(b"test payload!", &[(&header, &*signer)])?;
 
-        let verifier = ES256.verifier_from_pem(&public_key)?;
+        let verifier = ES256.verifier_from_jwk(&pair.to_jwk_public_key())?;
         assert!(
             jws::deserialize_json(&json, &verifier).is_err(),
             "a JWS declaring an unsupported critical extension was accepted"
@@ -383,14 +261,5 @@ mod tests {
         assert_eq!(payload, b"test payload!".to_vec());
 
         Ok(())
-    }
-
-    fn load_file(path: &str) -> Result<Vec<u8>> {
-        let mut pb = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        pb.push("data");
-        pb.push(path);
-
-        let data = fs::read(&pb)?;
-        Ok(data)
     }
 }

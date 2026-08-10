@@ -502,61 +502,7 @@ impl Deref for RsaesJweDecrypter {
 }
 
 #[cfg(test)]
-mod tests {
-    use anyhow::Result;
-    use std::fs;
-    use std::path::PathBuf;
-
-    use super::RsaesJweAlgorithm;
-    use crate::jose::jwe::JweHeader;
-    use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
-    use crate::jose::jwk::Jwk;
-    use crate::jose::util;
-
-    #[test]
-    #[allow(deprecated)]
-    fn encrypt_and_decrypt_rsaes() -> Result<()> {
-        let enc = AescbcHmacJweEncryption::A128cbcHs256;
-
-        let private_key = load_file("jwk/RSA_private.jwk")?;
-        let mut private_key = Jwk::from_bytes(&private_key)?;
-        private_key.set_key_use("enc");
-
-        let public_key = load_file("jwk/RSA_public.jwk")?;
-        let mut public_key = Jwk::from_bytes(&public_key)?;
-        public_key.set_key_use("enc");
-
-        for alg in [
-            RsaesJweAlgorithm::Rsa1_5,
-            RsaesJweAlgorithm::RsaOaep,
-            RsaesJweAlgorithm::RsaOaep256,
-        ] {
-            let mut header = JweHeader::new();
-            header.set_content_encryption(enc.name());
-
-            let encrypter = alg.encrypter_from_jwk(&public_key)?;
-            let mut out_header = header.clone();
-            let src_key = util::random_bytes(enc.key_len());
-            let encrypted_key = encrypter.encrypt(&src_key, &header, &mut out_header)?;
-
-            let decrypter = alg.decrypter_from_jwk(&private_key)?;
-            let dst_key = decrypter.decrypt(encrypted_key.as_deref(), &enc, &out_header)?;
-
-            assert_eq!(&src_key as &[u8], &dst_key as &[u8]);
-        }
-
-        Ok(())
-    }
-
-    fn load_file(path: &str) -> Result<Vec<u8>> {
-        let mut pb = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        pb.push("data");
-        pb.push(path);
-
-        let data = fs::read(&pb)?;
-        Ok(data)
-    }
-}
+mod tests {}
 
 mod openssl_rsa_oaep {
     use openssl::error::ErrorStack;

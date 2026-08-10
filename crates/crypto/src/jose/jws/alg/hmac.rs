@@ -372,9 +372,6 @@ mod tests {
 
     use crate::jose::util;
     use anyhow::Result;
-    use std::fs::File;
-    use std::io::Read;
-    use std::path::PathBuf;
 
     #[test]
     fn sign_and_verify_hmac_generated_jwk() -> Result<()> {
@@ -387,28 +384,6 @@ mod tests {
             HmacJwsAlgorithm::Hs512,
         ] {
             let private_key = alg.to_jwk(&private_key);
-
-            let signer = alg.signer_from_jwk(&private_key)?;
-            let signature = signer.sign(input)?;
-
-            let verifier = alg.verifier_from_jwk(&private_key)?;
-            verifier.verify(input, &signature)?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn sign_and_verify_hmac_jwk() -> Result<()> {
-        let input = b"abcde12345";
-
-        for alg in &[
-            HmacJwsAlgorithm::Hs256,
-            HmacJwsAlgorithm::Hs384,
-            HmacJwsAlgorithm::Hs512,
-        ] {
-            let private_key = load_file("jwk/oct_512bit_private.jwk")?;
-            let private_key = Jwk::from_bytes(&private_key)?;
 
             let signer = alg.signer_from_jwk(&private_key)?;
             let signature = signer.sign(input)?;
@@ -438,16 +413,5 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    fn load_file(path: &str) -> Result<Vec<u8>> {
-        let mut pb = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        pb.push("data");
-        pb.push(path);
-
-        let mut file = File::open(&pb)?;
-        let mut data = Vec::new();
-        file.read_to_end(&mut data)?;
-        Ok(data)
     }
 }

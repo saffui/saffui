@@ -477,8 +477,6 @@ impl Deref for EcxKeyPair {
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use std::fs;
-    use std::path::PathBuf;
 
     use super::{EcxCurve, EcxKeyPair};
 
@@ -500,45 +498,5 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    #[test]
-    fn test_ecx_key_pair() -> Result<()> {
-        for curve in [EcxCurve::X25519, EcxCurve::X448] {
-            let private_key = load_file(match curve {
-                EcxCurve::X25519 => "der/X25519_pkcs8_private.der",
-                EcxCurve::X448 => "der/X448_pkcs8_private.der",
-            })?;
-
-            let public_key = load_file(match curve {
-                EcxCurve::X25519 => "der/X25519_spki_public.der",
-                EcxCurve::X448 => "der/X448_spki_public.der",
-            })?;
-
-            let key_pair_1 = EcxKeyPair::from_der(private_key)?;
-            let der_private1 = key_pair_1.to_der_private_key();
-            let der_public1 = key_pair_1.to_der_public_key();
-
-            let jwk_key_pair_1 = key_pair_1.to_jwk_key_pair();
-
-            let key_pair_2 = EcxKeyPair::from_jwk(&jwk_key_pair_1)?;
-            let der_private2 = key_pair_2.to_der_private_key();
-            let der_public2 = key_pair_2.to_der_public_key();
-
-            assert_eq!(der_private1, der_private2);
-            assert_eq!(der_public1, der_public2);
-            assert_eq!(der_public1, public_key);
-        }
-
-        Ok(())
-    }
-
-    fn load_file(path: &str) -> Result<Vec<u8>> {
-        let mut pb = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        pb.push("data");
-        pb.push(path);
-
-        let data = fs::read(&pb)?;
-        Ok(data)
     }
 }

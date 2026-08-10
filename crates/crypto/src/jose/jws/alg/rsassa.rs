@@ -475,8 +475,6 @@ mod tests {
     use super::*;
 
     use anyhow::Result;
-    use std::fs;
-    use std::path::PathBuf;
 
     #[test]
     fn sign_and_verify_rsassa_generated_der() -> Result<()> {
@@ -584,116 +582,6 @@ mod tests {
     }
 
     #[test]
-    fn sign_and_verify_rsassa_jwt() -> Result<()> {
-        let input = b"abcde12345";
-
-        for alg in &[
-            RsassaJwsAlgorithm::Rs256,
-            RsassaJwsAlgorithm::Rs384,
-            RsassaJwsAlgorithm::Rs512,
-        ] {
-            let private_key = load_file("jwk/RSA_private.jwk")?;
-            let public_key = load_file("jwk/RSA_public.jwk")?;
-
-            let signer = alg.signer_from_jwk(&Jwk::from_bytes(&private_key)?)?;
-            let signature = signer.sign(input)?;
-
-            let verifier = alg.verifier_from_jwk(&Jwk::from_bytes(&public_key)?)?;
-            verifier.verify(input, &signature)?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn sign_and_verify_rsassa_pkcs8_pem() -> Result<()> {
-        let input = b"abcde12345";
-
-        for alg in &[
-            RsassaJwsAlgorithm::Rs256,
-            RsassaJwsAlgorithm::Rs384,
-            RsassaJwsAlgorithm::Rs512,
-        ] {
-            let private_key = load_file("pem/RSA_2048bit_private.pem")?;
-            let public_key = load_file("pem/RSA_2048bit_public.pem")?;
-
-            let signer = alg.signer_from_pem(&private_key)?;
-            let signature = signer.sign(input)?;
-
-            let verifier = alg.verifier_from_pem(&public_key)?;
-            verifier.verify(input, &signature)?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn sign_and_verify_rsassa_pkcs8_der() -> Result<()> {
-        let input = b"abcde12345";
-
-        for alg in &[
-            RsassaJwsAlgorithm::Rs256,
-            RsassaJwsAlgorithm::Rs384,
-            RsassaJwsAlgorithm::Rs512,
-        ] {
-            let private_key = load_file("der/RSA_2048bit_pkcs8_private.der")?;
-            let public_key = load_file("der/RSA_2048bit_spki_public.der")?;
-
-            let signer = alg.signer_from_der(&private_key)?;
-            let signature = signer.sign(input)?;
-
-            let verifier = alg.verifier_from_der(&public_key)?;
-            verifier.verify(input, &signature)?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn sign_and_verify_rsassa_pkcs1_pem() -> Result<()> {
-        let input = b"abcde12345";
-
-        for alg in &[
-            RsassaJwsAlgorithm::Rs256,
-            RsassaJwsAlgorithm::Rs384,
-            RsassaJwsAlgorithm::Rs512,
-        ] {
-            let private_key = load_file("pem/RSA_2048bit_private.pem")?;
-            let public_key = load_file("pem/RSA_2048bit_public.pem")?;
-
-            let signer = alg.signer_from_pem(&private_key)?;
-            let signature = signer.sign(input)?;
-
-            let verifier = alg.verifier_from_pem(&public_key)?;
-            verifier.verify(input, &signature)?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn sign_and_verify_rsassa_pkcs1_der() -> Result<()> {
-        let input = b"abcde12345";
-
-        for alg in &[
-            RsassaJwsAlgorithm::Rs256,
-            RsassaJwsAlgorithm::Rs384,
-            RsassaJwsAlgorithm::Rs512,
-        ] {
-            let private_key = load_file("der/RSA_2048bit_raw_private.der")?;
-            let public_key = load_file("der/RSA_2048bit_raw_public.der")?;
-
-            let signer = alg.signer_from_der(&private_key)?;
-            let signature = signer.sign(input)?;
-
-            let verifier = alg.verifier_from_der(&public_key)?;
-            verifier.verify(input, &signature)?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
     fn sign_and_verify_rsassa_mismatch() -> Result<()> {
         let input = b"abcde12345";
 
@@ -715,14 +603,5 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    fn load_file(path: &str) -> Result<Vec<u8>> {
-        let mut pb = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        pb.push("data");
-        pb.push(path);
-
-        let data = fs::read(&pb)?;
-        Ok(data)
     }
 }

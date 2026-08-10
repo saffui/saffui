@@ -202,6 +202,15 @@ impl Deref for Pbes2HmacAeskwJweAlgorithm {
     }
 }
 
+/// Fewest PBKDF2 iterations this implementation will derive a key encryption
+/// key with. RFC 7518 4.8.1.2 recommends at least 1000, and `set_iter_count`
+/// has always refused less; `p2c` arriving in a header did not go through it.
+const MIN_ITER_COUNT: usize = 1000;
+
+/// Most it will do. A `p2c` is attacker-supplied on the decrypt path, so the
+/// ceiling is what stops a header from asking for unbounded work.
+const MAX_ITER_COUNT: usize = 1_000_000;
+
 #[derive(Debug, Clone)]
 pub struct Pbes2HmacAeskwJweEncrypter {
     algorithm: Pbes2HmacAeskwJweAlgorithm,
@@ -220,8 +229,11 @@ impl Pbes2HmacAeskwJweEncrypter {
     }
 
     pub fn set_iter_count(&mut self, iter_count: usize) {
-        if iter_count < 1000 {
-            panic!("iter_count must be 1000 or more: {}", iter_count);
+        if iter_count < MIN_ITER_COUNT {
+            panic!(
+                "iter_count must be {} or more: {}",
+                MIN_ITER_COUNT, iter_count
+            );
         }
         self.iter_count = iter_count;
     }
@@ -280,11 +292,31 @@ impl JweEncrypter for Pbes2HmacAeskwJweEncrypter {
                 }
             };
             let p2c = match in_header.claim("p2c") {
+                // A caller-supplied count bypasses `set_iter_count`, which is
+                // where the floor used to live, so it is bounded here instead.
+                // Silently raising it would be worse than refusing: the header
+                // is signed material, and the JWE would then say one thing and
+                // have been built with another.
                 Some(Value::Number(val)) => match val.as_u64() {
-                    Some(val) => usize::try_from(val)?,
+                    Some(val) => {
+                        let p2c = usize::try_from(val)?;
+                        if p2c < MIN_ITER_COUNT {
+                            bail!(
+                                "The p2c value is too small to derive a key encryption key: {}",
+                                p2c
+                            );
+                        }
+                        if p2c > MAX_ITER_COUNT {
+                            bail!(
+                                "The p2c value is too large. This is a possible DoS attack: {}",
+                                p2c
+                            );
+                        }
+                        p2c
+                    }
                     None => bail!("Overflow u64 value: {}", val),
                 },
-                Some(_) => bail!("The apv header claim must be string."),
+                Some(_) => bail!("The p2c header claim must be a number."),
                 None => {
                     let p2c = self.iter_count;
                     out_header.set_claim("p2c", Some(Value::Number(Number::from(p2c))))?;
@@ -400,9 +432,21 @@ impl JweDecrypter for Pbes2HmacAeskwJweDecrypter {
                 None => bail!("The p2c header claim is required."),
             };
 
-            if p2c > 1000000 {
+            if p2c > MAX_ITER_COUNT {
                 bail!(
                     "The p2c value is too large. This is a possible DoS attack: {}",
+                    p2c
+                );
+            }
+
+            // The floor upstream never had. `p2c` is chosen by whoever produced
+            // the JWE, so a recipient that accepts `p2c = 1` derives the key
+            // encryption key in a single PBKDF2 round: the password behind it
+            // becomes a thousand times cheaper to attack offline than the
+            // sender's own configuration would ever allow.
+            if p2c < MIN_ITER_COUNT {
+                bail!(
+                    "The p2c value is too small to derive a key encryption key: {}",
                     p2c
                 );
             }
@@ -498,6 +542,72 @@ mod tests {
 
             assert_eq!(&src_key as &[u8], &dst_key as &[u8]);
         }
+
+        Ok(())
+    }
+
+    /// A `p2c` below the floor must be refused on both paths.
+    ///
+    /// `p2c` is chosen by whoever produced the JWE, and upstream bounded it
+    /// only from above. A recipient handed `p2c = 1` derived the key encryption
+    /// key in a single PBKDF2 round, so the password behind it was a thousand
+    /// times cheaper to attack offline than the sender's own configuration
+    /// permitted — `set_iter_count` has always refused anything under 1000, and
+    /// a header walked straight past it.
+    ///
+    /// Decryption is the half that matters, and it is tested the way the attack
+    /// arrives: encrypt honestly, then rewrite `p2c` in the header the
+    /// recipient reads. Encryption is tested too, because the same claim is
+    /// read there from the caller's header with no bound at all.
+    #[test]
+    fn reject_pbes2_hmac_with_too_small_p2c() -> Result<()> {
+        let enc = AescbcHmacJweEncryption::A128cbcHs256;
+        let alg = Pbes2HmacAeskwJweAlgorithm::Pbes2Hs256A128kw;
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption(enc.name());
+
+        let jwk = {
+            let key = util::random_bytes(8);
+            let key = util::encode_base64_urlsafe_nopad(&key);
+
+            let mut jwk = Jwk::new("oct");
+            jwk.set_key_use("enc");
+            jwk.set_parameter("k", Some(json!(key)))?;
+            jwk
+        };
+
+        let encrypter = alg.encrypter_from_jwk(&jwk)?;
+        let mut out_header = header.clone();
+        let src_key = util::random_bytes(enc.key_len());
+        let encrypted_key = encrypter.encrypt(&src_key, &header, &mut out_header)?;
+
+        // The honest JWE verifies, so the refusal below is about `p2c` and not
+        // about anything else this setup got wrong.
+        let decrypter = alg.decrypter_from_jwk(&jwk)?;
+        let dst_key = decrypter.decrypt(encrypted_key.as_deref(), &enc, &out_header)?;
+        assert_eq!(&src_key as &[u8], &dst_key as &[u8]);
+
+        let mut tampered = out_header.clone();
+        tampered.set_claim("p2c", Some(json!(1)))?;
+        let err = decrypter
+            .decrypt(encrypted_key.as_deref(), &enc, &tampered)
+            .unwrap_err();
+        assert_eq!(
+            format!("{}", err),
+            "Invalid JWE format: The p2c value is too small to derive a key encryption key: 1"
+        );
+
+        let mut asked = header.clone();
+        asked.set_claim("p2c", Some(json!(1)))?;
+        let mut out = asked.clone();
+        let err = encrypter.encrypt(&src_key, &asked, &mut out).unwrap_err();
+        // The encrypt path wraps its failures as an invalid key format, the
+        // decrypt path as an invalid JWE format. Same refusal, different side.
+        assert_eq!(
+            format!("{}", err),
+            "Invalid key format: The p2c value is too small to derive a key encryption key: 1"
+        );
 
         Ok(())
     }

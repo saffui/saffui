@@ -76,8 +76,16 @@ The JOSE layer is vendored from josekit. See the entry below.
       keyed by `(kid, position in keys)` and a removal shifts every later
       position; the regression test keeps a key after the removed one for
       exactly that reason.
+  12. A PBES2 iteration floor of 1000, named alongside the existing ceiling and
+      applied on both paths. `set_iter_count` already refused less; a `p2c`
+      taken from a header did not go through it. The encrypt side is the one
+      that mattered: it used a caller-supplied `p2c` unbounded in either
+      direction, so a JWE could be emitted whose password was a thousand times
+      cheaper to attack offline than the configuration allowed. Refused rather
+      than raised silently — a JWE that states one count while having been
+      built with another is worse than one that fails.
 - **Verification:** the 144 upstream tests pass unmodified after vendoring, and
-  145 after the boxed-equality regression test added with modification 5.
+  148 with the regression tests added by modifications 5, 10, 11 and 12.
 - **Upstream tracking:** watch https://github.com/hidekatsu-izuno/josekit-rs/releases.
   Record every port in this entry, extending the Modifications list.
 
@@ -103,10 +111,10 @@ they are not hypothetical.
 
 Both are worth reporting upstream rather than only patching locally.
 
-Also missing upstream, and worth adding while you are in the code: PBES2 has an
-iteration-count ceiling but **no floor**, so `p2c = 1` derives a key encryption
-key in a single PBKDF2 round (RFC 7518 §4.8.1.2 recommends at least 1000), and
-the encrypt path reads `p2c` from the incoming header with no bound at all.
+Also missing upstream, and **added here** (modification 12): PBES2 had an
+iteration-count ceiling but no floor, so `p2c = 1` derived a key encryption key
+in a single PBKDF2 round (RFC 7518 §4.8.1.2 recommends at least 1000), and the
+encrypt path read `p2c` from the incoming header with no bound at all.
 
 ## Before vendoring anything
 

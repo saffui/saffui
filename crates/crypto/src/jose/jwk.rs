@@ -10,6 +10,10 @@
 
 pub mod alg;
 
+// Upstream layout: `jwk::jwk` holds the `Jwk` type. Renaming it is a structural
+// divergence that every future port would have to be replayed against, for no
+// behavioural gain.
+#[allow(clippy::module_inception)]
 mod jwk;
 mod jwk_set;
 mod key_info;

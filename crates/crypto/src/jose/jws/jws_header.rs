@@ -17,7 +17,7 @@ use crate::jose::util;
 use crate::jose::{JoseError, JoseHeader, Map, Value};
 
 /// Represent JWS header claims
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Default)]
 pub struct JwsHeader {
     claims: Map<String, Value>,
 }
@@ -147,7 +147,7 @@ impl JwsHeader {
     /// # Arguments
     ///
     /// * `values` - X.509 certificate chain
-    pub fn set_x509_certificate_chain(&mut self, values: &Vec<impl AsRef<[u8]>>) {
+    pub fn set_x509_certificate_chain(&mut self, values: &[impl AsRef<[u8]>]) {
         let key = "x5c";
         let mut vec = Vec::with_capacity(values.len());
         for val in values {
@@ -273,7 +273,7 @@ impl JwsHeader {
     /// # Arguments
     ///
     /// * `values` - critical claim names
-    pub fn set_critical(&mut self, values: &Vec<impl AsRef<str>>) {
+    pub fn set_critical(&mut self, values: &[impl AsRef<str>]) {
         let key = "crit";
         let vec = values
             .iter()
@@ -515,7 +515,7 @@ mod tests {
         header.set_jwk_set_url("jku");
         header.set_jwk(jwk.clone());
         header.set_x509_url("x5u");
-        header.set_x509_certificate_chain(&vec![
+        header.set_x509_certificate_chain(&[
             b"x5c0".to_vec(),
             b"x5c1".to_vec(),
             "@@~".as_bytes().to_vec(),
@@ -525,7 +525,7 @@ mod tests {
         header.set_key_id("kid");
         header.set_token_type("typ");
         header.set_content_type("cty");
-        header.set_critical(&vec!["crit0", "crit1"]);
+        header.set_critical(&["crit0", "crit1"]);
         header.set_url("url");
         header.set_nonce(b"nonce");
         header.set_claim("header_claim", Some(json!("header_claim")))?;

@@ -384,7 +384,7 @@ impl Jwk {
     ///
     /// # Arguments
     /// * `values` - X.509 certificate chain
-    pub fn set_x509_certificate_chain(&mut self, values: &Vec<impl AsRef<[u8]>>) {
+    pub fn set_x509_certificate_chain(&mut self, values: &[impl AsRef<[u8]>]) {
         let mut vec = Vec::with_capacity(values.len());
         for val in values {
             vec.push(Value::String(util::encode_base64_standard(val)));
@@ -586,7 +586,7 @@ mod tests {
     fn test_new_jws_header() -> Result<()> {
         let mut jwk = Jwk::new("oct");
         jwk.set_x509_url("x5u");
-        jwk.set_x509_certificate_chain(&vec![
+        jwk.set_x509_certificate_chain(&[
             b"x5c0".to_vec(),
             b"x5c1".to_vec(),
             "@@~".as_bytes().to_vec(),

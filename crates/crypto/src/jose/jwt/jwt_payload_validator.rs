@@ -15,7 +15,7 @@ use crate::jose::jwt::JwtPayload;
 use crate::jose::{JoseError, Map, Value};
 
 /// Represents JWT payload validator.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Default)]
 pub struct JwtPayloadValidator {
     base_time: Option<SystemTime>,
     min_issued_time: Option<SystemTime>,

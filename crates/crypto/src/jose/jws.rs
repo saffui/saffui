@@ -255,7 +255,7 @@ mod tests {
 
         let mut src_header = JwsHeader::new();
         src_header.set_token_type("JWT");
-        src_header.set_x509_certificate_chain(&vec![&public_key]);
+        src_header.set_x509_certificate_chain(&[&public_key]);
         let src_payload = b"test payload!";
         let signer = alg.signer_from_pem(&private_key)?;
         let jwt = jws::serialize_compact(src_payload, &src_header, &signer)?;

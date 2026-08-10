@@ -54,6 +54,18 @@ The JOSE layer is vendored from josekit. See the entry below.
      source of divergence and the one that will cost the most at the next port:
      it touches almost every file. Taken deliberately, so that the CI can hold
      the whole tree to one standard rather than carve out an exemption.
+  8. The lints `clippy` cannot rewrite on its own, cleared by hand: 45 match
+     guards of the form `val if val == LIT` replaced by the literal pattern,
+     `&Vec<T>` narrowed to `&[T]` in the eight `set_critical` and
+     `set_x509_certificate_chain` signatures, `Default` derived on the five
+     types that had a bare `new()`, and `is_empty` added to `JoseHeader` with a
+     default body.
+  9. Three lints kept with a local `#[allow]` and a written reason instead of a
+     rewrite, because each would restructure upstream rather than improve it:
+     `module_inception` on `jwk::jwk`, `should_implement_trait` on
+     `DerReader::next` (it returns a `Result` and is not an iterator), and
+     `unbuffered_bytes` in `DerReader::from_reader` (every construction here
+     reads from an in-memory slice, so buffering would allocate for nothing).
 - **Verification:** the 144 upstream tests pass unmodified after vendoring, and
   145 after the boxed-equality regression test added with modification 5.
 - **Upstream tracking:** watch https://github.com/hidekatsu-izuno/josekit-rs/releases.

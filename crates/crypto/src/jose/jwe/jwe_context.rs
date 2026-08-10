@@ -546,7 +546,7 @@ impl JweContext {
 
                 let encrypted_key = encrypter.encrypt(&key, merged, header)?;
 
-                if header.len() == 0 {
+                if header.is_empty() {
                     bail!("The per-recipient header must not be empty");
                 }
                 let header_json = serde_json::to_string(header.claims_set())?;
@@ -723,7 +723,7 @@ impl JweContext {
                 None
             };
 
-            let protected_b64 = if protected.len() > 0 {
+            let protected_b64 = if !protected.is_empty() {
                 let protected_json = serde_json::to_vec(protected.claims_set())?;
                 let protected_b64 = util::encode_base64_urlsafe_nopad(protected_json);
                 Some(protected_b64)

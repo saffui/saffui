@@ -34,6 +34,10 @@ impl<'a> DerReader<&'a [u8]> {
 }
 
 impl<R: Read> DerReader<R> {
+    // The lint is aimed at per-byte reads that cost a syscall each. Every
+    // construction in this tree goes through `from_bytes`, whose reader is an
+    // in-memory `&[u8]`, so buffering would add an allocation and buy nothing.
+    #[allow(clippy::unbuffered_bytes)]
     pub fn from_reader(input: R) -> Self {
         Self {
             input: input.bytes(),
@@ -45,6 +49,10 @@ impl<R: Read> DerReader<R> {
         }
     }
 
+    // Not `Iterator::next`: it returns a `Result` and the reader is a pull
+    // parser whose state the caller drives. Renaming it would diverge from
+    // upstream at every call site for no gain.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> Result<Option<DerType>, DerError> {
         let mut depth = self.stack.len();
         let mut is_indefinite_parent = false;

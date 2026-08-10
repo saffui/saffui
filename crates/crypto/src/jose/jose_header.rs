@@ -14,6 +14,11 @@ pub trait JoseHeader: Any + Send + Sync + Debug {
     /// Return claim count.
     fn len(&self) -> usize;
 
+    /// Whether the header carries no claim.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Return the value for header claim of a specified key.
     ///
     /// # Arguments

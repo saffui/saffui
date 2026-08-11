@@ -734,4 +734,125 @@ mod tests {
 
         Ok(())
     }
+
+    /// Every claim set, read back, and seen again after a trip through JSON.
+    ///
+    /// Same reason as on the JWS side: in memory a setter and its getter agree
+    /// with each other whatever name they use between them. Only the trip
+    /// through JSON forces the claim to survive as the name the wire carries.
+    #[test]
+    fn every_claim_survives_a_round_trip_through_json() -> Result<()> {
+        let mut header = JweHeader::new();
+        header.set_algorithm("ECDH-ES");
+        header.set_content_encryption("A128GCM");
+        header.set_compression("DEF");
+        header.set_jwk_set_url("https://example.test/jwks");
+        header.set_x509_url("https://example.test/x5u");
+        header.set_x509_certificate_chain(&[b"first".to_vec(), b"second".to_vec()]);
+        header.set_x509_certificate_sha1_thumbprint(b"sha1-thumb");
+        header.set_x509_certificate_sha256_thumbprint(b"sha256-thumb");
+        header.set_key_id("kid-1");
+        header.set_token_type("JWT");
+        header.set_content_type("application/json");
+        header.set_critical(&["exp"]);
+        header.set_url("https://example.test/url");
+        header.set_nonce(b"nonce-bytes");
+        header.set_agreement_partyuinfo(b"party-u");
+        header.set_agreement_partyvinfo(b"party-v");
+        header.set_issuer("issuer");
+        header.set_subject("subject");
+        header.set_audience(vec!["first", "second"]);
+
+        let mut jwk = Jwk::new("oct");
+        jwk.set_key_id("jwk-kid");
+        header.set_jwk(jwk);
+
+        header.set_claim("custom", Some(json!("value")))?;
+
+        let encoded = serde_json::to_vec(header.claims_set())?;
+        let parsed = JweHeader::from_bytes(&encoded)?;
+
+        for header in [&header, &parsed] {
+            assert_eq!(header.algorithm(), Some("ECDH-ES"));
+            assert_eq!(header.content_encryption(), Some("A128GCM"));
+            assert_eq!(header.compression(), Some("DEF"));
+            assert_eq!(header.jwk_set_url(), Some("https://example.test/jwks"));
+            assert_eq!(header.x509_url(), Some("https://example.test/x5u"));
+            assert_eq!(
+                header.x509_certificate_chain(),
+                Some(vec![b"first".to_vec(), b"second".to_vec()])
+            );
+            assert_eq!(
+                header.x509_certificate_sha1_thumbprint(),
+                Some(b"sha1-thumb".to_vec())
+            );
+            assert_eq!(
+                header.x509_certificate_sha256_thumbprint(),
+                Some(b"sha256-thumb".to_vec())
+            );
+            assert_eq!(header.key_id(), Some("kid-1"));
+            assert_eq!(header.token_type(), Some("JWT"));
+            assert_eq!(header.content_type(), Some("application/json"));
+            assert_eq!(header.critical(), Some(vec!["exp"]));
+            assert_eq!(header.url(), Some("https://example.test/url"));
+            assert_eq!(header.nonce(), Some(b"nonce-bytes".to_vec()));
+            assert_eq!(header.agreement_partyuinfo(), Some(b"party-u".to_vec()));
+            assert_eq!(header.agreement_partyvinfo(), Some(b"party-v".to_vec()));
+            assert_eq!(header.issuer(), Some("issuer"));
+            assert_eq!(header.subject(), Some("subject"));
+            assert_eq!(header.audience(), Some(vec!["first", "second"]));
+            assert_eq!(
+                header.jwk().and_then(|j| j.key_id().map(str::to_owned)),
+                Some("jwk-kid".to_string())
+            );
+            assert_eq!(header.claim("custom"), Some(&json!("value")));
+        }
+
+        Ok(())
+    }
+
+    /// A single audience is written as a bare string rather than a one-element
+    /// array, and has to read back the same either way.
+    #[test]
+    fn a_single_audience_round_trips_as_a_string() -> Result<()> {
+        let mut header = JweHeader::new();
+        header.set_audience(vec!["only"]);
+
+        assert_eq!(header.claim("aud"), Some(&json!("only")));
+        assert_eq!(header.audience(), Some(vec!["only"]));
+
+        let parsed = JweHeader::from_bytes(&serde_json::to_vec(header.claims_set())?)?;
+        assert_eq!(parsed.audience(), Some(vec!["only"]));
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_claim_of_the_wrong_type_is_refused() {
+        let mut header = JweHeader::new();
+
+        assert!(header.set_claim("alg", Some(json!(1))).is_err());
+        assert!(header.set_claim("enc", Some(json!(false))).is_err());
+        assert!(header.set_claim("zip", Some(json!(2))).is_err());
+        assert!(header.set_claim("crit", Some(json!("exp"))).is_err());
+        assert!(
+            header
+                .set_claim("x5c", Some(json!("not-an-array")))
+                .is_err()
+        );
+        assert!(header.set_claim("apu", Some(json!("not base64!"))).is_err());
+    }
+
+    #[test]
+    fn setting_a_claim_to_none_removes_it() -> Result<()> {
+        let mut header = JweHeader::new();
+        header.set_key_id("kid-1");
+        assert_eq!(header.key_id(), Some("kid-1"));
+
+        header.set_claim("kid", None)?;
+        assert_eq!(header.key_id(), None);
+        assert!(!header.claims_set().contains_key("kid"));
+
+        Ok(())
+    }
 }

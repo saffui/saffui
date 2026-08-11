@@ -632,4 +632,159 @@ impl KeyInfo {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    use crate::jose::jwk::KeyPair;
+    use crate::jose::jwk::alg::ec::EcKeyPair;
+    use crate::jose::jwk::alg::ecx::EcxKeyPair;
+    use crate::jose::jwk::alg::ed::EdKeyPair;
+    use crate::jose::jwk::alg::rsa::RsaKeyPair;
+    use crate::jose::jwk::alg::rsapss::RsaPssKeyPair;
+    use crate::jose::jwk::{Ed448, Ed25519, P_256, P_384, P_521, Secp256k1, X448, X25519};
+
+    /// Detection has to agree with the encoder on all four of DER and PEM,
+    /// private and public, for every key type this crate can generate.
+    ///
+    /// It reads raw bytes and decides format, algorithm and whether the key is
+    /// public. Getting the last one wrong is the interesting failure: a caller
+    /// that hands a private key where a public one was expected, and is told it
+    /// is public, has just been cleared to publish it.
+    fn check(pair: &dyn KeyPair, expected: KeyAlg) {
+        check_with(pair, expected, false)
+    }
+
+    /// `private_der_raw` because the encoders disagree by key type: OpenSSL
+    /// writes an EC private key to DER in the traditional SEC1 form, while the
+    /// same key to PEM goes out as PKCS#8. Detection reports what it is handed,
+    /// so the expectation follows the encoder rather than the other way round.
+    fn check_with(pair: &dyn KeyPair, expected: KeyAlg, private_der_raw: bool) {
+        let cases: [(Vec<u8>, KeyFormat, bool); 4] = [
+            (
+                pair.to_der_private_key(),
+                KeyFormat::Der {
+                    raw: private_der_raw,
+                },
+                false,
+            ),
+            (
+                pair.to_der_public_key(),
+                KeyFormat::Der { raw: false },
+                true,
+            ),
+            (
+                pair.to_pem_private_key(),
+                KeyFormat::Pem { traditional: false },
+                false,
+            ),
+            (
+                pair.to_pem_public_key(),
+                KeyFormat::Pem { traditional: false },
+                true,
+            ),
+        ];
+
+        for (bytes, format, is_public) in cases {
+            let info = KeyInfo::detect(&bytes)
+                .unwrap_or_else(|| panic!("{expected:?} in {format:?} was not recognised"));
+            assert_eq!(info.format(), format, "{expected:?}");
+            assert_eq!(
+                info.is_public_key(),
+                is_public,
+                "{expected:?} in {format:?}"
+            );
+            assert_eq!(info.alg(), Some(expected), "{expected:?} in {format:?}");
+        }
+    }
+
+    #[test]
+    fn rsa_keys_are_recognised_in_every_encoding() {
+        check(&RsaKeyPair::generate(2048).unwrap(), KeyAlg::Rsa);
+    }
+
+    /// A PSS key carries its digest, MGF1 digest and salt length in the
+    /// algorithm identifier, so detection reports them rather than a bare Rsa.
+    #[test]
+    fn rsa_pss_keys_carry_their_parameters() {
+        let pair = RsaPssKeyPair::generate(2048, HashAlgorithm::Sha256, HashAlgorithm::Sha256, 32)
+            .unwrap();
+        check(
+            &pair,
+            KeyAlg::RsaPss {
+                hash: Some(HashAlgorithm::Sha256),
+                mgf1_hash: Some(HashAlgorithm::Sha256),
+                salt_len: Some(32),
+            },
+        );
+    }
+
+    #[test]
+    fn ec_keys_are_recognised_on_every_curve() {
+        for curve in [P_256, P_384, P_521, Secp256k1] {
+            check_with(
+                &EcKeyPair::generate(curve).unwrap(),
+                KeyAlg::Ec { curve: Some(curve) },
+                true,
+            );
+        }
+    }
+
+    #[test]
+    fn edwards_keys_are_recognised_on_both_curves() {
+        for curve in [Ed25519, Ed448] {
+            check(
+                &EdKeyPair::generate(curve).unwrap(),
+                KeyAlg::Ed { curve: Some(curve) },
+            );
+        }
+    }
+
+    #[test]
+    fn montgomery_keys_are_recognised_on_both_curves() {
+        for curve in [X25519, X448] {
+            check(
+                &EcxKeyPair::generate(curve).unwrap(),
+                KeyAlg::Ecx { curve: Some(curve) },
+            );
+        }
+    }
+
+    /// The traditional PEM encoding is a different envelope for the same key,
+    /// and detection has to say so rather than fall back to the modern one.
+    #[test]
+    fn traditional_pem_is_reported_as_traditional() {
+        let pair = EcKeyPair::generate(P_256).unwrap();
+        let info = KeyInfo::detect(&pair.to_traditional_pem_private_key()).unwrap();
+
+        assert_eq!(info.format(), KeyFormat::Pem { traditional: true });
+        assert!(!info.is_public_key());
+    }
+
+    /// Nothing that is not a key returns something that looks like one.
+    #[test]
+    fn input_that_is_not_a_key_is_refused() {
+        assert!(KeyInfo::detect(&Vec::<u8>::new()).is_none());
+        assert!(KeyInfo::detect(&b"not a key at all".to_vec()).is_none());
+        assert!(KeyInfo::detect(&b"-----BEGIN NOTHING-----".to_vec()).is_none());
+
+        // A DER sequence header with nothing behind it.
+        assert!(KeyInfo::detect(&vec![0x30u8, 0x82, 0xff, 0xff]).is_none());
+    }
+
+    /// Detection classifies, it does not validate.
+    ///
+    /// A key truncated after its algorithm identifier is still reported, and
+    /// that is the contract: `detect` answers "what is this shaped like" so a
+    /// caller can pick a parser. The parser is what rejects it. Written down
+    /// because the name invites the other reading, and a caller that treats a
+    /// `Some` here as "this key is usable" is wrong.
+    #[test]
+    fn detection_is_not_validation() {
+        let der = RsaKeyPair::generate(2048).unwrap().to_der_private_key();
+        let truncated = der[..der.len() / 2].to_vec();
+
+        let info = KeyInfo::detect(&truncated).expect("still classified");
+        assert_eq!(info.alg(), Some(KeyAlg::Rsa));
+        assert!(RsaKeyPair::from_der(&truncated).is_err());
+    }
+}

@@ -710,4 +710,98 @@ mod tests {
 
         assert!(jwe::deserialize_compact_with_selector(&jwe, |_| Ok(None)).is_err());
     }
+
+    /// Malformed compact tokens are refused rather than parsed part-way.
+    ///
+    /// A compact JWE is five dot-separated parts. Anything else is not a JWE,
+    /// and the reader has to say so before it starts unwrapping keys.
+    #[test]
+    fn a_compact_jwe_of_the_wrong_shape_is_refused() {
+        let key = oct_jwk(32);
+        let encrypter = A256KW.encrypter_from_jwk(&key).unwrap();
+        let decrypter = A256KW.decrypter_from_jwk(&key).unwrap();
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption(AesgcmJweEncryption::A128gcm.name());
+        let jwe = jwe::serialize_compact(b"payload", &header, &encrypter).unwrap();
+        let parts: Vec<&str> = jwe.split('.').collect();
+
+        let malformed = [
+            String::new(),
+            "not a jwe".to_string(),
+            parts[..4].join("."),
+            format!("{jwe}.extra"),
+            format!(".{}", parts[1..].join(".")),
+            format!("!!!.{}", parts[1..].join(".")),
+        ];
+
+        for input in malformed {
+            assert!(
+                jwe::deserialize_compact(&input, &decrypter).is_err(),
+                "accepted {input:?}"
+            );
+        }
+    }
+
+    /// A token whose header names another key-management algorithm must be
+    /// refused by a decrypter that does not implement it.
+    ///
+    /// Without the check, `alg` would be a hint rather than a statement, and a
+    /// decrypter would try to unwrap under whatever it happened to be.
+    #[test]
+    fn a_decrypter_refuses_a_header_naming_another_algorithm() {
+        let key = oct_jwk(32);
+        let encrypter = A256KW.encrypter_from_jwk(&key).unwrap();
+        let decrypter = A128KW.decrypter_from_jwk(&oct_jwk(16)).unwrap();
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption(AesgcmJweEncryption::A128gcm.name());
+        let jwe = jwe::serialize_compact(b"payload", &header, &encrypter).unwrap();
+
+        assert!(jwe::deserialize_compact(&jwe, &decrypter).is_err());
+    }
+
+    /// A content encryption the implementation does not know is refused, not
+    /// guessed at.
+    #[test]
+    fn an_unknown_content_encryption_is_refused() {
+        let key = oct_jwk(32);
+        let encrypter = A256KW.encrypter_from_jwk(&key).unwrap();
+        let decrypter = A256KW.decrypter_from_jwk(&key).unwrap();
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption(AesgcmJweEncryption::A128gcm.name());
+        let jwe = jwe::serialize_compact(b"payload", &header, &encrypter).unwrap();
+
+        // Rewrite `enc` in the protected header to something that does not exist.
+        let parts: Vec<&str> = jwe.split('.').collect();
+        let mut claims: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_slice(&util::decode_base64_urlsafe_no_pad(parts[0]).unwrap()).unwrap();
+        claims.insert("enc".to_string(), json!("A999GCM"));
+        let rewritten = util::encode_base64_urlsafe_nopad(serde_json::to_vec(&claims).unwrap());
+        let tampered = format!("{rewritten}.{}", parts[1..].join("."));
+
+        assert!(jwe::deserialize_compact(&tampered, &decrypter).is_err());
+    }
+
+    /// ECDH-ES agrees against the recipient's curve, so an ephemeral key on
+    /// another one has nothing to agree with and must be refused.
+    #[test]
+    fn ecdh_es_refuses_an_ephemeral_key_from_another_curve() {
+        let recipient = EcKeyPair::generate(P_256).unwrap();
+        let other_curve = EcKeyPair::generate(P_384).unwrap();
+
+        let encrypter = ECDH_ES
+            .encrypter_from_jwk(&other_curve.to_jwk_public_key())
+            .unwrap();
+        let decrypter = ECDH_ES
+            .decrypter_from_jwk(&recipient.to_jwk_private_key())
+            .unwrap();
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption(AesgcmJweEncryption::A128gcm.name());
+        let jwe = jwe::serialize_compact(b"payload", &header, &encrypter).unwrap();
+
+        assert!(jwe::deserialize_compact(&jwe, &decrypter).is_err());
+    }
 }

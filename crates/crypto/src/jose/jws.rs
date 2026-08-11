@@ -628,4 +628,59 @@ mod tests {
 
         assert!(jws::deserialize_compact_with_selector(&jws, |_| Ok(None)).is_err());
     }
+
+    /// Malformed compact tokens are refused rather than parsed part-way.
+    #[test]
+    fn a_compact_jws_of_the_wrong_shape_is_refused() {
+        let ec = EcKeyPair::generate(P_256).unwrap();
+        let signer = ES256.signer_from_jwk(&ec.to_jwk_private_key()).unwrap();
+        let verifier = ES256.verifier_from_jwk(&ec.to_jwk_public_key()).unwrap();
+
+        let header = JwsHeader::new();
+        let jws = jws::serialize_compact(b"payload", &header, &*signer).unwrap();
+        let parts: Vec<&str> = jws.split('.').collect();
+
+        let malformed = [
+            String::new(),
+            "not a jws".to_string(),
+            parts[..2].join("."),
+            format!("{jws}.extra"),
+            format!("!!!.{}", parts[1..].join(".")),
+        ];
+
+        for input in malformed {
+            assert!(
+                jws::deserialize_compact(&input, &*verifier).is_err(),
+                "accepted {input:?}"
+            );
+        }
+    }
+
+    /// The empty signature is the `none` algorithm's shape, and it must not
+    /// verify under a real one.
+    ///
+    /// Stripping the signature and leaving the two other parts is the oldest
+    /// JWS attack there is. It fails here because the verifier is fixed and
+    /// checks the header against itself, but it is worth an assertion of its
+    /// own rather than an inference.
+    #[test]
+    fn a_token_with_its_signature_removed_does_not_verify() {
+        let ec = EcKeyPair::generate(P_256).unwrap();
+        let signer = ES256.signer_from_jwk(&ec.to_jwk_private_key()).unwrap();
+        let verifier = ES256.verifier_from_jwk(&ec.to_jwk_public_key()).unwrap();
+
+        let header = JwsHeader::new();
+        let jws = jws::serialize_compact(b"payload", &header, &*signer).unwrap();
+        let (head, _) = jws.rsplit_once('.').unwrap();
+
+        assert!(jws::deserialize_compact(format!("{head}."), &*verifier).is_err());
+
+        // And the same token re-headed as `none`.
+        let mut claims = serde_json::Map::new();
+        claims.insert("alg".to_string(), serde_json::Value::String("none".into()));
+        let none_header =
+            crate::jose::util::encode_base64_urlsafe_nopad(serde_json::to_vec(&claims).unwrap());
+        let payload = head.split_once('.').unwrap().1;
+        assert!(jws::deserialize_compact(format!("{none_header}.{payload}."), &*verifier).is_err());
+    }
 }

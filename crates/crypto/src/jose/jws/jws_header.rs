@@ -404,6 +404,14 @@ impl JwsHeader {
                     }
                     _ => bail!("The JWS {} header claim must be a array.", key),
                 },
+                // RFC 7797 3: b64 is a boolean. Upstream left it out of this
+                // match, so a string went in unchecked and then read back as
+                // absent, since the getter only recognises a bool. That is the
+                // sender's instruction dropped rather than obeyed.
+                "b64" => match &value {
+                    Value::Bool(_) => {}
+                    _ => bail!("The JWS {} header claim must be a bool.", key),
+                },
                 "x5t" | "x5t#S256" | "nonce" => match &value {
                     Value::String(val) => {
                         if !util::is_base64_urlsafe_nopad(val) {
@@ -575,6 +583,102 @@ mod tests {
 
         let map: Map<String, Value> = header.clone().into();
         assert_eq!(JwsHeader::from_map(map)?, header);
+
+        Ok(())
+    }
+
+    /// Every claim set, read back, and seen again after a trip through JSON.
+    ///
+    /// A setter that writes under one name while its getter reads another is
+    /// invisible in-process: the pair agrees with itself. Serializing and
+    /// parsing forces the claim to survive as the name the wire uses, which is
+    /// the only thing another implementation will look for.
+    #[test]
+    fn every_claim_survives_a_round_trip_through_json() -> Result<()> {
+        let mut header = JwsHeader::new();
+        header.set_algorithm("ES256");
+        header.set_jwk_set_url("https://example.test/jwks");
+        header.set_x509_url("https://example.test/x5u");
+        header.set_x509_certificate_chain(&[b"first".to_vec(), b"second".to_vec()]);
+        header.set_x509_certificate_sha1_thumbprint(b"sha1-thumb");
+        header.set_x509_certificate_sha256_thumbprint(b"sha256-thumb");
+        header.set_key_id("kid-1");
+        header.set_token_type("JWT");
+        header.set_content_type("application/json");
+        header.set_critical(&["b64"]);
+        header.set_base64url_encode_payload(false);
+        header.set_url("https://example.test/url");
+        header.set_nonce(b"nonce-bytes");
+
+        let mut jwk = Jwk::new("oct");
+        jwk.set_key_id("jwk-kid");
+        header.set_jwk(jwk);
+
+        header.set_claim("custom", Some(json!("value")))?;
+
+        let encoded = serde_json::to_vec(header.claims_set())?;
+        let parsed = JwsHeader::from_bytes(&encoded)?;
+
+        for header in [&header, &parsed] {
+            assert_eq!(header.algorithm(), Some("ES256"));
+            assert_eq!(header.jwk_set_url(), Some("https://example.test/jwks"));
+            assert_eq!(header.x509_url(), Some("https://example.test/x5u"));
+            assert_eq!(
+                header.x509_certificate_chain(),
+                Some(vec![b"first".to_vec(), b"second".to_vec()])
+            );
+            assert_eq!(
+                header.x509_certificate_sha1_thumbprint(),
+                Some(b"sha1-thumb".to_vec())
+            );
+            assert_eq!(
+                header.x509_certificate_sha256_thumbprint(),
+                Some(b"sha256-thumb".to_vec())
+            );
+            assert_eq!(header.key_id(), Some("kid-1"));
+            assert_eq!(header.token_type(), Some("JWT"));
+            assert_eq!(header.content_type(), Some("application/json"));
+            assert_eq!(header.critical(), Some(vec!["b64"]));
+            assert_eq!(header.base64url_encode_payload(), Some(false));
+            assert_eq!(header.url(), Some("https://example.test/url"));
+            assert_eq!(header.nonce(), Some(b"nonce-bytes".to_vec()));
+            assert_eq!(
+                header.jwk().and_then(|j| j.key_id().map(str::to_owned)),
+                Some("jwk-kid".to_string())
+            );
+            assert_eq!(header.claim("custom"), Some(&json!("value")));
+        }
+
+        Ok(())
+    }
+
+    /// A claim of the wrong JSON type is refused rather than stored and handed
+    /// back as `None` later, which would read as absent instead of malformed.
+    #[test]
+    fn a_claim_of_the_wrong_type_is_refused() {
+        let mut header = JwsHeader::new();
+
+        assert!(header.set_claim("alg", Some(json!(1))).is_err());
+        assert!(header.set_claim("kid", Some(json!(true))).is_err());
+        assert!(header.set_claim("crit", Some(json!("b64"))).is_err());
+        assert!(header.set_claim("b64", Some(json!("false"))).is_err());
+        assert!(
+            header
+                .set_claim("x5c", Some(json!("not-an-array")))
+                .is_err()
+        );
+    }
+
+    /// Removing a claim takes it out rather than storing a null.
+    #[test]
+    fn setting_a_claim_to_none_removes_it() -> Result<()> {
+        let mut header = JwsHeader::new();
+        header.set_key_id("kid-1");
+        assert_eq!(header.key_id(), Some("kid-1"));
+
+        header.set_claim("kid", None)?;
+        assert_eq!(header.key_id(), None);
+        assert!(!header.claims_set().contains_key("kid"));
 
         Ok(())
     }

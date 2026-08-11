@@ -9,6 +9,8 @@
 //! directly, and routing it through this seam would mean rewriting third-party
 //! code we want to keep diffable against upstream (see THIRD-PARTY.md).
 
+pub mod openssl;
+
 use async_trait::async_trait;
 use secrecy::SecretBox;
 use thiserror::Error;

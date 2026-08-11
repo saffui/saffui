@@ -186,8 +186,14 @@ mod tests {
     use anyhow::Result;
     use serde_json::json;
 
-    use crate::jose::jws::{HS256, HS384, HS512, JwsHeader};
-    use crate::jose::jwt::{self, JwtPayload};
+    use std::time::{Duration, SystemTime};
+
+    use crate::jose::jwe::{A256KW, JweHeader};
+    use crate::jose::jwk::KeyPair;
+    use crate::jose::jwk::P_256;
+    use crate::jose::jwk::alg::ec::EcKeyPair;
+    use crate::jose::jws::{ES256, HS256, HS384, HS512, JwsHeader};
+    use crate::jose::jwt::{self, JwtPayload, JwtPayloadValidator};
     use crate::jose::util;
 
     #[test]
@@ -242,6 +248,142 @@ mod tests {
             assert_eq!(src_header, dst_header);
             assert_eq!(src_payload, dst_payload);
         }
+
+        Ok(())
+    }
+
+    /// A signed JWT round-trips, and its registered claims survive.
+    #[test]
+    fn a_signed_jwt_round_trips_with_its_claims() -> Result<()> {
+        let pair = EcKeyPair::generate(P_256)?;
+        let signer = ES256.signer_from_jwk(&pair.to_jwk_private_key())?;
+        let verifier = ES256.verifier_from_jwk(&pair.to_jwk_public_key())?;
+
+        let issued = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let expires = issued + Duration::from_secs(3600);
+
+        let mut payload = JwtPayload::new();
+        payload.set_issuer("https://issuer.test");
+        payload.set_subject("subject-1");
+        payload.set_audience(vec!["first", "second"]);
+        payload.set_issued_at(&issued);
+        payload.set_not_before(&issued);
+        payload.set_expires_at(&expires);
+        payload.set_jwt_id("jti-1");
+        payload.set_claim("custom", Some(json!("value")))?;
+
+        let mut header = JwsHeader::new();
+        header.set_token_type("JWT");
+        let jwt = jwt::encode_with_signer(&payload, &header, &*signer)?;
+
+        let (decoded, decoded_header) = jwt::decode_with_verifier(&jwt, &*verifier)?;
+        assert_eq!(decoded_header.token_type(), Some("JWT"));
+        assert_eq!(decoded.issuer(), Some("https://issuer.test"));
+        assert_eq!(decoded.subject(), Some("subject-1"));
+        assert_eq!(decoded.audience(), Some(vec!["first", "second"]));
+        assert_eq!(decoded.jwt_id(), Some("jti-1"));
+        assert_eq!(decoded.claim("custom"), Some(&json!("value")));
+        assert_eq!(decoded.expires_at(), Some(expires));
+
+        Ok(())
+    }
+
+    /// An encrypted JWT round-trips the same way.
+    #[test]
+    fn an_encrypted_jwt_round_trips() -> Result<()> {
+        let key = util::random_bytes(32);
+        let encrypter = A256KW.encrypter_from_bytes(&key)?;
+        let decrypter = A256KW.decrypter_from_bytes(&key)?;
+
+        let mut payload = JwtPayload::new();
+        payload.set_subject("subject-1");
+
+        let mut header = JweHeader::new();
+        header.set_token_type("JWT");
+        header.set_content_encryption("A128GCM");
+
+        let jwt = jwt::encode_with_encrypter(&payload, &header, &encrypter)?;
+        let (decoded, _) = jwt::decode_with_decrypter(&jwt, &decrypter)?;
+        assert_eq!(decoded.subject(), Some("subject-1"));
+
+        Ok(())
+    }
+
+    /// The header can be read without holding a key, which is how a recipient
+    /// picks one. It must not be mistaken for verification.
+    #[test]
+    fn the_header_can_be_read_before_any_key_is_chosen() -> Result<()> {
+        let pair = EcKeyPair::generate(P_256)?;
+        let signer = ES256.signer_from_jwk(&pair.to_jwk_private_key())?;
+
+        let mut header = JwsHeader::new();
+        header.set_key_id("kid-1");
+        let jwt = jwt::encode_with_signer(&JwtPayload::new(), &header, &*signer)?;
+
+        let read = jwt::decode_header(&jwt)?;
+        assert_eq!(read.claim("kid"), Some(&json!("kid-1")));
+
+        Ok(())
+    }
+
+    /// Validation is what the claims are for: a token outside its window, from
+    /// another issuer, or for another audience must be rejected.
+    #[test]
+    fn the_validator_rejects_a_token_outside_its_terms() -> Result<()> {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let hour = Duration::from_secs(3600);
+
+        let mut payload = JwtPayload::new();
+        payload.set_issuer("https://issuer.test");
+        payload.set_audience(vec!["intended"]);
+        payload.set_not_before(&now);
+        payload.set_expires_at(&(now + hour));
+        payload.set_jwt_id("jti-1");
+
+        let mut ok = JwtPayloadValidator::new();
+        ok.set_base_time(now + Duration::from_secs(60));
+        ok.set_issuer("https://issuer.test");
+        ok.set_audience("intended");
+        ok.set_jwt_id("jti-1");
+        assert!(ok.validate(&payload).is_ok());
+
+        // Expired.
+        let mut late = JwtPayloadValidator::new();
+        late.set_base_time(now + hour + Duration::from_secs(1));
+        assert!(late.validate(&payload).is_err());
+
+        // Not yet valid.
+        let mut early = JwtPayloadValidator::new();
+        early.set_base_time(now - Duration::from_secs(1));
+        assert!(early.validate(&payload).is_err());
+
+        // Another issuer, and another audience.
+        let mut wrong_issuer = JwtPayloadValidator::new();
+        wrong_issuer.set_base_time(now);
+        wrong_issuer.set_issuer("https://elsewhere.test");
+        assert!(wrong_issuer.validate(&payload).is_err());
+
+        let mut wrong_audience = JwtPayloadValidator::new();
+        wrong_audience.set_base_time(now);
+        wrong_audience.set_audience("someone-else");
+        assert!(wrong_audience.validate(&payload).is_err());
+
+        Ok(())
+    }
+
+    /// A payload claim of the wrong JSON type is refused, and removing one
+    /// takes it out.
+    #[test]
+    fn a_payload_claim_of_the_wrong_type_is_refused() -> Result<()> {
+        let mut payload = JwtPayload::new();
+
+        assert!(payload.set_claim("iss", Some(json!(1))).is_err());
+        assert!(payload.set_claim("aud", Some(json!(false))).is_err());
+        assert!(payload.set_claim("exp", Some(json!("soon"))).is_err());
+
+        payload.set_subject("subject-1");
+        payload.set_claim("sub", None)?;
+        assert_eq!(payload.subject(), None);
 
         Ok(())
     }

@@ -49,12 +49,10 @@ pub enum CryptoError {
     AttestationUnsupported,
 }
 
-// ---------------------------------------------------------------------------
 // Algorithm identifiers
 //
 // Names and sizes only. What digest or cipher implements them belongs to the
 // backend, which is the whole point of this seam.
-// ---------------------------------------------------------------------------
 
 /// A message-digest algorithm.
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -170,9 +168,7 @@ impl SignAlg {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Key material
-// ---------------------------------------------------------------------------
 
 /// A private key, carried as DER so this module names no backend type.
 ///
@@ -252,13 +248,11 @@ pub struct ConcatKdfInfo<'a> {
     pub supp_pub: &'a [u8],
 }
 
-// ---------------------------------------------------------------------------
 // Provider traits
 //
 // One trait per concern. A caller that only verifies a password does not get
 // handed key derivation, and a caller deriving keys does not get password
 // storage.
-// ---------------------------------------------------------------------------
 
 /// The provider itself: one accessor per primitive family.
 pub trait CryptoProvider: Send + Sync {

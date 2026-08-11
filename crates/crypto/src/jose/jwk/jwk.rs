@@ -578,8 +578,10 @@ impl Display for Jwk {
 mod tests {
     use anyhow::Result;
 
+    use serde_json::json;
+
     use crate::jose::Value;
-    use crate::jose::jwk::Jwk;
+    use crate::jose::jwk::{Ed25519, Jwk, P_256, X25519};
 
     #[test]
     fn test_new_jws_header() -> Result<()> {
@@ -627,6 +629,152 @@ mod tests {
             jwk.parameter("x5t#S256"),
             Some(&Value::String("eDV0I1MyNTYgQEB-".to_string()))
         );
+        Ok(())
+    }
+
+    /// Every parameter set, read back, and read again after a trip through
+    /// JSON, so each one survives as the name the wire carries.
+    #[test]
+    fn every_parameter_survives_a_round_trip_through_json() -> Result<()> {
+        let mut jwk = Jwk::new("oct");
+        jwk.set_key_use("sig");
+        jwk.set_key_operations(vec!["sign", "verify"]);
+        jwk.set_algorithm("HS256");
+        jwk.set_key_id("kid-1");
+        jwk.set_x509_url("https://example.test/x5u");
+        jwk.set_x509_certificate_sha1_thumbprint(b"sha1-thumb");
+        jwk.set_x509_certificate_sha256_thumbprint(b"sha256-thumb");
+        jwk.set_x509_certificate_chain(&[b"first".to_vec(), b"second".to_vec()]);
+        jwk.set_parameter("custom", Some(json!("value")))?;
+
+        let parsed = Jwk::from_bytes(&serde_json::to_vec(jwk.as_ref())?)?;
+
+        for jwk in [&jwk, &parsed] {
+            assert_eq!(jwk.key_type(), "oct");
+            assert_eq!(jwk.key_use(), Some("sig"));
+            assert_eq!(jwk.key_operations(), Some(vec!["sign", "verify"]));
+            assert_eq!(jwk.algorithm(), Some("HS256"));
+            assert_eq!(jwk.key_id(), Some("kid-1"));
+            assert_eq!(jwk.x509_url(), Some("https://example.test/x5u"));
+            assert_eq!(
+                jwk.x509_certificate_sha1_thumbprint(),
+                Some(b"sha1-thumb".to_vec())
+            );
+            assert_eq!(
+                jwk.x509_certificate_sha256_thumbprint(),
+                Some(b"sha256-thumb".to_vec())
+            );
+            assert_eq!(
+                jwk.x509_certificate_chain(),
+                Some(vec![b"first".to_vec(), b"second".to_vec()])
+            );
+            assert_eq!(jwk.parameter("custom"), Some(&json!("value")));
+        }
+
+        Ok(())
+    }
+
+    /// `key_ops` restricts what a key may be used for, and a key that names
+    /// none is unrestricted.
+    ///
+    /// The `None` case is the one to get right: absent means "no restriction
+    /// stated", not "nothing permitted". Reading it the other way would refuse
+    /// every key that simply does not carry the parameter.
+    #[test]
+    fn key_operations_restrict_only_when_stated() {
+        let mut jwk = Jwk::new("oct");
+        assert!(jwk.is_for_key_operation("sign"));
+        assert!(jwk.is_for_key_operation("anything"));
+
+        jwk.set_key_operations(vec!["verify"]);
+        assert!(jwk.is_for_key_operation("verify"));
+        assert!(!jwk.is_for_key_operation("sign"));
+
+        // A `key_ops` of the wrong shape permits nothing rather than
+        // everything: a malformed restriction is still a restriction.
+        let mut jwk = Jwk::new("oct");
+        jwk.set_parameter("key_ops", Some(json!([]))).unwrap();
+        assert!(!jwk.is_for_key_operation("sign"));
+    }
+
+    /// The public half of a generated key drops the private parameters.
+    ///
+    /// This is what gets published, so a private component surviving the
+    /// conversion is the whole key leaking.
+    #[test]
+    fn a_public_key_carries_no_private_parameter() -> Result<()> {
+        let cases = [
+            (Jwk::generate_ec_key(P_256)?, vec!["d"]),
+            (Jwk::generate_ed_key(Ed25519)?, vec!["d"]),
+            (Jwk::generate_ecx_key(X25519)?, vec!["d"]),
+            (
+                Jwk::generate_rsa_key(2048)?,
+                vec!["d", "p", "q", "dp", "dq", "qi"],
+            ),
+        ];
+
+        for (private, secret_names) in cases {
+            let public = private.to_public_key()?;
+            for name in &secret_names {
+                assert!(
+                    private.parameter(name).is_some(),
+                    "the private key should carry {name}"
+                );
+                assert!(
+                    public.parameter(name).is_none(),
+                    "the public key still carries {name}"
+                );
+            }
+            assert_eq!(public.key_type(), private.key_type());
+        }
+
+        Ok(())
+    }
+
+    /// A generated symmetric key is the requested length, and two of them
+    /// differ. Constant output here would be a key nobody has to guess.
+    #[test]
+    fn a_generated_oct_key_has_the_asked_for_length_and_is_random() -> Result<()> {
+        for len in [16u8, 32, 64] {
+            let jwk = Jwk::generate_oct_key(len)?;
+            assert_eq!(jwk.key_type(), "oct");
+
+            let k = jwk.key_value().expect("an oct key has a value");
+            assert_eq!(k.len(), len as usize);
+
+            let other = Jwk::generate_oct_key(len)?;
+            assert_ne!(k, other.key_value().unwrap(), "two keys came out equal");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_parameter_of_the_wrong_type_is_refused() {
+        let mut jwk = Jwk::new("oct");
+
+        assert!(jwk.set_parameter("kty", Some(json!(1))).is_err());
+        assert!(jwk.set_parameter("use", Some(json!(true))).is_err());
+        assert!(jwk.set_parameter("key_ops", Some(json!("sign"))).is_err());
+        assert!(
+            jwk.set_parameter("x5c", Some(json!("not-an-array")))
+                .is_err()
+        );
+        assert!(
+            jwk.set_parameter("x5t", Some(json!("not base64!")))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn setting_a_parameter_to_none_removes_it() -> Result<()> {
+        let mut jwk = Jwk::new("oct");
+        jwk.set_key_id("kid-1");
+        assert_eq!(jwk.key_id(), Some("kid-1"));
+
+        jwk.set_parameter("kid", None)?;
+        assert_eq!(jwk.key_id(), None);
+
         Ok(())
     }
 }

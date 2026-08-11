@@ -122,13 +122,13 @@ where
 /// * `input` - a JWT string representation.
 /// * `jwk_set` - a JWK set.
 /// * `selector` - a function for selecting the verifying algorithm.
-pub fn decode_with_verifier_in_jwk_set<F>(
+pub fn decode_with_verifier_in_jwk_set<'a, F>(
     input: impl AsRef<[u8]>,
     jwk_set: &JwkSet,
     selector: F,
 ) -> Result<(JwtPayload, JwsHeader), JoseError>
 where
-    F: Fn(&Jwk) -> Result<Option<&dyn JwsVerifier>, JoseError>,
+    F: Fn(&Jwk) -> Result<Option<&'a dyn JwsVerifier>, JoseError>,
 {
     DEFAULT_CONTEXT.decode_with_verifier_in_jwk_set(input, jwk_set, selector)
 }
@@ -169,13 +169,13 @@ where
 /// * `input` - a JWT string representation.
 /// * `jwk_set` - a JWK set.
 /// * `selector` - a function for selecting the decrypting algorithm.
-pub fn decode_with_decrypter_in_jwk_set<F>(
+pub fn decode_with_decrypter_in_jwk_set<'a, F>(
     input: impl AsRef<[u8]>,
     jwk_set: &JwkSet,
     selector: F,
 ) -> Result<(JwtPayload, JweHeader), JoseError>
 where
-    F: Fn(&Jwk) -> Result<Option<&dyn JweDecrypter>, JoseError>,
+    F: Fn(&Jwk) -> Result<Option<&'a dyn JweDecrypter>, JoseError>,
 {
     DEFAULT_CONTEXT.decode_with_decrypter_in_jwk_set(input, jwk_set, selector)
 }
@@ -190,9 +190,9 @@ mod tests {
 
     use crate::jose::jwe::{A256KW, JweHeader};
     use crate::jose::jwk::KeyPair;
-    use crate::jose::jwk::P_256;
     use crate::jose::jwk::alg::ec::EcKeyPair;
-    use crate::jose::jws::{ES256, HS256, HS384, HS512, JwsHeader};
+    use crate::jose::jwk::{JwkSet, P_256};
+    use crate::jose::jws::{ES256, HS256, HS384, HS512, JwsHeader, JwsVerifier};
     use crate::jose::jwt::{self, JwtPayload, JwtPayloadValidator};
     use crate::jose::util;
 
@@ -384,6 +384,123 @@ mod tests {
         payload.set_subject("subject-1");
         payload.set_claim("sub", None)?;
         assert_eq!(payload.subject(), None);
+
+        Ok(())
+    }
+
+    /// Decoding against a JWK set picks the key the header names.
+    ///
+    /// This is how a recipient holding several keys verifies without being
+    /// told which one: the `kid` selects it. A set that holds no matching key
+    /// must verify nothing rather than try them all.
+    #[test]
+    fn a_jwk_set_supplies_the_key_the_header_names() -> Result<()> {
+        let mine = EcKeyPair::generate(P_256)?;
+        let other = EcKeyPair::generate(P_256)?;
+
+        let mut public = mine.to_jwk_public_key();
+        public.set_key_id("mine");
+        public.set_algorithm("ES256");
+        let mut other_public = other.to_jwk_public_key();
+        other_public.set_key_id("other");
+        other_public.set_algorithm("ES256");
+
+        let mut set = JwkSet::new();
+        set.push_key(other_public.clone());
+        set.push_key(public);
+
+        let mut private = mine.to_jwk_private_key();
+        private.set_key_id("mine");
+        let signer = ES256.signer_from_jwk(&private)?;
+
+        let mut header = JwsHeader::new();
+        header.set_key_id("mine");
+        let jwt = jwt::encode_with_signer(&JwtPayload::new(), &header, &*signer)?;
+
+        // The set finds the key by `kid`; the selector turns it into a
+        // verifier. Both halves have to work for the token to be read.
+        let verifier = ES256.verifier_from_jwk(&mine.to_jwk_public_key())?;
+        let (_, decoded_header) = jwt::decode_with_verifier_in_jwk_set(&jwt, &set, |jwk| {
+            Ok(match jwk.key_id() {
+                Some("mine") => Some(&verifier as &dyn JwsVerifier),
+                _ => None,
+            })
+        })?;
+        assert_eq!(decoded_header.key_id(), Some("mine"));
+
+        // A set without that key never reaches the selector, so nothing is
+        // verified.
+        let mut without = JwkSet::new();
+        without.push_key(other_public);
+        assert!(
+            jwt::decode_with_verifier_in_jwk_set(&jwt, &without, |jwk| {
+                Ok(match jwk.key_id() {
+                    Some("mine") => Some(&verifier as &dyn JwsVerifier),
+                    _ => None,
+                })
+            })
+            .is_err()
+        );
+
+        Ok(())
+    }
+
+    /// The unsecured form carries `alg: none` and no signature at all.
+    ///
+    /// It is decoded only by the call that says so in its name. Handing one to
+    /// the verifying path must fail, or "unsecured" would be a way in rather
+    /// than a separate format.
+    #[test]
+    fn an_unsecured_jwt_is_only_read_by_the_call_that_asks_for_one() -> Result<()> {
+        let mut payload = JwtPayload::new();
+        payload.set_subject("subject-1");
+        let jwt = jwt::encode_unsecured(&payload, &JwsHeader::new())?;
+
+        let (decoded, _) = jwt::decode_unsecured(&jwt)?;
+        assert_eq!(decoded.subject(), Some("subject-1"));
+
+        let pair = EcKeyPair::generate(P_256)?;
+        let verifier = ES256.verifier_from_jwk(&pair.to_jwk_public_key())?;
+        assert!(jwt::decode_with_verifier(&jwt, &*verifier).is_err());
+
+        Ok(())
+    }
+
+    /// The remaining validator terms: issued-at window, subject, and a claim of
+    /// the caller's own.
+    #[test]
+    fn the_validator_checks_the_issued_window_the_subject_and_a_custom_claim() -> Result<()> {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let minute = Duration::from_secs(60);
+
+        let mut payload = JwtPayload::new();
+        payload.set_subject("subject-1");
+        payload.set_issued_at(&now);
+        payload.set_claim("tenant", Some(json!("acme")))?;
+
+        let mut ok = JwtPayloadValidator::new();
+        ok.set_base_time(now + minute);
+        ok.set_subject("subject-1");
+        ok.set_min_issued_time(now - minute);
+        ok.set_max_issued_time(now + minute);
+        ok.set_claim("tenant", json!("acme"));
+        assert!(ok.validate(&payload).is_ok());
+
+        let mut too_old = JwtPayloadValidator::new();
+        too_old.set_min_issued_time(now + minute);
+        assert!(too_old.validate(&payload).is_err());
+
+        let mut too_new = JwtPayloadValidator::new();
+        too_new.set_max_issued_time(now - minute);
+        assert!(too_new.validate(&payload).is_err());
+
+        let mut wrong_subject = JwtPayloadValidator::new();
+        wrong_subject.set_subject("someone-else");
+        assert!(wrong_subject.validate(&payload).is_err());
+
+        let mut wrong_tenant = JwtPayloadValidator::new();
+        wrong_tenant.set_claim("tenant", json!("other"));
+        assert!(wrong_tenant.validate(&payload).is_err());
 
         Ok(())
     }

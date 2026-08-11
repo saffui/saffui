@@ -99,6 +99,10 @@ The JOSE layer is vendored from josekit. See the entry below.
   17. `RsaPssKeyPair::from_der` and `from_pem` now take the MGF1 digest from
       the key's own MGF1 field when the caller does not state one, instead of
       from its signing digest.
+  18. An explicit lifetime on the selector of `decode_with_verifier_in_jwk_set`
+      and `decode_with_decrypter_in_jwk_set`, matching their `*_selector`
+      siblings. Without it the bound resolves to `'static` and neither function
+      can be called with a verifier or decrypter built from the JWK it selects.
 - **Verification:** the 144 upstream tests passed unmodified at the point of
   vendoring, which is what established that the port was faithful. That
   evidence is no longer reproducible from the tree: modification 13 removed the
@@ -136,6 +140,7 @@ they are not hypothetical.
 | `DerBuilder::append_integer_from_u64` writes the octets least significant first | `src/util/der/der_builder.rs` | A DER INTEGER is big-endian and never zero octets long (X.690 8.3.2). The builder emitted the bytes reversed, and wrote zero as an INTEGER of no length. Its own reader decodes big-endian, so the two halves of the module disagreed. Nothing upstream or here calls it — the production paths use the single-byte variant, where order does not arise — so it is latent rather than exploitable. Patched here (modification 15); still present upstream. |
 | `check_claim` does not type-check the `b64` header claim | `src/jws/jws_header.rs` | RFC 7797 3 makes `b64` a boolean. Every other typed claim is checked; this one falls through, so `"b64": "false"` is stored and then read back as absent, because the getter only recognises a bool. The sender's instruction is dropped rather than obeyed. Both sides default to `true` the same way, so it fails closed rather than opening anything. Patched here (modification 16); still present upstream. |
 | `RsaPssKeyPair::from_der` and `from_pem` fall back to the signing digest for MGF1 | `src/jwk/alg/rsapss.rs` | When the caller passes `mgf1_hash: None`, both take the digest from the `hash` field of the key's algorithm identifier instead of its MGF1 field. A key whose two digests differ is silently rewritten on read, and re-encodes as a different algorithm identifier than it was given. Invisible in the common configuration, where the two digests are equal. Patched here (modification 17); still present upstream. |
+| `decode_with_verifier_in_jwk_set` and `decode_with_decrypter_in_jwk_set` elide the selector's lifetime | `src/jwt/jwt_context.rs` | Their selector is `Fn(&Jwk) -> Result<Option<&dyn JwsVerifier>>`, where the elided trait-object lifetime is `'static`. A caller can only return a verifier that lives forever, and the only way to obtain one is to build it from the JWK it was just handed — which does not. Both sibling `*_selector` functions carry an explicit `'a` and work. The pair is unusable as written. Patched here (modification 18); still present upstream. |
 
 Both are worth reporting upstream rather than only patching locally.
 

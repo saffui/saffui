@@ -243,14 +243,14 @@ impl JwtContext {
     /// * `input` - a JWT string representation.
     /// * `jwk_set` - a JWK set.
     /// * `selector` - a function for selecting the verifying algorithm.
-    pub fn decode_with_verifier_in_jwk_set<F>(
+    pub fn decode_with_verifier_in_jwk_set<'a, F>(
         &self,
         input: impl AsRef<[u8]>,
         jwk_set: &JwkSet,
         selector: F,
     ) -> Result<(JwtPayload, JwsHeader), JoseError>
     where
-        F: Fn(&Jwk) -> Result<Option<&dyn JwsVerifier>, JoseError>,
+        F: Fn(&Jwk) -> Result<Option<&'a dyn JwsVerifier>, JoseError>,
     {
         self.decode_with_verifier_selector(input, |header| {
             let key_id = match header.key_id() {
@@ -325,14 +325,14 @@ impl JwtContext {
     /// * `input` - a JWT string representation.
     /// * `jwk_set` - a JWK set.
     /// * `selector` - a function for selecting the decrypting algorithm.
-    pub fn decode_with_decrypter_in_jwk_set<F>(
+    pub fn decode_with_decrypter_in_jwk_set<'a, F>(
         &self,
         input: impl AsRef<[u8]>,
         jwk_set: &JwkSet,
         selector: F,
     ) -> Result<(JwtPayload, JweHeader), JoseError>
     where
-        F: Fn(&Jwk) -> Result<Option<&dyn JweDecrypter>, JoseError>,
+        F: Fn(&Jwk) -> Result<Option<&'a dyn JweDecrypter>, JoseError>,
     {
         self.decode_with_decrypter_selector(input, |header| {
             let key_id = match header.key_id() {

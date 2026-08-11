@@ -217,9 +217,16 @@ mod tests {
 
     use anyhow::Result;
 
-    use crate::jose::jwk::P_256;
     use crate::jose::jwk::alg::ec::EcKeyPair;
-    use crate::jose::jws::{self, ES256, JwsHeaderSet};
+    use crate::jose::jwk::alg::ed::EdKeyPair;
+    use crate::jose::jwk::alg::rsa::RsaKeyPair;
+    use crate::jose::jwk::alg::rsapss::RsaPssKeyPair;
+    use crate::jose::jwk::{Ed448, Ed25519, KeyPair, P_256, P_384, P_521, Secp256k1};
+    use crate::jose::jws::{
+        self, ES256, ES256K, ES384, ES512, EdDSA, HS256, HS384, HS512, JwsHeader, JwsHeaderSet,
+        JwsSigner, JwsVerifier, PS256, PS384, PS512, RS256, RS384, RS512,
+    };
+    use crate::jose::util::HashAlgorithm;
 
     /// RFC 7515 4.1.11: a `crit` naming an extension the recipient does not
     /// understand makes the JWS invalid. That is the point of the parameter —
@@ -261,5 +268,124 @@ mod tests {
         assert_eq!(payload, b"test payload!".to_vec());
 
         Ok(())
+    }
+
+    /// Sign, verify, and refuse a signature that was touched.
+    ///
+    /// The refusal half is what makes the round trip mean anything: an
+    /// implementation that returns `Ok(())` unconditionally passes the first
+    /// half of every case below.
+    fn round_trip(signer: &dyn JwsSigner, verifier: &dyn JwsVerifier) {
+        let mut header = JwsHeader::new();
+        header.set_token_type("JWT");
+        let payload = b"the quick brown fox";
+
+        let jws = jws::serialize_compact(payload, &header, signer).unwrap();
+        let (decoded, decoded_header) = jws::deserialize_compact(&jws, verifier).unwrap();
+        assert_eq!(decoded, payload);
+        assert_eq!(decoded_header.algorithm(), Some(signer.algorithm().name()));
+
+        let mut tampered = jws.clone();
+        let last = tampered.pop().unwrap();
+        tampered.push(if last == 'A' { 'B' } else { 'A' });
+        assert!(
+            jws::deserialize_compact(&tampered, verifier).is_err(),
+            "a modified signature verified under {}",
+            signer.algorithm().name()
+        );
+
+        let (head, _) = jws.rsplit_once('.').unwrap();
+        let swapped = format!("{head}.{}", "A".repeat(4));
+        assert!(jws::deserialize_compact(&swapped, verifier).is_err());
+    }
+
+    /// HMAC signing, on a key long enough for the largest digest offered.
+    #[test]
+    fn hmac_algorithms_round_trip() {
+        let key = [0x5a_u8; 64];
+        for alg in [HS256, HS384, HS512] {
+            let signer = alg.signer_from_bytes(key).unwrap();
+            let verifier = alg.verifier_from_bytes(key).unwrap();
+            round_trip(&*signer, &*verifier);
+        }
+    }
+
+    /// One generated RSA key serves the three PKCS#1 v1.5 algorithms; only the
+    /// digest changes between them.
+    #[test]
+    fn rsassa_algorithms_round_trip() {
+        let pair = RsaKeyPair::generate(2048).unwrap();
+        let private = pair.to_jwk_private_key();
+        let public = pair.to_jwk_public_key();
+
+        for alg in [RS256, RS384, RS512] {
+            let signer = alg.signer_from_jwk(&private).unwrap();
+            let verifier = alg.verifier_from_jwk(&public).unwrap();
+            round_trip(&*signer, &*verifier);
+        }
+    }
+
+    /// PSS keys carry their digest, MGF1 digest and salt length, so each
+    /// algorithm needs a key generated for it rather than a shared one.
+    #[test]
+    fn rsassa_pss_algorithms_round_trip() {
+        let cases = [
+            (PS256, HashAlgorithm::Sha256, 32),
+            (PS384, HashAlgorithm::Sha384, 48),
+            (PS512, HashAlgorithm::Sha512, 64),
+        ];
+
+        for (alg, hash, salt_len) in cases {
+            let pair = RsaPssKeyPair::generate(2048, hash, hash, salt_len).unwrap();
+            let signer = alg.signer_from_jwk(&pair.to_jwk_private_key()).unwrap();
+            let verifier = alg.verifier_from_jwk(&pair.to_jwk_public_key()).unwrap();
+            round_trip(&*signer, &*verifier);
+        }
+    }
+
+    /// Each ECDSA algorithm is bound to one curve, secp256k1 included.
+    #[test]
+    fn ecdsa_algorithms_round_trip() {
+        let cases = [
+            (ES256, P_256),
+            (ES384, P_384),
+            (ES512, P_521),
+            (ES256K, Secp256k1),
+        ];
+
+        for (alg, curve) in cases {
+            let pair = EcKeyPair::generate(curve).unwrap();
+            let signer = alg.signer_from_jwk(&pair.to_jwk_private_key()).unwrap();
+            let verifier = alg.verifier_from_jwk(&pair.to_jwk_public_key()).unwrap();
+            round_trip(&*signer, &*verifier);
+        }
+    }
+
+    /// EdDSA names one algorithm over two curves; the curve comes from the key.
+    #[test]
+    fn eddsa_round_trips_on_both_curves() {
+        for curve in [Ed25519, Ed448] {
+            let pair = EdKeyPair::generate(curve).unwrap();
+            let signer = EdDSA.signer_from_jwk(&pair.to_jwk_private_key()).unwrap();
+            let verifier = EdDSA.verifier_from_jwk(&pair.to_jwk_public_key()).unwrap();
+            round_trip(&*signer, &*verifier);
+        }
+    }
+
+    /// A key of the right shape but the wrong value must not verify. Without
+    /// this, a verifier that ignores the signature entirely still passes.
+    #[test]
+    fn a_signature_does_not_verify_under_another_key() {
+        let mine = EcKeyPair::generate(P_256).unwrap();
+        let theirs = EcKeyPair::generate(P_256).unwrap();
+
+        let signer = ES256.signer_from_jwk(&mine.to_jwk_private_key()).unwrap();
+        let verifier = ES256
+            .verifier_from_jwk(&theirs.to_jwk_public_key())
+            .unwrap();
+
+        let header = JwsHeader::new();
+        let jws = jws::serialize_compact(b"payload", &header, &*signer).unwrap();
+        assert!(jws::deserialize_compact(&jws, &*verifier).is_err());
     }
 }

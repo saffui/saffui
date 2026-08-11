@@ -591,4 +591,124 @@ mod tests {
         assert_eq!(header.claim("header_claim"), Some(&json!("header_claim")));
         Ok(())
     }
+
+    /// A claim lands in exactly one half, and moving it takes it out of the
+    /// other.
+    ///
+    /// The two halves are not decoration: only the protected one is covered by
+    /// the signature. A claim that stayed in both after being moved would be
+    /// readable as protected while an unsigned copy sat beside it, and a reader
+    /// picking the wrong copy would trust a value nobody signed.
+    #[test]
+    fn a_claim_lives_in_one_half_and_moving_it_empties_the_other() {
+        let mut set = JwsHeaderSet::new();
+
+        set.set_key_id("kid-1", true);
+        assert_eq!(set.claims_set(true).get("kid"), Some(&json!("kid-1")));
+        assert_eq!(set.claims_set(false).get("kid"), None);
+
+        set.set_key_id("kid-2", false);
+        assert_eq!(set.claims_set(true).get("kid"), None);
+        assert_eq!(set.claims_set(false).get("kid"), Some(&json!("kid-2")));
+        assert_eq!(set.key_id(), Some("kid-2"));
+    }
+
+    /// Every claim, in each half, read back through the merged view.
+    #[test]
+    fn every_claim_reads_back_from_either_half() -> Result<()> {
+        for protection in [true, false] {
+            let mut set = JwsHeaderSet::new();
+            set.set_algorithm("ES256", protection);
+            set.set_jwk_set_url("https://example.test/jwks", protection);
+            set.set_x509_url("https://example.test/x5u", protection);
+            set.set_x509_certificate_chain(&[b"first".to_vec()], protection);
+            set.set_x509_certificate_sha1_thumbprint(b"sha1-thumb", protection);
+            set.set_x509_certificate_sha256_thumbprint(b"sha256-thumb", protection);
+            set.set_key_id("kid-1", protection);
+            set.set_token_type("JWT", protection);
+            set.set_content_type("application/json", protection);
+            set.set_url("https://example.test/url", protection);
+            set.set_nonce(b"nonce-bytes", protection);
+
+            let mut jwk = Jwk::new("oct");
+            jwk.set_key_id("jwk-kid");
+            set.set_jwk(jwk, protection);
+
+            set.set_claim("custom", Some(json!("value")), protection)?;
+
+            assert_eq!(set.algorithm(), Some("ES256"));
+            assert_eq!(set.claims_set(protection).get("alg"), Some(&json!("ES256")));
+            assert_eq!(set.jwk_set_url(), Some("https://example.test/jwks"));
+            assert_eq!(set.x509_url(), Some("https://example.test/x5u"));
+            assert_eq!(set.x509_certificate_chain(), Some(vec![b"first".to_vec()]));
+            assert_eq!(
+                set.x509_certificate_sha1_thumbprint(),
+                Some(b"sha1-thumb".to_vec())
+            );
+            assert_eq!(
+                set.x509_certificate_sha256_thumbprint(),
+                Some(b"sha256-thumb".to_vec())
+            );
+            assert_eq!(set.key_id(), Some("kid-1"));
+            assert_eq!(set.token_type(), Some("JWT"));
+            assert_eq!(set.content_type(), Some("application/json"));
+            assert_eq!(set.url(), Some("https://example.test/url"));
+            assert_eq!(set.nonce(), Some(b"nonce-bytes".to_vec()));
+            assert_eq!(
+                set.jwk().and_then(|j| j.key_id().map(str::to_owned)),
+                Some("jwk-kid".to_string())
+            );
+
+            // The merged view is what a signer hands to the header, so every
+            // claim has to be in it whichever half it was put in.
+            let merged = set.to_map();
+            assert_eq!(merged.get("kid"), Some(&json!("kid-1")));
+            assert_eq!(merged.get("custom"), Some(&json!("value")));
+        }
+
+        Ok(())
+    }
+
+    /// `alg` and the payload-encoding flag are signed or they are worthless, so
+    /// they go in the protected half whatever a caller asks for.
+    #[test]
+    fn the_signed_claims_stay_protected() {
+        let mut set = JwsHeaderSet::new();
+        set.set_algorithm("ES256", true);
+        set.set_critical(&["b64"]);
+        set.set_base64url_encode_payload(false);
+
+        assert_eq!(set.claims_set(true).get("alg"), Some(&json!("ES256")));
+        assert_eq!(set.claims_set(false).get("alg"), None);
+        assert_eq!(set.claims_set(true).get("crit"), Some(&json!(["b64"])));
+        assert_eq!(set.claims_set(false).get("crit"), None);
+        assert_eq!(set.claims_set(true).get("b64"), Some(&json!(false)));
+        assert_eq!(set.claims_set(false).get("b64"), None);
+
+        assert_eq!(set.critical(), Some(vec!["b64"]));
+        assert_eq!(set.base64url_encode_payload(), Some(false));
+    }
+
+    #[test]
+    fn a_claim_of_the_wrong_type_is_refused() {
+        let mut set = JwsHeaderSet::new();
+
+        assert!(set.set_claim("alg", Some(json!(1)), true).is_err());
+        assert!(set.set_claim("kid", Some(json!(true)), false).is_err());
+        assert!(set.set_claim("crit", Some(json!("b64")), true).is_err());
+        assert!(set.set_claim("b64", Some(json!("false")), true).is_err());
+    }
+
+    #[test]
+    fn setting_a_claim_to_none_removes_it_from_both_halves() -> Result<()> {
+        let mut set = JwsHeaderSet::new();
+        set.set_key_id("kid-1", true);
+        set.set_claim("kid", None, true)?;
+
+        assert_eq!(set.key_id(), None);
+        assert!(!set.claims_set(true).contains_key("kid"));
+        assert!(!set.claims_set(false).contains_key("kid"));
+
+        Ok(())
+    }
 }

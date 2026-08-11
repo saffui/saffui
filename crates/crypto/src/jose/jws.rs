@@ -480,4 +480,58 @@ mod tests {
         let jws = jws::serialize_compact(b"payload", &header, &*signer).unwrap();
         assert!(jws::deserialize_compact(&jws, &*verifier).is_err());
     }
+
+    /// An `alg` left unprotected is not signed, and rewriting it is caught by
+    /// the verifier rather than by the signature.
+    ///
+    /// RFC 7515 permits `alg` outside the protected header in the JSON
+    /// serializations, and this implementation takes the caller at their word:
+    /// asked for unprotected, it stays out of the signed bytes. So the
+    /// signature does not defend it.
+    ///
+    /// What does is the verifier: it compares the header's `alg` against its
+    /// own, so a rewritten value is refused. The check is worth pinning because
+    /// it is the only thing standing there — a recipient that instead picks its
+    /// verifier from the header, through `deserialize_json_with_selector`, has
+    /// no such comparison to make and is choosing from unsigned bytes.
+    #[test]
+    fn an_unprotected_alg_is_unsigned_but_a_rewrite_is_still_refused() {
+        let key = [0x5a_u8; 64];
+        let signer = HS256.signer_from_bytes(key).unwrap();
+
+        let mut set = JwsHeaderSet::new();
+        set.set_algorithm("HS256", false);
+        set.set_key_id("kid-1", true);
+
+        let json = jws::serialize_flattened_json(b"payload", &set, &*signer).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let protected_b64 = value["protected"].as_str().expect("a protected header");
+        let protected: serde_json::Value = serde_json::from_slice(
+            &crate::jose::util::decode_base64_urlsafe_no_pad(protected_b64).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(protected["kid"], "kid-1", "kid was asked to be protected");
+        assert_eq!(
+            protected["alg"],
+            serde_json::Value::Null,
+            "alg asked to be unprotected stays out of the signed header"
+        );
+        assert_eq!(value["header"]["alg"], "HS256");
+
+        let verifier = HS256.verifier_from_bytes(key).unwrap();
+        assert_eq!(
+            jws::deserialize_json(&json, &*verifier).unwrap().0,
+            b"payload",
+            "the untouched token verifies"
+        );
+
+        value["header"]["alg"] = serde_json::Value::String("HS512".to_string());
+        let tampered = serde_json::to_string(&value).unwrap();
+        assert!(
+            jws::deserialize_json(&tampered, &*verifier).is_err(),
+            "a rewritten alg must be refused by the verifier, since the signature cannot"
+        );
+    }
 }

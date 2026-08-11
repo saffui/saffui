@@ -534,4 +534,98 @@ mod tests {
             "a rewritten alg must be refused by the verifier, since the signature cannot"
         );
     }
+
+    /// A general JSON JWS carries several signatures, and each verifier finds
+    /// its own.
+    ///
+    /// The compact form holds one signature, so the matrices above never
+    /// reached the code that walks a list looking for the one a given verifier
+    /// can check.
+    #[test]
+    fn a_general_json_jws_verifies_under_each_of_its_signers() {
+        let rsa = RsaKeyPair::generate(2048).unwrap();
+        let ec = EcKeyPair::generate(P_256).unwrap();
+        let ed = EdKeyPair::generate(Ed25519).unwrap();
+
+        let mut h1 = JwsHeaderSet::new();
+        h1.set_key_id("rsa", true);
+        let mut h2 = JwsHeaderSet::new();
+        h2.set_key_id("ec", true);
+        let mut h3 = JwsHeaderSet::new();
+        h3.set_key_id("ed", true);
+
+        let s1 = RS256.signer_from_jwk(&rsa.to_jwk_private_key()).unwrap();
+        let s2 = ES256.signer_from_jwk(&ec.to_jwk_private_key()).unwrap();
+        let s3 = EdDSA.signer_from_jwk(&ed.to_jwk_private_key()).unwrap();
+
+        let json =
+            jws::serialize_general_json(b"payload", &[(&h1, &*s1), (&h2, &*s2), (&h3, &*s3)])
+                .unwrap();
+
+        let verifiers: Vec<Box<dyn JwsVerifier>> = vec![
+            Box::new(RS256.verifier_from_jwk(&rsa.to_jwk_public_key()).unwrap()),
+            Box::new(ES256.verifier_from_jwk(&ec.to_jwk_public_key()).unwrap()),
+            Box::new(EdDSA.verifier_from_jwk(&ed.to_jwk_public_key()).unwrap()),
+        ];
+        for verifier in &verifiers {
+            let (payload, header) = jws::deserialize_json(&json, &**verifier).unwrap();
+            assert_eq!(payload, b"payload");
+            assert!(header.key_id().is_some());
+        }
+
+        // A verifier holding none of these keys finds nothing to check.
+        let stranger = EcKeyPair::generate(P_256).unwrap();
+        let outsider = ES256
+            .verifier_from_jwk(&stranger.to_jwk_public_key())
+            .unwrap();
+        assert!(jws::deserialize_json(&json, &*outsider).is_err());
+    }
+
+    /// The flattened form is the same token with one signature and no list.
+    #[test]
+    fn a_flattened_json_jws_round_trips() {
+        let ec = EcKeyPair::generate(P_256).unwrap();
+        let signer = ES256.signer_from_jwk(&ec.to_jwk_private_key()).unwrap();
+        let verifier = ES256.verifier_from_jwk(&ec.to_jwk_public_key()).unwrap();
+
+        let mut header = JwsHeaderSet::new();
+        header.set_key_id("kid-1", true);
+        header.set_token_type("JWT", false);
+
+        let json = jws::serialize_flattened_json(b"payload", &header, &*signer).unwrap();
+        let (decoded, decoded_header) = jws::deserialize_json(&json, &*verifier).unwrap();
+
+        assert_eq!(decoded, b"payload");
+        assert_eq!(decoded_header.key_id(), Some("kid-1"));
+        assert_eq!(decoded_header.token_type(), Some("JWT"));
+
+        // The payload is covered by the signature even in this form.
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value["payload"] =
+            serde_json::Value::String(crate::jose::util::encode_base64_urlsafe_nopad(b"other"));
+        let tampered = serde_json::to_string(&value).unwrap();
+        assert!(jws::deserialize_json(&tampered, &*verifier).is_err());
+    }
+
+    /// The selector variants let the caller choose from the header. What they
+    /// must not do is verify when the caller declines to supply anything.
+    #[test]
+    fn a_selector_that_returns_nothing_verifies_nothing() {
+        let ec = EcKeyPair::generate(P_256).unwrap();
+        let signer = ES256.signer_from_jwk(&ec.to_jwk_private_key()).unwrap();
+        let verifier = ES256.verifier_from_jwk(&ec.to_jwk_public_key()).unwrap();
+
+        let mut header = JwsHeader::new();
+        header.set_key_id("kid-1");
+        let jws = jws::serialize_compact(b"payload", &header, &*signer).unwrap();
+
+        let (payload, _) = jws::deserialize_compact_with_selector(&jws, |header| {
+            assert_eq!(header.key_id(), Some("kid-1"));
+            Ok(Some(&verifier as &dyn JwsVerifier))
+        })
+        .unwrap();
+        assert_eq!(payload, b"payload");
+
+        assert!(jws::deserialize_compact_with_selector(&jws, |_| Ok(None)).is_err());
+    }
 }

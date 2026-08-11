@@ -261,8 +261,8 @@ mod tests {
     use crate::jose::jwe::{
         self, A128GCMKW, A128KW, A192GCMKW, A192KW, A256GCMKW, A256KW, Dir, ECDH_ES,
         ECDH_ES_A128KW, ECDH_ES_A192KW, ECDH_ES_A256KW, JweAlgorithm, JweContentEncryption,
-        JweDecrypter, JweEncrypter, JweHeader, PBES2_HS256_A128KW, PBES2_HS384_A192KW,
-        PBES2_HS512_A256KW, RSA_OAEP, RSA_OAEP_256, RSA_OAEP_384, RSA_OAEP_512,
+        JweDecrypter, JweEncrypter, JweHeader, JweHeaderSet, PBES2_HS256_A128KW,
+        PBES2_HS384_A192KW, PBES2_HS512_A256KW, RSA_OAEP, RSA_OAEP_256, RSA_OAEP_384, RSA_OAEP_512,
     };
     // RSA1_5 is deprecated upstream. Imported on its own so the allow covers
     // the name and nothing else in the list above.
@@ -602,5 +602,112 @@ mod tests {
         let mut narrow = JweHeader::new();
         narrow.set_content_encryption(AesgcmJweEncryption::A128gcm.name());
         assert!(jwe::serialize_compact(b"payload", &narrow, &encrypter).is_err());
+    }
+
+    /// A general JSON JWE is addressed to several recipients, and each unwraps
+    /// the same content key with its own.
+    ///
+    /// The compact form has one recipient, so the matrices above never reached
+    /// the code that walks the recipient list.
+    #[test]
+    fn a_general_json_jwe_decrypts_for_each_recipient() {
+        let rsa = RsaKeyPair::generate(2048).unwrap();
+        let ec = EcKeyPair::generate(P_256).unwrap();
+        let oct = oct_jwk(32);
+
+        let e1 = RSA_OAEP
+            .encrypter_from_jwk(&rsa.to_jwk_public_key())
+            .unwrap();
+        let e2 = ECDH_ES_A128KW
+            .encrypter_from_jwk(&ec.to_jwk_public_key())
+            .unwrap();
+        let e3 = A256KW.encrypter_from_jwk(&oct).unwrap();
+
+        let mut shared = JweHeaderSet::new();
+        shared.set_content_encryption(AesgcmJweEncryption::A128gcm.name(), true);
+
+        let json = jwe::serialize_general_json(
+            b"payload",
+            Some(&shared),
+            &[(None, &e1 as &dyn JweEncrypter), (None, &e2), (None, &e3)],
+            Some(b"aad"),
+        )
+        .unwrap();
+
+        let decrypters: Vec<Box<dyn JweDecrypter>> = vec![
+            Box::new(
+                RSA_OAEP
+                    .decrypter_from_jwk(&rsa.to_jwk_private_key())
+                    .unwrap(),
+            ),
+            Box::new(
+                ECDH_ES_A128KW
+                    .decrypter_from_jwk(&ec.to_jwk_private_key())
+                    .unwrap(),
+            ),
+            Box::new(A256KW.decrypter_from_jwk(&oct).unwrap()),
+        ];
+        for decrypter in &decrypters {
+            let (payload, _) = jwe::deserialize_json(&json, &**decrypter).unwrap();
+            assert_eq!(payload, b"payload");
+        }
+
+        // Someone holding none of the three keys gets nothing.
+        let stranger = oct_jwk(32);
+        let outsider = A256KW.decrypter_from_jwk(&stranger).unwrap();
+        assert!(jwe::deserialize_json(&json, &outsider).is_err());
+    }
+
+    /// The additional authenticated data is authenticated: changing it after
+    /// the fact must break the decryption, which is the only thing that makes
+    /// it worth carrying.
+    #[test]
+    fn the_additional_authenticated_data_is_covered() {
+        let key = oct_jwk(32);
+        let encrypter = A256KW.encrypter_from_jwk(&key).unwrap();
+        let decrypter = A256KW.decrypter_from_jwk(&key).unwrap();
+
+        let mut shared = JweHeaderSet::new();
+        shared.set_content_encryption(AesgcmJweEncryption::A128gcm.name(), true);
+
+        let json = jwe::serialize_flattened_json(
+            b"payload",
+            Some(&shared),
+            None,
+            Some(b"bound data"),
+            &encrypter,
+        )
+        .unwrap();
+        assert_eq!(
+            jwe::deserialize_json(&json, &decrypter).unwrap().0,
+            b"payload"
+        );
+
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value["aad"] = serde_json::Value::String(util::encode_base64_urlsafe_nopad(b"other data"));
+        let tampered = serde_json::to_string(&value).unwrap();
+        assert!(jwe::deserialize_json(&tampered, &decrypter).is_err());
+    }
+
+    /// A selector that supplies nothing decrypts nothing.
+    #[test]
+    fn a_selector_that_returns_nothing_decrypts_nothing() {
+        let key = oct_jwk(32);
+        let encrypter = A256KW.encrypter_from_jwk(&key).unwrap();
+        let decrypter = A256KW.decrypter_from_jwk(&key).unwrap();
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption(AesgcmJweEncryption::A128gcm.name());
+        header.set_key_id("kid-1");
+        let jwe = jwe::serialize_compact(b"payload", &header, &encrypter).unwrap();
+
+        let (payload, _) = jwe::deserialize_compact_with_selector(&jwe, |header| {
+            assert_eq!(header.key_id(), Some("kid-1"));
+            Ok(Some(&decrypter as &dyn JweDecrypter))
+        })
+        .unwrap();
+        assert_eq!(payload, b"payload");
+
+        assert!(jwe::deserialize_compact_with_selector(&jwe, |_| Ok(None)).is_err());
     }
 }

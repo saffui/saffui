@@ -791,4 +791,134 @@ mod tests {
 
         Ok(())
     }
+
+    /// A claim lands in exactly one half, and moving it empties the other.
+    ///
+    /// In a JWE only the protected header is bound into the AEAD's additional
+    /// data. A claim left in both halves after a move would be readable as
+    /// protected while an unauthenticated copy sat beside it.
+    #[test]
+    fn a_claim_lives_in_one_half_and_moving_it_empties_the_other() {
+        let mut set = JweHeaderSet::new();
+
+        set.set_key_id("kid-1", true);
+        assert_eq!(set.claims_set(true).get("kid"), Some(&json!("kid-1")));
+        assert_eq!(set.claims_set(false).get("kid"), None);
+
+        set.set_key_id("kid-2", false);
+        assert_eq!(set.claims_set(true).get("kid"), None);
+        assert_eq!(set.claims_set(false).get("kid"), Some(&json!("kid-2")));
+        assert_eq!(set.key_id(), Some("kid-2"));
+    }
+
+    /// Every claim, in each half, read back through the merged view.
+    #[test]
+    fn every_claim_reads_back_from_either_half() -> Result<()> {
+        for protection in [true, false] {
+            let mut set = JweHeaderSet::new();
+            set.set_algorithm("ECDH-ES", protection);
+            set.set_content_encryption("A128GCM", protection);
+            set.set_compression("DEF");
+            set.set_jwk_set_url("https://example.test/jwks", protection);
+            set.set_x509_url("https://example.test/x5u", protection);
+            set.set_x509_certificate_chain(&[b"first".to_vec()], protection);
+            set.set_x509_certificate_sha1_thumbprint(b"sha1-thumb", protection);
+            set.set_x509_certificate_sha256_thumbprint(b"sha256-thumb", protection);
+            set.set_key_id("kid-1", protection);
+            set.set_token_type("JWT", protection);
+            set.set_content_type("application/json", protection);
+            set.set_url("https://example.test/url", protection);
+            set.set_nonce(b"nonce-bytes", protection);
+            set.set_agreement_partyuinfo(b"party-u", protection);
+            set.set_agreement_partyvinfo(b"party-v", protection);
+            set.set_issuer("issuer", protection);
+            set.set_subject("subject", protection);
+            set.set_audience(vec!["first", "second"], protection);
+            set.set_claim("custom", Some(json!("value")), protection)?;
+
+            assert_eq!(set.algorithm(), Some("ECDH-ES"));
+            assert_eq!(set.content_encryption(), Some("A128GCM"));
+            assert_eq!(set.compression(), Some("DEF"));
+            assert_eq!(set.jwk_set_url(), Some("https://example.test/jwks"));
+            assert_eq!(set.x509_url(), Some("https://example.test/x5u"));
+            assert_eq!(set.x509_certificate_chain(), Some(vec![b"first".to_vec()]));
+            assert_eq!(
+                set.x509_certificate_sha1_thumbprint(),
+                Some(b"sha1-thumb".to_vec())
+            );
+            assert_eq!(
+                set.x509_certificate_sha256_thumbprint(),
+                Some(b"sha256-thumb".to_vec())
+            );
+            assert_eq!(set.key_id(), Some("kid-1"));
+            assert_eq!(set.token_type(), Some("JWT"));
+            assert_eq!(set.content_type(), Some("application/json"));
+            assert_eq!(set.url(), Some("https://example.test/url"));
+            assert_eq!(set.nonce(), Some(b"nonce-bytes".to_vec()));
+            assert_eq!(set.agreement_partyuinfo(), Some(b"party-u".to_vec()));
+            assert_eq!(set.agreement_partyvinfo(), Some(b"party-v".to_vec()));
+            assert_eq!(set.issuer(), Some("issuer"));
+            assert_eq!(set.subject(), Some("subject"));
+            assert_eq!(set.audience(), Some(vec!["first", "second"]));
+
+            let merged = set.to_map();
+            assert_eq!(merged.get("kid"), Some(&json!("kid-1")));
+            assert_eq!(merged.get("custom"), Some(&json!("value")));
+            assert_eq!(
+                set.claims_set(protection).get("alg"),
+                Some(&json!("ECDH-ES"))
+            );
+        }
+
+        Ok(())
+    }
+
+    /// `crit` and `zip` take no protection flag, so neither can be put
+    /// anywhere but the protected half.
+    ///
+    /// That is the only place either would mean anything: `crit` says which
+    /// extensions a recipient must understand, and `zip` decides how the
+    /// plaintext is processed. An unauthenticated copy of either is an
+    /// instruction an attacker gets to write.
+    #[test]
+    fn critical_and_compression_are_always_protected() {
+        let mut set = JweHeaderSet::new();
+        set.set_critical(&["exp"]);
+        set.set_compression("DEF");
+
+        assert_eq!(set.claims_set(true).get("crit"), Some(&json!(["exp"])));
+        assert_eq!(set.claims_set(false).get("crit"), None);
+        assert_eq!(set.claims_set(true).get("zip"), Some(&json!("DEF")));
+        assert_eq!(set.claims_set(false).get("zip"), None);
+
+        assert_eq!(set.critical(), Some(vec!["exp"]));
+        assert_eq!(set.compression(), Some("DEF"));
+    }
+
+    #[test]
+    fn a_claim_of_the_wrong_type_is_refused() {
+        let mut set = JweHeaderSet::new();
+
+        assert!(set.set_claim("alg", Some(json!(1)), true).is_err());
+        assert!(set.set_claim("enc", Some(json!(false)), true).is_err());
+        assert!(set.set_claim("zip", Some(json!(2)), false).is_err());
+        assert!(set.set_claim("crit", Some(json!("exp")), true).is_err());
+        assert!(
+            set.set_claim("apu", Some(json!("not base64!")), true)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn setting_a_claim_to_none_removes_it_from_both_halves() -> Result<()> {
+        let mut set = JweHeaderSet::new();
+        set.set_key_id("kid-1", true);
+        set.set_claim("kid", None, true)?;
+
+        assert_eq!(set.key_id(), None);
+        assert!(!set.claims_set(true).contains_key("kid"));
+        assert!(!set.claims_set(false).contains_key("kid"));
+
+        Ok(())
+    }
 }

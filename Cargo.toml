@@ -34,6 +34,13 @@ tokio-postgres = "0.7.18"
 zeroize        = { version = "1.8", features = ["derive"] }
 subtle         = "2.6"
 
+# --- The CryptoProvider seam ---
+# secrecy carries key material through the trait so a `Vec<u8>` cannot be logged
+# or copied by accident; async-trait is what lets the key store be a trait
+# object, since a PKCS#11 or KMS store answers over I/O.
+secrecy        = "0.10"
+async-trait    = "0.1"
+
 # --- Encodings ---
 # HEXLOWER for random identifiers, BASE32_NOPAD for TOTP shared secrets
 # (otpauth:// URIs), BASE64URL_NOPAD for JOSE compact serialization (RFC 7515

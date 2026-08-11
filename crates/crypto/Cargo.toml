@@ -37,6 +37,8 @@ thiserror = { workspace = true }
 zeroize = { workspace = true }
 subtle = { workspace = true }
 data-encoding = { workspace = true }
+secrecy = { workspace = true }
+async-trait = { workspace = true }
 
 # Pulled in by the vendored JOSE layer.
 anyhow = { workspace = true }

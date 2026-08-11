@@ -466,4 +466,141 @@ mod tests {
         let decrypter = A256KW.decrypter_from_jwk(&theirs).unwrap();
         assert!(jwe::deserialize_compact(&jwe, &decrypter).is_err());
     }
+
+    /// The same key reached through DER, PEM and JWK must produce the same
+    /// working pair.
+    ///
+    /// Three constructors per algorithm, and the earlier matrix only ever used
+    /// one of them. A parser that mishandles an encoding fails here rather than
+    /// on the day someone loads a key from disk instead of a JWK set.
+    #[test]
+    fn rsaes_accepts_a_key_in_der_pem_and_jwk() {
+        let pair = RsaKeyPair::generate(2048).unwrap();
+
+        let encrypters: Vec<_> = vec![
+            RSA_OAEP
+                .encrypter_from_der(pair.to_der_public_key())
+                .unwrap(),
+            RSA_OAEP
+                .encrypter_from_pem(pair.to_pem_public_key())
+                .unwrap(),
+            RSA_OAEP
+                .encrypter_from_jwk(&pair.to_jwk_public_key())
+                .unwrap(),
+        ];
+        let decrypters: Vec<_> = vec![
+            RSA_OAEP
+                .decrypter_from_der(pair.to_der_private_key())
+                .unwrap(),
+            RSA_OAEP
+                .decrypter_from_pem(pair.to_pem_private_key())
+                .unwrap(),
+            RSA_OAEP
+                .decrypter_from_jwk(&pair.to_jwk_private_key())
+                .unwrap(),
+        ];
+
+        // Cross every encoding against every other: a key read from PEM has to
+        // decrypt what a key read from DER encrypted.
+        let mut header = JweHeader::new();
+        header.set_content_encryption(AesgcmJweEncryption::A128gcm.name());
+        for encrypter in &encrypters {
+            let jwe = jwe::serialize_compact(b"payload", &header, encrypter).unwrap();
+            for decrypter in &decrypters {
+                let (decoded, _) = jwe::deserialize_compact(&jwe, decrypter).unwrap();
+                assert_eq!(decoded, b"payload");
+            }
+        }
+    }
+
+    #[test]
+    fn ecdh_es_accepts_a_key_in_der_pem_and_jwk() {
+        let pair = EcKeyPair::generate(P_256).unwrap();
+
+        let encrypters = [
+            ECDH_ES
+                .encrypter_from_der(pair.to_der_public_key())
+                .unwrap(),
+            ECDH_ES
+                .encrypter_from_pem(pair.to_pem_public_key())
+                .unwrap(),
+            ECDH_ES
+                .encrypter_from_jwk(&pair.to_jwk_public_key())
+                .unwrap(),
+        ];
+        let decrypters = [
+            ECDH_ES
+                .decrypter_from_der(pair.to_der_private_key())
+                .unwrap(),
+            ECDH_ES
+                .decrypter_from_pem(pair.to_pem_private_key())
+                .unwrap(),
+            ECDH_ES
+                .decrypter_from_jwk(&pair.to_jwk_private_key())
+                .unwrap(),
+        ];
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption(AesgcmJweEncryption::A128gcm.name());
+        for encrypter in &encrypters {
+            let jwe = jwe::serialize_compact(b"payload", &header, encrypter).unwrap();
+            for decrypter in &decrypters {
+                let (decoded, _) = jwe::deserialize_compact(&jwe, decrypter).unwrap();
+                assert_eq!(decoded, b"payload");
+            }
+        }
+    }
+
+    /// The symmetric algorithms take raw bytes as well as a JWK, and the two
+    /// have to agree.
+    #[test]
+    fn symmetric_algorithms_accept_raw_bytes_and_a_jwk() {
+        let key = util::random_bytes(32);
+        let mut jwk = Jwk::new("oct");
+        jwk.set_key_use("enc");
+        jwk.set_parameter("k", Some(json!(util::encode_base64_urlsafe_nopad(&key))))
+            .unwrap();
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption(AesgcmJweEncryption::A256gcm.name());
+
+        let from_bytes = A256KW.encrypter_from_bytes(&key).unwrap();
+        let from_jwk = A256KW.decrypter_from_jwk(&jwk).unwrap();
+        let jwe = jwe::serialize_compact(b"payload", &header, &from_bytes).unwrap();
+        assert_eq!(
+            jwe::deserialize_compact(&jwe, &from_jwk).unwrap().0,
+            b"payload"
+        );
+
+        let from_jwk_enc = A256GCMKW.encrypter_from_jwk(&jwk).unwrap();
+        let from_bytes_dec = A256GCMKW.decrypter_from_bytes(&key).unwrap();
+        let jwe = jwe::serialize_compact(b"payload", &header, &from_jwk_enc).unwrap();
+        assert_eq!(
+            jwe::deserialize_compact(&jwe, &from_bytes_dec).unwrap().0,
+            b"payload"
+        );
+    }
+
+    /// Direct encryption uses the content encryption key itself, so the key
+    /// length has to match the `enc` it is used with.
+    #[test]
+    fn direct_encryption_round_trips_and_refuses_a_mismatched_key() {
+        let key = util::random_bytes(32);
+        let mut header = JweHeader::new();
+        header.set_content_encryption(AesgcmJweEncryption::A256gcm.name());
+
+        let encrypter = Dir.encrypter_from_bytes(&key).unwrap();
+        let decrypter = Dir.decrypter_from_bytes(&key).unwrap();
+        let jwe = jwe::serialize_compact(b"payload", &header, &encrypter).unwrap();
+        assert_eq!(
+            jwe::deserialize_compact(&jwe, &decrypter).unwrap().0,
+            b"payload"
+        );
+
+        // A 256-bit key cannot serve A128GCM: direct mode has no wrapping step
+        // to resize it, so this must be refused rather than truncated.
+        let mut narrow = JweHeader::new();
+        narrow.set_content_encryption(AesgcmJweEncryption::A128gcm.name());
+        assert!(jwe::serialize_compact(b"payload", &narrow, &encrypter).is_err());
+    }
 }

@@ -56,11 +56,19 @@ impl DerBuilder {
     }
 
     pub fn append_integer_from_u64(&mut self, value: u64) {
+        // X.690 8.3.2: an INTEGER is big-endian, and never zero octets long.
+        // The loop below produces the bytes least significant first, so it is
+        // reversed, and zero is written as a single 0x00 rather than nothing.
         let mut vec = Vec::new();
         let mut rest = value;
         while rest > 0 {
             vec.push((rest & 0xFF) as u8);
             rest >>= 8;
+        }
+        if vec.is_empty() {
+            vec.push(0);
+        } else {
+            vec.reverse();
         }
         self.append(DerType::Integer, None, &vec);
     }

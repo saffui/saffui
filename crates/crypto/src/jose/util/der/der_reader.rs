@@ -601,12 +601,217 @@ mod tests {
         Ok(())
     }
 
-    fn load_file(path: &str) -> Result<File> {
-        let mut pb = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        pb.push("data");
-        pb.push(path);
+    /// Every primitive the reader can decode, written by the builder and read
+    /// back. The pair has to agree, and nothing here goes through a file.
+    #[test]
+    fn primitives_round_trip_through_the_builder() -> Result<()> {
+        let oid = ObjectIdentifier::from_slice(&[1, 2, 840, 113549, 1, 1, 11]);
 
-        let file = File::open(&pb)?;
-        Ok(file)
+        let mut builder = DerBuilder::new();
+        builder.begin(DerType::Sequence);
+        {
+            builder.append_null();
+            builder.append_integer_from_u8(42);
+            builder.append_integer_from_u64(1_000_000);
+            builder.append_object_identifier(&oid);
+            builder.append_octed_string_from_bytes(b"octets");
+            builder.append_bit_string_from_bytes(&[0b1010_0000], 5);
+        }
+        builder.end();
+
+        let input = builder.build();
+        let mut reader = DerReader::from_bytes(&input);
+
+        assert!(matches!(reader.next()?, Some(DerType::Sequence)));
+        assert!(reader.is_constructed());
+
+        assert!(matches!(reader.next()?, Some(DerType::Null)));
+        assert!(reader.is_primitive());
+        reader.to_null()?;
+
+        assert!(matches!(reader.next()?, Some(DerType::Integer)));
+        assert_eq!(reader.to_u8()?, 42);
+
+        assert!(matches!(reader.next()?, Some(DerType::Integer)));
+        assert_eq!(reader.to_u64()?, 1_000_000);
+
+        assert!(matches!(reader.next()?, Some(DerType::ObjectIdentifier)));
+        assert_eq!(reader.to_object_identifier()?, oid);
+
+        assert!(matches!(reader.next()?, Some(DerType::OctetString)));
+        assert_eq!(reader.to_vec()?, b"octets");
+
+        assert!(matches!(reader.next()?, Some(DerType::BitString)));
+        assert_eq!(reader.to_bit_vec()?, (vec![0b1010_0000], 5));
+
+        assert!(matches!(reader.next()?, Some(DerType::EndOfContents)));
+        assert!(reader.next()?.is_none());
+
+        Ok(())
+    }
+
+    /// `skip_contents` has to consume a whole nested structure, not one item.
+    #[test]
+    fn skipping_a_sequence_consumes_all_of_it() -> Result<()> {
+        let mut builder = DerBuilder::new();
+        builder.begin(DerType::Sequence);
+        {
+            builder.begin(DerType::Sequence);
+            {
+                builder.append_integer_from_u8(1);
+                builder.begin(DerType::Sequence);
+                {
+                    builder.append_integer_from_u8(2);
+                }
+                builder.end();
+            }
+            builder.end();
+            builder.append_integer_from_u8(9);
+        }
+        builder.end();
+
+        let input = builder.build();
+        let mut reader = DerReader::from_bytes(&input);
+        assert!(matches!(reader.next()?, Some(DerType::Sequence)));
+        assert!(matches!(reader.next()?, Some(DerType::Sequence)));
+        reader.skip_contents()?;
+
+        // What follows the skipped subtree, not something from inside it.
+        assert!(matches!(reader.next()?, Some(DerType::Integer)));
+        assert_eq!(reader.to_u8()?, 9);
+
+        Ok(())
+    }
+
+    /// An empty input is the end, not an error.
+    #[test]
+    fn an_empty_input_reads_as_the_end() -> Result<()> {
+        let empty = Vec::<u8>::new();
+        let mut reader = DerReader::from_bytes(&empty);
+        assert!(reader.next()?.is_none());
+        Ok(())
+    }
+
+    /// A structure that stops mid-way must say so rather than return what it
+    /// managed to read. This is the shape a truncated key arrives in.
+    #[test]
+    fn a_truncated_structure_is_refused() {
+        let mut builder = DerBuilder::new();
+        builder.begin(DerType::Sequence);
+        {
+            builder.append_octed_string_from_bytes(b"0123456789");
+        }
+        builder.end();
+        let full = builder.build();
+
+        for cut in [full.len() - 1, full.len() - 5, 3] {
+            let slice = &full[..cut];
+            let mut reader = DerReader::from_bytes(&slice);
+            let outcome = (|| -> Result<(), DerError> {
+                while reader.next()?.is_some() {}
+                Ok(())
+            })();
+            assert!(
+                matches!(outcome, Err(DerError::UnexpectedEndOfInput)),
+                "a structure cut at {cut} was accepted"
+            );
+        }
+    }
+
+    /// 0xFF is reserved as a length byte, and the reader has to reject it
+    /// rather than treat it as a very large length.
+    #[test]
+    fn the_reserved_length_byte_is_refused() {
+        let input = vec![0x04u8, 0xFF, 0x00];
+        let mut reader = DerReader::from_bytes(&input);
+        assert!(matches!(reader.next(), Err(DerError::InvalidLength(_))));
+    }
+
+    /// An integer wider than the accumulator must overflow rather than wrap.
+    #[test]
+    fn an_integer_too_wide_for_u64_overflows() -> Result<()> {
+        let mut builder = DerBuilder::new();
+        builder.append_integer_from_be_slice(&[0x7f; 16], false);
+        let input = builder.build();
+
+        let mut reader = DerReader::from_bytes(&input);
+        assert!(matches!(reader.next()?, Some(DerType::Integer)));
+        assert!(matches!(reader.to_u64(), Err(DerError::Overflow)));
+
+        Ok(())
+    }
+
+    /// A primitive tag on a type that must be constructed, and the reverse.
+    #[test]
+    fn a_tag_used_the_wrong_way_is_refused() {
+        // Sequence, tagged primitive: 0x10 rather than 0x30.
+        let primitive_sequence = vec![0x10u8, 0x00];
+        let mut reader = DerReader::from_bytes(&primitive_sequence);
+        assert!(matches!(reader.next(), Err(DerError::InvalidTag(_))));
+
+        // Null, tagged constructed: 0x25 rather than 0x05.
+        let constructed_null = vec![0x25u8, 0x00];
+        let mut reader = DerReader::from_bytes(&constructed_null);
+        assert!(matches!(reader.next(), Err(DerError::InvalidTag(_))));
+    }
+
+    /// End-of-contents is only legal inside a structure of indefinite length.
+    #[test]
+    fn end_of_contents_outside_an_indefinite_structure_is_refused() {
+        let input = vec![0x00u8, 0x00];
+        let mut reader = DerReader::from_bytes(&input);
+        assert!(matches!(reader.next(), Err(DerError::InvalidTag(_))));
+    }
+
+    /// A boolean carries exactly one byte.
+    #[test]
+    fn a_boolean_of_the_wrong_width_is_refused() -> Result<()> {
+        let wide = vec![0x01u8, 0x02, 0x00, 0x01];
+        let mut reader = DerReader::from_bytes(&wide);
+        assert!(matches!(reader.next()?, Some(DerType::Boolean)));
+        assert!(matches!(
+            reader.to_boolean(),
+            Err(DerError::InvalidLength(_))
+        ));
+
+        let one = vec![0x01u8, 0x01, 0xff];
+        let mut reader = DerReader::from_bytes(&one);
+        assert!(matches!(reader.next()?, Some(DerType::Boolean)));
+        assert!(reader.to_boolean()?);
+
+        Ok(())
+    }
+
+    /// A DER INTEGER is big-endian and at least one octet long (X.690 8.3.2).
+    ///
+    /// The builder used to push the bytes least significant first and append
+    /// them unreversed, so anything it wrote was read back byte-swapped, and
+    /// zero came out as an INTEGER of no length at all. Nothing in the tree
+    /// called it — the production paths all use the single-byte variant, where
+    /// order does not arise — so the disagreement sat between two halves of the
+    /// same module with no test to put them side by side.
+    #[test]
+    fn integers_are_written_big_endian() -> Result<()> {
+        for value in [0u64, 1, 255, 256, 1_000_000, u64::MAX] {
+            let mut builder = DerBuilder::new();
+            builder.append_integer_from_u64(value);
+            let input = builder.build();
+
+            let mut reader = DerReader::from_bytes(&input);
+            assert!(matches!(reader.next()?, Some(DerType::Integer)));
+            assert_eq!(reader.to_u64()?, value, "{value} did not survive");
+
+            let contents = reader.contents().expect("an integer has contents");
+            assert!(!contents.is_empty(), "{value} encoded as no octets");
+            if value > 0 {
+                assert_eq!(
+                    contents[0],
+                    (value >> (8 * (contents.len() - 1))) as u8,
+                    "{value} is not most significant first"
+                );
+            }
+        }
+
+        Ok(())
     }
 }

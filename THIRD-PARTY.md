@@ -89,6 +89,11 @@ The JOSE layer is vendored from josekit. See the entry below.
       remain, including every regression test written for modifications 5, 10,
       11 and 12 — the `crit` one was rewritten to generate its key rather than
       load it, so the coverage survives the vectors.
+  14. Regression tests for the JWS, JWE and key-detection paths, written with
+      generated key material rather than the removed vectors.
+  15. `DerBuilder::append_integer_from_u64` fixed to write big-endian octets,
+      and to write zero as one `0x00` rather than none. Found by putting the
+      builder and the reader in the same test; see the defect table.
 - **Verification:** the 144 upstream tests passed unmodified at the point of
   vendoring, which is what established that the port was faithful. That
   evidence is no longer reproducible from the tree: modification 13 removed the
@@ -123,6 +128,7 @@ they are not hypothetical.
 | ~~The `crit` header claim is read as `"critical"` on the JSON deserialization path~~ — **patched here**, modification 10 | `src/jws/jws_context.rs` (`deserialize_json_with_selector`) | The whole critical-extension validation is dead code. A JWS naming an extension the implementation does not understand is **accepted**, in violation of RFC 7515 §4.1.11. The compact path reads `"crit"` correctly, which is what hides it. Still present upstream; report it. |
 | ~~`JwkSet::remove_key` does not clear `kid_map`~~ — **patched here**, modification 11 | `src/jwk/jwk_set.rs` | A key removed from the set still resolves through `get(kid)`. Revoking a key does not stop it being selected. The index is also keyed by position in `keys`, so a removal invalidates every entry after it. Still present upstream; report it. |
 | `PartialEq for Box<dyn T>` is written `self == other` | `src/jwe/jwe_algorithm.rs`, `src/jwe/jwe_compression.rs`, `src/jwe/jwe_content_encryption.rs`, `src/jws/jws_algorithm.rs`, `src/jwk/key_pair.rs` | The impl calls itself. Comparing two boxed algorithms, compressions, content encryptions or key pairs recurses until the stack is exhausted and the process dies. Patched here (modification 5); still present upstream. No upstream test covers it, and none could: the test process would go down with it. |
+| `DerBuilder::append_integer_from_u64` writes the octets least significant first | `src/util/der/der_builder.rs` | A DER INTEGER is big-endian and never zero octets long (X.690 8.3.2). The builder emitted the bytes reversed, and wrote zero as an INTEGER of no length. Its own reader decodes big-endian, so the two halves of the module disagreed. Nothing upstream or here calls it — the production paths use the single-byte variant, where order does not arise — so it is latent rather than exploitable. Patched here (modification 15); still present upstream. |
 
 Both are worth reporting upstream rather than only patching locally.
 

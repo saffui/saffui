@@ -253,8 +253,25 @@ mod tests {
 
     use anyhow::Result;
 
+    use serde_json::json;
+
     use crate::jose::Value;
-    use crate::jose::jwe::{self, Dir, JweAlgorithm, JweHeader};
+    use crate::jose::jwe::enc::aescbc_hmac::AescbcHmacJweEncryption;
+    use crate::jose::jwe::enc::aesgcm::AesgcmJweEncryption;
+    use crate::jose::jwe::{
+        self, A128GCMKW, A128KW, A192GCMKW, A192KW, A256GCMKW, A256KW, Dir, ECDH_ES,
+        ECDH_ES_A128KW, ECDH_ES_A192KW, ECDH_ES_A256KW, JweAlgorithm, JweContentEncryption,
+        JweDecrypter, JweEncrypter, JweHeader, PBES2_HS256_A128KW, PBES2_HS384_A192KW,
+        PBES2_HS512_A256KW, RSA_OAEP, RSA_OAEP_256, RSA_OAEP_384, RSA_OAEP_512,
+    };
+    // RSA1_5 is deprecated upstream. Imported on its own so the allow covers
+    // the name and nothing else in the list above.
+    #[allow(deprecated)]
+    use crate::jose::jwe::RSA1_5;
+    use crate::jose::jwk::alg::ec::EcKeyPair;
+    use crate::jose::jwk::alg::ecx::EcxKeyPair;
+    use crate::jose::jwk::alg::rsa::RsaKeyPair;
+    use crate::jose::jwk::{Jwk, KeyPair, P_256, P_384, P_521, X448, X25519};
 
     use crate::jose::util;
 
@@ -297,5 +314,156 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    /// Encrypt, decrypt, and refuse a ciphertext that was touched.
+    ///
+    /// The refusal half matters as much as the round trip: AEAD is only worth
+    /// anything if a modified token fails, and a decrypter that ignores the tag
+    /// round-trips perfectly.
+    fn round_trip(alg_name: &str, encrypter: &dyn JweEncrypter, decrypter: &dyn JweDecrypter) {
+        for enc in [
+            &AescbcHmacJweEncryption::A128cbcHs256 as &dyn JweContentEncryption,
+            &AescbcHmacJweEncryption::A192cbcHs384,
+            &AescbcHmacJweEncryption::A256cbcHs512,
+            &AesgcmJweEncryption::A128gcm,
+            &AesgcmJweEncryption::A192gcm,
+            &AesgcmJweEncryption::A256gcm,
+        ] {
+            let mut header = JweHeader::new();
+            header.set_content_encryption(enc.name());
+            let payload = b"the quick brown fox";
+
+            let jwe = jwe::serialize_compact(payload, &header, encrypter).unwrap();
+            let (decoded, _) = jwe::deserialize_compact(&jwe, decrypter).unwrap();
+            assert_eq!(decoded, payload, "{alg_name} with {}", enc.name());
+
+            let mut parts: Vec<&str> = jwe.split('.').collect();
+            assert_eq!(parts.len(), 5, "compact JWE has five parts");
+            let ciphertext = parts[3].to_string();
+            let flipped = flip_last_base64_char(&ciphertext);
+            parts[3] = &flipped;
+            let tampered = parts.join(".");
+            assert!(
+                jwe::deserialize_compact(&tampered, decrypter).is_err(),
+                "{alg_name} with {} accepted a modified ciphertext",
+                enc.name()
+            );
+        }
+    }
+
+    fn flip_last_base64_char(s: &str) -> String {
+        let mut out = s.to_string();
+        let last = out.pop().unwrap();
+        out.push(if last == 'A' { 'B' } else { 'A' });
+        out
+    }
+
+    fn oct_jwk(len: usize) -> Jwk {
+        let key = util::random_bytes(len);
+        let mut jwk = Jwk::new("oct");
+        jwk.set_key_use("enc");
+        jwk.set_parameter("k", Some(json!(util::encode_base64_urlsafe_nopad(&key))))
+            .unwrap();
+        jwk
+    }
+
+    /// AES key wrap, one key length per algorithm.
+    #[test]
+    fn aeskw_algorithms_round_trip() {
+        for (alg, len) in [(A128KW, 16), (A192KW, 24), (A256KW, 32)] {
+            let jwk = oct_jwk(len);
+            let encrypter = alg.encrypter_from_jwk(&jwk).unwrap();
+            let decrypter = alg.decrypter_from_jwk(&jwk).unwrap();
+            round_trip(alg.name(), &encrypter, &decrypter);
+        }
+    }
+
+    /// AES-GCM key wrap, which also carries its own iv and tag in the header.
+    #[test]
+    fn aesgcmkw_algorithms_round_trip() {
+        for (alg, len) in [(A128GCMKW, 16), (A192GCMKW, 24), (A256GCMKW, 32)] {
+            let jwk = oct_jwk(len);
+            let encrypter = alg.encrypter_from_jwk(&jwk).unwrap();
+            let decrypter = alg.decrypter_from_jwk(&jwk).unwrap();
+            round_trip(alg.name(), &encrypter, &decrypter);
+        }
+    }
+
+    /// RSAES. RSA1_5 is deprecated and padding-oracle prone, and is covered
+    /// here because it is reachable, not because it should be chosen.
+    #[test]
+    #[allow(deprecated)]
+    fn rsaes_algorithms_round_trip() {
+        let pair = RsaKeyPair::generate(2048).unwrap();
+        let private = pair.to_jwk_private_key();
+        let public = pair.to_jwk_public_key();
+
+        for alg in [RSA1_5, RSA_OAEP, RSA_OAEP_256, RSA_OAEP_384, RSA_OAEP_512] {
+            let encrypter = alg.encrypter_from_jwk(&public).unwrap();
+            let decrypter = alg.decrypter_from_jwk(&private).unwrap();
+            round_trip(alg.name(), &encrypter, &decrypter);
+        }
+    }
+
+    /// ECDH-ES, both the direct agreement and the three key-wrapping variants,
+    /// on each curve the implementation accepts.
+    #[test]
+    fn ecdh_es_algorithms_round_trip() {
+        for curve in [P_256, P_384, P_521] {
+            let pair = EcKeyPair::generate(curve).unwrap();
+            let private = pair.to_jwk_private_key();
+            let public = pair.to_jwk_public_key();
+
+            for alg in [ECDH_ES, ECDH_ES_A128KW, ECDH_ES_A192KW, ECDH_ES_A256KW] {
+                let encrypter = alg.encrypter_from_jwk(&public).unwrap();
+                let decrypter = alg.decrypter_from_jwk(&private).unwrap();
+                round_trip(alg.name(), &encrypter, &decrypter);
+            }
+        }
+    }
+
+    /// ECDH-ES over the montgomery curves, which take a different key type.
+    #[test]
+    fn ecdh_es_round_trips_on_montgomery_curves() {
+        for curve in [X25519, X448] {
+            let pair = EcxKeyPair::generate(curve).unwrap();
+            let encrypter = ECDH_ES
+                .encrypter_from_jwk(&pair.to_jwk_public_key())
+                .unwrap();
+            let decrypter = ECDH_ES
+                .decrypter_from_jwk(&pair.to_jwk_private_key())
+                .unwrap();
+            round_trip(ECDH_ES.name(), &encrypter, &decrypter);
+        }
+    }
+
+    /// PBES2 derives the key encryption key from a passphrase.
+    #[test]
+    fn pbes2_algorithms_round_trip() {
+        for alg in [PBES2_HS256_A128KW, PBES2_HS384_A192KW, PBES2_HS512_A256KW] {
+            let encrypter = alg
+                .encrypter_from_bytes(b"correct horse battery staple")
+                .unwrap();
+            let decrypter = alg
+                .decrypter_from_bytes(b"correct horse battery staple")
+                .unwrap();
+            round_trip(alg.name(), &encrypter, &decrypter);
+        }
+    }
+
+    /// A ciphertext must not decrypt under a different key of the same shape.
+    #[test]
+    fn a_jwe_does_not_decrypt_under_another_key() {
+        let mine = oct_jwk(32);
+        let theirs = oct_jwk(32);
+
+        let mut header = JweHeader::new();
+        header.set_content_encryption(AesgcmJweEncryption::A256gcm.name());
+        let encrypter = A256KW.encrypter_from_jwk(&mine).unwrap();
+        let jwe = jwe::serialize_compact(b"payload", &header, &encrypter).unwrap();
+
+        let decrypter = A256KW.decrypter_from_jwk(&theirs).unwrap();
+        assert!(jwe::deserialize_compact(&jwe, &decrypter).is_err());
     }
 }

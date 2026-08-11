@@ -409,3 +409,113 @@ pub trait KeyStoreProvider: Send + Sync {
     fn supports_attestation(&self) -> bool;
     async fn attest(&self, handle: &KeyHandle) -> Result<Attestation>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The digest each JWS algorithm is paired with is spec, not preference:
+    /// RS256 signing over SHA-384 produces something no verifier accepts, and
+    /// nothing downstream would catch it.
+    #[test]
+    fn signature_algorithms_carry_their_specified_digest() {
+        for (alg, hash) in [
+            (SignAlg::Rs256, Some(HashAlg::Sha256)),
+            (SignAlg::Rs384, Some(HashAlg::Sha384)),
+            (SignAlg::Rs512, Some(HashAlg::Sha512)),
+            (SignAlg::Ps256, Some(HashAlg::Sha256)),
+            (SignAlg::Ps384, Some(HashAlg::Sha384)),
+            (SignAlg::Ps512, Some(HashAlg::Sha512)),
+            (SignAlg::Es256, Some(HashAlg::Sha256)),
+            (SignAlg::Es384, Some(HashAlg::Sha384)),
+            (SignAlg::Es512, Some(HashAlg::Sha512)),
+            (SignAlg::EdDsa, None),
+        ] {
+            assert_eq!(alg.hash(), hash, "{alg:?}");
+        }
+    }
+
+    /// EdDSA hashes internally. A caller that pre-hashes because `hash()`
+    /// handed it a digest signs the wrong thing, so the `None` is load-bearing.
+    #[test]
+    fn eddsa_asks_for_no_external_digest() {
+        assert!(SignAlg::EdDsa.hash().is_none());
+    }
+
+    /// `is_pss` and `is_ecdsa` choose the padding and the signature encoding.
+    /// A false negative on `is_pss` silently signs PKCS#1 v1.5 instead.
+    #[test]
+    fn padding_and_encoding_predicates_select_the_right_algorithms() {
+        let all = [
+            SignAlg::Rs256,
+            SignAlg::Rs384,
+            SignAlg::Rs512,
+            SignAlg::Ps256,
+            SignAlg::Ps384,
+            SignAlg::Ps512,
+            SignAlg::Es256,
+            SignAlg::Es384,
+            SignAlg::Es512,
+            SignAlg::EdDsa,
+        ];
+        let pss: Vec<_> = all.iter().filter(|a| a.is_pss()).copied().collect();
+        let ecdsa: Vec<_> = all.iter().filter(|a| a.is_ecdsa()).copied().collect();
+
+        assert_eq!(pss, [SignAlg::Ps256, SignAlg::Ps384, SignAlg::Ps512]);
+        assert_eq!(ecdsa, [SignAlg::Es256, SignAlg::Es384, SignAlg::Es512]);
+        assert!(all.iter().all(|a| !(a.is_pss() && a.is_ecdsa())));
+    }
+
+    /// The AEAD key length is what the backend checks a caller's key against,
+    /// so a wrong value here accepts a key the cipher cannot use.
+    #[test]
+    fn aead_sizes_match_their_ciphers() {
+        assert_eq!(AeadAlg::A128Gcm.key_len(), 16);
+        assert_eq!(AeadAlg::A192Gcm.key_len(), 24);
+        assert_eq!(AeadAlg::A256Gcm.key_len(), 32);
+        #[cfg(feature = "chacha20")]
+        assert_eq!(AeadAlg::ChaCha20Poly1305.key_len(), 32);
+
+        for alg in [AeadAlg::A128Gcm, AeadAlg::A192Gcm, AeadAlg::A256Gcm] {
+            assert_eq!(alg.nonce_len(), 12);
+            assert_eq!(alg.tag_len(), 16);
+        }
+    }
+
+    #[test]
+    fn hmac_algorithms_carry_their_digest() {
+        assert_eq!(HmacAlg::Hs256.hash(), HashAlg::Sha256);
+        assert_eq!(HmacAlg::Hs384.hash(), HashAlg::Sha384);
+        assert_eq!(HmacAlg::Hs512.hash(), HashAlg::Sha512);
+    }
+
+    /// `PrivateKey` overrides `Debug` so a key cannot be printed into a log by
+    /// a struct that happens to derive it. This asserts the override holds.
+    #[test]
+    fn a_private_key_never_renders_its_bytes() {
+        let key = PrivateKey::from_der(b"SECRET-KEY-MATERIAL".to_vec());
+        let rendered = format!("{key:?}");
+
+        assert!(!rendered.contains("SECRET"));
+        assert!(!rendered.contains("83"), "no byte listing either");
+        assert_eq!(rendered, "PrivateKey(<redacted>)");
+        assert_eq!(key.der(), b"SECRET-KEY-MATERIAL");
+    }
+
+    /// The default cost is the OWASP 2024 baseline. Written down as a test so
+    /// lowering it is a decision someone makes on purpose.
+    #[test]
+    fn argon2_defaults_are_the_owasp_baseline() {
+        let p = Argon2Params::default();
+        assert_eq!(p.m_cost, 19 * 1024);
+        assert_eq!(p.t_cost, 2);
+        assert_eq!(p.p_cost, 1);
+        assert_eq!(p.output_len, 32);
+    }
+
+    #[test]
+    fn a_public_key_round_trips_its_der() {
+        let key = PublicKey::from_der(vec![1, 2, 3]);
+        assert_eq!(key.der(), &[1, 2, 3]);
+    }
+}

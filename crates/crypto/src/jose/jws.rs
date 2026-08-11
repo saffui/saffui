@@ -388,4 +388,96 @@ mod tests {
         let jws = jws::serialize_compact(b"payload", &header, &*signer).unwrap();
         assert!(jws::deserialize_compact(&jws, &*verifier).is_err());
     }
+
+    /// A key read from DER, from PEM and from a JWK must give the same signer.
+    ///
+    /// Three parsers per algorithm, and the matrix above only exercised one.
+    /// Crossing them catches an encoding a parser reads differently from the
+    /// others, which is otherwise found the day a key comes off disk.
+    fn cross_encodings(signers: &[Box<dyn JwsSigner>], verifiers: &[Box<dyn JwsVerifier>]) {
+        let header = JwsHeader::new();
+        for signer in signers {
+            let jws = jws::serialize_compact(b"payload", &header, &**signer).unwrap();
+            for verifier in verifiers {
+                let (decoded, _) = jws::deserialize_compact(&jws, &**verifier).unwrap();
+                assert_eq!(decoded, b"payload");
+            }
+        }
+    }
+
+    #[test]
+    fn rsassa_accepts_a_key_in_der_pem_and_jwk() {
+        let pair = RsaKeyPair::generate(2048).unwrap();
+        let signers: Vec<Box<dyn JwsSigner>> = vec![
+            Box::new(RS256.signer_from_der(pair.to_der_private_key()).unwrap()),
+            Box::new(RS256.signer_from_pem(pair.to_pem_private_key()).unwrap()),
+            Box::new(RS256.signer_from_jwk(&pair.to_jwk_private_key()).unwrap()),
+        ];
+        let verifiers: Vec<Box<dyn JwsVerifier>> = vec![
+            Box::new(RS256.verifier_from_der(pair.to_der_public_key()).unwrap()),
+            Box::new(RS256.verifier_from_pem(pair.to_pem_public_key()).unwrap()),
+            Box::new(RS256.verifier_from_jwk(&pair.to_jwk_public_key()).unwrap()),
+        ];
+        cross_encodings(&signers, &verifiers);
+    }
+
+    #[test]
+    fn ecdsa_accepts_a_key_in_der_pem_and_jwk() {
+        let pair = EcKeyPair::generate(P_256).unwrap();
+        let signers: Vec<Box<dyn JwsSigner>> = vec![
+            Box::new(ES256.signer_from_der(pair.to_der_private_key()).unwrap()),
+            Box::new(ES256.signer_from_pem(pair.to_pem_private_key()).unwrap()),
+            Box::new(ES256.signer_from_jwk(&pair.to_jwk_private_key()).unwrap()),
+        ];
+        let verifiers: Vec<Box<dyn JwsVerifier>> = vec![
+            Box::new(ES256.verifier_from_der(pair.to_der_public_key()).unwrap()),
+            Box::new(ES256.verifier_from_pem(pair.to_pem_public_key()).unwrap()),
+            Box::new(ES256.verifier_from_jwk(&pair.to_jwk_public_key()).unwrap()),
+        ];
+        cross_encodings(&signers, &verifiers);
+    }
+
+    #[test]
+    fn eddsa_accepts_a_key_in_der_pem_and_jwk() {
+        let pair = EdKeyPair::generate(Ed25519).unwrap();
+        let signers: Vec<Box<dyn JwsSigner>> = vec![
+            Box::new(EdDSA.signer_from_der(pair.to_der_private_key()).unwrap()),
+            Box::new(EdDSA.signer_from_pem(pair.to_pem_private_key()).unwrap()),
+            Box::new(EdDSA.signer_from_jwk(&pair.to_jwk_private_key()).unwrap()),
+        ];
+        let verifiers: Vec<Box<dyn JwsVerifier>> = vec![
+            Box::new(EdDSA.verifier_from_der(pair.to_der_public_key()).unwrap()),
+            Box::new(EdDSA.verifier_from_pem(pair.to_pem_public_key()).unwrap()),
+            Box::new(EdDSA.verifier_from_jwk(&pair.to_jwk_public_key()).unwrap()),
+        ];
+        cross_encodings(&signers, &verifiers);
+    }
+
+    #[test]
+    fn rsassa_pss_accepts_a_key_in_der_pem_and_jwk() {
+        let pair = RsaPssKeyPair::generate(2048, HashAlgorithm::Sha256, HashAlgorithm::Sha256, 32)
+            .unwrap();
+        let signers: Vec<Box<dyn JwsSigner>> = vec![
+            Box::new(PS256.signer_from_der(pair.to_der_private_key()).unwrap()),
+            Box::new(PS256.signer_from_jwk(&pair.to_jwk_private_key()).unwrap()),
+        ];
+        let verifiers: Vec<Box<dyn JwsVerifier>> = vec![
+            Box::new(PS256.verifier_from_der(pair.to_der_public_key()).unwrap()),
+            Box::new(PS256.verifier_from_jwk(&pair.to_jwk_public_key()).unwrap()),
+        ];
+        cross_encodings(&signers, &verifiers);
+    }
+
+    /// A verifier must refuse a token whose header names an algorithm other
+    /// than its own. Without the check, `alg` becomes attacker-controlled.
+    #[test]
+    fn a_verifier_refuses_a_header_naming_another_algorithm() {
+        let key = [0x5a_u8; 64];
+        let signer = HS256.signer_from_bytes(key).unwrap();
+        let verifier = HS384.verifier_from_bytes(key).unwrap();
+
+        let header = JwsHeader::new();
+        let jws = jws::serialize_compact(b"payload", &header, &*signer).unwrap();
+        assert!(jws::deserialize_compact(&jws, &*verifier).is_err());
+    }
 }

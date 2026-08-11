@@ -41,6 +41,12 @@ subtle         = "2.6"
 secrecy        = "0.10"
 async-trait    = "0.1"
 
+# --- Password storage ---
+# argon2 mints and reads PHC strings; bcrypt is verification only, kept for
+# hashes imported from an older system and never used to make new ones.
+argon2         = "0.5"
+bcrypt         = "0.17"
+
 # --- Encodings ---
 # HEXLOWER for random identifiers, BASE32_NOPAD for TOTP shared secrets
 # (otpauth:// URIs), BASE64URL_NOPAD for JOSE compact serialization (RFC 7515

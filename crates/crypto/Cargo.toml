@@ -39,6 +39,8 @@ subtle = { workspace = true }
 data-encoding = { workspace = true }
 secrecy = { workspace = true }
 async-trait = { workspace = true }
+argon2 = { workspace = true }
+bcrypt = { workspace = true }
 
 # Pulled in by the vendored JOSE layer.
 anyhow = { workspace = true }

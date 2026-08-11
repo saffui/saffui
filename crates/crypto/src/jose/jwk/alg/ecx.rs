@@ -479,6 +479,8 @@ mod tests {
     use anyhow::Result;
 
     use super::{EcxCurve, EcxKeyPair};
+    use crate::jose::jwk::KeyPair;
+    use crate::jose::jwk::alg::ed::{EdCurve, EdKeyPair};
 
     #[test]
     fn test_generate_ecx() -> Result<()> {
@@ -498,5 +500,72 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    /// A montgomery key read back through each encoding is the same key on the
+    /// same curve.
+    ///
+    /// The curve is what the key is for: X25519 and X448 are different key
+    /// agreements, and a key that comes back on the other one agrees with
+    /// nobody.
+    #[test]
+    fn a_montgomery_key_survives_every_encoding() -> Result<()> {
+        for curve in [EcxCurve::X25519, EcxCurve::X448] {
+            let pair = EcxKeyPair::generate(curve)?;
+            assert_eq!(pair.curve(), curve);
+
+            let from_der = EcxKeyPair::from_der(pair.to_der_private_key())?;
+            let from_pem = EcxKeyPair::from_pem(pair.to_pem_private_key())?;
+            let from_jwk = EcxKeyPair::from_jwk(&pair.to_jwk_key_pair())?;
+            let from_traditional = EcxKeyPair::from_pem(pair.to_traditional_pem_private_key())?;
+
+            for other in [&from_der, &from_pem, &from_jwk, &from_traditional] {
+                assert_eq!(other.curve(), curve);
+                assert_eq!(other.to_der_private_key(), pair.to_der_private_key());
+                assert_eq!(other.to_der_public_key(), pair.to_der_public_key());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// The curve comes from the key itself, and a key of another family is
+    /// not read as a montgomery one.
+    ///
+    /// X25519 and Ed25519 are both OKP keys and differ by their curve alone, so
+    /// this is the check standing between key agreement and signing.
+    #[test]
+    fn a_key_from_another_family_is_not_read_as_montgomery() -> Result<()> {
+        let ed = EdKeyPair::generate(EdCurve::Ed25519)?;
+        assert!(EcxKeyPair::from_der(ed.to_der_private_key()).is_err());
+        assert!(EcxKeyPair::from_pem(ed.to_pem_private_key()).is_err());
+        assert!(EcxKeyPair::from_jwk(&ed.to_jwk_private_key()).is_err());
+
+        Ok(())
+    }
+
+    /// The public half carries no private component, since that half is what
+    /// gets published.
+    #[test]
+    fn the_public_jwk_drops_the_private_component() -> Result<()> {
+        for curve in [EcxCurve::X25519, EcxCurve::X448] {
+            let pair = EcxKeyPair::generate(curve)?;
+
+            assert!(pair.to_jwk_private_key().parameter("d").is_some());
+            assert!(pair.to_jwk_public_key().parameter("d").is_none());
+            assert_eq!(
+                pair.to_jwk_public_key().parameter("crv"),
+                Some(&serde_json::json!(curve.name()))
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn input_that_is_not_a_key_is_refused() {
+        assert!(EcxKeyPair::from_der(b"garbage").is_err());
+        assert!(EcxKeyPair::from_pem(b"garbage").is_err());
+        assert!(EcxKeyPair::from_pem(b"-----BEGIN NOTHING-----").is_err());
     }
 }

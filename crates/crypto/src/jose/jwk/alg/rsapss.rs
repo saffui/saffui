@@ -127,7 +127,10 @@ impl RsaPssKeyPair {
                     let mgf1_hash = match mgf1_hash {
                         Some(val) if val == mgf1_hash2 => mgf1_hash2,
                         Some(_) => bail!("The MGF1 hash algorithm is mismatched: {}", mgf1_hash2),
-                        None => hash2,
+                        // The key's own MGF1 digest, not its signing digest.
+                        // Upstream falls back to `hash2` here, which silently
+                        // rewrites a key whose two digests differ.
+                        None => mgf1_hash2,
                     };
 
                     let salt_len = match salt_len {
@@ -224,7 +227,8 @@ impl RsaPssKeyPair {
                             Some(_) => {
                                 bail!("The MGF1 hash algorithm is mismatched: {}", mgf1_hash2)
                             }
-                            None => hash2,
+                            // As in `from_der`: the key's MGF1 digest.
+                            None => mgf1_hash2,
                         };
 
                         let salt_len = match salt_len {
@@ -796,5 +800,175 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    /// A PSS key read back through each encoding keeps its parameters.
+    ///
+    /// The digest, the MGF1 digest and the salt length are part of what the
+    /// algorithm identifier says, so a key that comes back with different ones
+    /// is a different algorithm wearing the same name.
+    #[test]
+    fn a_pss_key_keeps_its_parameters_through_every_encoding() -> Result<()> {
+        let cases = [
+            (HashAlgorithm::Sha256, 32u8),
+            (HashAlgorithm::Sha384, 48),
+            (HashAlgorithm::Sha512, 64),
+        ];
+
+        for (hash, salt_len) in cases {
+            let pair = RsaPssKeyPair::generate(2048, hash, hash, salt_len)?;
+            assert_eq!(pair.key_len(), 256);
+
+            let from_der = RsaPssKeyPair::from_der(
+                pair.to_der_private_key(),
+                Some(hash),
+                Some(hash),
+                Some(salt_len),
+            )?;
+            let from_pem = RsaPssKeyPair::from_pem(
+                pair.to_pem_private_key(),
+                Some(hash),
+                Some(hash),
+                Some(salt_len),
+            )?;
+            let from_jwk = RsaPssKeyPair::from_jwk(&pair.to_jwk_key_pair(), hash, hash, salt_len)?;
+
+            for other in [&from_der, &from_pem, &from_jwk] {
+                assert_eq!(other.to_der_private_key(), pair.to_der_private_key());
+                assert_eq!(other.to_der_public_key(), pair.to_der_public_key());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// A key whose MGF1 digest differs from its signing digest keeps both when
+    /// the caller leaves them to the encoding.
+    ///
+    /// Upstream falls back to the signing digest when `mgf1_hash` is `None`,
+    /// in both `from_der` and `from_pem`, so reading such a key without
+    /// restating its parameters quietly rewrote them. The two are equal in
+    /// every common configuration, which is why it went unseen: only a key
+    /// whose digests differ shows it.
+    #[test]
+    fn an_unspecified_mgf1_digest_comes_from_the_key_not_the_signing_digest() -> Result<()> {
+        let pair = RsaPssKeyPair::generate(2048, HashAlgorithm::Sha256, HashAlgorithm::Sha384, 32)?;
+        let der = pair.to_der_private_key();
+
+        let from_der = RsaPssKeyPair::from_der(&der, None, None, None)?;
+        assert_eq!(
+            from_der.to_der_private_key(),
+            der,
+            "reading a key without stating its parameters changed them"
+        );
+
+        let from_pem = RsaPssKeyPair::from_pem(pair.to_pem_private_key(), None, None, None)?;
+        assert_eq!(from_pem.to_der_private_key(), der);
+
+        // Stating one of them and leaving the other must not move the other.
+        let partial = RsaPssKeyPair::from_der(&der, Some(HashAlgorithm::Sha256), None, Some(32))?;
+        assert_eq!(partial.to_der_private_key(), der);
+
+        Ok(())
+    }
+
+    /// The raw and traditional encodings are the same key in another envelope,
+    /// and each has to parse back to it.
+    #[test]
+    fn the_raw_and_traditional_encodings_carry_the_same_key() -> Result<()> {
+        let hash = HashAlgorithm::Sha256;
+        let pair = RsaPssKeyPair::generate(2048, hash, hash, 32)?;
+
+        let raw_private = pair.to_raw_private_key();
+        let from_raw = RsaPssKeyPair::from_der(&raw_private, Some(hash), Some(hash), Some(32))?;
+        assert_eq!(from_raw.to_der_public_key(), pair.to_der_public_key());
+
+        let traditional = pair.to_traditional_pem_private_key();
+        let from_traditional =
+            RsaPssKeyPair::from_pem(&traditional, Some(hash), Some(hash), Some(32))?;
+        assert_eq!(
+            from_traditional.to_der_public_key(),
+            pair.to_der_public_key()
+        );
+
+        assert!(!pair.to_raw_public_key().is_empty());
+
+        Ok(())
+    }
+
+    /// Reading a PSS key as plain RSA drops the parameters, which is the point
+    /// of the conversion: the result is a key, not a key bound to one digest.
+    #[test]
+    fn a_pss_key_converts_to_a_plain_rsa_key() -> Result<()> {
+        let hash = HashAlgorithm::Sha256;
+        let pair = RsaPssKeyPair::generate(2048, hash, hash, 32)?;
+        let public_before = pair.to_der_public_key();
+
+        let rsa = pair.into_rsa_key_pair();
+        assert_eq!(rsa.key_len(), 256);
+        assert_ne!(
+            rsa.to_der_public_key(),
+            public_before,
+            "the algorithm identifier should no longer say PSS"
+        );
+
+        Ok(())
+    }
+
+    /// Parameters asked for that the encoded key does not carry must be
+    /// refused rather than silently overridden.
+    ///
+    /// A key written for SHA-256 and read as SHA-512 would sign under a digest
+    /// its own algorithm identifier does not permit, and every verifier reading
+    /// that identifier would reject the result. Failing at the read is where it
+    /// belongs.
+    #[test]
+    fn parameters_that_contradict_the_encoding_are_refused() -> Result<()> {
+        let pair = RsaPssKeyPair::generate(2048, HashAlgorithm::Sha256, HashAlgorithm::Sha256, 32)?;
+        let der = pair.to_der_private_key();
+
+        assert!(
+            RsaPssKeyPair::from_der(
+                &der,
+                Some(HashAlgorithm::Sha512),
+                Some(HashAlgorithm::Sha256),
+                Some(32)
+            )
+            .is_err(),
+            "a different digest was accepted"
+        );
+        assert!(
+            RsaPssKeyPair::from_der(
+                &der,
+                Some(HashAlgorithm::Sha256),
+                Some(HashAlgorithm::Sha512),
+                Some(32)
+            )
+            .is_err(),
+            "a different MGF1 digest was accepted"
+        );
+        assert!(
+            RsaPssKeyPair::from_der(
+                &der,
+                Some(HashAlgorithm::Sha256),
+                Some(HashAlgorithm::Sha256),
+                Some(48)
+            )
+            .is_err(),
+            "a different salt length was accepted"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn input_that_is_not_a_key_is_refused() {
+        let hash = HashAlgorithm::Sha256;
+        assert!(RsaPssKeyPair::from_der(b"garbage", Some(hash), Some(hash), Some(32)).is_err());
+        assert!(RsaPssKeyPair::from_pem(b"garbage", Some(hash), Some(hash), Some(32)).is_err());
+        assert!(
+            RsaPssKeyPair::from_pem(b"-----BEGIN NOTHING-----", Some(hash), Some(hash), Some(32))
+                .is_err()
+        );
     }
 }

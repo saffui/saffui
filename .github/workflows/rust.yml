@@ -12,7 +12,7 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5.0.1
       # rustup auto-installs the toolchain pinned in rust-toolchain.toml
       # (components included) on the first cargo invocation - no setup step.
       - uses: Swatinem/rust-cache@v2
@@ -50,5 +50,5 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5.0.1
       - uses: EmbarkStudios/cargo-deny-action@v2

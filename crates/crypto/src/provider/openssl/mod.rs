@@ -8,6 +8,7 @@ pub mod aead;
 pub mod digest;
 pub mod hmac;
 pub mod kdf;
+pub mod key_store;
 pub mod password;
 pub mod rand;
 pub mod signer;

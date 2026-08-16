@@ -172,6 +172,66 @@ jobs:
             exit 1
           fi
 
+  # The lock and the runner say nothing without a server, and the TLS modes say
+  # nothing without one that negotiates TLS. Both are here rather than skipped.
+  postgres:
+    runs-on: ubuntu-latest
+    env:
+      SAFFUI_TEST_PG: "host=localhost port=5432 user=postgres password=saffui dbname=saffui_test"
+      SAFFUI_TEST_PG_TLS: "host=localhost port=5433 user=postgres password=saffui dbname=saffui_test"
+      SAFFUI_TEST_PG_TLS_CERTS: /tmp/pgtls
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: saffui
+          POSTGRES_DB: saffui_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5.0.1
+      - uses: Swatinem/rust-cache@v2
+
+      # A second server, with TLS. It cannot be a service: the certificate has
+      # to exist before the container starts, and a service has no step to make
+      # one in. Self-signed on purpose — `require` is only distinguishable from
+      # `verify-full` against a certificate that would fail verification.
+      - name: start a TLS-enabled server
+        run: |
+          mkdir -p "$SAFFUI_TEST_PG_TLS_CERTS"
+          cd "$SAFFUI_TEST_PG_TLS_CERTS"
+          openssl req -new -x509 -days 1 -nodes -subj "/CN=localhost" \
+            -keyout server.key -out server.crt
+          openssl req -new -x509 -days 1 -nodes -subj "/CN=other-ca" \
+            -keyout other.key -out other.crt
+          chmod 600 server.key
+
+          docker run -d --name saffui-pg-tls \
+            -e POSTGRES_PASSWORD=saffui -e POSTGRES_DB=saffui_test -p 5433:5432 \
+            -v "$SAFFUI_TEST_PG_TLS_CERTS:/certs:ro" postgres:17-alpine \
+            -c ssl=on -c ssl_cert_file=/certs/server.crt -c ssl_key_file=/certs/server.key
+
+          for _ in $(seq 1 30); do
+            docker exec saffui-pg-tls pg_isready -U postgres && break
+            sleep 2
+          done
+          docker exec saffui-pg-tls psql -U postgres -tAc "SHOW ssl" | grep -qx on
+
+      # `cargo test --ignored` exits 0 when it runs nothing, so the count is
+      # checked rather than the exit status: a green job that reached no server
+      # reads as coverage of the lock and the schema, which is the last place to
+      # be wrong about.
+      - name: test against both servers
+        run: |
+          set -o pipefail
+          cargo test -p pgcore -- --ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/pg.log"
+          if ! grep -qE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/pg.log"; then
+            echo "no database test ran; the job proved nothing." >&2
+            exit 1
+          fi
+
   deny:
     runs-on: ubuntu-latest
     steps:

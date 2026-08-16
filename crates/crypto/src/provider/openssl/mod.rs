@@ -6,6 +6,7 @@
 
 pub mod aead;
 pub mod digest;
+pub mod hashing;
 pub mod hmac;
 pub mod kdf;
 pub mod key_store;
@@ -15,11 +16,13 @@ pub mod rand;
 pub mod signer;
 
 use crate::provider::{
-    AeadProvider, CryptoConfig, CryptoError, CryptoProvider, HmacProvider, KdfProvider,
-    KeyStoreProvider, LegacyDigestProvider, PasswordProvider, RandProvider, Result, SignerProvider,
+    AeadProvider, CryptoConfig, CryptoError, CryptoProvider, DigestProvider, HmacProvider,
+    KdfProvider, KeyStoreProvider, LegacyDigestProvider, PasswordProvider, RandProvider, Result,
+    SignerProvider,
 };
 
 use aead::OpenSslAead;
+use hashing::OpenSslDigest;
 use hmac::OpenSslHmac;
 use kdf::OpenSslKdf;
 use key_store::SoftwareKeyStore;
@@ -45,6 +48,7 @@ pub struct OpenSslProvider {
     password: OpenSslPassword,
     key_store: SoftwareKeyStore,
     legacy_digest: OpenSslLegacyDigest,
+    digest: OpenSslDigest,
 }
 
 impl OpenSslProvider {
@@ -90,6 +94,7 @@ impl OpenSslProvider {
             password: OpenSslPassword,
             key_store: SoftwareKeyStore::new(),
             legacy_digest: OpenSslLegacyDigest,
+            digest: OpenSslDigest,
         })
     }
 
@@ -138,6 +143,9 @@ impl CryptoProvider for OpenSslProvider {
     }
     fn legacy_digest(&self) -> &dyn LegacyDigestProvider {
         &self.legacy_digest
+    }
+    fn digest(&self) -> &dyn DigestProvider {
+        &self.digest
     }
 }
 

@@ -270,6 +270,7 @@ pub trait CryptoProvider: Send + Sync {
     fn password(&self) -> &dyn PasswordProvider;
     fn key_store(&self) -> &dyn KeyStoreProvider;
     fn legacy_digest(&self) -> &dyn LegacyDigestProvider;
+    fn digest(&self) -> &dyn DigestProvider;
 }
 
 pub trait HmacProvider: Send + Sync {
@@ -315,19 +316,22 @@ pub enum LegacyDigest {
     Sha512,
 }
 
-/// Not here, and deliberately so until something needs them:
+/// Hashing under any algorithm the seam names.
 ///
-/// - a digest over [`HashAlg`], which would let a caller hash under SHA-2 or
-///   SHA-3 through the seam. [`LegacyDigestProvider`] is not it: its four
-///   algorithms exist to read inherited password records, and widening that
-///   type would put MD5 back within reach of everything else.
-/// - the SHAKE extendable-output functions, which post-quantum work needs.
+/// Separate from [`LegacyDigestProvider`], which exists to read inherited
+/// password records and names MD5. Merging them would put MD5 within one enum
+/// variant of everything that hashes.
 ///
-/// Both belong here as trait methods when a caller appears. Neither belongs in
-/// a free function calling the backend directly — that is the shape that lost
-/// the family check, the nonce-length check and the cost bounds elsewhere in
-/// this crate, each time by reaching past this seam rather than through it.
-///
+/// Still missing here, and deliberately so until something needs it: the SHAKE
+/// extendable-output functions, which post-quantum work will want. That belongs
+/// as a method on this trait, not in a free function calling the backend — the
+/// latter is the shape that lost the key-family check, the nonce-length check
+/// and a pair of cost bounds elsewhere in this crate, each time by reaching
+/// past this seam rather than through it.
+pub trait DigestProvider: Send + Sync {
+    fn hash(&self, alg: HashAlg, data: &[u8]) -> Result<Vec<u8>>;
+}
+
 /// Bare digests, for reading legacy password formats and nothing else.
 ///
 /// Under a FIPS build MD5 is not available and this reports the failure rather

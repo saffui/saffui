@@ -1,6 +1,7 @@
 //! Signatures over OpenSSL.
 
-use openssl::pkey::{Id, PKey, Private, Public};
+use openssl::nid::Nid;
+use openssl::pkey::{HasParams, Id, PKey, Private, Public};
 use openssl::rsa::Padding;
 use openssl::sign::{RsaPssSaltlen, Signer, Verifier};
 
@@ -23,16 +24,40 @@ where
     )
 }
 
+/// RFC 7518 3.4: each ECDSA algorithm names exactly one curve.
+fn curve_of(alg: SignAlg) -> Option<Nid> {
+    match alg {
+        SignAlg::Es256 => Some(Nid::X9_62_PRIME256V1),
+        SignAlg::Es384 => Some(Nid::SECP384R1),
+        SignAlg::Es512 => Some(Nid::SECP521R1),
+        _ => None,
+    }
+}
+
 /// The algorithm names a key family as well as a digest, and OpenSSL will not
 /// check that for us: `Signer::new` signs with whatever the key is, so asking
 /// for RS256 over an EC key yields an ECDSA signature under an RSA name. That
 /// verifies nowhere, and a reader trusting `alg` to say what it is holding has
 /// been told something false. Refused here instead.
-fn check_family(alg: SignAlg, id: Id) -> Result<()> {
+///
+/// For ECDSA the family is not enough, because `alg` names the curve too. A
+/// P-521 key signing as ES256 produces 66-byte coordinates where a reader of
+/// `alg` expects 32, and a P-256 key signing as ES512 is a strength downgrade
+/// advertised as the opposite. Both verify nowhere and neither is refused by
+/// a family check alone.
+fn check_family<T: HasParams>(alg: SignAlg, pkey: &PKey<T>) -> Result<()> {
+    let id = pkey.id();
     let ok = match alg {
         SignAlg::Rs256 | SignAlg::Rs384 | SignAlg::Rs512 => id == Id::RSA,
         SignAlg::Ps256 | SignAlg::Ps384 | SignAlg::Ps512 => id == Id::RSA || id == Id::RSA_PSS,
-        SignAlg::Es256 | SignAlg::Es384 | SignAlg::Es512 => id == Id::EC,
+        SignAlg::Es256 | SignAlg::Es384 | SignAlg::Es512 => {
+            id == Id::EC
+                && pkey
+                    .ec_key()
+                    .ok()
+                    .and_then(|ec| ec.group().curve_name())
+                    .is_some_and(|curve| Some(curve) == curve_of(alg))
+        }
         SignAlg::EdDsa => id == Id::ED25519 || id == Id::ED448,
     };
 
@@ -45,13 +70,13 @@ fn check_family(alg: SignAlg, id: Id) -> Result<()> {
 
 fn private(alg: SignAlg, key: &PrivateKey) -> Result<PKey<Private>> {
     let pkey = PKey::private_key_from_der(key.der()).map_err(|_| CryptoError::InvalidKey)?;
-    check_family(alg, pkey.id())?;
+    check_family(alg, &pkey)?;
     Ok(pkey)
 }
 
 fn public(alg: SignAlg, key: &PublicKey) -> Result<PKey<Public>> {
     let pkey = PKey::public_key_from_der(key.der()).map_err(|_| CryptoError::InvalidKey)?;
-    check_family(alg, pkey.id())?;
+    check_family(alg, &pkey)?;
     Ok(pkey)
 }
 
@@ -302,5 +327,46 @@ mod tests {
                 .verify(SignAlg::Rs256, &public, b"payload", b"sig")
                 .is_err()
         );
+    }
+
+    /// `alg` names the curve, not just the family, so a key on another curve is
+    /// refused rather than signed with.
+    ///
+    /// Signing a P-521 key as ES256 succeeds at the OpenSSL level and yields
+    /// 66-byte coordinates where a reader of `alg` expects 32; the reverse
+    /// advertises P-521 and delivers P-256. Neither verifies anywhere, and a
+    /// family check alone lets both through.
+    #[test]
+    fn an_ecdsa_algorithm_only_accepts_its_own_curve() {
+        let curves = [
+            (SignAlg::Es256, Nid::X9_62_PRIME256V1),
+            (SignAlg::Es384, Nid::SECP384R1),
+            (SignAlg::Es512, Nid::SECP521R1),
+        ];
+
+        for (alg, nid) in curves {
+            let (private, public) = ec(nid);
+            round_trip(alg, &private, &public);
+
+            for (other, other_nid) in curves {
+                if other == alg {
+                    continue;
+                }
+                assert!(
+                    matches!(
+                        OpenSslSigner.sign(other, &private, b"payload"),
+                        Err(CryptoError::UnsupportedAlgorithm)
+                    ),
+                    "{nid:?} key signed as {other:?}"
+                );
+                assert!(
+                    matches!(
+                        OpenSslSigner.verify(other, &public, b"payload", b"sig"),
+                        Err(CryptoError::UnsupportedAlgorithm)
+                    ),
+                    "{nid:?} key verified as {other:?} (expects {other_nid:?})"
+                );
+            }
+        }
     }
 }

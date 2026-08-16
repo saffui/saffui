@@ -1,8 +1,11 @@
 name: rust
 
 on:
+  # A feature branch is covered by its pull request, which runs the same jobs
+  # against the same commit. Listing it here as well ran everything twice per
+  # push and bought nothing.
   push:
-    branches: [develop, 'features/**']
+    branches: [develop]
   pull_request:
 
 env:

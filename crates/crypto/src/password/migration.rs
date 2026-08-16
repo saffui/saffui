@@ -249,19 +249,39 @@ mod tests {
              which is not the same order of work"
         );
 
+        // The decoy follows the policy. Read from the cached hash rather than
+        // timed: a decoy frozen at the old cost is visible in its own
+        // parameters, while wall clock on a shared runner is not a measurement
+        // of anything this module controls.
         let dearer = Argon2Params {
             m_cost: 128 * 1024,
             ..policy
         };
-        burn(dearer);
-        let dear = burn(dearer);
-
-        assert!(
-            dear > burned * 2,
-            "raising the cost from {} KiB to {} KiB moved the burn only from \
-             {burned:?} to {dear:?}, so the decoy is still the old one",
-            policy.m_cost,
-            dearer.m_cost
+        assert_eq!(
+            m_cost_of(&decoy_for(&p, dearer).expect("a decoy for the raised cost")),
+            dearer.m_cost,
+            "the decoy was not rebuilt for the raised cost"
         );
+
+        // And back down, so the cache is keyed by the parameters in both
+        // directions rather than merely replaced by the last one asked for.
+        assert_eq!(
+            m_cost_of(&decoy_for(&p, policy).expect("a decoy for the original cost")),
+            policy.m_cost,
+            "the decoy did not return to the original cost"
+        );
+    }
+
+    /// The `m=` field of a PHC string.
+    fn m_cost_of(encoded: &str) -> u32 {
+        encoded
+            .split('$')
+            .find_map(|segment| {
+                segment
+                    .split(',')
+                    .find_map(|field| field.strip_prefix("m="))
+                    .and_then(|value| value.parse().ok())
+            })
+            .unwrap_or_else(|| panic!("no m= parameter in {encoded}"))
     }
 }

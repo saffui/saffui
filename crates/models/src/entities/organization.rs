@@ -3,11 +3,11 @@
 //! they log in, what they see and who administers them.
 
 use chrono::{DateTime, Utc};
-use postgres_types::{FromSql, ToSql};
 use serde::{Deserialize, Serialize};
 
 use crate::auditable::AuditableModel;
 use crate::entities::attributes::AttributesMap;
+use crate::str_enum::str_enum;
 
 /// A verified (or pending) email domain that drives home-realm discovery.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -16,14 +16,15 @@ pub struct OrganizationDomain {
     pub verified: bool,
 }
 
-/// How a user came to belong to an organization.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSql, FromSql, PartialEq, Eq, Hash)]
-#[postgres(name = "orgmembershiptypeenum")]
-pub enum OrgMembershipType {
-    /// Provisioned by an org-linked identity provider on broker login.
-    Managed,
-    /// Invited, or self-registered.
-    Unmanaged,
+str_enum! {
+    #[postgres(name = "orgmembershiptypeenum")]
+    /// How a user came to belong to an organization.
+    pub enum OrgMembershipType {
+        /// Provisioned by an org-linked identity provider on broker login.
+        Managed => "managed",
+        /// Invited, or self-registered.
+        Unmanaged => "unmanaged",
+    }
 }
 
 /// An organization within a realm.
@@ -139,8 +140,13 @@ mod tests {
         assert!(org.domains.is_empty());
     }
 
+    /// The membership type is a database enum, so its label, its wire spelling
+    /// and `as_str` all come from one literal.
     #[test]
-    fn membership_types_are_distinct() {
-        assert_ne!(OrgMembershipType::Managed, OrgMembershipType::Unmanaged);
+    fn the_membership_types_agree_with_their_own_spelling() {
+        assert_eq!(OrgMembershipType::ALL.len(), 2);
+        assert_eq!(OrgMembershipType::Managed.as_str(), "managed");
+        assert_eq!(OrgMembershipType::Unmanaged.as_str(), "unmanaged");
+        crate::str_enum::assert_round_trips(OrgMembershipType::ALL);
     }
 }

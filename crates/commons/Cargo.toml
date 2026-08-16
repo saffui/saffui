@@ -8,3 +8,4 @@ authors.workspace = true
 
 [dependencies]
 thiserror = { workspace = true }
+secrecy = { workspace = true }

@@ -22,6 +22,12 @@ default = []
 # Off by default so a FIPS build cannot select a non-validated cipher.
 chacha20 = []
 
+# ML-DSA signatures and ML-KEM encapsulation, through OpenSSL's default
+# provider. Off by default because it needs libcrypto 3.5 or newer at link and
+# at run time: an older library has no such algorithms, and the failure is a
+# provider that builds and then refuses every post-quantum operation.
+pq-hybrid = []
+
 # Pins the validated FIPS provider. Mutually exclusive with the non-FIPS
 # algorithms above, and a `compile_error!` in lib.rs enforces it rather than a
 # note in these docs: a binary that claims FIPS while linking ChaCha20 is a
@@ -31,6 +37,8 @@ fips-strict = []
 [dependencies]
 commons = { workspace = true }
 openssl = { workspace = true }
+openssl-sys = { workspace = true }
+foreign-types = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -12,6 +12,8 @@ pub mod kdf;
 pub mod key_store;
 pub mod legacy_digest;
 pub mod password;
+#[cfg(feature = "pq-hybrid")]
+pub mod pq;
 pub mod rand;
 pub mod signer;
 
@@ -28,6 +30,8 @@ use kdf::OpenSslKdf;
 use key_store::SoftwareKeyStore;
 use legacy_digest::OpenSslLegacyDigest;
 use password::OpenSslPassword;
+#[cfg(feature = "pq-hybrid")]
+use pq::{OpenSslMlDsa, OpenSslMlKem};
 use rand::OpenSslRand;
 use signer::OpenSslSigner;
 
@@ -49,6 +53,10 @@ pub struct OpenSslProvider {
     key_store: SoftwareKeyStore,
     legacy_digest: OpenSslLegacyDigest,
     digest: OpenSslDigest,
+    #[cfg(feature = "pq-hybrid")]
+    pq_signature: OpenSslMlDsa,
+    #[cfg(feature = "pq-hybrid")]
+    pq_kem: OpenSslMlKem,
 }
 
 impl OpenSslProvider {
@@ -95,6 +103,10 @@ impl OpenSslProvider {
             key_store: SoftwareKeyStore::new(),
             legacy_digest: OpenSslLegacyDigest,
             digest: OpenSslDigest,
+            #[cfg(feature = "pq-hybrid")]
+            pq_signature: OpenSslMlDsa,
+            #[cfg(feature = "pq-hybrid")]
+            pq_kem: OpenSslMlKem,
         })
     }
 
@@ -146,6 +158,16 @@ impl CryptoProvider for OpenSslProvider {
     }
     fn digest(&self) -> &dyn DigestProvider {
         &self.digest
+    }
+
+    #[cfg(feature = "pq-hybrid")]
+    fn pq_signature(&self) -> &dyn crate::provider::PqSignatureProvider {
+        &self.pq_signature
+    }
+
+    #[cfg(feature = "pq-hybrid")]
+    fn pq_kem(&self) -> &dyn crate::provider::PqKemProvider {
+        &self.pq_kem
     }
 }
 

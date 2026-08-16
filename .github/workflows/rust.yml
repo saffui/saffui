@@ -36,18 +36,80 @@ jobs:
       # builds the pair it forbids - and a guard nobody fires is a guard nobody
       # notices losing. The failure has to carry the guard's own message: a build
       # broken for any other reason would otherwise read as the guard holding.
-      - name: fips-strict excludes chacha20
+      - name: fips-strict excludes the non-validated features
         run: |
-          if cargo build -p crypto --features fips-strict,chacha20 > "$RUNNER_TEMP/guard.log" 2>&1; then
-            echo "fips-strict + chacha20 built: the compile_error guard is gone." >&2
-            exit 1
-          fi
-          if ! grep -q "feature 'fips-strict' is incompatible with the non-FIPS 'chacha20' cipher" \
-               "$RUNNER_TEMP/guard.log"; then
-            echo "the build failed, but not on the guard:" >&2
-            cat "$RUNNER_TEMP/guard.log" >&2
-            exit 1
-          fi
+          check() {
+            if cargo build -p crypto --features "fips-strict,$1" > "$RUNNER_TEMP/guard.log" 2>&1; then
+              echo "fips-strict + $1 built: the compile_error guard is gone." >&2
+              exit 1
+            fi
+            if ! grep -q "$2" "$RUNNER_TEMP/guard.log"; then
+              echo "the $1 build failed, but not on the guard:" >&2
+              cat "$RUNNER_TEMP/guard.log" >&2
+              exit 1
+            fi
+          }
+          check chacha20 "incompatible with the non-FIPS 'chacha20' cipher"
+          check pq-hybrid "ML-DSA and ML-KEM are not FIPS-validated"
+
+  # ML-DSA and ML-KEM arrived in OpenSSL 3.5, and the runner image ships 3.0, so
+  # the ci job above can compile this feature but cannot execute a single line
+  # of it. Rather than let the tests be skipped - which reads as coverage of the
+  # code that generates keys - this job builds the library it needs.
+  pq:
+    runs-on: ubuntu-latest
+    env:
+      # One line to bump. Only ever linked here: nothing ships this build.
+      OPENSSL_VERSION: 3.5.0
+      OPENSSL_PREFIX: /opt/openssl-pq
+    steps:
+      - uses: actions/checkout@v5.0.1
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cache the built library
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OPENSSL_PREFIX }}
+          key: openssl-${{ env.OPENSSL_VERSION }}-rpath-${{ runner.os }}
+
+      - name: build OpenSSL
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSLO "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
+          tar xzf "openssl-$OPENSSL_VERSION.tar.gz"
+          cd "openssl-$OPENSSL_VERSION"
+          # The rpath is what makes the built binaries find their own
+          # libraries. Without it the loader reaches the system ones first, and
+          # everything below silently tests OpenSSL 3.0 instead.
+          ./Configure --prefix="$OPENSSL_PREFIX" --openssldir="$OPENSSL_PREFIX/ssl" shared \
+            "-Wl,-rpath,$OPENSSL_PREFIX/lib64" "-Wl,-rpath,$OPENSSL_PREFIX/lib"
+          make -j"$(nproc)"
+          # install_sw skips the manual pages, which are most of the install time
+          # and none of the point.
+          sudo make install_sw
+
+      # The whole job rests on cargo linking the library built above rather than
+      # the system one, and a silent fallback would surface as a puzzling test
+      # failure. Checked here instead, where the message can say what happened.
+      - name: check it is the library we think it is
+        env:
+          LD_LIBRARY_PATH: ${{ env.OPENSSL_PREFIX }}/lib64:${{ env.OPENSSL_PREFIX }}/lib
+        run: |
+          "$OPENSSL_PREFIX/bin/openssl" version
+          case "$("$OPENSSL_PREFIX/bin/openssl" version)" in
+            "OpenSSL $OPENSSL_VERSION"*) ;;
+            *) echo "the built library is not $OPENSSL_VERSION" >&2; exit 1 ;;
+          esac
+          "$OPENSSL_PREFIX/bin/openssl" list -signature-algorithms | grep -q ML-DSA
+          "$OPENSSL_PREFIX/bin/openssl" list -kem-algorithms | grep -q ML-KEM
+
+      - name: test with pq-hybrid
+        env:
+          OPENSSL_DIR: ${{ env.OPENSSL_PREFIX }}
+          LD_LIBRARY_PATH: ${{ env.OPENSSL_PREFIX }}/lib64:${{ env.OPENSSL_PREFIX }}/lib
+        run: |
+          cargo test --workspace --features crypto/pq-hybrid
 
   deny:
     runs-on: ubuntu-latest

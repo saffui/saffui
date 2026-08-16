@@ -25,6 +25,14 @@ serde_json = { version = "1.0.151", features = ["preserve_order"] }
 tokio          = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 thiserror      = "2.0.19"
 openssl        = "0.10.81"
+# The raw FFI, for the post-quantum algorithms the safe crate has no bindings
+# for yet. Pinned to what `openssl` already resolves to, so there is one
+# libcrypto and one set of headers rather than two.
+openssl-sys    = "0.9.117"
+# Only for `ForeignType`, which is how a raw `EVP_PKEY` from the FFI above is
+# adopted into the safe crate's `PKey`. Pinned to the version `openssl` uses,
+# or the trait would be a different trait.
+foreign-types  = "0.3.2"
 tokio-postgres = "0.7.18"
 
 # --- Secret material ---

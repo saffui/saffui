@@ -271,6 +271,9 @@ pub trait CryptoProvider: Send + Sync {
     fn key_store(&self) -> &dyn KeyStoreProvider;
     fn legacy_digest(&self) -> &dyn LegacyDigestProvider;
     fn digest(&self) -> &dyn DigestProvider;
+
+    #[cfg(feature = "pq-hybrid")]
+    fn pq_signature(&self) -> &dyn PqSignatureProvider;
 }
 
 pub trait HmacProvider: Send + Sync {
@@ -314,6 +317,43 @@ pub enum LegacyDigest {
     Sha1,
     Sha256,
     Sha512,
+}
+
+/// ML-DSA parameter sets (FIPS 204).
+///
+/// Deliberately not a [`SignAlg`]. That type answers `hash`, `is_pss` and
+/// `is_ecdsa`, and none of the three means anything here: ML-DSA signs a
+/// message directly with no external digest and belongs to neither family.
+/// Folding them together would make those methods lie for three variants.
+#[cfg(feature = "pq-hybrid")]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum MlDsaAlg {
+    MlDsa44,
+    MlDsa65,
+    MlDsa87,
+}
+
+/// Post-quantum signatures.
+///
+/// Separate from [`SignerProvider`] because the two share no algorithm and no
+/// key shape. Keys cross here as DER like everywhere else in this seam, so a
+/// caller holds bytes rather than a backend handle.
+///
+/// Every operation needs libcrypto 3.5 or newer. On an older library the
+/// algorithm cannot be fetched at all and these report
+/// [`CryptoError::UnsupportedAlgorithm`], which is the honest answer: a
+/// post-quantum signature that silently became something else would be worse
+/// than none.
+#[cfg(feature = "pq-hybrid")]
+pub trait PqSignatureProvider: Send + Sync {
+    /// A fresh key pair, private as PKCS#8 DER and public as SPKI DER.
+    fn generate(&self, alg: MlDsaAlg) -> Result<(PrivateKey, PublicKey)>;
+
+    /// Sign a message. ML-DSA hashes internally, so there is no digest to pick
+    /// and nothing for a caller to get wrong.
+    fn sign(&self, key: &PrivateKey, message: &[u8]) -> Result<Vec<u8>>;
+
+    fn verify(&self, key: &PublicKey, message: &[u8], signature: &[u8]) -> Result<bool>;
 }
 
 /// An extendable-output function, which produces as many bytes as it is asked

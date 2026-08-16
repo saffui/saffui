@@ -81,8 +81,9 @@ macro_rules! str_enum {
 
 pub(crate) use str_enum;
 
-/// Assert that a generated enum agrees with itself: every variant is in `ALL`,
-/// parses back from its own text, and serialises to that same text.
+/// Assert that a generated enum agrees with itself: each variant serialises to
+/// its own text, parses back from that text, and decodes back from its own
+/// encoding.
 ///
 /// Called by each declaring module rather than generated into it, so a module
 /// that forgets to call it is visible as a missing test rather than as a test
@@ -90,17 +91,34 @@ pub(crate) use str_enum;
 #[cfg(test)]
 pub(crate) fn assert_round_trips<T>(variants: &'static [T])
 where
-    T: Copy + PartialEq + std::fmt::Debug + serde::Serialize + std::str::FromStr,
+    T: Copy
+        + PartialEq
+        + std::fmt::Debug
+        + serde::Serialize
+        + serde::de::DeserializeOwned
+        + std::str::FromStr,
     <T as std::str::FromStr>::Err: std::fmt::Debug,
 {
     for (index, variant) in variants.iter().enumerate() {
-        let text = serde_json::to_string(variant).expect("a string enum serialises");
-        let text = text.trim_matches('"');
+        let encoded = serde_json::to_string(variant).expect("a string enum serialises");
+        // Unquoted by the JSON parser rather than by trimming, so a spelling
+        // holding a quote or a backslash reaches `from_str` as it was written.
+        let text: String =
+            serde_json::from_str(&encoded).expect("a string enum encodes as a JSON string");
 
         assert_eq!(
-            &T::from_str(text).expect("its own text parses"),
+            &T::from_str(&text).expect("its own text parses"),
             variant,
             "variant {index} does not parse back from {text:?}"
+        );
+
+        // The half the name promises and the serialize-only bound would miss:
+        // a rename that applies in one direction reads back as a spelling the
+        // domain never writes.
+        assert_eq!(
+            &serde_json::from_str::<T>(&encoded).expect("its own encoding decodes"),
+            variant,
+            "variant {index} does not decode from {encoded}"
         );
 
         for (other_index, other) in variants.iter().enumerate() {
@@ -126,6 +144,9 @@ mod tests {
         enum Sample {
             First => "first",
             Second => "second-hand",
+            /// A spelling JSON has to escape, so the round trip is shown to go
+            /// through the encoding rather than around it.
+            Escaped => "a\\b",
         }
     }
 
@@ -142,7 +163,21 @@ mod tests {
 
     #[test]
     fn all_lists_every_variant_in_order() {
-        assert_eq!(Sample::ALL, &[Sample::First, Sample::Second]);
+        assert_eq!(
+            Sample::ALL,
+            &[Sample::First, Sample::Second, Sample::Escaped]
+        );
+    }
+
+    /// A spelling the encoding has to escape survives both directions.
+    #[test]
+    fn an_escaped_spelling_round_trips_through_its_encoding() {
+        assert_eq!(Sample::Escaped.as_str(), "a\\b");
+        assert_eq!(
+            serde_json::to_string(&Sample::Escaped).unwrap(),
+            r#""a\\b""#
+        );
+        assert_eq!(Sample::from_str("a\\b").unwrap(), Sample::Escaped);
     }
 
     /// Nothing outside the table parses. A lenient parser that fell back to the

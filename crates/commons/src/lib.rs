@@ -3,4 +3,5 @@
 pub mod error;
 #[cfg(feature = "http")]
 pub mod http;
+pub mod observability;
 pub mod secret;

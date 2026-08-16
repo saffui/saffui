@@ -31,6 +31,14 @@ thiserror      = "2.0.19"
 # a feature so a crypto unit test does not compile a web framework.
 actix-web      = "4.14"
 log            = "0.4"
+
+# --- Observability ---
+# The subscriber stack is what a binary installs once; a library only ever
+# emits. Behind a feature so a crypto unit test compiles none of it.
+tracing              = "0.1.44"
+tracing-subscriber   = { version = "0.3.23", features = ["env-filter", "json"] }
+tracing-log          = "0.2.0"
+tracing-actix-web    = "0.7.22"
 openssl        = "0.10.81"
 # The raw FFI, for the post-quantum algorithms the safe crate has no bindings
 # for yet. Pinned to what `openssl` already resolves to, so there is one

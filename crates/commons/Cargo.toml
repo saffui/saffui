@@ -14,6 +14,15 @@ default = []
 # framework and the database driver into every one of them.
 http = ["dep:actix-web", "dep:serde", "dep:serde_json", "dep:log"]
 
+# The tracing subscriber, and the per-request span when `http` is on too. Off by
+# default for the same reason: this is what a binary installs, not what a
+# library needs to emit a record.
+tracing-json = ["dep:tracing", "dep:tracing-subscriber", "dep:tracing-log"]
+
+# The per-request root span. Needs both the tracing stack and the web framework,
+# so it is its own feature rather than a silent consequence of enabling two.
+request-span = ["http", "tracing-json", "dep:tracing-actix-web"]
+
 [dependencies]
 thiserror = { workspace = true }
 secrecy = { workspace = true }
@@ -22,3 +31,7 @@ actix-web = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
+tracing-log = { workspace = true, optional = true }
+tracing-actix-web = { workspace = true, optional = true }

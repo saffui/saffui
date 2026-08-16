@@ -16,6 +16,7 @@ authors      = ["Kodjo Touglo <micheltouglo@gmail.com>"]
 commons = { path = "crates/commons" }
 crypto  = { path = "crates/crypto" }
 config  = { path = "crates/config" }
+pgcore  = { path = "crates/pgcore" }
 
 # External: one version per dependency across the whole workspace.
 serde = { version = "1.0.229", features = ["derive"] }
@@ -52,6 +53,10 @@ foreign-types  = "0.3.2"
 # PKCS#11, for a key store where the private key never leaves the token.
 cryptoki       = "0.12"
 tokio-postgres = "0.7.18"
+# One TLS stack for the workspace: the OpenSSL already linked by `crypto`,
+# reached through postgres-openssl. Never a second one.
+postgres-openssl  = "0.5"
+deadpool-postgres = "0.14"
 
 # --- Secret material ---
 # zeroize wipes buffers on drop; subtle gives constant-time equality. Neither is

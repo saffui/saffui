@@ -27,6 +27,26 @@ pub struct CryptoConfig {
     /// Require the backend's FIPS mode. A build that asks for it and cannot get
     /// it fails rather than falling back.
     pub fips_required: bool,
+
+    /// Where to find a PKCS#11 token, when the key store should be one.
+    ///
+    /// Absent means the software store. There is no automatic discovery: a
+    /// deployment that meant to use a token and silently got the software store
+    /// would hold its private keys in process memory while believing otherwise.
+    #[cfg(feature = "pkcs11")]
+    pub pkcs11: Option<Pkcs11Config>,
+}
+
+/// How to reach a PKCS#11 token.
+#[cfg(feature = "pkcs11")]
+#[derive(Debug)]
+pub struct Pkcs11Config {
+    /// Path to the module to load.
+    pub module: String,
+    /// Which slot to use. Absent takes the first slot holding a token, which is
+    /// right for a single-token host and wrong for anything else.
+    pub slot: Option<u64>,
+    pub pin: SecretBox<String>,
 }
 
 /// Errors a provider surfaces.
@@ -215,9 +235,20 @@ impl PublicKey {
 ///
 /// One variant for now. A hardware store adds its own rather than reusing this
 /// one, so a software id can never be mistaken for a slot handle.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyHandle {
-    Software { id: String },
+    Software {
+        id: String,
+    },
+    /// A key living inside a PKCS#11 token, named by its label.
+    ///
+    /// The label rather than an object handle: handles are per-session and mean
+    /// nothing once the session closes, so one stored in a database would refer
+    /// to whatever occupies that slot next time.
+    #[cfg(feature = "pkcs11")]
+    Token {
+        label: String,
+    },
 }
 
 /// What to generate when asking a store for a new key.

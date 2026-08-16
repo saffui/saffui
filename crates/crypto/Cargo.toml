@@ -28,6 +28,12 @@ chacha20 = []
 # provider that builds and then refuses every post-quantum operation.
 pq-hybrid = []
 
+# A key store backed by a PKCS#11 token, where the private key is created
+# inside the device and never leaves it. Off by default: it needs a module to
+# load and a token to talk to, and a build without either should not carry the
+# dependency.
+pkcs11 = ["dep:cryptoki"]
+
 # Pins the validated FIPS provider. Mutually exclusive with the non-FIPS
 # algorithms above, and a `compile_error!` in lib.rs enforces it rather than a
 # note in these docs: a binary that claims FIPS while linking ChaCha20 is a
@@ -39,6 +45,7 @@ commons = { workspace = true }
 openssl = { workspace = true }
 openssl-sys = { workspace = true }
 foreign-types = { workspace = true }
+cryptoki = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -33,6 +33,9 @@ openssl-sys    = "0.9.117"
 # adopted into the safe crate's `PKey`. Pinned to the version `openssl` uses,
 # or the trait would be a different trait.
 foreign-types  = "0.3.2"
+
+# PKCS#11, for a key store where the private key never leaves the token.
+cryptoki       = "0.12"
 tokio-postgres = "0.7.18"
 
 # --- Secret material ---

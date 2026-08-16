@@ -31,6 +31,7 @@ jobs:
       - name: features
         run: |
           cargo clippy --workspace --all-targets --features crypto/chacha20 -- -D warnings
+          cargo clippy --workspace --all-targets --features crypto/pkcs11 -- -D warnings
           cargo clippy --workspace --all-targets --features crypto/fips-strict -- -D warnings
       # The exclusion is a compile_error!, so nothing observes it unless someone
       # builds the pair it forbids - and a guard nobody fires is a guard nobody
@@ -110,6 +111,41 @@ jobs:
           LD_LIBRARY_PATH: ${{ env.OPENSSL_PREFIX }}/lib64:${{ env.OPENSSL_PREFIX }}/lib
         run: |
           cargo test --workspace --features crypto/pq-hybrid
+
+  # The token tests are #[ignore], so a developer with no PKCS#11 module still
+  # gets a green suite. That also makes them invisible: nothing runs them unless
+  # something is set up to. This job is that something.
+  hsm:
+    runs-on: ubuntu-latest
+    env:
+      SAFFUI_TEST_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
+      SAFFUI_TEST_PKCS11_PIN: "1234"
+    steps:
+      - uses: actions/checkout@v5.0.1
+      - uses: Swatinem/rust-cache@v2
+
+      - name: install a PKCS#11 token
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y softhsm2
+          sudo mkdir -p /var/lib/softhsm/tokens
+          sudo chown -R "$USER" /var/lib/softhsm
+          softhsm2-util --init-token --free --label saffui-ci --pin 1234 --so-pin 1234
+          softhsm2-util --show-slots
+
+      # `cargo test --ignored` exits 0 when it runs nothing at all, so the count
+      # is checked and not the exit status. A job that passes while testing
+      # nothing is worse than no job: it reads as coverage of the private-key
+      # path, which is the last place to have a blind spot.
+      - name: test against the token
+        run: |
+          set -o pipefail
+          cargo test --workspace --features crypto/pkcs11 -- --ignored --test-threads=1 \
+            2>&1 | tee "$RUNNER_TEMP/hsm.log"
+          if ! grep -qE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/hsm.log"; then
+            echo "no token test ran; the job proved nothing." >&2
+            exit 1
+          fi
 
   deny:
     runs-on: ubuntu-latest

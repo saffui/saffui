@@ -17,6 +17,7 @@ commons = { path = "crates/commons" }
 crypto  = { path = "crates/crypto" }
 config  = { path = "crates/config" }
 pgcore  = { path = "crates/pgcore" }
+models  = { path = "crates/models" }
 
 # External: one version per dependency across the whole workspace.
 serde = { version = "1.0.229", features = ["derive"] }
@@ -26,6 +27,14 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 tokio          = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 thiserror      = "2.0.19"
+
+# --- Domain models ---
+# Timestamps on every audited row; `serde` so an API response carries RFC 3339
+# rather than a count of seconds nobody can read.
+chrono = { version = "0.4.42", features = ["serde"] }
+# Derives ToSql/FromSql for the enums that are PostgreSQL enum types, so the
+# database refuses a value the Rust side cannot name and vice versa.
+postgres-types = { version = "0.2.11", features = ["derive"] }
 
 # --- HTTP ---
 # Only the layers that serve a request pull these; `commons` gates them behind

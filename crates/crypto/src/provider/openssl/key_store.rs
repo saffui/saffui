@@ -34,6 +34,20 @@ impl SoftwareKeyStore {
         }
     }
 
+    /// The id inside a handle this store issued.
+    ///
+    /// A handle from another store is refused rather than looked up. The two
+    /// name different things — an id here, a token label there — and a store
+    /// that searched for one under the other would report "no such key" for a
+    /// key that exists, somewhere else.
+    fn software_id(handle: &KeyHandle) -> Result<&str> {
+        match handle {
+            KeyHandle::Software { id } => Ok(id),
+            #[cfg(feature = "pkcs11")]
+            KeyHandle::Token { .. } => Err(CryptoError::KeyStore),
+        }
+    }
+
     fn generate_der(alg: SignAlg) -> Result<Zeroizing<Vec<u8>>> {
         let pkey = match alg {
             SignAlg::Rs256
@@ -98,7 +112,7 @@ impl KeyStoreProvider for SoftwareKeyStore {
     }
 
     async fn delete_key(&self, handle: &KeyHandle) -> Result<()> {
-        let KeyHandle::Software { id } = handle;
+        let id = Self::software_id(handle)?;
         // Deleting a key that is not there is an error, not a no-op. The
         // caller's mental model is "that key is now gone because I removed
         // it"; on a missing id the truthful answer is that nothing was
@@ -117,7 +131,7 @@ impl KeyStoreProvider for SoftwareKeyStore {
         alg: SignAlg,
         data: &[u8],
     ) -> Result<Vec<u8>> {
-        let KeyHandle::Software { id } = handle;
+        let id = Self::software_id(handle)?;
         let der = {
             let keys = self.keys.lock().map_err(|_| CryptoError::KeyStore)?;
             keys.get(id).cloned().ok_or(CryptoError::KeyStore)?
@@ -243,7 +257,7 @@ mod tests {
 
         // Reach into the map for the public half only — the test stands in for
         // the export path a real deployment would have.
-        let KeyHandle::Software { id } = &handle;
+        let id = SoftwareKeyStore::software_id(&handle).unwrap();
         let public = {
             let keys = store.keys.lock().unwrap();
             let pkey = PKey::private_key_from_pkcs8(keys.get(id).unwrap()).unwrap();
@@ -265,8 +279,8 @@ mod tests {
         let first = block_on(store.create_key(spec(SignAlg::Es256))).unwrap();
         let second = block_on(store.create_key(spec(SignAlg::Es256))).unwrap();
 
-        let KeyHandle::Software { id: first_id } = &first;
-        let KeyHandle::Software { id: second_id } = &second;
+        let first_id = SoftwareKeyStore::software_id(&first).unwrap();
+        let second_id = SoftwareKeyStore::software_id(&second).unwrap();
         assert_ne!(first_id, second_id);
 
         block_on(store.delete_key(&first)).unwrap();

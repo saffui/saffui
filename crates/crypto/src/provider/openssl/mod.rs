@@ -12,6 +12,8 @@ pub mod kdf;
 pub mod key_store;
 pub mod legacy_digest;
 pub mod password;
+#[cfg(feature = "pkcs11")]
+pub mod pkcs11;
 #[cfg(feature = "pq-hybrid")]
 pub mod pq;
 pub mod rand;
@@ -50,7 +52,7 @@ pub struct OpenSslProvider {
     kdf: OpenSslKdf,
     rand: OpenSslRand,
     password: OpenSslPassword,
-    key_store: SoftwareKeyStore,
+    key_store: Box<dyn KeyStoreProvider>,
     legacy_digest: OpenSslLegacyDigest,
     digest: OpenSslDigest,
     #[cfg(feature = "pq-hybrid")]
@@ -100,7 +102,7 @@ impl OpenSslProvider {
             kdf: OpenSslKdf,
             rand: OpenSslRand,
             password: OpenSslPassword,
-            key_store: SoftwareKeyStore::new(),
+            key_store: Self::key_store(config)?,
             legacy_digest: OpenSslLegacyDigest,
             digest: OpenSslDigest,
             #[cfg(feature = "pq-hybrid")]
@@ -108,6 +110,22 @@ impl OpenSslProvider {
             #[cfg(feature = "pq-hybrid")]
             pq_kem: OpenSslMlKem,
         })
+    }
+
+    /// The key store the configuration asks for.
+    ///
+    /// A token is used only when one is configured. There is no discovery and
+    /// no fallback: a deployment that meant to hold its private keys in
+    /// hardware and silently got the software store would believe something
+    /// about those keys that is not true, and nothing later would say so.
+    fn key_store(config: &CryptoConfig) -> Result<Box<dyn KeyStoreProvider>> {
+        #[cfg(feature = "pkcs11")]
+        if let Some(pkcs11) = &config.pkcs11 {
+            return Ok(Box::new(pkcs11::Pkcs11KeyStore::new(pkcs11)?));
+        }
+
+        let _ = config;
+        Ok(Box::new(SoftwareKeyStore::new()))
     }
 
     fn load_fips() -> Result<Vec<openssl::provider::Provider>> {
@@ -151,7 +169,7 @@ impl CryptoProvider for OpenSslProvider {
         &self.password
     }
     fn key_store(&self) -> &dyn KeyStoreProvider {
-        &self.key_store
+        self.key_store.as_ref()
     }
     fn legacy_digest(&self) -> &dyn LegacyDigestProvider {
         &self.legacy_digest
@@ -178,6 +196,19 @@ mod tests {
     use secrecy::{ExposeSecret, SecretBox};
 
     use crate::provider::{AeadAlg, HashAlg, HmacAlg};
+
+    /// A config demanding FIPS.
+    ///
+    /// Written once: the struct grows a field per backend feature, so a literal
+    /// spelled out at each call site compiles under one feature set and not the
+    /// next.
+    fn fips_required() -> CryptoConfig {
+        CryptoConfig {
+            fips_required: true,
+            #[cfg(feature = "pkcs11")]
+            pkcs11: None,
+        }
+    }
 
     /// One operation through every accessor, behind the trait object.
     ///
@@ -251,9 +282,7 @@ mod tests {
     /// load failure is fatal in `new`.
     #[test]
     fn a_fips_requirement_is_met_or_fatal() {
-        let config = CryptoConfig {
-            fips_required: true,
-        };
+        let config = fips_required();
 
         match OpenSslProvider::new(&config) {
             Ok(provider) => assert!(
@@ -281,9 +310,7 @@ mod tests {
     /// the failure path runs.
     #[test]
     fn a_failed_fips_attempt_leaves_the_process_usable() {
-        let fips = OpenSslProvider::new(&CryptoConfig {
-            fips_required: true,
-        });
+        let fips = OpenSslProvider::new(&fips_required());
 
         let fallback = OpenSslProvider::new(&CryptoConfig::default())
             .expect("a default provider after a FIPS attempt");

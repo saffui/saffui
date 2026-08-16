@@ -5,6 +5,7 @@
 //! answer within reach of every caller.
 
 pub mod auditable;
+pub mod entities;
 pub mod paging;
 pub mod representation;
 pub mod search;

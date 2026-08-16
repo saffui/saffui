@@ -28,24 +28,8 @@ impl UnknownVariant {
 /// derived from it and `as_str` returns it, so the wire form and the Rust form
 /// cannot drift apart. `ALL` is generated rather than written, and parsing is
 /// strict — an unrecognised value is an error, never the first variant.
-macro_rules! str_enum {
-    (
-        $(#[$meta:meta])*
-        $vis:vis enum $name:ident {
-            $( $(#[$variant_meta:meta])* $variant:ident => $text:literal ),+ $(,)?
-        }
-    ) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash,
-                 ::serde::Serialize, ::serde::Deserialize)]
-        $vis enum $name {
-            $(
-                $(#[$variant_meta])*
-                #[serde(rename = $text)]
-                $variant,
-            )+
-        }
-
+macro_rules! str_enum_impls {
+    ($name:ident { $( $variant:ident => $text:literal ),+ $(,)? }) => {
         impl $name {
             /// Every variant, in declaration order.
             pub const ALL: &'static [$name] = &[$($name::$variant),+];
@@ -78,6 +62,64 @@ macro_rules! str_enum {
         }
     };
 }
+
+/// Declare an enum whose variants are also a fixed set of strings.
+///
+/// The literal in the table is the only place the spelling appears: serde is
+/// derived from it and `as_str` returns it, so the wire form and the Rust form
+/// cannot drift apart. `ALL` is generated rather than written, and parsing is
+/// strict — an unrecognised value is an error, never the first variant.
+///
+/// Prefixing the declaration with `#[postgres(name = "...")]` also derives
+/// `ToSql`/`FromSql` and labels each variant from the same literal, so a
+/// database enum type cannot spell a variant differently from the wire.
+macro_rules! str_enum {
+    (
+        #[postgres(name = $pg_name:literal)]
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $( $(#[$variant_meta:meta])* $variant:ident => $text:literal ),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash,
+                 ::serde::Serialize, ::serde::Deserialize,
+                 ::postgres_types::ToSql, ::postgres_types::FromSql)]
+        #[postgres(name = $pg_name)]
+        $vis enum $name {
+            $(
+                $(#[$variant_meta])*
+                #[serde(rename = $text)]
+                #[postgres(name = $text)]
+                $variant,
+            )+
+        }
+
+        $crate::str_enum::str_enum_impls!($name { $($variant => $text),+ });
+    };
+
+    (
+        $(#[$meta:meta])*
+        $vis:vis enum $name:ident {
+            $( $(#[$variant_meta:meta])* $variant:ident => $text:literal ),+ $(,)?
+        }
+    ) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash,
+                 ::serde::Serialize, ::serde::Deserialize)]
+        $vis enum $name {
+            $(
+                $(#[$variant_meta])*
+                #[serde(rename = $text)]
+                $variant,
+            )+
+        }
+
+        $crate::str_enum::str_enum_impls!($name { $($variant => $text),+ });
+    };
+}
+
+pub(crate) use str_enum_impls;
 
 pub(crate) use str_enum;
 
@@ -167,6 +209,80 @@ mod tests {
             Sample::ALL,
             &[Sample::First, Sample::Second, Sample::Escaped]
         );
+    }
+
+    str_enum! {
+        #[postgres(name = "sample_stored_enum")]
+        enum Stored {
+            Kept => "kept",
+            Dropped => "let-go",
+        }
+    }
+
+    /// The database label comes from the same literal as the wire spelling.
+    ///
+    /// Checked against a type that declares the labels rather than trusted to
+    /// the macro: `to_sql` refuses a value the enum type does not list, so a
+    /// variant labelled by its Rust name would fail here instead of failing on
+    /// the first insert.
+    #[test]
+    fn a_database_enum_is_labelled_from_the_same_table() {
+        use postgres_types::{Kind, ToSql, Type};
+
+        let declared = Type::new(
+            "sample_stored_enum".to_owned(),
+            0,
+            Kind::Enum(Stored::ALL.iter().map(|v| v.as_str().to_owned()).collect()),
+            "public".to_owned(),
+        );
+
+        assert!(
+            <Stored as ToSql>::accepts(&declared),
+            "a type declaring exactly these labels must be accepted"
+        );
+
+        for variant in Stored::ALL {
+            let mut buffer = bytes::BytesMut::new();
+            variant
+                .to_sql(&declared, &mut buffer)
+                .expect("the variant is one the type declares");
+            assert_eq!(
+                &buffer[..],
+                variant.as_str().as_bytes(),
+                "{variant} is stored under another label"
+            );
+        }
+
+        assert_eq!(Stored::Dropped.as_str(), "let-go");
+        assert_round_trips(Stored::ALL);
+    }
+
+    /// A label the type does not declare is refused rather than written.
+    #[test]
+    fn a_label_the_type_does_not_declare_is_refused() {
+        use postgres_types::{Kind, ToSql, Type};
+
+        let mismatched = Type::new(
+            "sample_stored_enum".to_owned(),
+            0,
+            Kind::Enum(vec!["Kept".to_owned(), "Dropped".to_owned()]),
+            "public".to_owned(),
+        );
+
+        assert!(
+            !<Stored as ToSql>::accepts(&mismatched),
+            "a type labelled by Rust names must not accept the wire spelling"
+        );
+
+        // And the check is not vacuous: it is the labels that decide, not the
+        // type name, which is identical in both.
+        let renamed = Type::new(
+            "another_name".to_owned(),
+            0,
+            Kind::Enum(Stored::ALL.iter().map(|v| v.as_str().to_owned()).collect()),
+            "public".to_owned(),
+        );
+        assert!(!<Stored as ToSql>::accepts(&renamed));
     }
 
     /// A spelling the encoding has to escape survives both directions.

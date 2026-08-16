@@ -1,0 +1,22 @@
+[package]
+name = "pgcore"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# PostgreSQL primitives that know nothing about tables: how a connection is
+# secured, how one writer at a time is elected, and how the schema reaches its
+# current version.
+
+[dependencies]
+openssl = { workspace = true }
+tokio-postgres = { workspace = true }
+postgres-openssl = { workspace = true }
+deadpool-postgres = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+crypto = { workspace = true }

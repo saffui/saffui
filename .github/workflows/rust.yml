@@ -26,16 +26,11 @@ jobs:
       # running them. Gating a cipher must not stop testing it.
       - name: test with chacha20
         run: cargo test --workspace --features crypto/chacha20
-      # Same reason: the post-quantum code is behind a feature, so nothing above
-      # compiles it and nothing else would run it.
-      - name: test with pq-hybrid
-        run: cargo test --workspace --features crypto/pq-hybrid
       # fips-strict gates only the exclusion guard, so compiling it is all there
       # is to check. Two invocations because the pair is mutually exclusive.
       - name: features
         run: |
           cargo clippy --workspace --all-targets --features crypto/chacha20 -- -D warnings
-          cargo clippy --workspace --all-targets --features crypto/pq-hybrid -- -D warnings
           cargo clippy --workspace --all-targets --features crypto/fips-strict -- -D warnings
       # The exclusion is a compile_error!, so nothing observes it unless someone
       # builds the pair it forbids - and a guard nobody fires is a guard nobody
@@ -56,6 +51,59 @@ jobs:
           }
           check chacha20 "incompatible with the non-FIPS 'chacha20' cipher"
           check pq-hybrid "ML-DSA and ML-KEM are not FIPS-validated"
+
+  # ML-DSA and ML-KEM arrived in OpenSSL 3.5, and the runner image ships 3.0, so
+  # the ci job above can compile this feature but cannot execute a single line
+  # of it. Rather than let the tests be skipped - which reads as coverage of the
+  # code that generates keys - this job builds the library it needs.
+  pq:
+    runs-on: ubuntu-latest
+    env:
+      # One line to bump. Only ever linked here: nothing ships this build.
+      OPENSSL_VERSION: 3.5.0
+      OPENSSL_PREFIX: /opt/openssl-pq
+    steps:
+      - uses: actions/checkout@v5.0.1
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cache the built library
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OPENSSL_PREFIX }}
+          key: openssl-${{ env.OPENSSL_VERSION }}-${{ runner.os }}
+
+      - name: build OpenSSL
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSLO "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
+          tar xzf "openssl-$OPENSSL_VERSION.tar.gz"
+          cd "openssl-$OPENSSL_VERSION"
+          ./Configure --prefix="$OPENSSL_PREFIX" --openssldir="$OPENSSL_PREFIX/ssl" shared
+          make -j"$(nproc)"
+          # install_sw skips the manual pages, which are most of the install time
+          # and none of the point.
+          sudo make install_sw
+
+      # The whole job rests on cargo linking the library built above rather than
+      # the system one, and a silent fallback would surface as a puzzling test
+      # failure. Checked here instead, where the message can say what happened.
+      - name: check it is the library we think it is
+        run: |
+          "$OPENSSL_PREFIX/bin/openssl" version
+          case "$("$OPENSSL_PREFIX/bin/openssl" version)" in
+            "OpenSSL $OPENSSL_VERSION"*) ;;
+            *) echo "the built library is not $OPENSSL_VERSION" >&2; exit 1 ;;
+          esac
+          "$OPENSSL_PREFIX/bin/openssl" list -signature-algorithms | grep -q ML-DSA
+          "$OPENSSL_PREFIX/bin/openssl" list -kem-algorithms | grep -q ML-KEM
+
+      - name: test with pq-hybrid
+        env:
+          OPENSSL_DIR: ${{ env.OPENSSL_PREFIX }}
+          LD_LIBRARY_PATH: ${{ env.OPENSSL_PREFIX }}/lib64:${{ env.OPENSSL_PREFIX }}/lib
+        run: |
+          cargo test --workspace --features crypto/pq-hybrid
 
   deny:
     runs-on: ubuntu-latest

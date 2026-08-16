@@ -30,6 +30,32 @@ const MIN_T_COST: u32 = 1;
 /// login, indistinguishable from a wrong one. Refusing to mint is the safe
 /// asymmetry: a rejected hash is a visible error while the password is being
 /// set, an unverifiable one is a silent error discovered much later.
+/// Ceiling on the bcrypt cost read out of a stored record.
+///
+/// `bcrypt::verify` honours the record's cost verbatim, and the format allows
+/// up to 31 — a cost-31 record measures around a hundred hours on a developer
+/// machine, so one imported or seeded row pins a worker for as long as it is
+/// allowed to run. The work doubles per unit, so the ceiling is what bounds a
+/// login attempt, not the caller's patience.
+///
+/// There is deliberately no floor, unlike Argon2 above. This crate never mints
+/// bcrypt, so a cheap record is one an older system already issued; refusing it
+/// locks that account out without making anything harder for an attacker who
+/// could write to the table in the first place.
+const MAX_BCRYPT_COST: u32 = 14;
+
+/// The cost is the two digits after the version tag: `$2b$12$<22 salt><31 hash>`.
+///
+/// Read here rather than left to the bcrypt crate, because the crate's own
+/// parse happens inside the call that then spends the work.
+fn bcrypt_cost(hash: &str) -> Option<u32> {
+    hash.strip_prefix("$2")?
+        .strip_prefix(['a', 'b', 'x', 'y'])?
+        .strip_prefix('$')?
+        .split_at_checked(2)
+        .and_then(|(cost, _)| cost.parse().ok())
+}
+
 fn within_bounds(m_cost: u32, t_cost: u32, p_cost: u32) -> bool {
     (MIN_M_COST..=MAX_M_COST).contains(&m_cost)
         && (MIN_T_COST..=MAX_T_COST).contains(&t_cost)
@@ -87,6 +113,12 @@ impl PasswordProvider for OpenSslPassword {
     }
 
     fn verify_bcrypt(&self, password: &SecretBox<String>, hash: &str) -> Result<bool> {
+        // Bounded before the call, because the call is the work.
+        let cost = bcrypt_cost(hash).ok_or(CryptoError::InvalidParams)?;
+        if cost > MAX_BCRYPT_COST {
+            return Err(CryptoError::InvalidParams);
+        }
+
         bcrypt::verify(password.expose_secret(), hash).map_err(|_| CryptoError::InvalidParams)
     }
 }
@@ -277,5 +309,65 @@ mod tests {
                 .verify_bcrypt(&password("correct horse"), "not a bcrypt hash")
                 .is_err()
         );
+    }
+
+    /// A record naming a cost beyond the ceiling is refused, and refused
+    /// without doing the work.
+    ///
+    /// The elapsed-time assertion is the point of the test. Returning an error
+    /// after grinding through 2^31 rounds would satisfy a plain `is_err`, and
+    /// that is exactly the outcome — a pinned worker per attempt — the ceiling
+    /// exists to prevent.
+    #[test]
+    fn a_record_above_the_cost_ceiling_is_refused_without_doing_the_work() {
+        // A genuine record, so salt and digest are well-formed; only the two
+        // cost digits move.
+        let genuine = bcrypt::hash("correct horse", 4).unwrap();
+        let body = &genuine["$2b$04$".len()..];
+
+        for cost in [MAX_BCRYPT_COST + 1, 20, 31] {
+            let record = format!("$2b${cost:02}${body}");
+            let started = std::time::Instant::now();
+            let outcome = OpenSslPassword.verify_bcrypt(&password("correct horse"), &record);
+            let elapsed = started.elapsed();
+
+            assert!(
+                matches!(outcome, Err(CryptoError::InvalidParams)),
+                "cost {cost} was accepted"
+            );
+            assert!(
+                elapsed < std::time::Duration::from_millis(100),
+                "cost {cost} was refused only after {elapsed:?} of work"
+            );
+        }
+    }
+
+    /// Records at or below the ceiling still read, so bounding the cost did not
+    /// lock out the imports this method exists for.
+    #[test]
+    fn records_within_the_ceiling_still_verify() {
+        for cost in [4u32, 6, 10] {
+            let record = bcrypt::hash("correct horse", cost).unwrap();
+            assert!(
+                OpenSslPassword
+                    .verify_bcrypt(&password("correct horse"), &record)
+                    .unwrap(),
+                "cost {cost} did not verify"
+            );
+        }
+    }
+
+    /// Every version tag the format defines is read, and anything else is not.
+    #[test]
+    fn the_cost_is_read_from_each_version_tag() {
+        for version in ["2a", "2b", "2x", "2y"] {
+            let record =
+                format!("${version}$12$c29tZXNhbHQyMmNoYXJhY3Rlcn.abcdefghijklmnopqrstuvwxyz012");
+            assert_eq!(bcrypt_cost(&record), Some(12), "{version} was not read");
+        }
+
+        for record in ["", "$2z$12$x", "$2b$$x", "$2b$xx$x", "not a hash"] {
+            assert_eq!(bcrypt_cost(record), None, "{record:?} was read as a record");
+        }
     }
 }

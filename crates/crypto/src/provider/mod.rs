@@ -274,6 +274,8 @@ pub trait CryptoProvider: Send + Sync {
 
     #[cfg(feature = "pq-hybrid")]
     fn pq_signature(&self) -> &dyn PqSignatureProvider;
+    #[cfg(feature = "pq-hybrid")]
+    fn pq_kem(&self) -> &dyn PqKemProvider;
 }
 
 pub trait HmacProvider: Send + Sync {
@@ -354,6 +356,59 @@ pub trait PqSignatureProvider: Send + Sync {
     fn sign(&self, key: &PrivateKey, message: &[u8]) -> Result<Vec<u8>>;
 
     fn verify(&self, key: &PublicKey, message: &[u8], signature: &[u8]) -> Result<bool>;
+}
+
+/// ML-KEM parameter sets (FIPS 203).
+#[cfg(feature = "pq-hybrid")]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum MlKemAlg {
+    MlKem512,
+    MlKem768,
+    MlKem1024,
+}
+
+/// What an encapsulation produces: the ciphertext for the holder of the private
+/// key, and the shared secret to keep.
+///
+/// The two travel together because they are only meaningful together, and
+/// because the secret is the half that must not be logged — separating them
+/// invites a struct where one field is protected and the other is not.
+#[cfg(feature = "pq-hybrid")]
+pub struct Encapsulation {
+    pub ciphertext: Vec<u8>,
+    pub shared_secret: SecretBox<Vec<u8>>,
+}
+
+#[cfg(feature = "pq-hybrid")]
+impl std::fmt::Debug for Encapsulation {
+    /// Renders the ciphertext's length and never the secret.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Encapsulation")
+            .field("ciphertext_len", &self.ciphertext.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// Post-quantum key encapsulation.
+///
+/// A KEM is not a cipher and not a key agreement: encapsulating produces a
+/// fresh shared secret *and* the ciphertext that lets one particular private
+/// key recover it. There is no plaintext to choose, which is why this has no
+/// resemblance to [`AeadProvider`] and needs its own trait.
+///
+/// Like [`PqSignatureProvider`], every operation needs libcrypto 3.5 or newer
+/// and reports [`CryptoError::UnsupportedAlgorithm`] when the algorithm cannot
+/// be fetched.
+#[cfg(feature = "pq-hybrid")]
+pub trait PqKemProvider: Send + Sync {
+    /// A fresh key pair, private as PKCS#8 DER and public as SPKI DER.
+    fn generate(&self, alg: MlKemAlg) -> Result<(PrivateKey, PublicKey)>;
+
+    /// Draw a shared secret and the ciphertext that recovers it.
+    fn encapsulate(&self, key: &PublicKey) -> Result<Encapsulation>;
+
+    /// Recover the shared secret from a ciphertext.
+    fn decapsulate(&self, key: &PrivateKey, ciphertext: &[u8]) -> Result<SecretBox<Vec<u8>>>;
 }
 
 /// An extendable-output function, which produces as many bytes as it is asked

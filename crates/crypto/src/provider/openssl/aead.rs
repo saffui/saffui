@@ -295,4 +295,29 @@ mod tests {
                 .is_err()
         );
     }
+
+    /// Each name maps to the cipher it names, checked by identity.
+    ///
+    /// Nothing else in this module can see a substitution here. The known
+    /// answer above pins A128Gcm alone; every other algorithm is covered by
+    /// round trips, and a round trip agrees with itself under any AEAD — swap
+    /// A256Gcm for AES-256-OCB and every test in this file still passes while
+    /// the crate silently stops speaking GCM.
+    #[test]
+    fn each_name_maps_to_the_cipher_it_names() {
+        let expected = [
+            (AeadAlg::A128Gcm, openssl::nid::Nid::AES_128_GCM),
+            (AeadAlg::A192Gcm, openssl::nid::Nid::AES_192_GCM),
+            (AeadAlg::A256Gcm, openssl::nid::Nid::AES_256_GCM),
+            #[cfg(feature = "chacha20")]
+            (
+                AeadAlg::ChaCha20Poly1305,
+                openssl::nid::Nid::CHACHA20_POLY1305,
+            ),
+        ];
+
+        for (alg, nid) in expected {
+            assert_eq!(cipher(alg).nid(), nid, "{alg:?} is not mapped to {nid:?}");
+        }
+    }
 }

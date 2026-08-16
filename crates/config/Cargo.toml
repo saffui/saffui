@@ -12,11 +12,6 @@ authors.workspace = true
 # and nothing about where the values came from, so it stays testable without an
 # environment.
 
-[features]
-default = []
-# Forwarded so the token fields are read only where a token can be used.
-pkcs11 = ["crypto/pkcs11"]
-
 [dependencies]
 commons = { workspace = true }
 crypto = { workspace = true }

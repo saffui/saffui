@@ -11,8 +11,6 @@ use crate::ConfigError;
 pub fn from_env() -> Result<CryptoConfig, ConfigError> {
     Ok(CryptoConfig {
         fips_required: crate::flag("CRYPTO_FIPS_REQUIRED", false)?,
-
-        #[cfg(feature = "pkcs11")]
         pkcs11: pkcs11_from_env()?,
     })
 }
@@ -22,7 +20,6 @@ pub fn from_env() -> Result<CryptoConfig, ConfigError> {
 /// The module path is what decides. A PIN or a slot on their own configure
 /// nothing, and silently ignoring them would leave an operator believing the
 /// token is in use — so they are an error instead.
-#[cfg(feature = "pkcs11")]
 fn pkcs11_from_env() -> Result<Option<crypto::provider::Pkcs11Config>, ConfigError> {
     let Some(module) = crate::optional("CRYPTO_PKCS11_MODULE") else {
         for orphan in ["CRYPTO_PKCS11_PIN", "CRYPTO_PKCS11_SLOT"] {
@@ -80,7 +77,6 @@ mod tests {
     }
 
     /// A token is used only when its module is named.
-    #[cfg(feature = "pkcs11")]
     #[test]
     fn a_token_needs_its_module_named() {
         let _guard = env_guard();

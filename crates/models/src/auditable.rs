@@ -101,8 +101,11 @@ mod tests {
         );
     }
 
-    /// The tenant-less record is empty everywhere, so a row persisted without
-    /// the overwrite fails a `NOT NULL` tenant rather than landing somewhere.
+    /// The tenant-less record holds nothing that could be mistaken for a real
+    /// value. The empty tenant is not itself the safeguard — an empty string
+    /// satisfies a `NOT NULL` column — which is why the constructor is named
+    /// rather than derived: what protects the row is that reaching for it has
+    /// to be written down.
     #[test]
     fn the_unassigned_record_carries_no_tenant_and_no_actor() {
         let meta = AuditableModel::unassigned();

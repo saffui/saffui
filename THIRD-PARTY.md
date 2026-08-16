@@ -149,6 +149,21 @@ iteration-count ceiling but no floor, so `p2c = 1` derived a key encryption key
 in a single PBKDF2 round (RFC 7518 §4.8.1.2 recommends at least 1000), and the
 encrypt path read `p2c` from the incoming header with no bound at all.
 
+### Not covered by the vendored tree
+
+**RFC 7638 JWK thumbprints, and the RFC 9278 thumbprint URI.** josekit reads
+and writes the `x5t` / `x5t#S256` header parameters, which are hashes of an
+X.509 *certificate*. That is a different value from a JWK thumbprint, which is
+a hash over the key's required members in the canonical JSON of RFC 7638 §3 —
+members lexicographically ordered, no whitespace, optional and private members
+excluded, so a key pair's public and private halves share one thumbprint.
+
+Nothing here computes it. Anything that needs a stable identifier *for a key*
+needs it written: DPoP binds a token to `jkt`, mTLS certificate binding and
+several OIDC flows use the same value. Writing it means the canonical JSON as
+well as the hash, since a serialiser that emits members in insertion order
+produces a thumbprint that agrees with nobody.
+
 ## Before vendoring anything
 
 Record the entry **in the same commit that introduces the code**, never

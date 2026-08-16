@@ -315,6 +315,19 @@ pub enum LegacyDigest {
     Sha512,
 }
 
+/// Not here, and deliberately so until something needs them:
+///
+/// - a digest over [`HashAlg`], which would let a caller hash under SHA-2 or
+///   SHA-3 through the seam. [`LegacyDigestProvider`] is not it: its four
+///   algorithms exist to read inherited password records, and widening that
+///   type would put MD5 back within reach of everything else.
+/// - the SHAKE extendable-output functions, which post-quantum work needs.
+///
+/// Both belong here as trait methods when a caller appears. Neither belongs in
+/// a free function calling the backend directly — that is the shape that lost
+/// the family check, the nonce-length check and the cost bounds elsewhere in
+/// this crate, each time by reaching past this seam rather than through it.
+///
 /// Bare digests, for reading legacy password formats and nothing else.
 ///
 /// Under a FIPS build MD5 is not available and this reports the failure rather

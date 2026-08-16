@@ -49,11 +49,13 @@ fn pkcs11_from_env() -> Result<Option<crypto::provider::Pkcs11Config>, ConfigErr
 mod tests {
     use super::*;
 
-    use crate::tests::{clear, set};
+    use crate::tests::{clear, env_guard, set};
 
     /// Nothing set is the software store with FIPS off.
     #[test]
     fn an_empty_environment_is_the_default() {
+        let _guard = env_guard();
+
         clear(&["CRYPTO_FIPS_REQUIRED"]);
 
         let config = from_env().unwrap();
@@ -64,6 +66,8 @@ mod tests {
     /// FIPS is read, and a value that is neither is refused.
     #[test]
     fn fips_is_read_and_checked() {
+        let _guard = env_guard();
+
         for (written, expected) in [("true", true), ("1", true), ("no", false), ("FALSE", false)] {
             set("CRYPTO_FIPS_REQUIRED", written);
             assert_eq!(from_env().unwrap().fips_required, expected, "{written}");
@@ -79,6 +83,8 @@ mod tests {
     #[cfg(feature = "pkcs11")]
     #[test]
     fn a_token_needs_its_module_named() {
+        let _guard = env_guard();
+
         clear(&[
             "CRYPTO_PKCS11_MODULE",
             "CRYPTO_PKCS11_PIN",

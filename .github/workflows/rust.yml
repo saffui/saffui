@@ -30,6 +30,10 @@ jobs:
       # request compiles a web framework — which means nothing above runs it.
       - name: test with commons/http
         run: cargo test --workspace --features commons/http
+      # The token fields are only read where a token can be used, so the feature
+      # has to be compiled somewhere.
+      - name: test with config/pkcs11
+        run: cargo test --workspace --features config/pkcs11
       # fips-strict gates only the exclusion guard, so compiling it is all there
       # is to check. Two invocations because the pair is mutually exclusive.
       - name: features

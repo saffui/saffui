@@ -4,6 +4,7 @@
 //! and who may see it to the API layer; a model that knew either would put that
 //! answer within reach of every caller.
 
+pub mod auditable;
 pub mod paging;
 pub mod representation;
 pub mod search;

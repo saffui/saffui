@@ -272,7 +272,22 @@ pub trait CryptoProvider: Send + Sync {
 }
 
 pub trait HmacProvider: Send + Sync {
-    fn hmac(&self, alg: HmacAlg, key: &SecretBox<Vec<u8>>, data: &[u8]) -> Result<Vec<u8>>;
+    /// HMAC under a bare hash.
+    ///
+    /// `HmacAlg` names the three hashes JWS allows; HMAC itself is defined over
+    /// any hash, and RFC 4226 one-time passwords are specified over SHA-1.
+    /// Reaching SHA-1 only through here keeps it out of `HmacAlg`, where it
+    /// would become selectable as a signature algorithm.
+    fn hmac_with_hash(
+        &self,
+        hash: HashAlg,
+        key: &SecretBox<Vec<u8>>,
+        data: &[u8],
+    ) -> Result<Vec<u8>>;
+
+    fn hmac(&self, alg: HmacAlg, key: &SecretBox<Vec<u8>>, data: &[u8]) -> Result<Vec<u8>> {
+        self.hmac_with_hash(alg.hash(), key, data)
+    }
 
     /// Compares in constant time. A caller must not recompute and use `==`.
     fn verify(

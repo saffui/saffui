@@ -6,15 +6,15 @@ use openssl::sign::Signer;
 use secrecy::{ExposeSecret, SecretBox};
 
 use crate::provider::openssl::digest::message_digest;
-use crate::provider::{CryptoError, HmacAlg, HmacProvider, Result};
+use crate::provider::{CryptoError, HashAlg, HmacAlg, HmacProvider, Result};
 
 pub struct OpenSslHmac;
 
 impl OpenSslHmac {
-    fn compute(alg: HmacAlg, key: &SecretBox<Vec<u8>>, data: &[u8]) -> Result<Vec<u8>> {
+    fn compute(hash: HashAlg, key: &SecretBox<Vec<u8>>, data: &[u8]) -> Result<Vec<u8>> {
         let pkey = PKey::hmac(key.expose_secret()).map_err(|_| CryptoError::InvalidKey)?;
-        let mut signer = Signer::new(message_digest(alg.hash()), &pkey)
-            .map_err(|_| CryptoError::OperationFailed)?;
+        let mut signer =
+            Signer::new(message_digest(hash), &pkey).map_err(|_| CryptoError::OperationFailed)?;
         signer
             .update(data)
             .map_err(|_| CryptoError::OperationFailed)?;
@@ -25,8 +25,13 @@ impl OpenSslHmac {
 }
 
 impl HmacProvider for OpenSslHmac {
-    fn hmac(&self, alg: HmacAlg, key: &SecretBox<Vec<u8>>, data: &[u8]) -> Result<Vec<u8>> {
-        Self::compute(alg, key, data)
+    fn hmac_with_hash(
+        &self,
+        hash: HashAlg,
+        key: &SecretBox<Vec<u8>>,
+        data: &[u8],
+    ) -> Result<Vec<u8>> {
+        Self::compute(hash, key, data)
     }
 
     fn verify(
@@ -36,7 +41,7 @@ impl HmacProvider for OpenSslHmac {
         data: &[u8],
         tag: &[u8],
     ) -> Result<bool> {
-        let expected = Self::compute(alg, key, data)?;
+        let expected = Self::compute(alg.hash(), key, data)?;
         // `memcmp::eq` is constant time but reads both slices to the same
         // length, so the lengths are compared first and separately. A length
         // mismatch is not secret; which byte differs is.
@@ -127,6 +132,36 @@ mod tests {
                 .verify(HmacAlg::Hs256, &key, b"other payload", &tag)
                 .unwrap()
         );
+    }
+
+    /// RFC 2202 test case 1, the SHA-1 counterpart of the vectors above.
+    ///
+    /// SHA-1 is reachable only through `hmac_with_hash`, so nothing else in the
+    /// crate covers it — and it is what RFC 4226 one-time passwords are built
+    /// on, where a wrong digest yields codes that no authenticator agrees with.
+    #[test]
+    fn rfc2202_case_1() {
+        let key = secret(&[0x0b; 20]);
+        let tag = OpenSslHmac
+            .hmac_with_hash(HashAlg::Sha1, &key, b"Hi There")
+            .unwrap();
+
+        assert_eq!(hex(&tag), "b617318655057264e28bc0b6fb378c8ef146be00");
+    }
+
+    /// The `HmacAlg` entry point is the hash one, so the two cannot disagree.
+    #[test]
+    fn the_named_algorithms_agree_with_their_hashes() {
+        let key = secret(b"0123456789abcdef0123456789abcdef");
+        let data = b"payload";
+
+        for alg in [HmacAlg::Hs256, HmacAlg::Hs384, HmacAlg::Hs512] {
+            assert_eq!(
+                OpenSslHmac.hmac(alg, &key, data).unwrap(),
+                OpenSslHmac.hmac_with_hash(alg.hash(), &key, data).unwrap(),
+                "{alg:?}"
+            );
+        }
     }
 
     fn hex(bytes: &[u8]) -> String {

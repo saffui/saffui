@@ -30,6 +30,10 @@ jobs:
       # request compiles a web framework — which means nothing above runs it.
       - name: test with commons/http
         run: cargo test --workspace --features commons/http
+      # The subscriber stack and the per-request span are what a binary
+      # installs, so nothing above compiles them.
+      - name: test with commons/request-span
+        run: cargo test --workspace --features commons/request-span
       # fips-strict gates only the exclusion guard, so compiling it is all there
       # is to check. Two invocations because the pair is mutually exclusive.
       - name: features
@@ -37,6 +41,7 @@ jobs:
           cargo clippy --workspace --all-targets --features crypto/chacha20 -- -D warnings
           cargo clippy --workspace --all-targets --features crypto/pkcs11 -- -D warnings
           cargo clippy --workspace --all-targets --features commons/http -- -D warnings
+          cargo clippy --workspace --all-targets --features commons/request-span -- -D warnings
           cargo clippy --workspace --all-targets --features crypto/fips-strict -- -D warnings
       # The exclusion is a compile_error!, so nothing observes it unless someone
       # builds the pair it forbids - and a guard nobody fires is a guard nobody

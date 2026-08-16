@@ -18,4 +18,5 @@ pub mod jose;
 pub mod otp;
 pub mod password;
 pub mod provider;
+pub mod secret;
 pub mod thumbprint;

@@ -55,6 +55,7 @@ use std::sync::Arc;
 use secrecy::{ExposeSecret, SecretBox};
 
 use crate::provider::{AeadAlg, CryptoError, CryptoProvider, HashAlg, HmacAlg, Result};
+use crate::secret::{Dek, KeyWrappingKey};
 
 /// Magic and layout version. A reader that does not recognise the version
 /// refuses the blob rather than trying to parse it.
@@ -97,7 +98,10 @@ const KEK_ID_LABEL: &[u8] = b"saffui/kek-id/v1";
 /// separated from its version produces blobs nothing can open.
 pub struct RealmDek {
     pub version: u32,
-    pub key: SecretBox<Vec<u8>>,
+    /// Typed, so a key that wraps DEKs cannot be put here and used to seal a
+    /// value. Both are 32 secret bytes and the swap produces ciphertext that
+    /// opens under nothing.
+    pub key: Dek,
 }
 
 impl std::fmt::Debug for RealmDek {
@@ -202,10 +206,13 @@ impl Envelope {
     ///
     /// Derived separately from the fingerprint so that publishing `kek_id` says
     /// nothing about the key that actually wraps DEKs.
-    fn wrapping_key(&self) -> Result<SecretBox<Vec<u8>>> {
-        self.crypto
-            .kdf()
-            .hkdf(HashAlg::Sha256, &self.kek, None, WRAP_INFO, DEK_LEN)
+    fn wrapping_key(&self) -> Result<KeyWrappingKey> {
+        let derived =
+            self.crypto
+                .kdf()
+                .hkdf(HashAlg::Sha256, &self.kek, None, WRAP_INFO, DEK_LEN)?;
+
+        Ok(KeyWrappingKey::new(derived.expose_secret().clone()))
     }
 
     /// Mint a fresh DEK for `version`.
@@ -215,7 +222,7 @@ impl Envelope {
 
         Ok(RealmDek {
             version,
-            key: SecretBox::new(Box::new(key)),
+            key: Dek::new(key),
         })
     }
 
@@ -226,10 +233,10 @@ impl Envelope {
     /// unwrap.
     pub fn wrap_dek(&self, scope: &SecretScope<'_>, dek: &RealmDek) -> Result<Vec<u8>> {
         self.seal_with(
-            &self.wrapping_key()?,
+            self.wrapping_key()?.secret(),
             dek.version,
             scope,
-            dek.key.expose_secret(),
+            dek.key.expose(),
         )
     }
 
@@ -240,7 +247,7 @@ impl Envelope {
         version: u32,
         wrapped: &[u8],
     ) -> Result<RealmDek> {
-        let key = self.open_with(&self.wrapping_key()?, version, scope, wrapped)?;
+        let key = self.open_with(self.wrapping_key()?.secret(), version, scope, wrapped)?;
 
         // A DEK of the wrong width would fail later, inside AES, as an opaque
         // operation failure. It is a malformed key and says so here.
@@ -248,7 +255,10 @@ impl Envelope {
             return Err(CryptoError::InvalidKey);
         }
 
-        Ok(RealmDek { version, key })
+        Ok(RealmDek {
+            version,
+            key: Dek::new(key.expose_secret().clone()),
+        })
     }
 
     /// Encrypt `plaintext` for `scope` under `dek`.
@@ -258,7 +268,7 @@ impl Envelope {
         scope: &SecretScope<'_>,
         plaintext: &[u8],
     ) -> Result<Vec<u8>> {
-        self.seal_with(&dek.key, dek.version, scope, plaintext)
+        self.seal_with(dek.key.secret(), dek.version, scope, plaintext)
     }
 
     /// Decrypt a blob sealed for the same scope under the same DEK generation.
@@ -268,7 +278,7 @@ impl Envelope {
         scope: &SecretScope<'_>,
         sealed: &[u8],
     ) -> Result<SecretBox<Vec<u8>>> {
-        self.open_with(&dek.key, dek.version, scope, sealed)
+        self.open_with(dek.key.secret(), dek.version, scope, sealed)
     }
 
     /// The shared sealing routine, over any key of the right width.
@@ -534,7 +544,7 @@ mod tests {
         // surface as a tag failure.
         let renumbered = RealmDek {
             version: 2,
-            key: SecretBox::new(Box::new(first.key.expose_secret().clone())),
+            key: Dek::new(first.key.expose().to_vec()),
         };
         assert!(matches!(
             envelope.open(&renumbered, &scope(), &sealed),
@@ -583,7 +593,7 @@ mod tests {
 
         let back = envelope.unwrap_dek(&scope(), 7, &wrapped).unwrap();
         assert_eq!(back.version, 7);
-        assert_eq!(back.key.expose_secret(), dek.key.expose_secret());
+        assert_eq!(back.key.expose(), dek.key.expose());
 
         // The unwrapped DEK is the working key, not merely equal bytes.
         let sealed = envelope.seal(&dek, &scope(), b"payload").unwrap();
@@ -636,7 +646,7 @@ mod tests {
             .kdf()
             .hkdf(HashAlg::Sha256, &envelope.kek, None, WRAP_INFO, DEK_LEN)
             .unwrap();
-        assert_eq!(wrapping.expose_secret(), expected.expose_secret());
+        assert_eq!(wrapping.expose(), expected.expose_secret().as_slice());
 
         let under_the_other_label = envelope
             .crypto
@@ -644,16 +654,13 @@ mod tests {
             .hkdf(HashAlg::Sha256, &envelope.kek, None, KEK_ID_LABEL, DEK_LEN)
             .unwrap();
         assert_ne!(
-            wrapping.expose_secret(),
-            under_the_other_label.expose_secret(),
+            wrapping.expose(),
+            under_the_other_label.expose_secret().as_slice(),
             "the KEK's two uses share a derivation"
         );
 
-        assert_ne!(
-            hex(wrapping.expose_secret()),
-            hex(envelope.kek.expose_secret())
-        );
-        assert!(!hex(wrapping.expose_secret()).contains(&envelope.kek_id().unwrap()));
+        assert_ne!(hex(wrapping.expose()), hex(envelope.kek.expose_secret()));
+        assert!(!hex(wrapping.expose()).contains(&envelope.kek_id().unwrap()));
     }
 
     /// A stored DEK of the wrong width is refused when it is unwrapped.
@@ -668,7 +675,7 @@ mod tests {
 
         for width in [0usize, 16, 31, 33, 64] {
             let wrapped = envelope
-                .seal_with(&wrapping, 1, &scope(), &vec![0x5a; width])
+                .seal_with(wrapping.secret(), 1, &scope(), &vec![0x5a; width])
                 .unwrap();
 
             assert!(
@@ -682,7 +689,7 @@ mod tests {
 
         // The right width still works, so the check rejects only the wrong one.
         let good = envelope
-            .seal_with(&wrapping, 1, &scope(), &[0x5a; DEK_LEN])
+            .seal_with(wrapping.secret(), 1, &scope(), &[0x5a; DEK_LEN])
             .unwrap();
         assert!(envelope.unwrap_dek(&scope(), 1, &good).is_ok());
     }
@@ -773,6 +780,6 @@ mod tests {
         let rendered = format!("{envelope:?} {dek:?}");
         assert!(rendered.contains("version: 3"));
         assert!(!rendered.contains(KEK));
-        assert!(!rendered.contains(&hex(dek.key.expose_secret())));
+        assert!(!rendered.contains(&hex(dek.key.expose())));
     }
 }

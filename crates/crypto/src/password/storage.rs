@@ -12,6 +12,7 @@
 use data_encoding::BASE64;
 use secrecy::{ExposeSecret, SecretBox};
 
+use crate::password::legacy::LegacyHash;
 use crate::provider::{Argon2Params, CryptoError, CryptoProvider, HashAlg, Result};
 
 /// Salt bytes for PBKDF2. RFC 8018 §4.1 asks for at least eight; sixteen
@@ -79,6 +80,47 @@ impl StoredPassword {
             salt: BASE64.encode(&salt),
             hash: BASE64.encode(derived.expose_secret()),
         })
+    }
+
+    /// The verifying side's view of this credential.
+    ///
+    /// The PRF is resolved by the same function that chose it when hashing, so
+    /// the two cannot drift. Mapping the name a second time here is how a
+    /// credential gets written in a spelling the reader does not accept — a
+    /// stored password that verifies against nothing, which no login can
+    /// recover from because migrating needs a login that succeeds.
+    pub fn to_legacy_hash(&self) -> Result<LegacyHash> {
+        match self {
+            Self::Argon2id { encoded } => Ok(LegacyHash::Argon2id {
+                encoded: encoded.clone(),
+            }),
+            Self::Pbkdf2 {
+                algorithm,
+                iterations,
+                salt,
+                hash,
+            } => {
+                let (iterations, salt, hash) = (*iterations, salt.clone(), hash.clone());
+                match pbkdf2_prf(algorithm)? {
+                    HashAlg::Sha1 => Ok(LegacyHash::Pbkdf2HmacSha1 {
+                        iterations,
+                        salt,
+                        hash,
+                    }),
+                    HashAlg::Sha256 => Ok(LegacyHash::Pbkdf2HmacSha256 {
+                        iterations,
+                        salt,
+                        hash,
+                    }),
+                    HashAlg::Sha512 => Ok(LegacyHash::Pbkdf2HmacSha512 {
+                        iterations,
+                        salt,
+                        hash,
+                    }),
+                    _ => Err(CryptoError::UnsupportedAlgorithm),
+                }
+            }
+        }
     }
 }
 
@@ -271,6 +313,53 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    /// Everything this module can write, it can hand to the verifying side.
+    ///
+    /// The two mappings used to be written separately, and a name accepted by
+    /// one and not the other mints a credential that verifies against nothing.
+    /// Nothing recovers from that: migrating a password needs a login, and the
+    /// login is what cannot succeed.
+    #[test]
+    fn every_credential_this_module_writes_can_be_handed_over() {
+        let provider = provider();
+
+        for name in [
+            "pbkdf2-sha1",
+            "pbkdf2-sha256",
+            "pbkdf2-sha512",
+            "PBKDF2WithHmacSHA1",
+            "PBKDF2WithHmacSHA256",
+            "PBKDF2WithHmacSHA512",
+        ] {
+            let stored =
+                StoredPassword::hash_pbkdf2(&provider, name, 1000, &password("secret")).unwrap();
+            let legacy = stored
+                .to_legacy_hash()
+                .unwrap_or_else(|_| panic!("{name} was written and cannot be handed over"));
+
+            let (expected_salt, expected_hash) = match &stored {
+                StoredPassword::Pbkdf2 { salt, hash, .. } => (salt, hash),
+                _ => panic!("not a PBKDF2 credential"),
+            };
+            let (salt, hash) = match &legacy {
+                LegacyHash::Pbkdf2HmacSha1 { salt, hash, .. }
+                | LegacyHash::Pbkdf2HmacSha256 { salt, hash, .. }
+                | LegacyHash::Pbkdf2HmacSha512 { salt, hash, .. } => (salt, hash),
+                other => panic!("{name} became {other:?}"),
+            };
+            assert_eq!(salt, expected_salt, "{name}");
+            assert_eq!(hash, expected_hash, "{name}");
+        }
+
+        let argon2 =
+            StoredPassword::hash_argon2id(&provider, Argon2Params::default(), &password("secret"))
+                .unwrap();
+        assert!(matches!(
+            argon2.to_legacy_hash().unwrap(),
+            LegacyHash::Argon2id { .. }
+        ));
     }
 
     /// A name that is not one of the known ones is refused, rather than read

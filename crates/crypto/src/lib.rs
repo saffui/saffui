@@ -5,6 +5,7 @@
 #[cfg(all(feature = "fips-strict", feature = "chacha20"))]
 compile_error!("feature 'fips-strict' is incompatible with the non-FIPS 'chacha20' cipher");
 
+pub mod envelope;
 pub mod jose;
 pub mod otp;
 pub mod password;

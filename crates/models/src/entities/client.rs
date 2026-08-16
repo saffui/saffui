@@ -202,6 +202,114 @@ impl ClientCreateModel {
     }
 }
 
+/// A named set of claims a client may ask for.
+///
+/// The roles and protocol mappers attached to a scope are *not* fields here.
+/// This is loaded on the token issuance path, where a join per scope is paid on
+/// every request, and a field that is populated for one caller and absent for
+/// every other stops meaning anything. What is attached is read by whoever
+/// needs the attachment.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientScopeModel {
+    pub client_scope_id: String,
+    pub realm_id: String,
+    pub name: String,
+    pub description: String,
+    pub protocol: Protocol,
+    pub default_scope: Option<bool>,
+    pub configs: Option<AttributesMap>,
+    pub metadata: AuditableModel,
+}
+
+/// The create and update payload for a scope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientScopeMutationModel {
+    pub name: String,
+    pub description: String,
+    pub protocol: Protocol,
+    pub default_scope: Option<bool>,
+    pub configs: Option<AttributesMap>,
+}
+
+impl ClientScopeMutationModel {
+    pub fn into_model(
+        self,
+        client_scope_id: String,
+        realm_id: String,
+        metadata: AuditableModel,
+    ) -> ClientScopeModel {
+        ClientScopeModel {
+            client_scope_id,
+            realm_id,
+            name: self.name,
+            description: self.description,
+            protocol: self.protocol,
+            default_scope: self.default_scope,
+            configs: self.configs,
+            metadata,
+        }
+    }
+}
+
+/// A rule turning something the server knows into a claim in a token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtocolMapperModel {
+    pub mapper_id: String,
+    pub realm_id: String,
+    pub name: String,
+    pub protocol: Protocol,
+    pub mapper_type: String,
+    pub configs: Option<AttributesMap>,
+    pub metadata: AuditableModel,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProtocolMapperMutationModel {
+    pub name: String,
+    pub protocol: Protocol,
+    pub mapper_type: String,
+    pub configs: Option<AttributesMap>,
+}
+
+impl ProtocolMapperMutationModel {
+    pub fn into_model(
+        self,
+        mapper_id: String,
+        realm_id: String,
+        metadata: AuditableModel,
+    ) -> ProtocolMapperModel {
+        ProtocolMapperModel {
+            mapper_id,
+            realm_id,
+            name: self.name,
+            protocol: self.protocol,
+            mapper_type: self.mapper_type,
+            configs: self.configs,
+            metadata,
+        }
+    }
+}
+
+/// A client as an export carries it: the row, plus what it is attached to.
+///
+/// Identifiers rather than entities. A realm export already carries its roles,
+/// its scopes and its mappers as sections of the document, so repeating them
+/// here would leave an importer with two sources that can disagree. What the
+/// document is missing is only the *attachment*, so that is what this holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientExport {
+    pub client: ClientModel,
+    /// Roles this client owns. Empty means it owns none — an export always
+    /// populates this, so absence is never ambiguity.
+    pub roles: Vec<String>,
+    /// Scopes attached to it. Without these a restored client emits none of the
+    /// mapped claims its scopes carry.
+    pub client_scopes: Vec<String>,
+    /// Mappers attached to the client directly, as opposed to those it inherits
+    /// through a scope.
+    pub protocol_mappers: Vec<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +445,64 @@ mod tests {
     fn a_credential_can_still_be_read_from_a_payload() {
         let parsed: ClientSecret = serde_json::from_str("\"s3cr3t-value\"").unwrap();
         assert_eq!(parsed.expose(), "s3cr3t-value");
+    }
+
+    /// A scope and a mapper take their identifiers and their audit record from
+    /// the caller, for the same reason a client does.
+    #[test]
+    fn a_scope_and_a_mapper_are_built_from_the_context_not_the_payload() {
+        let scope = ClientScopeMutationModel {
+            name: "profile".into(),
+            description: "Basic profile".into(),
+            protocol: Protocol::OpenId,
+            default_scope: Some(true),
+            configs: None,
+        }
+        .into_model(
+            "scope-1".into(),
+            "realm-1".into(),
+            AuditableModel::from_creator("acme".into(), "root".into()),
+        );
+        assert_eq!(scope.client_scope_id, "scope-1");
+        assert_eq!(scope.realm_id, "realm-1");
+        assert_eq!(scope.metadata.tenant, "acme");
+        assert_eq!(scope.protocol, Protocol::OpenId);
+
+        let mapper = ProtocolMapperMutationModel {
+            name: "email".into(),
+            protocol: Protocol::OpenId,
+            mapper_type: "oidc-usermodel-property-mapper".into(),
+            configs: None,
+        }
+        .into_model(
+            "mapper-1".into(),
+            "realm-1".into(),
+            AuditableModel::unassigned(),
+        );
+        assert_eq!(mapper.mapper_id, "mapper-1");
+        assert_eq!(mapper.realm_id, "realm-1");
+        assert_eq!(mapper.mapper_type, "oidc-usermodel-property-mapper");
+    }
+
+    /// An export carries attachments and no credential: it is written to a file
+    /// an operator moves between deployments.
+    #[test]
+    fn an_export_carries_attachments_and_still_no_credential() {
+        let export = ClientExport {
+            client: ClientModel {
+                secret: Some(ClientSecret::new("s3cr3t-value".into())),
+                ..client()
+            },
+            roles: vec!["admin".into()],
+            client_scopes: vec!["profile".into()],
+            protocol_mappers: vec!["email".into()],
+        };
+
+        let json = serde_json::to_string(&export).unwrap();
+        assert!(
+            !json.contains("s3cr3t-value"),
+            "an export leaked a secret: {json}"
+        );
+        assert!(json.contains("admin") && json.contains("profile") && json.contains("email"));
     }
 }

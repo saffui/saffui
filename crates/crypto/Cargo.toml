@@ -2,11 +2,55 @@
 name = "crypto"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+# Ground rules for this crate:
+#   - never reinvent a primitive; write only the glue,
+#   - one library per layer,
+#   - OpenSSL 3.x is THE backend (signatures, AEAD, HMAC, PBKDF2, RNG, PEM/DER),
+#   - every FFI call stays behind the CryptoProvider trait, so the rest of the
+#     server depends on the trait object and never on OpenSSL directly.
+
+
+[features]
+default = []
+
+# ChaCha20-Poly1305: non-FIPS, worth having on mobile hardware without AES-NI.
+# Off by default so a FIPS build cannot select a non-validated cipher.
+chacha20 = []
+
+# Pins the validated FIPS provider. Mutually exclusive with the non-FIPS
+# algorithms above, and a `compile_error!` in lib.rs enforces it rather than a
+# note in these docs: a binary that claims FIPS while linking ChaCha20 is a
+# contradiction an audit should catch at build time, not at runtime.
+fips-strict = []
+
 [dependencies]
 commons = { workspace = true }
 openssl = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
+zeroize = { workspace = true }
+subtle = { workspace = true }
+data-encoding = { workspace = true }
+secrecy = { workspace = true }
+async-trait = { workspace = true }
+argon2 = { workspace = true }
+bcrypt = { workspace = true }
+
+# Pulled in by the vendored JOSE layer.
+anyhow = { workspace = true }
+regex = { workspace = true }
+base64 = { workspace = true }
+flate2 = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+# The security invariants must hold for EVERY input, not just the curated cases:
+# parser totality, sign/verify round-trips, tamper rejection, constant-time
+# equality. Property tests are what catch the input nobody thought to write.
+proptest = "1"

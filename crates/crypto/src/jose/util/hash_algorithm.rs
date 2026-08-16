@@ -1,0 +1,43 @@
+// Derived from josekit <https://github.com/hidekatsu-izuno/josekit-rs>,
+// version 0.10.3 (commit 8fc5c14, 2025-05-21),
+// Copyright (c) Hidekatsu Izuno, licensed under Apache-2.0 OR MIT.
+//
+// Modified by Kodjo Michel Touglo, 2026: vendored into the saffui `crypto`
+// crate as the `jose` module; module paths rewritten from `crate::` to
+// `crate::jose::`. See THIRD-PARTY.md at the repository root.
+
+use std::fmt::Display;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum HashAlgorithm {
+    Sha1,
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+impl HashAlgorithm {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Sha1 => "SHA-1",
+            Self::Sha256 => "SHA-256",
+            Self::Sha384 => "SHA-384",
+            Self::Sha512 => "SHA-512",
+        }
+    }
+
+    pub fn output_len(&self) -> usize {
+        match self {
+            Self::Sha1 => 20,
+            Self::Sha256 => 32,
+            Self::Sha384 => 48,
+            Self::Sha512 => 64,
+        }
+    }
+}
+
+impl Display for HashAlgorithm {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        fmt.write_str(self.name())
+    }
+}

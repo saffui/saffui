@@ -59,7 +59,15 @@ impl KdfProvider for OpenSslKdf {
         // being derived, so they are scrubbed on drop: `previous` is reassigned
         // every round and would otherwise leave a copy of each intermediate
         // block behind in freed memory.
-        let mut okm = Zeroizing::new(Vec::with_capacity(len));
+        //
+        // The capacity is the block-aligned length, not the requested one. The
+        // loop appends whole digest blocks, so a buffer sized to `len` would
+        // grow on the last one whenever `len` is not a multiple of the digest
+        // size — and a reallocation copies the derived bytes to a new block and
+        // frees the old one without scrubbing it, which is precisely what
+        // `Zeroizing` is here to prevent. Fitting every block up front means no
+        // reallocation happens at all.
+        let mut okm = Zeroizing::new(Vec::with_capacity(len.div_ceil(hash_len) * hash_len));
         let mut previous: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::new());
         let mut counter: u8 = 1;
         while okm.len() < len {
@@ -92,7 +100,11 @@ impl KdfProvider for OpenSslKdf {
         other_info.extend_from_slice(info.party_v);
         other_info.extend_from_slice(info.supp_pub);
 
-        let mut out = Zeroizing::new(Vec::with_capacity(len));
+        // Block-aligned for the same reason as `hkdf`: whole digest blocks are
+        // appended, and a reallocation would strand derived key material in a
+        // freed buffer that nothing scrubs.
+        let hash_len = hash.output_len();
+        let mut out = Zeroizing::new(Vec::with_capacity(len.div_ceil(hash_len) * hash_len));
         let mut counter: u32 = 1;
         while out.len() < len {
             let mut hasher =

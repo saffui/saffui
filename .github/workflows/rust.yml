@@ -71,7 +71,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.OPENSSL_PREFIX }}
-          key: openssl-${{ env.OPENSSL_VERSION }}-${{ runner.os }}
+          key: openssl-${{ env.OPENSSL_VERSION }}-rpath-${{ runner.os }}
 
       - name: build OpenSSL
         if: steps.cache.outputs.cache-hit != 'true'
@@ -79,7 +79,11 @@ jobs:
           curl -fsSLO "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
           tar xzf "openssl-$OPENSSL_VERSION.tar.gz"
           cd "openssl-$OPENSSL_VERSION"
-          ./Configure --prefix="$OPENSSL_PREFIX" --openssldir="$OPENSSL_PREFIX/ssl" shared
+          # The rpath is what makes the built binaries find their own
+          # libraries. Without it the loader reaches the system ones first, and
+          # everything below silently tests OpenSSL 3.0 instead.
+          ./Configure --prefix="$OPENSSL_PREFIX" --openssldir="$OPENSSL_PREFIX/ssl" shared \
+            "-Wl,-rpath,$OPENSSL_PREFIX/lib64" "-Wl,-rpath,$OPENSSL_PREFIX/lib"
           make -j"$(nproc)"
           # install_sw skips the manual pages, which are most of the install time
           # and none of the point.
@@ -89,6 +93,8 @@ jobs:
       # the system one, and a silent fallback would surface as a puzzling test
       # failure. Checked here instead, where the message can say what happened.
       - name: check it is the library we think it is
+        env:
+          LD_LIBRARY_PATH: ${{ env.OPENSSL_PREFIX }}/lib64:${{ env.OPENSSL_PREFIX }}/lib
         run: |
           "$OPENSSL_PREFIX/bin/openssl" version
           case "$("$OPENSSL_PREFIX/bin/openssl" version)" in

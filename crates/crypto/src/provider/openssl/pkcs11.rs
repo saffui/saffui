@@ -17,9 +17,10 @@ use cryptoki::slot::Slot;
 use cryptoki::types::AuthPin;
 use secrecy::ExposeSecret;
 
+use crate::provider::openssl::hashing::OpenSslDigest;
 use crate::provider::{
-    Attestation, CryptoError, KeyGenSpec, KeyHandle, KeyStoreProvider, Pkcs11Config, Result,
-    SignAlg,
+    Attestation, CryptoError, DigestProvider, HashAlg, KeyGenSpec, KeyHandle, KeyStoreProvider,
+    Pkcs11Config, Result, SignAlg,
 };
 
 /// A key store bound to one token slot.
@@ -148,25 +149,40 @@ fn der_from_raw_ecdsa(raw: &[u8]) -> Result<Vec<u8>> {
     signature.to_der().map_err(|_| CryptoError::OperationFailed)
 }
 
-/// The mechanism that signs under an algorithm.
+/// The mechanism that signs under an algorithm, and the digest to apply first.
 ///
-/// The digest is part of the mechanism here, not applied beforehand: asking the
-/// token for `ECDSA` and hashing outside it would sign a hash of a hash.
-fn sign_mechanism(alg: SignAlg) -> Result<Mechanism<'static>> {
+/// ECDSA uses the bare `CKM_ECDSA`, which signs a digest already computed —
+/// so the hash is taken here and handed over. The combined hash-and-sign
+/// mechanisms would be tidier and are not portable: SoftHSM 2.6 implements the
+/// bare one only, and a store that needs the token to hash cannot be moved
+/// between tokens.
+///
+/// RSA keeps its combined mechanisms, where the alternative is assembling a
+/// DigestInfo by hand for every digest.
+fn sign_mechanism(alg: SignAlg) -> Result<(Mechanism<'static>, Option<HashAlg>)> {
     match alg {
-        SignAlg::Es256 => Ok(Mechanism::EcdsaSha256),
-        SignAlg::Es384 => Ok(Mechanism::EcdsaSha384),
-        SignAlg::Es512 => Ok(Mechanism::EcdsaSha512),
-        SignAlg::Rs256 => Ok(Mechanism::Sha256RsaPkcs),
-        SignAlg::Rs384 => Ok(Mechanism::Sha384RsaPkcs),
-        SignAlg::Rs512 => Ok(Mechanism::Sha512RsaPkcs),
+        SignAlg::Es256 => Ok((Mechanism::Ecdsa, Some(HashAlg::Sha256))),
+        SignAlg::Es384 => Ok((Mechanism::Ecdsa, Some(HashAlg::Sha384))),
+        SignAlg::Es512 => Ok((Mechanism::Ecdsa, Some(HashAlg::Sha512))),
+        SignAlg::Rs256 => Ok((Mechanism::Sha256RsaPkcs, None)),
+        SignAlg::Rs384 => Ok((Mechanism::Sha384RsaPkcs, None)),
+        SignAlg::Rs512 => Ok((Mechanism::Sha512RsaPkcs, None)),
 
         // RFC 7518 3.5 fixes the salt at the digest length, which is also what
         // the software signer uses. A token asked for a different one produces
         // signatures the rest of this crate will not verify.
-        SignAlg::Ps256 => Ok(Mechanism::Sha256RsaPkcsPss(pss(MechanismType::SHA256, 32))),
-        SignAlg::Ps384 => Ok(Mechanism::Sha384RsaPkcsPss(pss(MechanismType::SHA384, 48))),
-        SignAlg::Ps512 => Ok(Mechanism::Sha512RsaPkcsPss(pss(MechanismType::SHA512, 64))),
+        SignAlg::Ps256 => Ok((
+            Mechanism::Sha256RsaPkcsPss(pss(MechanismType::SHA256, 32)),
+            None,
+        )),
+        SignAlg::Ps384 => Ok((
+            Mechanism::Sha384RsaPkcsPss(pss(MechanismType::SHA384, 48)),
+            None,
+        )),
+        SignAlg::Ps512 => Ok((
+            Mechanism::Sha512RsaPkcsPss(pss(MechanismType::SHA512, 64)),
+            None,
+        )),
 
         // Edwards curves are a token capability rather than a given, and the
         // seam has no way to ask. Refused rather than attempted.
@@ -288,8 +304,18 @@ impl KeyStoreProvider for Pkcs11KeyStore {
         let key =
             Self::find(&session, ObjectClass::PRIVATE_KEY, label)?.ok_or(CryptoError::KeyStore)?;
 
+        let (mechanism, digest) = sign_mechanism(alg)?;
+
+        // Hashed here when the mechanism expects a digest rather than a
+        // message. Which of the two it is comes from the table above, so the
+        // two cannot disagree.
+        let signed = match digest {
+            Some(hash) => std::borrow::Cow::Owned(OpenSslDigest.hash(hash, data)?),
+            None => std::borrow::Cow::Borrowed(data),
+        };
+
         let signature = session
-            .sign(&sign_mechanism(alg)?, key, data)
+            .sign(&mechanism, key, &signed)
             .map_err(|_| CryptoError::OperationFailed)?;
 
         // PKCS#11 returns ECDSA as the raw r‖s pair; the software store returns

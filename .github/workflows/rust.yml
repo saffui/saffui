@@ -142,6 +142,12 @@ jobs:
             softhsm2-util --init-token --free --label saffui-ci --pin 1234 --so-pin 1234
           SOFTHSM2_CONF="$HOME/softhsm2.conf" softhsm2-util --show-slots
 
+          # What the token actually implements. A mechanism this store asks for
+          # and the token does not have fails as "operation failed", which says
+          # nothing; the list turns that into a readable diagnosis.
+          SOFTHSM2_CONF="$HOME/softhsm2.conf" softhsm2-util --show-slots \
+            | grep -iE "mechanism|ECDSA|RSA" || true
+
       # `cargo test --ignored` exits 0 when it runs nothing at all, so the count
       # is checked and not the exit status. A job that passes while testing
       # nothing is worse than no job: it reads as coverage of the private-key

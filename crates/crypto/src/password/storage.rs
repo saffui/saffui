@@ -130,7 +130,7 @@ impl StoredPassword {
 /// for a digit in the string. A substring test reads `PBKDF2WithHmacSHA512` and
 /// `md5-512-whatever` the same way, and a credential verified under the wrong
 /// PRF never matches — a lockout that looks like a forgotten password.
-fn pbkdf2_prf(name: &str) -> Result<HashAlg> {
+pub(crate) fn pbkdf2_prf(name: &str) -> Result<HashAlg> {
     match name.to_ascii_lowercase().as_str() {
         "pbkdf2-sha1" | "pbkdf2withhmacsha1" => Ok(HashAlg::Sha1),
         "pbkdf2-sha256" | "pbkdf2withhmacsha256" => Ok(HashAlg::Sha256),

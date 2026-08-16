@@ -49,12 +49,16 @@ impl AttributeValue {
     /// A number, widening an `Int` and parsing a `Str`.
     ///
     /// The one accessor that coerces, because a decimal has no variant of its
-    /// own and is stored as text. A `Str` that is not a number is `None`, not
-    /// zero.
+    /// own and is stored as text. Text that is not a finite number is `None`,
+    /// not zero — `NaN` and the infinities parse, and either one read out of an
+    /// open map defeats every comparison a caller then makes with it.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
             AttributeValue::Int(value) => Some(*value as f64),
-            AttributeValue::Str(value) => value.parse().ok(),
+            AttributeValue::Str(value) => value
+                .parse::<f64>()
+                .ok()
+                .filter(|number| number.is_finite()),
             _ => None,
         }
     }
@@ -108,6 +112,13 @@ mod tests {
                 "roles".to_owned(),
                 AttributeValue::ListStr(vec!["admin".to_owned(), "auditor".to_owned()]),
             ),
+            // A one-element list, because that is the only shape from which
+            // narrowing to a string would look reasonable.
+            (
+                "tags".to_owned(),
+                AttributeValue::ListStr(vec!["sole".to_owned()]),
+            ),
+            ("rate".to_owned(), AttributeValue::Str("1.5".to_owned())),
         ])
     }
 
@@ -137,11 +148,34 @@ mod tests {
         assert_eq!(string_at(&attributes, "active"), None);
         assert_eq!(string_at(&attributes, "roles"), None);
 
+        // Every foreign shape, not only the one that would fail to parse
+        // anyway: a string that happens not to be a number refuses the accessor
+        // for the same reason a bool does, and only one of the two says so.
         assert_eq!(int_at(&attributes, "age"), Some(36));
         assert_eq!(int_at(&attributes, "name"), None);
+        assert_eq!(
+            int_at(&attributes, "rate"),
+            None,
+            "numeric text is not an int"
+        );
+        assert_eq!(int_at(&attributes, "active"), None);
+        assert_eq!(int_at(&attributes, "roles"), None);
 
         assert_eq!(bool_at(&attributes, "active"), Some(true));
         assert_eq!(bool_at(&attributes, "age"), None);
+        assert_eq!(bool_at(&attributes, "name"), None);
+        assert_eq!(bool_at(&attributes, "roles"), None);
+    }
+
+    /// The map accessors reach the value accessors rather than answering on
+    /// their own, so a present name yields what the shape holds.
+    #[test]
+    fn the_map_accessors_return_what_the_value_holds() {
+        let attributes = map();
+        assert_eq!(f64_at(&attributes, "age"), Some(36.0));
+        assert_eq!(f64_at(&attributes, "rate"), Some(1.5));
+        assert_eq!(f64_at(&attributes, "name"), None);
+        assert_eq!(f64_at(&attributes, "active"), None);
     }
 
     /// A name nobody stored is absent, not a default.
@@ -167,10 +201,17 @@ mod tests {
         assert_eq!(list_at(&attributes, "name"), Some(vec!["ada".to_owned()]));
         assert_eq!(list_at(&attributes, "age"), None);
 
+        assert_eq!(list_at(&attributes, "tags"), Some(vec!["sole".to_owned()]));
+
         assert_eq!(
             string_at(&attributes, "roles"),
             None,
             "a list never collapses to its first element"
+        );
+        assert_eq!(
+            string_at(&attributes, "tags"),
+            None,
+            "not even a list holding exactly one element"
         );
     }
 
@@ -183,5 +224,15 @@ mod tests {
         assert_eq!(AttributeValue::Str("ada".to_owned()).as_f64(), None);
         assert_eq!(AttributeValue::Str(String::new()).as_f64(), None);
         assert_eq!(AttributeValue::Bool(true).as_f64(), None);
+
+        // These three parse. A caller comparing against a quota would find that
+        // NaN fails every comparison and an infinity passes every one.
+        for text in ["NaN", "inf", "infinity", "-inf", "1e400"] {
+            assert_eq!(
+                AttributeValue::Str(text.to_owned()).as_f64(),
+                None,
+                "{text} is not a number a comparison can use"
+            );
+        }
     }
 }

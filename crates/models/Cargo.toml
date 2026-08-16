@@ -1,0 +1,21 @@
+[package]
+name = "models"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The domain vocabulary. A type here says what something is; how it is stored
+# belongs to the store and who may see it to the API layer, and a model that
+# knew either would put that answer within reach of every caller.
+
+[dependencies]
+serde = { workspace = true }
+chrono = { workspace = true }
+postgres-types = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

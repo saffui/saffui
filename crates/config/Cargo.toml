@@ -1,0 +1,24 @@
+[package]
+name = "config"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Reads the environment and hands each crate the configuration it declared. The
+# dependency runs this way on purpose: `crypto` knows what a `CryptoConfig` is
+# and nothing about where the values came from, so it stays testable without an
+# environment.
+
+[features]
+default = []
+# Forwarded so the token fields are read only where a token can be used.
+pkcs11 = ["crypto/pkcs11"]
+
+[dependencies]
+commons = { workspace = true }
+crypto = { workspace = true }
+secrecy = { workspace = true }
+thiserror = { workspace = true }

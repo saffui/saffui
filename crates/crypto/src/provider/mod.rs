@@ -13,6 +13,7 @@ pub mod openssl;
 
 use async_trait::async_trait;
 use secrecy::SecretBox;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Result specialised to [`CryptoError`].
@@ -157,17 +158,31 @@ impl AeadAlg {
 }
 
 /// A signature algorithm, named as JWS `alg` values.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+///
+/// The rename on each variant is the same spelling [`SignAlg::name`] returns, so
+/// a stored document, a token header and this enum cannot disagree about which
+/// algorithm a record names. A test holds the two in step.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum SignAlg {
+    #[serde(rename = "RS256")]
     Rs256,
+    #[serde(rename = "RS384")]
     Rs384,
+    #[serde(rename = "RS512")]
     Rs512,
+    #[serde(rename = "PS256")]
     Ps256,
+    #[serde(rename = "PS384")]
     Ps384,
+    #[serde(rename = "PS512")]
     Ps512,
+    #[serde(rename = "ES256")]
     Es256,
+    #[serde(rename = "ES384")]
     Es384,
+    #[serde(rename = "ES512")]
     Es512,
+    #[serde(rename = "EdDSA")]
     EdDsa,
 }
 
@@ -191,6 +206,77 @@ impl SignAlg {
     /// Whether this algorithm produces ECDSA signatures.
     pub fn is_ecdsa(self) -> bool {
         matches!(self, Self::Es256 | Self::Es384 | Self::Es512)
+    }
+
+    /// Every algorithm this build can sign with.
+    ///
+    /// The one list. Discovery metadata, a stored catalogue and any database
+    /// constraint all read it, so none of them can advertise an algorithm the
+    /// signer would refuse.
+    pub const ALL: [SignAlg; 10] = [
+        Self::Rs256,
+        Self::Rs384,
+        Self::Rs512,
+        Self::Ps256,
+        Self::Ps384,
+        Self::Ps512,
+        Self::Es256,
+        Self::Es384,
+        Self::Es512,
+        Self::EdDsa,
+    ];
+
+    /// The JWS `alg` name (RFC 7518 §3.1), as it appears in a token header and
+    /// in a JWKS.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rs256 => "RS256",
+            Self::Rs384 => "RS384",
+            Self::Rs512 => "RS512",
+            Self::Ps256 => "PS256",
+            Self::Ps384 => "PS384",
+            Self::Ps512 => "PS512",
+            Self::Es256 => "ES256",
+            Self::Es384 => "ES384",
+            Self::Es512 => "ES512",
+            Self::EdDsa => "EdDSA",
+        }
+    }
+
+    /// The JWK `kty` this algorithm implies: `EC`, `RSA` or `OKP`.
+    ///
+    /// Derived rather than stored beside the algorithm, so the pair cannot be
+    /// written down disagreeing.
+    pub fn key_type(self) -> &'static str {
+        match self {
+            Self::Es256 | Self::Es384 | Self::Es512 => "EC",
+            Self::Rs256 | Self::Rs384 | Self::Rs512 => "RSA",
+            Self::Ps256 | Self::Ps384 | Self::Ps512 => "RSA",
+            Self::EdDsa => "OKP",
+        }
+    }
+}
+
+impl std::str::FromStr for SignAlg {
+    type Err = CryptoError;
+
+    /// Parse a requested or stored `alg`.
+    ///
+    /// Case-sensitive, because `alg` is case-sensitive in RFC 7515 and accepting
+    /// `es256` would mean emitting a header some verifiers reject. Anything
+    /// unregistered is refused here rather than surfacing later as a signing
+    /// failure or, worse, as a silent choice of something else.
+    fn from_str(name: &str) -> Result<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|alg| alg.name() == name)
+            .ok_or(CryptoError::UnsupportedAlgorithm)
+    }
+}
+
+impl std::fmt::Display for SignAlg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
     }
 }
 
@@ -667,24 +753,103 @@ mod tests {
     /// A false negative on `is_pss` silently signs PKCS#1 v1.5 instead.
     #[test]
     fn padding_and_encoding_predicates_select_the_right_algorithms() {
-        let all = [
-            SignAlg::Rs256,
-            SignAlg::Rs384,
-            SignAlg::Rs512,
-            SignAlg::Ps256,
-            SignAlg::Ps384,
-            SignAlg::Ps512,
-            SignAlg::Es256,
-            SignAlg::Es384,
-            SignAlg::Es512,
-            SignAlg::EdDsa,
-        ];
+        let all = SignAlg::ALL;
         let pss: Vec<_> = all.iter().filter(|a| a.is_pss()).copied().collect();
         let ecdsa: Vec<_> = all.iter().filter(|a| a.is_ecdsa()).copied().collect();
 
         assert_eq!(pss, [SignAlg::Ps256, SignAlg::Ps384, SignAlg::Ps512]);
         assert_eq!(ecdsa, [SignAlg::Es256, SignAlg::Es384, SignAlg::Es512]);
         assert!(all.iter().all(|a| !(a.is_pss() && a.is_ecdsa())));
+    }
+
+    /// Whatever `name` emits, `from_str` accepts, and `Display` agrees with
+    /// both. A break here is a key row written one way and read back as
+    /// unknown.
+    #[test]
+    fn every_algorithm_round_trips_through_its_jws_name() {
+        for alg in SignAlg::ALL {
+            assert_eq!(
+                alg.name().parse::<SignAlg>().expect("its own name parses"),
+                alg,
+                "{alg} must parse back"
+            );
+            assert_eq!(alg.to_string(), alg.name(), "{alg}: Display must be name");
+        }
+    }
+
+    /// `alg` is case-sensitive in RFC 7515. Accepting `es256` would mean
+    /// emitting a header some verifiers reject, so the leniency is refused at
+    /// the parse rather than papered over.
+    #[test]
+    fn parsing_an_algorithm_is_case_sensitive_and_refuses_the_unknown() {
+        for bad in [
+            "es256", "ES-256", "ES256 ", " ES256", "eddsa", "EDDSA", "RS", "", "null",
+        ] {
+            assert!(bad.parse::<SignAlg>().is_err(), "{bad:?} must not parse");
+        }
+    }
+
+    /// The exclusions are decisions, not omissions, so they are asserted rather
+    /// than left to whoever next edits the enum.
+    ///
+    /// `HS*` is symmetric: a realm signing key is published in a JWKS, so an
+    /// HMAC key there would publish the secret itself. `ES256K` is not
+    /// registered for id token signing and sits outside the FIPS set. `none` is
+    /// never a signing algorithm.
+    #[test]
+    fn the_excluded_algorithms_stay_excluded() {
+        for excluded in ["HS256", "HS384", "HS512", "ES256K", "none", "None"] {
+            assert!(
+                excluded.parse::<SignAlg>().is_err(),
+                "{excluded} must never enter the catalogue"
+            );
+        }
+    }
+
+    /// Each algorithm implies exactly one registered JWK key type. Derived here
+    /// rather than stored beside the algorithm, which is what stops a record
+    /// from naming a curve its algorithm does not use.
+    #[test]
+    fn every_algorithm_implies_a_registered_key_type() {
+        for alg in SignAlg::ALL {
+            assert!(
+                matches!(alg.key_type(), "EC" | "RSA" | "OKP"),
+                "{alg} implies unregistered kty {}",
+                alg.key_type()
+            );
+        }
+        assert_eq!(SignAlg::Es256.key_type(), "EC");
+        assert_eq!(SignAlg::Rs512.key_type(), "RSA");
+        assert_eq!(SignAlg::Ps384.key_type(), "RSA");
+        assert_eq!(SignAlg::EdDsa.key_type(), "OKP");
+    }
+
+    /// The encoded spelling is the one `name` returns, in both directions. A
+    /// rename that drifted from the table would store a document naming an
+    /// algorithm the header never carries.
+    #[test]
+    fn the_encoded_spelling_is_the_jws_name() {
+        for alg in SignAlg::ALL {
+            let encoded = serde_json::to_string(&alg).expect("an algorithm encodes");
+            assert_eq!(encoded, format!("\"{}\"", alg.name()), "{alg}");
+            assert_eq!(
+                serde_json::from_str::<SignAlg>(&encoded).expect("it decodes back"),
+                alg
+            );
+        }
+    }
+
+    /// A duplicate name would make `from_str` resolve to whichever variant
+    /// comes first, silently shadowing the other — and `ALL` is what discovery
+    /// advertises.
+    #[test]
+    fn the_algorithm_catalogue_has_no_duplicates() {
+        let mut names: Vec<&str> = SignAlg::ALL.iter().map(|alg| alg.name()).collect();
+        let count = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), count, "duplicate name in ALL");
+        assert_eq!(count, 10);
     }
 
     /// The AEAD key length is what the backend checks a caller's key against,

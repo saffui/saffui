@@ -6,6 +6,19 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+
+# The actix rendering of a catalogued error. Off by default: everything depends
+# on commons, and the reference implementation's equivalent crate pulls the web
+# framework and the database driver into every one of them.
+http = ["dep:actix-web", "dep:serde", "dep:serde_json", "dep:log"]
+
 [dependencies]
 thiserror = { workspace = true }
 secrecy = { workspace = true }
+
+actix-web = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+log = { workspace = true, optional = true }

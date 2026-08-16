@@ -430,6 +430,14 @@ pub trait PasswordProvider: Send + Sync {
     /// Verify against a stored PHC string.
     fn verify(&self, password: &SecretBox<String>, encoded: &str) -> Result<bool>;
 
+    /// Verify against an Argon2 string of any variant.
+    ///
+    /// [`Self::verify`] accepts argon2id alone, which is right for what this
+    /// crate writes. A credential imported as argon2i or argon2d has to verify
+    /// exactly once all the same, or the account can never be migrated —
+    /// migration happens during a successful login, and that is the login.
+    fn verify_legacy_argon2(&self, password: &SecretBox<String>, encoded: &str) -> Result<bool>;
+
     /// Verify against a bcrypt hash imported from an older system. Verification
     /// only: nothing here mints bcrypt.
     fn verify_bcrypt(&self, password: &SecretBox<String>, hash: &str) -> Result<bool>;

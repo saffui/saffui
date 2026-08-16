@@ -62,6 +62,31 @@ fn within_bounds(m_cost: u32, t_cost: u32, p_cost: u32) -> bool {
         && p_cost <= MAX_P_COST
 }
 
+/// The body behind both verifying entry points, differing only in which
+/// variants they will read.
+///
+/// One function so the cost bounds cannot be enforced on one path and forgotten
+/// on the other. The legacy path is the one that reads the least trustworthy
+/// records, so it is the one that can least afford to skip them.
+fn verify_argon2(password: &SecretBox<String>, encoded: &str, accepted: &[&str]) -> Result<bool> {
+    let parsed = PasswordHash::new(encoded).map_err(|_| CryptoError::InvalidParams)?;
+
+    // Bounded before any work is done, because the cost in the record is what
+    // decides how much work there is.
+    let params = Params::try_from(&parsed).map_err(|_| CryptoError::InvalidParams)?;
+    if !within_bounds(params.m_cost(), params.t_cost(), params.p_cost()) {
+        return Err(CryptoError::InvalidParams);
+    }
+
+    if !accepted.contains(&parsed.algorithm.as_str()) {
+        return Err(CryptoError::InvalidParams);
+    }
+
+    Ok(Argon2::default()
+        .verify_password(password.expose_secret().as_bytes(), &parsed)
+        .is_ok())
+}
+
 pub struct OpenSslPassword;
 
 impl PasswordProvider for OpenSslPassword {
@@ -91,25 +116,14 @@ impl PasswordProvider for OpenSslPassword {
     }
 
     fn verify(&self, password: &SecretBox<String>, encoded: &str) -> Result<bool> {
-        let parsed = PasswordHash::new(encoded).map_err(|_| CryptoError::InvalidParams)?;
-
-        // Bounded before any work is done, because the cost in the record is
-        // what decides how much work there is.
-        let params = Params::try_from(&parsed).map_err(|_| CryptoError::InvalidParams)?;
-        if !within_bounds(params.m_cost(), params.t_cost(), params.p_cost()) {
-            return Err(CryptoError::InvalidParams);
-        }
-
         // The variant is checked because callers read this method's name as a
         // promise. Left alone it also accepts `$argon2i$` and `$argon2d$`,
         // which trade away side-channel and GPU resistance respectively.
-        if parsed.algorithm.as_str() != "argon2id" {
-            return Err(CryptoError::InvalidParams);
-        }
+        verify_argon2(password, encoded, &["argon2id"])
+    }
 
-        Ok(Argon2::default()
-            .verify_password(password.expose_secret().as_bytes(), &parsed)
-            .is_ok())
+    fn verify_legacy_argon2(&self, password: &SecretBox<String>, encoded: &str) -> Result<bool> {
+        verify_argon2(password, encoded, &["argon2id", "argon2i", "argon2d"])
     }
 
     fn verify_bcrypt(&self, password: &SecretBox<String>, hash: &str) -> Result<bool> {
@@ -268,6 +282,79 @@ mod tests {
                 "{variant} was accepted"
             );
         }
+    }
+
+    /// The legacy path reads the sibling variants, and the ordinary one still
+    /// does not.
+    ///
+    /// A credential imported as argon2i has to verify once or its account can
+    /// never move: the rehash needs the plaintext, and the plaintext only
+    /// exists during a login that succeeds.
+    #[test]
+    fn the_legacy_path_reads_the_sibling_variants() {
+        // Minted here rather than pasted, so the test cannot pass against a
+        // vector that was wrong to begin with.
+        let params = Params::new(MIN_M_COST, 2, 1, Some(32)).unwrap();
+        let salt = SaltString::encode_b64(&[0x2b; 16]).unwrap();
+
+        for (variant, algorithm) in [
+            (Algorithm::Argon2i, "argon2i"),
+            (Algorithm::Argon2d, "argon2d"),
+        ] {
+            let encoded = Argon2::new(variant, Version::V0x13, params.clone())
+                .hash_password(b"correct horse", &salt)
+                .unwrap()
+                .to_string();
+            assert!(encoded.starts_with(&format!("${algorithm}$")));
+
+            assert!(
+                OpenSslPassword
+                    .verify_legacy_argon2(&password("correct horse"), &encoded)
+                    .unwrap(),
+                "{algorithm} did not verify on the legacy path"
+            );
+            assert!(
+                !OpenSslPassword
+                    .verify_legacy_argon2(&password("wrong horse"), &encoded)
+                    .unwrap(),
+                "{algorithm} accepted the wrong password"
+            );
+            assert!(
+                matches!(
+                    OpenSslPassword.verify(&password("correct horse"), &encoded),
+                    Err(CryptoError::InvalidParams)
+                ),
+                "{algorithm} was read by the ordinary path"
+            );
+        }
+    }
+
+    /// The legacy path is bounded exactly like the ordinary one.
+    ///
+    /// It reads the least trustworthy records in the crate, so it is the one
+    /// that can least afford to skip the cost check.
+    #[test]
+    fn the_legacy_path_bounds_the_cost_too() {
+        for record in [
+            "$argon2i$v=19$m=4194304,t=2,p=1$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG",
+            "$argon2d$v=19$m=8,t=1,p=1$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG",
+            "$argon2id$v=19$m=4194304,t=2,p=1$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG",
+        ] {
+            assert!(
+                matches!(
+                    OpenSslPassword.verify_legacy_argon2(&password("secret"), record),
+                    Err(CryptoError::InvalidParams)
+                ),
+                "{record} was accepted"
+            );
+        }
+
+        // And nothing outside the Argon2 family gets in through it.
+        assert!(
+            OpenSslPassword
+                .verify_legacy_argon2(&password("secret"), "not a hash")
+                .is_err()
+        );
     }
 
     /// Something that is not a PHC string is refused rather than treated as a

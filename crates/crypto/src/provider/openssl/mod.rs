@@ -9,19 +9,21 @@ pub mod digest;
 pub mod hmac;
 pub mod kdf;
 pub mod key_store;
+pub mod legacy_digest;
 pub mod password;
 pub mod rand;
 pub mod signer;
 
 use crate::provider::{
     AeadProvider, CryptoConfig, CryptoError, CryptoProvider, HmacProvider, KdfProvider,
-    KeyStoreProvider, PasswordProvider, RandProvider, Result, SignerProvider,
+    KeyStoreProvider, LegacyDigestProvider, PasswordProvider, RandProvider, Result, SignerProvider,
 };
 
 use aead::OpenSslAead;
 use hmac::OpenSslHmac;
 use kdf::OpenSslKdf;
 use key_store::SoftwareKeyStore;
+use legacy_digest::OpenSslLegacyDigest;
 use password::OpenSslPassword;
 use rand::OpenSslRand;
 use signer::OpenSslSigner;
@@ -42,6 +44,7 @@ pub struct OpenSslProvider {
     rand: OpenSslRand,
     password: OpenSslPassword,
     key_store: SoftwareKeyStore,
+    legacy_digest: OpenSslLegacyDigest,
 }
 
 impl OpenSslProvider {
@@ -86,6 +89,7 @@ impl OpenSslProvider {
             rand: OpenSslRand,
             password: OpenSslPassword,
             key_store: SoftwareKeyStore::new(),
+            legacy_digest: OpenSslLegacyDigest,
         })
     }
 
@@ -131,6 +135,9 @@ impl CryptoProvider for OpenSslProvider {
     }
     fn key_store(&self) -> &dyn KeyStoreProvider {
         &self.key_store
+    }
+    fn legacy_digest(&self) -> &dyn LegacyDigestProvider {
+        &self.legacy_digest
     }
 }
 
@@ -186,6 +193,15 @@ mod tests {
 
         let mut buf = [0u8; 16];
         provider.rand().fill(&mut buf).unwrap();
+
+        assert_eq!(
+            provider
+                .legacy_digest()
+                .digest(crate::provider::LegacyDigest::Sha256, b"")
+                .unwrap()
+                .len(),
+            32
+        );
 
         let password = SecretBox::new(Box::new("secret".to_string()));
         let stored = provider

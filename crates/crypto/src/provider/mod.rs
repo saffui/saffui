@@ -269,6 +269,7 @@ pub trait CryptoProvider: Send + Sync {
     fn rand(&self) -> &dyn RandProvider;
     fn password(&self) -> &dyn PasswordProvider;
     fn key_store(&self) -> &dyn KeyStoreProvider;
+    fn legacy_digest(&self) -> &dyn LegacyDigestProvider;
 }
 
 pub trait HmacProvider: Send + Sync {
@@ -297,6 +298,31 @@ pub trait HmacProvider: Send + Sync {
         data: &[u8],
         tag: &[u8],
     ) -> Result<bool>;
+}
+
+/// A digest that exists only to read a password format this crate inherited.
+///
+/// Deliberately not part of [`HashAlg`]. MD5 belongs on no path but this one,
+/// and a type that cannot name it anywhere else says so more reliably than a
+/// comment does. The overlap with `HashAlg` on SHA-1 and above is the price of
+/// that, and a cheap one: these four are a fixed list that will only ever
+/// shrink.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum LegacyDigest {
+    Md5,
+    Sha1,
+    Sha256,
+    Sha512,
+}
+
+/// Bare digests, for reading legacy password formats and nothing else.
+///
+/// Under a FIPS build MD5 is not available and this reports the failure rather
+/// than substituting anything. A credential that cannot be checked is a login
+/// that fails, which is the correct outcome: the alternative is a FIPS
+/// deployment quietly verifying passwords with a broken digest.
+pub trait LegacyDigestProvider: Send + Sync {
+    fn digest(&self, alg: LegacyDigest, data: &[u8]) -> Result<Vec<u8>>;
 }
 
 pub trait AeadProvider: Send + Sync {

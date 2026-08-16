@@ -15,6 +15,7 @@ authors      = ["Kodjo Touglo <micheltouglo@gmail.com>"]
 # `{ workspace = true }`, so adding or moving a crate is a one-line change.
 commons = { path = "crates/commons" }
 crypto  = { path = "crates/crypto" }
+config  = { path = "crates/config" }
 
 # External: one version per dependency across the whole workspace.
 serde = { version = "1.0.229", features = ["derive"] }

@@ -43,7 +43,6 @@ impl SoftwareKeyStore {
     fn software_id(handle: &KeyHandle) -> Result<&str> {
         match handle {
             KeyHandle::Software { id } => Ok(id),
-            #[cfg(feature = "pkcs11")]
             KeyHandle::Token { .. } => Err(CryptoError::KeyStore),
         }
     }

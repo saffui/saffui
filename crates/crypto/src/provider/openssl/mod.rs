@@ -119,12 +119,20 @@ impl OpenSslProvider {
     /// hardware and silently got the software store would believe something
     /// about those keys that is not true, and nothing later would say so.
     fn key_store(config: &CryptoConfig) -> Result<Box<dyn KeyStoreProvider>> {
-        #[cfg(feature = "pkcs11")]
-        if let Some(pkcs11) = &config.pkcs11 {
-            return Ok(Box::new(pkcs11::Pkcs11KeyStore::new(pkcs11)?));
+        if let Some(token) = &config.pkcs11 {
+            // A build without the backend cannot honour a configured token, and
+            // quietly using the software store instead would put the private
+            // keys in process memory for a deployment that asked for hardware.
+            #[cfg(not(feature = "pkcs11"))]
+            {
+                let _ = token;
+                return Err(CryptoError::UnsupportedAlgorithm);
+            }
+
+            #[cfg(feature = "pkcs11")]
+            return Ok(Box::new(pkcs11::Pkcs11KeyStore::new(token)?));
         }
 
-        let _ = config;
         Ok(Box::new(SoftwareKeyStore::new()))
     }
 
@@ -205,7 +213,6 @@ mod tests {
     fn fips_required() -> CryptoConfig {
         CryptoConfig {
             fips_required: true,
-            #[cfg(feature = "pkcs11")]
             pkcs11: None,
         }
     }
@@ -270,6 +277,28 @@ mod tests {
             .hash(&password, crate::provider::Argon2Params::default())
             .unwrap();
         assert!(provider.password().verify(&password, &stored).unwrap());
+    }
+
+    /// A token configured into a build that cannot honour it is refused.
+    ///
+    /// Falling back to the software store would put the private keys in process
+    /// memory for a deployment that asked for hardware, and nothing later would
+    /// say so.
+    #[cfg(not(feature = "pkcs11"))]
+    #[test]
+    fn a_token_without_the_backend_is_refused() {
+        use secrecy::SecretBox;
+
+        let config = CryptoConfig {
+            fips_required: false,
+            pkcs11: Some(crate::provider::Pkcs11Config {
+                module: "/opt/lib/token.so".to_string(),
+                slot: None,
+                pin: SecretBox::new(Box::new("1234".to_string())),
+            }),
+        };
+
+        assert!(OpenSslProvider::new(&config).is_err());
     }
 
     /// A config that demands FIPS either gets it or fails with

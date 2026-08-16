@@ -33,12 +33,16 @@ pub struct CryptoConfig {
     /// Absent means the software store. There is no automatic discovery: a
     /// deployment that meant to use a token and silently got the software store
     /// would hold its private keys in process memory while believing otherwise.
-    #[cfg(feature = "pkcs11")]
+    ///
+    /// Present whether or not the backend can honour it. A configuration type
+    /// that changes shape with a feature makes every caller carry the same
+    /// `cfg`, and a caller that gets it wrong builds a provider that ignores the
+    /// token instead of failing to compile.
     pub pkcs11: Option<Pkcs11Config>,
 }
 
-/// How to reach a PKCS#11 token.
-#[cfg(feature = "pkcs11")]
+/// How to reach a PKCS#11 token. Data only — nothing here needs the backend
+/// that would use it.
 #[derive(Debug)]
 pub struct Pkcs11Config {
     /// Path to the module to load.
@@ -233,8 +237,8 @@ impl PublicKey {
 
 /// A reference to a key held by a [`KeyStoreProvider`].
 ///
-/// One variant for now. A hardware store adds its own rather than reusing this
-/// one, so a software id can never be mistaken for a slot handle.
+/// A hardware store names its keys its own way rather than reusing the software
+/// variant, so an id can never be mistaken for a token label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyHandle {
     Software {
@@ -245,7 +249,6 @@ pub enum KeyHandle {
     /// The label rather than an object handle: handles are per-session and mean
     /// nothing once the session closes, so one stored in a database would refer
     /// to whatever occupies that slot next time.
-    #[cfg(feature = "pkcs11")]
     Token {
         label: String,
     },

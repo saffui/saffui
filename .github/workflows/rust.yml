@@ -165,7 +165,7 @@ jobs:
       - name: test against the token
         run: |
           set -o pipefail
-          cargo test --workspace --features crypto/pkcs11 -- --ignored --test-threads=1 \
+          cargo test -p crypto --features pkcs11 -- --ignored --test-threads=1 \
             2>&1 | tee "$RUNNER_TEMP/hsm.log"
           if ! grep -qE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/hsm.log"; then
             echo "no token test ran; the job proved nothing." >&2
@@ -206,7 +206,11 @@ jobs:
             -keyout server.key -out server.crt
           openssl req -new -x509 -days 1 -nodes -subj "/CN=other-ca" \
             -keyout other.key -out other.crt
-          chmod 600 server.key
+          # PostgreSQL refuses a key it does not own, and the container runs as
+          # its own user. Docker Desktop remaps ids and hides this; a runner
+          # does not.
+          sudo chown 70:70 server.key server.crt
+          sudo chmod 600 server.key
 
           docker run -d --name saffui-pg-tls \
             -e POSTGRES_PASSWORD=saffui -e POSTGRES_DB=saffui_test -p 5433:5432 \
@@ -217,7 +221,14 @@ jobs:
             docker exec saffui-pg-tls pg_isready -U postgres && break
             sleep 2
           done
-          docker exec saffui-pg-tls psql -U postgres -tAc "SHOW ssl" | grep -qx on
+
+          # Whatever happened, say what the server said. A container that dies
+          # otherwise reports only that it is not running, which names no cause.
+          if ! docker exec saffui-pg-tls psql -U postgres -tAc "SHOW ssl" | grep -qx on; then
+            echo "the TLS server did not come up:" >&2
+            docker logs saffui-pg-tls >&2 || true
+            exit 1
+          fi
 
       # `cargo test --ignored` exits 0 when it runs nothing, so the count is
       # checked rather than the exit status: a green job that reached no server

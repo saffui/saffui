@@ -2,7 +2,7 @@ name: rust
 
 on:
   push:
-    branches: [develop]
+    branches: [feature/mt/crypto]
   pull_request:
 
 env:

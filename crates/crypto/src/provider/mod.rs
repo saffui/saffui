@@ -316,20 +316,46 @@ pub enum LegacyDigest {
     Sha512,
 }
 
+/// An extendable-output function, which produces as many bytes as it is asked
+/// for rather than a fixed digest.
+///
+/// Deliberately not a [`HashAlg`]. That type promises `output_len`, and a XOF
+/// has no length of its own — the caller names one. Folding the two together
+/// would make that method a lie for two of its variants.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum XofAlg {
+    Shake128,
+    Shake256,
+}
+
+impl XofAlg {
+    /// The security strength in bits, which is what bounds a useful output
+    /// length rather than the length itself.
+    ///
+    /// Squeezing more than this buys nothing: the extra bytes are determined by
+    /// the same state, so a longer output is longer, not stronger.
+    pub fn strength_bits(self) -> usize {
+        match self {
+            Self::Shake128 => 128,
+            Self::Shake256 => 256,
+        }
+    }
+}
+
 /// Hashing under any algorithm the seam names.
 ///
 /// Separate from [`LegacyDigestProvider`], which exists to read inherited
 /// password records and names MD5. Merging them would put MD5 within one enum
 /// variant of everything that hashes.
-///
-/// Still missing here, and deliberately so until something needs it: the SHAKE
-/// extendable-output functions, which post-quantum work will want. That belongs
-/// as a method on this trait, not in a free function calling the backend — the
-/// latter is the shape that lost the key-family check, the nonce-length check
-/// and a pair of cost bounds elsewhere in this crate, each time by reaching
-/// past this seam rather than through it.
 pub trait DigestProvider: Send + Sync {
     fn hash(&self, alg: HashAlg, data: &[u8]) -> Result<Vec<u8>>;
+
+    /// Squeeze `len` bytes out of an extendable-output function.
+    ///
+    /// A zero-length squeeze is refused. It is a well-defined operation that
+    /// returns nothing, which is never what a caller meant and is exactly what
+    /// an uninitialised length parameter produces.
+    fn xof(&self, alg: XofAlg, data: &[u8], len: usize) -> Result<Vec<u8>>;
 }
 
 /// Bare digests, for reading legacy password formats and nothing else.

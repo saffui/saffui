@@ -24,6 +24,12 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 tokio          = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
 thiserror      = "2.0.19"
+
+# --- HTTP ---
+# Only the layers that serve a request pull these; `commons` gates them behind
+# a feature so a crypto unit test does not compile a web framework.
+actix-web      = "4.14"
+log            = "0.4"
 openssl        = "0.10.81"
 # The raw FFI, for the post-quantum algorithms the safe crate has no bindings
 # for yet. Pinned to what `openssl` already resolves to, so there is one

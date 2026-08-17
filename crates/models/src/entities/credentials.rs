@@ -8,7 +8,7 @@ use crate::auditable::AuditableModel;
 use crate::str_enum::str_enum;
 
 str_enum! {
-    #[postgres(name = "credentialtypeenum")]
+    #[postgres(name = "credential_type")]
     /// What a stored credential is.
     pub enum CredentialType {
         Password => "password",
@@ -22,6 +22,7 @@ str_enum! {
 }
 
 str_enum! {
+    #[postgres(name = "otp_algorithm")]
     /// The digest an OTP credential is computed with, spelled as an
     /// `otpauth://` URI spells it.
     ///

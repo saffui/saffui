@@ -25,6 +25,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V002__users_and_clients.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 3,
+            name: "credentials",
+            sql: include_str!("../migrations/V003__credentials.sql"),
+            transactional: true,
+        }),
     ]
 }
 

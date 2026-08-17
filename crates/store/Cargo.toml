@@ -1,0 +1,23 @@
+[package]
+name = "store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# Everything that reaches PostgreSQL on behalf of a realm: the schema, and the
+# reads and writes the layers above are written against.
+
+[dependencies]
+models = { workspace = true }
+pgcore = { workspace = true }
+crypto = { workspace = true }
+tokio-postgres = { workspace = true }
+tokio = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+deadpool-postgres = { workspace = true }

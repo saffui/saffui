@@ -246,6 +246,18 @@ jobs:
             exit 1
           fi
 
+      # The isolation the schema promises, under the role it applies to. Counted
+      # for the same reason: a suite that reached no server would report the
+      # tenant rules as proven.
+      - name: test the schema's isolation
+        run: |
+          set -o pipefail
+          cargo test -p store -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/store.log"
+          if ! grep -qE "^test result: ok\. [4-9][0-9]* passed" "$RUNNER_TEMP/store.log"; then
+            echo "the isolation tests did not run; the job proved nothing." >&2
+            exit 1
+          fi
+
   deny:
     runs-on: ubuntu-latest
     steps:

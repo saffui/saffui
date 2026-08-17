@@ -1,5 +1,6 @@
 //! The persisted entities.
 
+pub mod acr;
 pub mod attributes;
 pub mod client;
 pub mod credentials;

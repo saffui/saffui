@@ -2,10 +2,12 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod apple_secret;
 pub mod federated_identity;
 pub mod link;
 pub mod login_state;
 pub mod oidc_config;
+pub mod presets;
 
 /// A value that must not be rendered until it is used.
 ///

@@ -4,6 +4,7 @@ pub mod acr;
 pub mod attributes;
 pub mod auth;
 pub mod client;
+pub mod consent;
 pub mod credentials;
 pub mod keys;
 pub mod oidc;

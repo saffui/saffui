@@ -98,6 +98,25 @@ pub struct AppliedRecord {
     pub checksum: String,
 }
 
+/// One migration a database has not applied yet.
+///
+/// Carries the name as well as the number: a version alone says nothing to
+/// whoever has to decide whether to run it now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingMigration {
+    pub version: i32,
+    pub name: String,
+}
+
+impl From<&Migration> for PendingMigration {
+    fn from(migration: &Migration) -> Self {
+        Self {
+            version: migration.version(),
+            name: migration.name().to_owned(),
+        }
+    }
+}
+
 /// What is left to apply, in order.
 ///
 /// Pure — it touches no database. It refuses four things, and each is a state a
@@ -111,7 +130,7 @@ pub struct AppliedRecord {
 /// - a new version that sorts below one already applied, which would run out of
 ///   order and leave two databases with the same version number and different
 ///   shapes.
-pub(super) fn plan<'a>(
+pub fn plan<'a>(
     embedded: &'a [Migration],
     applied: &[AppliedRecord],
     digest: &dyn DigestProvider,

@@ -8,5 +8,7 @@
 //! The tenant is not a parameter. It is whatever the transaction was scoped to,
 //! so a caller cannot name one that disagrees with the rules being applied.
 
+pub mod clients;
 pub mod realms;
 pub mod tenants;
+pub mod users;

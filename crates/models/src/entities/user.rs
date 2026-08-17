@@ -7,7 +7,7 @@ use crate::entities::attributes::{AttributesMap, string_at};
 use crate::str_enum::str_enum;
 
 str_enum! {
-    #[postgres(name = "userstorageenum")]
+    #[postgres(name = "user_storage")]
     /// Where the account itself lives.
     pub enum UserStorage {
         /// In this realm's own tables.
@@ -18,6 +18,7 @@ str_enum! {
 }
 
 str_enum! {
+    #[postgres(name = "required_action")]
     /// Something a user must do before a session is considered complete.
     ///
     /// Named rather than free text because each one is a screen the login flow

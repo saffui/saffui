@@ -11,7 +11,7 @@ use crate::entities::keys::{JweAlgorithm, JweEncryption};
 use crate::str_enum::str_enum;
 
 str_enum! {
-    #[postgres(name = "protocolenum")]
+    #[postgres(name = "protocol")]
     /// The protocol a client speaks.
     pub enum Protocol {
         OpenId => "openid-connect",

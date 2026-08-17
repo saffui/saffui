@@ -1,6 +1,6 @@
 //! What a collection endpoint accepts, and the window it resolves to.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The page size a caller gets when it does not ask.
 pub const DEFAULT_MAX: i64 = 100;
@@ -133,6 +133,40 @@ impl PagingParams {
             return Err(PagingError::FirstTooDeep);
         }
         Ok(requested as i64)
+    }
+}
+
+/// One page of a collection, with what it took to build it.
+///
+/// Generic, because every collection answers the same shape. A page type per
+/// entity is a type per entity to keep in step, and the one that drifts is the
+/// one nobody looked at.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    /// The window that produced it, echoed so a caller can tell a short page
+    /// from the last one.
+    pub first: i64,
+    pub max: i64,
+    /// The total, when it was asked for. `None` means nobody paid for the
+    /// count, not that there is nothing.
+    pub total: Option<i64>,
+}
+
+impl<T> Page<T> {
+    pub fn new(items: Vec<T>, window: Window, total: Option<i64>) -> Self {
+        Self {
+            items,
+            first: window.first,
+            max: window.max,
+            total,
+        }
+    }
+
+    /// Whether a further page may exist. A full page says nothing about what
+    /// follows, so this is a reason to ask again rather than a promise.
+    pub fn may_have_more(&self) -> bool {
+        self.items.len() as i64 >= self.max
     }
 }
 
@@ -318,6 +352,28 @@ mod tests {
         .unwrap();
         assert_eq!(window.max, MAX_MAX);
         assert!(window.clamped);
+    }
+
+    /// A page echoes the window it was built from, so a caller reading a short
+    /// page can tell it apart from a page that was cut off.
+    #[test]
+    fn a_page_carries_the_window_that_produced_it() {
+        let window = PagingParams {
+            first: Some(20),
+            max: Some(10),
+            ..params()
+        }
+        .window()
+        .unwrap();
+
+        let full = Page::new((0..10).collect::<Vec<i32>>(), window, None);
+        assert_eq!((full.first, full.max), (20, 10));
+        assert_eq!(full.total, None, "absent is unasked for, not empty");
+        assert!(full.may_have_more(), "a full page is a reason to ask again");
+
+        let short = Page::new(vec![1, 2], window, Some(22));
+        assert!(!short.may_have_more());
+        assert_eq!(short.total, Some(22));
     }
 
     /// A count is never implicit.

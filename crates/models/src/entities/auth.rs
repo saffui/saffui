@@ -114,7 +114,7 @@ impl AuthenticationFlowMutationModel {
 }
 
 str_enum! {
-    #[postgres(name = "authenticatorrequirementenum")]
+    #[postgres(name = "authenticator_requirement")]
     /// How much a step counts towards the flow succeeding.
     pub enum AuthenticatorRequirement {
         /// Must succeed. The flow fails without it.
@@ -140,22 +140,46 @@ impl AuthenticatorRequirement {
     }
 }
 
+/// What a step actually runs.
+///
+/// One arm per kind, because what each needs is disjoint: an authenticator has
+/// a name and may have settings, a nested flow has the identifier of the flow
+/// to run and no settings of its own. A shape carrying a flag beside all three
+/// gives every step two fields that mean nothing for it, and leaves the pairing
+/// to whoever writes the row.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ExecutionStep {
+    /// A single authenticator, with the settings it reads when it runs.
+    Authenticator {
+        authenticator: String,
+        config_id: Option<String>,
+    },
+    /// Another flow, run as one step of this one.
+    SubFlow { flow_id: String },
+}
+
+impl ExecutionStep {
+    /// The flow this step runs, if it runs a flow.
+    pub fn sub_flow(&self) -> Option<&str> {
+        match self {
+            Self::SubFlow { flow_id } => Some(flow_id),
+            Self::Authenticator { .. } => None,
+        }
+    }
+}
+
 /// One step of a flow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthenticationExecutionModel {
     pub execution_id: String,
     pub realm_id: String,
     pub alias: String,
+    /// The flow this step belongs to.
     pub flow_id: String,
-    /// The sub-flow this step sits in, when it is nested.
-    pub parent_flow_id: Option<String>,
-    /// Lower runs first.
+    /// Lower runs first, and no two steps of one flow share a position.
     pub priority: i32,
-    /// The authenticator that implements the step.
-    pub authenticator: String,
-    /// Whether the step is itself a flow rather than a single authenticator.
-    pub authenticator_flow: Option<bool>,
-    pub authenticator_config: Option<String>,
+    pub step: ExecutionStep,
     pub requirement: AuthenticatorRequirement,
     pub metadata: AuditableModel,
 }
@@ -170,11 +194,8 @@ impl AuthenticationExecutionModel {
 pub struct AuthenticationExecutionMutationModel {
     pub alias: String,
     pub flow_id: String,
-    pub parent_flow_id: Option<String>,
     pub priority: i32,
-    pub authenticator: String,
-    pub authenticator_flow: Option<bool>,
-    pub authenticator_config: Option<String>,
+    pub step: ExecutionStep,
     pub requirement: AuthenticatorRequirement,
 }
 
@@ -190,11 +211,8 @@ impl AuthenticationExecutionMutationModel {
             realm_id,
             alias: self.alias,
             flow_id: self.flow_id,
-            parent_flow_id: self.parent_flow_id,
             priority: self.priority,
-            authenticator: self.authenticator,
-            authenticator_flow: self.authenticator_flow,
-            authenticator_config: self.authenticator_config,
+            step: self.step,
             requirement: self.requirement,
             metadata,
         }
@@ -323,6 +341,51 @@ mod tests {
         assert_eq!(config.alias, "otp-config");
     }
 
+    /// A step that runs a flow answers with the flow it runs, and one that runs
+    /// an authenticator answers with nothing. Whoever walks the tree asks this
+    /// one question, and an arm that answered wrongly would either descend into
+    /// an authenticator or stop at a nested flow.
+    #[test]
+    fn only_a_nested_step_names_a_flow_to_run() {
+        let nested = ExecutionStep::SubFlow {
+            flow_id: "flow-2".into(),
+        };
+        assert_eq!(nested.sub_flow(), Some("flow-2"));
+
+        let leaf = ExecutionStep::Authenticator {
+            authenticator: "auth-otp".into(),
+            config_id: None,
+        };
+        assert_eq!(leaf.sub_flow(), None);
+    }
+
+    /// The two kinds are told apart on the wire by a tag, not by which fields
+    /// happen to be present.
+    #[test]
+    fn a_step_names_its_kind_on_the_wire() {
+        let nested = serde_json::to_value(ExecutionStep::SubFlow {
+            flow_id: "flow-2".into(),
+        })
+        .unwrap();
+        assert_eq!(nested["kind"], "sub_flow");
+        assert_eq!(nested["flow_id"], "flow-2");
+        assert!(nested.get("authenticator").is_none());
+
+        let leaf = serde_json::to_value(ExecutionStep::Authenticator {
+            authenticator: "auth-otp".into(),
+            config_id: None,
+        })
+        .unwrap();
+        assert_eq!(leaf["kind"], "authenticator");
+        assert_eq!(
+            serde_json::from_value::<ExecutionStep>(leaf).unwrap(),
+            ExecutionStep::Authenticator {
+                authenticator: "auth-otp".into(),
+                config_id: None,
+            }
+        );
+    }
+
     /// A step keeps the flow it names and the requirement it was given, and
     /// reads its own enablement from that requirement.
     #[test]
@@ -330,11 +393,11 @@ mod tests {
         let execution = AuthenticationExecutionMutationModel {
             alias: "otp".into(),
             flow_id: "flow-1".into(),
-            parent_flow_id: Some("flow-parent".into()),
             priority: 20,
-            authenticator: "auth-otp".into(),
-            authenticator_flow: Some(false),
-            authenticator_config: Some("config-1".into()),
+            step: ExecutionStep::Authenticator {
+                authenticator: "auth-otp".into(),
+                config_id: Some("config-1".into()),
+            },
             requirement: AuthenticatorRequirement::Conditional,
         }
         .into_model("exec-1".into(), "realm-1".into(), metadata());
@@ -342,9 +405,13 @@ mod tests {
         assert_eq!(execution.execution_id, "exec-1");
         assert_eq!(execution.realm_id, "realm-1");
         assert_eq!(execution.flow_id, "flow-1");
-        assert_eq!(execution.parent_flow_id.as_deref(), Some("flow-parent"));
         assert_eq!(execution.priority, 20);
         assert!(execution.is_enabled());
+        assert_eq!(
+            execution.step.sub_flow(),
+            None,
+            "a step running an authenticator answered with a flow to run"
+        );
 
         let disabled = AuthenticationExecutionModel {
             requirement: AuthenticatorRequirement::Disabled,

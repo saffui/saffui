@@ -49,6 +49,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V006__organizations.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 7,
+            name: "authentication_flows",
+            sql: include_str!("../migrations/V007__authentication_flows.sql"),
+            transactional: true,
+        }),
     ]
 }
 

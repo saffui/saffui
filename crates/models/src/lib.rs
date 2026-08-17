@@ -7,6 +7,7 @@
 pub mod auditable;
 pub mod broker;
 pub mod entities;
+pub mod export;
 pub mod paging;
 pub mod representation;
 pub mod search;

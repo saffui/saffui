@@ -8,6 +8,7 @@
 //! The tenant is not a parameter. It is whatever the transaction was scoped to,
 //! so a caller cannot name one that disagrees with the rules being applied.
 
+pub mod auth_flows;
 pub mod clients;
 pub mod credentials;
 pub mod one_time_tokens;

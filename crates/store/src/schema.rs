@@ -12,12 +12,20 @@ use pgcore::migrations::{Migration, SqlMigration};
 /// migration that was written and never listed does not silently go unapplied
 /// while the directory looks complete.
 pub fn migrations() -> Vec<Migration> {
-    vec![Migration::Sql(SqlMigration {
-        version: 1,
-        name: "tenancy",
-        sql: include_str!("../migrations/V001__tenancy.sql"),
-        transactional: true,
-    })]
+    vec![
+        Migration::Sql(SqlMigration {
+            version: 1,
+            name: "tenancy",
+            sql: include_str!("../migrations/V001__tenancy.sql"),
+            transactional: true,
+        }),
+        Migration::Sql(SqlMigration {
+            version: 2,
+            name: "users_and_clients",
+            sql: include_str!("../migrations/V002__users_and_clients.sql"),
+            transactional: true,
+        }),
+    ]
 }
 
 #[cfg(test)]

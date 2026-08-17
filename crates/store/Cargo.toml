@@ -15,6 +15,7 @@ models = { workspace = true }
 pgcore = { workspace = true }
 crypto = { workspace = true }
 tokio-postgres = { workspace = true }
+deadpool-postgres = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
 

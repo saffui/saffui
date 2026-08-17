@@ -37,6 +37,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V004__sessions_and_tokens.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 5,
+            name: "roles_and_groups",
+            sql: include_str!("../migrations/V005__roles_and_groups.sql"),
+            transactional: true,
+        }),
     ]
 }
 

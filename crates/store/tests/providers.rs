@@ -286,3 +286,263 @@ async fn a_state_change_bumps_the_stored_version() {
     );
     transaction.commit().await.unwrap();
 }
+
+use models::entities::client::{ClientCreateModel, ClientSecret};
+use models::entities::user::{UserCreateModel, UserModel};
+use store::providers::{clients, users};
+
+fn user(tenant: &str, realm: &str, id: &str) -> UserModel {
+    UserCreateModel {
+        user_name: id.to_owned(),
+        enabled: true,
+        email: format!("{id}@example.test"),
+        email_verified: Some(true),
+        phone_number: Some(format!("+3312345{id}")),
+        phone_number_verified: None,
+        required_actions: None,
+        not_before: None,
+        user_storage: None,
+        attributes: None,
+        is_service_account: None,
+        service_account_client_link: None,
+    }
+    .into_model(
+        id.to_owned(),
+        realm.to_owned(),
+        AuditableModel::from_creator(tenant.to_owned(), "root".to_owned()),
+    )
+}
+
+/// Plant a tenant, a realm, and whatever lives in it.
+async fn plant_realm(pool: &Pool, tenancy: &Tenancy, name: &str, realm_id: &str) {
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::tenant_wide(name))
+        .await
+        .unwrap();
+    tenants::create(&transaction, &tenant(name)).await.unwrap();
+    realms::create(&transaction, &realm(name, realm_id))
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+}
+
+/// A user is found by every identifier a login may arrive with, and only inside
+/// their own realm.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_user_is_found_by_what_a_login_arrives_with() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    plant_realm(&pool, &tenancy, "acme", "main").await;
+    plant_realm(&pool, &tenancy, "globex", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+    users::create(&transaction, &user("acme", "main", "ada"))
+        .await
+        .unwrap();
+
+    for found in [
+        users::load(&transaction, "ada").await.unwrap(),
+        users::load_by_name(&transaction, "ada").await.unwrap(),
+        users::load_by_email(&transaction, "ada@example.test")
+            .await
+            .unwrap(),
+        users::load_by_phone(&transaction, "+3312345ada")
+            .await
+            .unwrap(),
+    ] {
+        let found = found.expect("every identifier resolves the same user");
+        assert_eq!(found.user_id, "ada");
+        assert_eq!(found.realm_id, "main");
+        assert_eq!(found.metadata.tenant, "acme");
+        assert!(found.enabled);
+    }
+
+    assert!(users::name_taken(&transaction, "ada").await.unwrap());
+    assert!(
+        users::email_taken(&transaction, "ada@example.test")
+            .await
+            .unwrap()
+    );
+    assert_eq!(users::count(&transaction).await.unwrap(), 1);
+    transaction.commit().await.unwrap();
+
+    // The same name in another tenant's realm is a different user, and free.
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("globex", "main"))
+        .await
+        .unwrap();
+    assert!(users::load(&transaction, "ada").await.unwrap().is_none());
+    assert!(!users::name_taken(&transaction, "ada").await.unwrap());
+    assert_eq!(users::count(&transaction).await.unwrap(), 0);
+    transaction.commit().await.unwrap();
+}
+
+/// An update writes what it carries and never the identifiers or the name: a
+/// realm's users are addressed by those, so moving one would be a different user
+/// wearing the same row.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_update_never_moves_a_user() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    plant_realm(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+    users::create(&transaction, &user("acme", "main", "ada"))
+        .await
+        .unwrap();
+
+    let mut changed = user("acme", "main", "ada");
+    changed.user_name = "someone-else".to_owned();
+    changed.email = "moved@example.test".to_owned();
+    changed.enabled = false;
+    changed.metadata.updated_by = Some("root".to_owned());
+
+    assert!(users::update(&transaction, &changed).await.unwrap());
+
+    let loaded = users::load(&transaction, "ada").await.unwrap().unwrap();
+    assert_eq!(loaded.email, "moved@example.test");
+    assert!(!loaded.enabled);
+    assert_eq!(
+        loaded.metadata.version, 2,
+        "the statement bumped the stored version"
+    );
+    assert_eq!(loaded.metadata.updated_by.as_deref(), Some("root"));
+    assert_eq!(
+        loaded.user_name, "ada",
+        "an update renamed the user it was written over"
+    );
+    transaction.commit().await.unwrap();
+}
+
+/// A client is loaded without what authenticates it, and reaching that is its
+/// own call.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_loaded_client_carries_no_credential() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    plant_realm(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+
+    let mut client = ClientCreateModel {
+        name: "app".into(),
+        display_name: "App".into(),
+        description: String::new(),
+        enabled: Some(true),
+    }
+    .into_model(
+        "app".to_owned(),
+        "main".to_owned(),
+        AuditableModel::from_creator("acme".to_owned(), "root".to_owned()),
+    );
+    client.secret = Some(ClientSecret::new("s3cr3t-value".to_owned()));
+    clients::create(&transaction, &client).await.unwrap();
+
+    let loaded = clients::load(&transaction, "app").await.unwrap().unwrap();
+    assert_eq!(loaded.client_id, "app");
+    assert_eq!(
+        loaded.secret, None,
+        "a plain load carried the credential that authenticates the client"
+    );
+    assert_eq!(loaded.registration_token, None);
+
+    let secret = clients::load_secret(&transaction, "app")
+        .await
+        .unwrap()
+        .expect("the deliberate call reaches it");
+    assert_eq!(secret.expose(), "s3cr3t-value");
+
+    assert!(clients::exists(&transaction, "app").await.unwrap());
+    assert!(!clients::exists(&transaction, "nobody").await.unwrap());
+    assert!(
+        clients::load_secret(&transaction, "nobody")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    transaction.commit().await.unwrap();
+}
+
+/// Rotating a secret stamps when it happened, because a secret whose age nothing
+/// can read is one nobody can decide to replace.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn rotating_a_secret_stamps_when_it_happened() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    plant_realm(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+
+    let client = ClientCreateModel {
+        name: "app".into(),
+        display_name: "App".into(),
+        description: String::new(),
+        enabled: Some(true),
+    }
+    .into_model(
+        "app".to_owned(),
+        "main".to_owned(),
+        AuditableModel::from_creator("acme".to_owned(), "root".to_owned()),
+    );
+    clients::create(&transaction, &client).await.unwrap();
+
+    let before = clients::load(&transaction, "app").await.unwrap().unwrap();
+    assert_eq!(before.secret_created_at, None, "it was minted without one");
+
+    assert!(
+        clients::rotate_secret(
+            &transaction,
+            "app",
+            &ClientSecret::new("fresh".into()),
+            None
+        )
+        .await
+        .unwrap()
+    );
+
+    let after = clients::load(&transaction, "app").await.unwrap().unwrap();
+    assert!(after.secret_created_at.is_some(), "the rotation stamped it");
+    assert_eq!(after.metadata.version, 2);
+    assert_eq!(
+        clients::load_secret(&transaction, "app")
+            .await
+            .unwrap()
+            .unwrap()
+            .expose(),
+        "fresh"
+    );
+
+    assert!(
+        !clients::rotate_secret(&transaction, "nobody", &ClientSecret::new("x".into()), None)
+            .await
+            .unwrap(),
+        "a secret was rotated on a client this transaction cannot see"
+    );
+    transaction.commit().await.unwrap();
+}

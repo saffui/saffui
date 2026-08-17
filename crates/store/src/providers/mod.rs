@@ -10,6 +10,8 @@
 
 pub mod clients;
 pub mod credentials;
+pub mod one_time_tokens;
 pub mod realms;
+pub mod sessions;
 pub mod tenants;
 pub mod users;

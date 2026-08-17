@@ -8,7 +8,7 @@ use crate::entities::user::RequiredAction;
 use crate::str_enum::str_enum;
 
 str_enum! {
-    #[postgres(name = "usersessionstateenum")]
+    #[postgres(name = "user_session_state")]
     /// Where a user session stands.
     pub enum UserSessionState {
         LoggedIn => "logged-in",

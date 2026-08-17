@@ -97,6 +97,7 @@ impl Fixture {
     }
 
     /// The same again, and a client.
+    #[allow(dead_code, reason = "each test binary compiles this module on its own")]
     pub async fn with_user_and_client() -> Self {
         let fixture = Self::empty().await;
         fixture.plant(true).await;

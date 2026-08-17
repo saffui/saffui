@@ -314,6 +314,10 @@ fn user(tenant: &str, realm: &str, id: &str) -> UserModel {
 }
 
 /// Plant a tenant, a realm, and whatever lives in it.
+/// A pool guard stays borrowed until it leaves scope, and shadowing it does not
+/// release it. A test that takes more of them in a row than the pool holds waits
+/// on one that is never coming back, so each is dropped once its transaction has
+/// committed.
 async fn plant_realm(pool: &Pool, tenancy: &Tenancy, name: &str, realm_id: &str) {
     let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
@@ -543,6 +547,382 @@ async fn rotating_a_secret_stamps_when_it_happened() {
             .await
             .unwrap(),
         "a secret was rotated on a client this transaction cannot see"
+    );
+    transaction.commit().await.unwrap();
+}
+
+use models::entities::credentials::{
+    CredentialModel, CredentialSecret, CredentialType, OtpAlgorithm, OtpCredentialData,
+    OtpParameters,
+};
+use store::providers::credentials;
+
+fn otp_credential(tenant: &str, realm: &str, id: &str, priority: i64) -> CredentialModel {
+    CredentialModel {
+        priority,
+        ..CredentialModel::otp(
+            id.to_owned(),
+            realm.to_owned(),
+            "ada".to_owned(),
+            CredentialSecret::new("JBSWY3DPEHPK3PXP".to_owned()),
+            OtpAlgorithm::Sha1,
+            OtpParameters::totp_default(),
+            AuditableModel::from_creator(tenant.to_owned(), "ada".to_owned()),
+        )
+    }
+}
+
+fn password(tenant: &str, realm: &str, id: &str, priority: i64) -> CredentialModel {
+    CredentialModel {
+        credential_id: id.to_owned(),
+        realm_id: realm.to_owned(),
+        user_id: "ada".to_owned(),
+        credential_type: CredentialType::Password,
+        user_label: None,
+        secret: CredentialSecret::new("$argon2id$stored".to_owned()),
+        otp: None,
+        priority,
+        metadata: AuditableModel::from_creator(tenant.to_owned(), "ada".to_owned()),
+    }
+}
+
+async fn realm_with_user(pool: &Pool, tenancy: &Tenancy, name: &str, realm_id: &str) {
+    plant_realm(pool, tenancy, name, realm_id).await;
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new(name, realm_id))
+        .await
+        .unwrap();
+    users::create(&transaction, &user(name, realm_id, "ada"))
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+}
+
+/// Credentials come back in the order they are tried, and the order is the
+/// statement's rather than whatever the rows happened to arrive in.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn credentials_come_back_in_the_order_they_are_tried() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    realm_with_user(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+
+    // Written out of order on purpose.
+    credentials::create(&transaction, &otp_credential("acme", "main", "second", 20))
+        .await
+        .unwrap();
+    credentials::create(&transaction, &password("acme", "main", "first", 10))
+        .await
+        .unwrap();
+    credentials::create(&transaction, &password("acme", "main", "also-first", 10))
+        .await
+        .unwrap();
+
+    let held = credentials::load_for_user(&transaction, "ada")
+        .await
+        .unwrap();
+    let order: Vec<&str> = held.iter().map(|c| c.credential_id.as_str()).collect();
+    assert_eq!(
+        order,
+        vec!["also-first", "first", "second"],
+        "a tie is broken by identifier, so the answer does not move between reads"
+    );
+
+    let passwords =
+        credentials::load_for_user_of_type(&transaction, "ada", CredentialType::Password)
+            .await
+            .unwrap();
+    assert_eq!(passwords.len(), 2);
+    assert!(
+        passwords
+            .iter()
+            .all(|c| c.credential_type == CredentialType::Password)
+    );
+    transaction.commit().await.unwrap();
+}
+
+/// The parameters survive the round trip as one value, and the priority reads
+/// back as the whole number it was written as.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_parameters_and_the_rank_survive_the_round_trip() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    realm_with_user(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+    credentials::create(&transaction, &otp_credential("acme", "main", "totp-1", 5))
+        .await
+        .unwrap();
+
+    let loaded = credentials::load(&transaction, "totp-1")
+        .await
+        .unwrap()
+        .expect("its own credential");
+
+    assert_eq!(loaded.credential_type, CredentialType::Totp);
+    assert_eq!(
+        loaded.priority, 5,
+        "the rank is read back as a whole number"
+    );
+    assert_eq!(loaded.secret.expose(), "JBSWY3DPEHPK3PXP");
+
+    let otp = loaded.otp.expect("a time based credential carries its own");
+    assert_eq!(otp.algorithm, OtpAlgorithm::Sha1);
+    assert_eq!(otp.parameters, OtpParameters::totp_default());
+    transaction.commit().await.unwrap();
+}
+
+/// A credential's parameters match its kind, and the database says so. A time
+/// based one with none cannot produce a code, and a password with some describes
+/// a way of checking it that nothing implements.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_parameters_have_to_match_the_kind() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    realm_with_user(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+
+    let mut bare_otp = otp_credential("acme", "main", "bare", 0);
+    bare_otp.otp = None;
+    assert!(
+        credentials::create(&transaction, &bare_otp).await.is_err(),
+        "a time based credential was written with no parameters"
+    );
+}
+
+/// Replacing what verifies a credential replaces its parameters with it.
+///
+/// A password rehashed at a new cost and stored beside the old parameters is one
+/// nothing can verify.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn replacing_the_secret_replaces_its_parameters() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    realm_with_user(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+    credentials::create(&transaction, &otp_credential("acme", "main", "totp-1", 0))
+        .await
+        .unwrap();
+
+    let stronger = OtpCredentialData {
+        algorithm: OtpAlgorithm::Sha256,
+        parameters: OtpParameters::totp(8, 60).unwrap(),
+    };
+    assert!(
+        credentials::replace_secret(
+            &transaction,
+            "totp-1",
+            &CredentialSecret::new("NEWSECRET".to_owned()),
+            Some(&stronger),
+            "ada",
+        )
+        .await
+        .unwrap()
+    );
+
+    let loaded = credentials::load(&transaction, "totp-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.secret.expose(), "NEWSECRET");
+    assert_eq!(loaded.otp, Some(stronger), "the parameters moved with it");
+    assert_eq!(loaded.metadata.version, 2);
+
+    assert!(
+        !credentials::replace_secret(
+            &transaction,
+            "nobody",
+            &CredentialSecret::new("x".to_owned()),
+            None,
+            "ada",
+        )
+        .await
+        .unwrap(),
+        "a secret was replaced on a credential this transaction cannot see"
+    );
+    transaction.commit().await.unwrap();
+}
+
+/// Which kinds a user holds is answerable without any of the material, which is
+/// what a redacted restore needs to know what has to be enrolled again.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_kinds_held_are_answerable_without_the_material() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    realm_with_user(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+
+    assert!(
+        credentials::kinds_held(&transaction, "ada")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a user who holds nothing"
+    );
+
+    credentials::create(&transaction, &password("acme", "main", "pw", 0))
+        .await
+        .unwrap();
+    credentials::create(&transaction, &otp_credential("acme", "main", "totp", 10))
+        .await
+        .unwrap();
+    credentials::create(&transaction, &password("acme", "main", "old-pw", 20))
+        .await
+        .unwrap();
+
+    let kinds = credentials::kinds_held(&transaction, "ada").await.unwrap();
+    assert_eq!(
+        kinds.len(),
+        2,
+        "each kind once, however many of it are held: {kinds:?}"
+    );
+    assert!(kinds.contains(&CredentialType::Password));
+    assert!(kinds.contains(&CredentialType::Totp));
+
+    // And removing one of a kind does not remove the kind.
+    assert!(credentials::delete(&transaction, "pw").await.unwrap());
+    assert!(
+        credentials::kinds_held(&transaction, "ada")
+            .await
+            .unwrap()
+            .contains(&CredentialType::Password)
+    );
+    assert!(!credentials::delete(&transaction, "pw").await.unwrap());
+    transaction.commit().await.unwrap();
+}
+
+/// A realm's credentials are invisible from another realm, and removing a user
+/// takes theirs with them.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn credentials_belong_to_their_realm_and_to_their_user() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    realm_with_user(&pool, &tenancy, "acme", "main").await;
+    realm_with_user(&pool, &tenancy, "globex", "main").await;
+
+    // A second realm under the same tenant, so the read half of the rule is
+    // exercised and not only the tenant half.
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::tenant_wide("acme"))
+        .await
+        .unwrap();
+    realms::create(&transaction, &realm("acme", "other"))
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    drop(connection);
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+    credentials::create(&transaction, &password("acme", "main", "pw", 0))
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+
+    // Another realm of the same tenant sees none of them. Crossing tenants
+    // would be isolated by the tenant alone, so it proves only half the rule.
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "other"))
+        .await
+        .unwrap();
+    assert!(
+        credentials::load(&transaction, "pw")
+            .await
+            .unwrap()
+            .is_none(),
+        "a realm read another realm's credentials inside the same tenant"
+    );
+    assert!(
+        credentials::load_for_user(&transaction, "ada")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        credentials::kinds_held(&transaction, "ada")
+            .await
+            .unwrap()
+            .is_empty(),
+        "nor the kinds they hold"
+    );
+    transaction.commit().await.unwrap();
+    drop(connection);
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("globex", "main"))
+        .await
+        .unwrap();
+    assert!(
+        credentials::load(&transaction, "pw")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        credentials::load_for_user(&transaction, "ada")
+            .await
+            .unwrap()
+            .is_empty(),
+        "another realm's user of the same name carries none of theirs"
+    );
+    transaction.commit().await.unwrap();
+
+    // Removing the user removes what they held.
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+    assert!(users::delete(&transaction, "ada").await.unwrap());
+    assert!(
+        credentials::load(&transaction, "pw")
+            .await
+            .unwrap()
+            .is_none(),
+        "a credential outlived the user it belonged to"
     );
     transaction.commit().await.unwrap();
 }

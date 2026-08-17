@@ -10,7 +10,7 @@ use crate::entities::attributes::AttributesMap;
 use crate::str_enum::str_enum;
 
 str_enum! {
-    #[postgres(name = "sslenforcementenum")]
+    #[postgres(name = "ssl_enforcement")]
     /// Where a realm insists on a secured connection.
     pub enum SslEnforcement {
         /// Nowhere. For a deployment behind something that already terminates

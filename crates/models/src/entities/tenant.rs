@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::str_enum::str_enum;
 
 str_enum! {
+    #[postgres(name = "tenant_state")]
     /// Whether a tenant may be reached at all.
     pub enum TenantState {
         Active => "active",

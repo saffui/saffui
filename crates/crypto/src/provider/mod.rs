@@ -651,7 +651,11 @@ pub trait RandProvider: Send + Sync {
 }
 
 /// Argon2id cost parameters.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+///
+/// Serialisable because a realm stores the cost it mints passwords at, and a
+/// second copy of these four numbers somewhere else is a second place for them
+/// to disagree with what the hasher is given.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Argon2Params {
     /// Memory cost in KiB.
     pub m_cost: u32,

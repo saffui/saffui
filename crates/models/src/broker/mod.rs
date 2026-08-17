@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 pub mod federated_identity;
+pub mod link;
 pub mod login_state;
 pub mod oidc_config;
 

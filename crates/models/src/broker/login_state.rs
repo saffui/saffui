@@ -21,30 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crypto::provider::{CryptoProvider, DigestProvider, HashAlg, Result};
 
-/// A value that must not be rendered until it is used.
-///
-/// The PKCE verifier and the nonce are secret until redemption, and the raw
-/// state is secret for the life of the login. All three reach a log the same
-/// way: a struct holding one is formatted.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BrokerSecret(String);
-
-impl BrokerSecret {
-    pub fn new(value: String) -> Self {
-        Self(value)
-    }
-
-    /// Read it. Named so every place one is read is greppable.
-    pub fn expose(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Debug for BrokerSecret {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("BrokerSecret(<redacted>)")
-    }
-}
+use crate::broker::BrokerSecret;
 
 /// Where a brokered login is going, and what local request it is a step of.
 ///

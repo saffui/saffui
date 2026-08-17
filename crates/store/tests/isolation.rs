@@ -384,3 +384,290 @@ async fn the_application_role_cannot_step_past_the_rules() {
         .get(0);
     assert_eq!(who, "saffui_app");
 }
+
+/// A realm's contents are scoped by both keys, so a directory-wide transaction
+/// that names no realm sees none of them.
+///
+/// That is what the empty realm on a tenant-wide context buys: it matches
+/// nothing on a table keyed by both rather than everything.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realms_contents_need_both_keys() {
+    let _turn = DATABASE.lock().await;
+    let client = migrated().await;
+
+    client.batch_execute("BEGIN").await.unwrap();
+    governed_by(&client, "acme").await;
+    client
+        .execute(
+            "INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $1)",
+            &[&"acme"],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO realms (tenant, realm_id, name, display_name) VALUES ($1, $2, $2, $2)",
+            &[&"acme", &"main"],
+        )
+        .await
+        .unwrap();
+    client.batch_execute("COMMIT").await.unwrap();
+
+    // Naming only the tenant, a user cannot be written or read.
+    client.batch_execute("BEGIN").await.unwrap();
+    governed_by(&client, "acme").await;
+    assert!(
+        client
+            .execute(
+                "INSERT INTO users (tenant, realm_id, user_id, user_name) \
+                 VALUES ($1, $2, $3, $3)",
+                &[&"acme", &"main", &"ada"],
+            )
+            .await
+            .is_err(),
+        "a user was written by a transaction that named no realm"
+    );
+    client.batch_execute("ROLLBACK").await.unwrap();
+
+    // Naming both, it can.
+    client.batch_execute("BEGIN").await.unwrap();
+    governed_by(&client, "acme").await;
+    client
+        .execute(
+            "SELECT set_config('saffui.current_realm', $1, true)",
+            &[&"main"],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO users (tenant, realm_id, user_id, user_name) VALUES ($1, $2, $3, $3)",
+            &[&"acme", &"main", &"ada"],
+        )
+        .await
+        .expect("both keys named");
+
+    // And a realm it does not name stays invisible even inside the same tenant.
+    assert!(
+        client
+            .execute(
+                "INSERT INTO users (tenant, realm_id, user_id, user_name) \
+                 VALUES ($1, $2, $3, $3)",
+                &[&"acme", &"other", &"eve"],
+            )
+            .await
+            .is_err(),
+        "a user was written into a realm the transaction did not name"
+    );
+    client.batch_execute("ROLLBACK").await.unwrap();
+}
+
+/// An identifier is unique within its realm and nowhere else.
+///
+/// Made globally unique, creating a user with a chosen identifier tells the
+/// caller whether it already exists somewhere they cannot read, which is one
+/// tenant learning another's identifiers by collision.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_identifier_says_nothing_about_another_realm() {
+    let _turn = DATABASE.lock().await;
+    let client = migrated().await;
+
+    for tenant in ["acme", "globex"] {
+        client.batch_execute("BEGIN").await.unwrap();
+        governed_by(&client, tenant).await;
+        client
+            .execute(
+                "INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $1)",
+                &[&tenant],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO realms (tenant, realm_id, name, display_name) VALUES ($1, $2, $2, $2)",
+                &[&tenant, &"main"],
+            )
+            .await
+            .unwrap();
+        client.batch_execute("COMMIT").await.unwrap();
+
+        client.batch_execute("BEGIN").await.unwrap();
+        governed_by(&client, tenant).await;
+        client
+            .execute(
+                "SELECT set_config('saffui.current_realm', $1, true)",
+                &[&"main"],
+            )
+            .await
+            .unwrap();
+        client
+            .execute(
+                "INSERT INTO users (tenant, realm_id, user_id, user_name) VALUES ($1, $2, $3, $3)",
+                &[&tenant, &"main", &"shared-id"],
+            )
+            .await
+            .expect("the same identifier is free in each realm");
+        client.batch_execute("COMMIT").await.unwrap();
+    }
+
+    // And reading needs both keys too, not only writing. A realm's users are
+    // invisible from another realm of the same tenant.
+    client.batch_execute("BEGIN").await.unwrap();
+    governed_by(&client, "acme").await;
+    client
+        .execute(
+            "SELECT set_config('saffui.current_realm', $1, true)",
+            &[&"main"],
+        )
+        .await
+        .unwrap();
+    let own: i64 = client
+        .query_one("SELECT count(*) FROM users", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(own, 1, "its own realm's user");
+
+    client
+        .execute(
+            "SELECT set_config('saffui.current_realm', $1, true)",
+            &[&"another"],
+        )
+        .await
+        .unwrap();
+    let elsewhere: i64 = client
+        .query_one("SELECT count(*) FROM users", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(
+        elsewhere, 0,
+        "a realm read another realm's users inside the same tenant"
+    );
+    client.batch_execute("COMMIT").await.unwrap();
+}
+
+/// A row cannot name a realm belonging to somebody else.
+///
+/// Referencing the realm alone leaves the pair free to disagree, and a row whose
+/// tenant is not its realm's tenant is visible to one and owned by the other.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_row_cannot_name_another_tenants_realm() {
+    let _turn = DATABASE.lock().await;
+    let client = migrated().await;
+
+    client.batch_execute("BEGIN").await.unwrap();
+    governed_by(&client, "globex").await;
+    client
+        .execute(
+            "INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $1)",
+            &[&"globex"],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO realms (tenant, realm_id, name, display_name) VALUES ($1, $2, $2, $2)",
+            &[&"globex", &"theirs"],
+        )
+        .await
+        .unwrap();
+    client.batch_execute("COMMIT").await.unwrap();
+
+    client.batch_execute("BEGIN").await.unwrap();
+    governed_by(&client, "acme").await;
+    client
+        .execute(
+            "INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $1)",
+            &[&"acme"],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "SELECT set_config('saffui.current_realm', $1, true)",
+            &[&"theirs"],
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        client
+            .execute(
+                "INSERT INTO users (tenant, realm_id, user_id, user_name) \
+                 VALUES ($1, $2, $3, $3)",
+                &[&"acme", &"theirs", &"ada"],
+            )
+            .await
+            .is_err(),
+        "a user was written naming a realm that belongs to another tenant"
+    );
+    client.batch_execute("ROLLBACK").await.unwrap();
+}
+
+/// An encryption registration is a pair. Half of one is not a registration, and
+/// the column that holds the other half has nothing to say on its own.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn half_an_encryption_registration_is_refused() {
+    let _turn = DATABASE.lock().await;
+    let client = migrated().await;
+
+    client.batch_execute("BEGIN").await.unwrap();
+    governed_by(&client, "acme").await;
+    client
+        .execute(
+            "INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $1)",
+            &[&"acme"],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "INSERT INTO realms (tenant, realm_id, name, display_name) VALUES ($1, $2, $2, $2)",
+            &[&"acme", &"main"],
+        )
+        .await
+        .unwrap();
+    client
+        .execute(
+            "SELECT set_config('saffui.current_realm', $1, true)",
+            &[&"main"],
+        )
+        .await
+        .unwrap();
+
+    for (alg, enc) in [(Some("RSA-OAEP"), None), (None, Some("A128GCM"))] {
+        // A refused write aborts the transaction, so each attempt gets a point
+        // to come back to rather than taking the setup down with it.
+        client.batch_execute("SAVEPOINT attempt").await.unwrap();
+        let attempt = client
+            .execute(
+                "INSERT INTO clients (tenant, realm_id, client_id, name, display_name, \
+                 id_token_encryption_alg, id_token_encryption_enc) \
+                 VALUES ($1, $2, $3, $3, $3, $4, $5)",
+                &[&"acme", &"main", &"app", &alg, &enc],
+            )
+            .await;
+        assert!(attempt.is_err(), "half a registration was written");
+        client
+            .batch_execute("ROLLBACK TO SAVEPOINT attempt")
+            .await
+            .unwrap();
+    }
+
+    client
+        .execute(
+            "INSERT INTO clients (tenant, realm_id, client_id, name, display_name, \
+             id_token_encryption_alg, id_token_encryption_enc) \
+             VALUES ($1, $2, $3, $3, $3, $4, $5)",
+            &[&"acme", &"main", &"app", &"RSA-OAEP", &"A128GCM"],
+        )
+        .await
+        .expect("both halves together");
+
+    client.batch_execute("ROLLBACK").await.unwrap();
+}

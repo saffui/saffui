@@ -11,6 +11,7 @@
 pub mod clients;
 pub mod credentials;
 pub mod one_time_tokens;
+pub mod organizations;
 pub mod realms;
 pub mod roles;
 pub mod sessions;

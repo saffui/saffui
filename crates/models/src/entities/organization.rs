@@ -17,7 +17,7 @@ pub struct OrganizationDomain {
 }
 
 str_enum! {
-    #[postgres(name = "orgmembershiptypeenum")]
+    #[postgres(name = "org_membership")]
     /// How a user came to belong to an organization.
     pub enum OrgMembershipType {
         /// Provisioned by an org-linked identity provider on broker login.

@@ -9,4 +9,5 @@ pub mod entities;
 pub mod paging;
 pub mod representation;
 pub mod search;
+pub mod sessions;
 pub mod str_enum;

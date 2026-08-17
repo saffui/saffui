@@ -10,5 +10,6 @@ pub mod credentials;
 pub mod keys;
 pub mod oidc;
 pub mod organization;
+pub mod realm;
 pub mod tenant;
 pub mod user;

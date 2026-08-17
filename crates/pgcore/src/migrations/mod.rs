@@ -11,4 +11,4 @@ pub use error::MigrationError;
 pub use migration::{
     AppliedRecord, DataMigration, Migration, PendingMigration, SqlMigration, plan,
 };
-pub use runner::{MigrationOptions, MigrationReport, MigrationRunner};
+pub use runner::{MigrationOptions, MigrationReport, MigrationRunner, MigrationStatus};

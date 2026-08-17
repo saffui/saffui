@@ -1291,6 +1291,7 @@ dependencies = [
  "bytes",
  "chrono",
  "crypto",
+ "data-encoding",
  "postgres-types",
  "serde",
  "serde_json",

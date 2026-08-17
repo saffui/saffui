@@ -3,13 +3,13 @@
 
 -- How much a step counts towards its flow succeeding.
 --
--- 'conditional' has nowhere yet to say what it is conditional on, so a step
--- marked conditional reads today as one that always runs. Either the condition
--- gets its own column paired with this one, or a conditional step becomes an
--- ordinary step whose authenticator is the condition. Whichever is chosen, the
--- variant should not stay here without its datum.
+-- There is no 'conditional'. A step that runs only sometimes has something it
+-- is conditional on, and this type has nowhere to put it: the value would name
+-- a state whose data lives nowhere, which is the shape every check in this file
+-- exists to refuse. A step that decides whether the rest of its flow runs is an
+-- ordinary step whose authenticator is that decision.
 CREATE TYPE authenticator_requirement AS ENUM (
-    'required', 'conditional', 'alternative', 'disabled'
+    'required', 'alternative', 'disabled'
 );
 
 CREATE TABLE authentication_flows

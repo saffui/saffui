@@ -5,4 +5,5 @@
 //! carried those would put a concurrency primitive in the vocabulary every layer
 //! shares.
 
+pub mod compound_id;
 pub mod records;

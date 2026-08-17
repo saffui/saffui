@@ -16,6 +16,7 @@ serde = { workspace = true }
 crypto = { workspace = true }
 serde_json = { workspace = true }
 data-encoding = { workspace = true }
+url = { workspace = true }
 chrono = { workspace = true }
 postgres-types = { workspace = true }
 thiserror = { workspace = true }

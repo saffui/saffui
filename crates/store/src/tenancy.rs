@@ -240,3 +240,82 @@ mod tests {
         );
     }
 }
+
+/// Answering whose realm this is, before anything is scoped.
+///
+/// These are the only reads in the store that run outside the rules, and they
+/// run there because the rules cannot answer them: the policies match nothing
+/// until the settings are written, and the settings are written from what these
+/// return. Each is a call into a function the database owns, granted to the
+/// application role and to nobody else.
+pub mod resolve {
+    use deadpool_postgres::Object;
+
+    use super::TenantContext;
+    use crate::error::{StoreError, StoreResult};
+
+    /// The realm a path names.
+    pub async fn realm_by_name(connection: &Object, name: &str) -> StoreResult<TenantContext> {
+        one(
+            "SELECT tenant, realm_id, region FROM resolve_realm_by_name($1)",
+            connection,
+            name,
+        )
+        .await
+    }
+
+    /// The realm a token names.
+    pub async fn realm_by_id(connection: &Object, realm_id: &str) -> StoreResult<TenantContext> {
+        one(
+            "SELECT tenant, realm_id, region FROM resolve_realm_by_id($1)",
+            connection,
+            realm_id,
+        )
+        .await
+    }
+
+    /// The realm a session belongs to.
+    pub async fn user_session(connection: &Object, session_id: &str) -> StoreResult<TenantContext> {
+        one(
+            "SELECT tenant, realm_id, region FROM resolve_user_session($1)",
+            connection,
+            session_id,
+        )
+        .await
+    }
+
+    /// One answer, or a refusal.
+    ///
+    /// Two answers is a refusal and not a choice. A name is unique within a
+    /// tenant and nothing makes it unique across them, so picking the first row
+    /// would resolve a request to whichever the plan happened to return, and
+    /// serve one customer's realm to another customer's caller.
+    ///
+    /// The tenant comes off the row that was found. Taking it from the request
+    /// instead would let a caller name any tenant and have the realm looked up
+    /// inside it.
+    async fn one(statement: &str, connection: &Object, asked: &str) -> StoreResult<TenantContext> {
+        let rows = connection
+            .query(statement, &[&asked])
+            .await
+            .map_err(|_| StoreError::Backend)?;
+
+        match rows.len() {
+            0 => Err(StoreError::NotFound {
+                asked: asked.to_owned(),
+            }),
+            1 => {
+                let row = &rows[0];
+                Ok(TenantContext::new(
+                    row.get::<_, String>("tenant"),
+                    row.get::<_, String>("realm_id"),
+                )
+                .with_region(row.get::<_, Option<String>>("region")))
+            }
+            count => Err(StoreError::Ambiguous {
+                asked: asked.to_owned(),
+                count,
+            }),
+        }
+    }
+}

@@ -137,8 +137,6 @@ fn server(mode: PolicyEnforcementMode, strategy: DecisionStrategy) -> ResourceSe
     )
 }
 
-// ---------------------------------------------------------------- the arms --
-
 /// Any of the roles named, on identifiers rather than names, since a name is
 /// what an administrator edits and an identifier is what a binding keeps.
 #[test]
@@ -412,8 +410,6 @@ fn a_pattern_policy_withholds_rather_than_failing_to_match() {
     assert!(matches!(reasons.as_slice(), [Reason::ClaimAbsent { .. }]));
 }
 
-// ---------------------------------------------------------- the comparisons --
-
 fn claim(name: &str) -> Operand {
     Operand::Claim {
         source: FactSource::Token,
@@ -610,8 +606,6 @@ fn a_test_every_value_passes_is_not_a_test() {
     }
 }
 
-// -------------------------------------------------------------- aggregation --
-
 /// An aggregate folds under its own strategy, and each condition's own logic is
 /// applied to its own answer before it is counted.
 #[test]
@@ -726,8 +720,6 @@ fn a_row_nothing_can_read_withholds_and_is_named() {
     assert_eq!(decision, Decision::Indeterminate);
     assert!(matches!(reasons.as_slice(), [Reason::Quarantined { .. }]));
 }
-
-// --------------------------------------------------------- what never grants --
 
 /// The property the whole crate exists for, asked of every dimension: a fact
 /// nobody could establish never becomes a grant, not even under negation.
@@ -848,8 +840,6 @@ fn a_binding_that_was_emptied_never_becomes_a_grant() {
     }
 }
 
-// ------------------------------------------------------------- confinement --
-
 /// A policy narrowed to an organization is silent for callers outside it and
 /// withholds for a caller whose own could not be established.
 #[test]
@@ -909,8 +899,6 @@ fn a_confined_policy_does_not_decide_outside_its_organization() {
         assert!(matches!(reasons.as_slice(), [Reason::Confined { .. }]));
     }
 }
-
-// -------------------------------------------------------------- permissions --
 
 fn target<'a>(scope_id: &'a str, declared: &'a BTreeSet<String>) -> Target<'a> {
     Target {

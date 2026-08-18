@@ -9,7 +9,7 @@ use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
 const ROLE_COLUMNS: &str = "tenant, realm_id, role_id, name, display_name, description, \
-                            client_id, admin_permissions, created_by, created_at, \
+                            client_id, admin_actions, created_by, created_at, \
                             updated_by, updated_at, version";
 
 const GROUP_COLUMNS: &str = "tenant, realm_id, group_id, name, display_name, description, \
@@ -18,7 +18,7 @@ const GROUP_COLUMNS: &str = "tenant, realm_id, group_id, name, display_name, des
 /// Record a role.
 pub async fn create(transaction: &Transaction<'_>, role: &RoleModel) -> StoreResult<()> {
     let permissions = role
-        .admin_permissions
+        .admin_actions
         .as_ref()
         .map(serde_json::to_value)
         .transpose()
@@ -37,7 +37,7 @@ pub async fn create(transaction: &Transaction<'_>, role: &RoleModel) -> StoreRes
         // from disagreeing.
         col("is_client_role", &is_client_role),
         col("client_id", &role.client_id),
-        col("admin_permissions", &permissions),
+        col("admin_actions", &permissions),
         col("created_by", &role.metadata.created_by),
     ]);
 
@@ -231,8 +231,8 @@ fn read_role(row: Row) -> RoleModel {
         description: row.get("description"),
         display_name: row.get("display_name"),
         client_id: row.get("client_id"),
-        admin_permissions: row
-            .get::<_, Option<serde_json::Value>>("admin_permissions")
+        admin_actions: row
+            .get::<_, Option<serde_json::Value>>("admin_actions")
             .and_then(|value| serde_json::from_value::<Vec<AdminAction>>(value).ok()),
         metadata: audit(&row),
     }

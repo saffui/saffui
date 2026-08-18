@@ -43,7 +43,7 @@ fn role(id: &str, client_id: Option<&str>) -> models::entities::authz::RoleModel
         display_name: id.to_owned(),
         description: String::new(),
         client_id: client_id.map(str::to_owned),
-        admin_permissions: None,
+        admin_actions: None,
     }
     .into_model(id.to_owned(), "main".to_owned(), metadata())
 }

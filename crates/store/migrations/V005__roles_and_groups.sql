@@ -11,13 +11,13 @@ CREATE TABLE roles
     -- Realm roles apply everywhere in the realm; client roles only where their
     -- client is the audience.
     is_client_role     boolean     NOT NULL DEFAULT false,
-    -- The admin plane capabilities this role grants, by their wire names.
+    -- The admin plane actions this role grants, by their wire names.
     --
     -- The catalogue that says which names exist lives in the build rather than
     -- here, so this column cannot check them. What does is that a name nobody
     -- declared fails to decode on the way out, which is the same refusal one
     -- statement later.
-    admin_permissions  jsonb,
+    admin_actions  jsonb,
 
     created_by         text,
     created_at         timestamptz NOT NULL DEFAULT now(),

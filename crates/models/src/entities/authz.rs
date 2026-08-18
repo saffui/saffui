@@ -108,9 +108,9 @@ pub struct RoleModel {
     /// The client that owns it, or none when the realm does. Named rather than
     /// flagged, so entitlements are not rebuilt by matching role names.
     pub client_id: Option<String>,
-    /// Admin plane capabilities this role grants, typed so an undeclared one
+    /// Admin plane actions this role grants, typed so an undeclared one
     /// cannot be written. None and an empty list both grant nothing.
-    pub admin_permissions: Option<Vec<AdminAction>>,
+    pub admin_actions: Option<Vec<AdminAction>>,
     pub metadata: AuditableModel,
 }
 
@@ -130,7 +130,7 @@ pub struct RoleMutationModel {
     pub description: String,
     pub display_name: String,
     pub client_id: Option<String>,
-    pub admin_permissions: Option<Vec<AdminAction>>,
+    pub admin_actions: Option<Vec<AdminAction>>,
 }
 
 impl RoleMutationModel {
@@ -147,7 +147,7 @@ impl RoleMutationModel {
             description: self.description,
             display_name: self.display_name,
             client_id: self.client_id,
-            admin_permissions: self.admin_permissions,
+            admin_actions: self.admin_actions,
             metadata,
         }
     }
@@ -750,7 +750,7 @@ mod tests {
             description: "Reads the ledger".into(),
             display_name: "Auditor".into(),
             client_id: None,
-            admin_permissions: Some(vec![AdminAction::ConsentRead, AdminAction::UserRead]),
+            admin_actions: Some(vec![AdminAction::ConsentRead, AdminAction::UserRead]),
         }
         .into_model("role-1".into(), "realm-1".into(), metadata());
 
@@ -758,7 +758,7 @@ mod tests {
         assert_eq!(role.realm_id, "realm-1");
         assert_eq!(role.metadata.tenant, "acme");
         assert_eq!(
-            role.admin_permissions,
+            role.admin_actions,
             Some(vec![AdminAction::ConsentRead, AdminAction::UserRead])
         );
 
@@ -781,19 +781,16 @@ mod tests {
             description: String::new(),
             display_name: "Member".into(),
             client_id: None,
-            admin_permissions: None,
+            admin_actions: None,
         }
         .into_model("role-2".into(), "realm-1".into(), metadata());
-        assert_eq!(role.admin_permissions, None);
+        assert_eq!(role.admin_actions, None);
 
         let empty = RoleModel {
-            admin_permissions: Some(Vec::new()),
+            admin_actions: Some(Vec::new()),
             ..role
         };
-        assert_eq!(
-            empty.admin_permissions.as_deref().unwrap_or_default().len(),
-            0
-        );
+        assert_eq!(empty.admin_actions.as_deref().unwrap_or_default().len(), 0);
     }
 
     /// A group takes its identifier from the caller like everything else, rather

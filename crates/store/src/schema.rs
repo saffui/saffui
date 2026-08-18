@@ -67,6 +67,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V009__realm_data_encryption_keys.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 10,
+            name: "realm_signing_keys",
+            sql: include_str!("../migrations/V010__realm_signing_keys.sql"),
+            transactional: true,
+        }),
     ]
 }
 

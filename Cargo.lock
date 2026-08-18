@@ -1770,6 +1770,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "server"
+version = "0.1.0"
+dependencies = [
+ "actix-web",
+ "commons",
+ "crypto",
+ "deadpool-postgres",
+ "models",
+ "serde",
+ "serde_json",
+ "store",
+ "tokio",
+]
+
+[[package]]
 name = "sha2"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

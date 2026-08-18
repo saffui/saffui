@@ -22,7 +22,7 @@ fn named(
         description: String::new(),
         display_name: id.to_owned(),
         client_id: None,
-        admin_permissions: permissions,
+        admin_actions: permissions,
     }
     .into_model(
         id.to_owned(),
@@ -68,7 +68,7 @@ async fn a_grant_comes_back_as_the_capabilities_it_names() {
 
     let loaded = roles::load(&transaction, "auditor").await.unwrap().unwrap();
     assert_eq!(
-        loaded.admin_permissions,
+        loaded.admin_actions,
         Some(vec![AdminAction::ConsentRead, AdminAction::UserRead])
     );
     assert!(!loaded.is_client_role());
@@ -82,14 +82,14 @@ async fn a_grant_comes_back_as_the_capabilities_it_names() {
     // role: the catalogue lives in the build, so this is where it is enforced.
     transaction
         .execute(
-            "UPDATE roles SET admin_permissions = '[\"realm:*\"]'::jsonb WHERE role_id = $1",
+            "UPDATE roles SET admin_actions = '[\"realm:*\"]'::jsonb WHERE role_id = $1",
             &[&"auditor"],
         )
         .await
         .unwrap();
     let smuggled = roles::load(&transaction, "auditor").await.unwrap().unwrap();
     assert_eq!(
-        smuggled.admin_permissions, None,
+        smuggled.admin_actions, None,
         "a capability the plane never declared reached a role"
     );
     transaction.commit().await.unwrap();

@@ -1,0 +1,18 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+commons = { workspace = true, features = ["http"] }
+crypto = { workspace = true }
+models = { workspace = true }
+store = { workspace = true }
+
+actix-web = { workspace = true }
+deadpool-postgres = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

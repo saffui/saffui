@@ -1,12 +1,10 @@
 //! Who may do what: the capability vocabulary, roles, groups, and the identity
 //! providers a realm federates to.
 
-use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
 use crate::auditable::AuditableModel;
-use crate::entities::attributes::AttributesMap;
+use crate::entities::attributes::{AttributeValue, AttributesMap};
 use crate::str_enum::str_enum;
 
 str_enum! {
@@ -254,7 +252,7 @@ impl IdentityProviderMutationModel {
 // Resource servers, and the policies that guard what they hold.
 
 str_enum! {
-    #[postgres(name = "policyenforcementmodeenum")]
+    #[postgres(name = "policy_enforcement_mode")]
     /// What a resource server does with a decision.
     pub enum PolicyEnforcementMode {
         /// Refuse what the policies do not permit.
@@ -268,7 +266,7 @@ str_enum! {
 }
 
 str_enum! {
-    #[postgres(name = "decisionstrategyenum")]
+    #[postgres(name = "decision_strategy")]
     /// How several policies combine into one answer.
     pub enum DecisionStrategy {
         /// One permit is enough.
@@ -281,7 +279,7 @@ str_enum! {
 }
 
 str_enum! {
-    #[postgres(name = "decisionlogicenum")]
+    #[postgres(name = "decision_logic")]
     /// Whether a policy grants on a match or on the absence of one.
     pub enum DecisionLogic {
         Positive => "positive",
@@ -291,7 +289,7 @@ str_enum! {
 }
 
 str_enum! {
-    #[postgres(name = "policytypeenum")]
+    #[postgres(name = "policy_type")]
     /// What a policy decides on.
     pub enum PolicyType {
         Role => "role",
@@ -301,7 +299,8 @@ str_enum! {
         ClientScope => "client-scope",
         Time => "time",
         Regex => "regex",
-        Script => "script",
+        /// A claim compared to a value, or to another claim.
+        Attribute => "attribute",
         Aggregated => "aggregated",
         ScopePermission => "scope-permission",
         ResourcePermission => "resource-permission",
@@ -481,6 +480,53 @@ pub struct TimeWindow {
 /// One arm per kind, carrying exactly that kind's payload. The shape this
 /// replaces was a single record with a field per kind, all optional, so a regex
 /// policy carried eleven fields that meant nothing for it and a reader had to
+/// Where a fact is read from.
+///
+/// Stated rather than searched. A rule that looked in the token and then in the
+/// stored profile would answer differently depending on which login minted the
+/// token, and the difference would be invisible in the rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FactSource {
+    /// A claim of the presented token.
+    Token,
+    /// An attribute of the stored subject.
+    Subject,
+}
+
+/// One side of a comparison.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "operand", rename_all = "lowercase")]
+pub enum Operand {
+    /// A fact, named and sourced.
+    Claim { source: FactSource, name: String },
+    /// A literal the policy carries.
+    Value(AttributeValue),
+}
+
+/// What is asked of the left operand.
+///
+/// The comparison carries the right side where there is one, so `present` does
+/// not have to hold an operand nobody reads. An operator beside an optional
+/// operand is the shape this crate refuses everywhere else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "compare", rename_all = "kebab-case")]
+pub enum Comparison {
+    Equals(Operand),
+    Contains(Operand),
+    StartsWith(Operand),
+    EndsWith(Operand),
+    /// Membership in a list the right side names.
+    In(Operand),
+    Gt(Operand),
+    Gte(Operand),
+    Lt(Operand),
+    Lte(Operand),
+    /// Whether the fact is there at all. The only test whose answer on an
+    /// absent fact is a decision rather than an inability to decide.
+    Present,
+}
+
 /// know which one to look at from a separate discriminant that could disagree
 /// with them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -506,8 +552,8 @@ pub enum PolicyRule {
         target_claim: String,
         target_regex: String,
     },
-    #[serde(rename = "script")]
-    Script { script: String },
+    #[serde(rename = "attribute")]
+    Attribute { left: Operand, test: Comparison },
     /// Decides from the policies it aggregates, which are the common `policies`
     /// list, so it carries nothing of its own.
     #[serde(rename = "aggregated")]
@@ -529,7 +575,7 @@ impl PolicyRule {
             Self::ClientScope { .. } => PolicyType::ClientScope,
             Self::Time(_) => PolicyType::Time,
             Self::Regex { .. } => PolicyType::Regex,
-            Self::Script { .. } => PolicyType::Script,
+            Self::Attribute { .. } => PolicyType::Attribute,
             Self::Aggregated => PolicyType::Aggregated,
             Self::ScopePermission { .. } => PolicyType::ScopePermission,
             Self::ResourcePermission { .. } => PolicyType::ResourcePermission,
@@ -545,7 +591,6 @@ pub struct PolicyTerms {
     pub decision: DecisionStrategy,
     pub logic: DecisionLogic,
     pub policy_owner: String,
-    pub configs: Option<BTreeMap<String, String>>,
     /// Policies this one is built from, by identifier.
     pub policies: Vec<String>,
     /// Resources it applies to, by identifier.
@@ -609,9 +654,17 @@ impl PolicyTerms {
 
 str_enum! {
     /// What a decision point answered.
+    ///
+    /// Three outcomes and not two. A policy that could not be evaluated has not
+    /// said no, and collapsing the two lets negative logic turn a failure into
+    /// an unconditional grant: the inversion swaps permit and deny and leaves
+    /// this third value alone, which is what makes every other guarantee hold.
     pub enum Decision {
         Permit => "permit",
         Deny => "deny",
+        /// The policy could not be evaluated: a claim was absent, a row would
+        /// not decode, a walk ran out of budget.
+        Indeterminate => "indeterminate",
     }
 }
 
@@ -648,6 +701,70 @@ mod tests {
 
     fn metadata() -> AuditableModel {
         AuditableModel::from_creator("acme".into(), "root".into())
+    }
+
+    /// Nothing decides by running code that was written into a row.
+    #[test]
+    fn no_policy_decides_by_running_a_script() {
+        assert!(
+            !PolicyType::ALL.iter().any(|kind| kind.as_str() == "script"),
+            "a policy kind still names a script"
+        );
+    }
+
+    /// The test carries its right side where it has one, so the shape cannot
+    /// hold an operand nobody reads.
+    #[test]
+    fn a_presence_test_carries_no_operand() {
+        let present = serde_json::to_value(Comparison::Present).unwrap();
+        assert_eq!(present["compare"], "present");
+        assert_eq!(
+            present.as_object().unwrap().len(),
+            1,
+            "a presence test carried something besides its own name"
+        );
+
+        let equals =
+            serde_json::to_value(Comparison::Equals(Operand::Value(AttributeValue::Int(7))))
+                .unwrap();
+        assert_eq!(equals["compare"], "equals");
+        assert_eq!(
+            serde_json::from_value::<Comparison>(equals).unwrap(),
+            Comparison::Equals(Operand::Value(AttributeValue::Int(7)))
+        );
+    }
+
+    /// A rule says where it reads a fact rather than searching for it: the same
+    /// name can be a token claim and a stored attribute, and a rule that looked
+    /// in both would answer differently depending on which login minted the
+    /// token.
+    #[test]
+    fn a_fact_names_the_source_it_is_read_from() {
+        let both: Vec<serde_json::Value> = [FactSource::Token, FactSource::Subject]
+            .into_iter()
+            .map(|source| {
+                serde_json::to_value(Operand::Claim {
+                    source,
+                    name: "department".into(),
+                })
+                .unwrap()
+            })
+            .collect();
+        assert_eq!(both[0]["source"], "token");
+        assert_eq!(both[1]["source"], "subject");
+        assert_ne!(both[0], both[1]);
+    }
+
+    /// Three outcomes, and the third is not a refusal. Two would make negative
+    /// logic turn a policy that could not be evaluated into an unconditional
+    /// grant, since the inversion would swap it with permit.
+    #[test]
+    fn a_policy_that_could_not_be_evaluated_has_not_said_no() {
+        assert_eq!(Decision::ALL.len(), 3);
+        assert!(Decision::ALL.contains(&Decision::Indeterminate));
+        assert_ne!(Decision::Indeterminate, Decision::Deny);
+        assert_eq!(Decision::Indeterminate.as_str(), "indeterminate");
+        crate::str_enum::assert_round_trips(Decision::ALL);
     }
 
     #[test]
@@ -818,7 +935,6 @@ mod tests {
             decision: DecisionStrategy::Unanimous,
             logic: DecisionLogic::Positive,
             policy_owner: "ada".into(),
-            configs: None,
             policies: Vec::new(),
             resources: vec!["resource-1".into()],
             scopes: vec!["scope-1".into()],
@@ -832,7 +948,7 @@ mod tests {
         assert_eq!(DecisionStrategy::ALL.len(), 3);
         assert_eq!(DecisionLogic::ALL.len(), 2);
         assert_eq!(PolicyType::ALL.len(), 11);
-        assert_eq!(Decision::ALL.len(), 2);
+        assert_eq!(Decision::ALL.len(), 3);
         assert_round_trips(PolicyEnforcementMode::ALL);
         assert_round_trips(DecisionStrategy::ALL);
         assert_round_trips(DecisionLogic::ALL);
@@ -864,8 +980,12 @@ mod tests {
                 target_claim: "email".into(),
                 target_regex: ".*".into(),
             },
-            PolicyRule::Script {
-                script: "return true".into(),
+            PolicyRule::Attribute {
+                left: Operand::Claim {
+                    source: FactSource::Token,
+                    name: "department".into(),
+                },
+                test: Comparison::Equals(Operand::Value(AttributeValue::Str("finance".into()))),
             },
             PolicyRule::Aggregated,
             PolicyRule::ScopePermission {

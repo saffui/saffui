@@ -55,6 +55,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V007__authentication_flows.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 8,
+            name: "realm_resolution",
+            sql: include_str!("../migrations/V008__realm_resolution.sql"),
+            transactional: true,
+        }),
     ]
 }
 
@@ -120,8 +126,9 @@ mod tests {
                 })
                 .collect();
 
-            assert!(!created.is_empty(), "{} creates no table", sql.name);
-
+            // A migration is allowed to create no table: one may add a
+            // function or a role and nothing else. What it may not do is create
+            // a table and leave it unguarded, which is what the loop checks.
             for table in created {
                 for clause in ["ENABLE", "FORCE"] {
                     assert!(
@@ -134,6 +141,39 @@ mod tests {
                 assert!(
                     sql.sql.contains(&format!("ON {table}\n")),
                     "{}: {table} has no policy",
+                    sql.name
+                );
+            }
+        }
+    }
+
+    /// Every function that runs with its owner's rights pins its search path.
+    ///
+    /// Such a function exists to see what its caller may not, so it is the one
+    /// place where the caller choosing what a table name means would hand them
+    /// the rows the rules were keeping. An unpinned search path is exactly that
+    /// choice: a caller who can create a schema puts their own `realms` in
+    /// front of the real one.
+    #[test]
+    fn every_definer_function_pins_its_search_path() {
+        for migration in migrations() {
+            let Migration::Sql(sql) = migration else {
+                continue;
+            };
+
+            for (index, _) in sql.sql.match_indices("SECURITY DEFINER") {
+                // The clause and the path sit in the same header, between the
+                // signature and the body.
+                let header_end = sql.sql[index..]
+                    .find("AS $$")
+                    .map(|offset| index + offset)
+                    .unwrap_or(sql.sql.len());
+                let start = sql.sql[..index]
+                    .rfind("CREATE OR REPLACE FUNCTION")
+                    .unwrap_or(0);
+                assert!(
+                    sql.sql[start..header_end].contains("SET search_path ="),
+                    "{}: a definer function does not pin its search path",
                     sql.name
                 );
             }
@@ -171,7 +211,7 @@ mod tests {
             }
 
             assert!(
-                read_a_setting,
+                read_a_setting || !sql.sql.contains("CREATE POLICY"),
                 "{} defines policies that read no tenant at all",
                 sql.name
             );

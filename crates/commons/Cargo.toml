@@ -26,6 +26,10 @@ request-span = ["http", "tracing-json", "dep:tracing-actix-web"]
 [dependencies]
 thiserror = { workspace = true }
 secrecy = { workspace = true }
+# The one engine an administrator's pattern is compiled by, so a pattern that
+# is refused on the write path and one that runs at a decision are the same
+# pattern under the same limits.
+regex = { workspace = true }
 
 actix-web = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }

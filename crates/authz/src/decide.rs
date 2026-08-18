@@ -5,7 +5,9 @@
 //! evaluators, and the one an administrator tries a rule against would not be
 //! the one that later refuses somebody.
 
-use models::entities::authz::{Decision, PolicyEnforcementMode, ResourceServerModel};
+use models::entities::authz::{
+    Decision, PolicyEnforcementMode, ReportedDecision, ResourceServerModel,
+};
 
 use crate::fold::fold;
 use crate::policies::{Applicability, Evaluable, Walk, governs};
@@ -42,6 +44,22 @@ pub fn permission(
     target: Target<'_>,
     request: Request<'_>,
 ) -> Verdict {
+    // Before anything reads the mode. A mode is a property of the application
+    // that owns the resource, so a caller naming one application and a resource
+    // of another would otherwise have the named one's mode applied to somebody
+    // else's resource: name a permissive or disabled application, and its mode
+    // answers for a resource it does not protect.
+    if server.server_id != target.server_id {
+        return Verdict {
+            reported: ReportedDecision::Deny,
+            computed: Decision::Deny,
+            reasons: vec![Reason::NotThisApplication {
+                server_id: server.server_id.clone(),
+                resource_id: target.resource_id.to_owned(),
+            }],
+        };
+    }
+
     conclude(server.enforcement_mode, || {
         let mut reasons = Vec::new();
 

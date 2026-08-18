@@ -221,7 +221,11 @@ impl<'a> Walk<'a> {
 pub(crate) fn placed(policy: &PolicyModel, membership: Membership<'_>) -> bool {
     match (&policy.org_id, membership) {
         (None, _) => true,
-        (Some(confined), Membership::In { org_id }) => confined == org_id,
+        // Membership in any one of them places the caller. Asking whether the
+        // confinement is among the caller's organizations answers the same way
+        // for one as for several, so a caller in two does not lose the policies
+        // of whichever one an arbitrary pick would have dropped.
+        (Some(confined), Membership::In(joined)) => joined.contains(confined),
         (Some(_), Membership::RealmWide) | (Some(_), Membership::Unknown) => false,
     }
 }
@@ -258,11 +262,11 @@ pub(crate) fn governs(
         }
         // A permission about another organization's business is about something
         // else, exactly as a permission about another resource is.
-        (Some(confined), Membership::In { org_id }) if confined != org_id => {
+        (Some(confined), Membership::In(joined)) if !joined.contains(confined) => {
             return Applicability::Silent;
         }
         (Some(_), Membership::RealmWide) => return Applicability::Silent,
-        (Some(_), Membership::In { .. }) | (None, _) => {}
+        (Some(_), Membership::In(_)) | (None, _) => {}
     }
 
     match &policy.terms.rule {

@@ -20,6 +20,7 @@ pgcore  = { path = "crates/pgcore" }
 models  = { path = "crates/models" }
 store   = { path = "crates/store" }
 server         = { path = "crates/server" }
+saffui         = { path = "crates/saffui" }
 
 # External: one version per dependency across the whole workspace.
 serde = { version = "1.0.229", features = ["derive"] }
@@ -48,6 +49,7 @@ url = "2.5"
 # serves HTTP: this renders catalogued errors and carries a request span. Adding
 # a server means turning http2 back on, and h2 0.3 is what RUSTSEC-2026-0258 is
 # about, so check whether actix-http has moved to 0.4 before doing so.
+clap           = { version = "4", features = ["derive"] }
 actix-web      = { version = "4.14", default-features = false, features = ["macros"] }
 log            = "0.4"
 

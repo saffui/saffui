@@ -28,14 +28,19 @@ impl SortDirection {
 
 /// A collection read: what to match, how to order it, and how much of it.
 ///
-/// The sort column is a compile time string, and that is the guard. It cannot
-/// hold a value that came off a request, so an endpoint has to map whatever a
-/// caller sent onto a constant it declares. A sort column is the one part of a
-/// statement that cannot be a placeholder, so the alternative is interpolating
-/// something a caller chose.
+/// The order is a list of compile time strings, and both halves of that are the
+/// guard. A sort column is the one part of a statement that cannot be a
+/// placeholder, so a column that could come off a request would be interpolated
+/// from something a caller chose; an endpoint maps what was asked onto a
+/// constant it declares. And it is a list because an offset window is only well
+/// defined over a total order: where the leading column ties, the database may
+/// break the tie differently between two statements, and one row is then served
+/// on two pages while another is served on none. The ties are ordinary rather
+/// than exotic, since `now()` is the transaction's clock and every row written
+/// together carries the same timestamp exactly.
 pub struct ListQuery<'a> {
     filters: Vec<Bind<'a>>,
-    sort: Option<(&'static str, SortDirection)>,
+    sort: Vec<(&'static str, SortDirection)>,
     window: Window,
 }
 
@@ -43,7 +48,7 @@ impl<'a> ListQuery<'a> {
     pub fn new(window: Window) -> Self {
         Self {
             filters: Vec::new(),
-            sort: None,
+            sort: Vec::new(),
             window,
         }
     }
@@ -65,8 +70,12 @@ impl<'a> ListQuery<'a> {
         self
     }
 
+    /// Order by one more column, after whatever was already asked for.
+    ///
+    /// Additive rather than replacing, so a tiebreaker is added by naming it
+    /// and never by rewriting the sort somebody else established.
     pub fn sorted_by(mut self, column: &'static str, direction: SortDirection) -> Self {
-        self.sort = Some((column, direction));
+        self.sort.push((column, direction));
         self
     }
 
@@ -93,10 +102,15 @@ impl<'a> ListQuery<'a> {
 
     /// The ordering, when one was asked for.
     pub fn order_clause(&self) -> String {
-        match self.sort {
-            Some((column, direction)) => format!(" ORDER BY {column} {}", direction.as_sql()),
-            None => String::new(),
+        if self.sort.is_empty() {
+            return String::new();
         }
+        let terms: Vec<String> = self
+            .sort
+            .iter()
+            .map(|(column, direction)| format!("{column} {}", direction.as_sql()))
+            .collect();
+        format!(" ORDER BY {}", terms.join(", "))
     }
 
     /// The window, as literals.
@@ -231,6 +245,38 @@ mod tests {
         let descending =
             ListQuery::new(window(0, 10)).sorted_by("created_at", SortDirection::Descending);
         assert_eq!(descending.order_clause(), " ORDER BY created_at DESC");
+    }
+
+    /// A window over an offset needs a total order. Where the leading column
+    /// ties, the database may break the tie differently between two statements,
+    /// and then one row is served on two pages and another on none. The tie is
+    /// the ordinary case rather than the odd one: `now()` is the transaction's
+    /// clock, so every row written together carries the same timestamp.
+    #[test]
+    fn a_tiebreaker_is_added_by_naming_it_and_never_by_replacing_the_sort() {
+        let query = ListQuery::new(window(0, 10))
+            .sorted_by("occurred_at", SortDirection::Descending)
+            .sorted_by("decision_id", SortDirection::Descending);
+
+        assert_eq!(
+            query.order_clause(),
+            " ORDER BY occurred_at DESC, decision_id DESC",
+            "the second column replaced the first instead of following it"
+        );
+    }
+
+    /// The parts of one order may run in different directions, so a natural
+    /// reading order can still be made total by an ascending identity.
+    #[test]
+    fn the_columns_of_one_order_keep_their_own_directions() {
+        let query = ListQuery::new(window(0, 10))
+            .sorted_by("created_at", SortDirection::Descending)
+            .sorted_by("receipt_id", SortDirection::Ascending);
+
+        assert_eq!(
+            query.order_clause(),
+            " ORDER BY created_at DESC, receipt_id ASC"
+        );
     }
 
     /// The whole statement, in the order the clauses have to appear in.

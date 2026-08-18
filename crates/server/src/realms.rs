@@ -53,6 +53,10 @@ pub async fn list(
         .await
         .map_err(|_| internal())?;
 
+    // One column is enough here and only here: the read is tenant wide and
+    // `realm_name_unique_per_tenant` makes the name unique within it, so the
+    // order is already total. A listing whose leading column can tie needs a
+    // tiebreaker, or an offset window serves one row twice and another never.
     let query = ListQuery::new(window)
         .sorted_by("name", store::query::list_query::SortDirection::Ascending);
     let found = realms::list(&transaction, &query, paging.count.unwrap_or(false))

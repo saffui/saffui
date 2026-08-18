@@ -67,9 +67,11 @@ async fn serve(bind: &str) -> Result<(), String> {
 
 /// Everything the plane needs, read once at startup.
 ///
-/// The accepted audiences have no default. A plane that admitted any audience
-/// until configured would be open on first boot, which is the one moment nobody
-/// is looking.
+/// Neither the accepted audiences nor the accepted clients have a default. A
+/// plane that admitted anything until configured would be open on first boot,
+/// which is the one moment nobody is looking. The two are asked separately
+/// because they are different questions: who a token is for, and which client
+/// obtained it.
 fn plane() -> Result<Plane, String> {
     let connection = config::required("DATABASE_URL").map_err(|e| e.to_string())?;
     let audiences: Vec<String> = config::required("ADMIN_AUDIENCES")
@@ -83,6 +85,17 @@ fn plane() -> Result<Plane, String> {
         return Err(
             "SAFFUI_ADMIN_AUDIENCES names no audience, so nothing could be admitted".into(),
         );
+    }
+
+    let parties: Vec<String> = config::required("ADMIN_PARTIES")
+        .map_err(|e| e.to_string())?
+        .split(',')
+        .map(str::trim)
+        .filter(|party| !party.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if parties.is_empty() {
+        return Err("SAFFUI_ADMIN_PARTIES names no client, so nothing could be admitted".into());
     }
 
     let scope = config::optional("ADMIN_SCOPE").unwrap_or_else(|| "admin".to_owned());
@@ -101,6 +114,10 @@ fn plane() -> Result<Plane, String> {
             Some(region) => Tenancy::in_region(region),
             None => Tenancy::unpinned(),
         },
-        policy: AdminPolicy { audiences, scope },
+        policy: AdminPolicy {
+            audiences,
+            parties,
+            scope,
+        },
     })
 }

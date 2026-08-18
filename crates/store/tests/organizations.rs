@@ -360,6 +360,82 @@ async fn a_member_comes_back_with_the_roles_it_holds() {
 }
 
 /// Belonging again is not belonging twice.
+/// A role granted inside an organization is held there and nowhere else. The
+/// realm wide read must not see it: counted there it would answer for every
+/// other organization and for the realm itself, which is a grant nobody wrote.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_role_granted_in_an_organization_is_not_held_across_the_realm() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    organizations::create(&transaction, &org("customer-x", "main"))
+        .await
+        .unwrap();
+    for id in ["auditor", "everywhere"] {
+        let role = RoleMutationModel {
+            name: id.to_owned(),
+            display_name: id.to_owned(),
+            description: String::new(),
+            client_id: None,
+            admin_actions: None,
+        }
+        .into_model(
+            id.to_owned(),
+            "main".to_owned(),
+            AuditableModel::from_creator("acme".to_owned(), "root".to_owned()),
+        );
+        roles::create(&transaction, &role).await.unwrap();
+    }
+
+    organizations::add_member(
+        &transaction,
+        &member("customer-x", "ada", OrgMembershipType::Managed),
+    )
+    .await
+    .unwrap();
+    organizations::grant_role(&transaction, "customer-x", "ada", "auditor")
+        .await
+        .unwrap();
+    roles::grant_to_user(&transaction, "ada", "everywhere")
+        .await
+        .unwrap();
+
+    let held: Vec<String> = roles::effective_roles(&transaction, "ada")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|role| role.role_id)
+        .collect();
+    assert_eq!(
+        held,
+        vec!["everywhere".to_owned()],
+        "a role granted only inside an organization was held across the realm"
+    );
+
+    let inside: Vec<String> = organizations::roles_of_member(&transaction, "customer-x", "ada")
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|role| role.role_id)
+        .collect();
+    assert_eq!(
+        inside,
+        vec!["auditor".to_owned()],
+        "the grant written inside the organization was read by nothing"
+    );
+
+    assert!(
+        organizations::roles_of_member(&transaction, "customer-x", "nobody")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
 /// A subject's organizations are the reverse of a member listing, on the index
 /// that exists for it. A subject in none comes back empty, which a decision
 /// reads as a realm level caller rather than as an unknown one.

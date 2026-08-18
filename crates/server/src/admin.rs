@@ -142,6 +142,11 @@ async fn establish(
         audiences: verified.audiences,
         scope: verified.scope,
         token_id: verified.token_id,
+        authorized_party: verified
+            .claims
+            .get("azp")
+            .and_then(|party| party.as_str())
+            .map(str::to_owned),
     };
 
     let held: Vec<AdminAction> = roles::effective_roles(&transaction, &presented.subject)

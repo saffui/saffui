@@ -20,11 +20,12 @@ use models::entities::authz::AdminAction;
 use server::app::{Plane as Mounted, mount};
 use server::guard::AdminPolicy;
 use store::tenancy::TenantContext;
-use support::{AUDIENCE, KID, Plane, REALM, SCOPE, SECOND_KID, SigningKey, claims};
+use support::{AUDIENCE, KID, PARTY, Plane, REALM, SCOPE, SECOND_KID, SigningKey, claims};
 
 fn policy() -> AdminPolicy {
     AdminPolicy {
         audiences: vec![AUDIENCE.to_owned()],
+        parties: vec![PARTY.to_owned()],
         scope: SCOPE.to_owned(),
     }
 }

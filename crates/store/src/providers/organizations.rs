@@ -294,6 +294,36 @@ pub async fn grant_role(
     Ok(())
 }
 
+/// The roles a member holds inside one organization.
+///
+/// Read on its own and never folded into the roles a subject holds across the
+/// realm, because folding them is what would destroy the confinement. A role
+/// granted within one organization is held there; counted realm wide it would
+/// answer for every other organization too, and for the realm itself, which is
+/// the grant nobody wrote.
+pub async fn roles_of_member(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    user_id: &str,
+) -> StoreResult<Vec<models::entities::authz::RoleModel>> {
+    let columns = super::roles::ROLE_COLUMNS;
+    let statement = format!(
+        "SELECT {columns} FROM roles \
+         WHERE role_id IN ( \
+             SELECT role_id FROM organization_members_roles \
+             WHERE org_id = $1 AND user_id = $2 \
+         ) ORDER BY name ASC"
+    );
+
+    Ok(transaction
+        .query(statement.as_str(), &[&org_id, &user_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(super::roles::read_role)
+        .collect())
+}
+
 fn read_org(row: Row) -> OrganizationModel {
     OrganizationModel {
         org_id: row.get("org_id"),

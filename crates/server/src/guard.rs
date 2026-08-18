@@ -21,6 +21,9 @@ pub struct Presented {
     /// What a revocation names, where the token carries one. A signature and a
     /// window say when a token stops; this is what withdraws one before then.
     pub token_id: Option<String>,
+    /// The client that asked for the token, from `azp`. Who the token is for is
+    /// a different question, and only this one says who presented it.
+    pub authorized_party: Option<String>,
 }
 
 impl Presented {
@@ -45,6 +48,12 @@ pub enum Refusal {
     MissingScope,
     /// A valid token, held by someone this route is not for.
     NotHeld,
+    /// Obtained by a client that is not part of this plane. Who a token is for
+    /// and who asked for it are two questions, and only the second one stops an
+    /// application that can also get a token for this audience from presenting
+    /// it and spending the admin's authority on its own errands. Naming no
+    /// party is refused rather than trusted.
+    WrongParty,
 }
 
 /// What the admin plane requires of every token, whatever the route.
@@ -54,6 +63,9 @@ pub struct AdminPolicy {
     /// right answer for a deployment that has not said: a plane that admits
     /// any audience until configured is one that is open on first boot.
     pub audiences: Vec<String>,
+    /// The clients that may ask for a token this plane accepts. Empty refuses
+    /// everything, for the same reason the audiences do.
+    pub parties: Vec<String>,
     pub scope: String,
 }
 
@@ -77,6 +89,11 @@ pub fn decide(
         return Err(Refusal::WrongAudience);
     }
 
+    match presented.authorized_party.as_deref() {
+        Some(party) if policy.parties.iter().any(|allowed| allowed == party) => {}
+        _ => return Err(Refusal::WrongParty),
+    }
+
     if !presented.has_scope(&policy.scope) {
         return Err(Refusal::MissingScope);
     }
@@ -97,6 +114,7 @@ mod tests {
     fn policy() -> AdminPolicy {
         AdminPolicy {
             audiences: vec!["saffui-admin".into()],
+            parties: vec!["saffui-console".into()],
             scope: "admin".into(),
         }
     }
@@ -107,6 +125,7 @@ mod tests {
             audiences: vec!["saffui-admin".into()],
             scope: "openid admin".into(),
             token_id: None,
+            authorized_party: Some("saffui-console".into()),
         }
     }
 
@@ -130,6 +149,7 @@ mod tests {
     fn an_unconfigured_plane_admits_nobody() {
         let empty = AdminPolicy {
             audiences: Vec::new(),
+            parties: vec!["saffui-console".into()],
             scope: "admin".into(),
         };
         assert_eq!(
@@ -200,6 +220,56 @@ mod tests {
             decide(None, &elsewhere, &[], &policy()),
             Err(Refusal::WrongAudience),
             "an unaccepted token learned that the route was undeclared"
+        );
+    }
+
+    /// Who the token is for and who obtained it are two questions. An admin
+    /// holds a token their own tooling asked for; another application able to
+    /// obtain one for the same audience would otherwise spend that authority.
+    #[test]
+    fn a_token_another_application_asked_for_is_refused() {
+        let elsewhere = Presented {
+            authorized_party: Some("some-app".into()),
+            ..presented()
+        };
+        assert_eq!(
+            decide(
+                Some(AdminAction::RealmRead),
+                &elsewhere,
+                &[AdminAction::RealmRead],
+                &policy(),
+            ),
+            Err(Refusal::WrongParty)
+        );
+
+        let anonymous = Presented {
+            authorized_party: None,
+            ..presented()
+        };
+        assert_eq!(
+            decide(
+                Some(AdminAction::RealmRead),
+                &anonymous,
+                &[AdminAction::RealmRead],
+                &policy(),
+            ),
+            Err(Refusal::WrongParty),
+            "a token naming no party was trusted"
+        );
+
+        let unconfigured = AdminPolicy {
+            parties: Vec::new(),
+            ..policy()
+        };
+        assert_eq!(
+            decide(
+                Some(AdminAction::RealmRead),
+                &presented(),
+                &[AdminAction::RealmRead],
+                &unconfigured,
+            ),
+            Err(Refusal::WrongParty),
+            "a plane that named no console admitted one"
         );
     }
 

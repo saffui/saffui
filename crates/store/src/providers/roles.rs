@@ -8,7 +8,7 @@ use crate::error::{StoreError, StoreResult};
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
-const ROLE_COLUMNS: &str = "tenant, realm_id, role_id, name, display_name, description, \
+pub(crate) const ROLE_COLUMNS: &str = "tenant, realm_id, role_id, name, display_name, description, \
                             client_id, admin_actions, created_by, created_at, \
                             updated_by, updated_at, version";
 
@@ -242,7 +242,7 @@ pub async fn groups_of(transaction: &Transaction<'_>, user_id: &str) -> StoreRes
         .collect())
 }
 
-fn read_role(row: Row) -> RoleModel {
+pub(crate) fn read_role(row: Row) -> RoleModel {
     RoleModel {
         role_id: row.get("role_id"),
         realm_id: row.get("realm_id"),

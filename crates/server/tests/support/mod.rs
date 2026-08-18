@@ -43,6 +43,9 @@ static DATABASE: Mutex<()> = Mutex::const_new(());
 const KEK: &str = "a-deployment-wrapping-key-of-decent-length";
 pub const TENANT: &str = "acme";
 pub const REALM: &str = "main";
+
+/// The client the console asks for its tokens as. What `azp` carries.
+pub const PARTY: &str = "saffui-console";
 pub const SUBJECT: &str = "ada";
 pub const AUDIENCE: &str = "saffui-admin";
 pub const SCOPE: &str = "admin";
@@ -142,6 +145,9 @@ pub fn claims() -> JwtPayload {
     payload
         .set_claim("scope", Some(serde_json::json!(format!("openid {SCOPE}"))))
         .expect("a scope claim");
+    payload
+        .set_claim("azp", Some(serde_json::json!(PARTY)))
+        .expect("an authorized party claim");
     payload.set_expires_at(&(SystemTime::now() + Duration::from_secs(600)));
     payload
 }

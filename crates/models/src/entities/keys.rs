@@ -12,6 +12,7 @@ use serde_json::Value;
 use crate::str_enum::str_enum;
 
 str_enum! {
+    #[postgres(name = "key_use")]
     /// What a key is for, spelled as RFC 7517 §4.2 spells it, so the record and
     /// the published JWK say the same word.
     pub enum KeyUse {
@@ -21,6 +22,7 @@ str_enum! {
 }
 
 str_enum! {
+    #[postgres(name = "key_status")]
     /// Where a key stands in its rotation.
     pub enum KeyStatus {
         /// Signs new tokens. One per realm and use.

@@ -70,7 +70,7 @@ impl Facts {
                 user_id: "ada",
                 through: Through::Client(Presented {
                     client_id: "app",
-                    client_scopes: &self.client_scopes,
+                    client_scopes: Resolved::Known(&self.client_scopes),
                 }),
             },
             roles: Resolved::Known(&self.roles),
@@ -199,7 +199,7 @@ fn a_user_policy_answers_about_a_client_rather_than_withholding() {
         caller: Caller::Client {
             presented: Presented {
                 client_id: "batch",
-                client_scopes: &facts.client_scopes,
+                client_scopes: Resolved::Known(&facts.client_scopes),
             },
         },
         ..facts.request()
@@ -230,7 +230,7 @@ fn a_client_policy_reads_the_client_that_presented_the_call() {
         caller: Caller::Client {
             presented: Presented {
                 client_id: "app",
-                client_scopes: &facts.client_scopes,
+                client_scopes: Resolved::Known(&facts.client_scopes),
             },
         },
         ..facts.request()
@@ -1165,4 +1165,45 @@ fn an_application_answers_only_for_the_resources_it_protects() {
             [Reason::NotThisApplication { .. }]
         ));
     }
+}
+
+/// A token whose scopes nobody resolved is not a token carrying none. Handing
+/// the engine an empty set answers the question; saying it was never read
+/// leaves the rule unevaluable, which negative logic cannot turn into a grant.
+#[test]
+fn scopes_nobody_read_are_not_scopes_the_token_lacks() {
+    let held = [one(
+        "by-scope",
+        PolicyRule::ClientScope {
+            client_scopes: vec!["profile".to_owned()],
+        },
+    )];
+
+    let carries = Facts::new();
+    assert_eq!(
+        answer(&held, "by-scope", carries.request()),
+        Decision::Permit
+    );
+
+    // Read, and not carried: an answer, and it is no.
+    let none = Facts {
+        client_scopes: BTreeSet::new(),
+        ..Facts::new()
+    };
+    assert_eq!(answer(&held, "by-scope", none.request()), Decision::Deny);
+
+    // Never read: not an answer at all.
+    let mut unread = carries.request();
+    unread.caller = Caller::User {
+        user_id: "ada",
+        through: Through::Client(Presented {
+            client_id: "app",
+            client_scopes: Resolved::Unknown,
+        }),
+    };
+    assert_eq!(
+        answer(&held, "by-scope", unread),
+        Decision::Indeterminate,
+        "scopes nobody read were answered as scopes the token does not carry"
+    );
 }

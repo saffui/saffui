@@ -192,7 +192,6 @@ struct Facts {
     roles: BTreeSet<String>,
     groups: BTreeSet<String>,
     attributes: AttributesMap,
-    client_scopes: BTreeSet<String>,
     /// The organization the caller acts within, as a set of one.
     acting: BTreeSet<String>,
 }
@@ -240,10 +239,6 @@ async fn gather(transaction: &Transaction<'_>, context: &Context) -> Result<Fact
             .attributes
             .clone()
             .unwrap_or_default(),
-        // The scopes the token carries are the presenter's, and nothing resolves
-        // a name to an identifier yet. Empty is what this caller holds, not a
-        // set nobody filled in: the presenter is stated below either way.
-        client_scopes: BTreeSet::new(),
     })
 }
 
@@ -255,7 +250,10 @@ fn asked<'a>(context: &'a Context, facts: &'a Facts) -> Request<'a> {
             through: match context.presenter.as_deref() {
                 Some(client_id) => Through::Client(Presented {
                     client_id,
-                    client_scopes: &facts.client_scopes,
+                    // Nothing resolves a token's scope names to identifiers yet.
+                    // Said to be unread rather than handed over empty, since an
+                    // empty set is a token carrying none, which is an answer.
+                    client_scopes: Resolved::Unknown,
                 }),
                 None => Through::Unestablished,
             },

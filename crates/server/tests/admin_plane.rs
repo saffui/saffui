@@ -20,7 +20,7 @@ use models::entities::authz::AdminAction;
 use server::app::{Plane as Mounted, mount};
 use server::guard::AdminPolicy;
 use store::tenancy::TenantContext;
-use support::{AUDIENCE, KID, PARTY, Plane, REALM, SCOPE, SECOND_KID, SigningKey, claims};
+use support::{AUDIENCE, KID, PARTY, Plane, REALM, SCOPE, SECOND_KID, SUBJECT, SigningKey, claims};
 
 fn policy() -> AdminPolicy {
     AdminPolicy {
@@ -239,6 +239,140 @@ async fn a_token_outside_the_window_it_states_is_refused() {
         request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
         StatusCode::UNAUTHORIZED,
         "a token not yet valid was accepted"
+    );
+}
+
+/// The plane now asks the realm about the caller, not only the token about
+/// itself. Switching an account off left every role in place and every route
+/// open, because nothing between the signature and the decision ever looked.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_subject_the_realm_switched_off_is_refused() {
+    let plane = Plane::with_actions(&[AdminAction::RealmList]).await;
+    let bearer = plane.token(&claims());
+
+    assert_eq!(
+        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+        StatusCode::OK,
+        "the caller was refused before being switched off, so what follows proves nothing"
+    );
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new("acme", REALM))
+        .await;
+    let mut user = store::providers::users::load(&transaction, SUBJECT)
+        .await
+        .unwrap()
+        .unwrap();
+    user.enabled = false;
+    user.metadata = models::auditable::AuditableModel::from_updater("acme".into(), "root".into());
+    store::providers::users::update(&transaction, &user)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    drop(connection);
+
+    assert_eq!(
+        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+        StatusCode::UNAUTHORIZED,
+        "a disabled account still held every capability it was granted"
+    );
+}
+
+/// A capability granted inside an organization is spent inside it. Claiming an
+/// organization the caller does not belong to is refused, and a caller acting
+/// across the realm does not carry what an organization granted it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_organization_grant_is_spent_where_it_was_made() {
+    let plane = Plane::with_actions(&[]).await;
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new("acme", REALM))
+        .await;
+    store::providers::organizations::create(
+        &transaction,
+        &models::entities::organization::OrganizationModel {
+            org_id: "north".into(),
+            realm_id: REALM.into(),
+            name: "north".into(),
+            display_name: "North".into(),
+            description: String::new(),
+            enabled: true,
+            domains: Vec::new(),
+            redirect_url: None,
+            attributes: None,
+            metadata: models::auditable::AuditableModel::from_creator("acme".into(), "root".into()),
+        },
+    )
+    .await
+    .unwrap();
+    store::providers::organizations::add_member(
+        &transaction,
+        &models::entities::organization::OrganizationMemberModel {
+            realm_id: REALM.into(),
+            org_id: "north".into(),
+            user_id: SUBJECT.into(),
+            membership_type: models::entities::organization::OrgMembershipType::Managed,
+            roles: Vec::new(),
+            joined_at: None,
+            metadata: models::auditable::AuditableModel::from_creator("acme".into(), "root".into()),
+        },
+    )
+    .await
+    .unwrap();
+    let lister = models::entities::authz::RoleMutationModel {
+        name: "org-lister".into(),
+        display_name: "Org lister".into(),
+        description: String::new(),
+        client_id: None,
+        admin_actions: Some(vec![AdminAction::RealmList]),
+    }
+    .into_model(
+        "org-lister".into(),
+        REALM.into(),
+        models::auditable::AuditableModel::from_creator("acme".into(), "root".into()),
+    );
+    store::providers::roles::create(&transaction, &lister)
+        .await
+        .unwrap();
+    store::providers::organizations::grant_role(&transaction, "north", SUBJECT, "org-lister")
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+    drop(connection);
+
+    // Acting across the realm, the organization's grant is not held.
+    let bearer = plane.token(&claims());
+    assert_eq!(
+        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+        StatusCode::FORBIDDEN,
+        "a grant made inside an organization answered for the whole realm"
+    );
+
+    // Acting within it, and confirmed to belong, the grant counts.
+    let mut inside = claims();
+    inside
+        .set_claim("org_id", Some(serde_json::json!("north")))
+        .expect("an organization claim");
+    let bearer = plane.token(&inside);
+    assert_eq!(
+        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+        StatusCode::OK
+    );
+
+    // Claiming one it does not belong to is refused before any capability is read.
+    let mut elsewhere = claims();
+    elsewhere
+        .set_claim("org_id", Some(serde_json::json!("south")))
+        .expect("an organization claim");
+    let bearer = plane.token(&elsewhere);
+    assert_eq!(
+        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+        StatusCode::UNAUTHORIZED,
+        "a caller confined itself to an organization it is not in"
     );
 }
 

@@ -48,7 +48,7 @@ pub async fn list(
     let transaction = tenancy
         .transaction(
             &mut connection,
-            &TenantContext::tenant_wide(&admin.context.tenant),
+            &TenantContext::tenant_wide(&admin.context.tenant.tenant),
         )
         .await
         .map_err(|_| internal())?;
@@ -85,7 +85,7 @@ pub async fn get(
     let transaction = tenancy
         .transaction(
             &mut connection,
-            &TenantContext::new(&admin.context.tenant, &realm_id),
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
         )
         .await
         .map_err(|_| internal())?;

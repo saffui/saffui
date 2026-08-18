@@ -6,30 +6,15 @@
 //! door.
 
 use models::entities::authz::AdminAction;
+use services::token::Verified;
 
-/// What the caller presented, once the transport has verified it.
-///
-/// Built only from a token whose signature checked out against the realm's
-/// published keys. A caller cannot construct one with different contents,
-/// because nothing here parses: the fields arrive already established.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Presented {
-    pub subject: String,
-    pub audiences: Vec<String>,
-    /// Space separated, as the token carries it.
-    pub scope: String,
-    /// What a revocation names, where the token carries one. A signature and a
-    /// window say when a token stops; this is what withdraws one before then.
-    pub token_id: Option<String>,
-    /// The client that asked for the token, from `azp`. Who the token is for is
-    /// a different question, and only this one says who presented it.
-    pub authorized_party: Option<String>,
+/// The client that obtained the token, which is not who the token is for.
+fn authorized_party(verified: &Verified) -> Option<&str> {
+    verified.claims.get("azp").and_then(|party| party.as_str())
 }
 
-impl Presented {
-    fn has_scope(&self, wanted: &str) -> bool {
-        self.scope.split_whitespace().any(|scope| scope == wanted)
-    }
+fn carries_scope(verified: &Verified, wanted: &str) -> bool {
+    verified.scope.split_whitespace().any(|held| held == wanted)
 }
 
 /// Why a request was refused.
@@ -77,11 +62,11 @@ pub struct AdminPolicy {
 /// the refusal it earns.
 pub fn decide(
     required: Option<AdminAction>,
-    presented: &Presented,
+    verified: &Verified,
     held: &[AdminAction],
     policy: &AdminPolicy,
 ) -> Result<AdminAction, Refusal> {
-    if !presented
+    if !verified
         .audiences
         .iter()
         .any(|audience| policy.audiences.iter().any(|allowed| allowed == audience))
@@ -89,12 +74,12 @@ pub fn decide(
         return Err(Refusal::WrongAudience);
     }
 
-    match presented.authorized_party.as_deref() {
+    match authorized_party(verified) {
         Some(party) if policy.parties.iter().any(|allowed| allowed == party) => {}
         _ => return Err(Refusal::WrongParty),
     }
 
-    if !presented.has_scope(&policy.scope) {
+    if !carries_scope(verified, &policy.scope) {
         return Err(Refusal::MissingScope);
     }
 
@@ -119,14 +104,25 @@ mod tests {
         }
     }
 
-    fn presented() -> Presented {
-        Presented {
+    /// A token that checked out, carrying what this plane reads of it.
+    fn presented() -> Verified {
+        let mut claims = serde_json::Map::new();
+        claims.insert("azp".into(), serde_json::json!("saffui-console"));
+        Verified {
             subject: "ada".into(),
             audiences: vec!["saffui-admin".into()],
             scope: "openid admin".into(),
             token_id: None,
-            authorized_party: Some("saffui-console".into()),
+            claims,
         }
+    }
+
+    /// The same, with one claim replaced. Named so a test says which one thing
+    /// it arranged wrong.
+    fn claiming(key: &str, value: serde_json::Value) -> Verified {
+        let mut verified = presented();
+        verified.claims.insert(key.into(), value);
+        verified
     }
 
     #[test]
@@ -165,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_token_for_another_audience_is_refused() {
-        let elsewhere = Presented {
+        let elsewhere = Verified {
             audiences: vec!["some-app".into()],
             ..presented()
         };
@@ -185,7 +181,7 @@ mod tests {
     #[test]
     fn the_scope_is_matched_whole() {
         for scope in ["administrator", "adminread", "not-admin", ""] {
-            let carrying = Presented {
+            let carrying = Verified {
                 scope: scope.into(),
                 ..presented()
             };
@@ -212,7 +208,7 @@ mod tests {
             Err(Refusal::Undeclared)
         );
 
-        let elsewhere = Presented {
+        let elsewhere = Verified {
             audiences: vec!["some-app".into()],
             ..presented()
         };
@@ -228,10 +224,7 @@ mod tests {
     /// obtain one for the same audience would otherwise spend that authority.
     #[test]
     fn a_token_another_application_asked_for_is_refused() {
-        let elsewhere = Presented {
-            authorized_party: Some("some-app".into()),
-            ..presented()
-        };
+        let elsewhere = claiming("azp", serde_json::json!("some-app"));
         assert_eq!(
             decide(
                 Some(AdminAction::RealmRead),
@@ -242,10 +235,8 @@ mod tests {
             Err(Refusal::WrongParty)
         );
 
-        let anonymous = Presented {
-            authorized_party: None,
-            ..presented()
-        };
+        let mut anonymous = presented();
+        anonymous.claims.remove("azp");
         assert_eq!(
             decide(
                 Some(AdminAction::RealmRead),

@@ -15,20 +15,26 @@ use actix_web::{Error, HttpMessage, ResponseError};
 use chrono::Utc;
 use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Pool;
+use deadpool_postgres::Transaction;
 use models::entities::authz::AdminAction;
-use store::providers::{realm_keys, roles};
-use store::tenancy::{Tenancy, TenantContext, resolve};
+use services::context::{self, Acting, Context};
+use store::providers::{organizations, realm_keys, roles};
+use store::tenancy::{Tenancy, resolve};
 
 use crate::error::{refused, unauthenticated};
-use crate::guard::{AdminPolicy, Presented, decide};
+use crate::guard::{AdminPolicy, decide};
 use crate::routes;
 
 /// What the guard established, for the handler that follows.
+///
+/// One value and not two lists of overlapping fields. What the token said and
+/// what the realm says about it are different questions, so they are different
+/// values, and neither is rebuilt from the other further down.
 #[derive(Debug, Clone)]
 pub struct Admin {
-    pub presented: Presented,
-    /// The realm the token was issued by, and the tenant it belongs to.
-    pub context: TenantContext,
+    /// Who is asking, resolved against the realm: the subject, whether the
+    /// realm still stands behind it, and which organization it acts within.
+    pub context: Context,
     /// What the route required, already checked.
     pub allowed: AdminAction,
 }
@@ -107,6 +113,8 @@ async fn establish(
     guard: &Guard,
     request: &ServiceRequest,
 ) -> Result<Admin, commons::http::ApiError> {
+    // Read once, so everything this request decides shares an instant.
+    let now = Utc::now();
     let bearer = bearer(request).ok_or_else(unauthenticated)?;
 
     // The issuer names the realm, and nothing is trusted until the signature
@@ -133,41 +141,62 @@ async fn establish(
     // same question, and a check left beside the verifier is one that caller
     // inherits by omission. The instant is stated rather than read in there, so
     // this decision and a replay of it read the same clock.
-    let verified = services::token::verify(&transaction, &keys, &bearer, Utc::now())
+    let verified = services::token::verify(&transaction, &keys, &bearer, now)
         .await
         .map_err(|_| unauthenticated())?;
 
-    let presented = Presented {
-        subject: verified.subject,
-        audiences: verified.audiences,
-        scope: verified.scope,
-        token_id: verified.token_id,
-        authorized_party: verified
-            .claims
-            .get("azp")
-            .and_then(|party| party.as_str())
-            .map(str::to_owned),
-    };
-
-    let held: Vec<AdminAction> = roles::effective_roles(&transaction, &presented.subject)
+    // What the realm says about the token, which the token cannot say about
+    // itself: whether the subject is still one this realm holds, whether it has
+    // been switched off, and whether it belongs where it claims to be acting.
+    let established = context::establish(&transaction, context, &verified, now)
         .await
-        .map_err(|_| unauthenticated())?
-        .into_iter()
-        .filter_map(|role| role.admin_actions)
-        .flatten()
-        .collect();
+        .map_err(|_| unauthenticated())?;
+
+    let held = capabilities(&transaction, &established).await?;
 
     let required = request
         .match_pattern()
         .and_then(|pattern| routes::required(request.method(), &pattern));
 
-    let allowed = decide(required, &presented, &held, &guard.policy).map_err(refused)?;
+    let allowed = decide(required, &verified, &held, &guard.policy).map_err(refused)?;
 
     Ok(Admin {
-        presented,
-        context,
+        context: established,
         allowed,
     })
+}
+
+/// What this caller may do, where it is acting.
+///
+/// A caller acting across the realm holds what the realm granted it. One acting
+/// within an organization holds that, and what the organization granted it
+/// there as well. The two are read separately and only ever added together
+/// under an organization the caller was confirmed to belong to: folded into the
+/// realm wide set, a grant made inside one organization would answer for every
+/// other one and for the realm itself.
+async fn capabilities(
+    transaction: &Transaction<'_>,
+    established: &Context,
+) -> Result<Vec<AdminAction>, commons::http::ApiError> {
+    let subject = established.principal.id();
+
+    let mut roles = roles::effective_roles(transaction, subject)
+        .await
+        .map_err(|_| unauthenticated())?;
+
+    if let Acting::In { org_id } = &established.acting {
+        roles.extend(
+            organizations::roles_of_member(transaction, org_id, subject)
+                .await
+                .map_err(|_| unauthenticated())?,
+        );
+    }
+
+    Ok(roles
+        .into_iter()
+        .filter_map(|role| role.admin_actions)
+        .flatten()
+        .collect())
 }
 
 fn bearer(request: &ServiceRequest) -> Option<String> {

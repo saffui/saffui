@@ -252,6 +252,25 @@ pub async fn members(
     Ok(rows.into_iter().map(read_member).collect())
 }
 
+/// The organizations a subject belongs to, by identifier.
+///
+/// The reverse of `members`, on the index that exists for it. A decision reads
+/// this to place a caller, so a subject in no organization comes back empty,
+/// which the caller reads as a realm level principal rather than as an unknown.
+/// Ordered by identifier so the answer does not depend on insertion order.
+pub async fn of_member(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "SELECT org_id FROM organization_members WHERE user_id = $1 ORDER BY org_id ASC",
+            &[&user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("org_id"))
+        .collect())
+}
+
 /// Grant a realm role to a member, inside one organization.
 ///
 /// Granting twice grants once: the row is keyed by everything it joins.

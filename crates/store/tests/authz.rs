@@ -270,6 +270,43 @@ async fn removing_a_role_takes_its_grants() {
     transaction.commit().await.unwrap();
 }
 
+/// A subject's groups come back by identifier, direct membership only, ordered.
+/// A group policy reads exactly this, so a subject in none answers empty rather
+/// than unknown.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_subject_answers_with_the_groups_it_belongs_to() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    assert!(
+        roles::groups_of(&transaction, "ada")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a subject in no group was not read as one that belongs to none"
+    );
+
+    for id in ["staff", "board"] {
+        roles::create_group(&transaction, &group(id, false))
+            .await
+            .unwrap();
+        roles::add_to_group(&transaction, "ada", id).await.unwrap();
+    }
+    roles::add_to_group(&transaction, "ada", "staff")
+        .await
+        .expect("joining a group again is not an error");
+
+    assert_eq!(
+        roles::groups_of(&transaction, "ada").await.unwrap(),
+        vec!["board".to_owned(), "staff".to_owned()],
+        "the groups are the ones joined, ordered by identifier, each once"
+    );
+}
+
 /// The groups a new user joins without anyone adding them are the ones that say
 /// so, and nothing else.
 #[tokio::test]

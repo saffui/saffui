@@ -105,7 +105,9 @@ pub struct RoleModel {
     pub name: String,
     pub description: String,
     pub display_name: String,
-    pub is_client_role: bool,
+    /// The client that owns it, or none when the realm does. Named rather than
+    /// flagged, so entitlements are not rebuilt by matching role names.
+    pub client_id: Option<String>,
     /// Admin plane capabilities this role grants.
     ///
     /// Typed, so a capability nobody declared cannot be written down. `None` and
@@ -116,13 +118,22 @@ pub struct RoleModel {
     pub metadata: AuditableModel,
 }
 
+impl RoleModel {
+    /// Whether a client owns it, which is the same question as whether one is
+    /// named. Derived rather than stored beside the name, so the two cannot
+    /// disagree.
+    pub fn is_client_role(&self) -> bool {
+        self.client_id.is_some()
+    }
+}
+
 /// The create and update payload for a role.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleMutationModel {
     pub name: String,
     pub description: String,
     pub display_name: String,
-    pub is_client_role: bool,
+    pub client_id: Option<String>,
     pub admin_permissions: Option<Vec<AdminAction>>,
 }
 
@@ -139,7 +150,7 @@ impl RoleMutationModel {
             name: self.name,
             description: self.description,
             display_name: self.display_name,
-            is_client_role: self.is_client_role,
+            client_id: self.client_id,
             admin_permissions: self.admin_permissions,
             metadata,
         }
@@ -747,7 +758,7 @@ mod tests {
             name: "auditor".into(),
             description: "Reads the ledger".into(),
             display_name: "Auditor".into(),
-            is_client_role: false,
+            client_id: None,
             admin_permissions: Some(vec![AdminAction::ConsentRead, AdminAction::UserRead]),
         }
         .into_model("role-1".into(), "realm-1".into(), metadata());
@@ -778,7 +789,7 @@ mod tests {
             name: "member".into(),
             description: String::new(),
             display_name: "Member".into(),
-            is_client_role: false,
+            client_id: None,
             admin_permissions: None,
         }
         .into_model("role-2".into(), "realm-1".into(), metadata());

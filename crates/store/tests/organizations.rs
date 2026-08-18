@@ -312,7 +312,7 @@ async fn a_member_comes_back_with_the_roles_it_holds() {
             name: id.to_owned(),
             display_name: id.to_owned(),
             description: String::new(),
-            is_client_role: false,
+            client_id: None,
             admin_permissions: None,
         }
         .into_model(

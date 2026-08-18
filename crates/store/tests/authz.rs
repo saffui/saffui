@@ -21,7 +21,7 @@ fn named(
         name: name.to_owned(),
         description: String::new(),
         display_name: id.to_owned(),
-        is_client_role: false,
+        client_id: None,
         admin_permissions: permissions,
     }
     .into_model(
@@ -71,7 +71,11 @@ async fn a_grant_comes_back_as_the_capabilities_it_names() {
         loaded.admin_permissions,
         Some(vec![AdminAction::ConsentRead, AdminAction::UserRead])
     );
-    assert!(!loaded.is_client_role);
+    assert!(!loaded.is_client_role());
+    assert_eq!(
+        loaded.client_id, None,
+        "a realm role named a client that owns it"
+    );
     assert_eq!(loaded.metadata.tenant, "acme");
 
     // A capability nobody declared, planted directly, does not decode onto a

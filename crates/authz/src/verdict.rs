@@ -60,6 +60,13 @@ pub enum Reason {
     /// A policy confined to an organization, met by a caller who is not in it
     /// or whose own could not be established.
     Confined { policy_id: String },
+    /// The resource named is not one this application protects. Answered
+    /// before the mode is read, since a mode belongs to the application that
+    /// owns the resource and not to whichever one a caller named.
+    NotThisApplication {
+        server_id: String,
+        resource_id: String,
+    },
     /// The verb is not one this resource declares.
     VerbNotDeclared {
         resource_id: String,

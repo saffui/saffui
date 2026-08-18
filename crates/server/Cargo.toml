@@ -15,6 +15,14 @@ actix-web = { workspace = true }
 deadpool-postgres = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# BASE64URL_NOPAD, to read the one unverified claim that says which realm's keys
+# to fetch. The JOSE layer has no read that skips the signature check.
+data-encoding = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+# The end to end plane mounts a real schema and signs real tokens, so the test
+# side reaches the migration runner and the software crypto provider directly.
+pgcore = { workspace = true }
+tokio-postgres = { workspace = true }
+actix-web = { workspace = true }

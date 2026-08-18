@@ -223,6 +223,25 @@ pub async fn effective_roles(
         .collect())
 }
 
+/// The groups a subject belongs to, by identifier.
+///
+/// Direct membership only, since that is what a group policy reads: the model
+/// carries no parent, so there is no subgroup to fold in. Ordered by identifier
+/// so two reads of one membership answer in one order, which a decision that
+/// records what it saw depends on.
+pub async fn groups_of(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "SELECT group_id FROM users_groups WHERE user_id = $1 ORDER BY group_id ASC",
+            &[&user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("group_id"))
+        .collect())
+}
+
 fn read_role(row: Row) -> RoleModel {
     RoleModel {
         role_id: row.get("role_id"),

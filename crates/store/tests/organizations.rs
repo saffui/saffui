@@ -360,6 +360,45 @@ async fn a_member_comes_back_with_the_roles_it_holds() {
 }
 
 /// Belonging again is not belonging twice.
+/// A subject's organizations are the reverse of a member listing, on the index
+/// that exists for it. A subject in none comes back empty, which a decision
+/// reads as a realm level caller rather than as an unknown one.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_subject_answers_with_the_organizations_it_belongs_to() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    assert!(
+        organizations::of_member(&transaction, "ada")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a subject in no organization was not read as a realm level caller"
+    );
+
+    for org_id in ["north", "east"] {
+        organizations::create(&transaction, &org(org_id, "main"))
+            .await
+            .unwrap();
+        organizations::add_member(
+            &transaction,
+            &member(org_id, "ada", OrgMembershipType::Managed),
+        )
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(
+        organizations::of_member(&transaction, "ada").await.unwrap(),
+        vec!["east".to_owned(), "north".to_owned()],
+        "the organizations are the ones joined, ordered by identifier"
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_second_add_corrects_how_a_member_belongs() {

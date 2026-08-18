@@ -137,8 +137,6 @@ fn server(mode: PolicyEnforcementMode, strategy: DecisionStrategy) -> ResourceSe
     )
 }
 
-// ---------------------------------------------------------------- the arms --
-
 /// Any of the roles named, on identifiers rather than names, since a name is
 /// what an administrator edits and an identifier is what a binding keeps.
 #[test]
@@ -412,8 +410,6 @@ fn a_pattern_policy_withholds_rather_than_failing_to_match() {
     assert!(matches!(reasons.as_slice(), [Reason::ClaimAbsent { .. }]));
 }
 
-// ---------------------------------------------------------- the comparisons --
-
 fn claim(name: &str) -> Operand {
     Operand::Claim {
         source: FactSource::Token,
@@ -610,8 +606,6 @@ fn a_test_every_value_passes_is_not_a_test() {
     }
 }
 
-// -------------------------------------------------------------- aggregation --
-
 /// An aggregate folds under its own strategy, and each condition's own logic is
 /// applied to its own answer before it is counted.
 #[test]
@@ -726,8 +720,6 @@ fn a_row_nothing_can_read_withholds_and_is_named() {
     assert_eq!(decision, Decision::Indeterminate);
     assert!(matches!(reasons.as_slice(), [Reason::Quarantined { .. }]));
 }
-
-// --------------------------------------------------------- what never grants --
 
 /// The property the whole crate exists for, asked of every dimension: a fact
 /// nobody could establish never becomes a grant, not even under negation.
@@ -848,8 +840,6 @@ fn a_binding_that_was_emptied_never_becomes_a_grant() {
     }
 }
 
-// ------------------------------------------------------------- confinement --
-
 /// A policy narrowed to an organization is silent for callers outside it and
 /// withholds for a caller whose own could not be established.
 #[test]
@@ -871,8 +861,9 @@ fn a_confined_policy_does_not_decide_outside_its_organization() {
         ),
     );
 
+    let north = ids(&["north"]);
     let inside = Request {
-        membership: Membership::In { org_id: "north" },
+        membership: Membership::In(&north),
         ..facts.request()
     };
     assert_eq!(
@@ -880,8 +871,22 @@ fn a_confined_policy_does_not_decide_outside_its_organization() {
         Decision::Permit
     );
 
+    // And a caller in several is placed by any one of them, so belonging to a
+    // second organization does not lose the policies of the first.
+    let both = ids(&["north", "south"]);
+    let in_both = Request {
+        membership: Membership::In(&both),
+        ..facts.request()
+    };
+    assert_eq!(
+        answer(std::slice::from_ref(&confined), "p", in_both),
+        Decision::Permit,
+        "a caller in two organizations lost the policies of one of them"
+    );
+
+    let south = ids(&["south"]);
     for elsewhere in [
-        Membership::In { org_id: "south" },
+        Membership::In(&south),
         Membership::RealmWide,
         Membership::Unknown,
     ] {
@@ -895,10 +900,9 @@ fn a_confined_policy_does_not_decide_outside_its_organization() {
     }
 }
 
-// -------------------------------------------------------------- permissions --
-
 fn target<'a>(scope_id: &'a str, declared: &'a BTreeSet<String>) -> Target<'a> {
     Target {
+        server_id: "app",
         resource_id: "doc",
         resource_type: "urn:doc",
         scope_id,
@@ -1126,4 +1130,39 @@ fn the_mode_changes_what_is_reported_and_not_what_applies() {
         "a server that evaluates nothing recorded an evaluation"
     );
     assert_eq!(disabled.reasons, vec![Reason::EnforcementDisabled]);
+}
+
+/// A resource one application protects, named alongside another application.
+///
+/// Refused before the mode is read, which is the whole point: a mode belongs to
+/// the application that owns the resource. Read from the application a caller
+/// named instead, a permissive or disabled one would answer for a resource it
+/// does not protect, and naming it would be enough to reach somebody else's.
+#[test]
+fn an_application_answers_only_for_the_resources_it_protects() {
+    let facts = Facts::new();
+    let declared = ids(&["read"]);
+    let elsewhere = Target {
+        server_id: "another-app",
+        ..target("read", &declared)
+    };
+
+    for mode in PolicyEnforcementMode::ALL {
+        let verdict = authz::permission(
+            &server(*mode, DecisionStrategy::Affirmative),
+            &Evaluable::index(&[]),
+            elsewhere,
+            facts.request(),
+        );
+        assert_eq!(
+            verdict.reported,
+            ReportedDecision::Deny,
+            "a {mode:?} application answered for a resource of another one"
+        );
+        assert_eq!(verdict.computed, Decision::Deny);
+        assert!(matches!(
+            verdict.reasons.as_slice(),
+            [Reason::NotThisApplication { .. }]
+        ));
+    }
 }

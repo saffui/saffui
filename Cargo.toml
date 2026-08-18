@@ -19,6 +19,7 @@ config  = { path = "crates/config" }
 pgcore  = { path = "crates/pgcore" }
 models  = { path = "crates/models" }
 store   = { path = "crates/store" }
+server         = { path = "crates/server" }
 
 # External: one version per dependency across the whole workspace.
 serde = { version = "1.0.229", features = ["derive"] }

@@ -116,11 +116,16 @@ impl AuthenticationFlowMutationModel {
 str_enum! {
     #[postgres(name = "authenticator_requirement")]
     /// How much a step counts towards the flow succeeding.
+    ///
+    /// There is no conditional requirement. A step that runs only sometimes has
+    /// something it is conditional on, and a requirement has nowhere to put it:
+    /// the value would name a state whose data lives nowhere, which is the one
+    /// shape this schema refuses everywhere else. A step that decides whether
+    /// the rest of its flow runs is an ordinary step whose authenticator is that
+    /// decision.
     pub enum AuthenticatorRequirement {
         /// Must succeed. The flow fails without it.
         Required => "required",
-        /// Runs only when its condition holds, and then counts as required.
-        Conditional => "conditional",
         /// One of a set, any of which satisfies the flow.
         Alternative => "alternative",
         /// Never runs.
@@ -263,12 +268,8 @@ mod tests {
 
     #[test]
     fn the_requirements_agree_with_their_own_spelling() {
-        assert_eq!(AuthenticatorRequirement::ALL.len(), 4);
+        assert_eq!(AuthenticatorRequirement::ALL.len(), 3);
         assert_eq!(AuthenticatorRequirement::Required.as_str(), "required");
-        assert_eq!(
-            AuthenticatorRequirement::Conditional.as_str(),
-            "conditional"
-        );
         assert_eq!(
             AuthenticatorRequirement::Alternative.as_str(),
             "alternative"
@@ -398,7 +399,7 @@ mod tests {
                 authenticator: "auth-otp".into(),
                 config_id: Some("config-1".into()),
             },
-            requirement: AuthenticatorRequirement::Conditional,
+            requirement: AuthenticatorRequirement::Alternative,
         }
         .into_model("exec-1".into(), "realm-1".into(), metadata());
 

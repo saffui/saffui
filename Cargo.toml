@@ -43,7 +43,11 @@ url = "2.5"
 # --- HTTP ---
 # Only the layers that serve a request pull these; `commons` gates them behind
 # a feature so a crypto unit test does not compile a web framework.
-actix-web      = "4.14"
+# Default features off, which drops http2 and with it the h2 crate. Nothing here
+# serves HTTP: this renders catalogued errors and carries a request span. Adding
+# a server means turning http2 back on, and h2 0.3 is what RUSTSEC-2026-0258 is
+# about, so check whether actix-http has moved to 0.4 before doing so.
+actix-web      = { version = "4.14", default-features = false, features = ["macros"] }
 log            = "0.4"
 
 # --- Observability ---

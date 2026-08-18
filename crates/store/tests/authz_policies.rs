@@ -2,8 +2,60 @@
 
 mod support;
 
+use models::auditable::AuditableModel;
+use models::entities::authz::{
+    AuthzDecisionRecord, Decision, DecisionLogic, DecisionStrategy, PolicyModel, PolicyRule,
+    PolicyTerms, ReportedDecision, StoredPolicy,
+};
+use store::error::StoreError;
+use store::providers::authz_policies;
 use store::tenancy::TenantContext;
 use support::Fixture;
+
+/// A policy of this realm's one application, with nothing bound to it.
+fn terms(name: &str, rule: PolicyRule) -> PolicyTerms {
+    PolicyTerms {
+        name: name.to_owned(),
+        description: String::new(),
+        decision: DecisionStrategy::Unanimous,
+        logic: DecisionLogic::Positive,
+        policy_owner: "ada".to_owned(),
+        policies: Vec::new(),
+        resources: Vec::new(),
+        scopes: Vec::new(),
+        rule,
+    }
+}
+
+fn stored(id: &str, terms: PolicyTerms) -> PolicyModel {
+    terms.into_model(
+        id.to_owned(),
+        "app".to_owned(),
+        "main".to_owned(),
+        None,
+        AuditableModel::from_creator("acme".to_owned(), "root".to_owned()),
+    )
+}
+
+/// An aggregate over the conditions it names.
+fn aggregate(id: &str, conditions: &[&str]) -> PolicyModel {
+    stored(
+        id,
+        PolicyTerms {
+            policies: conditions.iter().map(|id| (*id).to_owned()).collect(),
+            ..terms(id, PolicyRule::Aggregated)
+        },
+    )
+}
+
+fn read(policy: StoredPolicy) -> PolicyModel {
+    match policy {
+        StoredPolicy::Read(policy) => policy,
+        StoredPolicy::Unreadable { policy_id } => {
+            panic!("{policy_id} came back as a row nothing could read")
+        }
+    }
+}
 
 /// A server, a resource and a scope to bind to.
 async fn plant_surface(fixture: &Fixture) {
@@ -92,8 +144,8 @@ async fn a_policy_names_its_own_kind() {
 
 /// A binding cannot hang from a kind that would never read it.
 ///
-/// This is the defect the reference ships: a row of groups under a policy that
-/// decides on roles, which nothing reads and nothing refuses.
+/// A row of groups under a policy that decides on roles is a binding nothing
+/// reads, and without the kind in the key it is also a binding nothing refuses.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_binding_hangs_only_from_the_kind_that_reads_it() {
@@ -503,4 +555,449 @@ async fn policies_are_not_visible_from_another_realm() {
         .unwrap()
         .get(0);
     assert_eq!(seen, 0, "another realm read this realm's policies");
+}
+
+/// A policy names what the realm still holds, not what it held when it was
+/// written. The document keeps the second answer, which is why the two are not
+/// the same read.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_policy_answers_with_what_still_exists() {
+    let fixture = Fixture::with_user_and_client().await;
+    plant_surface(&fixture).await;
+
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+    transaction
+        .execute(
+            "INSERT INTO roles (tenant, realm_id, role_id, name, display_name) \
+             VALUES ('acme', 'main', 'viewer', 'viewer', 'Viewer')",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    authz_policies::create(
+        &transaction,
+        &stored(
+            "editors",
+            terms(
+                "editors",
+                PolicyRule::Role {
+                    roles: vec!["viewer".to_owned(), "editor".to_owned()],
+                },
+            ),
+        ),
+    )
+    .await
+    .unwrap();
+
+    let loaded = read(
+        authz_policies::load(&transaction, "app", "editors")
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    assert_eq!(
+        loaded.terms.rule,
+        PolicyRule::Role {
+            roles: vec!["editor".to_owned(), "viewer".to_owned()]
+        },
+        "the members did not come back from the rows the database keeps"
+    );
+    assert_eq!(loaded.org_id, None);
+    assert_eq!(loaded.metadata.created_by.as_deref(), Some("root"));
+
+    transaction
+        .execute("DELETE FROM roles WHERE role_id = 'viewer'", &[])
+        .await
+        .unwrap();
+
+    let after = read(
+        authz_policies::load(&transaction, "app", "editors")
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    assert_eq!(
+        after.terms.rule,
+        PolicyRule::Role {
+            roles: vec!["editor".to_owned()]
+        },
+        "a policy still named a role the realm no longer has"
+    );
+
+    // And the document is untouched, so what was asked for is still on record.
+    let written: serde_json::Value = transaction
+        .query_one("SELECT rule FROM policies WHERE policy_id = 'editors'", &[])
+        .await
+        .unwrap()
+        .get("rule");
+    assert_eq!(
+        written["roles"],
+        serde_json::json!(["viewer", "editor"]),
+        "the record of what was asked for was rewritten by a deletion elsewhere"
+    );
+}
+
+/// The one cycle a row shows is the table's to refuse. A longer one is only
+/// visible from the whole graph, and it is refused before the edge lands.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_condition_that_leads_back_is_refused() {
+    let fixture = Fixture::with_user_and_client().await;
+    plant_surface(&fixture).await;
+
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    for leaf in ["leaf", "twig"] {
+        authz_policies::create(
+            &transaction,
+            &stored(
+                leaf,
+                terms(
+                    leaf,
+                    PolicyRule::Role {
+                        roles: vec!["editor".to_owned()],
+                    },
+                ),
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    for (id, conditions) in [
+        ("first", vec!["leaf"]),
+        ("second", vec!["first"]),
+        ("third", vec!["second"]),
+    ] {
+        authz_policies::create(&transaction, &aggregate(id, &conditions))
+            .await
+            .unwrap();
+    }
+
+    // Three edges away and back again. Nothing in one row shows it.
+    assert_eq!(
+        authz_policies::update(&transaction, &aggregate("first", &["third"])).await,
+        Err(StoreError::PolicyCycle {
+            policy: "first".to_owned(),
+            condition: "third".to_owned(),
+        })
+    );
+
+    // The short one is refused by the same walk, so the two are one rule.
+    assert!(matches!(
+        authz_policies::update(&transaction, &aggregate("first", &["first"])).await,
+        Err(StoreError::PolicyCycle { .. })
+    ));
+
+    // A refusal leaves the graph as it was, and the transaction usable.
+    let untouched = read(
+        authz_policies::load(&transaction, "app", "first")
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    assert_eq!(untouched.terms.policies, vec!["leaf".to_owned()]);
+
+    // And nothing here is a blanket refusal: an aggregation that leads nowhere
+    // near where it started is written.
+    assert!(
+        authz_policies::update(&transaction, &aggregate("first", &["leaf", "twig"]))
+            .await
+            .unwrap()
+    );
+    let widened = read(
+        authz_policies::load(&transaction, "app", "first")
+            .await
+            .unwrap()
+            .unwrap(),
+    );
+    assert_eq!(
+        widened.terms.policies,
+        vec!["leaf".to_owned(), "twig".to_owned()],
+        "an update added to the conditions instead of replacing them"
+    );
+}
+
+/// Everything the write path refuses is refused before it writes, so a refusal
+/// leaves nothing behind and does not abort the transaction it was asked in.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn what_is_refused_is_refused_before_anything_is_written() {
+    let fixture = Fixture::with_user_and_client().await;
+    plant_surface(&fixture).await;
+
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    let unconditional = stored(
+        "grant",
+        PolicyTerms {
+            resources: vec!["doc".to_owned()],
+            ..terms(
+                "grant",
+                PolicyRule::ResourcePermission {
+                    resource_type: "urn:doc".to_owned(),
+                },
+            )
+        },
+    );
+    assert_eq!(
+        authz_policies::create(&transaction, &unconditional).await,
+        Err(StoreError::UnconditionalPermission)
+    );
+
+    let broken = stored(
+        "by-mail",
+        terms(
+            "by-mail",
+            PolicyRule::Regex {
+                target_claim: "email".to_owned(),
+                target_regex: "([a-z".to_owned(),
+            },
+        ),
+    );
+    assert!(matches!(
+        authz_policies::create(&transaction, &broken).await,
+        Err(StoreError::BadPattern(_))
+    ));
+
+    let ghost = aggregate("built-on-air", &["no-such-policy"]);
+    assert_eq!(
+        authz_policies::create(&transaction, &ghost).await,
+        Err(StoreError::NotFound {
+            asked: "no-such-policy".to_owned(),
+        })
+    );
+
+    // Nothing landed, including the row the aggregate would have written before
+    // it reached its conditions.
+    assert!(
+        authz_policies::list_for_server(&transaction, "app")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a refused write left a policy behind"
+    );
+
+    // And the transaction still works, which is what refusing before writing
+    // buys: no statement was sent for the database to abort it over.
+    authz_policies::create(
+        &transaction,
+        &stored(
+            "by-mail",
+            terms(
+                "by-mail",
+                PolicyRule::Regex {
+                    target_claim: "email".to_owned(),
+                    target_regex: r"^.+@example\.test$".to_owned(),
+                },
+            ),
+        ),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        authz_policies::list_for_server(&transaction, "app")
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+/// A policy nobody can read is named and quarantined. Dropping it would make it
+/// look like a policy nobody wrote, and under a strategy where one permit is
+/// enough those two are the difference between refusing and permitting.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_row_nothing_can_read_is_named_and_the_rest_survive() {
+    let fixture = Fixture::with_user_and_client().await;
+    plant_surface(&fixture).await;
+
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    authz_policies::create(
+        &transaction,
+        &stored(
+            "editors",
+            terms(
+                "editors",
+                PolicyRule::Role {
+                    roles: vec!["editor".to_owned()],
+                },
+            ),
+        ),
+    )
+    .await
+    .unwrap();
+
+    // Tagged as the kind it claims, so the constraint that reads the tag is
+    // satisfied, and carrying none of what that kind is made of.
+    transaction
+        .execute(&policy("adrift", "role", r#"{"policy_type": "role"}"#), &[])
+        .await
+        .unwrap();
+
+    let listed = authz_policies::list_for_server(&transaction, "app")
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 2, "a row that would not decode took the list");
+
+    let names: Vec<&str> = listed.iter().map(StoredPolicy::policy_id).collect();
+    assert_eq!(names, vec!["adrift", "editors"]);
+    assert!(matches!(listed[0], StoredPolicy::Unreadable { .. }));
+    assert!(matches!(listed[1], StoredPolicy::Read(_)));
+
+    assert!(matches!(
+        authz_policies::load(&transaction, "app", "adrift")
+            .await
+            .unwrap(),
+        Some(StoredPolicy::Unreadable { .. })
+    ));
+}
+
+/// What a caller was told and what the evaluation reached, kept apart on the
+/// way in and on the way out.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_decision_keeps_both_answers_through_the_round_trip() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    let record = |id: &str, reported, computed| AuthzDecisionRecord {
+        decision_id: id.to_owned(),
+        tenant: "acme".to_owned(),
+        realm_id: "main".to_owned(),
+        subject_type: "user".to_owned(),
+        subject_id: "ada".to_owned(),
+        resource_kind: "resource".to_owned(),
+        resource_ref: Some("doc".to_owned()),
+        action: "read".to_owned(),
+        reported,
+        computed,
+        detail: serde_json::json!({"claims": {"tier": "gold"}}),
+        duration_us: 1_200,
+        trace_id: Some("trace-1".to_owned()),
+        occurred_at_millis: None,
+    };
+
+    for entry in [
+        record("plain", ReportedDecision::Permit, Decision::Permit),
+        // A permissive server telling the caller yes over a denial.
+        record("masked", ReportedDecision::Permit, Decision::Deny),
+        // And an evaluation that reached no answer at all.
+        record(
+            "unanswered",
+            ReportedDecision::Deny,
+            Decision::Indeterminate,
+        ),
+    ] {
+        authz_policies::record(&transaction, &entry).await.unwrap();
+    }
+
+    // The order is not asserted: these share one transaction, so `now()` gives
+    // them one timestamp and a sort on it decides nothing.
+    let all = authz_policies::recent(&transaction, 10).await.unwrap();
+    assert_eq!(all.len(), 3);
+
+    let plain = all
+        .iter()
+        .find(|entry| entry.decision_id == "plain")
+        .expect("the ordinary decision");
+    assert_eq!(plain.reported, ReportedDecision::Permit);
+    assert_eq!(plain.computed, Decision::Permit);
+    assert_eq!(plain.detail["claims"]["tier"], "gold");
+    assert_eq!(plain.duration_us, 1_200);
+    assert!(plain.occurred_at_millis.is_some());
+
+    let mut disagreed: Vec<String> = authz_policies::disagreements(&transaction, 10)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.decision_id)
+        .collect();
+    disagreed.sort();
+    assert_eq!(
+        disagreed,
+        vec!["masked".to_owned(), "unanswered".to_owned()],
+        "the two an auditor looks for are not what the read returned"
+    );
+}
+
+/// A policy is what it decides on. Changing that under the same identifier
+/// would take everything conditioned on it along without anyone asking.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_policy_does_not_change_what_it_decides_on() {
+    let fixture = Fixture::with_user_and_client().await;
+    plant_surface(&fixture).await;
+
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    authz_policies::create(
+        &transaction,
+        &stored(
+            "editors",
+            terms(
+                "editors",
+                PolicyRule::Role {
+                    roles: vec!["editor".to_owned()],
+                },
+            ),
+        ),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        authz_policies::update(&transaction, &aggregate("editors", &["editors"])).await,
+        Err(StoreError::PolicyKindChanged)
+    );
+
+    assert!(
+        !authz_policies::update(
+            &transaction,
+            &stored(
+                "nobody",
+                terms(
+                    "nobody",
+                    PolicyRule::Role {
+                        roles: vec!["editor".to_owned()],
+                    },
+                ),
+            ),
+        )
+        .await
+        .unwrap(),
+        "a policy that is not there was reported as updated"
+    );
+
+    assert!(
+        authz_policies::delete(&transaction, "editors")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !authz_policies::delete(&transaction, "editors")
+            .await
+            .unwrap()
+    );
 }

@@ -1,0 +1,21 @@
+[package]
+name = "saffui"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "saffui"
+path = "src/main.rs"
+
+[dependencies]
+commons = { workspace = true, features = ["http"] }
+config = { workspace = true }
+pgcore = { workspace = true }
+server = { workspace = true }
+store = { workspace = true }
+
+actix-web = { workspace = true }
+clap = { workspace = true }
+deadpool-postgres = { workspace = true }
+tokio-postgres = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

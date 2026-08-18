@@ -253,7 +253,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test -p store -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/store.log"
-          if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/store.log")" -lt 13 ]; then
+          if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/store.log")" -lt 14 ]; then
             echo "the isolation tests did not run; the job proved nothing." >&2
             exit 1
           fi

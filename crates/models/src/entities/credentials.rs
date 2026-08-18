@@ -18,6 +18,9 @@ str_enum! {
         Secret => "secret",
         Totp => "totp",
         Hotp => "hotp",
+        /// One of a printed set, spent once. A secret the user holds, which is
+        /// why it lives here and a passkey does not.
+        RecoveryCode => "recovery-code",
     }
 }
 
@@ -244,7 +247,7 @@ mod tests {
 
     #[test]
     fn the_catalogues_agree_with_their_own_spelling() {
-        assert_eq!(CredentialType::ALL.len(), 5);
+        assert_eq!(CredentialType::ALL.len(), 6);
         assert_eq!(OtpAlgorithm::ALL.len(), 3);
         assert_eq!(CredentialType::PasswordHistory.as_str(), "password-history");
         assert_eq!(OtpAlgorithm::Sha256.as_str(), "SHA256");

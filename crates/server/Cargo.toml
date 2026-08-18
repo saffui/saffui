@@ -26,3 +26,4 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 pgcore = { workspace = true }
 tokio-postgres = { workspace = true }
 actix-web = { workspace = true }
+chrono = { workspace = true }

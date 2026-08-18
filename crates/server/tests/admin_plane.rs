@@ -15,10 +15,12 @@ use std::time::{Duration, SystemTime};
 
 use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test};
+use chrono::Utc;
 use models::entities::authz::AdminAction;
 use server::app::{Plane as Mounted, mount};
 use server::guard::AdminPolicy;
-use support::{AUDIENCE, KID, Plane, SCOPE, SECOND_KID, SigningKey, claims};
+use store::tenancy::TenantContext;
+use support::{AUDIENCE, KID, Plane, REALM, SCOPE, SECOND_KID, SigningKey, claims};
 
 fn policy() -> AdminPolicy {
     AdminPolicy {
@@ -236,6 +238,47 @@ async fn a_token_outside_the_window_it_states_is_refused() {
         request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
         StatusCode::UNAUTHORIZED,
         "a token not yet valid was accepted"
+    );
+}
+
+/// A window says when a token stops on its own, and nothing about withdrawing
+/// one before then. A signature cannot be taken back and an expiry cannot be
+/// brought forward, so revocation is the only lever there is, and it has to be
+/// pulled here or it is not pulled at all.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_whose_identifier_was_revoked_is_refused() {
+    let plane = Plane::with_actions(&[AdminAction::RealmList]).await;
+
+    let mut identified = claims();
+    identified.set_jwt_id("jti-1");
+    let bearer = plane.token(&identified);
+
+    assert_eq!(
+        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+        StatusCode::OK,
+        "an unrevoked token was refused, so the test that follows proves nothing"
+    );
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new("acme", REALM))
+        .await;
+    store::providers::oidc::revoke(
+        &transaction,
+        "jti-1",
+        Utc::now() + chrono::Duration::hours(1),
+        "logged out",
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    drop(connection);
+
+    assert_eq!(
+        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+        StatusCode::UNAUTHORIZED,
+        "a revoked token still opened the plane"
     );
 }
 

@@ -133,6 +133,18 @@ async fn establish(
         .map_err(|_| unauthenticated())?;
     let presented = verify(&bearer, &keys).ok_or_else(unauthenticated)?;
 
+    // A signature says who minted it and the window says when it stops on its
+    // own. Neither can be taken back, so a token withdrawn before its expiry is
+    // refused here or not at all. A token carrying no identifier names nothing
+    // a revocation could have been written against, and is left to its window.
+    if let Some(token_id) = presented.token_id.as_deref()
+        && store::providers::oidc::is_revoked(&transaction, token_id)
+            .await
+            .map_err(|_| unauthenticated())?
+    {
+        return Err(unauthenticated());
+    }
+
     let held: Vec<AdminAction> = roles::effective_roles(&transaction, &presented.subject)
         .await
         .map_err(|_| unauthenticated())?
@@ -224,6 +236,7 @@ fn verify(
 
     Some(Presented {
         subject: payload.subject()?.to_owned(),
+        token_id: payload.jwt_id().map(str::to_owned),
         audiences: payload
             .audience()
             .map(|audiences| audiences.iter().map(|a| (*a).to_owned()).collect())

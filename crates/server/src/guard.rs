@@ -18,6 +18,9 @@ pub struct Presented {
     pub audiences: Vec<String>,
     /// Space separated, as the token carries it.
     pub scope: String,
+    /// What a revocation names, where the token carries one. A signature and a
+    /// window say when a token stops; this is what withdraws one before then.
+    pub token_id: Option<String>,
 }
 
 impl Presented {
@@ -103,6 +106,7 @@ mod tests {
             subject: "ada".into(),
             audiences: vec!["saffui-admin".into()],
             scope: "openid admin".into(),
+            token_id: None,
         }
     }
 

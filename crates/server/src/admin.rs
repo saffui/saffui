@@ -8,15 +8,11 @@
 
 use std::future::{Ready, ready};
 use std::rc::Rc;
-use std::time::SystemTime;
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::{Error, HttpMessage, ResponseError};
-use crypto::jose::jwk::Jwk;
-use crypto::jose::jws::{ES256, ES384, ES512, EdDSA, PS256, PS384, PS512, RS256, RS384, RS512};
-use crypto::jose::jwt;
-use crypto::provider::SignAlg;
+use chrono::Utc;
 use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Pool;
 use models::entities::authz::AdminAction;
@@ -131,19 +127,22 @@ async fn establish(
     let keys = realm_keys::published(&transaction, models::entities::keys::KeyUse::Sig)
         .await
         .map_err(|_| unauthenticated())?;
-    let presented = verify(&bearer, &keys).ok_or_else(unauthenticated)?;
 
-    // A signature says who minted it and the window says when it stops on its
-    // own. Neither can be taken back, so a token withdrawn before its expiry is
-    // refused here or not at all. A token carrying no identifier names nothing
-    // a revocation could have been written against, and is left to its window.
-    if let Some(token_id) = presented.token_id.as_deref()
-        && store::providers::oidc::is_revoked(&transaction, token_id)
-            .await
-            .map_err(|_| unauthenticated())?
-    {
-        return Err(unauthenticated());
-    }
+    // One gate, and it is not this crate's. Signature, the window the token
+    // states, and whether it was withdrawn: a second caller is about to ask the
+    // same question, and a check left beside the verifier is one that caller
+    // inherits by omission. The instant is stated rather than read in there, so
+    // this decision and a replay of it read the same clock.
+    let verified = services::token::verify(&transaction, &keys, &bearer, Utc::now())
+        .await
+        .map_err(|_| unauthenticated())?;
+
+    let presented = Presented {
+        subject: verified.subject,
+        audiences: verified.audiences,
+        scope: verified.scope,
+        token_id: verified.token_id,
+    };
 
     let held: Vec<AdminAction> = roles::effective_roles(&transaction, &presented.subject)
         .await
@@ -193,90 +192,4 @@ fn unverified_issuer(token: &str) -> Option<String> {
     let decoded = BASE64URL_NOPAD.decode(payload.as_bytes()).ok()?;
     let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
     claims.get("iss")?.as_str().map(str::to_owned)
-}
-
-/// Verify against the one key the token names, and against the window it says
-/// it is good for.
-///
-/// The header names a key and only that key is tried. Trying each published key
-/// in turn would let a token be verified by whichever one happens to accept it,
-/// which is how a retired key keeps signing long after it stopped being active.
-///
-/// The algorithm comes from the key and never from the token's header, which is
-/// what stops a token choosing a weaker one than the key was published for.
-///
-/// A signature is not a lifetime, and checking one is not checking the other.
-/// This realm keeps a rotated key published and passive on purpose, so that
-/// tokens it already signed keep verifying: rotation therefore retires no
-/// token, and `exp` is the only thing that ever will. A token carrying none is
-/// refused rather than read as unlimited, because the alternative is a bearer
-/// credential that works forever and that nothing can withdraw.
-fn verify(
-    token: &str,
-    published: &[models::entities::keys::RealmSigningKeyView],
-) -> Option<Presented> {
-    let header = jwt::decode_header(token).ok()?;
-    let kid = header.claim("kid")?.as_str()?.to_owned();
-    let key = published.iter().find(|key| key.kid == kid)?;
-
-    let jwk = Jwk::from_map(key.public_jwk.as_object()?.clone()).ok()?;
-    let verifier = verifier_for(key.algorithm, &jwk)?;
-    let payload = jwt::decode_with_verifier(token, &*verifier).ok()?.0;
-
-    // An absent expiry is refused here rather than left to the validator, which
-    // reads every time claim only if the token carries it: a token with no `exp`
-    // would satisfy every bound it never stated.
-    payload.expires_at()?;
-
-    // One instant for both bounds, so a token cannot be read as expired against
-    // one clock and not yet valid against another.
-    let mut window = jwt::JwtPayloadValidator::new();
-    window.set_base_time(SystemTime::now());
-    window.validate(&payload).ok()?;
-
-    Some(Presented {
-        subject: payload.subject()?.to_owned(),
-        token_id: payload.jwt_id().map(str::to_owned),
-        audiences: payload
-            .audience()
-            .map(|audiences| audiences.iter().map(|a| (*a).to_owned()).collect())
-            .unwrap_or_default(),
-        scope: payload
-            .claim("scope")
-            .and_then(|scope| scope.as_str())
-            .unwrap_or_default()
-            .to_owned(),
-    })
-}
-
-/// The verifier the published algorithm names.
-///
-/// Exhaustive over the catalogue rather than a lookup with a fallback: an
-/// algorithm this build does not implement must fail to compile here, not fail
-/// to verify at runtime and read as a bad token.
-fn verifier_for(algorithm: SignAlg, jwk: &Jwk) -> Option<Box<dyn crypto::jose::jws::JwsVerifier>> {
-    let verifier =
-        match algorithm {
-            SignAlg::Rs256 => Box::new(RS256.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Rs384 => Box::new(RS384.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Rs512 => Box::new(RS512.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Ps256 => Box::new(PS256.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Ps384 => Box::new(PS384.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Ps512 => Box::new(PS512.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Es256 => Box::new(ES256.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Es384 => Box::new(ES384.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Es512 => Box::new(ES512.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::EdDsa => Box::new(EdDSA.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-        };
-    Some(verifier)
 }

@@ -20,6 +20,7 @@ pgcore  = { path = "crates/pgcore" }
 models  = { path = "crates/models" }
 store   = { path = "crates/store" }
 authz   = { path = "crates/authz" }
+services       = { path = "crates/services" }
 server         = { path = "crates/server" }
 saffui         = { path = "crates/saffui" }
 

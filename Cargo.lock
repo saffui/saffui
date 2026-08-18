@@ -1919,9 +1919,26 @@ dependencies = [
  "pgcore",
  "serde",
  "serde_json",
+ "services",
  "store",
  "tokio",
  "tokio-postgres",
+]
+
+[[package]]
+name = "services"
+version = "0.1.0"
+dependencies = [
+ "authz",
+ "chrono",
+ "commons",
+ "crypto",
+ "deadpool-postgres",
+ "models",
+ "serde_json",
+ "store",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

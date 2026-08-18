@@ -28,4 +28,10 @@ deadpool-postgres = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+# The context tests establish a caller against a real schema, so the test side
+# reaches the migration runner and the software crypto provider directly.
+pgcore = { workspace = true }
+crypto = { workspace = true }
+tokio-postgres = { workspace = true }
+serde_json = { workspace = true }

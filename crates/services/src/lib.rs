@@ -14,4 +14,5 @@
 //! reached by anything that is not answering an HTTP call: not a command line,
 //! not a scheduled sweep, not a test.
 
+pub mod context;
 pub mod token;

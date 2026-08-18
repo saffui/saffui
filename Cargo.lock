@@ -1935,10 +1935,12 @@ dependencies = [
  "crypto",
  "deadpool-postgres",
  "models",
+ "pgcore",
  "serde_json",
  "store",
  "thiserror",
  "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

@@ -272,6 +272,17 @@ jobs:
       # refusing every signed token with nothing able to see it. Counted like
       # the others, since a suite that reached no server would report the whole
       # chain as proven.
+      # What a request establishes about its caller, against a real schema. Same
+      # counted guard as the others.
+      - name: test what a request establishes
+        run: |
+          set -o pipefail
+          cargo test -p services -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/services.log"
+          if ! grep -qE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/services.log"; then
+            echo "the context tests did not run; the job proved nothing." >&2
+            exit 1
+          fi
+
       - name: test the admin plane end to end
         run: |
           set -o pipefail

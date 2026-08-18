@@ -97,6 +97,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V014__oidc_core.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 15,
+            name: "protected_surface",
+            sql: include_str!("../migrations/V015__protected_surface.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -85,6 +85,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V012__client_scopes_and_mappers.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 13,
+            name: "login_in_progress",
+            sql: include_str!("../migrations/V013__login_in_progress.sql"),
+            transactional: true,
+        }),
     ]
 }
 

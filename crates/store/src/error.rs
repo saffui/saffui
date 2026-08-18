@@ -76,6 +76,20 @@ pub enum StoreError {
         binding: &'static str,
     },
 
+    /// A policy something else is conditioned on. Removing it would take a
+    /// condition out from under a policy that reads it, which is a permission
+    /// granting where it refused and nothing left to show a condition was there.
+    #[error("{policy_id} is a condition of another policy")]
+    PolicyIsACondition { policy_id: String },
+
+    /// A time window no instant can satisfy. Refused because such a window is
+    /// not a policy that never grants: under negative logic it is one that
+    /// always does.
+    #[error("the time window names no instant that could satisfy it")]
+    UnusableWindow {
+        defect: models::entities::authz::WindowDefect,
+    },
+
     /// The pattern is not one, or is one too large to keep. Compiled here so a
     /// decision never has to.
     #[error("the pattern was refused: {0}")]

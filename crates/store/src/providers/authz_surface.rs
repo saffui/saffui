@@ -113,6 +113,11 @@ pub async fn set_server_mode(
 /// The client stays. Removing a surface stops an application being protected;
 /// removing the client is a different act with a different blast radius.
 pub async fn delete_server(transaction: &Transaction<'_>, server_id: &str) -> StoreResult<bool> {
+    // The aggregation edges first. A policy something is conditioned on cannot
+    // be deleted from under it, and the cascade below reaches the two ends of an
+    // edge in whichever order it finds them.
+    crate::providers::authz_policies::unbind_server(transaction, server_id).await?;
+
     let removed = transaction
         .execute(
             "DELETE FROM resource_servers WHERE server_id = $1",

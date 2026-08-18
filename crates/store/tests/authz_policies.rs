@@ -1001,3 +1001,70 @@ async fn a_policy_does_not_change_what_it_decides_on() {
             .unwrap()
     );
 }
+
+/// A condition cannot just vanish from under the policy that reads it.
+///
+/// Removing one is not a narrowing: a permission that required two conditions
+/// and now requires one grants where it refused, and nothing downstream can see
+/// that a condition was ever there.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_policy_something_is_conditioned_on_does_not_vanish() {
+    let fixture = Fixture::with_user_and_client().await;
+    plant_surface(&fixture).await;
+
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+    for leaf in ["leaf", "twig"] {
+        authz_policies::create(
+            &transaction,
+            &stored(
+                leaf,
+                terms(
+                    leaf,
+                    PolicyRule::Role {
+                        roles: vec!["editor".to_owned()],
+                    },
+                ),
+            ),
+        )
+        .await
+        .unwrap();
+    }
+    authz_policies::create(&transaction, &aggregate("built-on", &["leaf"]))
+        .await
+        .unwrap();
+
+    // Refused before any statement runs, so the transaction it was asked in is
+    // still usable and the caller hears what is in the way.
+    assert_eq!(
+        authz_policies::delete(&transaction, "leaf").await,
+        Err(StoreError::PolicyIsACondition {
+            policy_id: "leaf".to_owned()
+        })
+    );
+
+    // Unbound first, and then it goes.
+    assert!(
+        authz_policies::update(&transaction, &aggregate("built-on", &["twig"]))
+            .await
+            .unwrap()
+    );
+    assert!(authz_policies::delete(&transaction, "leaf").await.unwrap());
+
+    // And removing the whole application still takes both ends of an edge in
+    // one statement, which is why the constraint is no action and not restrict.
+    assert!(
+        store::providers::authz_surface::delete_server(&transaction, "app")
+            .await
+            .unwrap()
+    );
+    assert!(
+        authz_policies::list_for_server(&transaction, "app")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

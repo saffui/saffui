@@ -1912,12 +1912,15 @@ dependencies = [
  "actix-web",
  "commons",
  "crypto",
+ "data-encoding",
  "deadpool-postgres",
  "models",
+ "pgcore",
  "serde",
  "serde_json",
  "store",
  "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

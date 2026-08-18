@@ -16,6 +16,7 @@ use crypto::jose::jwk::Jwk;
 use crypto::jose::jws::{ES256, ES384, ES512, EdDSA, PS256, PS384, PS512, RS256, RS384, RS512};
 use crypto::jose::jwt;
 use crypto::provider::SignAlg;
+use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Pool;
 use models::entities::authz::AdminAction;
 use store::providers::{realm_keys, roles};
@@ -163,10 +164,22 @@ fn bearer(request: &ServiceRequest) -> Option<String> {
 /// The issuer, read without verifying anything.
 ///
 /// Reading an unverified payload to find the key is unavoidable: something has
-/// to say which realm's keys to fetch. Nothing else is taken from it.
+/// to say which realm's keys to fetch, and which realm that is, is written in
+/// the token. Nothing else is taken from it, and nothing read here survives
+/// into the decision: the payload is read again, from scratch, once the
+/// signature has checked out.
+///
+/// The segment is decoded here rather than through the JOSE layer because that
+/// layer has no way to read a payload without checking it. Decoding as an
+/// unsecured token refuses anything whose header is not `alg: none`, which is
+/// every real token; asking it for no verifier is an error rather than a
+/// permission to skip the check. So this reads the one field it needs and
+/// treats the rest as what it is, unproven text.
 fn unverified_issuer(token: &str) -> Option<String> {
-    let (payload, _) = jwt::decode_unsecured(token).ok()?;
-    payload.issuer().map(str::to_owned)
+    let payload = token.split('.').nth(1)?;
+    let decoded = BASE64URL_NOPAD.decode(payload.as_bytes()).ok()?;
+    let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    claims.get("iss")?.as_str().map(str::to_owned)
 }
 
 /// Verify against the one key the token names.

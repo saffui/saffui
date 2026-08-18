@@ -103,6 +103,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V015__protected_surface.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 16,
+            name: "policies",
+            sql: include_str!("../migrations/V016__policies.sql"),
+            transactional: true,
+        }),
     ]
 }
 

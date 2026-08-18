@@ -2,8 +2,51 @@
 
 mod support;
 
+use models::auditable::AuditableModel;
+use models::entities::authz::{
+    DecisionStrategy, PolicyEnforcementMode, ResourceModel, ResourceMutationModel,
+    ResourceServerModel, ResourceServerMutationModel, ScopeModel, ScopeMutationModel,
+};
+use store::providers::authz_surface;
 use store::tenancy::TenantContext;
 use support::Fixture;
+
+fn meta() -> AuditableModel {
+    AuditableModel::from_creator("acme".to_owned(), "root".to_owned())
+}
+
+fn server(id: &str) -> ResourceServerModel {
+    ResourceServerMutationModel {
+        enforcement_mode: PolicyEnforcementMode::Enforcing,
+        decision_strategy: DecisionStrategy::Unanimous,
+        remote_resource_management: false,
+        user_managed_access: false,
+    }
+    .into_model(id.to_owned(), "main".to_owned(), meta())
+}
+
+fn resource(id: &str, kind: &str) -> ResourceModel {
+    ResourceMutationModel {
+        name: id.to_owned(),
+        display_name: id.to_owned(),
+        description: String::new(),
+        resource_uris: vec![format!("/{id}")],
+        resource_type: kind.to_owned(),
+        resource_owner: "app".to_owned(),
+        user_managed_access: false,
+        configs: None,
+    }
+    .into_model(id.to_owned(), "app".to_owned(), "main".to_owned(), meta())
+}
+
+fn scope(id: &str) -> ScopeModel {
+    ScopeMutationModel {
+        name: id.to_owned(),
+        display_name: id.to_owned(),
+        description: String::new(),
+    }
+    .into_model(id.to_owned(), "app".to_owned(), "main".to_owned(), meta())
+}
 
 /// Plant a server on the client the fixture already has.
 async fn plant_server(fixture: &Fixture) {
@@ -270,4 +313,254 @@ async fn the_surface_is_not_visible_from_another_realm() {
             .get(0);
         assert_eq!(seen, 0, "another realm read {table}");
     }
+}
+
+/// A resource that declares nothing and a resource whose verbs were not read
+/// are different answers, and the provider only ever gives the first.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_resource_answers_with_the_verbs_it_declares() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    authz_surface::create_server(&transaction, &server("app"))
+        .await
+        .unwrap();
+    authz_surface::create_scope(&transaction, &scope("read"))
+        .await
+        .unwrap();
+    authz_surface::create_scope(&transaction, &scope("write"))
+        .await
+        .unwrap();
+    authz_surface::create_resource(&transaction, &resource("doc", "urn:doc"))
+        .await
+        .unwrap();
+
+    let bare = authz_surface::load_resource(&transaction, "doc")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        bare.scopes.as_deref(),
+        Some(&[][..]),
+        "a resource declaring nothing came back as one whose verbs were not read"
+    );
+
+    // Declared out of order, so the order they come back in is the read's and
+    // not the order they were written in.
+    authz_surface::declare_scope(&transaction, "app", "doc", "write")
+        .await
+        .unwrap();
+    authz_surface::declare_scope(&transaction, "app", "doc", "read")
+        .await
+        .unwrap();
+    authz_surface::declare_scope(&transaction, "app", "doc", "read")
+        .await
+        .unwrap();
+
+    let loaded = authz_surface::load_resource(&transaction, "doc")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        loaded.scopes.as_deref(),
+        Some(&["read".to_owned(), "write".to_owned()][..]),
+        "declaring a verb twice declared it twice"
+    );
+
+    assert!(
+        authz_surface::undeclare_scope(&transaction, "doc", "write")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !authz_surface::undeclare_scope(&transaction, "doc", "write")
+            .await
+            .unwrap(),
+        "a verb was taken back off a resource that no longer declared it"
+    );
+}
+
+/// What a permission naming a type applies to, read as one answer rather than
+/// filtered by the caller.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_surface_answers_by_type() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    authz_surface::create_server(&transaction, &server("app"))
+        .await
+        .unwrap();
+    authz_surface::create_scope(&transaction, &scope("read"))
+        .await
+        .unwrap();
+    for (id, kind) in [
+        ("memo", "urn:doc"),
+        ("note", "urn:note"),
+        ("doc", "urn:doc"),
+    ] {
+        authz_surface::create_resource(&transaction, &resource(id, kind))
+            .await
+            .unwrap();
+    }
+    authz_surface::declare_scope(&transaction, "app", "memo", "read")
+        .await
+        .unwrap();
+
+    let documents = authz_surface::resources_of_type(&transaction, "app", "urn:doc")
+        .await
+        .unwrap();
+    let named: Vec<&str> = documents
+        .iter()
+        .map(|resource| resource.resource_id.as_str())
+        .collect();
+    assert_eq!(named, vec!["doc", "memo"]);
+
+    // Every one of them carries its own verbs, so a listing is not a shape a
+    // caller has to go back and fill in one resource at a time.
+    assert_eq!(documents[0].scopes.as_deref(), Some(&[][..]));
+    assert_eq!(
+        documents[1].scopes.as_deref(),
+        Some(&["read".to_owned()][..])
+    );
+
+    assert_eq!(
+        authz_surface::resources_of_server(&transaction, "app")
+            .await
+            .unwrap()
+            .len(),
+        3
+    );
+    assert!(
+        authz_surface::resources_of_type(&transaction, "app", "urn:nothing")
+            .await
+            .unwrap()
+            .is_empty(),
+        "a type nothing answers to came back with resources"
+    );
+}
+
+/// Rolling a policy out permissively changes what the server does with an
+/// answer, not what it protects.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn changing_the_mode_leaves_the_surface_alone() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    authz_surface::create_server(&transaction, &server("app"))
+        .await
+        .unwrap();
+    authz_surface::create_scope(&transaction, &scope("read"))
+        .await
+        .unwrap();
+    authz_surface::create_resource(&transaction, &resource("doc", "urn:doc"))
+        .await
+        .unwrap();
+    authz_surface::declare_scope(&transaction, "app", "doc", "read")
+        .await
+        .unwrap();
+
+    let rolled_out = ResourceServerModel {
+        enforcement_mode: PolicyEnforcementMode::Permissive,
+        decision_strategy: DecisionStrategy::Affirmative,
+        metadata: AuditableModel::from_updater("acme".to_owned(), "ada".to_owned()),
+        ..server("app")
+    };
+    assert!(
+        authz_surface::set_server_mode(&transaction, &rolled_out)
+            .await
+            .unwrap()
+    );
+
+    let loaded = authz_surface::load_server(&transaction, "app")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(loaded.enforcement_mode, PolicyEnforcementMode::Permissive);
+    assert_eq!(loaded.decision_strategy, DecisionStrategy::Affirmative);
+    assert_eq!(loaded.metadata.version, 2);
+    assert_eq!(loaded.metadata.updated_by.as_deref(), Some("ada"));
+    assert_eq!(
+        loaded.metadata.created_by.as_deref(),
+        Some("root"),
+        "an update overwrote who created the row"
+    );
+
+    assert_eq!(
+        authz_surface::load_resource(&transaction, "doc")
+            .await
+            .unwrap()
+            .unwrap()
+            .scopes
+            .as_deref(),
+        Some(&["read".to_owned()][..])
+    );
+}
+
+/// Taking a surface away stops an application being protected. It does not take
+/// the application with it, which is a different act with a different reach.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn taking_the_surface_away_leaves_the_client() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    authz_surface::create_server(&transaction, &server("app"))
+        .await
+        .unwrap();
+    authz_surface::create_scope(&transaction, &scope("read"))
+        .await
+        .unwrap();
+    authz_surface::create_resource(&transaction, &resource("doc", "urn:doc"))
+        .await
+        .unwrap();
+    authz_surface::declare_scope(&transaction, "app", "doc", "read")
+        .await
+        .unwrap();
+
+    assert!(
+        authz_surface::delete_server(&transaction, "app")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !authz_surface::delete_server(&transaction, "app")
+            .await
+            .unwrap()
+    );
+
+    assert!(
+        authz_surface::load_resource(&transaction, "doc")
+            .await
+            .unwrap()
+            .is_none(),
+        "a resource outlived the surface it belonged to"
+    );
+    assert!(
+        authz_surface::load_scope(&transaction, "read")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store::providers::clients::load(&transaction, "app")
+            .await
+            .unwrap()
+            .is_some(),
+        "removing a surface removed the client under it"
+    );
 }

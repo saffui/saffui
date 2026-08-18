@@ -11,6 +11,7 @@ authors.workspace = true
 # reads and writes the layers above are written against.
 
 [dependencies]
+commons = { workspace = true }
 models = { workspace = true }
 pgcore = { workspace = true }
 crypto = { workspace = true }

@@ -502,6 +502,7 @@ version = "0.1.0"
 dependencies = [
  "actix-web",
  "log",
+ "regex",
  "secrecy",
  "serde",
  "serde_json",
@@ -1990,6 +1991,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "commons",
  "crypto",
  "deadpool-postgres",
  "models",

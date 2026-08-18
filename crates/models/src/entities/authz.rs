@@ -308,31 +308,29 @@ str_enum! {
 }
 
 /// A protected application and the settings its decisions are made under.
+///
+/// It has no name, no description and no settings map of its own. A protected
+/// application is a client that has a surface, so what it is called is the
+/// client's answer to give: a second copy here would be a second answer, and
+/// the two would disagree the first time one of them was edited.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceServerModel {
+    /// The client whose surface this is.
     pub server_id: String,
     pub realm_id: String,
-    pub name: String,
-    pub display_name: String,
-    pub description: String,
     pub enforcement_mode: PolicyEnforcementMode,
     pub decision_strategy: DecisionStrategy,
-    pub remote_resource_management: Option<bool>,
-    pub user_managed_access_enabled: Option<bool>,
-    pub configs: Option<AttributesMap>,
+    pub remote_resource_management: bool,
+    pub user_managed_access: bool,
     pub metadata: AuditableModel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResourceServerMutationModel {
-    pub name: String,
-    pub display_name: String,
-    pub description: String,
     pub enforcement_mode: PolicyEnforcementMode,
     pub decision_strategy: DecisionStrategy,
-    pub remote_resource_management: Option<bool>,
-    pub user_managed_access_enabled: Option<bool>,
-    pub configs: Option<AttributesMap>,
+    pub remote_resource_management: bool,
+    pub user_managed_access: bool,
 }
 
 impl ResourceServerMutationModel {
@@ -345,14 +343,10 @@ impl ResourceServerMutationModel {
         ResourceServerModel {
             server_id,
             realm_id,
-            name: self.name,
-            display_name: self.display_name,
-            description: self.description,
             enforcement_mode: self.enforcement_mode,
             decision_strategy: self.decision_strategy,
             remote_resource_management: self.remote_resource_management,
-            user_managed_access_enabled: self.user_managed_access_enabled,
-            configs: self.configs,
+            user_managed_access: self.user_managed_access,
             metadata,
         }
     }
@@ -370,10 +364,10 @@ pub struct ResourceModel {
     pub resource_uris: Vec<String>,
     pub resource_type: String,
     pub resource_owner: String,
-    pub user_managed_access_enabled: Option<bool>,
+    pub user_managed_access: bool,
     pub configs: Option<AttributesMap>,
-    /// The verbs meaningful on this resource. None is not loaded, empty is declares
-    /// none, and neither may read as the other.
+    /// The verbs meaningful on this resource, by identifier. None is not loaded,
+    /// empty is declares none, and neither may read as the other.
     pub scopes: Option<Vec<String>>,
     pub metadata: AuditableModel,
 }
@@ -386,7 +380,7 @@ pub struct ResourceMutationModel {
     pub resource_uris: Vec<String>,
     pub resource_type: String,
     pub resource_owner: String,
-    pub user_managed_access_enabled: Option<bool>,
+    pub user_managed_access: bool,
     pub configs: Option<AttributesMap>,
 }
 
@@ -408,7 +402,7 @@ impl ResourceMutationModel {
             resource_uris: self.resource_uris,
             resource_type: self.resource_type,
             resource_owner: self.resource_owner,
-            user_managed_access_enabled: self.user_managed_access_enabled,
+            user_managed_access: self.user_managed_access,
             configs: self.configs,
             // A payload never carries scope bindings. They are attached through
             // their own operation, so creating a resource cannot quietly widen
@@ -622,9 +616,44 @@ pub struct PolicyModel {
     pub policy_id: String,
     pub server_id: String,
     pub realm_id: String,
+    /// The organization it is confined to, none being the whole realm. Widening
+    /// one to the other afterwards is a grant, so removal is not release.
+    pub org_id: Option<String>,
     #[serde(flatten)]
     pub terms: PolicyTerms,
     pub metadata: AuditableModel,
+}
+
+/// A policy row as storage handed it back.
+///
+/// A row whose rule will not decode is named rather than dropped. Skipping it
+/// would make a policy nobody can read indistinguishable from a policy that is
+/// not there, and under a strategy where one permit is enough those two are the
+/// difference between refusing and permitting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "boxing the readable arm to shrink the quarantined one would put an \
+              allocation on every policy read to save bytes on almost none"
+)]
+pub enum StoredPolicy {
+    Read(PolicyModel),
+    /// The row is there and its rule names no kind this build can read. What it
+    /// supports is one answer: the policy decided nothing.
+    Unreadable {
+        policy_id: String,
+    },
+}
+
+impl StoredPolicy {
+    /// Which policy this is, readable or not. A quarantined row still has to be
+    /// named in the log, or the fold records an outcome nothing accounts for.
+    pub fn policy_id(&self) -> &str {
+        match self {
+            Self::Read(policy) => &policy.policy_id,
+            Self::Unreadable { policy_id } => policy_id,
+        }
+    }
 }
 
 impl PolicyModel {
@@ -640,12 +669,14 @@ impl PolicyTerms {
         policy_id: String,
         server_id: String,
         realm_id: String,
+        org_id: Option<String>,
         metadata: AuditableModel,
     ) -> PolicyModel {
         PolicyModel {
             policy_id,
             server_id,
             realm_id,
+            org_id,
             terms: self,
             metadata,
         }
@@ -668,6 +699,20 @@ str_enum! {
     }
 }
 
+str_enum! {
+    /// What a caller was told.
+    ///
+    /// Two values, because there is no third answer to give somebody: a request
+    /// is let through or it is not. The evaluation's own third outcome is
+    /// recorded beside this rather than folded into it, so a permit reported
+    /// over a denial and a denial standing in for an evaluation that reached no
+    /// answer are both still there to be found afterwards.
+    pub enum ReportedDecision {
+        Permit => "permit",
+        Deny => "deny",
+    }
+}
+
 /// One recorded decision.
 ///
 /// The flat columns are what a query filters on; `detail` is the request as it
@@ -683,7 +728,11 @@ pub struct AuthzDecisionRecord {
     pub resource_kind: String,
     pub resource_ref: Option<String>,
     pub action: String,
-    pub decision: Decision,
+    /// What the caller was told.
+    pub reported: ReportedDecision,
+    /// What the evaluation reached. A permissive server and an unevaluable
+    /// policy are the two cases where it is not what was reported.
+    pub computed: Decision,
     /// The replay payload.
     pub detail: serde_json::Value,
     pub duration_us: i64,
@@ -1111,6 +1160,7 @@ mod tests {
             "policy-1".into(),
             "server-1".into(),
             "realm-1".into(),
+            None,
             metadata(),
         );
 
@@ -1119,6 +1169,10 @@ mod tests {
         assert_eq!(policy.realm_id, "realm-1");
         assert_eq!(policy.policy_type(), PolicyType::Time);
         assert_eq!(policy.metadata.tenant, "acme");
+        assert_eq!(
+            policy.org_id, None,
+            "a policy is realm wide until somebody confines it"
+        );
     }
 
     /// A resource declaring no scopes is a different answer from one whose
@@ -1132,7 +1186,7 @@ mod tests {
             resource_uris: vec!["/invoices/*".into()],
             resource_type: "urn:app:invoice".into(),
             resource_owner: "app".into(),
-            user_managed_access_enabled: Some(false),
+            user_managed_access: false,
             configs: None,
         }
         .into_model(
@@ -1164,14 +1218,10 @@ mod tests {
     fn a_resource_server_keeps_the_mode_it_was_given() {
         for mode in PolicyEnforcementMode::ALL {
             let server = ResourceServerMutationModel {
-                name: "app".into(),
-                display_name: "App".into(),
-                description: String::new(),
                 enforcement_mode: *mode,
                 decision_strategy: DecisionStrategy::Affirmative,
-                remote_resource_management: None,
-                user_managed_access_enabled: None,
-                configs: None,
+                remote_resource_management: false,
+                user_managed_access: false,
             }
             .into_model("server-1".into(), "realm-1".into(), metadata());
 
@@ -1181,12 +1231,19 @@ mod tests {
         }
     }
 
-    /// A recorded decision names one of two answers, and a stored value that is
-    /// neither does not decode.
+    /// What is reported and what was computed are not the same vocabulary. A
+    /// caller hears one of two answers; the evaluation reaches one of three,
+    /// and the third is what negative logic must not be able to invert.
     #[test]
-    fn a_recorded_decision_is_one_of_two_answers() {
-        assert_eq!(Decision::Permit.as_str(), "permit");
-        assert_eq!(Decision::Deny.as_str(), "deny");
+    fn what_is_reported_says_less_than_what_was_computed() {
+        assert_eq!(ReportedDecision::ALL.len(), 2);
+        assert_eq!(Decision::ALL.len(), 3);
+
+        assert_eq!(ReportedDecision::Permit.as_str(), "permit");
+        assert_eq!(ReportedDecision::Deny.as_str(), "deny");
+        assert!(serde_json::from_str::<ReportedDecision>("\"indeterminate\"").is_err());
+
+        assert_eq!(Decision::Indeterminate.as_str(), "indeterminate");
         assert!(serde_json::from_str::<Decision>("\"maybe\"").is_err());
         assert!(serde_json::from_str::<Decision>("\"Permit\"").is_err());
     }

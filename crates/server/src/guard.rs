@@ -22,6 +22,12 @@ fn carries_scope(verified: &Verified, wanted: &str) -> bool {
 /// Each is a distinct answer, and which one a caller is told is not decided
 /// here: this says what happened, and the layer that answers decides how much
 /// of it to say.
+///
+/// `WrongParty` is the one worth spelling out. Who a token is for and who asked
+/// for it are two questions, and only the second stops an application that can
+/// also obtain a token for this audience from presenting it and spending an
+/// admin's authority on its own errands. A token naming no party is refused
+/// rather than trusted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
     /// The route declares no action. Refused rather than guessed at, so adding
@@ -33,20 +39,18 @@ pub enum Refusal {
     MissingScope,
     /// A valid token, held by someone this route is not for.
     NotHeld,
-    /// Obtained by a client that is not part of this plane. Who a token is for
-    /// and who asked for it are two questions, and only the second one stops an
-    /// application that can also get a token for this audience from presenting
-    /// it and spending the admin's authority on its own errands. Naming no
-    /// party is refused rather than trusted.
+    /// Obtained by a client that is not part of this plane.
     WrongParty,
 }
 
 /// What the admin plane requires of every token, whatever the route.
+///
+/// Neither list has a default and an empty one admits nobody, which is the
+/// right answer for a deployment that has not said: a plane open until somebody
+/// configures it shut is open on first boot, the one moment nobody is looking.
 #[derive(Debug, Clone)]
 pub struct AdminPolicy {
-    /// The audiences a token may name. Empty refuses everything, which is the
-    /// right answer for a deployment that has not said: a plane that admits
-    /// any audience until configured is one that is open on first boot.
+    /// The audiences a token may name. Empty refuses everything.
     pub audiences: Vec<String>,
     /// The clients that may ask for a token this plane accepts. Empty refuses
     /// everything, for the same reason the audiences do.

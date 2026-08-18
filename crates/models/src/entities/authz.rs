@@ -469,6 +469,127 @@ pub struct TimeWindow {
     pub minute_end: Option<u64>,
 }
 
+/// Why a time window can never be satisfied.
+///
+/// A window that never matches is not a policy that never grants. Under
+/// negative logic it is a policy that always grants, so a window that cannot be
+/// met is refused where it is written and answers nothing where it is read,
+/// rather than answering that the instant fell outside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WindowDefect {
+    /// It bounds nothing, so it decides on time and names no time.
+    Unbounded,
+    /// A calendar field carries one end of its range and not the other. Which
+    /// of the two readings was meant cannot be recovered from the row.
+    HalfOpen,
+    /// A bound sits outside the values its field can take.
+    OutOfRange,
+    /// A range ends before it starts.
+    Inverted,
+    /// A day of the month no month in the range has.
+    NoSuchDate,
+}
+
+impl TimeWindow {
+    /// Why no instant can satisfy this window, or `None` if one could.
+    ///
+    /// Read on the write path, which refuses the window, and again on the read
+    /// path, which answers that it could not decide. The second is not
+    /// redundant: a window can reach storage through a path this check did not
+    /// guard, and the answer owed at a decision is a decision.
+    pub fn defect(&self) -> Option<WindowDefect> {
+        // Destructured whole, with no `..`. A thirteenth field is then a
+        // compile error here rather than a bound nothing reads, which is a
+        // window narrower on paper than in effect.
+        let TimeWindow {
+            not_before,
+            not_on_or_after,
+            year,
+            year_end,
+            month,
+            month_end,
+            day_of_month,
+            day_of_month_end,
+            hour,
+            hour_end,
+            minute,
+            minute_end,
+        } = *self;
+
+        let stated = [
+            not_before,
+            not_on_or_after,
+            year,
+            year_end,
+            month,
+            month_end,
+            day_of_month,
+            day_of_month_end,
+            hour,
+            hour_end,
+            minute,
+            minute_end,
+        ];
+        if stated.iter().all(Option::is_none) {
+            return Some(WindowDefect::Unbounded);
+        }
+
+        // The epoch pair is the one that is genuinely one sided: a policy in
+        // force from a date with no end is an ordinary thing to write.
+        if let (Some(from), Some(until)) = (not_before, not_on_or_after)
+            && from >= until
+        {
+            return Some(WindowDefect::Inverted);
+        }
+
+        // The calendar pairs are not. `hour = 9` alone reads as nine o'clock to
+        // one administrator and as nine onwards to another, and the row cannot
+        // say which, so it is refused rather than guessed.
+        for (start, end, low, high) in [
+            (year, year_end, 1970, 9999),
+            (month, month_end, 1, 12),
+            (day_of_month, day_of_month_end, 1, 31),
+            (hour, hour_end, 0, 23),
+            (minute, minute_end, 0, 59),
+        ] {
+            match (start, end) {
+                (None, None) => {}
+                (Some(_), None) | (None, Some(_)) => return Some(WindowDefect::HalfOpen),
+                (Some(start), Some(end)) => {
+                    if start < low || start > high || end < low || end > high {
+                        return Some(WindowDefect::OutOfRange);
+                    }
+                    if start > end {
+                        return Some(WindowDefect::Inverted);
+                    }
+                }
+            }
+        }
+
+        // The one pair that is sound apart and impossible together.
+        if let (Some(day), Some(first), Some(last)) = (day_of_month, month, month_end)
+            && day > longest_month(first, last)
+        {
+            return Some(WindowDefect::NoSuchDate);
+        }
+        None
+    }
+}
+
+/// The most days any month in the range has, February counted as a leap one
+/// since leap years are in every range a year window can name.
+fn longest_month(first: u64, last: u64) -> u64 {
+    (first..=last)
+        .map(|month| match month {
+            2 => 29,
+            4 | 6 | 9 | 11 => 30,
+            _ => 31,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// What a policy actually decides on.
 ///
 /// One arm per kind, carrying exactly that kind's payload. The shape this
@@ -529,10 +650,7 @@ pub enum PolicyRule {
     #[serde(rename = "role")]
     Role { roles: Vec<String> },
     #[serde(rename = "group")]
-    Group {
-        group_claim: String,
-        groups: Vec<String>,
-    },
+    Group { groups: Vec<String> },
     #[serde(rename = "user")]
     User { users: Vec<String> },
     #[serde(rename = "client")]
@@ -1013,10 +1131,7 @@ mod tests {
     fn every_rule_names_its_kind_and_the_wire_agrees() {
         let rules = [
             PolicyRule::Role { roles: Vec::new() },
-            PolicyRule::Group {
-                group_claim: "groups".into(),
-                groups: Vec::new(),
-            },
+            PolicyRule::Group { groups: Vec::new() },
             PolicyRule::User { users: Vec::new() },
             PolicyRule::Client {
                 clients: Vec::new(),

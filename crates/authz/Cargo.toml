@@ -1,0 +1,19 @@
+[package]
+name = "authz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# What a policy set answers, as one pure function. Nothing here reaches a
+# database or a clock: both arrive as arguments, so the same question asked
+# twice gives the same answer and a recorded decision can be replayed.
+
+[dependencies]
+models = { workspace = true }
+commons = { workspace = true }
+serde = { workspace = true }
+chrono = { workspace = true }
+regex = { workspace = true }

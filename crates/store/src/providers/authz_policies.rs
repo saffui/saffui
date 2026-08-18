@@ -72,7 +72,11 @@ pub fn validate(terms: &PolicyTerms) -> StoreResult<()> {
             binding: "resources",
         });
     }
-    if !is_permission(kind) && !terms.scopes.is_empty() {
+    // Scopes belong to the one kind defined by them. A resource permission that
+    // could bind them would have two meanings for an empty list, since the
+    // binding rows cascade: the verbs it was written to cover, and every verb
+    // there is once somebody deletes the last one it named.
+    if kind != PolicyType::ScopePermission && !terms.scopes.is_empty() {
         return Err(StoreError::UnreadBinding {
             kind: kind.as_str(),
             binding: "scopes",
@@ -85,9 +89,15 @@ pub fn validate(terms: &PolicyTerms) -> StoreResult<()> {
         PolicyRule::User { users } => at_least_one("user", users),
         PolicyRule::Client { clients } => at_least_one("client", clients),
         PolicyRule::ClientScope { client_scopes } => at_least_one("client scope", client_scopes),
-        // A window and a comparison carry their own terms, and both are legible
-        // to the schema as the document they are stored as.
-        PolicyRule::Time(_) | PolicyRule::Attribute { .. } => Ok(()),
+        // A comparison carries its own terms and is legible to the schema as
+        // the document it is stored as.
+        PolicyRule::Attribute { .. } => Ok(()),
+        // A window is not. What the schema cannot see is whether any instant
+        // could satisfy it, and one that none could is a grant in waiting.
+        PolicyRule::Time(window) => match window.defect() {
+            Some(defect) => Err(StoreError::UnusableWindow { defect }),
+            None => Ok(()),
+        },
         // Compiled once, here. A decision that compiled it would pay for it per
         // request and would meet a bad pattern with a decision to make.
         PolicyRule::Regex { target_regex, .. } => {
@@ -263,12 +273,52 @@ async fn unbind(transaction: &Transaction<'_>, policy_id: &str) -> StoreResult<(
 }
 
 /// Remove a policy, and say whether there was one to remove.
+///
+/// A policy something is conditioned on is refused rather than left to the
+/// constraint, so the caller is told what is in the way and the transaction it
+/// asked in is still usable. Removing it would leave a parent requiring one
+/// condition where it required two, and nothing to show the other was there.
 pub async fn delete(transaction: &Transaction<'_>, policy_id: &str) -> StoreResult<bool> {
+    if is_a_condition(transaction, policy_id).await? {
+        return Err(StoreError::PolicyIsACondition {
+            policy_id: policy_id.to_owned(),
+        });
+    }
+
     let removed = transaction
         .execute("DELETE FROM policies WHERE policy_id = $1", &[&policy_id])
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(removed > 0)
+}
+
+/// Drop every aggregation edge of one application.
+///
+/// What anything removing a whole application calls first. A condition cannot
+/// be deleted from under the policy that reads it, and a cascade takes the rows
+/// in whatever order it reaches them, so the edges go before the rows the
+/// constraint is about.
+pub async fn unbind_server(transaction: &Transaction<'_>, server_id: &str) -> StoreResult<()> {
+    transaction
+        .execute(
+            "DELETE FROM policies_policies WHERE server_id = $1",
+            &[&server_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// Whether anything is conditioned on this policy.
+async fn is_a_condition(transaction: &Transaction<'_>, policy_id: &str) -> StoreResult<bool> {
+    Ok(transaction
+        .query_opt(
+            "SELECT 1 FROM policies_policies WHERE associated_policy_id = $1 LIMIT 1",
+            &[&policy_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .is_some())
 }
 
 /// Record what was decided.
@@ -787,8 +837,7 @@ fn rebind(rule: PolicyRule, bound: &Bound, policy_id: &str) -> PolicyRule {
         PolicyRule::Role { .. } => PolicyRule::Role {
             roles: Bound::of(&bound.roles, policy_id),
         },
-        PolicyRule::Group { group_claim, .. } => PolicyRule::Group {
-            group_claim,
+        PolicyRule::Group { .. } => PolicyRule::Group {
             groups: Bound::of(&bound.groups, policy_id),
         },
         PolicyRule::User { .. } => PolicyRule::User {
@@ -850,7 +899,7 @@ fn audit(row: &Row) -> models::auditable::AuditableModel {
 mod tests {
     use super::*;
     use models::entities::authz::{
-        Comparison, DecisionLogic, DecisionStrategy, FactSource, Operand, TimeWindow,
+        Comparison, DecisionLogic, DecisionStrategy, FactSource, Operand, TimeWindow, WindowDefect,
     };
 
     fn terms(rule: PolicyRule) -> PolicyTerms {
@@ -876,7 +925,6 @@ mod tests {
                 roles: vec!["editor".to_owned()],
             }),
             terms(PolicyRule::Group {
-                group_claim: "groups".to_owned(),
                 groups: vec!["staff".to_owned()],
             }),
             terms(PolicyRule::User {
@@ -955,10 +1003,7 @@ mod tests {
     fn a_policy_that_names_nobody_is_refused() {
         for rule in [
             PolicyRule::Role { roles: Vec::new() },
-            PolicyRule::Group {
-                group_claim: "groups".to_owned(),
-                groups: Vec::new(),
-            },
+            PolicyRule::Group { groups: Vec::new() },
             PolicyRule::User { users: Vec::new() },
             PolicyRule::Client {
                 clients: Vec::new(),
@@ -982,7 +1027,6 @@ mod tests {
     fn a_permission_with_no_condition_is_refused() {
         let permission = PolicyTerms {
             resources: vec!["doc".to_owned()],
-            scopes: vec!["read".to_owned()],
             ..terms(PolicyRule::ResourcePermission {
                 resource_type: "urn:doc".to_owned(),
             })
@@ -1064,6 +1108,87 @@ mod tests {
                 binding: "resources",
             })
         );
+    }
+
+    /// Only the kind defined by the verbs it names may bind them. A resource
+    /// permission that could would have two meanings for an empty list, since
+    /// the rows cascade: the verbs it was written to cover, and every verb
+    /// there is once somebody deletes the last one it named.
+    #[test]
+    fn only_the_kind_defined_by_verbs_binds_them() {
+        let over_reaching = PolicyTerms {
+            policies: vec!["condition".to_owned()],
+            resources: vec!["doc".to_owned()],
+            scopes: vec!["read".to_owned()],
+            ..terms(PolicyRule::ResourcePermission {
+                resource_type: String::new(),
+            })
+        };
+        assert_eq!(
+            validate(&over_reaching),
+            Err(StoreError::UnreadBinding {
+                kind: "resource-permission",
+                binding: "scopes",
+            })
+        );
+    }
+
+    /// A window no instant can satisfy is not a policy that never grants. Under
+    /// negative logic it is one that always does.
+    #[test]
+    fn a_window_no_instant_could_satisfy_is_refused() {
+        let unusable = [
+            (TimeWindow::default(), WindowDefect::Unbounded),
+            (
+                TimeWindow {
+                    hour: Some(9),
+                    ..TimeWindow::default()
+                },
+                WindowDefect::HalfOpen,
+            ),
+            (
+                TimeWindow {
+                    hour: Some(17),
+                    hour_end: Some(9),
+                    ..TimeWindow::default()
+                },
+                WindowDefect::Inverted,
+            ),
+            (
+                TimeWindow {
+                    month: Some(0),
+                    month_end: Some(12),
+                    ..TimeWindow::default()
+                },
+                WindowDefect::OutOfRange,
+            ),
+            (
+                TimeWindow {
+                    month: Some(2),
+                    month_end: Some(2),
+                    day_of_month: Some(30),
+                    day_of_month_end: Some(31),
+                    ..TimeWindow::default()
+                },
+                WindowDefect::NoSuchDate,
+            ),
+        ];
+
+        for (window, defect) in unusable {
+            assert_eq!(
+                validate(&terms(PolicyRule::Time(window))),
+                Err(StoreError::UnusableWindow { defect }),
+                "{window:?}"
+            );
+        }
+
+        // And one that names a bound with no end on the side that has none is
+        // still written: a policy in force from a date is an ordinary thing.
+        let from_a_date = TimeWindow {
+            not_before: Some(1_760_000_000),
+            ..TimeWindow::default()
+        };
+        assert_eq!(validate(&terms(PolicyRule::Time(from_a_date))), Ok(()));
     }
 
     /// The pattern is compiled where it is written. A decision that compiled it

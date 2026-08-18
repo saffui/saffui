@@ -244,10 +244,20 @@ CREATE TABLE policies_policies
         FOREIGN KEY (tenant, realm_id, server_id, policy_id, policy_type)
         REFERENCES policies (tenant, realm_id, server_id, policy_id, policy_type)
         ON DELETE CASCADE,
+    -- No cascade, where the parent edge cascades. Removing a condition from
+    -- under a policy that reads it is not a narrowing: a permission that
+    -- required two conditions and now requires one grants where it refused, and
+    -- nothing downstream can see that a condition was ever there. So a policy
+    -- something is conditioned on cannot be deleted until it is unbound.
+    --
+    -- Strict, so a cascade that would take a condition out from under a
+    -- surviving parent fails rather than succeeding quietly. What follows from
+    -- that is that anything removing many policies at once unbinds the edges
+    -- first, which the write path does.
     CONSTRAINT policies_policies_child
         FOREIGN KEY (tenant, realm_id, server_id, associated_policy_id, associated_type)
         REFERENCES policies (tenant, realm_id, server_id, policy_id, policy_type)
-        ON DELETE CASCADE,
+        ON DELETE NO ACTION,
     CONSTRAINT only_an_aggregate_or_a_permission_aggregates
         CHECK (policy_type IN ('aggregated', 'scope-permission', 'resource-permission')),
     CONSTRAINT a_permission_is_not_a_condition

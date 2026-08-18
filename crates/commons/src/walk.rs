@@ -12,7 +12,7 @@
 //! question means: at a write it is a refusal, at a decision it is a policy
 //! that could not be evaluated.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 
 /// How far a walk may go before it gives up.
 ///
@@ -27,6 +27,18 @@ pub struct Budget {
     /// The most nodes visited.
     pub max_nodes: usize,
 }
+
+/// The ceiling one policy aggregation graph is followed under, wherever it is
+/// followed.
+///
+/// Named here rather than in either caller because the write path that refuses
+/// a cycle and the decision that folds the graph have to agree. Two copies of
+/// the number would let a policy set be one a write accepts and a decision
+/// cannot answer, which is a realm that saves a rule and then decides nothing.
+pub const POLICY_AGGREGATION: Budget = Budget {
+    max_depth: 16,
+    max_nodes: 1024,
+};
 
 /// The walk ran out of budget with edges left to follow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -51,13 +63,19 @@ where
     let mut visited: BTreeSet<String> = BTreeSet::new();
     visited.insert(start.to_owned());
 
-    let mut pending = step(start, 1, &successors, &budget)?;
+    let mut pending: VecDeque<(String, usize)> = step(start, 1, &successors, &budget)?.into();
 
-    while let Some((node, depth)) = pending.pop() {
+    // Breadth first, and that is not a preference. A node is reached here at
+    // its shortest distance from the start, so the depth ceiling means "no node
+    // further than this many edges is expanded". Followed depth first, a node
+    // would be expanded at whatever depth the traversal order happened to reach
+    // it first, and the same graph would be inside the ceiling or outside it
+    // depending on the order its edges came back in.
+    while let Some((node, depth)) = pending.pop_front() {
         if node == target {
             return Ok(true);
         }
-        // A node already walked has already had its successors pushed, and the
+        // A node already walked has already had its successors queued, and the
         // second visit adds nothing but a way round a cycle again.
         if !visited.insert(node.clone()) {
             continue;
@@ -145,6 +163,24 @@ mod tests {
 
         let loops = graph(&[("a", "a")]);
         assert_eq!(reaches("a", "a", &loops, generous()), Ok(true));
+    }
+
+    /// A node is reached at its shortest distance whatever order its edges came
+    /// back in, so the depth ceiling decides the same way twice. Followed depth
+    /// first, `a` would reach `d` by the long arm first and this graph would be
+    /// refused at a ceiling that its shortest path fits inside.
+    #[test]
+    fn the_depth_ceiling_counts_the_shortest_path() {
+        let edges = graph(&[("a", "d"), ("a", "b"), ("b", "c"), ("c", "d"), ("d", "e")]);
+        let shallow = Budget {
+            max_depth: 1,
+            max_nodes: 64,
+        };
+        assert_eq!(
+            reaches("a", "d", &edges, shallow),
+            Ok(true),
+            "the one edge to the target was not counted as one edge"
+        );
     }
 
     /// Past the depth ceiling the answer is that there is no answer. Reporting

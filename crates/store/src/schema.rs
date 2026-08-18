@@ -91,6 +91,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V013__login_in_progress.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 14,
+            name: "oidc_core",
+            sql: include_str!("../migrations/V014__oidc_core.sql"),
+            transactional: true,
+        }),
     ]
 }
 

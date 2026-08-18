@@ -15,4 +15,5 @@
 //! not a scheduled sweep, not a test.
 
 pub mod context;
+pub mod pdp;
 pub mod token;

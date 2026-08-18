@@ -118,13 +118,14 @@ impl<'a> Caller<'a> {
 /// Not a policy kind but a predicate over every decision, which is why it sits
 /// on the request rather than in a rule: a policy confined to an organization
 /// has to be silent for callers outside it, whatever the policy decides on.
+///
+/// The membership is a set and not one organization, because a caller may
+/// belong to several while a policy is confined to one: collapsing to a single
+/// organization silences every confined policy of the others, and a confined
+/// policy silenced is a policy that stops refusing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Membership<'a> {
-    /// The organizations the caller belongs to, by identifier. A set and not
-    /// one, because a caller may belong to several and a policy is confined to
-    /// one: collapsing to a single organization silences every confined policy
-    /// of the others, and a confined policy silenced is a policy that stops
-    /// refusing.
+    /// The organizations the caller belongs to, by identifier.
     In(&'a BTreeSet<String>),
     /// Acting at realm level, in no organization at all.
     RealmWide,
@@ -173,9 +174,8 @@ pub enum Declared<'a> {
 /// folded" is held by the type rather than by a check somebody may skip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Target<'a> {
-    /// The application the resource belongs to. Carried so the engine can
-    /// refuse a target the passed server does not own, rather than trusting
-    /// whoever paired the two.
+    /// The application the resource belongs to, so the engine can refuse a
+    /// target the passed server does not own.
     pub server_id: &'a str,
     pub resource_id: &'a str,
     pub resource_type: &'a str,

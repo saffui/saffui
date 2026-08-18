@@ -66,6 +66,13 @@ pub enum Acting {
 }
 
 /// Why a request established nothing.
+///
+/// Each refusal is its own, because the events differ: a subject that does not
+/// exist is a typo, a disabled one is somebody offboarded, and a login that
+/// ended is somebody logging out. `NotAnAccessToken` refuses by what the token
+/// is rather than by failing a later lookup, so a refresh token, an identity
+/// token and a token minted for a machine are each turned away for the reason
+/// they are turned away for, and none of them by accident.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum NotEstablished {
     /// The token names a subject this realm does not hold.
@@ -82,10 +89,7 @@ pub enum NotEstablished {
     /// It claims an organization the subject does not belong to.
     #[error("the subject does not belong to the organization it claims")]
     NotAMember,
-    /// Not an access token bound to a login. Refused by what it is rather than
-    /// by failing some later lookup, so a refresh token, an identity token and
-    /// a token minted for a machine are each turned away for the reason they
-    /// are turned away for.
+    /// Not an access token bound to a login.
     #[error("the token is not an access token bound to a login")]
     NotAnAccessToken,
     /// It names a login that has ended, or one that never existed. The lever

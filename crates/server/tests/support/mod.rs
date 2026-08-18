@@ -31,7 +31,7 @@ use models::entities::user::UserCreateModel;
 use pgcore::migrations::MigrationRunner;
 use pgcore::tls::PgConnector;
 use store::keyring;
-use store::providers::{realm_keys, realms, roles, tenants, users};
+use store::providers::{realm_keys, realms, roles, sessions, tenants, users};
 use store::schema::migrations;
 use store::tenancy::{Tenancy, TenantContext};
 use tokio::sync::{Mutex, MutexGuard};
@@ -46,6 +46,10 @@ pub const REALM: &str = "main";
 
 /// The client the console asks for its tokens as. What `azp` carries.
 pub const PARTY: &str = "saffui-console";
+
+/// The login every token here is bound to. A logout closes it, and the plane
+/// refuses the token that named it.
+pub const SESSION: &str = "session-1";
 pub const SUBJECT: &str = "ada";
 pub const AUDIENCE: &str = "saffui-admin";
 pub const SCOPE: &str = "admin";
@@ -148,6 +152,14 @@ pub fn claims() -> JwtPayload {
     payload
         .set_claim("azp", Some(serde_json::json!(PARTY)))
         .expect("an authorized party claim");
+    // An access token, and the login it belongs to. A token carrying neither is
+    // not something this plane accepts, whatever else it carries.
+    payload
+        .set_claim("typ", Some(serde_json::json!("Bearer")))
+        .expect("a token type claim");
+    payload
+        .set_claim("sid", Some(serde_json::json!(SESSION)))
+        .expect("a session claim");
     payload.set_expires_at(&(SystemTime::now() + Duration::from_secs(600)));
     payload
 }
@@ -333,6 +345,35 @@ impl Plane {
         }
         .into_model(SUBJECT.into(), REALM.into(), metadata());
         users::create(&transaction, &user).await.unwrap();
+
+        // The login the tokens are bound to. The plane refuses a token whose
+        // login it cannot find, so without this every test here refuses for a
+        // reason none of them is about.
+        sessions::open(
+            &transaction,
+            &models::sessions::records::UserSessionModel {
+                tenant: TENANT.into(),
+                session_id: SESSION.into(),
+                realm_id: REALM.into(),
+                user_id: SUBJECT.into(),
+                login_username: SUBJECT.into(),
+                broker_session_id: None,
+                broker_user_id: None,
+                auth_method: None,
+                ip_address: None,
+                started_at: chrono::Utc::now().timestamp(),
+                auth_time: None,
+                loa: None,
+                expiration: None,
+                state: models::sessions::records::UserSessionState::LoggedIn,
+                remember_me: None,
+                last_session_refresh: None,
+                is_offline: None,
+                notes: None,
+            },
+        )
+        .await
+        .unwrap();
 
         // One role carrying exactly what was asked for. An empty list is a real
         // case: a caller holding a role that grants nothing is not the same as

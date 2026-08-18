@@ -6,24 +6,15 @@
 //! door.
 
 use models::entities::authz::AdminAction;
+use services::token::Verified;
 
-/// What the caller presented, once the transport has verified it.
-///
-/// Built only from a token whose signature checked out against the realm's
-/// published keys. A caller cannot construct one with different contents,
-/// because nothing here parses: the fields arrive already established.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Presented {
-    pub subject: String,
-    pub audiences: Vec<String>,
-    /// Space separated, as the token carries it.
-    pub scope: String,
+/// The client that obtained the token, which is not who the token is for.
+fn authorized_party(verified: &Verified) -> Option<&str> {
+    verified.claims.get("azp").and_then(|party| party.as_str())
 }
 
-impl Presented {
-    fn has_scope(&self, wanted: &str) -> bool {
-        self.scope.split_whitespace().any(|scope| scope == wanted)
-    }
+fn carries_scope(verified: &Verified, wanted: &str) -> bool {
+    verified.scope.split_whitespace().any(|held| held == wanted)
 }
 
 /// Why a request was refused.
@@ -42,6 +33,12 @@ pub enum Refusal {
     MissingScope,
     /// A valid token, held by someone this route is not for.
     NotHeld,
+    /// Obtained by a client that is not part of this plane. Who a token is for
+    /// and who asked for it are two questions, and only the second one stops an
+    /// application that can also get a token for this audience from presenting
+    /// it and spending the admin's authority on its own errands. Naming no
+    /// party is refused rather than trusted.
+    WrongParty,
 }
 
 /// What the admin plane requires of every token, whatever the route.
@@ -51,6 +48,9 @@ pub struct AdminPolicy {
     /// right answer for a deployment that has not said: a plane that admits
     /// any audience until configured is one that is open on first boot.
     pub audiences: Vec<String>,
+    /// The clients that may ask for a token this plane accepts. Empty refuses
+    /// everything, for the same reason the audiences do.
+    pub parties: Vec<String>,
     pub scope: String,
 }
 
@@ -62,11 +62,11 @@ pub struct AdminPolicy {
 /// the refusal it earns.
 pub fn decide(
     required: Option<AdminAction>,
-    presented: &Presented,
+    verified: &Verified,
     held: &[AdminAction],
     policy: &AdminPolicy,
 ) -> Result<AdminAction, Refusal> {
-    if !presented
+    if !verified
         .audiences
         .iter()
         .any(|audience| policy.audiences.iter().any(|allowed| allowed == audience))
@@ -74,7 +74,12 @@ pub fn decide(
         return Err(Refusal::WrongAudience);
     }
 
-    if !presented.has_scope(&policy.scope) {
+    match authorized_party(verified) {
+        Some(party) if policy.parties.iter().any(|allowed| allowed == party) => {}
+        _ => return Err(Refusal::WrongParty),
+    }
+
+    if !carries_scope(verified, &policy.scope) {
         return Err(Refusal::MissingScope);
     }
 
@@ -94,16 +99,30 @@ mod tests {
     fn policy() -> AdminPolicy {
         AdminPolicy {
             audiences: vec!["saffui-admin".into()],
+            parties: vec!["saffui-console".into()],
             scope: "admin".into(),
         }
     }
 
-    fn presented() -> Presented {
-        Presented {
+    /// A token that checked out, carrying what this plane reads of it.
+    fn presented() -> Verified {
+        let mut claims = serde_json::Map::new();
+        claims.insert("azp".into(), serde_json::json!("saffui-console"));
+        Verified {
             subject: "ada".into(),
             audiences: vec!["saffui-admin".into()],
             scope: "openid admin".into(),
+            token_id: None,
+            claims,
         }
+    }
+
+    /// The same, with one claim replaced. Named so a test says which one thing
+    /// it arranged wrong.
+    fn claiming(key: &str, value: serde_json::Value) -> Verified {
+        let mut verified = presented();
+        verified.claims.insert(key.into(), value);
+        verified
     }
 
     #[test]
@@ -126,6 +145,7 @@ mod tests {
     fn an_unconfigured_plane_admits_nobody() {
         let empty = AdminPolicy {
             audiences: Vec::new(),
+            parties: vec!["saffui-console".into()],
             scope: "admin".into(),
         };
         assert_eq!(
@@ -141,7 +161,7 @@ mod tests {
 
     #[test]
     fn a_token_for_another_audience_is_refused() {
-        let elsewhere = Presented {
+        let elsewhere = Verified {
             audiences: vec!["some-app".into()],
             ..presented()
         };
@@ -161,7 +181,7 @@ mod tests {
     #[test]
     fn the_scope_is_matched_whole() {
         for scope in ["administrator", "adminread", "not-admin", ""] {
-            let carrying = Presented {
+            let carrying = Verified {
                 scope: scope.into(),
                 ..presented()
             };
@@ -188,7 +208,7 @@ mod tests {
             Err(Refusal::Undeclared)
         );
 
-        let elsewhere = Presented {
+        let elsewhere = Verified {
             audiences: vec!["some-app".into()],
             ..presented()
         };
@@ -196,6 +216,51 @@ mod tests {
             decide(None, &elsewhere, &[], &policy()),
             Err(Refusal::WrongAudience),
             "an unaccepted token learned that the route was undeclared"
+        );
+    }
+
+    /// Who the token is for and who obtained it are two questions. An admin
+    /// holds a token their own tooling asked for; another application able to
+    /// obtain one for the same audience would otherwise spend that authority.
+    #[test]
+    fn a_token_another_application_asked_for_is_refused() {
+        let elsewhere = claiming("azp", serde_json::json!("some-app"));
+        assert_eq!(
+            decide(
+                Some(AdminAction::RealmRead),
+                &elsewhere,
+                &[AdminAction::RealmRead],
+                &policy(),
+            ),
+            Err(Refusal::WrongParty)
+        );
+
+        let mut anonymous = presented();
+        anonymous.claims.remove("azp");
+        assert_eq!(
+            decide(
+                Some(AdminAction::RealmRead),
+                &anonymous,
+                &[AdminAction::RealmRead],
+                &policy(),
+            ),
+            Err(Refusal::WrongParty),
+            "a token naming no party was trusted"
+        );
+
+        let unconfigured = AdminPolicy {
+            parties: Vec::new(),
+            ..policy()
+        };
+        assert_eq!(
+            decide(
+                Some(AdminAction::RealmRead),
+                &presented(),
+                &[AdminAction::RealmRead],
+                &unconfigured,
+            ),
+            Err(Refusal::WrongParty),
+            "a plane that named no console admitted one"
         );
     }
 

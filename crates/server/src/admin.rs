@@ -12,26 +12,29 @@ use std::rc::Rc;
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::{Error, HttpMessage, ResponseError};
-use crypto::jose::jwk::Jwk;
-use crypto::jose::jws::{ES256, ES384, ES512, EdDSA, PS256, PS384, PS512, RS256, RS384, RS512};
-use crypto::jose::jwt;
-use crypto::provider::SignAlg;
+use chrono::Utc;
 use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Pool;
+use deadpool_postgres::Transaction;
 use models::entities::authz::AdminAction;
-use store::providers::{realm_keys, roles};
-use store::tenancy::{Tenancy, TenantContext, resolve};
+use services::context::{self, Acting, Context};
+use store::providers::{organizations, realm_keys, roles};
+use store::tenancy::{Tenancy, resolve};
 
 use crate::error::{refused, unauthenticated};
-use crate::guard::{AdminPolicy, Presented, decide};
+use crate::guard::{AdminPolicy, decide};
 use crate::routes;
 
 /// What the guard established, for the handler that follows.
+///
+/// One value and not two lists of overlapping fields. What the token said and
+/// what the realm says about it are different questions, so they are different
+/// values, and neither is rebuilt from the other further down.
 #[derive(Debug, Clone)]
 pub struct Admin {
-    pub presented: Presented,
-    /// The realm the token was issued by, and the tenant it belongs to.
-    pub context: TenantContext,
+    /// Who is asking, resolved against the realm: the subject, whether the
+    /// realm still stands behind it, and which organization it acts within.
+    pub context: Context,
     /// What the route required, already checked.
     pub allowed: AdminAction,
 }
@@ -110,6 +113,8 @@ async fn establish(
     guard: &Guard,
     request: &ServiceRequest,
 ) -> Result<Admin, commons::http::ApiError> {
+    // Read once, so everything this request decides shares an instant.
+    let now = Utc::now();
     let bearer = bearer(request).ok_or_else(unauthenticated)?;
 
     // The issuer names the realm, and nothing is trusted until the signature
@@ -130,27 +135,68 @@ async fn establish(
     let keys = realm_keys::published(&transaction, models::entities::keys::KeyUse::Sig)
         .await
         .map_err(|_| unauthenticated())?;
-    let presented = verify(&bearer, &keys).ok_or_else(unauthenticated)?;
 
-    let held: Vec<AdminAction> = roles::effective_roles(&transaction, &presented.subject)
+    // One gate, and it is not this crate's. Signature, the window the token
+    // states, and whether it was withdrawn: a second caller is about to ask the
+    // same question, and a check left beside the verifier is one that caller
+    // inherits by omission. The instant is stated rather than read in there, so
+    // this decision and a replay of it read the same clock.
+    let verified = services::token::verify(&transaction, &keys, &bearer, now)
         .await
-        .map_err(|_| unauthenticated())?
-        .into_iter()
-        .filter_map(|role| role.admin_actions)
-        .flatten()
-        .collect();
+        .map_err(|_| unauthenticated())?;
+
+    // What the realm says about the token, which the token cannot say about
+    // itself: whether the subject is still one this realm holds, whether it has
+    // been switched off, and whether it belongs where it claims to be acting.
+    let established = context::establish(&transaction, context, &verified, now)
+        .await
+        .map_err(|_| unauthenticated())?;
+
+    let held = capabilities(&transaction, &established).await?;
 
     let required = request
         .match_pattern()
         .and_then(|pattern| routes::required(request.method(), &pattern));
 
-    let allowed = decide(required, &presented, &held, &guard.policy).map_err(refused)?;
+    let allowed = decide(required, &verified, &held, &guard.policy).map_err(refused)?;
 
     Ok(Admin {
-        presented,
-        context,
+        context: established,
         allowed,
     })
+}
+
+/// What this caller may do, where it is acting.
+///
+/// A caller acting across the realm holds what the realm granted it. One acting
+/// within an organization holds that, and what the organization granted it
+/// there as well. The two are read separately and only ever added together
+/// under an organization the caller was confirmed to belong to: folded into the
+/// realm wide set, a grant made inside one organization would answer for every
+/// other one and for the realm itself.
+async fn capabilities(
+    transaction: &Transaction<'_>,
+    established: &Context,
+) -> Result<Vec<AdminAction>, commons::http::ApiError> {
+    let subject = established.principal.id();
+
+    let mut roles = roles::effective_roles(transaction, subject)
+        .await
+        .map_err(|_| unauthenticated())?;
+
+    if let Acting::In { org_id } = &established.acting {
+        roles.extend(
+            organizations::roles_of_member(transaction, org_id, subject)
+                .await
+                .map_err(|_| unauthenticated())?,
+        );
+    }
+
+    Ok(roles
+        .into_iter()
+        .filter_map(|role| role.admin_actions)
+        .flatten()
+        .collect())
 }
 
 fn bearer(request: &ServiceRequest) -> Option<String> {
@@ -180,70 +226,4 @@ fn unverified_issuer(token: &str) -> Option<String> {
     let decoded = BASE64URL_NOPAD.decode(payload.as_bytes()).ok()?;
     let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
     claims.get("iss")?.as_str().map(str::to_owned)
-}
-
-/// Verify against the one key the token names.
-///
-/// The header names a key and only that key is tried. Trying each published key
-/// in turn would let a token be verified by whichever one happens to accept it,
-/// which is how a retired key keeps signing long after it stopped being active.
-///
-/// The algorithm comes from the key and never from the token's header, which is
-/// what stops a token choosing a weaker one than the key was published for.
-fn verify(
-    token: &str,
-    published: &[models::entities::keys::RealmSigningKeyView],
-) -> Option<Presented> {
-    let header = jwt::decode_header(token).ok()?;
-    let kid = header.claim("kid")?.as_str()?.to_owned();
-    let key = published.iter().find(|key| key.kid == kid)?;
-
-    let jwk = Jwk::from_map(key.public_jwk.as_object()?.clone()).ok()?;
-    let verifier = verifier_for(key.algorithm, &jwk)?;
-    let payload = jwt::decode_with_verifier(token, &*verifier).ok()?.0;
-
-    Some(Presented {
-        subject: payload.subject()?.to_owned(),
-        audiences: payload
-            .audience()
-            .map(|audiences| audiences.iter().map(|a| (*a).to_owned()).collect())
-            .unwrap_or_default(),
-        scope: payload
-            .claim("scope")
-            .and_then(|scope| scope.as_str())
-            .unwrap_or_default()
-            .to_owned(),
-    })
-}
-
-/// The verifier the published algorithm names.
-///
-/// Exhaustive over the catalogue rather than a lookup with a fallback: an
-/// algorithm this build does not implement must fail to compile here, not fail
-/// to verify at runtime and read as a bad token.
-fn verifier_for(algorithm: SignAlg, jwk: &Jwk) -> Option<Box<dyn crypto::jose::jws::JwsVerifier>> {
-    let verifier =
-        match algorithm {
-            SignAlg::Rs256 => Box::new(RS256.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Rs384 => Box::new(RS384.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Rs512 => Box::new(RS512.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Ps256 => Box::new(PS256.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Ps384 => Box::new(PS384.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Ps512 => Box::new(PS512.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Es256 => Box::new(ES256.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Es384 => Box::new(ES384.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::Es512 => Box::new(ES512.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-            SignAlg::EdDsa => Box::new(EdDSA.verifier_from_jwk(jwk).ok()?)
-                as Box<dyn crypto::jose::jws::JwsVerifier>,
-        };
-    Some(verifier)
 }

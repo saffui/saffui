@@ -199,13 +199,11 @@ pub struct ExportedRealm {
     /// The document format, so an importer can refuse what it cannot read.
     pub format_version: u32,
     pub exported_at: DateTime<Utc>,
-    /// Which parts this document carries. A reader consults this rather than
-    /// inferring from an empty list, since a section that was not exported and a
-    /// section that is genuinely empty look identical otherwise.
+    /// Which parts this document carries. A section not exported and one genuinely
+    /// empty look identical otherwise.
     pub sections: Vec<Section>,
-    /// How this document treated operator supplied values, so a reader can tell
-    /// a redacted document from a complete one instead of importing markers as
-    /// if they were values.
+    /// How operator supplied values were treated, so a reader tells a redacted
+    /// document from a complete one instead of importing markers as values.
     pub secret_handling: SecretHandling,
 
     pub realm: RealmModel,
@@ -214,9 +212,8 @@ pub struct ExportedRealm {
     pub required_actions: Vec<RequiredActionModel>,
 
     pub authentication_flows: Vec<AuthenticationFlowModel>,
-    /// Listed before the steps that reference them. That reference is a bare
-    /// column with no constraint behind it, so the order is the only thing
-    /// keeping it resolvable on replay.
+    /// Listed before the steps referencing them. That reference has no constraint
+    /// behind it, so the order is the only thing keeping it resolvable on replay.
     pub authenticator_configs: Vec<AuthenticatorConfigModel>,
     pub authentication_executions: Vec<AuthenticationExecutionModel>,
 
@@ -234,10 +231,8 @@ pub struct ExportedRealm {
     pub client_scope_protocol_mappers: Vec<Attachment>,
     pub protocol_mappers: Vec<ProtocolMapperModel>,
 
-    /// Each client with the identifiers of what it is attached to. Those joins
-    /// live in no other section and are recoverable from nowhere else in the
-    /// document: without them a restored client emits none of its mapped claims
-    /// and its own roles have no owner.
+    /// Each client with what it is attached to. Those joins are recoverable from
+    /// nowhere else, and without them a restored client emits no mapped claims.
     pub clients: Vec<ClientExport>,
 
     pub identity_providers: Vec<IdentityProviderModel>,
@@ -335,9 +330,8 @@ pub struct ImportedRealm {
     pub resource_servers: usize,
     pub policies: usize,
     pub signing_keys: usize,
-    /// Sections the document declared and this build did not write. Reported
-    /// rather than silently skipped: an import that quietly drops a section
-    /// leaves a realm that looks restored.
+    /// Sections declared and not written. Reported rather than dropped, since an
+    /// import that quietly skips one leaves a realm that looks restored.
     pub skipped: Vec<Section>,
 }
 

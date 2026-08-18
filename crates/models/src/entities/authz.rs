@@ -108,12 +108,8 @@ pub struct RoleModel {
     /// The client that owns it, or none when the realm does. Named rather than
     /// flagged, so entitlements are not rebuilt by matching role names.
     pub client_id: Option<String>,
-    /// Admin plane capabilities this role grants.
-    ///
-    /// Typed, so a capability nobody declared cannot be written down. `None` and
-    /// an empty list both grant nothing: the admin plane is deny by default, and
-    /// a role that administers a deployment holds its grant by name rather than
-    /// through this list.
+    /// Admin plane capabilities this role grants, typed so an undeclared one
+    /// cannot be written. None and an empty list both grant nothing.
     pub admin_permissions: Option<Vec<AdminAction>>,
     pub metadata: AuditableModel,
 }
@@ -377,13 +373,8 @@ pub struct ResourceModel {
     pub resource_owner: String,
     pub user_managed_access_enabled: Option<bool>,
     pub configs: Option<AttributesMap>,
-    /// The scopes this resource declares, by identifier: the verbs meaningful on
-    /// it.
-    ///
-    /// `None` means not loaded, an empty list means it declares none, and the
-    /// difference matters. A resource that declares nothing carries no
-    /// information to narrow a scope-only permission with, while one that
-    /// declares scopes does, and "not loaded" must not read as either.
+    /// The verbs meaningful on this resource. None is not loaded, empty is declares
+    /// none, and neither may read as the other.
     pub scopes: Option<Vec<String>>,
     pub metadata: AuditableModel,
 }

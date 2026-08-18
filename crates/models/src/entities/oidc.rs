@@ -23,9 +23,8 @@ pub struct AuthorizationCode {
     pub user_id: String,
     /// The SSO session the code was minted from; becomes the token `sid` claim.
     pub session_id: String,
-    /// The redirect_uri this code was issued against. `/token` compares its
-    /// `redirect_uri` parameter against this value, rather than merely
-    /// re-validating it against the client's registered set.
+    /// The redirect_uri this code was issued against. `/token` compares against this
+    /// value rather than merely revalidating against the registered set.
     pub redirect_uri: String,
     /// Space-separated granted scopes.
     pub scope: String,
@@ -36,14 +35,8 @@ pub struct AuthorizationCode {
     pub code_challenge_method: Option<String>,
     /// When the user authenticated (`auth_time`), Unix epoch seconds.
     pub auth_time: i64,
-    /// The realm's `acr` name for the level this login reached, decided at
-    /// authorization time and copied into the id token.
-    ///
-    /// Frozen here rather than resolved at `/token` for the same reason
-    /// `auth_time` is: by then the request is gone and the session may have
-    /// stepped up in another tab, so a freshly resolved value would attest to a
-    /// strength this code was never issued under. `None` when the realm maps
-    /// nothing at the achieved level — the claim is omitted, never guessed.
+    /// The realm's context value for the level this login reached, frozen here: by
+    /// `/token` the request is gone and a fresh answer would attest to another.
     pub acr: Option<String>,
     /// The organization the login was scoped to, carried into the token as the
     /// `org_id` / `org_name` claims. `None` for a realm-level login.

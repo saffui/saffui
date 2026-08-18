@@ -97,9 +97,8 @@ pub struct ConsentGrant {
     /// says someone consented to something, which is evidence of nothing.
     pub notice_version: String,
     pub notice_locale: Option<String>,
-    /// How the consent was collected: a login form, a USSD session, an admin
-    /// recording a paper form. Part of the "freely given, specific, informed"
-    /// question.
+    /// How the consent was collected: a login form, a USSD session, a paper form an
+    /// admin recorded. Part of the freely given and informed question.
     pub collection_method: Option<String>,
 }
 
@@ -121,9 +120,8 @@ pub struct ConsentReceipt {
     #[serde(flatten)]
     pub state: ConsentState,
     pub collection_method: Option<String>,
-    /// The audit chain sequence this receipt was attested at. The chain is the
-    /// tamper evidence, and this is what lets an evidence pack prove the row and
-    /// the chain agree.
+    /// The audit chain sequence this receipt was attested at, which is what lets an
+    /// evidence pack prove the row and the chain agree.
     pub audit_seq: Option<i64>,
     /// Unix epoch seconds.
     pub created_at: i64,

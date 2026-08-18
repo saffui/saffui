@@ -127,12 +127,8 @@ pub struct RealmModel {
     pub not_before: Option<i32>,
     pub attributes: Option<AttributesMap>,
 
-    /// Maps this realm's context values to levels of assurance.
-    ///
-    /// `None` means the realm maps nothing, which is not level zero. With no
-    /// ordering no request can be judged satisfied and no claim can be issued,
-    /// and both are omissions rather than defaults, because a guessed level of
-    /// assurance is a false attestation.
+    /// Maps context values to levels of assurance. None means the realm maps none,
+    /// which is an omission and not level zero: a guess would be a false claim.
     pub acr_loa_map: Option<AcrLoaMap>,
     pub metadata: AuditableModel,
 }

@@ -17,8 +17,7 @@ pub struct SqlMigration {
     pub name: &'static str,
     pub sql: &'static str,
     /// Whether the runner wraps it in one transaction. Off for the statements
-    /// PostgreSQL refuses to run inside one, `CREATE INDEX CONCURRENTLY` above
-    /// all.
+    /// PostgreSQL refuses to run inside one, `CREATE INDEX CONCURRENTLY` above all.
     pub transactional: bool,
 }
 

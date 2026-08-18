@@ -15,9 +15,8 @@ pub struct AuditableModel {
     pub created_at: Option<DateTime<Utc>>,
     pub updated_by: Option<String>,
     pub updated_at: Option<DateTime<Utc>>,
-    /// The row's version, and `0` where this record does not carry one. An
-    /// update names the actor, not the version — the statement bumps it from the
-    /// stored value, and a number carried here would be a second opinion.
+    /// The row's version, zero where a record carries none. An update names the
+    /// actor and lets the statement bump this, so it is never a second opinion.
     pub version: i32,
 }
 

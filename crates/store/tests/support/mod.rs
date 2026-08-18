@@ -90,6 +90,7 @@ impl Fixture {
     }
 
     /// The same, with a tenant, a realm and a user in it.
+    #[allow(dead_code, reason = "each test binary compiles this module on its own")]
     pub async fn with_user() -> Self {
         let fixture = Self::empty().await;
         fixture.plant(false).await;

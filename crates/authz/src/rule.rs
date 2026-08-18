@@ -64,11 +64,16 @@ pub(crate) fn decide(
                 return answer;
             }
             match request.caller.presented() {
-                Some(presented) => holds(
-                    client_scopes
-                        .iter()
-                        .any(|named| presented.client_scopes.contains(named)),
-                ),
+                Some(presented) => match presented.client_scopes.known() {
+                    Some(held) => holds(client_scopes.iter().any(|named| held.contains(named))),
+                    None => unable(
+                        reasons,
+                        Reason::SourceUnavailable {
+                            policy_id: id.to_owned(),
+                            source: FactSource::Token,
+                        },
+                    ),
+                },
                 None => unable(
                     reasons,
                     Reason::NoPresenter {

@@ -109,6 +109,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V016__policies.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 17,
+            name: "rebac",
+            sql: include_str!("../migrations/V017__rebac.sql"),
+            transactional: true,
+        }),
     ]
 }
 

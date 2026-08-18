@@ -18,7 +18,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use commons::pattern;
-use commons::walk::{self, Budget};
+use commons::walk::{self, POLICY_AGGREGATION};
 use deadpool_postgres::Transaction;
 use models::entities::authz::{
     AuthzDecisionRecord, Decision, PolicyModel, PolicyRule, PolicyTerms, PolicyType,
@@ -37,17 +37,6 @@ const POLICY_COLUMNS: &str = "tenant, realm_id, policy_id, server_id, org_id, na
 const DECISION_COLUMNS: &str = "tenant, realm_id, decision_id, subject_type, subject_id, \
                                 resource_kind, resource_ref, action, reported, computed, detail, \
                                 duration_us, trace_id, occurred_at";
-
-/// How far the aggregation graph is searched before a write is refused.
-///
-/// Both ceilings sit far above any policy set written by hand and far below
-/// what would hold a connection. Reaching either refuses the write: what is
-/// being asked is whether an edge closes a cycle, and not having found one is
-/// not the same answer as there not being one.
-const GRAPH: Budget = Budget {
-    max_depth: 16,
-    max_nodes: 1024,
-};
 
 /// What the schema cannot see, refused where the whole shape is known.
 ///
@@ -624,7 +613,7 @@ async fn refuse_cycles(transaction: &Transaction<'_>, policy: &PolicyModel) -> S
         // The row being written is not in the graph yet, so the edge that would
         // close the shortest cycle is checked here rather than walked to.
         if condition == &policy.policy_id
-            || walk::reaches(condition, &policy.policy_id, successors, GRAPH)?
+            || walk::reaches(condition, &policy.policy_id, successors, POLICY_AGGREGATION)?
         {
             return Err(StoreError::PolicyCycle {
                 policy: policy.policy_id.clone(),

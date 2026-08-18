@@ -45,12 +45,17 @@ impl<'a, T: ?Sized> Resolved<'a, T> {
 }
 
 /// The client that presented the token, and the scopes the token carries.
+///
+/// The scopes state whether they were resolved. A client is established by its
+/// identifier alone, and the scopes its token names are a separate reading that
+/// may not have happened: handing over an empty set would say the token carries
+/// none, which is an answer, and a rule reading it would be refused rather than
+/// left unevaluable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Presented<'a> {
     pub client_id: &'a str,
-    /// Client scope identifiers, resolved once from the token's scope string,
-    /// because an identifier is what a policy names.
-    pub client_scopes: &'a BTreeSet<String>,
+    /// Client scope identifiers, resolved once from the token's scope string.
+    pub client_scopes: Resolved<'a, BTreeSet<String>>,
 }
 
 /// The client a user's call came through.

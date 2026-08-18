@@ -17,3 +17,7 @@ commons = { workspace = true }
 serde = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

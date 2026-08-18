@@ -96,6 +96,21 @@ impl Fixture {
         fixture
     }
 
+    /// A connection as the role that owns the tables.
+    ///
+    /// The application role is refused a good deal on purpose, so a test that
+    /// needs to do what only an owner can, such as altering a record the
+    /// application may only read, asks for this instead of being given rights
+    /// the application should not have.
+    #[allow(dead_code, reason = "each test binary compiles this module on its own")]
+    pub async fn owner(&self) -> tokio_postgres::Client {
+        let (client, connection) = owner_config().connect(NoTls).await.expect("the owner");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+    }
+
     /// The same again, and a client.
     #[allow(dead_code, reason = "each test binary compiles this module on its own")]
     pub async fn with_user_and_client() -> Self {

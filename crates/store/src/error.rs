@@ -15,6 +15,10 @@ pub enum StoreError {
     #[error("the database operation failed")]
     Backend,
 
+    /// The realm has no chain, so nothing can be appended to it or verified.
+    #[error("the realm has no audit chain")]
+    NoChain,
+
     /// The realm has no generation at all, so nothing can be sealed for it.
     #[error("the realm has no data encryption key")]
     NoKeyring,

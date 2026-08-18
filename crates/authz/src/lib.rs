@@ -32,6 +32,7 @@ mod compare;
 mod decide;
 mod fold;
 mod policies;
+pub mod rebac;
 mod request;
 mod rule;
 mod verdict;

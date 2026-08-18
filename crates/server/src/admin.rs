@@ -8,6 +8,7 @@
 
 use std::future::{Ready, ready};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
@@ -182,7 +183,8 @@ fn unverified_issuer(token: &str) -> Option<String> {
     claims.get("iss")?.as_str().map(str::to_owned)
 }
 
-/// Verify against the one key the token names.
+/// Verify against the one key the token names, and against the window it says
+/// it is good for.
 ///
 /// The header names a key and only that key is tried. Trying each published key
 /// in turn would let a token be verified by whichever one happens to accept it,
@@ -190,6 +192,13 @@ fn unverified_issuer(token: &str) -> Option<String> {
 ///
 /// The algorithm comes from the key and never from the token's header, which is
 /// what stops a token choosing a weaker one than the key was published for.
+///
+/// A signature is not a lifetime, and checking one is not checking the other.
+/// This realm keeps a rotated key published and passive on purpose, so that
+/// tokens it already signed keep verifying: rotation therefore retires no
+/// token, and `exp` is the only thing that ever will. A token carrying none is
+/// refused rather than read as unlimited, because the alternative is a bearer
+/// credential that works forever and that nothing can withdraw.
 fn verify(
     token: &str,
     published: &[models::entities::keys::RealmSigningKeyView],
@@ -201,6 +210,17 @@ fn verify(
     let jwk = Jwk::from_map(key.public_jwk.as_object()?.clone()).ok()?;
     let verifier = verifier_for(key.algorithm, &jwk)?;
     let payload = jwt::decode_with_verifier(token, &*verifier).ok()?.0;
+
+    // An absent expiry is refused here rather than left to the validator, which
+    // reads every time claim only if the token carries it: a token with no `exp`
+    // would satisfy every bound it never stated.
+    payload.expires_at()?;
+
+    // One instant for both bounds, so a token cannot be read as expired against
+    // one clock and not yet valid against another.
+    let mut window = jwt::JwtPayloadValidator::new();
+    window.set_base_time(SystemTime::now());
+    window.validate(&payload).ok()?;
 
     Some(Presented {
         subject: payload.subject()?.to_owned(),

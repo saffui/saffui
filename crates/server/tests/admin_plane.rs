@@ -11,6 +11,8 @@
 
 mod support;
 
+use std::time::{Duration, SystemTime};
+
 use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test};
 use models::entities::authz::AdminAction;
@@ -206,6 +208,55 @@ async fn a_token_for_another_audience_is_refused() {
     assert_eq!(
         request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
         StatusCode::FORBIDDEN
+    );
+}
+
+/// A signature is not a lifetime. The realm keeps a rotated key passive so the
+/// tokens it already signed keep verifying, which means rotation retires no
+/// token and `exp` is the only thing that does. These three are what would
+/// otherwise be a bearer credential nothing can withdraw.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_outside_the_window_it_states_is_refused() {
+    let plane = Plane::with_actions(&[AdminAction::RealmList]).await;
+
+    let mut expired = claims();
+    expired.set_expires_at(&(SystemTime::now() - Duration::from_secs(1)));
+    let bearer = plane.token(&expired);
+    assert_eq!(
+        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+        StatusCode::UNAUTHORIZED,
+        "a token that expired a second ago was accepted"
+    );
+
+    let mut early = claims();
+    early.set_not_before(&(SystemTime::now() + Duration::from_secs(600)));
+    let bearer = plane.token(&early);
+    assert_eq!(
+        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+        StatusCode::UNAUTHORIZED,
+        "a token not yet valid was accepted"
+    );
+}
+
+/// A token that states no expiry is refused rather than read as one that never
+/// expires. The validator reads a time claim only when the token carries it, so
+/// omitting the claim would satisfy every bound it never stated.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_that_states_no_expiry_is_refused() {
+    let plane = Plane::with_actions(&[AdminAction::RealmList]).await;
+
+    let mut forever = claims();
+    forever
+        .set_claim("exp", None)
+        .expect("a payload with no expiry");
+    let bearer = plane.token(&forever);
+
+    assert_eq!(
+        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+        StatusCode::UNAUTHORIZED,
+        "a token with no expiry was accepted, and nothing would ever withdraw it"
     );
 }
 

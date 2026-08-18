@@ -14,6 +14,11 @@ env:
 jobs:
   ci:
     runs-on: ubuntu-latest
+    # Every job below is bounded. Nothing else bounds them: a job with no
+    # timeout inherits the six hour default, so one that hangs holds a runner
+    # for a working day and leaves the whole run reading as still in progress
+    # rather than as broken.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v5.0.1
       # rustup auto-installs the toolchain pinned in rust-toolchain.toml
@@ -72,6 +77,7 @@ jobs:
   # code that generates keys - this job builds the library it needs.
   pq:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       # One line to bump. Only ever linked here: nothing ships this build.
       OPENSSL_VERSION: 3.5.0
@@ -130,6 +136,7 @@ jobs:
   # something is set up to. This job is that something.
   hsm:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       SAFFUI_TEST_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
       SAFFUI_TEST_PKCS11_PIN: "1234"
@@ -179,6 +186,7 @@ jobs:
   # nothing without one that negotiates TLS. Both are here rather than skipped.
   postgres:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       SAFFUI_TEST_PG: "host=localhost port=5432 user=postgres password=saffui dbname=saffui_test"
       SAFFUI_TEST_PG_TLS: "host=localhost port=5433 user=postgres password=saffui dbname=saffui_test"
@@ -258,8 +266,24 @@ jobs:
             exit 1
           fi
 
+      # The admin plane from a request to a decision: a realm that signs, and
+      # tokens it signed. This is the one suite that covers everything between
+      # the bearer header and the guard's answer, which is where the plane was
+      # refusing every signed token with nothing able to see it. Counted like
+      # the others, since a suite that reached no server would report the whole
+      # chain as proven.
+      - name: test the admin plane end to end
+        run: |
+          set -o pipefail
+          cargo test -p server -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/server.log"
+          if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/server.log")" -lt 2 ]; then
+            echo "the end to end plane tests did not run; the job proved nothing." >&2
+            exit 1
+          fi
+
   deny:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5.0.1
       - uses: EmbarkStudios/cargo-deny-action@v2

@@ -9,6 +9,8 @@
 //! so a caller cannot name one that disagrees with the rules being applied.
 
 pub mod auth_flows;
+pub mod authz_policies;
+pub mod authz_surface;
 pub mod client_scopes;
 pub mod clients;
 pub mod credentials;

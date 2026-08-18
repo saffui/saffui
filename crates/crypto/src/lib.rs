@@ -13,6 +13,10 @@ compile_error!(
     "feature 'fips-strict' is incompatible with 'pq-hybrid': ML-DSA and ML-KEM are not FIPS-validated"
 );
 
+/// Re-exported because this crate's API hands back secrets in its types, and
+/// a consumer that pulled its own copy could hold a different version of them.
+pub use secrecy;
+
 pub mod envelope;
 pub mod jose;
 pub mod otp;

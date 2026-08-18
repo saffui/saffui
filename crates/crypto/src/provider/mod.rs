@@ -29,16 +29,8 @@ pub struct CryptoConfig {
     /// it fails rather than falling back.
     pub fips_required: bool,
 
-    /// Where to find a PKCS#11 token, when the key store should be one.
-    ///
-    /// Absent means the software store. There is no automatic discovery: a
-    /// deployment that meant to use a token and silently got the software store
-    /// would hold its private keys in process memory while believing otherwise.
-    ///
-    /// Present whether or not the backend can honour it. A configuration type
-    /// that changes shape with a feature makes every caller carry the same
-    /// `cfg`, and a caller that gets it wrong builds a provider that ignores the
-    /// token instead of failing to compile.
+    /// Where to find a PKCS#11 token. Absent means the software store, never
+    /// discovery: a deployment must not believe it holds keys it does not.
     pub pkcs11: Option<Pkcs11Config>,
 }
 

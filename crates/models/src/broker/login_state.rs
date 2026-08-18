@@ -35,9 +35,8 @@ pub struct BrokerLoginDestination {
     pub provider_alias: String,
     /// Our callback URI, echoed to the token endpoint.
     pub redirect_uri: String,
-    /// Where to resume the local login. A brokered login is a step inside a
-    /// local authorization request rather than a request of its own, so what the
-    /// local client asked for has to survive the round trip.
+    /// Where to resume the local login. A brokered login is a step inside a local
+    /// request, so what the local client asked for survives the round trip.
     pub client_id: Option<String>,
     pub local_redirect_uri: Option<String>,
     pub local_state: Option<String>,
@@ -57,9 +56,8 @@ pub struct BrokerLoginState {
     pub state_hash: String,
     pub tenant: String,
     pub realm_id: String,
-    /// The callback carries the alias in its path, but trusting the path alone
-    /// would let a callback for one provider be replayed against another
-    /// provider's configuration.
+    /// The callback carries this in its path, and trusting the path alone would let
+    /// one provider's callback be replayed against another's configuration.
     pub provider_alias: String,
     /// Sent upstream, compared against the id token's `nonce` claim.
     pub nonce: BrokerSecret,

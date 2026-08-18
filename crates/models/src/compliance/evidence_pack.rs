@@ -156,9 +156,8 @@ pub struct EvidencePack<C, D, B, R> {
     pub dsar_requests: PackSection<D>,
     pub breaches: PackSection<B>,
     pub registrations: PackSection<R>,
-    /// The retention configuration in force, as free key and value pairs. It is
-    /// per deployment, and a fixed shape would omit whatever a given regulator
-    /// asks about.
+    /// The retention configuration in force, as free pairs. A fixed shape would omit
+    /// whatever a given regulator asks about.
     pub retention: Vec<(String, String)>,
 }
 

@@ -117,18 +117,13 @@ pub const WEBAUTHN_AUTHENTICATOR: &str = "webauthn";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WebauthnCredentialRecord {
     pub user_id: String,
-    /// base64url without padding, of the raw credential identifier. The
-    /// encoding is not an arbitrary choice: it is the one the specification
-    /// itself uses, so the exported value is what a reader already recognises.
+    /// base64url without padding, of the raw identifier. The encoding is the
+    /// specification's own, so the exported value is one a reader recognises.
     pub credential_id_b64url: String,
     /// The passkey as the authenticator layer stores it.
     pub passkey: serde_json::Value,
-    /// When it was enrolled.
-    ///
-    /// Carried because it cannot be reconstructed. The column defaults to the
-    /// current instant, so a passkey restored without this is stamped with the
-    /// import date, and every credential age report or "revoke authenticators
-    /// enrolled before this date" sweep silently reads the migration day.
+    /// Carried because it cannot be reconstructed: the column defaults to now, so a
+    /// passkey restored without it is stamped with the import date.
     pub enrolled_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -266,13 +261,11 @@ pub struct SectionCount {
 /// before it looked, and a reader has to treat it as failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityTrailer {
-    /// Records per section, in the order they were written. A section that was
-    /// opened and carried nothing appears with a zero, which is what
-    /// distinguishes empty from never written.
+    /// Records per section, in the order written. A section that carried nothing
+    /// appears with a zero, which is what tells empty from never written.
     pub counts: Vec<SectionCount>,
-    /// Whether the exporter finished. It exists so a reader checks something
-    /// positive rather than inferring wholeness from the absence of an error,
-    /// and so an export that stopped on purpose can say so.
+    /// Whether the exporter finished, so a reader checks something positive instead
+    /// of inferring wholeness from the absence of an error.
     pub complete: bool,
 }
 
@@ -295,12 +288,8 @@ impl IdentityTrailer {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentityIngestReport {
     pub sections: Vec<SectionCount>,
-    /// Actions the import granted because the stream said those users held an
-    /// authenticator whose material it could not carry.
-    ///
-    /// Reported rather than left implicit. It is the one thing an import does
-    /// that the stream did not literally ask for, and an operator restoring a
-    /// redacted export needs to know how many accounts now have to enrol again.
+    /// Actions the import granted for authenticators the stream could not carry.
+    /// Reported, since an operator needs to know who must enrol again.
     pub required_actions_granted: Vec<(String, u64)>,
 }
 

@@ -13,11 +13,8 @@ use super::migration::{AppliedRecord, Migration, PendingMigration, plan};
 /// How the run behaves against a database that is in use.
 #[derive(Debug, Clone, Default)]
 pub struct MigrationOptions {
-    /// How long a statement waits for a lock before giving up.
-    ///
-    /// Unset means wait forever, which on a live database is how a migration
-    /// takes the application down with it: the statement queues behind a long
-    /// read and everything else queues behind the statement.
+    /// How long a statement waits for a lock. Unset means forever, which on a live
+    /// database is how a migration takes the application down with it.
     pub lock_timeout_ms: Option<u64>,
 }
 

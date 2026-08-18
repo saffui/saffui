@@ -57,9 +57,8 @@ pub struct PagingParams {
     pub first: Option<i64>,
     /// Page size. Clamped to [`MAX_MAX`] rather than refused.
     pub max: Option<i64>,
-    /// Whether to compute the total. Off by default: `COUNT(*)` under most
-    /// predicates is a sequential scan, and one per keystroke of a search box is
-    /// how an admin console becomes unusable.
+    /// Whether to compute the total. Off by default: a count under most predicates
+    /// is a sequential scan, and one per keystroke makes a console unusable.
     pub count: Option<bool>,
 
     /// House spelling, kept for the callers that already use it.

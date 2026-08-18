@@ -81,10 +81,8 @@ pub struct ClientModel {
     pub root_url: Option<String>,
     pub web_origins: Option<Vec<String>>,
     pub redirect_uris: Option<Vec<String>>,
-    /// Registered post-logout redirect URIs (RP-Initiated Logout 1.0 §2).
-    /// Deliberately separate from `redirect_uris`: a logout landing page is
-    /// usually not a login callback, and requiring it to be one would make
-    /// every logout destination a valid authorization code destination too.
+    /// Registered post-logout redirect URIs, separate from `redirect_uris` so a
+    /// logout destination is not thereby an authorization code destination.
     pub post_logout_redirect_uris: Option<Vec<String>>,
 
     /// Never serialised. The store binds it as a column; a client rendered into
@@ -100,9 +98,8 @@ pub struct ClientModel {
     /// what every pre-lifecycle client keeps.
     pub secret_expires_at: Option<DateTime<Utc>>,
 
-    /// The algorithm this client's id tokens must be signed with. `None` = the
-    /// realm's active signing key. An algorithm no realm key can sign is an
-    /// error at issuance, never a silent downgrade.
+    /// What id tokens are signed with. None is the realm's active key, and an
+    /// algorithm no key can sign fails issuance rather than downgrading.
     pub id_token_signed_response_alg: Option<SignAlg>,
     /// Signed UserInfo (Core §5.3.2): when set, `/userinfo` answers with an
     /// `application/jwt` JWS signed by a realm key of exactly this algorithm.
@@ -110,9 +107,8 @@ pub struct ClientModel {
     /// Request object signing. Registered under the same refusal rule.
     pub request_object_signing_alg: Option<SignAlg>,
 
-    /// When set, the signed id token is encrypted to the client's own public
-    /// key from its registered JWKS. Encryption failure is an issuance error,
-    /// never an unencrypted response.
+    /// When set, the id token is encrypted to the client's registered key. Failing
+    /// to encrypt fails issuance rather than answering in the clear.
     pub id_token_encryption: Option<JweRegistration>,
     /// When set, `/userinfo` returns a JWE of the claims rather than JSON.
     pub userinfo_encryption: Option<JweRegistration>,

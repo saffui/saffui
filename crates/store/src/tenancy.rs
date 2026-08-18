@@ -19,11 +19,8 @@ use crate::error::{StoreError, StoreResult};
 pub struct TenantContext {
     pub tenant: String,
     pub realm_id: String,
-    /// The tenant's residency pin, when there is one.
-    ///
-    /// Read off the stored row by whatever resolves a realm, so the pin is the
-    /// database's answer rather than the caller's. A caller that could name its
-    /// own region could name one that lets it through.
+    /// The tenant's residency pin, read off the stored row rather than taken from
+    /// the caller, who could otherwise name one that lets it through.
     pub region: Option<String>,
 }
 

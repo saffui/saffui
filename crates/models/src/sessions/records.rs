@@ -36,17 +36,11 @@ pub struct UserSessionModel {
     pub auth_method: Option<String>,
     pub ip_address: Option<String>,
     pub started_at: i64,
-    /// When the user last actually authenticated, the `auth_time` claim.
-    ///
-    /// Deliberately not `started_at`. A session begun at nine and
-    /// re-authenticated at noon is three hours old while its authentication is
-    /// minutes old, and `max_age` asks about the second. `None` on a session
-    /// written before this was tracked, never zero, which would read as a real
-    /// authentication at the epoch.
+    /// When the user last actually authenticated, which is not when the session
+    /// began. None where it was never tracked, never zero, which reads as the epoch.
     pub auth_time: Option<i64>,
-    /// The level of assurance actually reached. `None` means unknown, not zero:
-    /// without it a step up cannot be recognised as having happened, and the
-    /// second factor runs again on every request that asks for a level.
+    /// The level of assurance reached. None is unknown and not zero: without it a
+    /// step up cannot be recognised and the second factor runs again.
     pub loa: Option<i32>,
     pub expiration: Option<i64>,
     pub state: UserSessionState,

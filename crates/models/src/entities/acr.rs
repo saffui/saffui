@@ -122,9 +122,8 @@ pub struct AuthContextRequest {
     /// Requested `acr` values in order of preference, as the client wrote them.
     pub acr_values: Vec<String>,
     pub requirement: AcrRequirement,
-    /// The authentication must be no older than this many seconds. `Some(0)` is
-    /// meaningful and means always re-authenticate, which is why this is not
-    /// folded into a prompt flag.
+    /// How old the authentication may be, in seconds. Zero is meaningful and means
+    /// always re-authenticate, which is why this is not a prompt flag.
     pub max_age: Option<i64>,
     /// `prompt=login` was requested.
     pub prompt_login: bool,

@@ -99,8 +99,7 @@ const KEK_ID_LABEL: &[u8] = b"saffui/kek-id/v1";
 pub struct RealmDek {
     pub version: u32,
     /// Typed, so a key that wraps DEKs cannot be put here and used to seal a
-    /// value. Both are 32 secret bytes and the swap produces ciphertext that
-    /// opens under nothing.
+    /// value: both are 32 bytes and the swap opens under nothing.
     pub key: Dek,
 }
 

@@ -83,9 +83,8 @@ pub struct OidcBrokerConfig {
     /// Never serialised. It authenticates this deployment to the provider.
     #[serde(skip_serializing)]
     pub client_secret: Option<BrokerSecret>,
-    /// Requested scopes. `openid` is always among them: without it the upstream
-    /// is not required to return an id token at all, and the flow degrades to
-    /// plain OAuth with no verifiable assertion of who logged in.
+    /// Requested scopes, always including `openid`: without it the upstream owes no
+    /// id token and the flow degrades to OAuth with nothing to verify.
     pub scopes: Vec<String>,
     /// The algorithms accepted on an upstream id token. Empty means every one
     /// this build can verify, never every one the upstream asserts.

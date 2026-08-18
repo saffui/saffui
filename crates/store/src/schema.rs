@@ -79,6 +79,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V011__audit_chain.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 12,
+            name: "client_scopes_and_mappers",
+            sql: include_str!("../migrations/V012__client_scopes_and_mappers.sql"),
+            transactional: true,
+        }),
     ]
 }
 

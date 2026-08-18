@@ -9,6 +9,7 @@
 //! so a caller cannot name one that disagrees with the rules being applied.
 
 pub mod auth_flows;
+pub mod client_scopes;
 pub mod clients;
 pub mod credentials;
 pub mod one_time_tokens;

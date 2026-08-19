@@ -16,4 +16,5 @@
 
 pub mod context;
 pub mod pdp;
+pub mod rebac;
 pub mod token;

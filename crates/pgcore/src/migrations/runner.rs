@@ -116,6 +116,8 @@ impl MigrationRunner {
             report.applied.push(migration.version());
         }
 
+        connection.let_the_application_read_the_history().await?;
+
         Ok(report)
         // The lock drops here, its session ends, and the server releases it.
     }
@@ -149,6 +151,25 @@ impl MaintConnection {
                      checksum   text NOT NULL,\
                      applied_at timestamptz NOT NULL DEFAULT now()\
                  )",
+            )
+            .await
+            .map_err(|_| MigrationError::History)
+    }
+
+    /// Let the application role read what has been applied.
+    ///
+    /// After the migrations rather than beside the table, because the role is
+    /// created by one of them: asked before, it does not exist yet. A pod
+    /// decides whether it may serve by comparing what it carries to what the
+    /// database has, and it asks that as itself.
+    async fn let_the_application_read_the_history(&self) -> Result<(), MigrationError> {
+        self.client
+            .batch_execute(
+                "DO $$ BEGIN \
+                     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'saffui_app') THEN \
+                         GRANT SELECT ON schema_migrations TO saffui_app; \
+                     END IF; \
+                 END $$",
             )
             .await
             .map_err(|_| MigrationError::History)

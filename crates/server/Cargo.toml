@@ -20,6 +20,7 @@ serde_json = { workspace = true }
 # BASE64URL_NOPAD, to read the one unverified claim that says which realm's keys
 # to fetch. The JOSE layer has no read that skips the signature check.
 data-encoding = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 services = { workspace = true }

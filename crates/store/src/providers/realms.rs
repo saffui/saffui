@@ -14,7 +14,16 @@ use crate::query::list_query::ListQuery;
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
-const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, ssl_enforcement, \
+const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
+                       registration_allowed, register_email_as_username, verify_email, \
+                       login_with_email_allowed, duplicated_email_allowed, \
+                       edit_user_name_allowed, reset_password_allowed, remember_me, \
+                       ssl_enforcement, password_policy, \
+                       revoke_refresh_token, refresh_token_max_reuse, access_token_lifespan, \
+                       action_tokens_lifespan, access_code_lifespan, \
+                       access_code_lifespan_user_action, access_code_lifespan_login, \
+                       master_admin_client, events_enabled, admin_events_enabled, not_before, \
+                       attributes, acr_loa_map, \
                        created_by, created_at, updated_by, updated_at, version";
 
 /// Record a realm.
@@ -98,6 +107,71 @@ pub async fn list(
     ))
 }
 
+/// Write a realm's settings back.
+///
+/// Every rule a realm has lives here rather than on [`create`], which names what
+/// a realm is and nothing about how it behaves. Setting them is a separate act
+/// behind its own capability, so creating a realm cannot also decide that it
+/// allows registration or that it needs no secured transport.
+///
+/// The identifier and the name are not written. A realm's name is what its
+/// issuer is built from, and moving it under a settings edit would invalidate
+/// every token already issued.
+pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreResult<bool> {
+    // Serialised up front rather than inline: the write set borrows what it
+    // binds, so a value built inside the vector would not outlive it.
+    let password_policy = jsonb(realm.password_policy.as_ref().map(serde_json::to_value))?;
+    let attributes = jsonb(realm.attributes.as_ref().map(serde_json::to_value))?;
+    let acr_loa_map = jsonb(realm.acr_loa_map.as_ref().map(serde_json::to_value))?;
+
+    let set = WriteSet::update(
+        vec![
+            col("display_name", &realm.display_name),
+            col("enabled", &realm.enabled),
+            col("registration_allowed", &realm.registration_allowed),
+            col(
+                "register_email_as_username",
+                &realm.register_email_as_username,
+            ),
+            col("verify_email", &realm.verify_email),
+            col("login_with_email_allowed", &realm.login_with_email_allowed),
+            col("duplicated_email_allowed", &realm.duplicated_email_allowed),
+            col("edit_user_name_allowed", &realm.edit_user_name_allowed),
+            col("reset_password_allowed", &realm.reset_password_allowed),
+            col("remember_me", &realm.remember_me),
+            col("ssl_enforcement", &realm.ssl_enforcement),
+            col("password_policy", &password_policy),
+            col("revoke_refresh_token", &realm.revoke_refresh_token),
+            col("refresh_token_max_reuse", &realm.refresh_token_max_reuse),
+            col("access_token_lifespan", &realm.access_token_lifespan),
+            col("action_tokens_lifespan", &realm.action_tokens_lifespan),
+            col("access_code_lifespan", &realm.access_code_lifespan),
+            col(
+                "access_code_lifespan_user_action",
+                &realm.access_code_lifespan_user_action,
+            ),
+            col(
+                "access_code_lifespan_login",
+                &realm.access_code_lifespan_login,
+            ),
+            col("master_admin_client", &realm.master_admin_client),
+            col("events_enabled", &realm.events_enabled),
+            col("admin_events_enabled", &realm.admin_events_enabled),
+            col("not_before", &realm.not_before),
+            col("attributes", &attributes),
+            col("acr_loa_map", &acr_loa_map),
+            col("updated_by", &realm.metadata.updated_by),
+        ],
+        vec![col("realm_id", &realm.realm_id)],
+    );
+
+    let changed = transaction
+        .execute(statement::update("realms", &set).as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
 fn read(row: Row) -> RealmModel {
     RealmModel {
         realm_id: row.get("realm_id"),
@@ -105,28 +179,34 @@ fn read(row: Row) -> RealmModel {
         display_name: row.get("display_name"),
         enabled: row.get("enabled"),
         ssl_enforcement: row.get::<_, Option<SslEnforcement>>("ssl_enforcement"),
-        registration_allowed: None,
-        register_email_as_username: None,
-        verify_email: None,
-        login_with_email_allowed: None,
-        duplicated_email_allowed: None,
-        edit_user_name_allowed: None,
-        reset_password_allowed: None,
-        remember_me: None,
-        password_policy: None,
-        revoke_refresh_token: None,
-        refresh_token_max_reuse: None,
-        access_token_lifespan: None,
-        action_tokens_lifespan: None,
-        access_code_lifespan: None,
-        access_code_lifespan_user_action: None,
-        access_code_lifespan_login: None,
-        master_admin_client: None,
-        events_enabled: None,
-        admin_events_enabled: None,
-        not_before: None,
-        attributes: None,
-        acr_loa_map: None,
+        registration_allowed: row.get("registration_allowed"),
+        register_email_as_username: row.get("register_email_as_username"),
+        verify_email: row.get("verify_email"),
+        login_with_email_allowed: row.get("login_with_email_allowed"),
+        duplicated_email_allowed: row.get("duplicated_email_allowed"),
+        edit_user_name_allowed: row.get("edit_user_name_allowed"),
+        reset_password_allowed: row.get("reset_password_allowed"),
+        remember_me: row.get("remember_me"),
+        password_policy: row
+            .get::<_, Option<serde_json::Value>>("password_policy")
+            .and_then(|value| serde_json::from_value(value).ok()),
+        revoke_refresh_token: row.get("revoke_refresh_token"),
+        refresh_token_max_reuse: row.get("refresh_token_max_reuse"),
+        access_token_lifespan: row.get("access_token_lifespan"),
+        action_tokens_lifespan: row.get("action_tokens_lifespan"),
+        access_code_lifespan: row.get("access_code_lifespan"),
+        access_code_lifespan_user_action: row.get("access_code_lifespan_user_action"),
+        access_code_lifespan_login: row.get("access_code_lifespan_login"),
+        master_admin_client: row.get("master_admin_client"),
+        events_enabled: row.get("events_enabled"),
+        admin_events_enabled: row.get("admin_events_enabled"),
+        not_before: row.get("not_before"),
+        attributes: row
+            .get::<_, Option<serde_json::Value>>("attributes")
+            .and_then(|value| serde_json::from_value(value).ok()),
+        acr_loa_map: row
+            .get::<_, Option<serde_json::Value>>("acr_loa_map")
+            .and_then(|value| serde_json::from_value(value).ok()),
         metadata: models::auditable::AuditableModel {
             tenant: row.get("tenant"),
             created_by: row.get("created_by"),
@@ -136,4 +216,11 @@ fn read(row: Row) -> RealmModel {
             version: row.get("version"),
         },
     }
+}
+
+/// A serialised document on its way into a jsonb column.
+fn jsonb(
+    value: Option<Result<serde_json::Value, serde_json::Error>>,
+) -> StoreResult<Option<serde_json::Value>> {
+    value.transpose().map_err(|_| StoreError::Backend)
 }

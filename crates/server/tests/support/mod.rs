@@ -45,6 +45,9 @@ const KEK: &str = "a-deployment-wrapping-key-of-decent-length";
 pub const TENANT: &str = "acme";
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const REALM: &str = "main";
+/// What this deployment answers from in the suites. The issuer is built out of
+/// it, and the gates take a realm from an issuer only when the prefix is theirs.
+pub const ORIGIN: &str = "https://id.test";
 
 /// The client the console asks for its tokens as. What `azp` carries.
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
@@ -158,9 +161,17 @@ impl SigningKey {
     dead_code,
     reason = "not every suite mints a token or mounts the plane"
 )]
+pub fn origin() -> config::serving::PublicOrigin {
+    config::serving::PublicOrigin::parse(ORIGIN).expect("a usable origin")
+}
+
+#[allow(
+    dead_code,
+    reason = "not every suite mints a token or mounts the plane"
+)]
 pub fn claims() -> JwtPayload {
     let mut payload = JwtPayload::new();
-    payload.set_issuer(REALM);
+    payload.set_issuer(origin().issuer(REALM));
     payload.set_subject(SUBJECT);
     payload.set_audience(vec![AUDIENCE]);
     payload

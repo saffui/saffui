@@ -12,6 +12,8 @@ use actix_web::{Error, HttpMessage, ResponseError};
 use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 
+use config::serving::PublicOrigin;
+
 use crate::middleware::bearer::admitted;
 
 /// Establish a caller, and require nothing of them.
@@ -23,6 +25,8 @@ use crate::middleware::bearer::admitted;
 pub struct Caller {
     pub pool: Pool,
     pub tenancy: Tenancy,
+    /// See [`crate::middleware::admin_guard::Guard::origin`].
+    pub origin: PublicOrigin,
 }
 
 impl<S, B> Transform<S, ServiceRequest> for Caller

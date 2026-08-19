@@ -1914,6 +1914,7 @@ dependencies = [
  "actix-web",
  "chrono",
  "commons",
+ "config",
  "crypto",
  "data-encoding",
  "deadpool-postgres",

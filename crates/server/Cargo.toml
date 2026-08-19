@@ -11,6 +11,9 @@ crypto = { workspace = true }
 models = { workspace = true }
 store = { workspace = true }
 services = { workspace = true }
+# The public origin: every issuer minted and every issuer accepted is built from
+# it, so the gates read the same value the binary was started with.
+config = { workspace = true }
 
 actix-web = { workspace = true }
 chrono = { workspace = true }
@@ -24,6 +27,9 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 services = { workspace = true }
+# The public origin: every issuer minted and every issuer accepted is built from
+# it, so the gates read the same value the binary was started with.
+config = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 # The end to end plane mounts a real schema and signs real tokens, so the test
 # side reaches the migration runner and the software crypto provider directly.

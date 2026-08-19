@@ -151,6 +151,10 @@ fn plane() -> Result<Plane, String> {
     }
 
     let scope = config::optional("ADMIN_SCOPE").unwrap_or_else(|| "admin".to_owned());
+    // No default. A guess here is not a wrong hostname for one request, it is
+    // the issuer baked into every token this deployment ever mints, and those
+    // tokens outlive the correction.
+    let origin = config::serving::PublicOrigin::from_env().map_err(|e| e.to_string())?;
     let region = config::optional("REGION");
 
     let pg: tokio_postgres::Config = connection
@@ -171,5 +175,6 @@ fn plane() -> Result<Plane, String> {
             parties,
             scope,
         },
+        origin,
     })
 }

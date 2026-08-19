@@ -49,9 +49,10 @@ pub(crate) async fn admitted(
     let now = Utc::now();
     let bearer = bearer(request).ok_or_else(unauthenticated)?;
     let issuer = unverified_issuer(&bearer).ok_or_else(unauthenticated)?;
+    let named = gate.origin.realm_of(&issuer).ok_or_else(unauthenticated)?;
 
     let mut connection = gate.pool.get().await.map_err(|_| unauthenticated())?;
-    let context = resolve::realm_by_id(&connection, &issuer)
+    let context = resolve::realm_by_id(&connection, named)
         .await
         .map_err(|_| unauthenticated())?;
     let transaction = gate

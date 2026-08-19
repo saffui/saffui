@@ -11,12 +11,14 @@
 
 use actix_web::dev::HttpServiceFactory;
 use actix_web::web;
+use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 
 use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
+use crate::api::rest::endpoints::protocol::token;
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
 use crate::middleware::admin_policy::AdminPolicy;
@@ -30,12 +32,28 @@ use services::pdp::Journal;
 /// become the ceiling of anything reachable before authentication.
 const ADMIN_BODY: usize = 8 * 1024 * 1024;
 
+/// How much form a caller with nothing to present may send.
+///
+/// A token request is a grant name, a client id, a secret, a code and at most a
+/// client assertion, which is a signed JWT of well under a kilobyte. Anything
+/// past this is not a request this endpoint would answer, and reading it is work
+/// done for whoever asked.
+///
+/// Stated rather than left to the framework. The default happens to sit here
+/// today, and a default is a value nobody chose: it moves with a dependency
+/// bump, and the scope that would inherit the move is the one door reachable
+/// with nothing presented.
+const PROTOCOL_BODY: usize = 8 * 1024;
+
 /// Everything the planes need to answer.
 #[derive(Clone)]
 pub struct Plane {
     pub pool: Pool,
     pub tenancy: Tenancy,
     pub policy: AdminPolicy,
+    /// Where callers reach this deployment. Every issuer minted and every
+    /// issuer accepted is built from it, so both planes hold the same one.
+    pub origin: PublicOrigin,
 }
 
 /// Register what a caller reaches.
@@ -48,8 +66,10 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 plane.pool.clone(),
                 plane.tenancy.clone(),
             )))
+            .app_data(web::Data::new(plane.origin.clone()))
             .service(admin_scope(plane))
-            .service(authz_scope(plane));
+            .service(authz_scope(plane))
+            .service(protocol_scope());
     }
 }
 
@@ -66,6 +86,7 @@ fn admin_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
             pool: plane.pool.clone(),
             tenancy: plane.tenancy.clone(),
             policy: plane.policy.clone(),
+            origin: plane.origin.clone(),
         });
 
     for route in routes::routes() {
@@ -95,8 +116,29 @@ fn authz_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
         .wrap(Caller {
             pool: plane.pool.clone(),
             tenancy: plane.tenancy.clone(),
+            origin: plane.origin.clone(),
         })
         .service(web::resource("/decision").route(web::post().to(decision::ask)))
+}
+
+/// The protocol plane: what a client speaks to.
+///
+/// No gate. Every other door here stands behind one, and this is the door a
+/// caller knocks on when it has nothing to present yet, so the checks a gate
+/// would have made are the endpoint's own.
+///
+/// Its own scope rather than a line in the route table: that table strips an
+/// `/admin` prefix it expects every entry to carry, and the strip is an
+/// `expect`, so an entry mounted anywhere else kills the process at startup
+/// rather than at the first request.
+///
+/// The form ceiling is hung here and not higher. A token request is a handful
+/// of short fields, and the only thing a wider ceiling buys is how much an
+/// unauthenticated caller may make the server read.
+fn protocol_scope() -> impl HttpServiceFactory + 'static {
+    web::scope("/realms/{realm}/protocol/openid-connect")
+        .app_data(web::FormConfig::default().limit(PROTOCOL_BODY))
+        .service(web::resource("/token").route(web::post().to(token::ask)))
 }
 
 /// Register what an orchestrator asks.

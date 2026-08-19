@@ -1,10 +1,8 @@
-//! Establishing who is asking, and deciding before the handler runs.
+//! The gate the administrative plane uses.
 //!
-//! This is a middleware and not an extractor on purpose. An extractor is
-//! something a handler can be written without, and a handler written without it
-//! is an unguarded route that looks exactly like a guarded one. Wrapping the
-//! scope means every route under it is guarded by construction, and the only
-//! way to add an unguarded one is to put it somewhere else.
+//! A middleware and not an extractor on purpose. An extractor is something a
+//! handler can be written without, and a handler written without it is an
+//! unguarded route that looks exactly like a guarded one.
 
 use std::future::{Ready, ready};
 use std::rc::Rc;
@@ -13,7 +11,6 @@ use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::{Error, HttpMessage, ResponseError};
 use chrono::Utc;
-use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Pool;
 use deadpool_postgres::Transaction;
 use models::entities::authz::AdminAction;
@@ -21,9 +18,10 @@ use services::context::{self, Acting, Context};
 use store::providers::{organizations, realm_keys, roles};
 use store::tenancy::{Tenancy, resolve};
 
+use crate::api::routes;
 use crate::error::{refused, unauthenticated};
-use crate::guard::{AdminPolicy, decide};
-use crate::routes;
+use crate::middleware::admin_policy::{AdminPolicy, decide};
+use crate::middleware::bearer::{bearer, unverified_issuer};
 
 /// What the guard established, for the handler that follows.
 ///
@@ -197,33 +195,4 @@ async fn capabilities(
         .filter_map(|role| role.admin_actions)
         .flatten()
         .collect())
-}
-
-fn bearer(request: &ServiceRequest) -> Option<String> {
-    let header = request.headers().get("authorization")?.to_str().ok()?;
-    header
-        .strip_prefix("Bearer ")
-        .map(|token| token.trim().to_owned())
-        .filter(|token| !token.is_empty())
-}
-
-/// The issuer, read without verifying anything.
-///
-/// Reading an unverified payload to find the key is unavoidable: something has
-/// to say which realm's keys to fetch, and which realm that is, is written in
-/// the token. Nothing else is taken from it, and nothing read here survives
-/// into the decision: the payload is read again, from scratch, once the
-/// signature has checked out.
-///
-/// The segment is decoded here rather than through the JOSE layer because that
-/// layer has no way to read a payload without checking it. Decoding as an
-/// unsecured token refuses anything whose header is not `alg: none`, which is
-/// every real token; asking it for no verifier is an error rather than a
-/// permission to skip the check. So this reads the one field it needs and
-/// treats the rest as what it is, unproven text.
-fn unverified_issuer(token: &str) -> Option<String> {
-    let payload = token.split('.').nth(1)?;
-    let decoded = BASE64URL_NOPAD.decode(payload.as_bytes()).ok()?;
-    let claims: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
-    claims.get("iss")?.as_str().map(str::to_owned)
 }

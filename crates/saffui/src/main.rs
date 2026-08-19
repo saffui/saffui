@@ -10,8 +10,8 @@ use std::process::ExitCode;
 use actix_web::{App, HttpServer};
 use clap::{Parser, Subcommand};
 use deadpool_postgres::{Manager, Pool};
-use server::app::{Plane, mount};
-use server::guard::AdminPolicy;
+use server::api::config::{Plane, mount};
+use server::middleware::admin_policy::AdminPolicy;
 use store::tenancy::Tenancy;
 use tokio_postgres::NoTls;
 

@@ -11,25 +11,12 @@ use commons::http::ApiError;
 use deadpool_postgres::Pool;
 use models::paging::PagingParams;
 use models::representation::RepresentationParams;
-use serde::Serialize;
 use store::providers::realms;
 use store::query::list_query::ListQuery;
 use store::tenancy::{Tenancy, TenantContext};
 
-use crate::admin::Admin;
-
-/// A realm as a listing shows it.
-///
-/// Its own shape rather than the stored record. A listing that answered with
-/// the row would carry every switch a realm has, and adding a column to the
-/// table would silently widen a public response.
-#[derive(Debug, Serialize)]
-pub struct RealmBrief {
-    pub realm_id: String,
-    pub name: String,
-    pub display_name: String,
-    pub enabled: bool,
-}
+use crate::api::rest::endpoints::admin::dto::RealmBrief;
+use crate::middleware::admin_guard::Admin;
 
 /// The realms of the tenant this token belongs to.
 pub async fn list(

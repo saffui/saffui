@@ -311,7 +311,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test -p server -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/server.log"
-          if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/server.log")" -lt 2 ]; then
+          if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/server.log")" -lt 3 ]; then
             echo "the end to end plane tests did not run; the job proved nothing." >&2
             exit 1
           fi

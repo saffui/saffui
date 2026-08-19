@@ -8,7 +8,7 @@
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 
-use crate::guard::Refusal;
+use crate::middleware::admin_policy::Refusal;
 
 /// The answer a refused request receives.
 ///

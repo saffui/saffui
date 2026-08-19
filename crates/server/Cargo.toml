@@ -22,6 +22,7 @@ serde_json = { workspace = true }
 data-encoding = { workspace = true }
 
 [dev-dependencies]
+services = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 # The end to end plane mounts a real schema and signs real tokens, so the test
 # side reaches the migration runner and the software crypto provider directly.

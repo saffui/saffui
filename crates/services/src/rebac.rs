@@ -1,15 +1,10 @@
 //! Following edges from an object back to a subject, under bounds it cannot
 //! exceed.
 //!
-//! The other engine. A policy decides from facts about a subject; this decides
-//! by walking, and walking is the part that has to be made to stop. Four things
-//! bound it, and every one of them is an error rather than a refusal: a walk
-//! that ran out of budget did not find that the subject is unrelated, and
-//! answering no would be answering a question nobody managed to ask.
-//!
-//! It takes the transaction it was asked in. The engine this replaces gives its
-//! store a connection of its own per call, so a check reads only committed
-//! state and nothing can write edges and then verify them.
+//! Walking is the part that has to be made to stop. Every bound here is an
+//! error rather than a refusal: a walk that ran out of budget did not find the
+//! subject unrelated. It takes the caller's transaction, so a check sees the
+//! edges written beside it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,12 +12,8 @@ use authz::rebac::{CompiledSchema, Rule};
 use deadpool_postgres::Transaction;
 use store::providers::rebac;
 
-/// How far a check may go.
-///
-/// No default, for the reason every other budget here has none: bounds a caller
-/// did not choose are bounds nobody owns. The depth counts hops between
-/// members, the queries count round trips to the store, and the fanout is how
-/// many edges one relation may contribute.
+/// How far a check may go. No default, since bounds a caller did not choose are
+/// bounds nobody owns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Budget {
     pub max_depth: u32,
@@ -30,13 +21,9 @@ pub struct Budget {
     pub max_fanout: i64,
 }
 
-/// What a check is walked under.
-///
-/// The queries budget stands where the reference puts a wall clock deadline.
-/// A deadline makes the same question answer differently on a slow afternoon,
-/// and the record of a decision is supposed to be replayable; counting round
-/// trips bounds the same thing the deadline was there to bound, and counts it
-/// the same way twice.
+/// What a check is walked under. Round trips are counted where a wall clock
+/// would be, since a deadline makes the same question answer differently on a
+/// slow afternoon and a decision is meant to be replayable.
 pub const CHECK: Budget = Budget {
     max_depth: 64,
     max_queries: 1000,
@@ -57,11 +44,9 @@ pub struct Subject<'a> {
     pub subject_id: &'a str,
 }
 
-/// Why a check reached no answer.
-///
-/// Every one of these is an error and not a refusal. A walk that hit a ceiling
-/// has not established that the subject is unrelated, and a decision point that
-/// read it as one would turn every crafted graph into an answer of its choosing.
+/// Why a check reached no answer. Never a refusal: a walk that hit a ceiling
+/// has not established anything, and reading it as a no would let a crafted
+/// graph choose what it is asked.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Unwalkable {
     #[error("the realm has no relationship schema")]
@@ -123,11 +108,9 @@ impl Unwalkable {
     }
 }
 
-/// This realm's schema, compiled, or why there is none to walk by.
-///
-/// The shape is checked against what this build reads. A document in a form it
-/// does not know is refused rather than deserialised into the nearest thing it
-/// has, which would be deciding by a schema nobody wrote.
+/// This realm's schema, compiled, or why there is none to walk by. A document
+/// in a shape this build does not read is refused rather than deserialised into
+/// the nearest thing it has.
 pub async fn schema_of(transaction: &Transaction<'_>) -> Result<CompiledSchema, Unwalkable> {
     let stored = rebac::load_schema(transaction)
         .await
@@ -158,11 +141,8 @@ pub enum Unpublishable {
 /// Publish a realm's schema: read it, compile it, and store both halves.
 ///
 /// One act, so the compiled form is always the compilation of the source beside
-/// it. Given the two separately, a caller can store a compiled document that is
-/// not what the source says, and then a realm shows one schema and decides by
-/// another. The reference's import does exactly that, deliberately, to avoid
-/// recompiling what was exported; the same end is reached here by never taking
-/// the two apart.
+/// it. Given the two separately, a realm can show one schema and decide by
+/// another.
 pub async fn publish(
     transaction: &Transaction<'_>,
     source: &str,
@@ -187,11 +167,9 @@ pub async fn publish(
     Ok(compiled)
 }
 
-/// Why an edge was not written.
-///
-/// An edge the schema does not describe is not a small mistake. It is stored,
-/// it is never matched, and the grant somebody thought they made was never
-/// made: writing it is the last moment anything can say so.
+/// Why an edge was not written. One the schema does not describe is stored,
+/// never matched, and a grant somebody thought they made: writing it is the
+/// last moment anything can say so.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Unwritable {
     #[error("the realm has no relationship schema to write against")]
@@ -225,16 +203,12 @@ pub enum Unwritable {
 /// Record an edge, once the schema says it means something.
 ///
 /// The one door edges come in by. Validation and the write share the caller's
-/// transaction, so the schema an edge is checked against is the schema it is
-/// stored under: read on another connection, a schema narrowed a moment ago
-/// would still be admitting what it no longer allows.
+/// transaction, so an edge is checked against the schema it is stored under.
 ///
-/// Three things are checked that the reference does not. That the member named
-/// is a relation rather than a permission, since a permission computes from
-/// edges and stores none. That the relation accepts this subject, which is only
-/// answerable because the declared types survive compilation. And that a
-/// userset names a relation rather than a permission on the subject's own type,
-/// which the compiler admits because it checks a userset against members.
+/// Three things are checked: that the member is a relation and not a permission,
+/// which stores no edges; that the relation accepts this subject, answerable
+/// only because the declared types survive compilation; and that a userset names
+/// a relation, which the compiler admits a permission for.
 pub async fn relate(
     transaction: &Transaction<'_>,
     object_type: &str,
@@ -309,10 +283,9 @@ pub async fn relate(
 
 /// Take an edge back, and say whether there was one.
 ///
-/// Unvalidated on purpose, and the asymmetry is the point: writing an edge the
-/// schema does not describe makes a grant nobody can use, while removing one
-/// takes a grant away. A realm whose schema narrowed has edges it can no longer
-/// write, and refusing to delete those would leave them stuck.
+/// Unvalidated on purpose: writing an edge the schema does not describe makes a
+/// grant nobody can use, removing one takes a grant away. A narrowed schema
+/// leaves edges that can no longer be written, and those must still go.
 pub async fn unrelate(
     transaction: &Transaction<'_>,
     object_type: &str,

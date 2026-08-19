@@ -120,9 +120,9 @@ pub async fn list(
 pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreResult<bool> {
     // Serialised up front rather than inline: the write set borrows what it
     // binds, so a value built inside the vector would not outlive it.
-    let password_policy = jsonb(realm.password_policy.as_ref().map(serde_json::to_value))?;
-    let attributes = jsonb(realm.attributes.as_ref().map(serde_json::to_value))?;
-    let acr_loa_map = jsonb(realm.acr_loa_map.as_ref().map(serde_json::to_value))?;
+    let password_policy = as_document(realm.password_policy.as_ref().map(serde_json::to_value))?;
+    let attributes = as_document(realm.attributes.as_ref().map(serde_json::to_value))?;
+    let acr_loa_map = as_document(realm.acr_loa_map.as_ref().map(serde_json::to_value))?;
 
     let set = WriteSet::update(
         vec![
@@ -219,7 +219,7 @@ fn read(row: Row) -> RealmModel {
 }
 
 /// A serialised document on its way into a jsonb column.
-fn jsonb(
+fn as_document(
     value: Option<Result<serde_json::Value, serde_json::Error>>,
 ) -> StoreResult<Option<serde_json::Value>> {
     value.transpose().map_err(|_| StoreError::Backend)

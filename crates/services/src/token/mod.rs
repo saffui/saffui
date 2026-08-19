@@ -13,6 +13,8 @@
 //! refuse every logout that arrives late. Nothing else may reach for that door,
 //! which is why it is named rather than being a flag on one function.
 
+pub mod issuance;
+
 use std::time::{Duration, SystemTime};
 
 use chrono::{DateTime, Utc};

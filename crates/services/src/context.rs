@@ -141,7 +141,7 @@ pub async fn establish(
 ) -> Result<Context, NotEstablished> {
     let session_id = access_token(verified)?;
     let principal = resolve(transaction, &verified.subject).await?;
-    live(&principal, verified)?;
+    subject_still_admitted(&principal, verified)?;
     logged_in(transaction, &session_id, &tenant, &principal, now).await?;
 
     let acting = acting(transaction, &principal, verified).await?;
@@ -256,7 +256,10 @@ fn minted_at(verified: &Verified) -> Option<i64> {
 /// Reads no clock. Both levers are about what the token says of itself against
 /// what the realm holds, and an instant would make the same token and the same
 /// row answer differently depending on when the question was asked.
-fn live(principal: &Principal, verified: &Verified) -> Result<(), NotEstablished> {
+fn subject_still_admitted(
+    principal: &Principal,
+    verified: &Verified,
+) -> Result<(), NotEstablished> {
     let user = principal.user();
     let (enabled, not_before) = (user.enabled, user.not_before);
 

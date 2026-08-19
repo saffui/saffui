@@ -192,14 +192,15 @@ pub async fn list(
 pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> StoreResult<bool> {
     // Serialised up front because the write set borrows what it binds, so a
     // value built inside the vector would not outlive it.
-    let id_token_alg = spelling(client.id_token_signed_response_alg);
-    let userinfo_alg = spelling(client.userinfo_signed_response_alg);
-    let request_object_alg = spelling(client.request_object_signing_alg);
-    let (id_token_enc_alg, id_token_enc) = pair(client.id_token_encryption);
-    let (userinfo_enc_alg, userinfo_enc) = pair(client.userinfo_encryption);
-    let (request_object_enc_alg, request_object_enc) = pair(client.request_object_encryption);
-    let configs = document(client.configs.as_ref().map(serde_json::to_value))?;
-    let overrides = document(
+    let id_token_alg = alg_name(client.id_token_signed_response_alg);
+    let userinfo_alg = alg_name(client.userinfo_signed_response_alg);
+    let request_object_alg = alg_name(client.request_object_signing_alg);
+    let (id_token_enc_alg, id_token_enc) = split_registration(client.id_token_encryption);
+    let (userinfo_enc_alg, userinfo_enc) = split_registration(client.userinfo_encryption);
+    let (request_object_enc_alg, request_object_enc) =
+        split_registration(client.request_object_encryption);
+    let configs = as_document(client.configs.as_ref().map(serde_json::to_value))?;
+    let overrides = as_document(
         client
             .auth_flow_binding_overrides
             .as_ref()
@@ -290,12 +291,12 @@ fn read(row: Row) -> ClientModel {
         web_origins: row.get("web_origins"),
         redirect_uris: row.get("redirect_uris"),
         post_logout_redirect_uris: row.get("post_logout_redirect_uris"),
-        id_token_signed_response_alg: signing_alg(&row, "id_token_signed_response_alg"),
-        userinfo_signed_response_alg: signing_alg(&row, "userinfo_signed_response_alg"),
-        request_object_signing_alg: signing_alg(&row, "request_object_signing_alg"),
-        id_token_encryption: encryption(&row, "id_token_encryption"),
-        userinfo_encryption: encryption(&row, "userinfo_encryption"),
-        request_object_encryption: encryption(&row, "request_object_encryption"),
+        id_token_signed_response_alg: read_signing_alg(&row, "id_token_signed_response_alg"),
+        userinfo_signed_response_alg: read_signing_alg(&row, "userinfo_signed_response_alg"),
+        request_object_signing_alg: read_signing_alg(&row, "request_object_signing_alg"),
+        id_token_encryption: read_encryption(&row, "id_token_encryption"),
+        userinfo_encryption: read_encryption(&row, "userinfo_encryption"),
+        request_object_encryption: read_encryption(&row, "request_object_encryption"),
         client_authenticator_type: row.get("client_authenticator_type"),
         full_scope_allowed: row.get("full_scope_allowed"),
         authorization_code_flow_enabled: row.get("authorization_code_flow_enabled"),
@@ -330,7 +331,7 @@ fn read(row: Row) -> ClientModel {
 /// A value this build does not know reads as unregistered rather than as a
 /// string nothing can sign with. Held as text in the column because the
 /// catalogue lives in the build and not in the database.
-fn signing_alg(row: &Row, column: &str) -> Option<crypto::provider::SignAlg> {
+fn read_signing_alg(row: &Row, column: &str) -> Option<crypto::provider::SignAlg> {
     let named: Option<String> = row.get(column);
     serde_json::from_value(serde_json::Value::String(named?)).ok()
 }
@@ -341,7 +342,7 @@ fn signing_alg(row: &Row, column: &str) -> Option<crypto::provider::SignAlg> {
 /// `alg` alone takes the specified default. Reading them as two independent
 /// options would let the half-written state back into the model that was built
 /// to make it unrepresentable.
-fn encryption(row: &Row, registration: &str) -> Option<JweRegistration> {
+fn read_encryption(row: &Row, registration: &str) -> Option<JweRegistration> {
     let named: Option<String> = row.get(format!("{registration}_alg").as_str());
     let alg: JweAlgorithm = serde_json::from_value(serde_json::Value::String(named?)).ok()?;
     let enc = row
@@ -353,13 +354,13 @@ fn encryption(row: &Row, registration: &str) -> Option<JweRegistration> {
 }
 
 /// How the catalogue spells an algorithm, which is what the column holds.
-fn spelling(algorithm: Option<crypto::provider::SignAlg>) -> Option<String> {
+fn alg_name(algorithm: Option<crypto::provider::SignAlg>) -> Option<String> {
     let named = serde_json::to_value(algorithm?).ok()?;
     named.as_str().map(str::to_owned)
 }
 
 /// A registration split into the two columns that hold it, both absent together.
-fn pair(registration: Option<JweRegistration>) -> (Option<String>, Option<String>) {
+fn split_registration(registration: Option<JweRegistration>) -> (Option<String>, Option<String>) {
     let Some(registration) = registration else {
         return (None, None);
     };
@@ -371,7 +372,7 @@ fn pair(registration: Option<JweRegistration>) -> (Option<String>, Option<String
 }
 
 /// A serialised document on its way into a jsonb column.
-fn document(
+fn as_document(
     value: Option<Result<serde_json::Value, serde_json::Error>>,
 ) -> StoreResult<Option<serde_json::Value>> {
     value.transpose().map_err(|_| StoreError::Backend)

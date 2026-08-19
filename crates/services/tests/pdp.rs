@@ -12,13 +12,18 @@ use models::auditable::AuditableModel;
 use models::entities::authz::{Decision, ReportedDecision};
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use services::context::{Context, establish};
-use services::pdp::{Question, Resource, decide};
+use services::pdp::{Journal, Question, Resource, decide};
 use services::token::Verified;
 use store::providers::{authz_policies, sessions};
 use store::tenancy::TenantContext;
 use support::Fixture;
 
 const SESSION: &str = "session-1";
+
+/// A journal on its own connections, as the running server gives it.
+fn journal(fixture: &Fixture) -> Journal {
+    Journal::new(fixture.pool(), fixture.tenancy())
+}
 
 fn tenant() -> TenantContext {
     TenantContext::new("acme", "main")
@@ -171,6 +176,7 @@ async fn a_permission_answers_on_what_the_caller_holds() {
     let context = caller(&transaction).await;
     let answer = decide(
         &transaction,
+        &journal(&fixture),
         &context,
         question(
             Resource::Permission {
@@ -192,6 +198,7 @@ async fn a_permission_answers_on_what_the_caller_holds() {
         .unwrap();
     let answer = decide(
         &transaction,
+        &journal(&fixture),
         &context,
         question(
             Resource::Permission {
@@ -228,6 +235,7 @@ async fn what_nothing_protects_is_refused_for_its_own_reason() {
 
     let unknown = decide(
         &transaction,
+        &journal(&fixture),
         &context,
         question(
             Resource::Permission {
@@ -248,6 +256,7 @@ async fn what_nothing_protects_is_refused_for_its_own_reason() {
 
     let elsewhere = decide(
         &transaction,
+        &journal(&fixture),
         &context,
         question(
             Resource::Permission {
@@ -282,6 +291,7 @@ async fn testing_a_policy_reports_what_it_reached() {
 
     let answer = decide(
         &transaction,
+        &journal(&fixture),
         &context,
         question(
             Resource::Policy {
@@ -298,6 +308,7 @@ async fn testing_a_policy_reports_what_it_reached() {
     // A policy the set does not hold is not a refusal on the merits.
     let missing = decide(
         &transaction,
+        &journal(&fixture),
         &context,
         question(
             Resource::Policy {
@@ -326,6 +337,7 @@ async fn a_realm_with_no_schema_cannot_answer() {
     let context = caller(&transaction).await;
     let answer = decide(
         &transaction,
+        &journal(&fixture),
         &context,
         question(
             Resource::Relationship {
@@ -378,9 +390,14 @@ async fn every_decision_is_written_down() {
             relation: "view",
         },
     ] {
-        decide(&transaction, &context, question(resource, "read"))
-            .await
-            .unwrap();
+        decide(
+            &transaction,
+            &journal(&fixture),
+            &context,
+            question(resource, "read"),
+        )
+        .await
+        .unwrap();
     }
 
     let written = authz_policies::recent(&transaction, 10).await.unwrap();
@@ -445,9 +462,14 @@ definition document {
     };
 
     // No edge yet.
-    let before = decide(&transaction, &context, question(asking("view"), "view"))
-        .await
-        .unwrap();
+    let before = decide(
+        &transaction,
+        &journal(&fixture),
+        &context,
+        question(asking("view"), "view"),
+    )
+    .await
+    .unwrap();
     assert!(!before.permitted());
     assert_eq!(
         before.computed,
@@ -470,16 +492,26 @@ definition document {
     .await
     .unwrap();
 
-    let after = decide(&transaction, &context, question(asking("view"), "view"))
-        .await
-        .unwrap();
+    let after = decide(
+        &transaction,
+        &journal(&fixture),
+        &context,
+        question(asking("view"), "view"),
+    )
+    .await
+    .unwrap();
     assert!(after.permitted(), "the edge written beside it was not seen");
     assert_eq!(after.computed, Decision::Permit);
 
     // A relation the schema does not describe is not a refusal on the merits.
-    let unknown = decide(&transaction, &context, question(asking("fly"), "fly"))
-        .await
-        .unwrap();
+    let unknown = decide(
+        &transaction,
+        &journal(&fixture),
+        &context,
+        question(asking("fly"), "fly"),
+    )
+    .await
+    .unwrap();
     assert!(!unknown.permitted());
     assert_eq!(unknown.computed, Decision::Deny);
 
@@ -500,5 +532,70 @@ definition document {
     assert!(
         refs.contains(&"document:doc#view".to_owned()),
         "the record does not say which relation was asked about: {refs:?}"
+    );
+}
+
+/// An append that does not land is counted, and the decision it belonged to
+/// still stands. Written into the transaction the decision was reached in a
+/// refused insert aborts it, so everything after fails and an audit outage
+/// becomes a service outage.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_journal_that_cannot_write_does_not_take_the_decision_with_it() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    plant(&transaction).await;
+    protect(&transaction).await;
+    let context = caller(&transaction).await;
+    let journal = journal(&fixture);
+
+    // One decision, and its record, both land.
+    let asking = || {
+        question(
+            Resource::Permission {
+                server_id: "app",
+                resource: "doc",
+                scope: "read",
+            },
+            "read",
+        )
+    };
+    decide(&transaction, &journal, &context, asking())
+        .await
+        .expect("a decision");
+    assert_eq!(journal.missed(), 0);
+
+    // The same identifier again: the record cannot land, since a decision is
+    // written down once.
+    let repeated = Question {
+        decision_id: "collides",
+        ..asking()
+    };
+    decide(&transaction, &journal, &context, repeated)
+        .await
+        .expect("a first decision under this identifier");
+    let again = Question {
+        decision_id: "collides",
+        ..asking()
+    };
+    let answer = decide(&transaction, &journal, &context, again)
+        .await
+        .expect("the decision stands even though its record could not");
+
+    assert!(!answer.permitted(), "ada holds no role here");
+    assert_eq!(
+        journal.missed(),
+        1,
+        "an append that did not land was not counted"
+    );
+
+    // And the transaction the decision was reached in is still usable, which is
+    // the whole of what a connection of its own buys.
+    assert!(
+        decide(&transaction, &journal, &context, asking())
+            .await
+            .is_ok(),
+        "a failed append poisoned the transaction beside it"
     );
 }

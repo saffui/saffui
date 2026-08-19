@@ -9,7 +9,7 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use services::context::Established;
-use services::pdp::{Question, Resource, decide};
+use services::pdp::{Journal, Question, Resource, decide};
 use store::tenancy::Tenancy;
 
 /// Ask.
@@ -17,6 +17,7 @@ pub async fn ask(
     established: web::ReqData<Established>,
     pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<Tenancy>,
+    journal: web::Data<Journal>,
     asked: web::Json<Ask>,
 ) -> Result<HttpResponse, ApiError> {
     let asked = asked.into_inner();
@@ -62,6 +63,7 @@ pub async fn ask(
 
     let answer = decide(
         &transaction,
+        &journal,
         &established.context,
         Question {
             resource,

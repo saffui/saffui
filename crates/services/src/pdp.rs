@@ -13,13 +13,16 @@
 
 use authz::{Caller, Declared, Evaluable, Membership, Presented, Request, Resolved, Through};
 use chrono::Utc;
-use deadpool_postgres::Transaction;
+use deadpool_postgres::{Pool, Transaction};
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::{
     AuthzDecisionRecord, Decision, ReportedDecision, ResourceServerModel,
 };
 use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use store::providers::{authz_policies, authz_surface, organizations, roles};
+use store::tenancy::{Tenancy, TenantContext};
 
 use crate::context::{Acting, Context};
 use crate::rebac;
@@ -83,12 +86,9 @@ impl Resource<'_> {
     }
 }
 
-/// What was decided, and what the caller is told.
-///
-/// Two answers and not one, kept apart all the way out. What the caller hears
-/// has two values because there is no third answer to give somebody; what the
-/// evaluation reached has three, and a permissive application reporting a
-/// permit over a refusal is exactly the case an auditor is looking for.
+/// What was decided, and what the caller is told. Two answers, since a
+/// permissive application reporting a permit over a refusal is the case an
+/// auditor looks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Answer {
     pub reported: ReportedDecision,
@@ -104,10 +104,8 @@ impl Answer {
 
 /// One question, with everything needed to answer it and to write it down.
 ///
-/// The identifier is the caller's to mint. Nothing here can: an instant is
-/// shared by every decision one request makes, so two decisions would carry one
-/// identifier and be one record where there should be two. The layer that knows
-/// the request is the layer that can tell them apart.
+/// The identifier is the caller's to mint: an instant is shared by every
+/// decision one request makes, so two would be one record.
 #[derive(Debug, Clone, Copy)]
 pub struct Question<'a> {
     pub resource: Resource<'a>,
@@ -118,29 +116,70 @@ pub struct Question<'a> {
     pub trace_id: Option<&'a str>,
 }
 
+/// Where decisions are written down, on connections of its own.
+///
+/// Written into the caller's transaction a failed append poisons it, so an
+/// audit outage becomes a service outage. One that misses is counted instead.
+#[derive(Clone)]
+pub struct Journal {
+    pool: Pool,
+    tenancy: Tenancy,
+    missed: Arc<AtomicU64>,
+}
+
+impl Journal {
+    pub fn new(pool: Pool, tenancy: Tenancy) -> Self {
+        Self {
+            pool,
+            tenancy,
+            missed: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    /// How many decisions were reached and not written down.
+    pub fn missed(&self) -> u64 {
+        self.missed.load(Ordering::Relaxed)
+    }
+
+    async fn append(&self, tenant: &TenantContext, record: &AuthzDecisionRecord) -> bool {
+        let landed = async {
+            let mut connection = self.pool.get().await.ok()?;
+            let transaction = self
+                .tenancy
+                .transaction(&mut connection, tenant)
+                .await
+                .ok()?;
+            authz_policies::record(&transaction, record).await.ok()?;
+            transaction.commit().await.ok()
+        }
+        .await
+        .is_some();
+
+        if !landed {
+            self.missed.fetch_add(1, Ordering::Relaxed);
+        }
+        landed
+    }
+}
+
 /// Why a decision could not be reached at all.
 ///
 /// Distinct from a refusal. A question that could not be asked and a question
 /// answered no are different events, and only the second one is a decision.
-///
-/// Failing to record is fatal here, which is a position rather than an
-/// oversight. The record goes into the transaction the decision was asked in,
-/// so a refused insert does not merely go unrecorded: it poisons the
-/// transaction, and everything after it fails regardless. Answering yes on the
-/// way out of a transaction that cannot commit would be answering about work
-/// that never happened. Surviving it means giving the journal a connection of
-/// its own, which is a change to how this layer reaches the database.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Unanswerable {
     #[error("the store could not be read")]
     Unreadable,
-    #[error("the decision could not be recorded")]
+    /// A refusal reported as a permit, and not written down: the only place
+    /// such a refusal exists.
+    #[error("a masked refusal could not be recorded")]
     Unrecorded,
 }
 
 /// Decide, and record what was decided.
 pub async fn decide(
     transaction: &Transaction<'_>,
+    journal: &Journal,
     context: &Context,
     question: Question<'_>,
 ) -> Result<Answer, Unanswerable> {
@@ -165,7 +204,7 @@ pub async fn decide(
     };
 
     record(
-        transaction,
+        journal,
         context,
         &question,
         &answer,
@@ -180,18 +219,12 @@ pub async fn decide(
 }
 
 /// Everything the store says about this caller, owned so a borrowed request can
-/// be built from it.
+/// be built from it. Gathered once, since two engines reading their own would
+/// see two callers.
 ///
-/// Gathered once per decision. Read per engine, two engines in one request
-/// could see two callers, which is the shape the context exists to prevent one
-/// layer up.
-///
-/// `acting` is a set of one on purpose. The engine asks its confinement
-/// question against the organizations a caller belongs to, and a caller may
-/// belong to several; this hands it the one the caller said it was acting
-/// within, confirmed against the store. That is narrower, and narrower is the
-/// safe direction: an unplaced confined policy is silent as a permission and
-/// withholds as a condition, and neither of those grants.
+/// `acting` is a set of one: the organization the caller said it was acting
+/// within, which is narrower than everything it belongs to, and narrow is the
+/// safe direction.
 struct Facts {
     roles: BTreeSet<String>,
     groups: BTreeSet<String>,
@@ -306,14 +339,9 @@ async fn tested(
 
 /// Does this caller stand in this relation to this object?
 ///
-/// The engine next door. It reaches no policy and no policy reaches it: which
-/// one answers is decided by what is being asked about, above, and neither can
-/// overrule the other because neither is ever asked the same question.
-///
-/// Every way the walk can fail to reach an answer is `Indeterminate` and never
-/// a refusal. A walk that ran out of budget did not establish that the caller
-/// is unrelated, and reporting that as a no would let a graph decide what it is
-/// asked.
+/// The engine next door: neither it nor a policy can overrule the other, since
+/// neither is ever asked the other's question. Every way the walk fails to
+/// reach an answer is `Indeterminate`, never a refusal.
 async fn related(
     transaction: &Transaction<'_>,
     context: &Context,
@@ -435,10 +463,8 @@ fn enforcement(server: &ResourceServerModel) -> &'static str {
     server.enforcement_mode.as_str()
 }
 
-/// A question about something nothing protects.
-///
-/// Refused without reading an enforcement mode, because the mode belongs to an
-/// application and there is none, or to a resource it does not have.
+/// A question about something nothing protects, refused without reading an
+/// enforcement mode: the mode belongs to an application that is not there.
 fn nothing_to_protect(reason: &'static str) -> Answer {
     Answer {
         reported: ReportedDecision::Deny,
@@ -447,13 +473,9 @@ fn nothing_to_protect(reason: &'static str) -> Answer {
     }
 }
 
-/// Write down what was decided.
-///
-/// On every path. A decision returned and not recorded is one nobody can
-/// replay, and the two an auditor looks for are exactly the ones where the
-/// answer given and the answer reached differ.
+/// Write down what was decided, on every path.
 async fn record(
-    transaction: &Transaction<'_>,
+    journal: &Journal,
     context: &Context,
     question: &Question<'_>,
     answer: &Answer,
@@ -476,7 +498,12 @@ async fn record(
         occurred_at_millis: None,
     };
 
-    authz_policies::record(transaction, &record)
-        .await
-        .map_err(|_| Unanswerable::Unrecorded)
+    if journal.append(&context.tenant, &record).await {
+        return Ok(());
+    }
+
+    if answer.reported == ReportedDecision::Permit && answer.computed != Decision::Permit {
+        return Err(Unanswerable::Unrecorded);
+    }
+    Ok(())
 }

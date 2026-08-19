@@ -22,6 +22,7 @@ use std::collections::BTreeSet;
 use store::providers::{authz_policies, authz_surface, organizations, roles};
 
 use crate::context::{Acting, Context};
+use crate::rebac;
 
 /// What is being acted on.
 ///
@@ -43,11 +44,16 @@ pub enum Resource<'a> {
         resource: &'a str,
         scope: &'a str,
     },
-    /// An object governed by relationships rather than by policies. Its engine
-    /// is not built, and the arm below says so.
+    /// An object governed by relationships rather than by policies.
+    ///
+    /// The relation is part of what is being asked about, beside the object,
+    /// for the reason the scope is part of a permission question: what may be
+    /// done is half of it, and a verb arriving as free text somewhere else is a
+    /// verb nothing checks against what the schema declares.
     Relationship {
         object_type: &'a str,
         object_id: &'a str,
+        relation: &'a str,
     },
 }
 
@@ -71,7 +77,8 @@ impl Resource<'_> {
             Self::Relationship {
                 object_type,
                 object_id,
-            } => Some(format!("{object_type}:{object_id}")),
+                relation,
+            } => Some(format!("{object_type}:{object_id}#{relation}")),
         }
     }
 }
@@ -150,14 +157,11 @@ pub async fn decide(
             resource,
             scope,
         } => enforced(transaction, context, &facts, server_id, resource, scope).await?,
-        // Named, not forgotten. When the engine lands this arm calls it, and
-        // until then the record says the question reached a surface nothing
-        // answers rather than a caller being refused on the merits.
-        Resource::Relationship { .. } => Answer {
-            reported: ReportedDecision::Deny,
-            computed: Decision::Indeterminate,
-            detail: serde_json::json!({ "reasons": [{ "reason": "no-engine" }] }),
-        },
+        Resource::Relationship {
+            object_type,
+            object_id,
+            relation,
+        } => related(transaction, context, object_type, object_id, relation).await?,
     };
 
     record(
@@ -298,6 +302,70 @@ async fn tested(
         computed,
         detail: serde_json::json!({ "reasons": reasons }),
     })
+}
+
+/// Does this caller stand in this relation to this object?
+///
+/// The engine next door. It reaches no policy and no policy reaches it: which
+/// one answers is decided by what is being asked about, above, and neither can
+/// overrule the other because neither is ever asked the same question.
+///
+/// Every way the walk can fail to reach an answer is `Indeterminate` and never
+/// a refusal. A walk that ran out of budget did not establish that the caller
+/// is unrelated, and reporting that as a no would let a graph decide what it is
+/// asked.
+async fn related(
+    transaction: &Transaction<'_>,
+    context: &Context,
+    object_type: &str,
+    object_id: &str,
+    relation: &str,
+) -> Result<Answer, Unanswerable> {
+    let schema = match rebac::schema_of(transaction).await {
+        Ok(schema) => schema,
+        Err(why) => return Ok(unwalkable(&why)),
+    };
+
+    let walked = rebac::check(
+        transaction,
+        &schema,
+        rebac::Object {
+            object_type,
+            object_id,
+        },
+        relation,
+        rebac::Subject {
+            subject_type: context.principal.kind(),
+            subject_id: context.principal.id(),
+        },
+        rebac::CHECK,
+    )
+    .await;
+
+    Ok(match walked {
+        Ok(true) => Answer {
+            reported: ReportedDecision::Permit,
+            computed: Decision::Permit,
+            detail: serde_json::json!({ "reasons": [] }),
+        },
+        Ok(false) => Answer {
+            reported: ReportedDecision::Deny,
+            computed: Decision::Deny,
+            detail: serde_json::json!({ "reasons": [{ "reason": "unrelated" }] }),
+        },
+        Err(why) => unwalkable(&why),
+    })
+}
+
+/// A walk that reached no answer, recorded as one.
+fn unwalkable(why: &rebac::Unwalkable) -> Answer {
+    Answer {
+        reported: ReportedDecision::Deny,
+        computed: Decision::Indeterminate,
+        detail: serde_json::json!({
+            "reasons": [{ "reason": why.slug(), "says": why.to_string() }]
+        }),
+    }
 }
 
 /// May this caller do this to this?

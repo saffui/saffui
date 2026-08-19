@@ -146,8 +146,28 @@ jobs:
 
       - name: install a PKCS#11 token
         run: |
-          sudo apt-get update
-          sudo apt-get install -y softhsm2
+          # apt hangs rather than fails when a mirror stops answering, which is
+          # what turned a forty second step into a fifteen minute one that the
+          # job timeout had to end. Each attempt is bounded and retried, so an
+          # unreachable mirror costs two minutes and says which call it was.
+          apt_bounded() {
+            for attempt in 1 2 3; do
+              if sudo timeout 120 apt-get \
+                   -o Acquire::Retries=2 \
+                   -o Acquire::http::Timeout=20 \
+                   -o Acquire::https::Timeout=20 \
+                   "$@"; then
+                return 0
+              fi
+              echo "apt-get $1 did not finish on attempt $attempt" >&2
+              sleep 5
+            done
+            echo "apt-get $1 never finished; the package mirror is not answering" >&2
+            return 1
+          }
+
+          apt_bounded update
+          apt_bounded install -y softhsm2
 
           # Our own configuration and token directory, rather than the ones the
           # package lays down under /var/lib and /etc. Those belong to root, the
@@ -278,8 +298,12 @@ jobs:
         run: |
           set -o pipefail
           cargo test -p services -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/services.log"
-          if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/services.log")" -lt 4 ]; then
-            echo "the context and decision tests did not run; the job proved nothing." >&2
+          # One per integration suite that actually plants rows: the context, the
+          # decision point, and the relationship walk. The crate carries no unit
+          # tests, so its lib and doc-test lines report zero and are not counted.
+          # Raise this when a suite is added, and only then.
+          if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/services.log")" -lt 3 ]; then
+            echo "a services suite did not run; the job proved nothing." >&2
             exit 1
           fi
 

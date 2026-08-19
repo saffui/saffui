@@ -17,42 +17,67 @@
 //! arrangement. The type is already called `AdminAction`, and a third name for
 //! one thing is one more thing that can disagree.
 
+use actix_web::Route;
 use actix_web::http::Method;
+use actix_web::web;
 use models::entities::authz::AdminAction;
 
-/// One route, and the action it requires.
-#[derive(Debug, Clone, PartialEq, Eq)]
+use crate::api::rest::endpoints::admin::realms;
+
+/// One route: the verb, the path, what it costs, and what answers it.
+///
+/// The four together, once. Written apart, the mount and the table of costs are
+/// two lists that agree until one of them is edited, and the one that gets
+/// edited is the mount: a handler arrives, nothing charges it, and the guard
+/// refuses a route that looks like it should work.
+#[derive(Clone)]
 pub struct AdminRoute {
     pub method: Method,
     /// The registered pattern, not the request path: `/admin/realms/{realm}`
-    /// rather than `/admin/realms/main`, so the lookup is an equality and never
-    /// a match.
+    /// rather than `/admin/realms/main`, so the lookup is an equality.
     pub pattern: &'static str,
     pub action: AdminAction,
+    /// What actix mounts, once something answers it. A builder rather than a
+    /// value, since registering consumes a route and this table is read twice.
+    ///
+    /// `None` declares what the plane will carry before it carries it: the cost
+    /// is settled here first, so a handler arriving later cannot arrive without
+    /// one, and until then the route is simply not there.
+    pub handler: Option<fn() -> Route>,
 }
 
-/// Every admin route, with the action it requires.
+impl std::fmt::Debug for AdminRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {} ({:?})", self.method, self.pattern, self.action)
+    }
+}
+
+/// Every admin route.
 pub fn routes() -> Vec<AdminRoute> {
     vec![
         AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms",
             action: AdminAction::RealmList,
+            handler: Some(|| web::get().to(realms::list)),
         },
         AdminRoute {
             method: Method::POST,
             pattern: "/admin/realms",
             action: AdminAction::RealmCreate,
+            handler: None,
         },
         AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms/{realm}",
             action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(realms::get)),
         },
         AdminRoute {
             method: Method::PUT,
             pattern: "/admin/realms/{realm}",
             action: AdminAction::RealmWrite,
+            handler: None,
         },
     ]
 }

@@ -141,7 +141,7 @@ pub async fn establish(
 ) -> Result<Context, NotEstablished> {
     let session_id = access_token(verified)?;
     let principal = resolve(transaction, &verified.subject).await?;
-    live(&principal, verified, now)?;
+    live(&principal, verified)?;
     logged_in(transaction, &session_id, &tenant, &principal, now).await?;
 
     let acting = acting(transaction, &principal, verified).await?;
@@ -237,11 +237,26 @@ async fn resolve(
 ///
 /// A window and a withdrawal miss what an administrator reaches for: switching
 /// an account off, and invalidating everything minted for it before now.
-fn live(
-    principal: &Principal,
-    verified: &Verified,
-    now: DateTime<Utc>,
-) -> Result<(), NotEstablished> {
+/// When the token says it was minted, in whole seconds.
+///
+/// A fractional value is read rather than refused. It is what `set_issued_at`
+/// writes, so tokens carrying one are already in flight, and refusing them
+/// would turn a lever that was doing nothing into one that refuses everybody.
+/// Truncating is the safe direction: a token is judged as minted no later than
+/// it says.
+fn minted_at(verified: &Verified) -> Option<i64> {
+    let issued = verified.claims.get("iat")?;
+    issued
+        .as_i64()
+        .or_else(|| issued.as_f64().map(|seconds| seconds.trunc() as i64))
+}
+
+/// Whether the realm still stands behind the subject this token names.
+///
+/// Reads no clock. Both levers are about what the token says of itself against
+/// what the realm holds, and an instant would make the same token and the same
+/// row answer differently depending on when the question was asked.
+fn live(principal: &Principal, verified: &Verified) -> Result<(), NotEstablished> {
     let user = principal.user();
     let (enabled, not_before) = (user.enabled, user.not_before);
 
@@ -251,13 +266,11 @@ fn live(
 
     // Against what the token says of itself rather than against the instant, so
     // a token minted before the cut is refused however long it is presented
-    // after it.
+    // after it. A token that states no readable instant is refused rather than
+    // judged against the clock: falling back to now made every past cut pass,
+    // which is the whole lever doing nothing.
     if let Some(cut) = not_before {
-        let issued = verified
-            .claims
-            .get("iat")
-            .and_then(|iat| iat.as_i64())
-            .unwrap_or_else(|| now.timestamp());
+        let issued = minted_at(verified).ok_or(NotEstablished::Superseded)?;
         if issued < cut {
             return Err(NotEstablished::Superseded);
         }

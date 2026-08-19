@@ -454,3 +454,68 @@ async fn the_schema_refuses_what_no_provider_would_write() {
         "a session was opened with no state at all"
     );
 }
+
+/// A rotation states which token it replaces, so two refreshes racing on one
+/// session cannot both land. The loser is told it lost rather than quietly
+/// overwriting the winner, which would leave a client holding a token the row
+/// no longer names.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn only_one_of_two_racing_rotations_lands() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    sessions::open(&transaction, &session("s-1", 1_000))
+        .await
+        .unwrap();
+    sessions::open_client_session(&transaction, &client_session("cs-1", "s-1"))
+        .await
+        .unwrap();
+    sessions::count_refresh_use(&transaction, "cs-1")
+        .await
+        .unwrap();
+
+    assert!(
+        sessions::rotate_refresh_token(&transaction, "cs-1", Some("rt-s3cr3t"), "rt-next")
+            .await
+            .unwrap(),
+        "the holder of the current token rotates"
+    );
+
+    let (token, used) = sessions::refresh_token(&transaction, "cs-1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(token, "rt-next");
+    assert_eq!(
+        used, 0,
+        "the count follows the token it counts, so a successor does not inherit \
+         what its predecessor was presented for"
+    );
+
+    assert!(
+        !sessions::rotate_refresh_token(&transaction, "cs-1", Some("rt-s3cr3t"), "rt-forged")
+            .await
+            .unwrap(),
+        "the second refresh read the same token and must not land on top of the first"
+    );
+    assert_eq!(
+        sessions::refresh_token(&transaction, "cs-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .0,
+        "rt-next"
+    );
+
+    assert!(
+        !sessions::rotate_refresh_token(&transaction, "nobody", Some("rt-next"), "rt-x")
+            .await
+            .unwrap(),
+        "a session that does not exist rotates nothing"
+    );
+    transaction.commit().await.unwrap();
+}

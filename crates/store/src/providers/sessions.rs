@@ -242,6 +242,36 @@ pub async fn count_refresh_use(
         .map(|row| row.get(0)))
 }
 
+/// Put a new refresh token in place of the one presented.
+///
+/// A compare and swap rather than a write: the caller states which token it
+/// believes is current, and the row moves only if that is still true. Two
+/// refreshes racing on one session both read the same token and both mint a
+/// successor, and a plain write would let the later one land, leaving a client
+/// holding a token the row no longer names. Here one of them loses and is told
+/// so, which is the difference between a rotation and a silent overwrite.
+///
+/// The count goes back to zero with the swap. It counts presentations of the
+/// current token, so carrying it across a rotation would refuse a fresh token
+/// for what its predecessor was used for.
+pub async fn rotate_refresh_token(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    expected: Option<&str>,
+    replacement: &str,
+) -> StoreResult<bool> {
+    let swapped = transaction
+        .execute(
+            "UPDATE client_sessions \
+             SET current_refresh_token = $3, current_refresh_token_use_count = 0 \
+             WHERE session_id = $1 AND current_refresh_token IS NOT DISTINCT FROM $2",
+            &[&session_id, &expected, &replacement],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(swapped > 0)
+}
+
 fn notes_json(
     notes: Option<&std::collections::HashMap<String, String>>,
 ) -> StoreResult<Option<serde_json::Value>> {

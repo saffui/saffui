@@ -17,7 +17,7 @@ use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test};
 use chrono::Utc;
 use models::entities::authz::AdminAction;
-use server::api::config::{Plane as Mounted, mount};
+use server::api::config::{Plane as Mounted, register};
 use server::middleware::admin_policy::AdminPolicy;
 use store::tenancy::TenantContext;
 use support::{AUDIENCE, KID, PARTY, Plane, REALM, SCOPE, SECOND_KID, SUBJECT, SigningKey, claims};
@@ -37,7 +37,7 @@ async fn request(plane: &Plane, method: Method, path: &str, bearer: Option<&str>
         tenancy: plane.tenancy(),
         policy: policy(),
     };
-    let app = test::init_service(mount(App::new(), &mounted)).await;
+    let app = test::init_service(App::new().configure(register(&mounted))).await;
 
     let mut builder = test::TestRequest::with_uri(path).method(method);
     if let Some(bearer) = bearer {

@@ -9,7 +9,7 @@ mod support;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use models::entities::authz::AdminAction;
-use server::api::config::{Plane as Mounted, mount};
+use server::api::config::{Plane as Mounted, register};
 use server::middleware::admin_policy::AdminPolicy;
 use store::tenancy::TenantContext;
 use support::{AUDIENCE, PARTY, Plane, REALM, SCOPE, claims};
@@ -29,7 +29,7 @@ async fn ask(plane: &Plane, bearer: &str, body: serde_json::Value) -> (StatusCod
         tenancy: plane.tenancy(),
         policy: policy(),
     };
-    let app = test::init_service(mount(App::new(), &mounted)).await;
+    let app = test::init_service(App::new().configure(register(&mounted))).await;
 
     let request = test::TestRequest::post()
         .uri("/authz/decision")
@@ -194,7 +194,7 @@ async fn the_enforcement_scope_is_guarded() {
         tenancy: plane.tenancy(),
         policy: policy(),
     };
-    let app = test::init_service(mount(App::new(), &mounted)).await;
+    let app = test::init_service(App::new().configure(register(&mounted))).await;
     let request = test::TestRequest::post()
         .uri("/authz/decision")
         .set_json(serde_json::json!({

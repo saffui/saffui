@@ -7,12 +7,12 @@ mod support;
 
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
-use server::api::config::mount_ops;
+use server::api::config::register_ops;
 use server::api::rest::endpoints::ops::health::Vitals;
 use support::Plane;
 
 async fn ask(vitals: &Vitals, path: &str) -> (StatusCode, String) {
-    let app = test::init_service(mount_ops(App::new(), vitals)).await;
+    let app = test::init_service(App::new().configure(register_ops(vitals))).await;
     let response = test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
     let status = response.status();
     let body = String::from_utf8(test::read_body(response).await.to_vec()).unwrap_or_default();
@@ -117,7 +117,7 @@ async fn the_probes_ask_nothing_of_the_caller() {
     vitals.started();
 
     for path in ["/livez", "/readyz", "/startupz"] {
-        let app = test::init_service(mount_ops(App::new(), &vitals)).await;
+        let app = test::init_service(App::new().configure(register_ops(&vitals))).await;
         let response = test::call_service(
             &app,
             test::TestRequest::get()

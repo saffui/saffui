@@ -11,7 +11,7 @@ use std::time::Duration;
 use actix_web::{App, HttpServer};
 use clap::{Parser, Subcommand};
 use deadpool_postgres::{Manager, Pool};
-use server::api::config::{Plane, mount, mount_ops};
+use server::api::config::{Plane, register, register_ops};
 use server::api::rest::endpoints::ops::health::Vitals;
 use server::middleware::admin_policy::AdminPolicy;
 use store::tenancy::Tenancy;
@@ -74,7 +74,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     // Bound before anything is announced, and before the probes say started.
     let probes = {
         let vitals = vitals.clone();
-        HttpServer::new(move || mount_ops(App::new(), &vitals))
+        HttpServer::new(move || App::new().configure(register_ops(&vitals)))
             .bind(ops)
             .map_err(|reason| format!("cannot listen on {ops}: {reason}"))?
             .run()
@@ -82,7 +82,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
 
     // Bound before anything is announced, so a port already taken fails here
     // rather than after the log line says it is serving.
-    let plane = HttpServer::new(move || mount(App::new(), &plane))
+    let plane = HttpServer::new(move || App::new().configure(register(&plane)))
         .bind(bind)
         .map_err(|reason| format!("cannot listen on {bind}: {reason}"))?
         .run();

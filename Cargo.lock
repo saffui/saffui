@@ -1938,6 +1938,7 @@ dependencies = [
  "deadpool-postgres",
  "models",
  "pgcore",
+ "secrecy",
  "serde_json",
  "store",
  "thiserror",

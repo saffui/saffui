@@ -99,6 +99,49 @@ pub enum Unwalkable {
     },
     #[error("the store could not be read")]
     Unreadable,
+    /// The stored schema is in a shape this build does not know. Refused rather
+    /// than read as one it does, which is what the number beside it is for.
+    #[error("the stored schema is in format {found}, and this build reads {known}")]
+    UnknownFormat { found: i32, known: u32 },
+}
+
+impl Unwalkable {
+    /// A stable name for the journal, so a record can be counted and searched
+    /// rather than matched on prose.
+    pub fn slug(&self) -> &'static str {
+        match self {
+            Self::NoSchema => "no-schema",
+            Self::UnknownType { .. } => "unknown-type",
+            Self::TooDeep { .. } => "too-deep",
+            Self::TooManyQueries { .. } => "too-many-queries",
+            Self::TooWide { .. } => "too-wide",
+            Self::Ring { .. } => "ring",
+            Self::Undeclared { .. } => "undeclared-subject",
+            Self::Unreadable => "unreadable",
+            Self::UnknownFormat { .. } => "unknown-format",
+        }
+    }
+}
+
+/// This realm's schema, compiled, or why there is none to walk by.
+///
+/// The shape is checked against what this build reads. A document in a form it
+/// does not know is refused rather than deserialised into the nearest thing it
+/// has, which would be deciding by a schema nobody wrote.
+pub async fn schema_of(transaction: &Transaction<'_>) -> Result<CompiledSchema, Unwalkable> {
+    let stored = rebac::load_schema(transaction)
+        .await
+        .map_err(|_| Unwalkable::Unreadable)?
+        .ok_or(Unwalkable::NoSchema)?;
+
+    if stored.format != authz::rebac::FORMAT as i32 {
+        return Err(Unwalkable::UnknownFormat {
+            found: stored.format,
+            known: authz::rebac::FORMAT,
+        });
+    }
+
+    serde_json::from_value(stored.compiled).map_err(|_| Unwalkable::Unreadable)
 }
 
 /// Whether this subject stands in this member of this object.

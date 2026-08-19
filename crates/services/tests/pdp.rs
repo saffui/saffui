@@ -313,12 +313,11 @@ async fn testing_a_policy_reports_what_it_reached() {
     assert!(!missing.permitted());
 }
 
-/// A surface whose engine is not built says so. It is an arm of the dispatch
-/// rather than a question falling through, so the record names it and adding
-/// the engine fills this arm instead of adding a case nothing had.
+/// A realm with no relationship schema has nothing to walk by, and that is not
+/// a caller being refused on the merits.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn a_surface_with_no_engine_says_so() {
+async fn a_realm_with_no_schema_cannot_answer() {
     let fixture = Fixture::with_user().await;
     let mut connection = fixture.connection().await;
     let transaction = fixture.scoped(&mut connection, &tenant()).await;
@@ -332,6 +331,7 @@ async fn a_surface_with_no_engine_says_so() {
             Resource::Relationship {
                 object_type: "document",
                 object_id: "doc",
+                relation: "view",
             },
             "view",
         ),
@@ -345,7 +345,7 @@ async fn a_surface_with_no_engine_says_so() {
         Decision::Indeterminate,
         "a question nothing answered was recorded as having been decided"
     );
-    assert_eq!(answer.detail["reasons"][0]["reason"], "no-engine");
+    assert_eq!(answer.detail["reasons"][0]["reason"], "no-schema");
 }
 
 /// Every decision is written down, on every path, and the record keeps the two
@@ -375,6 +375,7 @@ async fn every_decision_is_written_down() {
         Resource::Relationship {
             object_type: "document",
             object_id: "doc",
+            relation: "view",
         },
     ] {
         decide(&transaction, &context, question(resource, "read"))
@@ -402,4 +403,102 @@ async fn every_decision_is_written_down() {
         .expect("the relationship decision");
     assert_eq!(unanswered.reported, ReportedDecision::Deny);
     assert_eq!(unanswered.computed, Decision::Indeterminate);
+}
+
+/// The other engine, reached through the same door and recorded the same way.
+/// Neither engine can overrule the other, because neither is ever asked the
+/// question the other answers.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_relationship_question_reaches_the_engine_next_door() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    plant(&transaction).await;
+
+    let source = "
+definition user {}
+definition document {
+    relation owner: user
+    permission view = owner
+}
+";
+    let compiled = authz::rebac::compile(&authz::rebac::parse(source).unwrap()).unwrap();
+    store::providers::rebac::put_schema(
+        &transaction,
+        &store::providers::rebac::StoredSchema {
+            format: authz::rebac::FORMAT as i32,
+            revision: 1,
+            source: source.to_owned(),
+            compiled: serde_json::to_value(&compiled).unwrap(),
+        },
+        Some("root"),
+    )
+    .await
+    .unwrap();
+
+    let context = caller(&transaction).await;
+    let asking = |relation: &'static str| Resource::Relationship {
+        object_type: "document",
+        object_id: "doc",
+        relation,
+    };
+
+    // No edge yet.
+    let before = decide(&transaction, &context, question(asking("view"), "view"))
+        .await
+        .unwrap();
+    assert!(!before.permitted());
+    assert_eq!(
+        before.computed,
+        Decision::Deny,
+        "an unrelated caller was recorded as unanswerable"
+    );
+
+    store::providers::rebac::relate(
+        &transaction,
+        "document",
+        "doc",
+        "owner",
+        &store::providers::rebac::Subject {
+            subject_type: "user".into(),
+            subject_id: "ada".into(),
+            subject_relation: String::new(),
+        },
+        Some("root"),
+    )
+    .await
+    .unwrap();
+
+    let after = decide(&transaction, &context, question(asking("view"), "view"))
+        .await
+        .unwrap();
+    assert!(after.permitted(), "the edge written beside it was not seen");
+    assert_eq!(after.computed, Decision::Permit);
+
+    // A relation the schema does not describe is not a refusal on the merits.
+    let unknown = decide(&transaction, &context, question(asking("fly"), "fly"))
+        .await
+        .unwrap();
+    assert!(!unknown.permitted());
+    assert_eq!(unknown.computed, Decision::Deny);
+
+    // And every one of the three is in the journal, named by what it was about.
+    let written = store::providers::authz_policies::recent(&transaction, 10)
+        .await
+        .unwrap();
+    let kinds: Vec<&str> = written.iter().map(|e| e.resource_kind.as_str()).collect();
+    assert_eq!(
+        kinds.iter().filter(|kind| **kind == "relationship").count(),
+        3
+    );
+    let refs: Vec<String> = written
+        .iter()
+        .filter(|e| e.resource_kind == "relationship")
+        .filter_map(|e| e.resource_ref.clone())
+        .collect();
+    assert!(
+        refs.contains(&"document:doc#view".to_owned()),
+        "the record does not say which relation was asked about: {refs:?}"
+    );
 }

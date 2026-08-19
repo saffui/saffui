@@ -520,3 +520,209 @@ async fn a_node_reached_by_several_paths_is_walked_once() {
         "the shared group was walked once per path"
     );
 }
+
+/// The one door edges come in by. Everything the schema does not describe is
+/// refused here, which is the last moment anything can say so: stored, such an
+/// edge is never matched, and the grant somebody thought they made was never
+/// made.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_edge_the_schema_does_not_describe_is_refused_at_the_door() {
+    use services::rebac::{Unwritable, relate as write};
+
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let compiled = schema();
+    plant(&transaction, &compiled).await;
+
+    // The ordinary case first, so every refusal below is the arranged one.
+    write(
+        &transaction,
+        "document",
+        "doc",
+        "owner",
+        &named("user", "ada"),
+        Some("root"),
+    )
+    .await
+    .expect("an edge the schema describes");
+
+    // A type nothing declares.
+    assert!(matches!(
+        write(
+            &transaction,
+            "spaceship",
+            "x",
+            "owner",
+            &named("user", "ada"),
+            None
+        )
+        .await,
+        Err(Unwritable::UnknownType { .. })
+    ));
+
+    // A relation the type does not have.
+    assert!(matches!(
+        write(
+            &transaction,
+            "document",
+            "doc",
+            "pilots",
+            &named("user", "ada"),
+            None
+        )
+        .await,
+        Err(Unwritable::NoSuchRelation { .. })
+    ));
+
+    // A permission stores no edges. The reference looks the member up and
+    // accepts whatever it finds, so this row is stored and never read.
+    assert!(
+        matches!(
+            write(
+                &transaction,
+                "document",
+                "doc",
+                "view",
+                &named("user", "ada"),
+                None
+            )
+            .await,
+            Err(Unwritable::NotARelation { .. })
+        ),
+        "an edge was written against a permission"
+    );
+
+    // `owner` accepts a user and nothing else. Only answerable because the
+    // declared types survive compilation.
+    assert!(
+        matches!(
+            write(
+                &transaction,
+                "document",
+                "doc",
+                "owner",
+                &named("group", "staff"),
+                None
+            )
+            .await,
+            Err(Unwritable::NotAccepted { .. })
+        ),
+        "a relation accepted a subject type it never declared"
+    );
+
+    // A userset the relation does not declare. `viewer` takes `group#member`,
+    // so the holders of anything else on a group are not what it accepts.
+    assert!(
+        matches!(
+            write(
+                &transaction,
+                "document",
+                "doc",
+                "viewer",
+                &holders("group", "staff", "nonesuch"),
+                None
+            )
+            .await,
+            Err(Unwritable::NotAccepted { .. })
+        ),
+        "a relation accepted a userset it never declared"
+    );
+
+    // And the userset that does exist is written.
+    write(
+        &transaction,
+        "document",
+        "doc",
+        "viewer",
+        &holders("group", "staff", "member"),
+        Some("root"),
+    )
+    .await
+    .expect("a userset the schema describes");
+}
+
+/// Removing an edge is not validated, and the asymmetry is the point: writing
+/// one the schema does not describe makes a grant nobody can use, removing one
+/// takes a grant away. A realm whose schema narrowed has edges it can no longer
+/// write, and refusing to delete those would leave them stuck.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_edge_the_schema_no_longer_describes_can_still_be_taken_back() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let compiled = schema();
+    plant(&transaction, &compiled).await;
+
+    // Planted the raw way, standing in for an edge written under a wider schema.
+    relate(
+        &transaction,
+        "document",
+        "doc",
+        "owner",
+        named("group", "staff"),
+    )
+    .await;
+
+    assert!(
+        services::rebac::unrelate(
+            &transaction,
+            "document",
+            "doc",
+            "owner",
+            &named("group", "staff")
+        )
+        .await
+        .unwrap(),
+        "an edge the schema no longer describes could not be removed"
+    );
+}
+
+/// Publishing is one act, so the compiled form is always the compilation of the
+/// source beside it. Given the two separately a caller can store a document
+/// that is not what the source says, and then a realm shows one schema and
+/// decides by another.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_published_schema_is_the_compilation_of_its_own_source() {
+    use services::rebac::{Unpublishable, publish};
+
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+
+    let compiled = publish(&transaction, SCHEMA, Some("root"))
+        .await
+        .expect("a schema that reads and compiles");
+
+    // What was stored is what was returned, and what the walk will read.
+    let stored = rebac::load_schema(&transaction).await.unwrap().unwrap();
+    assert_eq!(stored.source, SCHEMA);
+    assert_eq!(stored.format, authz::rebac::FORMAT as i32);
+    assert_eq!(
+        serde_json::from_value::<authz::rebac::CompiledSchema>(stored.compiled).unwrap(),
+        compiled,
+        "the stored form is not the compilation of the stored source"
+    );
+
+    // A source that does not read is refused before anything is stored.
+    assert!(matches!(
+        publish(&transaction, "definition d {", None).await,
+        Err(Unpublishable::Unreadable(_))
+    ));
+
+    // And one that reads and does not compile.
+    assert!(matches!(
+        publish(&transaction, "definition d { permission p = p }", None).await,
+        Err(Unpublishable::Faulty(_))
+    ));
+
+    // Neither replaced what was there.
+    let after = rebac::load_schema(&transaction).await.unwrap().unwrap();
+    assert_eq!(
+        after.source, SCHEMA,
+        "a schema that was refused replaced the one that stood"
+    );
+}

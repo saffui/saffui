@@ -144,6 +144,199 @@ pub async fn schema_of(transaction: &Transaction<'_>) -> Result<CompiledSchema, 
     serde_json::from_value(stored.compiled).map_err(|_| Unwalkable::Unreadable)
 }
 
+/// Why a schema was not published.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Unpublishable {
+    #[error("{0}")]
+    Unreadable(authz::rebac::Unreadable),
+    #[error("{0}")]
+    Faulty(authz::rebac::Faults),
+    #[error("the schema could not be written")]
+    Unwritable,
+}
+
+/// Publish a realm's schema: read it, compile it, and store both halves.
+///
+/// One act, so the compiled form is always the compilation of the source beside
+/// it. Given the two separately, a caller can store a compiled document that is
+/// not what the source says, and then a realm shows one schema and decides by
+/// another. The reference's import does exactly that, deliberately, to avoid
+/// recompiling what was exported; the same end is reached here by never taking
+/// the two apart.
+pub async fn publish(
+    transaction: &Transaction<'_>,
+    source: &str,
+    actor: Option<&str>,
+) -> Result<CompiledSchema, Unpublishable> {
+    let read = authz::rebac::parse(source).map_err(Unpublishable::Unreadable)?;
+    let compiled = authz::rebac::compile(&read).map_err(Unpublishable::Faulty)?;
+
+    rebac::put_schema(
+        transaction,
+        &rebac::StoredSchema {
+            format: authz::rebac::FORMAT as i32,
+            revision: 1,
+            source: source.to_owned(),
+            compiled: serde_json::to_value(&compiled).map_err(|_| Unpublishable::Unwritable)?,
+        },
+        actor,
+    )
+    .await
+    .map_err(|_| Unpublishable::Unwritable)?;
+
+    Ok(compiled)
+}
+
+/// Why an edge was not written.
+///
+/// An edge the schema does not describe is not a small mistake. It is stored,
+/// it is never matched, and the grant somebody thought they made was never
+/// made: writing it is the last moment anything can say so.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Unwritable {
+    #[error("the realm has no relationship schema to write against")]
+    NoSchema,
+    #[error("the schema does not describe a '{object_type}'")]
+    UnknownType { object_type: String },
+    #[error("'{object_type}' has no relation named '{relation}'")]
+    NoSuchRelation {
+        object_type: String,
+        relation: String,
+    },
+    /// A permission computes from edges; it does not store them. Writing one
+    /// against it stores a row nothing will ever read.
+    #[error("'{relation}' on '{object_type}' is a permission, so it stores no edges")]
+    NotARelation {
+        object_type: String,
+        relation: String,
+    },
+    /// The relation declares what may stand in it, and this is not one of them.
+    /// Only checkable because the declared types survive compilation.
+    #[error("'{relation}' on '{object_type}' does not accept {names}")]
+    NotAccepted {
+        object_type: String,
+        relation: String,
+        names: String,
+    },
+    #[error("the store could not be written")]
+    Unwritable,
+}
+
+/// Record an edge, once the schema says it means something.
+///
+/// The one door edges come in by. Validation and the write share the caller's
+/// transaction, so the schema an edge is checked against is the schema it is
+/// stored under: read on another connection, a schema narrowed a moment ago
+/// would still be admitting what it no longer allows.
+///
+/// Three things are checked that the reference does not. That the member named
+/// is a relation rather than a permission, since a permission computes from
+/// edges and stores none. That the relation accepts this subject, which is only
+/// answerable because the declared types survive compilation. And that a
+/// userset names a relation rather than a permission on the subject's own type,
+/// which the compiler admits because it checks a userset against members.
+pub async fn relate(
+    transaction: &Transaction<'_>,
+    object_type: &str,
+    object_id: &str,
+    relation: &str,
+    subject: &rebac::Subject,
+    actor: Option<&str>,
+) -> Result<(), Unwritable> {
+    let schema = schema_of(transaction).await.map_err(|why| match why {
+        Unwalkable::NoSchema => Unwritable::NoSchema,
+        _ => Unwritable::Unwritable,
+    })?;
+
+    if !schema.has_type(object_type) {
+        return Err(Unwritable::UnknownType {
+            object_type: object_type.to_owned(),
+        });
+    }
+
+    let declared = match schema.lookup(object_type, relation) {
+        None => {
+            return Err(Unwritable::NoSuchRelation {
+                object_type: object_type.to_owned(),
+                relation: relation.to_owned(),
+            });
+        }
+        Some(Rule::Direct { subjects }) => subjects,
+        // Every other rule is a permission's body.
+        Some(_) => {
+            return Err(Unwritable::NotARelation {
+                object_type: object_type.to_owned(),
+                relation: relation.to_owned(),
+            });
+        }
+    };
+
+    if !accepts(declared, subject) {
+        return Err(Unwritable::NotAccepted {
+            object_type: object_type.to_owned(),
+            relation: relation.to_owned(),
+            names: describe(subject),
+        });
+    }
+
+    // What the relation accepts has already been matched, so the userset names
+    // a member the schema declares. What is left is that it names a relation:
+    // the compiler admits `group#some_permission`, since a userset is checked
+    // against members, and a permission stores no edges for anyone to hold.
+    if !subject.subject_relation.is_empty() {
+        match schema.lookup(&subject.subject_type, &subject.subject_relation) {
+            Some(Rule::Direct { .. }) => {}
+            _ => {
+                return Err(Unwritable::NoSuchRelation {
+                    object_type: subject.subject_type.clone(),
+                    relation: subject.subject_relation.clone(),
+                });
+            }
+        }
+    }
+
+    rebac::relate(
+        transaction,
+        object_type,
+        object_id,
+        relation,
+        subject,
+        actor,
+    )
+    .await
+    .map_err(|_| Unwritable::Unwritable)
+}
+
+/// Take an edge back, and say whether there was one.
+///
+/// Unvalidated on purpose, and the asymmetry is the point: writing an edge the
+/// schema does not describe makes a grant nobody can use, while removing one
+/// takes a grant away. A realm whose schema narrowed has edges it can no longer
+/// write, and refusing to delete those would leave them stuck.
+pub async fn unrelate(
+    transaction: &Transaction<'_>,
+    object_type: &str,
+    object_id: &str,
+    relation: &str,
+    subject: &rebac::Subject,
+) -> Result<bool, Unwritable> {
+    rebac::unrelate(transaction, object_type, object_id, relation, subject)
+        .await
+        .map_err(|_| Unwritable::Unwritable)
+}
+
+/// How an edge names its subject, for a refusal to quote back.
+fn describe(subject: &rebac::Subject) -> String {
+    if subject.subject_relation.is_empty() {
+        format!("a {}", subject.subject_type)
+    } else {
+        format!(
+            "the holders of '{}' on a {}",
+            subject.subject_relation, subject.subject_type
+        )
+    }
+}
+
 /// Whether this subject stands in this member of this object.
 pub async fn check(
     transaction: &Transaction<'_>,

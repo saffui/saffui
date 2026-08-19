@@ -79,7 +79,18 @@ pub async fn load_schema(transaction: &Transaction<'_>) -> StoreResult<Option<St
         }))
 }
 
-/// Record an edge. Writing one twice writes it once.
+/// Record an edge, as a row and nothing more.
+///
+/// Nothing here reads the schema, because this layer cannot: the compiled form
+/// belongs to the crate that decides by it. What that means for a caller is
+/// that this writes edges the schema does not describe, which are stored, never
+/// matched, and a grant somebody thought they made and did not.
+///
+/// The door edges should come in by is `services::rebac::relate`, which asks
+/// the schema first. This one is for a caller replaying edges that were already
+/// validated, an import being the case that exists.
+///
+/// Writing one twice writes it once.
 pub async fn relate(
     transaction: &Transaction<'_>,
     object_type: &str,

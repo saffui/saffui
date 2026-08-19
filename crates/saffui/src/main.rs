@@ -6,13 +6,16 @@
 //! anything needed it would have been a shape chosen in advance.
 
 use std::process::ExitCode;
+use std::time::Duration;
 
 use actix_web::{App, HttpServer};
 use clap::{Parser, Subcommand};
 use deadpool_postgres::{Manager, Pool};
-use server::api::config::{Plane, mount};
+use server::api::config::{Plane, mount, mount_ops};
+use server::api::rest::endpoints::ops::health::Vitals;
 use server::middleware::admin_policy::AdminPolicy;
 use store::tenancy::Tenancy;
+use tokio::signal;
 use tokio_postgres::NoTls;
 
 #[derive(Parser)]
@@ -33,15 +36,19 @@ enum Command {
         /// Where to listen.
         #[arg(long, default_value = "127.0.0.1:8080")]
         bind: String,
+        /// Where an orchestrator asks. Its own port, so a probe never queues
+        /// behind traffic and is not reachable from wherever traffic is.
+        #[arg(long, default_value = "127.0.0.1:8081")]
+        ops: String,
     },
 }
 
 fn main() -> ExitCode {
-    let Command::Serve { bind } = Cli::parse().command;
+    let Command::Serve { bind, ops } = Cli::parse().command;
 
     let outcome = tokio::runtime::Runtime::new()
         .map_err(|reason| reason.to_string())
-        .and_then(|runtime| runtime.block_on(serve(&bind)));
+        .and_then(|runtime| runtime.block_on(serve(&bind, &ops)));
 
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
@@ -52,18 +59,63 @@ fn main() -> ExitCode {
     }
 }
 
-async fn serve(bind: &str) -> Result<(), String> {
+async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     let plane = plane()?;
+
+    // What this build reads. A pod whose database has migrated past it cannot
+    // read what its peers now write, so it takes itself out of service.
+    let schema = store::schema::migrations()
+        .iter()
+        .map(pgcore::migrations::Migration::version)
+        .max()
+        .unwrap_or(0);
+    let vitals = Vitals::new(plane.pool.clone(), schema);
+
+    // Bound before anything is announced, and before the probes say started.
+    let probes = {
+        let vitals = vitals.clone();
+        HttpServer::new(move || mount_ops(App::new(), &vitals))
+            .bind(ops)
+            .map_err(|reason| format!("cannot listen on {ops}: {reason}"))?
+            .run()
+    };
 
     // Bound before anything is announced, so a port already taken fails here
     // rather than after the log line says it is serving.
-    HttpServer::new(move || mount(App::new(), &plane))
+    let plane = HttpServer::new(move || mount(App::new(), &plane))
         .bind(bind)
         .map_err(|reason| format!("cannot listen on {bind}: {reason}"))?
-        .run()
-        .await
-        .map_err(|reason| reason.to_string())
+        .run();
+
+    // Both ports are bound, so a probe asking now gets a true answer.
+    vitals.started();
+
+    let draining = vitals.clone();
+    let plane_handle = plane.handle();
+    let probes_handle = probes.handle();
+    tokio::spawn(async move {
+        if signal::ctrl_c().await.is_err() {
+            return;
+        }
+        // Readiness fails first, and only then is anything stopped. Stopping
+        // first would refuse requests an orchestrator is still routing here,
+        // since it learns this pod is going away one probe period later.
+        draining.drain();
+        tokio::time::sleep(DRAIN).await;
+        plane_handle.stop(true).await;
+        probes_handle.stop(true).await;
+    });
+
+    let (served, _) = tokio::join!(plane, probes);
+    served.map_err(|reason| reason.to_string())
 }
+
+/// How long readiness is allowed to be false before anything is stopped.
+///
+/// Longer than a probe period so an orchestrator sees the pod leave, and
+/// shorter than any sane grace period so what is in flight finishes before the
+/// process is killed rather than asked.
+const DRAIN: Duration = Duration::from_secs(5);
 
 /// Everything the plane needs, read once at startup.
 ///

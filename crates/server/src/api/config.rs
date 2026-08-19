@@ -11,6 +11,8 @@ use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 
 use crate::api::rest::endpoints::authz::decision;
+use crate::api::rest::endpoints::ops::health;
+use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
 use crate::middleware::admin_policy::AdminPolicy;
@@ -23,6 +25,28 @@ pub struct Plane {
     pub pool: Pool,
     pub tenancy: Tenancy,
     pub policy: AdminPolicy,
+}
+
+/// Mount the probes an orchestrator reads.
+///
+/// Its own listener, and nothing else on it. Sharing the data plane's port
+/// means a probe queues behind real traffic, competes with its rate limiter,
+/// and is reachable from wherever that port is: an orchestrator's questions and
+/// a caller's are not the same question and do not belong on one door.
+pub fn mount_ops<T, B>(app: App<T>, vitals: &Vitals) -> App<T>
+where
+    T: ServiceFactory<
+            ServiceRequest,
+            Config = (),
+            Response = ServiceResponse<B>,
+            Error = actix_web::Error,
+            InitError = (),
+        >,
+{
+    app.app_data(web::Data::new(vitals.clone()))
+        .service(web::resource("/livez").route(web::get().to(health::alive)))
+        .service(web::resource("/readyz").route(web::get().to(health::ready)))
+        .service(web::resource("/startupz").route(web::get().to(health::started)))
 }
 
 /// Mount the admin scope, guarded.

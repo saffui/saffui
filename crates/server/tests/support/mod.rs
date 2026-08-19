@@ -41,23 +41,32 @@ use tokio_postgres::{Config, NoTls};
 static DATABASE: Mutex<()> = Mutex::const_new(());
 
 const KEK: &str = "a-deployment-wrapping-key-of-decent-length";
+#[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const TENANT: &str = "acme";
+#[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const REALM: &str = "main";
 
 /// The client the console asks for its tokens as. What `azp` carries.
+#[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const PARTY: &str = "saffui-console";
 
 /// The login every token here is bound to. A logout closes it, and the plane
 /// refuses the token that named it.
+#[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const SESSION: &str = "session-1";
+#[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const SUBJECT: &str = "ada";
+#[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const AUDIENCE: &str = "saffui-admin";
+#[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const SCOPE: &str = "admin";
 /// The key the realm publishes, named so a test can ask for a token signed by
 /// something else.
+#[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const KID: &str = "kid-1";
 /// A second published key, whose private half carries no name of its own, so a
 /// token signed with it can name whichever key a test wants it to name.
+#[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const SECOND_KID: &str = "kid-2";
 
 fn owner_config() -> Config {
@@ -127,6 +136,10 @@ impl SigningKey {
     /// The name is a parameter rather than this key's own, so a test can name
     /// one key and sign with another and prove that picking by name is what
     /// actually happens.
+    #[allow(
+        dead_code,
+        reason = "not every suite mints a token or mounts the plane"
+    )]
     pub fn sign(&self, payload: &JwtPayload, named: &str) -> String {
         let mut header = JwsHeader::new();
         header.set_token_type("JWT");
@@ -141,6 +154,10 @@ impl SigningKey {
 /// Built complete and then edited, so a test that wants a token missing one
 /// thing names that thing rather than assembling a whole payload and getting a
 /// second one wrong by accident.
+#[allow(
+    dead_code,
+    reason = "not every suite mints a token or mounts the plane"
+)]
 pub fn claims() -> JwtPayload {
     let mut payload = JwtPayload::new();
     payload.set_issuer(REALM);
@@ -229,6 +246,10 @@ impl Plane {
         self.pool.clone()
     }
 
+    #[allow(
+        dead_code,
+        reason = "not every suite mints a token or mounts the plane"
+    )]
     pub fn tenancy(&self) -> Tenancy {
         self.tenancy.clone()
     }
@@ -249,6 +270,10 @@ impl Plane {
     }
 
     /// A token this realm signed, naming the key it published.
+    #[allow(
+        dead_code,
+        reason = "not every suite mints a token or mounts the plane"
+    )]
     pub fn token(&self, payload: &JwtPayload) -> String {
         self.key.sign(payload, &self.key.kid)
     }

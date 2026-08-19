@@ -20,4 +20,4 @@ actix-web = { workspace = true }
 clap = { workspace = true }
 deadpool-postgres = { workspace = true }
 tokio-postgres = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal", "time"] }

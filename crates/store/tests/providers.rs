@@ -1,7 +1,8 @@
 //! What the providers do under the rules, against a database.
 
+use crypto::password::storage::StoredPassword;
 use crypto::provider::openssl::OpenSslProvider;
-use crypto::provider::{CryptoConfig, CryptoProvider};
+use crypto::provider::{Argon2Params, CryptoConfig, CryptoProvider};
 use deadpool_postgres::{Manager, Pool};
 use models::auditable::AuditableModel;
 use models::entities::acr::AcrLoaMap;
@@ -476,11 +477,23 @@ async fn a_loaded_client_carries_no_credential() {
     );
     assert_eq!(loaded.registration_token, None);
 
-    let secret = clients::load_secret(&transaction, "app")
+    assert!(
+        clients::load_secret(&transaction, "app")
+            .await
+            .unwrap()
+            .is_none(),
+        "create wrote a credential it has nothing to hash with"
+    );
+
+    clients::rotate_secret(&transaction, "app", "$argon2id$stand-in", None)
         .await
-        .unwrap()
-        .expect("the deliberate call reaches it");
-    assert_eq!(secret.expose(), "s3cr3t-value");
+        .unwrap();
+    assert_eq!(
+        clients::load_secret(&transaction, "app").await.unwrap(),
+        Some(clients::StoredSecret::Hashed(
+            "$argon2id$stand-in".to_owned()
+        ))
+    );
 
     assert!(clients::exists(&transaction, "app").await.unwrap());
     assert!(!clients::exists(&transaction, "nobody").await.unwrap());
@@ -526,30 +539,21 @@ async fn rotating_a_secret_stamps_when_it_happened() {
     assert_eq!(before.secret_created_at, None, "it was minted without one");
 
     assert!(
-        clients::rotate_secret(
-            &transaction,
-            "app",
-            &ClientSecret::new("fresh".into()),
-            None
-        )
-        .await
-        .unwrap()
+        clients::rotate_secret(&transaction, "app", "$argon2id$fresh", None)
+            .await
+            .unwrap()
     );
 
     let after = clients::load(&transaction, "app").await.unwrap().unwrap();
     assert!(after.secret_created_at.is_some(), "the rotation stamped it");
     assert_eq!(after.metadata.version, 2);
     assert_eq!(
-        clients::load_secret(&transaction, "app")
-            .await
-            .unwrap()
-            .unwrap()
-            .expose(),
-        "fresh"
+        clients::load_secret(&transaction, "app").await.unwrap(),
+        Some(clients::StoredSecret::Hashed("$argon2id$fresh".to_owned()))
     );
 
     assert!(
-        !clients::rotate_secret(&transaction, "nobody", &ClientSecret::new("x".into()), None)
+        !clients::rotate_secret(&transaction, "nobody", "$argon2id$x", None)
             .await
             .unwrap(),
         "a secret was rotated on a client this transaction cannot see"
@@ -1110,4 +1114,186 @@ async fn a_clients_registrations_survive_being_written_and_read_back() {
             .is_err(),
         "a content encryption was dropped from under the algorithm it goes with"
     );
+}
+
+/// The column is what an attacker reads, so that is what the test reads. A
+/// rotation that wrote a hash and left the plaintext behind would pass every
+/// assertion about `load_secret` and change nothing about who can authenticate
+/// as this client.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_raw_column_yields_nothing_a_client_could_present() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    plant_realm(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+
+    let client = ClientCreateModel {
+        name: "app".into(),
+        display_name: "App".into(),
+        description: String::new(),
+        enabled: Some(true),
+    }
+    .into_model(
+        "app".to_owned(),
+        "main".to_owned(),
+        AuditableModel::from_creator("acme".to_owned(), "root".to_owned()),
+    );
+    clients::create(&transaction, &client).await.unwrap();
+
+    // What a binary older than V018 left in the row. The rotation has to clear
+    // it: writing the hash beside it would leave the credential it replaced
+    // both readable and still accepted by that older binary.
+    transaction
+        .execute(
+            "UPDATE clients SET secret = 'the-one-being-replaced' WHERE client_id = 'app'",
+            &[],
+        )
+        .await
+        .unwrap();
+
+    let hashed = hash("presented-by-the-client");
+    clients::rotate_secret(&transaction, "app", &hashed, None)
+        .await
+        .unwrap();
+
+    let row = transaction
+        .query_one(
+            "SELECT secret, secret_hash FROM clients WHERE client_id = 'app'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        row.get::<_, Option<String>>("secret"),
+        None,
+        "the plaintext column still holds a credential"
+    );
+    let stored: String = row.get("secret_hash");
+    assert!(
+        stored.starts_with("$argon2id$"),
+        "what the column holds is not a hash: {stored}"
+    );
+    assert!(
+        !stored.contains("presented-by-the-client"),
+        "the secret is readable from the column that replaced it"
+    );
+
+    transaction.commit().await.unwrap();
+}
+
+/// A row an older binary wrote is checked once more and then replaced. Until it
+/// is, the plaintext is what an attacker reads, so the conversion has to happen
+/// on the authentication that proves it rather than on some later sweep.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_row_written_before_the_migration_converts_when_it_authenticates() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    plant_realm(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+
+    let client = ClientCreateModel {
+        name: "app".into(),
+        display_name: "App".into(),
+        description: String::new(),
+        enabled: Some(true),
+    }
+    .into_model(
+        "app".to_owned(),
+        "main".to_owned(),
+        AuditableModel::from_creator("acme".to_owned(), "root".to_owned()),
+    );
+    clients::create(&transaction, &client).await.unwrap();
+
+    // What the binary before V018 left behind.
+    transaction
+        .execute(
+            "UPDATE clients SET secret = 'legacy-value' WHERE client_id = 'app'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        clients::load_secret(&transaction, "app").await.unwrap(),
+        Some(clients::StoredSecret::Plain(ClientSecret::new(
+            "legacy-value".to_owned()
+        )))
+    );
+
+    let hashed = hash("legacy-value");
+    assert!(
+        clients::convert_secret(&transaction, "app", &hashed)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        clients::load_secret(&transaction, "app").await.unwrap(),
+        Some(clients::StoredSecret::Hashed(hashed.clone())),
+        "the hash did not win once it was written"
+    );
+    assert_eq!(
+        transaction
+            .query_one("SELECT secret FROM clients WHERE client_id = 'app'", &[])
+            .await
+            .unwrap()
+            .get::<_, Option<String>>("secret"),
+        None,
+        "the plaintext survived its own conversion"
+    );
+
+    assert!(
+        !clients::convert_secret(&transaction, "app", &hash("something-else"))
+            .await
+            .unwrap(),
+        "a converted row was converted again, which would let a second caller \
+         write over a hash it never proved"
+    );
+
+    // The state a rolling update produces: this binary wrote a hash, the older
+    // one then wrote plaintext beside it. Preferring the plaintext would let the
+    // old binary's leftovers undo a rotation this one performed.
+    transaction
+        .execute(
+            "UPDATE clients SET secret = 'written-by-the-old-binary' WHERE client_id = 'app'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        clients::load_secret(&transaction, "app").await.unwrap(),
+        Some(clients::StoredSecret::Hashed(hashed)),
+        "a plaintext column written beside a hash was preferred to it"
+    );
+
+    transaction.commit().await.unwrap();
+}
+
+/// An Argon2id string of the value a client would present.
+fn hash(secret: &str) -> String {
+    let provider = OpenSslProvider::new(&CryptoConfig {
+        fips_required: false,
+        pkcs11: None,
+    })
+    .expect("a software provider");
+    let held = secrecy::SecretBox::new(Box::new(secret.to_owned()));
+    let StoredPassword::Argon2id { encoded } =
+        StoredPassword::hash_argon2id(&provider, Argon2Params::default(), &held)
+            .expect("a hashed secret")
+    else {
+        unreachable!("hash_argon2id returns the argon2id shape")
+    };
+    encoded
 }

@@ -9,6 +9,7 @@ use std::str::FromStr;
 use secrecy::SecretBox;
 
 pub mod crypto;
+pub mod serving;
 
 /// The prefix every variable shares.
 pub const PREFIX: &str = "SAFFUI_";

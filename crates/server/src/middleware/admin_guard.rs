@@ -11,6 +11,7 @@ use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::{Error, HttpMessage, ResponseError};
 use chrono::Utc;
+use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
 use deadpool_postgres::Transaction;
 use models::entities::authz::AdminAction;
@@ -43,6 +44,9 @@ pub struct Guard {
     pub pool: Pool,
     pub tenancy: Tenancy,
     pub policy: AdminPolicy,
+    /// What this deployment answers from. A token states an issuer built out of
+    /// it, and one built out of anything else is not this deployment's.
+    pub origin: PublicOrigin,
 }
 
 impl<S, B> Transform<S, ServiceRequest> for Guard
@@ -116,11 +120,14 @@ async fn establish(
     let bearer = bearer(request).ok_or_else(unauthenticated)?;
 
     // The issuer names the realm, and nothing is trusted until the signature
-    // checks out: this only decides which keys to fetch.
+    // checks out: this only decides which keys to fetch. What it does settle is
+    // that the issuer is one this deployment mints, so a token naming somebody
+    // else's cannot reach a realm here by having a familiar tail.
     let issuer = unverified_issuer(&bearer).ok_or_else(unauthenticated)?;
+    let named = guard.origin.realm_of(&issuer).ok_or_else(unauthenticated)?;
 
     let mut connection = guard.pool.get().await.map_err(|_| unauthenticated())?;
-    let context = resolve::realm_by_id(&connection, &issuer)
+    let context = resolve::realm_by_id(&connection, named)
         .await
         .map_err(|_| unauthenticated())?;
 

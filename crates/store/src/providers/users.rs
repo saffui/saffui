@@ -89,6 +89,26 @@ pub async fn load_by_phone(
 }
 
 /// Whether the name is taken in this realm.
+/// The account a client acts as when it acts for itself.
+///
+/// Keyed on the link rather than on a name built from the client id. A name is
+/// a thing an administrator can edit, and an account reached by rebuilding its
+/// name would silently become somebody else's the moment one was.
+pub async fn load_service_account(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+) -> StoreResult<Option<UserModel>> {
+    let statement = format!(
+        "SELECT {COLUMNS} FROM users \
+         WHERE service_account_client_link = $1 AND is_service_account IS TRUE"
+    );
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&client_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read))
+}
+
 pub async fn name_taken(transaction: &Transaction<'_>, user_name: &str) -> StoreResult<bool> {
     exists(transaction, "user_name = $1", user_name).await
 }

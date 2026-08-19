@@ -12,6 +12,10 @@ path = "src/main.rs"
 [dependencies]
 commons = { workspace = true, features = ["http"] }
 config = { workspace = true }
+# The deployment wrapping key is opened here, at startup, so a missing one stops
+# the process instead of every mint it was asked for later.
+crypto = { workspace = true }
+secrecy = { workspace = true }
 pgcore = { workspace = true }
 server = { workspace = true }
 store = { workspace = true }

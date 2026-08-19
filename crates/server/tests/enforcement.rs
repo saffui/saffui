@@ -28,6 +28,8 @@ async fn ask(plane: &Plane, bearer: &str, body: serde_json::Value) -> (StatusCod
         pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: policy(),
+        origin: support::origin(),
+        sealing: support::sealing(),
     };
     let app = test::init_service(App::new().configure(register(&mounted))).await;
 
@@ -193,6 +195,8 @@ async fn the_enforcement_scope_is_guarded() {
         pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: policy(),
+        origin: support::origin(),
+        sealing: support::sealing(),
     };
     let app = test::init_service(App::new().configure(register(&mounted))).await;
     let request = test::TestRequest::post()

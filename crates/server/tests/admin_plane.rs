@@ -36,6 +36,8 @@ async fn request(plane: &Plane, method: Method, path: &str, bearer: Option<&str>
         pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: policy(),
+        origin: support::origin(),
+        sealing: support::sealing(),
     };
     let app = test::init_service(App::new().configure(register(&mounted))).await;
 
@@ -180,20 +182,38 @@ async fn a_token_naming_a_key_the_realm_does_not_have_is_refused() {
 }
 
 /// The issuer picks which realm's keys to fetch, and it is the only thing taken
-/// from an unverified payload. One naming no realm reaches no keys.
+/// from an unverified payload. One this deployment did not mint reaches no keys.
+///
+/// The prefix is what carries this. Without it `iss` is a string the gate routes
+/// on and nobody verifies, so anything ending in a realm name this deployment
+/// holds would resolve, whoever wrote it.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_token_issued_by_no_realm_this_deployment_has_is_refused() {
     let plane = Plane::with_actions(&[AdminAction::RealmList]).await;
 
-    let mut elsewhere = claims();
-    elsewhere.set_issuer("some-other-realm");
-    let bearer = plane.token(&elsewhere);
+    for foreign in [
+        // No realm of that name anywhere.
+        "https://id.test/realms/some-other-realm",
+        // The right realm, somebody else's deployment.
+        "https://elsewhere.test/realms/main",
+        // The realm name alone, which is what tokens used to carry.
+        "main",
+        // A prefix that only looks like ours.
+        "https://id.test.attacker.example/realms/main",
+        // Past the segment the issuer names.
+        "https://id.test/realms/main/../other",
+    ] {
+        let mut elsewhere = claims();
+        elsewhere.set_issuer(foreign);
+        let bearer = plane.token(&elsewhere);
 
-    assert_eq!(
-        request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
-        StatusCode::UNAUTHORIZED
-    );
+        assert_eq!(
+            request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
+            StatusCode::UNAUTHORIZED,
+            "{foreign} reached a realm on this deployment"
+        );
+    }
 }
 
 /// A token this realm signed, for somebody else's ears. Refused before the

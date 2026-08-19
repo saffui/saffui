@@ -12,8 +12,8 @@
 use data_encoding::{BASE64, HEXLOWER_PERMISSIVE};
 use secrecy::{ExposeSecret, SecretBox};
 use serde::{Deserialize, Serialize};
-use subtle::ConstantTimeEq;
 
+use crate::constant_time::eq as ct_eq;
 use crate::password::phc::argon2id_below_policy;
 use crate::password::storage::pbkdf2_prf;
 use crate::provider::{Argon2Params, CryptoError, CryptoProvider, HashAlg, LegacyDigest, Result};
@@ -502,13 +502,6 @@ fn b64(text: &str) -> Result<Vec<u8>> {
 
 fn hex_lower(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// Constant-time equality. `ct_eq` on slices short-circuits on a length
-/// mismatch, which is what is wanted: the length is fixed by the algorithm,
-/// the contents are not.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    a.ct_eq(b).into()
 }
 
 fn pbkdf2_check(

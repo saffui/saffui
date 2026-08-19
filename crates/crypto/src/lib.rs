@@ -17,6 +17,7 @@ compile_error!(
 /// a consumer that pulled its own copy could hold a different version of them.
 pub use secrecy;
 
+pub mod constant_time;
 pub mod envelope;
 pub mod jose;
 pub mod otp;

@@ -11,6 +11,12 @@ crypto = { workspace = true }
 models = { workspace = true }
 store = { workspace = true }
 services = { workspace = true }
+# The public origin: every issuer minted and every issuer accepted is built from
+# it, so the gates read the same value the binary was started with.
+config = { workspace = true }
+# SecretBox, so a client secret read off the wire is zeroized and redacted from
+# the moment it is read rather than from where it is compared.
+secrecy = { workspace = true }
 
 actix-web = { workspace = true }
 chrono = { workspace = true }
@@ -24,6 +30,12 @@ tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
 services = { workspace = true }
+# The public origin: every issuer minted and every issuer accepted is built from
+# it, so the gates read the same value the binary was started with.
+config = { workspace = true }
+# SecretBox, so a client secret read off the wire is zeroized and redacted from
+# the moment it is read rather than from where it is compared.
+secrecy = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 # The end to end plane mounts a real schema and signs real tokens, so the test
 # side reaches the migration runner and the software crypto provider directly.

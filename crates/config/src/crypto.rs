@@ -15,6 +15,17 @@ pub fn from_env() -> Result<CryptoConfig, ConfigError> {
     })
 }
 
+/// The key that wraps a realm's data encryption keys.
+///
+/// Read through a reference like every other secret here, so the value itself
+/// never sits in a process environment where a crash dump or a `/proc` read
+/// picks it up. Required: without it a realm's sealed keys cannot be opened, and
+/// a server that started anyway would refuse every token it was asked to mint,
+/// at the moment it was asked rather than at boot.
+pub fn kek_from_env() -> Result<secrecy::SecretBox<String>, ConfigError> {
+    crate::secret("CRYPTO_KEK")
+}
+
 /// The token, when one is configured.
 ///
 /// The module path is what decides. A PIN or a slot on their own configure

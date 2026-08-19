@@ -278,8 +278,12 @@ jobs:
         run: |
           set -o pipefail
           cargo test -p services -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/services.log"
-          if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/services.log")" -lt 4 ]; then
-            echo "the context and decision tests did not run; the job proved nothing." >&2
+          # One per integration suite that actually plants rows: the context, the
+          # decision point, and the relationship walk. The crate carries no unit
+          # tests, so its lib and doc-test lines report zero and are not counted.
+          # Raise this when a suite is added, and only then.
+          if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/services.log")" -lt 3 ]; then
+            echo "a services suite did not run; the job proved nothing." >&2
             exit 1
           fi
 

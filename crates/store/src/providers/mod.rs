@@ -20,6 +20,7 @@ pub mod one_time_tokens;
 pub mod organizations;
 pub mod realm_keys;
 pub mod realms;
+pub mod rebac;
 pub mod roles;
 pub mod sessions;
 pub mod tenants;

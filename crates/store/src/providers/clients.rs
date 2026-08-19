@@ -34,10 +34,12 @@ const COLUMNS: &str = "tenant, realm_id, client_id, name, display_name, descript
                        created_by, created_at, updated_by, updated_at, version";
 
 /// Record a client.
+/// Record a client.
+///
+/// Writes no bearer credential. `client.secret` is not persisted here: a secret
+/// is hashed before it is stored and this call has nothing to hash with, so
+/// minting one is [`rotate_secret`], which is the single door that sets one.
 pub async fn create(transaction: &Transaction<'_>, client: &ClientModel) -> StoreResult<()> {
-    let secret = client.secret.as_ref().map(ClientSecret::expose);
-    let registration_token = client.registration_token.as_ref().map(ClientSecret::expose);
-
     let set = WriteSet::insert(vec![
         col("tenant", &client.metadata.tenant),
         col("realm_id", &client.realm_id),
@@ -46,8 +48,6 @@ pub async fn create(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
         col("display_name", &client.display_name),
         col("description", &client.description),
         col("enabled", &client.enabled),
-        col("secret", &secret),
-        col("registration_token", &registration_token),
         col("secret_created_at", &client.secret_created_at),
         col("secret_expires_at", &client.secret_expires_at),
         col("public_client", &client.public_client),
@@ -75,25 +75,65 @@ pub async fn load(
         .map(read))
 }
 
-/// The secret a client authenticates with.
+/// What a presented secret is checked against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StoredSecret {
+    /// An Argon2id PHC string, which is what everything written since V018 is.
+    Hashed(String),
+    /// A row an older binary wrote. Checked once more, then replaced, the way a
+    /// password hash is upgraded on a login.
+    Plain(ClientSecret),
+}
+
+/// What a client authenticates with.
 ///
 /// Its own call, so reaching one is something somebody wrote rather than
 /// something that arrived with every load. Absent both when the client has none
 /// and when there is no such client, which are the same answer to whoever is
-/// about to compare it.
+/// about to check it.
+///
+/// The hash wins when both columns are set. A rolling update has the old binary
+/// still writing the plaintext one, and preferring it would mean a rotation
+/// performed by the new binary could be undone by the old one's leftovers.
 pub async fn load_secret(
     transaction: &Transaction<'_>,
     client_id: &str,
-) -> StoreResult<Option<ClientSecret>> {
+) -> StoreResult<Option<StoredSecret>> {
     Ok(transaction
         .query_opt(
-            "SELECT secret FROM clients WHERE client_id = $1",
+            "SELECT secret_hash, secret FROM clients WHERE client_id = $1",
             &[&client_id],
         )
         .await
         .map_err(|_| StoreError::Backend)?
-        .and_then(|row| row.get::<_, Option<String>>("secret"))
-        .map(ClientSecret::new))
+        .and_then(|row| match row.get::<_, Option<String>>("secret_hash") {
+            Some(encoded) => Some(StoredSecret::Hashed(encoded)),
+            None => row
+                .get::<_, Option<String>>("secret")
+                .map(|plain| StoredSecret::Plain(ClientSecret::new(plain))),
+        }))
+}
+
+/// Put a hash where a plaintext secret was, without touching anything else.
+///
+/// What converts a row on the authentication that proved the plaintext. The
+/// stamps are left alone deliberately: the credential has not changed, only how
+/// it is kept, and moving `secret_created_at` would age a secret that is exactly
+/// as old as it was a moment ago.
+pub async fn convert_secret(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    encoded: &str,
+) -> StoreResult<bool> {
+    let changed = transaction
+        .execute(
+            "UPDATE clients SET secret_hash = $2, secret = NULL \
+             WHERE client_id = $1 AND secret IS NOT NULL",
+            &[&client_id, &encoded],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
 }
 
 /// Whether the identifier is taken in this realm.
@@ -117,13 +157,17 @@ pub async fn exists(transaction: &Transaction<'_>, client_id: &str) -> StoreResu
 pub async fn rotate_secret(
     transaction: &Transaction<'_>,
     client_id: &str,
-    secret: &ClientSecret,
+    encoded: &str,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> StoreResult<bool> {
-    let exposed = secret.expose();
+    // The plaintext column is cleared, not left. A rotation that wrote the hash
+    // and left the old value behind would leave the credential it replaced
+    // readable and, worse, still accepted by a binary that reads that column.
+    let nothing: Option<String> = None;
     let set = WriteSet::update(
         vec![
-            col("secret", &exposed),
+            col("secret_hash", &encoded),
+            col("secret", &nothing),
             col("secret_expires_at", &expires_at),
         ],
         vec![col("client_id", &client_id)],

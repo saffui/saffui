@@ -6,14 +6,13 @@
 
 use chrono::{DateTime, Utc};
 use crypto::constant_time;
+use crypto::password::migration::verify_and_plan;
+use crypto::password::storage::StoredPassword;
+use crypto::provider::{Argon2Params, CryptoProvider};
 use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
 use secrecy::{ExposeSecret, SecretBox};
-use store::providers::clients;
-
-/// A secret this build compares against when there is nothing real to compare
-/// against, so an unknown client costs what a known one costs.
-const DECOY: &str = "a-secret-of-about-the-length-a-registered-client-holds";
+use store::providers::clients::{self, StoredSecret};
 
 /// How a client offered to prove who it is.
 #[derive(Debug)]
@@ -107,6 +106,8 @@ pub fn read_presented(
 /// Establish the client, or refuse without saying which part failed.
 pub async fn authenticate(
     transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    cost: Argon2Params,
     presented: &Presented,
     now: DateTime<Utc>,
 ) -> Result<ClientModel, Unauthenticated> {
@@ -115,10 +116,10 @@ pub async fn authenticate(
         .map_err(|_| Unauthenticated::Unreadable)?;
 
     let Some(client) = loaded else {
-        // No such client. The comparison happens anyway, because an endpoint
-        // that answers faster for a name nobody registered publishes which
-        // names are registered.
-        burn(presented);
+        // No such client. The work happens anyway, because an endpoint that
+        // answers faster for a name nobody registered publishes which names are
+        // registered.
+        burn(provider, cost, presented);
         return Err(Unauthenticated::Refused);
     };
 
@@ -134,7 +135,7 @@ pub async fn authenticate(
     }
 
     if client.enabled == Some(false) {
-        burn(presented);
+        burn(provider, cost, presented);
         return Err(Unauthenticated::Refused);
     }
 
@@ -153,7 +154,7 @@ pub async fn authenticate(
     };
 
     if client.secret_expires_at.is_some_and(|expiry| expiry <= now) {
-        burn(presented);
+        burn(provider, cost, presented);
         return Err(Unauthenticated::Refused);
     }
 
@@ -162,20 +163,67 @@ pub async fn authenticate(
         .map_err(|_| Unauthenticated::Unreadable)?;
 
     let Some(held) = held else {
-        burn(presented);
+        burn(provider, cost, presented);
         return Err(Unauthenticated::Refused);
     };
 
-    constant_time::eq(offered.expose_secret().as_bytes(), held.expose().as_bytes())
-        .then_some(client)
-        .ok_or(Unauthenticated::Refused)
+    match held {
+        StoredSecret::Hashed(encoded) => {
+            let stored = StoredPassword::Argon2id { encoded }
+                .to_legacy_hash()
+                .map_err(|_| Unauthenticated::Refused)?;
+            verify_and_plan(provider, offered, &stored)
+                .is_ok_and(|plan| plan.valid)
+                .then_some(client)
+                .ok_or(Unauthenticated::Refused)
+        }
+        // A row an older binary wrote. Checked in constant time, because that is
+        // the only defence a plaintext column has, and then replaced: a secret
+        // that authenticated once is a secret whose hash can be written, and the
+        // row stops being readable from that moment.
+        StoredSecret::Plain(plain) => {
+            if !constant_time::eq(
+                offered.expose_secret().as_bytes(),
+                plain.expose().as_bytes(),
+            ) {
+                return Err(Unauthenticated::Refused);
+            }
+            convert(transaction, provider, cost, presented.client_id(), offered).await;
+            Ok(client)
+        }
+    }
 }
 
-/// Spend what a real comparison spends.
-fn burn(presented: &Presented) {
+/// Write the hash of a secret that has just proved itself.
+///
+/// A failure here is not a failure of the authentication. The client presented
+/// the right secret and is entitled to be let in; the row simply stays readable
+/// until the next attempt, which is where it was a moment ago.
+async fn convert(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    cost: Argon2Params,
+    client_id: &str,
+    offered: &SecretBox<String>,
+) {
+    let Ok(StoredPassword::Argon2id { encoded }) =
+        StoredPassword::hash_argon2id(provider, cost, offered)
+    else {
+        return;
+    };
+    let _ = clients::convert_secret(transaction, client_id, &encoded).await;
+}
+
+/// Spend what a real check spends.
+///
+/// A hash comparison, not a byte one. Since V018 the stored secret is an
+/// Argon2id string, so an unknown client that only cost a memcmp would answer in
+/// a fraction of the time a known one does, which is the timing signal this
+/// exists to remove.
+fn burn(provider: &dyn CryptoProvider, cost: Argon2Params, presented: &Presented) {
     let offered = presented
         .secret()
-        .map(|secret| secret.expose_secret().to_owned())
-        .unwrap_or_default();
-    let _ = constant_time::eq(offered.as_bytes(), DECOY.as_bytes());
+        .map(|secret| SecretBox::new(Box::new(secret.expose_secret().to_owned())))
+        .unwrap_or_else(|| SecretBox::new(Box::new(String::new())));
+    let _ = StoredPassword::hash_argon2id(provider, cost, &offered);
 }

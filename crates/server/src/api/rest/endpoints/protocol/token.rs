@@ -64,9 +64,29 @@ pub async fn ask(
         return Denied::InvalidRequest.answer("the realm could not be read");
     };
 
+    let Ok(Some(realm)) = realms::load(&transaction, &context.realm_id).await else {
+        return Denied::InvalidRequest.answer("the realm could not be read");
+    };
+    // What the realm mints passwords at. A secret converted from the plaintext
+    // column is hashed at the cost this realm chose, not at one this endpoint
+    // picked.
+    let cost = realm
+        .password_policy
+        .as_ref()
+        .map(|policy| policy.hashing)
+        .unwrap_or_default();
+
     // Before the grant is even read. A grant added later cannot be added
     // without this, because there is nowhere below here to add it.
-    let client = match client::authenticate(&transaction, &presented, now).await {
+    let client = match client::authenticate(
+        &transaction,
+        sealing.provider.as_ref(),
+        cost,
+        &presented,
+        now,
+    )
+    .await
+    {
         Ok(client) => client,
         Err(why) => return refused(why),
     };
@@ -77,16 +97,14 @@ pub async fn ask(
 
     let granted = match grant_type {
         "client_credentials" => {
-            let (Ok(Some(realm)), Ok(ring)) = (
-                realms::load(&transaction, &context.realm_id).await,
-                keyring::load(
-                    &transaction,
-                    &sealing.envelope,
-                    &context.tenant,
-                    &context.realm_id,
-                )
-                .await,
-            ) else {
+            let Ok(ring) = keyring::load(
+                &transaction,
+                &sealing.envelope,
+                &context.tenant,
+                &context.realm_id,
+            )
+            .await
+            else {
                 return Denied::InvalidRequest.answer("the realm could not be read");
             };
 

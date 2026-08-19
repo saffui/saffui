@@ -19,18 +19,20 @@ use crypto::envelope::Envelope;
 use crypto::jose::jwk::{Jwk, P_256};
 use crypto::jose::jws::{ES256, JwsHeader};
 use crypto::jose::jwt::{self, JwtPayload};
+use crypto::password::storage::StoredPassword;
 use crypto::provider::openssl::OpenSslProvider;
-use crypto::provider::{CryptoConfig, CryptoProvider, SignAlg};
+use crypto::provider::{Argon2Params, CryptoConfig, CryptoProvider, SignAlg};
 use deadpool_postgres::{Manager, Object, Pool, Transaction};
 use models::auditable::AuditableModel;
 use models::entities::authz::{AdminAction, RoleMutationModel};
-use models::entities::client::{ClientCreateModel, ClientSecret};
+use models::entities::client::ClientCreateModel;
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey};
 use models::entities::realm::RealmCreateModel;
 use models::entities::tenant::TenantCreateModel;
 use models::entities::user::UserCreateModel;
 use pgcore::migrations::MigrationRunner;
 use pgcore::tls::PgConnector;
+use secrecy::SecretBox;
 use store::keyring;
 use store::providers::{clients, realm_keys, realms, roles, sessions, tenants, users};
 use store::schema::migrations;
@@ -440,8 +442,20 @@ impl Plane {
                 enabled: Some(true),
             }
             .into_model(client_id.to_owned(), REALM.into(), metadata());
-            client.secret = secret.map(|secret| ClientSecret::new(secret.to_owned()));
             clients::create(&transaction, &client).await.unwrap();
+            if let Some(secret) = secret {
+                let StoredPassword::Argon2id { encoded } = StoredPassword::hash_argon2id(
+                    &provider(),
+                    Argon2Params::default(),
+                    &SecretBox::new(Box::new(secret.to_owned())),
+                )
+                .expect("a hashed secret") else {
+                    unreachable!("hash_argon2id returns the argon2id shape")
+                };
+                clients::rotate_secret(&transaction, client_id, &encoded, None)
+                    .await
+                    .unwrap();
+            }
 
             // Neither `public_client` nor `service_account_enabled` is on the
             // create payload: one decides whether a secret is expected at all,

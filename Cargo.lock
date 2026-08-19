@@ -2038,6 +2038,7 @@ dependencies = [
  "models",
  "pgcore",
  "postgres-types",
+ "secrecy",
  "serde_json",
  "thiserror",
  "tokio",

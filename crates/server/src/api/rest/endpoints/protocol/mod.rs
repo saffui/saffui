@@ -5,5 +5,6 @@
 //! move without a client having written one down, and the one string that cannot
 //! move, the issuer, carries no version for exactly that reason.
 
+pub mod basic;
 pub mod dto;
 pub mod token;

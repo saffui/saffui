@@ -1920,6 +1920,7 @@ dependencies = [
  "deadpool-postgres",
  "models",
  "pgcore",
+ "secrecy",
  "serde",
  "serde_json",
  "services",

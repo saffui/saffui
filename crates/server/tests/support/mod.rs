@@ -24,6 +24,7 @@ use crypto::provider::{CryptoConfig, CryptoProvider, SignAlg};
 use deadpool_postgres::{Manager, Object, Pool, Transaction};
 use models::auditable::AuditableModel;
 use models::entities::authz::{AdminAction, RoleMutationModel};
+use models::entities::client::{ClientCreateModel, ClientSecret};
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey};
 use models::entities::realm::RealmCreateModel;
 use models::entities::tenant::TenantCreateModel;
@@ -31,7 +32,7 @@ use models::entities::user::UserCreateModel;
 use pgcore::migrations::MigrationRunner;
 use pgcore::tls::PgConnector;
 use store::keyring;
-use store::providers::{realm_keys, realms, roles, sessions, tenants, users};
+use store::providers::{clients, realm_keys, realms, roles, sessions, tenants, users};
 use store::schema::migrations;
 use store::tenancy::{Tenancy, TenantContext};
 use tokio::sync::{Mutex, MutexGuard};
@@ -52,6 +53,11 @@ pub const ORIGIN: &str = "https://id.test";
 /// The client the console asks for its tokens as. What `azp` carries.
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const PARTY: &str = "saffui-console";
+/// A confidential client, its secret, and a public one. What the token endpoint
+/// authenticates against.
+pub const CONFIDENTIAL: &str = "app";
+pub const CLIENT_SECRET: &str = "a-registered-secret";
+pub const PUBLIC: &str = "spa";
 
 /// The login every token here is bound to. A logout closes it, and the plane
 /// refuses the token that named it.
@@ -363,6 +369,26 @@ impl Plane {
             )
             .await
             .unwrap();
+        }
+
+        for (client_id, secret, public) in [
+            (CONFIDENTIAL, Some(CLIENT_SECRET), false),
+            (PUBLIC, None, true),
+        ] {
+            let mut client = ClientCreateModel {
+                name: client_id.into(),
+                display_name: client_id.into(),
+                description: String::new(),
+                enabled: Some(true),
+            }
+            .into_model(client_id.to_owned(), REALM.into(), metadata());
+            client.secret = secret.map(|secret| ClientSecret::new(secret.to_owned()));
+            clients::create(&transaction, &client).await.unwrap();
+
+            // `public_client` is not on the create payload, and the token
+            // endpoint reads it to decide whether a secret is even expected.
+            client.public_client = Some(public);
+            clients::update(&transaction, &client).await.unwrap();
         }
 
         let user = UserCreateModel {

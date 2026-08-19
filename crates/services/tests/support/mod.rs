@@ -125,6 +125,19 @@ impl Fixture {
     /// Released once its transaction has committed. A guard stays borrowed until
     /// it leaves scope and shadowing it does not release one, so a test taking
     /// more in a row than the pool holds waits on one that is never coming back.
+    /// The pool and the tenancy, for the one caller that opens its own
+    /// connections. Only the decision suite builds a journal, so the other two
+    /// suites in this crate see these as unused.
+    #[allow(dead_code, reason = "only the decision suite builds a journal")]
+    pub fn pool(&self) -> Pool {
+        self.pool.clone()
+    }
+
+    #[allow(dead_code, reason = "only the decision suite builds a journal")]
+    pub fn tenancy(&self) -> Tenancy {
+        self.tenancy.clone()
+    }
+
     pub async fn connection(&self) -> Object {
         self.pool.get().await.expect("a connection")
     }

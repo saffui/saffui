@@ -15,6 +15,7 @@ use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
 use crate::middleware::admin_policy::AdminPolicy;
 use crate::middleware::caller::Caller;
+use services::pdp::Journal;
 
 /// Everything the plane needs to answer.
 #[derive(Clone)]
@@ -57,6 +58,10 @@ where
 
     app.app_data(web::Data::new(plane.pool.clone()))
         .app_data(web::Data::new(plane.tenancy.clone()))
+        .app_data(web::Data::new(Journal::new(
+            plane.pool.clone(),
+            plane.tenancy.clone(),
+        )))
         .service(admin)
         // Its own scope, and its own gate. The admin plane demands a capability
         // per route; this demands only that the token stood up.

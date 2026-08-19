@@ -139,7 +139,7 @@ async fn establish(
     // same question, and a check left beside the verifier is one that caller
     // inherits by omission. The instant is stated rather than read in there, so
     // this decision and a replay of it read the same clock.
-    let verified = services::token::verify(&transaction, &keys, &bearer, now)
+    let verified = services::token::verify_presented(&transaction, &keys, &bearer, now)
         .await
         .map_err(|_| unauthenticated())?;
 

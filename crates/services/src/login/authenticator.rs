@@ -60,11 +60,11 @@ pub enum Answer {
     Password(SecretBox<String>),
 }
 
-/// Run one step against what the realm holds.
+/// Say whether an answer satisfies one authenticator.
 ///
 /// The subject is resolved before this: an authenticator says whether the
 /// answer is right, not who is answering.
-pub async fn run(
+pub async fn verify_answer(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,

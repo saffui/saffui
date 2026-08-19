@@ -56,7 +56,7 @@ pub enum Unrunnable {
 /// Every enabled step is run, not merely the ones before the first refusal: a
 /// flow of alternatives has to try them all before it can say none of them let
 /// this caller in, and the fold cannot see what was never run.
-pub async fn advance(
+pub async fn run_flow(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
@@ -90,7 +90,8 @@ pub async fn advance(
         let named: Authenticator = authenticator.parse()?;
 
         let outcome =
-            authenticator::run(transaction, provider, realm, subject, named, answer).await;
+            authenticator::verify_answer(transaction, provider, realm, subject, named, answer)
+                .await;
 
         if outcome == Outcome::Pending && waiting.is_none() {
             waiting = Some(execution.execution_id.clone());

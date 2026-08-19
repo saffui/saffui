@@ -11,7 +11,7 @@ use models::entities::auth::{
 use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
 use secrecy::SecretBox;
 use services::login::authenticator::Answer;
-use services::login::{Progress, Unrunnable, advance};
+use services::login::{Progress, Unrunnable, run_flow};
 use store::providers::{auth_flows, credentials, realms};
 use store::tenancy::TenantContext;
 use support::{Fixture, provider};
@@ -103,7 +103,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
         .unwrap();
 
     // Nothing answered: the caller is asked, and told which step asks.
-    let asked = advance(
+    let asked = run_flow(
         &transaction,
         &provider(),
         &realm,
@@ -124,7 +124,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
 
     let right = Answer::Password(SecretBox::new(Box::new("correct horse".to_owned())));
     assert_eq!(
-        advance(
+        run_flow(
             &transaction,
             &provider(),
             &realm,
@@ -140,7 +140,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
 
     let wrong = Answer::Password(SecretBox::new(Box::new("battery staple".to_owned())));
     assert_eq!(
-        advance(
+        run_flow(
             &transaction,
             &provider(),
             &realm,
@@ -170,7 +170,7 @@ async fn an_unknown_subject_is_refused_like_a_wrong_password() {
 
     let offered = Answer::Password(SecretBox::new(Box::new("anything".to_owned())));
     assert_eq!(
-        advance(
+        run_flow(
             &transaction,
             &provider(),
             &realm,
@@ -204,7 +204,7 @@ async fn a_step_this_build_cannot_run_stops_the_flow() {
     let realm = realms::load(&transaction, "main").await.unwrap().unwrap();
 
     assert!(matches!(
-        advance(
+        run_flow(
             &transaction,
             &provider(),
             &realm,
@@ -228,7 +228,7 @@ async fn a_flow_that_is_not_there_is_not_a_refusal() {
     let realm = realms::load(&transaction, "main").await.unwrap().unwrap();
 
     assert_eq!(
-        advance(
+        run_flow(
             &transaction,
             &provider(),
             &realm,
@@ -262,7 +262,7 @@ async fn a_flow_whose_only_step_is_disabled_admits_nobody() {
 
     let right = Answer::Password(SecretBox::new(Box::new("correct horse".to_owned())));
     assert_eq!(
-        advance(
+        run_flow(
             &transaction,
             &provider(),
             &realm,

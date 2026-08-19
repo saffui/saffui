@@ -116,14 +116,14 @@ pub struct Established {
 ///
 /// Both planes come through here, since two paths doing this are two places for
 /// one to skip a step nobody notices missing.
-pub async fn admit(
+pub async fn admit_bearer(
     transaction: &Transaction<'_>,
     tenant: TenantContext,
     keys: &[models::entities::keys::RealmSigningKeyView],
     bearer: &str,
     now: DateTime<Utc>,
 ) -> Result<Established, NotEstablished> {
-    let verified = crate::token::verify(transaction, keys, bearer, now).await?;
+    let verified = crate::token::verify_presented(transaction, keys, bearer, now).await?;
     let context = establish(transaction, tenant, &verified, now).await?;
     Ok(Established { context, verified })
 }

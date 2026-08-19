@@ -77,7 +77,7 @@ pub enum Refused {
 /// passed. Nothing else should reach for it: a token that is merely well signed
 /// is not a token that is currently good, and treating one as the other is how
 /// an expired credential becomes a live one.
-pub fn signature(keys: &[RealmSigningKeyView], token: &str) -> Result<JwtPayload, Refused> {
+pub fn verify_signature(keys: &[RealmSigningKeyView], token: &str) -> Result<JwtPayload, Refused> {
     let header = jwt::decode_header(token).map_err(|_| Refused::Unreadable)?;
     let kid = header
         .claim("kid")
@@ -114,12 +114,12 @@ pub fn signature(keys: &[RealmSigningKeyView], token: &str) -> Result<JwtPayload
 /// depend on when the question was asked rather than on what was asked, so a
 /// decision and the replay of that decision would disagree for a reason nothing
 /// records.
-pub fn current(
+pub fn verify_signature_and_window(
     keys: &[RealmSigningKeyView],
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<Verified, Refused> {
-    let payload = signature(keys, token)?;
+    let payload = verify_signature(keys, token)?;
 
     // Refused here rather than left to the validator, which reads a time claim
     // only when the token carries one: a token stating no expiry would
@@ -138,13 +138,13 @@ pub fn current(
 /// The whole gate: signature, window, and whether it was withdrawn.
 ///
 /// What every caller presenting a bearer should ask for.
-pub async fn verify(
+pub async fn verify_presented(
     transaction: &Transaction<'_>,
     keys: &[RealmSigningKeyView],
     token: &str,
     now: DateTime<Utc>,
 ) -> Result<Verified, Refused> {
-    let verified = current(keys, token, now)?;
+    let verified = verify_signature_and_window(keys, token, now)?;
 
     // A token carrying no identifier names nothing a withdrawal could have been
     // written against, and is left to its window.

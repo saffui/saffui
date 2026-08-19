@@ -126,7 +126,7 @@ async fn a_step_adds_to_the_notes_without_erasing_them() {
         .unwrap();
 
     assert!(
-        login::advance(
+        login::record_step(
             &transaction,
             "login-1",
             None,
@@ -137,7 +137,7 @@ async fn a_step_adds_to_the_notes_without_erasing_them() {
         .unwrap()
     );
     assert!(
-        login::advance(
+        login::record_step(
             &transaction,
             "login-1",
             Some("ada"),
@@ -381,7 +381,7 @@ async fn an_expired_login_does_not_advance() {
         .unwrap();
 
     assert!(
-        !login::advance(
+        !login::record_step(
             &transaction,
             "stale",
             Some("ada"),
@@ -409,7 +409,7 @@ async fn a_later_step_does_not_forget_the_user() {
         .await
         .unwrap();
 
-    login::advance(
+    login::record_step(
         &transaction,
         "login-1",
         Some("ada"),
@@ -418,7 +418,7 @@ async fn a_later_step_does_not_forget_the_user() {
     )
     .await
     .unwrap();
-    login::advance(
+    login::record_step(
         &transaction,
         "login-1",
         None,

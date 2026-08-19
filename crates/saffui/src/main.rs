@@ -6,12 +6,17 @@
 //! anything needed it would have been a shape chosen in advance.
 
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use actix_web::{App, HttpServer};
 use clap::{Parser, Subcommand};
+use crypto::envelope::Envelope;
+use crypto::provider::CryptoProvider;
+use crypto::provider::openssl::OpenSslProvider;
 use deadpool_postgres::{Manager, Pool};
-use server::api::config::{Plane, register, register_ops};
+use secrecy::ExposeSecret;
+use server::api::config::{Plane, Sealing, register, register_ops};
 use server::api::rest::endpoints::ops::health::Vitals;
 use server::middleware::admin_policy::AdminPolicy;
 use store::tenancy::Tenancy;
@@ -155,6 +160,17 @@ fn plane() -> Result<Plane, String> {
     // the issuer baked into every token this deployment ever mints, and those
     // tokens outlive the correction.
     let origin = config::serving::PublicOrigin::from_env().map_err(|e| e.to_string())?;
+
+    // Read at startup, not on the first request that needs it. A deployment
+    // whose wrapping key is missing refuses to start rather than refusing every
+    // token it is asked to mint, hours later, to whoever asked.
+    let crypto = config::crypto::from_env().map_err(|e| e.to_string())?;
+    let kek = config::crypto::kek_from_env().map_err(|e| e.to_string())?;
+    let provider: Arc<dyn CryptoProvider> = Arc::new(
+        OpenSslProvider::new(&crypto).map_err(|reason| format!("cannot build crypto: {reason}"))?,
+    );
+    let envelope = Envelope::new(Arc::clone(&provider), kek.expose_secret())
+        .map_err(|reason| format!("cannot build the envelope: {reason}"))?;
     let region = config::optional("REGION");
 
     let pg: tokio_postgres::Config = connection
@@ -176,5 +192,9 @@ fn plane() -> Result<Plane, String> {
             scope,
         },
         origin,
+        sealing: Sealing {
+            provider,
+            envelope: Arc::new(envelope),
+        },
     })
 }

@@ -18,6 +18,7 @@ fn mounted(plane: &Plane) -> Mounted {
             scope: support::SCOPE.to_owned(),
         },
         origin: support::origin(),
+        sealing: support::sealing(),
     }
 }
 
@@ -48,23 +49,136 @@ async fn asking(
     (status, test::read_body_json(response).await)
 }
 
-/// A registered client, proving it, in each of the two ways §2.3.1 allows. It
-/// reaches the grant, which is where the refusal now comes from.
+/// The whole way through: a client proves itself, gets a token, and the token is
+/// one this deployment takes back. A grant tested only against its own response
+/// proves a string was returned.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn a_client_that_proves_itself_reaches_the_grant() {
+async fn a_client_acting_for_itself_gets_a_token_this_realm_takes_back() {
     let plane = Plane::with_actions(&[]).await;
-
-    let (_, header) = asking(
+    let (status, body) = asking(
         &plane,
         support::REALM,
         &[("grant_type", "client_credentials")],
         Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
     )
     .await;
-    assert_eq!(header["error"], "unsupported_grant_type");
 
-    let (_, body) = ask(
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["token_type"], "Bearer");
+    assert_eq!(body["expires_in"], 300);
+    assert!(
+        body.get("refresh_token").is_none(),
+        "§4.4.3: a refresh token would be a second credential for the same \
+         authority with a longer life, and the client already holds the one \
+         that produced this: {body}"
+    );
+
+    let token = body["access_token"].as_str().expect("a token");
+    let claims = plane.claims_of(token).await;
+    assert_eq!(
+        claims["iss"],
+        format!("https://id.test/realms/{}", support::REALM)
+    );
+    assert_eq!(claims["azp"], support::CONFIDENTIAL);
+    assert_eq!(claims["aud"], support::CONFIDENTIAL);
+    assert_eq!(claims["typ"], "Bearer");
+    assert_eq!(
+        claims["sub"],
+        format!("service-account-{}", support::CONFIDENTIAL),
+        "a machine token carried no subject, so every gate downstream would \
+         need a second kind of caller"
+    );
+    assert!(
+        claims["sid"].as_str().is_some_and(|sid| !sid.is_empty()),
+        "no login was named, so the gate that reads one refuses this token"
+    );
+    assert!(
+        claims["jti"].as_str().is_some_and(|jti| !jti.is_empty()),
+        "no identifier, so no revocation could ever name it"
+    );
+}
+
+/// The login is written before the token is handed out. Answering first and
+/// committing after hands a client a token whose login the gate cannot find.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_login_the_token_names_is_there_when_the_client_gets_it() {
+    let plane = Plane::with_actions(&[]).await;
+    let (_, body) = asking(
+        &plane,
+        support::REALM,
+        &[("grant_type", "client_credentials")],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let token = body["access_token"].as_str().expect("a token");
+    let session_id = plane.claims_of(token).await["sid"]
+        .as_str()
+        .expect("a login")
+        .to_owned();
+
+    assert!(
+        plane.session_exists(&session_id).await,
+        "the token was handed out before the login it names was written"
+    );
+}
+
+/// A client that authenticates and may not have this grant is told that, which
+/// §5.2 keeps apart from failing to authenticate. A public client may not: §4.4
+/// is authentication by credential alone, and a public client has none to keep.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_public_client_may_not_act_for_itself() {
+    let plane = Plane::with_actions(&[]).await;
+    let (status, body) = ask(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "client_credentials"),
+            ("client_id", support::PUBLIC),
+        ],
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "unauthorized_client");
+}
+
+/// Switching off the account is the lever an operator reaches for first, and it
+/// has to work while the client registration still says the grant is enabled.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_account_the_realm_switched_off_acts_for_nobody() {
+    let plane = Plane::with_actions(&[]).await;
+    let (status, body) = asking(
+        &plane,
+        support::REALM,
+        &[("grant_type", "client_credentials")],
+        Some((support::OFFBOARDED, support::CLIENT_SECRET)),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "unauthorized_client");
+}
+
+/// A registered client, proving it, in each of the two ways §2.3.1 allows.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_that_proves_itself_reaches_the_grant() {
+    let plane = Plane::with_actions(&[]).await;
+
+    let (header, _) = asking(
+        &plane,
+        support::REALM,
+        &[("grant_type", "client_credentials")],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(header, StatusCode::OK);
+
+    let (post, _) = ask(
         &plane,
         support::REALM,
         &[
@@ -74,7 +188,7 @@ async fn a_client_that_proves_itself_reaches_the_grant() {
         ],
     )
     .await;
-    assert_eq!(body["error"], "unsupported_grant_type");
+    assert_eq!(post, StatusCode::OK);
 }
 
 /// Everything about who is asking collapses to one answer. Four distinguishable
@@ -132,8 +246,9 @@ async fn only_a_public_client_gets_anywhere_on_its_name_alone() {
     )
     .await;
     assert_eq!(
-        body["error"], "unsupported_grant_type",
-        "a public client was refused for holding no secret"
+        body["error"], "unauthorized_client",
+        "a public client was refused for holding no secret, rather than for \
+         being one this grant is not open to"
     );
 }
 
@@ -222,10 +337,13 @@ async fn the_token_endpoint_answers_without_a_bearer() {
     )
     .await;
 
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"], "unsupported_grant_type");
+    assert_eq!(status, StatusCode::OK, "{body}");
     assert!(
-        body.get("error_description").is_some(),
+        body.get("access_token").is_some(),
+        "a client that proved itself got no token: {body}"
+    );
+    assert!(
+        body.get("error").is_none(),
         "a refusal a client cannot act on: {body}"
     );
     assert!(

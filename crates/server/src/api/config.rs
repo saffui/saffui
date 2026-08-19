@@ -11,7 +11,11 @@
 
 use actix_web::dev::HttpServiceFactory;
 use actix_web::web;
+use std::sync::Arc;
+
 use config::serving::PublicOrigin;
+use crypto::envelope::Envelope;
+use crypto::provider::CryptoProvider;
 use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 
@@ -54,6 +58,23 @@ pub struct Plane {
     /// Where callers reach this deployment. Every issuer minted and every
     /// issuer accepted is built from it, so both planes hold the same one.
     pub origin: PublicOrigin,
+    /// What signs. Verification reads published public halves and needs none of
+    /// this; minting has to open a private one, which is the envelope's job.
+    pub sealing: Sealing,
+}
+
+/// What it takes to open a realm's sealed keys.
+///
+/// One value rather than two fields, because neither half is any use alone and
+/// a caller holding one would have to go looking for the other.
+///
+/// Shared rather than copied. `Envelope` is deliberately not `Clone`: a derived
+/// one would duplicate deployment key material every time a worker was built,
+/// and there is no reason for a second copy to exist.
+#[derive(Clone)]
+pub struct Sealing {
+    pub provider: Arc<dyn CryptoProvider>,
+    pub envelope: Arc<Envelope>,
 }
 
 /// Register what a caller reaches.
@@ -67,6 +88,7 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 plane.tenancy.clone(),
             )))
             .app_data(web::Data::new(plane.origin.clone()))
+            .app_data(web::Data::new(plane.sealing.clone()))
             .service(admin_scope(plane))
             .service(authz_scope(plane))
             .service(protocol_scope());

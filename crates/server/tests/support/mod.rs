@@ -58,6 +58,9 @@ pub const PARTY: &str = "saffui-console";
 pub const CONFIDENTIAL: &str = "app";
 pub const CLIENT_SECRET: &str = "a-registered-secret";
 pub const PUBLIC: &str = "spa";
+/// A client whose registration still enables a service account the realm has
+/// switched off. The lever an operator reaches for first.
+pub const OFFBOARDED: &str = "retired";
 
 /// The login every token here is bound to. A logout closes it, and the plane
 /// refuses the token that named it.
@@ -91,6 +94,15 @@ fn provider() -> OpenSslProvider {
         pkcs11: None,
     })
     .expect("a software provider")
+}
+
+#[allow(dead_code, reason = "not every suite mints a token")]
+pub fn sealing() -> server::api::config::Sealing {
+    let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
+    server::api::config::Sealing {
+        envelope: Arc::new(Envelope::new(Arc::clone(&shared), KEK).expect("an envelope")),
+        provider: shared,
+    }
 }
 
 fn envelope() -> Envelope {
@@ -131,6 +143,17 @@ impl SigningKey {
             kid: published_as.to_owned(),
             private,
         }
+    }
+
+    /// The private half as the store keeps it. Minting opens a PEM out of the
+    /// sealed column, so a placeholder there proves the token endpoint parses
+    /// its input and nothing about whether it can sign.
+    pub fn private_pem(&self) -> Vec<u8> {
+        use crypto::jose::jwk::KeyPair;
+        use crypto::jose::jwk::alg::ec::EcKeyPair;
+        EcKeyPair::from_jwk(&self.private)
+            .expect("the private half")
+            .to_pem_private_key()
     }
 
     pub fn public(&self) -> Jwk {
@@ -211,6 +234,40 @@ pub struct Plane {
 }
 
 impl Plane {
+    /// What a token this realm minted actually carries.
+    ///
+    /// Verified against the published key rather than decoded, so a test reading
+    /// a claim has also established that the realm would accept the token the
+    /// claim came from.
+    #[allow(dead_code, reason = "only the suites that mint read a token back")]
+    pub async fn claims_of(&self, token: &str) -> serde_json::Value {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let keys = realm_keys::published(&transaction, KeyUse::Sig)
+            .await
+            .expect("the published keys");
+
+        let verified =
+            services::token::verify_signature_and_window(&keys, token, chrono::Utc::now())
+                .expect("the realm refused a token it had just minted");
+        serde_json::Value::Object(verified.claims)
+    }
+
+    /// Whether the login a token names is on the table.
+    #[allow(dead_code, reason = "only the suites that mint ask")]
+    pub async fn session_exists(&self, session_id: &str) -> bool {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        sessions::load(&transaction, session_id)
+            .await
+            .expect("the session table")
+            .is_some()
+    }
+
     /// A realm with a signing key, a role carrying exactly these actions, and a
     /// user holding it.
     pub async fn with_actions(held: &[AdminAction]) -> Self {
@@ -359,10 +416,10 @@ impl Plane {
                     key_use: KeyUse::Sig,
                     status,
                     priority,
-                    // Never read by the guard, which verifies against the
-                    // published public half. Present because the column is.
-                    private_pem: b"-----BEGIN PRIVATE KEY-----test-----END PRIVATE KEY-----"
-                        .to_vec(),
+                    // Read by the token endpoint, which has to open it to sign.
+                    // The guard never does: it verifies against the published
+                    // public half.
+                    private_pem: key.private_pem(),
                     public_jwk: serde_json::to_value(key.public().as_ref()).expect("a public jwk"),
                     created_at: 1_700_000_000,
                 },
@@ -371,9 +428,10 @@ impl Plane {
             .unwrap();
         }
 
-        for (client_id, secret, public) in [
-            (CONFIDENTIAL, Some(CLIENT_SECRET), false),
-            (PUBLIC, None, true),
+        for (client_id, secret, public, account_enabled) in [
+            (CONFIDENTIAL, Some(CLIENT_SECRET), false, true),
+            (PUBLIC, None, true, true),
+            (OFFBOARDED, Some(CLIENT_SECRET), false, false),
         ] {
             let mut client = ClientCreateModel {
                 name: client_id.into(),
@@ -385,10 +443,43 @@ impl Plane {
             client.secret = secret.map(|secret| ClientSecret::new(secret.to_owned()));
             clients::create(&transaction, &client).await.unwrap();
 
-            // `public_client` is not on the create payload, and the token
-            // endpoint reads it to decide whether a secret is even expected.
+            // Neither `public_client` nor `service_account_enabled` is on the
+            // create payload: one decides whether a secret is expected at all,
+            // the other whether this client may act for itself.
             client.public_client = Some(public);
+            // Both, including the public one. An operator can tick a service
+            // account on a public client, and what refuses that has to be the
+            // rule about public clients rather than the tick being absent.
+            client.service_account_enabled = Some(true);
             clients::update(&transaction, &client).await.unwrap();
+
+            // Every one of them, the public client included. If the public one
+            // had no account, the lookup would be what refuses it and the rule
+            // about public clients would never be reached.
+            //
+            // Reached by the link and not by a name built from the client id, so
+            // renaming it does not silently point the client at somebody else.
+            let mut account = UserCreateModel {
+                user_name: format!("service-account-{client_id}"),
+                enabled: account_enabled,
+                email: String::new(),
+                email_verified: None,
+                phone_number: None,
+                phone_number_verified: None,
+                required_actions: None,
+                not_before: None,
+                user_storage: None,
+                attributes: None,
+                is_service_account: Some(true),
+                service_account_client_link: Some(client_id.to_owned()),
+            }
+            .into_model(
+                format!("service-account-{client_id}"),
+                REALM.into(),
+                metadata(),
+            );
+            account.email = format!("service-account-{client_id}@example.test");
+            users::create(&transaction, &account).await.unwrap();
         }
 
         let user = UserCreateModel {

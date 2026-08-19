@@ -6,7 +6,7 @@ use chrono::{Duration, Utc};
 use crypto::provider::CryptoProvider;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use store::providers::one_time_tokens::{self, Owner};
-use store::providers::sessions;
+use store::providers::sessions::{self, Refreshed};
 use store::tenancy::TenantContext;
 use support::{Fixture, provider};
 
@@ -129,63 +129,6 @@ async fn closing_a_login_takes_what_the_clients_got_with_it() {
         "a client session outlived the login that authorised it"
     );
     assert!(!sessions::close(&transaction, "s-1").await.unwrap());
-    transaction.commit().await.unwrap();
-}
-
-/// A loaded client session carries no refresh token, and reaching one brings its
-/// use count with it: a token that matches and has been presented before is a
-/// replay, and neither half says that alone.
-#[tokio::test]
-#[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn a_refresh_token_comes_with_how_often_it_was_presented() {
-    let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
-
-    sessions::open(&transaction, &session("s-1", 1_000))
-        .await
-        .unwrap();
-    sessions::open_client_session(&transaction, &client_session("cs-1", "s-1"))
-        .await
-        .unwrap();
-
-    let loaded = &sessions::client_sessions_of(&transaction, "s-1")
-        .await
-        .unwrap()[0];
-    assert_eq!(
-        loaded.current_refresh_token, None,
-        "a plain read carried the token the client refreshes with"
-    );
-    assert_eq!(loaded.current_refresh_token_use_count, Some(0));
-
-    let (token, used) = sessions::refresh_token(&transaction, "cs-1")
-        .await
-        .unwrap()
-        .expect("the deliberate call reaches it");
-    assert_eq!(token, "rt-s3cr3t");
-    assert_eq!(used, 0, "never presented yet");
-
-    assert_eq!(
-        sessions::count_refresh_use(&transaction, "cs-1")
-            .await
-            .unwrap(),
-        Some(1)
-    );
-    assert_eq!(
-        sessions::count_refresh_use(&transaction, "cs-1")
-            .await
-            .unwrap(),
-        Some(2),
-        "it counts how far a reuse went rather than flagging that one happened"
-    );
-    assert_eq!(
-        sessions::count_refresh_use(&transaction, "nobody")
-            .await
-            .unwrap(),
-        None
-    );
     transaction.commit().await.unwrap();
 }
 
@@ -453,4 +396,93 @@ async fn the_schema_refuses_what_no_provider_would_write() {
             .is_err(),
         "a session was opened with no state at all"
     );
+}
+
+/// Presenting a refresh token is one act with four answers. A caller cannot
+/// reconstruct them from a boolean: a refusal that does not say whether the
+/// session is gone or the token is stale gets reported as the wrong thing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn presenting_a_refresh_token_says_which_of_the_four_it_was() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    sessions::open(&transaction, &session("s-1", 1_000))
+        .await
+        .unwrap();
+    sessions::open_client_session(&transaction, &client_session("cs-1", "s-1"))
+        .await
+        .unwrap();
+
+    assert!(
+        matches!(
+            sessions::advance_refresh_token(&transaction, "nobody", "rt-s3cr3t", Some("rt-2"))
+                .await
+                .unwrap(),
+            Refreshed::Unknown
+        ),
+        "a session that does not exist is not a replay"
+    );
+
+    // No successor: the realm does not rotate, so the presentation is counted.
+    let counted = sessions::advance_refresh_token(&transaction, "cs-1", "rt-s3cr3t", None)
+        .await
+        .unwrap();
+    let Refreshed::Reused {
+        session,
+        presentations,
+    } = counted
+    else {
+        panic!("a token that is the one the session holds was not recognised");
+    };
+    assert_eq!(presentations, 1);
+    assert_eq!(session.client_id, "app");
+    assert_eq!(
+        session.current_refresh_token, None,
+        "the credential was handed back out"
+    );
+
+    assert!(matches!(
+        sessions::advance_refresh_token(&transaction, "cs-1", "rt-s3cr3t", None)
+            .await
+            .unwrap(),
+        Refreshed::Reused {
+            presentations: 2,
+            ..
+        }
+    ));
+
+    // A successor rotates, and the count follows the token it counts rather than
+    // carrying what its predecessor was presented for.
+    assert!(matches!(
+        sessions::advance_refresh_token(&transaction, "cs-1", "rt-s3cr3t", Some("rt-next"))
+            .await
+            .unwrap(),
+        Refreshed::Rotated { .. }
+    ));
+    assert!(matches!(
+        sessions::advance_refresh_token(&transaction, "cs-1", "rt-next", None)
+            .await
+            .unwrap(),
+        Refreshed::Reused {
+            presentations: 1,
+            ..
+        }
+    ));
+
+    // The token that was rotated away is not the one the session holds, and it
+    // is refused as such rather than landing on top of its own successor.
+    assert!(
+        matches!(
+            sessions::advance_refresh_token(&transaction, "cs-1", "rt-s3cr3t", Some("rt-forged"))
+                .await
+                .unwrap(),
+            Refreshed::Replayed
+        ),
+        "a token the session no longer holds rotated it anyway"
+    );
+    transaction.commit().await.unwrap();
 }

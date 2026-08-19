@@ -1,7 +1,8 @@
 //! The clients of a realm.
 
 use deadpool_postgres::Transaction;
-use models::entities::client::{ClientModel, ClientSecret, Protocol};
+use models::entities::client::{ClientModel, ClientSecret, JweRegistration, Protocol};
+use models::entities::keys::{JweAlgorithm, JweEncryption};
 use models::paging::Page;
 use tokio_postgres::Row;
 
@@ -18,6 +19,18 @@ use crate::query::write_set::{WriteSet, col};
 /// wants one is a place somebody wrote that call.
 const COLUMNS: &str = "tenant, realm_id, client_id, name, display_name, description, enabled, \
                        public_client, protocol, secret_created_at, secret_expires_at, \
+                       client_authenticator_type, full_scope_allowed, consent_required, \
+                       bearer_only, service_account_enabled, is_surrogate_auth_required, \
+                       authorization_code_flow_enabled, implicit_flow_enabled, \
+                       direct_access_grants_enabled, standard_flow_enabled, \
+                       front_channel_logout, \
+                       root_url, web_origins, redirect_uris, post_logout_redirect_uris, \
+                       id_token_signed_response_alg, userinfo_signed_response_alg, \
+                       request_object_signing_alg, \
+                       id_token_encryption_alg, id_token_encryption_enc, \
+                       userinfo_encryption_alg, userinfo_encryption_enc, \
+                       request_object_encryption_alg, request_object_encryption_enc, \
+                       not_before, configs, auth_flow_binding_overrides, \
                        created_by, created_at, updated_by, updated_at, version";
 
 /// Record a client.
@@ -167,6 +180,95 @@ pub async fn list(
     ))
 }
 
+/// Write a client's registrations back.
+///
+/// Not [`create`], which names what a client is. Everything a client is trusted
+/// for, its redirect URIs, its flows, its signing and encryption registrations,
+/// is set afterwards behind its own capability, so registering a client cannot
+/// also decide which callbacks it may send a user to.
+///
+/// The bearer credentials are not written here either. Rotating one is
+/// [`rotate_secret`], so a settings edit cannot quietly replace a credential.
+pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> StoreResult<bool> {
+    // Serialised up front because the write set borrows what it binds, so a
+    // value built inside the vector would not outlive it.
+    let id_token_alg = alg_name(client.id_token_signed_response_alg);
+    let userinfo_alg = alg_name(client.userinfo_signed_response_alg);
+    let request_object_alg = alg_name(client.request_object_signing_alg);
+    let (id_token_enc_alg, id_token_enc) = split_registration(client.id_token_encryption);
+    let (userinfo_enc_alg, userinfo_enc) = split_registration(client.userinfo_encryption);
+    let (request_object_enc_alg, request_object_enc) =
+        split_registration(client.request_object_encryption);
+    let configs = as_document(client.configs.as_ref().map(serde_json::to_value))?;
+    let overrides = as_document(
+        client
+            .auth_flow_binding_overrides
+            .as_ref()
+            .map(serde_json::to_value),
+    )?;
+
+    let set = WriteSet::update(
+        vec![
+            col("name", &client.name),
+            col("display_name", &client.display_name),
+            col("description", &client.description),
+            col("enabled", &client.enabled),
+            col("public_client", &client.public_client),
+            col("protocol", &client.protocol),
+            col(
+                "client_authenticator_type",
+                &client.client_authenticator_type,
+            ),
+            col("full_scope_allowed", &client.full_scope_allowed),
+            col("consent_required", &client.consent_required),
+            col("bearer_only", &client.bearer_only),
+            col("service_account_enabled", &client.service_account_enabled),
+            col(
+                "is_surrogate_auth_required",
+                &client.is_surrogate_auth_required,
+            ),
+            col(
+                "authorization_code_flow_enabled",
+                &client.authorization_code_flow_enabled,
+            ),
+            col("implicit_flow_enabled", &client.implicit_flow_enabled),
+            col(
+                "direct_access_grants_enabled",
+                &client.direct_access_grants_enabled,
+            ),
+            col("standard_flow_enabled", &client.standard_flow_enabled),
+            col("front_channel_logout", &client.front_channel_logout),
+            col("root_url", &client.root_url),
+            col("web_origins", &client.web_origins),
+            col("redirect_uris", &client.redirect_uris),
+            col(
+                "post_logout_redirect_uris",
+                &client.post_logout_redirect_uris,
+            ),
+            col("id_token_signed_response_alg", &id_token_alg),
+            col("userinfo_signed_response_alg", &userinfo_alg),
+            col("request_object_signing_alg", &request_object_alg),
+            col("id_token_encryption_alg", &id_token_enc_alg),
+            col("id_token_encryption_enc", &id_token_enc),
+            col("userinfo_encryption_alg", &userinfo_enc_alg),
+            col("userinfo_encryption_enc", &userinfo_enc),
+            col("request_object_encryption_alg", &request_object_enc_alg),
+            col("request_object_encryption_enc", &request_object_enc),
+            col("not_before", &client.not_before),
+            col("configs", &configs),
+            col("auth_flow_binding_overrides", &overrides),
+            col("updated_by", &client.metadata.updated_by),
+        ],
+        vec![col("client_id", &client.client_id)],
+    );
+
+    let changed = transaction
+        .execute(statement::update("clients", &set).as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
 fn read(row: Row) -> ClientModel {
     ClientModel {
         client_id: row.get("client_id"),
@@ -184,30 +286,34 @@ fn read(row: Row) -> ClientModel {
         // Never read here. Reaching a bearer credential is its own call.
         secret: None,
         registration_token: None,
-        consent_required: None,
-        root_url: None,
-        web_origins: None,
-        redirect_uris: None,
-        post_logout_redirect_uris: None,
-        id_token_signed_response_alg: None,
-        userinfo_signed_response_alg: None,
-        request_object_signing_alg: None,
-        id_token_encryption: None,
-        userinfo_encryption: None,
-        request_object_encryption: None,
-        client_authenticator_type: None,
-        full_scope_allowed: None,
-        authorization_code_flow_enabled: None,
-        implicit_flow_enabled: None,
-        direct_access_grants_enabled: None,
-        standard_flow_enabled: None,
-        bearer_only: None,
-        front_channel_logout: None,
-        is_surrogate_auth_required: None,
-        not_before: None,
-        configs: None,
-        service_account_enabled: None,
-        auth_flow_binding_overrides: None,
+        consent_required: row.get("consent_required"),
+        root_url: row.get("root_url"),
+        web_origins: row.get("web_origins"),
+        redirect_uris: row.get("redirect_uris"),
+        post_logout_redirect_uris: row.get("post_logout_redirect_uris"),
+        id_token_signed_response_alg: read_signing_alg(&row, "id_token_signed_response_alg"),
+        userinfo_signed_response_alg: read_signing_alg(&row, "userinfo_signed_response_alg"),
+        request_object_signing_alg: read_signing_alg(&row, "request_object_signing_alg"),
+        id_token_encryption: read_encryption(&row, "id_token_encryption"),
+        userinfo_encryption: read_encryption(&row, "userinfo_encryption"),
+        request_object_encryption: read_encryption(&row, "request_object_encryption"),
+        client_authenticator_type: row.get("client_authenticator_type"),
+        full_scope_allowed: row.get("full_scope_allowed"),
+        authorization_code_flow_enabled: row.get("authorization_code_flow_enabled"),
+        implicit_flow_enabled: row.get("implicit_flow_enabled"),
+        direct_access_grants_enabled: row.get("direct_access_grants_enabled"),
+        standard_flow_enabled: row.get("standard_flow_enabled"),
+        bearer_only: row.get("bearer_only"),
+        front_channel_logout: row.get("front_channel_logout"),
+        is_surrogate_auth_required: row.get("is_surrogate_auth_required"),
+        not_before: row.get("not_before"),
+        configs: row
+            .get::<_, Option<serde_json::Value>>("configs")
+            .and_then(|value| serde_json::from_value(value).ok()),
+        service_account_enabled: row.get("service_account_enabled"),
+        auth_flow_binding_overrides: row
+            .get::<_, Option<serde_json::Value>>("auth_flow_binding_overrides")
+            .and_then(|value| serde_json::from_value(value).ok()),
         metadata: models::auditable::AuditableModel {
             tenant: row.get("tenant"),
             created_by: row.get("created_by"),
@@ -217,4 +323,57 @@ fn read(row: Row) -> ClientModel {
             version: row.get("version"),
         },
     }
+}
+
+/// A registered signing algorithm, read back through the catalogue that wrote
+/// it.
+///
+/// A value this build does not know reads as unregistered rather than as a
+/// string nothing can sign with. Held as text in the column because the
+/// catalogue lives in the build and not in the database.
+fn read_signing_alg(row: &Row, column: &str) -> Option<crypto::provider::SignAlg> {
+    let named: Option<String> = row.get(column);
+    serde_json::from_value(serde_json::Value::String(named?)).ok()
+}
+
+/// A registered encryption pair.
+///
+/// The pair is the unit: an `enc` with no `alg` is not a registration, and an
+/// `alg` alone takes the specified default. Reading them as two independent
+/// options would let the half-written state back into the model that was built
+/// to make it unrepresentable.
+fn read_encryption(row: &Row, registration: &str) -> Option<JweRegistration> {
+    let named: Option<String> = row.get(format!("{registration}_alg").as_str());
+    let alg: JweAlgorithm = serde_json::from_value(serde_json::Value::String(named?)).ok()?;
+    let enc = row
+        .get::<_, Option<String>>(format!("{registration}_enc").as_str())
+        .and_then(|named| {
+            serde_json::from_value::<JweEncryption>(serde_json::Value::String(named)).ok()
+        });
+    Some(JweRegistration::new(alg, enc))
+}
+
+/// How the catalogue spells an algorithm, which is what the column holds.
+fn alg_name(algorithm: Option<crypto::provider::SignAlg>) -> Option<String> {
+    let named = serde_json::to_value(algorithm?).ok()?;
+    named.as_str().map(str::to_owned)
+}
+
+/// A registration split into the two columns that hold it, both absent together.
+fn split_registration(registration: Option<JweRegistration>) -> (Option<String>, Option<String>) {
+    let Some(registration) = registration else {
+        return (None, None);
+    };
+    let spell = |value: serde_json::Value| value.as_str().map(str::to_owned);
+    (
+        serde_json::to_value(registration.alg).ok().and_then(spell),
+        serde_json::to_value(registration.enc).ok().and_then(spell),
+    )
+}
+
+/// A serialised document on its way into a jsonb column.
+fn as_document(
+    value: Option<Result<serde_json::Value, serde_json::Error>>,
+) -> StoreResult<Option<serde_json::Value>> {
+    value.transpose().map_err(|_| StoreError::Backend)
 }

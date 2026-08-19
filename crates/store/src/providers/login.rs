@@ -74,7 +74,7 @@ pub async fn resume(
 ///
 /// The notes are merged rather than replaced, so a step that writes one key does
 /// not silently drop what another wrote.
-pub async fn advance(
+pub async fn record_step(
     transaction: &Transaction<'_>,
     session_id: &str,
     user_id: Option<&str>,

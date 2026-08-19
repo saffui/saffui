@@ -8,6 +8,29 @@ use crate::error::{StoreError, StoreResult};
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
+/// What presenting a refresh token turned out to be.
+///
+/// Four answers rather than a boolean, because a caller cannot reconstruct them
+/// from one. A refusal that does not say whether the session is gone or the
+/// token is stale gets reported as the wrong thing, and a rotation that does not
+/// say whether it rotated cannot tell a lost race from a replay.
+#[derive(Debug, Clone)]
+pub enum Refreshed {
+    /// It was the token this session held, and a successor is now in its place.
+    Rotated { session: ClientSessionModel },
+    /// It was the token this session held, the realm does not rotate, and this
+    /// is how many times it has now been presented.
+    Reused {
+        session: ClientSessionModel,
+        presentations: i32,
+    },
+    /// It is not the token this session holds. Either it was rotated away or it
+    /// was never this session's.
+    Replayed,
+    /// There is no such client session.
+    Unknown,
+}
+
 const SESSION_COLUMNS: &str = "tenant, realm_id, session_id, user_id, login_username, \
                                broker_session_id, broker_user_id, auth_method, ip_address, \
                                started_at, auth_time, loa, expiration, state, remember_me, \
@@ -197,49 +220,71 @@ pub async fn client_sessions_of(
         .collect())
 }
 
-/// The token a client session refreshes with, and how many times it has been
-/// presented.
+/// Advance a client session's refresh token, and say what happened.
 ///
-/// Its own call, so reaching a bearer credential is deliberate. The count comes
-/// with it because the two are only useful together: a token that matches and
-/// has been presented before is a replay, and neither half says that alone.
-pub async fn refresh_token(
+/// One statement, because the caller has no way to hold the row between two.
+/// Reading the current token, comparing it, and writing a successor as three
+/// calls means three snapshots, and under read committed a second refresh can
+/// land between any two of them. Here the comparison is the write: two
+/// refreshes racing both name the same token, the second waits on the row lock
+/// and then re-reads it, finds a token that is no longer the one it named, and
+/// is told so.
+///
+/// Nothing reads the stored token out. A caller presents what it holds and is
+/// told what that is, so the credential never leaves the database, and there is
+/// no call that hands one to something that then has to decide what to do with
+/// it.
+///
+/// A successor rotates and resets the count. No successor means the realm does
+/// not rotate, so the presentation is counted instead and the caller weighs it
+/// against `refresh_token_max_reuse`.
+pub async fn advance_refresh_token(
     transaction: &Transaction<'_>,
     session_id: &str,
-) -> StoreResult<Option<(String, i32)>> {
-    Ok(transaction
-        .query_opt(
-            "SELECT current_refresh_token, current_refresh_token_use_count \
-             FROM client_sessions WHERE session_id = $1",
-            &[&session_id],
-        )
-        .await
-        .map_err(|_| StoreError::Backend)?
-        .and_then(|row| {
-            row.get::<_, Option<String>>("current_refresh_token")
-                .map(|token| (token, row.get("current_refresh_token_use_count")))
-        }))
-}
+    presented: &str,
+    successor: Option<&str>,
+) -> StoreResult<Refreshed> {
+    let statement = format!(
+        "UPDATE client_sessions \
+            SET current_refresh_token = COALESCE($3, current_refresh_token), \
+                current_refresh_token_use_count = \
+                    CASE WHEN $3 IS NULL THEN current_refresh_token_use_count + 1 ELSE 0 END \
+          WHERE session_id = $1 AND current_refresh_token = $2 \
+      RETURNING {CLIENT_SESSION_COLUMNS}, current_refresh_token_use_count AS presentations"
+    );
 
-/// Count one more presentation of the current token.
-///
-/// Counts rather than flags. A flag says a token was reused and a count says how
-/// far the reuse went, which is the difference between knowing something
-/// happened and knowing what to revoke.
-pub async fn count_refresh_use(
-    transaction: &Transaction<'_>,
-    session_id: &str,
-) -> StoreResult<Option<i32>> {
-    Ok(transaction
+    if let Some(row) = transaction
+        .query_opt(statement.as_str(), &[&session_id, &presented, &successor])
+        .await
+        .map_err(|_| StoreError::Backend)?
+    {
+        let presentations: i32 = row.get("presentations");
+        let session = read_client_session(row);
+        return Ok(match successor {
+            Some(_) => Refreshed::Rotated { session },
+            None => Refreshed::Reused {
+                session,
+                presentations,
+            },
+        });
+    }
+
+    // Only to name the refusal. Both answers withhold a token either way, and
+    // asking after the fact cannot make a token that was refused accepted.
+    let known = transaction
         .query_opt(
-            "UPDATE client_sessions \
-             SET current_refresh_token_use_count = current_refresh_token_use_count + 1 \
-             WHERE session_id = $1 RETURNING current_refresh_token_use_count",
+            "SELECT 1 FROM client_sessions WHERE session_id = $1",
             &[&session_id],
         )
         .await
         .map_err(|_| StoreError::Backend)?
-        .map(|row| row.get(0)))
+        .is_some();
+
+    Ok(if known {
+        Refreshed::Replayed
+    } else {
+        Refreshed::Unknown
+    })
 }
 
 fn notes_json(

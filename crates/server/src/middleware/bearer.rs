@@ -64,7 +64,7 @@ pub(crate) async fn admitted(
         .await
         .map_err(|_| unauthenticated())?;
 
-    services::context::admit(&transaction, context, &keys, &bearer, now)
+    services::context::admit_bearer(&transaction, context, &keys, &bearer, now)
         .await
         .map_err(|_| unauthenticated())
 }

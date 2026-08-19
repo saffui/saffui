@@ -408,3 +408,55 @@ async fn the_client_that_asked_for_the_token_is_carried() {
         .unwrap();
     assert_eq!(context.presenter.as_deref(), Some("saffui-console"));
 }
+
+/// The cut has to survive the shape a real token carries. `set_issued_at` writes
+/// `iat` as a fraction, `as_i64` reads a fraction as nothing, and the fallback
+/// was the instant of the question, so every cut in the past passed. The test
+/// above never caught it because it wrote the claim by hand, as an integer.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_cut_reads_the_instant_a_minted_token_actually_carries() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+
+    open_login(&transaction, "ada").await;
+
+    let now = Utc::now();
+    let cut = now.timestamp();
+    let mut user = users::load(&transaction, "ada").await.unwrap().unwrap();
+    user.not_before = Some(cut);
+    user.metadata = AuditableModel::from_updater("acme".into(), "root".into());
+    users::update(&transaction, &user).await.unwrap();
+
+    let mut payload = crypto::jose::jwt::JwtPayload::new();
+    payload.set_issued_at(
+        &(std::time::UNIX_EPOCH + std::time::Duration::from_secs((cut - 60) as u64)),
+    );
+    let minted = payload.claim("iat").unwrap().clone();
+    assert!(
+        minted.as_i64().is_none(),
+        "the claim a minted token carries is no longer a fraction, so this test \
+         is asserting the wrong thing"
+    );
+
+    let mut stale = presented("ada");
+    stale.claims.insert("iat".into(), minted);
+    assert_eq!(
+        establish(&transaction, tenant(), &stale, now)
+            .await
+            .expect_err("a token minted before the cut, as a real one states it"),
+        NotEstablished::Superseded
+    );
+
+    // And a token that states nothing at all is refused rather than judged
+    // against the clock, which is what let every past cut through.
+    let mut silent = presented("ada");
+    silent.claims.remove("iat");
+    assert_eq!(
+        establish(&transaction, tenant(), &silent, now)
+            .await
+            .expect_err("a token stating no instant cannot be judged against a cut"),
+        NotEstablished::Superseded
+    );
+}

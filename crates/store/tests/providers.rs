@@ -4,11 +4,17 @@ use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{CryptoConfig, CryptoProvider};
 use deadpool_postgres::{Manager, Pool};
 use models::auditable::AuditableModel;
-use models::entities::realm::{RealmCreateModel, RealmModel};
+use models::entities::acr::AcrLoaMap;
+use models::entities::attributes::AttributeValue;
+use models::entities::keys::{JweAlgorithm, JweEncryption};
+use models::entities::realm::{PasswordPolicy, RealmCreateModel, RealmModel};
 use models::entities::tenant::{TenantCreateModel, TenantLimits, TenantModel, TenantState};
 use models::paging::PagingParams;
 use pgcore::migrations::MigrationRunner;
 use pgcore::tls::PgConnector;
+use std::collections::HashMap;
+
+use crypto::provider::SignAlg;
 use store::providers::{realms, tenants};
 use store::query::list_query::ListQuery;
 use store::schema::migrations;
@@ -287,7 +293,7 @@ async fn a_state_change_bumps_the_stored_version() {
     transaction.commit().await.unwrap();
 }
 
-use models::entities::client::{ClientCreateModel, ClientSecret};
+use models::entities::client::{ClientCreateModel, ClientSecret, JweRegistration};
 use models::entities::user::{UserCreateModel, UserModel};
 use store::providers::{clients, users};
 
@@ -925,4 +931,183 @@ async fn credentials_belong_to_their_realm_and_to_their_user() {
         "a credential outlived the user it belonged to"
     );
     transaction.commit().await.unwrap();
+}
+
+/// Every rule a realm has must survive being written and read back. They are set
+/// after creation, which names what a realm is and nothing about how it behaves,
+/// so a read that drops them leaves an operator setting a five minute access
+/// token and getting whatever a constant elsewhere says, forever, with no error.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realms_rules_survive_being_written_and_read_back() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    plant_realm(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::tenant_wide("acme"))
+        .await
+        .unwrap();
+
+    let mut settings = realms::load(&transaction, "main").await.unwrap().unwrap();
+    settings.access_token_lifespan = Some(300);
+    settings.action_tokens_lifespan = Some(600);
+    settings.access_code_lifespan = Some(60);
+    settings.access_code_lifespan_user_action = Some(120);
+    settings.access_code_lifespan_login = Some(1_800);
+    settings.revoke_refresh_token = Some(true);
+    settings.refresh_token_max_reuse = Some(2);
+    settings.not_before = Some(1_700_000_000);
+    settings.remember_me = Some(true);
+    settings.verify_email = Some(true);
+    settings.acr_loa_map = Some(AcrLoaMap::from_pairs([("password", 1), ("mfa", 2)]));
+    settings.password_policy = Some(PasswordPolicy {
+        min_length: Some(12),
+        ..PasswordPolicy::default()
+    });
+    settings.attributes = Some(HashMap::from([(
+        "brand".to_owned(),
+        AttributeValue::Str("acme".to_owned()),
+    )]));
+
+    assert!(realms::update(&transaction, &settings).await.unwrap());
+
+    let read_back = realms::load(&transaction, "main").await.unwrap().unwrap();
+    assert_eq!(read_back.access_token_lifespan, Some(300));
+    assert_eq!(read_back.action_tokens_lifespan, Some(600));
+    assert_eq!(read_back.access_code_lifespan, Some(60));
+    assert_eq!(read_back.access_code_lifespan_user_action, Some(120));
+    assert_eq!(read_back.access_code_lifespan_login, Some(1_800));
+    assert_eq!(read_back.revoke_refresh_token, Some(true));
+    assert_eq!(read_back.refresh_token_max_reuse, Some(2));
+    assert_eq!(read_back.not_before, Some(1_700_000_000));
+    assert_eq!(read_back.remember_me, Some(true));
+    assert_eq!(read_back.verify_email, Some(true));
+    assert_eq!(read_back.acr_loa_map, settings.acr_loa_map);
+    assert_eq!(read_back.password_policy, settings.password_policy);
+    assert_eq!(read_back.attributes, settings.attributes);
+
+    assert!(
+        !realms::update(&transaction, &realm("acme", "nobody"))
+            .await
+            .unwrap(),
+        "a realm that does not exist takes no settings"
+    );
+    transaction.commit().await.unwrap();
+}
+
+/// Same for a client, and the encryption pair is the case worth naming: the two
+/// columns hold one registration, and reading them as two independent options
+/// would let the half written state back into a model built to make it
+/// unrepresentable.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_clients_registrations_survive_being_written_and_read_back() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    plant_realm(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+
+    let client = ClientCreateModel {
+        name: "app".into(),
+        display_name: "App".into(),
+        description: String::new(),
+        enabled: Some(true),
+    }
+    .into_model(
+        "app".to_owned(),
+        "main".to_owned(),
+        AuditableModel::from_creator("acme".to_owned(), "root".to_owned()),
+    );
+    clients::create(&transaction, &client).await.unwrap();
+
+    let mut registered = clients::load(&transaction, "app").await.unwrap().unwrap();
+    registered.redirect_uris = Some(vec!["https://app.example/cb".to_owned()]);
+    registered.post_logout_redirect_uris = Some(vec!["https://app.example/bye".to_owned()]);
+    registered.web_origins = Some(vec!["https://app.example".to_owned()]);
+    registered.root_url = Some("https://app.example".to_owned());
+    registered.id_token_signed_response_alg = Some(SignAlg::Es256);
+    registered.userinfo_signed_response_alg = Some(SignAlg::Rs512);
+    registered.id_token_encryption = Some(JweRegistration::new(
+        JweAlgorithm::RsaOaep256,
+        Some(JweEncryption::A256Gcm),
+    ));
+    // No `enc` named, so the registration takes the specified default and the
+    // read must bring back the pair rather than the half that was written.
+    registered.userinfo_encryption = Some(JweRegistration::new(JweAlgorithm::EcdhEs, None));
+    registered.full_scope_allowed = Some(false);
+    registered.consent_required = Some(true);
+    registered.direct_access_grants_enabled = Some(true);
+    registered.standard_flow_enabled = Some(true);
+    registered.implicit_flow_enabled = Some(false);
+    registered.service_account_enabled = Some(true);
+    registered.not_before = Some(1_700_000_000);
+    registered.configs = Some(HashMap::from([("tier".to_owned(), AttributeValue::Int(2))]));
+
+    assert!(clients::update(&transaction, &registered).await.unwrap());
+
+    let read_back = clients::load(&transaction, "app").await.unwrap().unwrap();
+    assert_eq!(read_back.redirect_uris, registered.redirect_uris);
+    assert_eq!(
+        read_back.post_logout_redirect_uris,
+        registered.post_logout_redirect_uris
+    );
+    assert_eq!(read_back.web_origins, registered.web_origins);
+    assert_eq!(read_back.root_url, registered.root_url);
+    assert_eq!(read_back.id_token_signed_response_alg, Some(SignAlg::Es256));
+    assert_eq!(read_back.userinfo_signed_response_alg, Some(SignAlg::Rs512));
+    assert_eq!(read_back.request_object_signing_alg, None);
+    assert_eq!(
+        read_back.id_token_encryption,
+        registered.id_token_encryption
+    );
+    assert_eq!(
+        read_back.userinfo_encryption,
+        Some(JweRegistration {
+            alg: JweAlgorithm::EcdhEs,
+            enc: JweEncryption::DEFAULT,
+        })
+    );
+    assert_eq!(read_back.request_object_encryption, None);
+
+    assert_eq!(read_back.full_scope_allowed, Some(false));
+    assert_eq!(read_back.consent_required, Some(true));
+    assert_eq!(read_back.direct_access_grants_enabled, Some(true));
+    assert_eq!(read_back.standard_flow_enabled, Some(true));
+    assert_eq!(read_back.implicit_flow_enabled, Some(false));
+    assert_eq!(read_back.service_account_enabled, Some(true));
+    assert_eq!(read_back.not_before, Some(1_700_000_000));
+    assert_eq!(read_back.configs, registered.configs);
+    assert_eq!(
+        read_back.secret, None,
+        "a settings edit is not how a credential is reached"
+    );
+    transaction.commit().await.unwrap();
+
+    // The half written state is unrepresentable on both sides, and the schema is
+    // where that is actually held: the model can only refuse to describe it, the
+    // check refuses to store it whatever wrote the row. Its own transaction,
+    // because a refused statement aborts the one it was issued in.
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+    assert!(
+        transaction
+            .execute(
+                "UPDATE clients SET userinfo_encryption_enc = NULL WHERE client_id = 'app'",
+                &[],
+            )
+            .await
+            .is_err(),
+        "a content encryption was dropped from under the algorithm it goes with"
+    );
 }

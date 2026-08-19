@@ -10,7 +10,8 @@ use actix_web::{App, web};
 use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 
-use crate::admin::Guard;
+use crate::admin::{Caller, Guard};
+use crate::enforce;
 use crate::guard::AdminPolicy;
 use crate::realms;
 
@@ -44,6 +45,17 @@ where
                 })
                 .service(web::resource("/realms").route(web::get().to(realms::list)))
                 .service(web::resource("/realms/{realm}").route(web::get().to(realms::get))),
+        )
+        // Its own scope, and its own gate. The admin plane demands a capability
+        // per route; this demands only that the token stood up, because what
+        // may be done is what it is here to ask.
+        .service(
+            web::scope("/authz")
+                .wrap(Caller {
+                    pool: plane.pool.clone(),
+                    tenancy: plane.tenancy.clone(),
+                })
+                .service(web::resource("/decision").route(web::post().to(enforce::ask))),
         )
 }
 

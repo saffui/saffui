@@ -1,15 +1,8 @@
 //! What one request established, before anything decides anything with it.
 //!
-//! Assembled once and read by everything downstream. The alternative is each
-//! decision gathering its own facts, and then two decisions in one request can
-//! disagree about who is asking: the roles are read, the subject is disabled a
-//! moment later, and the second decision answers about a different caller than
-//! the first. One context per request makes that unrepresentable.
-//!
-//! Nothing here is taken on the token's word. The token says which realm to ask
-//! and which organization the caller means to act within; the store says
-//! whether the subject exists, whether it is enabled, and whether it belongs
-//! where it claims. A claim is a question, never an answer.
+//! Assembled once, so two decisions in one request cannot disagree about who is
+//! asking. Nothing here is taken on the token's word: the token says which realm
+//! and which organization, the store says whether any of it is so.
 
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
@@ -22,15 +15,9 @@ use crate::token::Verified;
 
 /// Who is asking, resolved against the realm rather than read off a token.
 ///
-/// A user, and only a user. What reaches here is an access token bound to a
-/// login, and a machine has no login: a client acting for itself is turned away
-/// before this, so an arm for one would be an arm nothing can build. When a
-/// machine is given a way in it gets its own, named, rather than arriving as a
-/// user with something missing.
-///
-/// A subject the realm does not hold is not a subject with no attributes, and a
-/// disabled one is not a subject with no roles. Both are refusals, and they are
-/// refusals here rather than absences an evaluator has to interpret.
+/// A user, and only a user: what reaches here is an access token bound to a
+/// login, and a machine has no login. When a machine is given a way in it gets
+/// one of its own rather than arriving as a user with something missing.
 #[derive(Debug, Clone)]
 pub struct Principal(Box<UserModel>);
 
@@ -50,12 +37,9 @@ impl Principal {
     }
 }
 
-/// Which organization the caller is acting within.
-///
-/// The token names one and the store confirms it. Neither half is enough on its
-/// own: without the claim a subject belonging to three organizations is
-/// ambiguous and something has to guess, and without the check the claim is a
-/// caller choosing its own confinement.
+/// Which organization the caller is acting within: the token names one and the
+/// store confirms it. Without the claim a subject in three is ambiguous, and
+/// without the check the claim is a caller choosing its own confinement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Acting {
     In {
@@ -98,6 +82,10 @@ pub enum NotEstablished {
     LoggedOut,
     #[error("the store could not be read")]
     Unreadable,
+    /// The bearer itself did not stand up. Distinct from everything above,
+    /// which is about a token that verified and a realm that will not have it.
+    #[error("{0}")]
+    Unverified(#[from] crate::token::Refused),
 }
 
 /// Everything one request established.
@@ -113,6 +101,31 @@ pub struct Context {
     /// Read once, so every decision in this request shares an instant and a
     /// replay of any of them reads the same clock.
     pub now: DateTime<Utc>,
+}
+
+/// Everything a request established, and the token it came from. The claims
+/// travel because a caller downstream reads them, and re-reading the token to
+/// find out would be a second verification nobody watches.
+#[derive(Debug, Clone)]
+pub struct Established {
+    pub context: Context,
+    pub verified: Verified,
+}
+
+/// Verify a bearer and establish what it means, in one transaction.
+///
+/// Both planes come through here, since two paths doing this are two places for
+/// one to skip a step nobody notices missing.
+pub async fn admit(
+    transaction: &Transaction<'_>,
+    tenant: TenantContext,
+    keys: &[models::entities::keys::RealmSigningKeyView],
+    bearer: &str,
+    now: DateTime<Utc>,
+) -> Result<Established, NotEstablished> {
+    let verified = crate::token::verify(transaction, keys, bearer, now).await?;
+    let context = establish(transaction, tenant, &verified, now).await?;
+    Ok(Established { context, verified })
 }
 
 /// Establish what a verified token means in this realm.
@@ -149,10 +162,9 @@ pub async fn establish(
 
 /// The login this token was minted for, or a refusal saying it names none.
 ///
-/// Two claims and both are required. `typ` turns away a refresh token and an
-/// identity token, which are minted for other purposes and would otherwise pass
-/// every check a bearer passes. `sid` turns away a token minted for a machine,
-/// which has no login behind it and therefore nothing a logout could close.
+/// `typ` turns away a refresh or identity token, minted for other purposes and
+/// otherwise passing everything a bearer passes. `sid` turns away a machine's,
+/// which has no login for a logout to close.
 fn access_token(verified: &Verified) -> Result<String, NotEstablished> {
     let claim = |name: &str| {
         verified
@@ -173,13 +185,9 @@ fn access_token(verified: &Verified) -> Result<String, NotEstablished> {
 
 /// Whether the login is still open, and is the one this token belongs to.
 ///
-/// The only lever that answers a logout. An expiry cannot be brought forward, a
-/// withdrawal names one token, and switching an account off ends every login it
-/// has: this ends the one that was ended.
-///
-/// The session has to name the same realm and the same subject as the token,
-/// because an identifier on its own is only a string. Without the check, a live
-/// session belonging to somebody else, or to another realm, is a way in.
+/// The only lever that answers a logout. The realm and subject are matched too,
+/// since an identifier alone is a string: somebody else's live session would
+/// otherwise be a way in for anyone who learned it.
 async fn logged_in(
     transaction: &Transaction<'_>,
     session_id: &str,
@@ -227,10 +235,8 @@ async fn resolve(
 
 /// Whether the realm still stands behind this subject and this token.
 ///
-/// A window says when a token stops on its own and a withdrawal names one
-/// token. Neither reaches the case an administrator actually reaches for:
-/// switching an account off, or invalidating everything minted for it before
-/// now. Those live on the subject, and nothing was reading them.
+/// A window and a withdrawal miss what an administrator reaches for: switching
+/// an account off, and invalidating everything minted for it before now.
 fn live(
     principal: &Principal,
     verified: &Verified,

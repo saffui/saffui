@@ -5,6 +5,7 @@
 
 pub mod admin;
 pub mod app;
+pub mod enforce;
 pub mod error;
 pub mod guard;
 pub mod realms;

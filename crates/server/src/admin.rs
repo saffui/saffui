@@ -39,6 +39,102 @@ pub struct Admin {
     pub allowed: AdminAction,
 }
 
+/// Establish a caller, and require nothing of them.
+///
+/// The enforcement scope's gate. The admin plane's asks for a capability on top;
+/// this asks only that the token stood up, because what may be done is the
+/// decision point's question and not the transport's.
+#[derive(Clone)]
+pub struct Caller {
+    pub pool: Pool,
+    pub tenancy: Tenancy,
+}
+
+impl<S, B> Transform<S, ServiceRequest> for Caller
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<EitherBody<B>>;
+    type Error = Error;
+    type Transform = CallerService<S>;
+    type InitError = ();
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(CallerService {
+            service: Rc::new(service),
+            gate: self.clone(),
+        }))
+    }
+}
+
+pub struct CallerService<S> {
+    service: Rc<S>,
+    gate: Caller,
+}
+
+impl<S, B> Service<ServiceRequest> for CallerService<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<EitherBody<B>>;
+    type Error = Error;
+    type Future = std::pin::Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+
+    actix_web::dev::forward_ready!(service);
+
+    fn call(&self, request: ServiceRequest) -> Self::Future {
+        let service = Rc::clone(&self.service);
+        let gate = self.gate.clone();
+
+        Box::pin(async move {
+            match admitted(&gate, &request).await {
+                Ok(established) => {
+                    request.extensions_mut().insert(established);
+                    service
+                        .call(request)
+                        .await
+                        .map(ServiceResponse::map_into_left_body)
+                }
+                Err(error) => {
+                    let (request, _) = request.into_parts();
+                    Ok(ServiceResponse::new(request, error.error_response()).map_into_right_body())
+                }
+            }
+        })
+    }
+}
+
+/// Verify the bearer and establish who it is, and stop there.
+async fn admitted(
+    gate: &Caller,
+    request: &ServiceRequest,
+) -> Result<services::context::Established, commons::http::ApiError> {
+    let now = Utc::now();
+    let bearer = bearer(request).ok_or_else(unauthenticated)?;
+    let issuer = unverified_issuer(&bearer).ok_or_else(unauthenticated)?;
+
+    let mut connection = gate.pool.get().await.map_err(|_| unauthenticated())?;
+    let context = resolve::realm_by_id(&connection, &issuer)
+        .await
+        .map_err(|_| unauthenticated())?;
+    let transaction = gate
+        .tenancy
+        .transaction(&mut connection, &context)
+        .await
+        .map_err(|_| unauthenticated())?;
+
+    let keys = realm_keys::published(&transaction, models::entities::keys::KeyUse::Sig)
+        .await
+        .map_err(|_| unauthenticated())?;
+
+    services::context::admit(&transaction, context, &keys, &bearer, now)
+        .await
+        .map_err(|_| unauthenticated())
+}
+
 /// The guard, and what it needs to do its work.
 #[derive(Clone)]
 pub struct Guard {

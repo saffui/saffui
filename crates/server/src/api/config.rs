@@ -22,7 +22,9 @@ use store::tenancy::Tenancy;
 use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
-use crate::api::rest::endpoints::protocol::{authorize, discovery, keys, login, token, userinfo};
+use crate::api::rest::endpoints::protocol::{
+    authorize, discovery, keys, login, logout, token, userinfo,
+};
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
 use crate::middleware::admin_policy::AdminPolicy;
@@ -174,6 +176,11 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/login").route(web::post().to(login::answer)))
         .service(web::resource("/token").route(web::post().to(token::ask)))
         .service(web::resource("/certs").route(web::get().to(keys::published)))
+        .service(
+            web::resource("/logout")
+                .route(web::get().to(logout::end))
+                .route(web::post().to(logout::end)),
+        )
         .service(
             web::resource("/userinfo")
                 .route(web::get().to(userinfo::tell))

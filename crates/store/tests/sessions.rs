@@ -419,18 +419,26 @@ async fn presenting_a_refresh_token_says_which_of_the_four_it_was() {
 
     assert!(
         matches!(
-            sessions::advance_refresh_token(&transaction, "nobody", "rt-s3cr3t", Some("rt-2"))
-                .await
-                .unwrap(),
+            sessions::advance_refresh_token(
+                &transaction,
+                "nobody",
+                "rt-s3cr3t",
+                Some("rt-2"),
+                now(),
+                grace()
+            )
+            .await
+            .unwrap(),
             Refreshed::Unknown
         ),
         "a session that does not exist is not a replay"
     );
 
     // No successor: the realm does not rotate, so the presentation is counted.
-    let counted = sessions::advance_refresh_token(&transaction, "cs-1", "rt-s3cr3t", None)
-        .await
-        .unwrap();
+    let counted =
+        sessions::advance_refresh_token(&transaction, "cs-1", "rt-s3cr3t", None, now(), grace())
+            .await
+            .unwrap();
     let Refreshed::Reused {
         session,
         presentations,
@@ -446,7 +454,7 @@ async fn presenting_a_refresh_token_says_which_of_the_four_it_was() {
     );
 
     assert!(matches!(
-        sessions::advance_refresh_token(&transaction, "cs-1", "rt-s3cr3t", None)
+        sessions::advance_refresh_token(&transaction, "cs-1", "rt-s3cr3t", None, now(), grace())
             .await
             .unwrap(),
         Refreshed::Reused {
@@ -458,13 +466,20 @@ async fn presenting_a_refresh_token_says_which_of_the_four_it_was() {
     // A successor rotates, and the count follows the token it counts rather than
     // carrying what its predecessor was presented for.
     assert!(matches!(
-        sessions::advance_refresh_token(&transaction, "cs-1", "rt-s3cr3t", Some("rt-next"))
-            .await
-            .unwrap(),
+        sessions::advance_refresh_token(
+            &transaction,
+            "cs-1",
+            "rt-s3cr3t",
+            Some("rt-next"),
+            now(),
+            grace()
+        )
+        .await
+        .unwrap(),
         Refreshed::Rotated { .. }
     ));
     assert!(matches!(
-        sessions::advance_refresh_token(&transaction, "cs-1", "rt-next", None)
+        sessions::advance_refresh_token(&transaction, "cs-1", "rt-next", None, now(), grace())
             .await
             .unwrap(),
         Refreshed::Reused {
@@ -473,16 +488,53 @@ async fn presenting_a_refresh_token_says_which_of_the_four_it_was() {
         }
     ));
 
-    // The token that was rotated away is not the one the session holds, and it
-    // is refused as such rather than landing on top of its own successor.
+    // The token a rotation replaced is still accepted while the window holds. A
+    // client that fired two refreshes at once, or retried after a response that
+    // never arrived, presents exactly this and is not an attacker.
     assert!(
         matches!(
-            sessions::advance_refresh_token(&transaction, "cs-1", "rt-s3cr3t", Some("rt-forged"))
-                .await
-                .unwrap(),
+            sessions::advance_refresh_token(
+                &transaction,
+                "cs-1",
+                "rt-s3cr3t",
+                Some("rt-third"),
+                now(),
+                grace()
+            )
+            .await
+            .unwrap(),
+            Refreshed::Rotated { .. }
+        ),
+        "a double submit inside the window was taken for a replay"
+    );
+
+    // Outside it, the same token is a replay again. `grace_from` at the instant
+    // itself leaves no window, which is what a rotation long past looks like.
+    assert!(
+        matches!(
+            sessions::advance_refresh_token(
+                &transaction,
+                "cs-1",
+                "rt-next",
+                Some("rt-forged"),
+                now(),
+                now()
+            )
+            .await
+            .unwrap(),
             Refreshed::Replayed
         ),
         "a token the session no longer holds rotated it anyway"
     );
     transaction.commit().await.unwrap();
+}
+
+/// The instant every advance in this file shares, and the window a rotation's
+/// predecessor is still accepted in.
+fn now() -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now()
+}
+
+fn grace() -> chrono::DateTime<chrono::Utc> {
+    now() - chrono::Duration::seconds(30)
 }

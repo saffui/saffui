@@ -12,7 +12,7 @@ use secrecy::SecretBox;
 use services::client::{self, Unauthenticated};
 use services::grant::{self, Granted, Ungranted};
 use store::keyring;
-use store::providers::realms;
+use store::providers::{realm_keys, realms};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
@@ -163,7 +163,43 @@ pub async fn ask(
             .await
         }
         "refresh_token" => {
-            return Denied::UnsupportedGrantType.answer("this grant is not performed yet");
+            let (Ok(ring), Ok(keys)) = (
+                keyring::load(
+                    &transaction,
+                    &sealing.envelope,
+                    &context.tenant,
+                    &context.realm_id,
+                )
+                .await,
+                realm_keys::published(&transaction, models::entities::keys::KeyUse::Sig).await,
+            ) else {
+                return Denied::InvalidRequest.answer("the realm could not be read");
+            };
+            let Some(refresh_token) = asked.refresh_token.as_deref().filter(|it| !it.is_empty())
+            else {
+                return Denied::InvalidRequest.answer("refresh_token is required");
+            };
+
+            grant::refresh_token(
+                &transaction,
+                &grant::Signing {
+                    provider: sealing.provider.as_ref(),
+                    ring: &ring,
+                    envelope: &sealing.envelope,
+                },
+                &grant::Within {
+                    tenant: &context,
+                    realm: &realm,
+                    issuer: &origin.issuer(&context.realm_id),
+                },
+                &client,
+                &grant::Renewing {
+                    refresh_token,
+                    keys: &keys,
+                },
+                now,
+            )
+            .await
         }
         _ => return Denied::UnsupportedGrantType.answer("no such grant"),
     };
@@ -173,7 +209,7 @@ pub async fn ask(
         // code is spent by the attempt and not by the attempt succeeding, and
         // rolling back here would hand it back: a code refused for its redirect
         // could then be presented again with the right one.
-        Err(why @ Ungranted::InvalidGrant) => {
+        Err(why @ (Ungranted::InvalidGrant | Ungranted::Replayed)) => {
             let _ = transaction.commit().await;
             return ungranted(why);
         }
@@ -212,7 +248,10 @@ fn ungranted(why: Ungranted) -> HttpResponse {
         Ungranted::Unauthorized => {
             Denied::UnauthorizedClient.answer("this client may not use this grant")
         }
-        Ungranted::InvalidGrant => {
+        // A replay is told apart from any other refusal only by what the store
+        // now holds: the session is gone. Saying so would confirm a guess to
+        // whoever presented a token they should not have.
+        Ungranted::InvalidGrant | Ungranted::Replayed => {
             Denied::InvalidGrant.answer("the grant presented was not honoured")
         }
         _ => Denied::InvalidRequest.answer("the grant could not be performed"),

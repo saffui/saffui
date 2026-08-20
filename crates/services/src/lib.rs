@@ -19,6 +19,7 @@ pub mod client;
 pub mod context;
 pub mod grant;
 pub mod login;
+pub mod logout;
 pub mod pdp;
 pub mod provisioning;
 pub mod rebac;

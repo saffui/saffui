@@ -1844,7 +1844,7 @@ async fn a_cookie_naming_no_live_login_starts_one() {
     // The code carries the login's own instant, not this one. A client asking
     // how recently the user authenticated is asking about the login, and a
     // freshly stamped value answers a question nobody asked.
-    let authenticated_at = plane.backdate_authentication(3_600).await;
+    let authenticated_at = plane.backdate_authentication(support::SESSION, 3_600).await;
     let (_, landing) = authorize_signed_in(&plane, &asked, support::SESSION).await;
     let code = landing
         .split_once("code=")
@@ -2025,4 +2025,234 @@ async fn only_an_access_token_of_this_realm_is_answered() {
             "{label} was refused without a challenge: {challenge:?}"
         );
     }
+}
+
+/// Sign in, and hand back the SSO session the browser now holds.
+async fn signed_in_once(plane: &Plane) -> String {
+    let (_, _, opened) =
+        authorize_with_cookies(plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, signed_in) = login_step(
+        plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(told["status"], "admitted", "{told}");
+    cookie_value(&signed_in, support::SSO_COOKIE).expect("a login")
+}
+
+fn asking_for<'a>(extra: &[(&'a str, &'a str)]) -> Vec<(&'a str, &'a str)> {
+    let mut asked = vec![
+        ("response_type", "code"),
+        ("client_id", support::CONFIDENTIAL),
+        ("redirect_uri", REDIRECT),
+        ("scope", "openid"),
+        ("state", "s"),
+    ];
+    asked.extend_from_slice(extra);
+    asked
+}
+
+/// `prompt=login` is the client saying "prove it again". Honouring it only for
+/// an old session would make it useless for the case it exists for.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn prompt_login_authenticates_again_however_fresh_the_session() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+
+    // Without it, the same browser is admitted straight away.
+    let (_, straight) = authorize_signed_in(&plane, &asking_for(&[]), &session).await;
+    assert!(straight.starts_with(REDIRECT), "{straight}");
+
+    let (status, sent) =
+        authorize_signed_in(&plane, &asking_for(&[("prompt", "login")]), &session).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(
+        sent, "https://login.test",
+        "a session minutes old satisfied prompt=login"
+    );
+}
+
+/// `max_age` asks how long ago the user authenticated, not how long ago the
+/// session began. A session refreshed for an hour is not a recent
+/// authentication, and conflating them is how `max_age` silently stops working.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn max_age_is_measured_against_the_authentication() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+
+    // Backdated rather than raced. A test that leans on how long two requests
+    // take measures the machine, not the rule.
+    plane.backdate_authentication(&session, 3_600).await;
+
+    let (_, generous) =
+        authorize_signed_in(&plane, &asking_for(&[("max_age", "7200")]), &session).await;
+    assert!(
+        generous.starts_with(REDIRECT),
+        "an authentication inside the window was refused: {generous}"
+    );
+
+    let (_, stale) = authorize_signed_in(&plane, &asking_for(&[("max_age", "60")]), &session).await;
+    assert_eq!(
+        stale, "https://login.test",
+        "an authentication an hour old satisfied a one minute window"
+    );
+}
+
+/// "Never interact" and "authenticate again" contradict each other, and the
+/// contradiction is the client's to resolve.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn prompt_none_refuses_rather_than_showing_a_screen() {
+    let plane = Plane::with_actions(&[]).await;
+
+    // No session at all: there is nothing to be silent about.
+    let (_, cold) = authorize(&plane, &asking_for(&[("prompt", "none")])).await;
+    assert!(cold.contains("error=login_required"), "{cold}");
+
+    // A session that satisfies the request is answered without a screen.
+    let session = signed_in_once(&plane).await;
+    let (_, warm) = authorize_signed_in(&plane, &asking_for(&[("prompt", "none")]), &session).await;
+    assert!(warm.starts_with(REDIRECT), "{warm}");
+
+    // One that does not is refused rather than sent to a screen it forbade.
+    plane.backdate_authentication(&session, 3_600).await;
+    let (_, stale) = authorize_signed_in(
+        &plane,
+        &asking_for(&[("prompt", "none"), ("max_age", "60")]),
+        &session,
+    )
+    .await;
+    assert!(stale.contains("error=login_required"), "{stale}");
+
+    // `none` with anything else contradicts itself.
+    let (_, both) = authorize(&plane, &asking_for(&[("prompt", "none login")])).await;
+    assert!(both.contains("error=invalid_request"), "{both}");
+}
+
+/// A level this realm maps but nothing here reaches sends the user back to
+/// authenticate; one it does not map at all is refused outright, because
+/// authenticating first and failing afterwards wastes the user's time.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_level_above_what_was_reached_is_not_admitted() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+
+    let (_, reached) = authorize_signed_in(
+        &plane,
+        &asking_for(&[("acr_values", support::PASSWORD_ACR)]),
+        &session,
+    )
+    .await;
+    assert!(reached.starts_with(REDIRECT), "{reached}");
+
+    let (_, above) = authorize_signed_in(
+        &plane,
+        &asking_for(&[("acr_values", support::STRONG_ACR)]),
+        &session,
+    )
+    .await;
+    assert_eq!(
+        above, "https://login.test",
+        "a level the session never reached was admitted"
+    );
+
+    // Unmapped and voluntary: a hint the provider may ignore, so the login
+    // proceeds at whatever level it reaches.
+    let (_, unknown) = authorize_signed_in(
+        &plane,
+        &asking_for(&[("acr_values", "a-level-nobody-defined")]),
+        &session,
+    )
+    .await;
+    assert!(unknown.starts_with(REDIRECT), "{unknown}");
+}
+
+/// The claim reports what was reached, never what was asked for. A server that
+/// echoes the request turns the mechanism into decoration, and a relying party
+/// reads it to decide whether to release money.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_acr_claim_reports_what_was_reached() {
+    let plane = Plane::with_actions(&[]).await;
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let landing = told["redirect_to"].as_str().expect("somewhere to land");
+    let code = landing
+        .split_once("code=")
+        .unwrap()
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let identity = plane
+        .claims_of(granted["id_token"].as_str().expect("an id token"))
+        .await;
+    assert_eq!(
+        identity["acr"],
+        support::PASSWORD_ACR,
+        "the claim did not report the level a password reaches"
+    );
+    assert_ne!(
+        identity["acr"],
+        support::STRONG_ACR,
+        "the claim reported a level nothing here can reach"
+    );
+}
+
+/// A realm that maps levels advertises them weakest first, and the `acr` claim
+/// with them. One that maps nothing omits both rather than publishing an empty
+/// list, which would claim it supports no authentication contexts at all.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn discovery_advertises_the_levels_the_realm_maps() {
+    let plane = Plane::with_actions(&[]).await;
+    let (_, document, _) = fetched(
+        &plane,
+        &format!(
+            "/realms/{}/.well-known/openid-configuration",
+            support::REALM
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        document["acr_values_supported"].as_array().unwrap(),
+        &vec![
+            serde_json::json!(support::PASSWORD_ACR),
+            serde_json::json!(support::STRONG_ACR),
+        ],
+        "the levels were not advertised weakest first"
+    );
+    assert!(
+        document["claims_supported"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("acr")),
+        "levels are mapped and the claim is not advertised"
+    );
 }

@@ -10,7 +10,7 @@ use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
 use models::entities::keys::KeyUse;
 use serde_json::{Value, json};
-use store::providers::realm_keys;
+use store::providers::{realm_keys, realms};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -48,6 +48,25 @@ pub async fn published(
     algorithms.sort_unstable();
     algorithms.dedup();
 
+    // What the realm calls its authentication levels, weakest first. A realm
+    // mapping nothing omits this and the `acr` claim with it: an empty list
+    // claims the server supports no authentication contexts at all.
+    let mapped = realms::load(&transaction, &context.realm_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|realm| realm.acr_loa_map)
+        .filter(|map| !map.is_empty());
+    let contexts: Vec<String> = mapped
+        .as_ref()
+        .map(|map| {
+            map.values_by_level()
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
+
     let issuer = origin.issuer(&context.realm_id);
     let protocol = format!("{issuer}/protocol/openid-connect");
 
@@ -81,20 +100,44 @@ pub async fn published(
             // endpoint refuses it, so advertising it would be a lie a client
             // acts on.
             "code_challenge_methods_supported": ["S256"],
-            "scopes_supported": ["openid"],
-            "claims_supported": [
-                "sub", "iss", "aud", "exp", "iat", "jti", "typ", "azp", "sid",
-                "scope", "auth_time", "nonce", "acr", "org_id",
-            ],
+            "scopes_supported": ["openid", "profile", "email", "phone"],
+            "claims_supported": claims_named(!contexts.is_empty()),
             // Stated because the omission is not neutral. Discovery §3 reads an
             // absent `request_uri_parameter_supported` as `true`, so saying
             // nothing here advertises a capability this build does not have and
             // a client that believes it sends a signed request nothing reads.
+            "acr_values_supported": contexts,
             "request_parameter_supported": false,
             "request_uri_parameter_supported": false,
             "claims_parameter_supported": false,
             "authorization_response_iss_parameter_supported": false,
         }))
+}
+
+/// What a token here may carry. `acr` only when the realm maps something, since
+/// a claim advertised and never emitted is one a client waits for.
+fn claims_named(maps_contexts: bool) -> Vec<&'static str> {
+    let mut named = vec![
+        "sub",
+        "iss",
+        "aud",
+        "exp",
+        "iat",
+        "jti",
+        "typ",
+        "azp",
+        "sid",
+        "scope",
+        "auth_time",
+        "nonce",
+        "preferred_username",
+        "email",
+        "email_verified",
+    ];
+    if maps_contexts {
+        named.push("acr");
+    }
+    named
 }
 
 fn refused(status: StatusCode) -> HttpResponse {

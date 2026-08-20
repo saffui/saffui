@@ -1,8 +1,7 @@
 //! Establishing which client is asking.
 //!
-//! Ahead of every grant, and separate from all of them: the token endpoint
-//! authenticates once and then routes, so a grant added later cannot be added
-//! without the check.
+//! Ahead of every grant and separate from all of them, so a grant added later
+//! cannot be added without the check.
 
 use chrono::{DateTime, Utc};
 use crypto::constant_time;
@@ -17,8 +16,7 @@ use store::providers::clients::{self, StoredSecret};
 /// How a client offered to prove who it is.
 #[derive(Debug)]
 pub enum Presented {
-    /// RFC 6749 §2.3.1, in the `Authorization` header. What the spec requires
-    /// every server to support and every client to prefer.
+    /// RFC 6749 §2.3.1, in the `Authorization` header.
     Basic {
         client_id: String,
         secret: SecretBox<String>,
@@ -55,29 +53,24 @@ pub enum Unauthenticated {
     /// Nothing named a client.
     #[error("no client was named")]
     Anonymous,
-    /// More than one method at once. RFC 6749 §2.3 forbids it, and the reason
-    /// is that a server picking one silently lets a caller present a weak
-    /// credential beside a strong one and be judged on whichever is checked.
+    /// More than one at once. §2.3 forbids it: a server picking one lets a
+    /// caller be judged on whichever gets checked.
     #[error("more than one authentication method was used")]
     Ambiguous,
-    /// The registration names a method this build does not perform. Refused
-    /// rather than falling back to the secret, which would be a downgrade the
-    /// operator did not ask for.
+    /// A method this build does not perform. Refused rather than falling back
+    /// to the secret, which is a downgrade nobody asked for.
     #[error("the client is registered for a method this build does not perform")]
     Unperformable,
-    /// No such client, wrong secret, switched off, or a secret past its date.
-    /// One answer, because four would enumerate the realm's clients.
+    /// No such client, wrong secret, switched off, or expired. One answer,
+    /// because four would enumerate the realm's clients.
     #[error("the client could not be authenticated")]
     Refused,
     #[error("the store could not be read")]
     Unreadable,
 }
 
-/// Read what the request offered, and refuse two offers at once.
-///
-/// The header and the form are separate arguments because refusing both
-/// together is the rule, and a function that took one merged value could not
-/// see that there had been two.
+/// Read what the request offered, and refuse two offers at once. Separate
+/// arguments, because a merged value could not see there had been two.
 pub fn read_presented(
     header: Option<(String, SecretBox<String>)>,
     form_client_id: Option<&str>,
@@ -87,9 +80,8 @@ pub fn read_presented(
 
     match (header, form_client_id, form_secret) {
         (Some(_), _, Some(_)) => Err(Unauthenticated::Ambiguous),
-        // A `client_id` in the form beside a header naming a different one is
-        // two claims about who is asking, and honouring the header would
-        // authenticate one client for a request written by another.
+        // Two claims about who is asking. Honouring the header would
+        // authenticate one client for another's request.
         (Some((named, _)), Some(also), None) if named != also => Err(Unauthenticated::Ambiguous),
         (Some((client_id, secret)), _, None) => Ok(Presented::Basic { client_id, secret }),
         (None, Some(client_id), Some(secret)) => Ok(Presented::Post {
@@ -116,16 +108,14 @@ pub async fn authenticate(
         .map_err(|_| Unauthenticated::Unreadable)?;
 
     let Some(client) = loaded else {
-        // No such client. The work happens anyway, because an endpoint that
-        // answers faster for a name nobody registered publishes which names are
-        // registered.
+        // The work happens anyway: answering faster for an unregistered name
+        // publishes which names are registered.
         burn(provider, cost, presented);
         return Err(Unauthenticated::Refused);
     };
 
-    // Named before anything is compared, so a client registered for a method
-    // this build cannot perform never reaches the branch that would let its
-    // secret stand in for that method.
+    // Before anything is compared, so its secret never stands in for a method
+    // this build cannot perform.
     if client
         .client_authenticator_type
         .as_deref()
@@ -140,9 +130,8 @@ pub async fn authenticate(
     }
 
     if client.public_client == Some(true) {
-        // A public client holds no secret it could keep, so one offered is
-        // either a secret somebody put where anybody can read it or a
-        // confidential client's, presented by something that is not it.
+        // It holds no secret it could keep, so one offered is either readable
+        // by anybody or somebody else's.
         return match presented {
             Presented::Bare { .. } => Ok(client),
             _ => Err(Unauthenticated::Refused),
@@ -177,10 +166,8 @@ pub async fn authenticate(
                 .then_some(client)
                 .ok_or(Unauthenticated::Refused)
         }
-        // A row an older binary wrote. Checked in constant time, because that is
-        // the only defence a plaintext column has, and then replaced: a secret
-        // that authenticated once is a secret whose hash can be written, and the
-        // row stops being readable from that moment.
+        // A row an older binary wrote. Constant time is the only defence a
+        // plaintext column has, and it stops being one the moment it converts.
         StoredSecret::Plain(plain) => {
             if !constant_time::eq(
                 offered.expose_secret().as_bytes(),
@@ -194,10 +181,9 @@ pub async fn authenticate(
     }
 }
 
-/// Write the hash of a secret that has just proved itself.
+/// Write the hash of a secret that just proved itself.
 ///
-/// A failure here is not a failure of the authentication. The client presented
-/// the right secret and is entitled to be let in; the row simply stays readable
+/// A failure here is not one of the authentication: the row stays readable
 /// until the next attempt, which is where it was a moment ago.
 async fn convert(
     transaction: &Transaction<'_>,
@@ -214,12 +200,8 @@ async fn convert(
     let _ = clients::convert_secret(transaction, client_id, &encoded).await;
 }
 
-/// Spend what a real check spends.
-///
-/// A hash comparison, not a byte one. Since V018 the stored secret is an
-/// Argon2id string, so an unknown client that only cost a memcmp would answer in
-/// a fraction of the time a known one does, which is the timing signal this
-/// exists to remove.
+/// Spend what a real check spends. A hash, not a memcmp: against an Argon2id
+/// string the difference is the timing signal this exists to remove.
 fn burn(provider: &dyn CryptoProvider, cost: Argon2Params, presented: &Presented) {
     let offered = presented
         .secret()

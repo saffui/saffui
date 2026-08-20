@@ -125,15 +125,60 @@ pub async fn ask(
             )
             .await
         }
-        "authorization_code" | "refresh_token" => {
+        "authorization_code" => {
+            let Ok(ring) = keyring::load(
+                &transaction,
+                &sealing.envelope,
+                &context.tenant,
+                &context.realm_id,
+            )
+            .await
+            else {
+                return Denied::InvalidRequest.answer("the realm could not be read");
+            };
+            let Some(code) = asked.code.as_deref().filter(|it| !it.is_empty()) else {
+                return Denied::InvalidRequest.answer("code is required");
+            };
+
+            grant::authorization_code(
+                &transaction,
+                &grant::Signing {
+                    provider: sealing.provider.as_ref(),
+                    ring: &ring,
+                    envelope: &sealing.envelope,
+                },
+                &grant::Within {
+                    tenant: &context,
+                    realm: &realm,
+                    issuer: &origin.issuer(&context.realm_id),
+                },
+                &client,
+                &grant::Redeeming {
+                    code,
+                    redirect_uri: asked.redirect_uri.as_deref(),
+                    code_verifier: asked.code_verifier.as_deref(),
+                },
+                now,
+            )
+            .await
+        }
+        "refresh_token" => {
             return Denied::UnsupportedGrantType.answer("this grant is not performed yet");
         }
         _ => return Denied::UnsupportedGrantType.answer("no such grant"),
     };
 
     let granted = match granted {
-        Ok(granted) => granted,
+        // A refused grant may still have consumed something. An authorization
+        // code is spent by the attempt and not by the attempt succeeding, and
+        // rolling back here would hand it back: a code refused for its redirect
+        // could then be presented again with the right one.
+        Err(why @ Ungranted::InvalidGrant) => {
+            let _ = transaction.commit().await;
+            return ungranted(why);
+        }
         Err(why) => return ungranted(why),
+        Ok(granted) => granted,
     };
 
     // The token is handed out only once the rows binding it exist. Answering
@@ -154,8 +199,8 @@ fn answer(granted: Granted) -> HttpResponse {
         access_token: granted.access_token,
         token_type: "Bearer",
         expires_in: granted.expires_in,
-        refresh_token: None,
-        id_token: None,
+        refresh_token: granted.refresh_token,
+        id_token: granted.id_token,
         scope: (!granted.scope.is_empty()).then_some(granted.scope),
     })
 }
@@ -166,6 +211,9 @@ fn ungranted(why: Ungranted) -> HttpResponse {
     match why {
         Ungranted::Unauthorized => {
             Denied::UnauthorizedClient.answer("this client may not use this grant")
+        }
+        Ungranted::InvalidGrant => {
+            Denied::InvalidGrant.answer("the grant presented was not honoured")
         }
         _ => Denied::InvalidRequest.answer("the grant could not be performed"),
     }

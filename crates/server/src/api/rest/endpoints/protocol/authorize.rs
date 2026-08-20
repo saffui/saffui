@@ -32,6 +32,9 @@ pub struct Asked {
     pub code_challenge_method: Option<String>,
     pub request: Option<String>,
     pub request_uri: Option<String>,
+    pub prompt: Option<String>,
+    pub max_age: Option<i64>,
+    pub acr_values: Option<String>,
 }
 
 /// Begin a login.
@@ -73,6 +76,9 @@ pub async fn begin(
             code_challenge_method: asked.code_challenge_method.as_deref(),
             request: asked.request.as_deref(),
             request_uri: asked.request_uri.as_deref(),
+            prompt: asked.prompt.as_deref(),
+            max_age: asked.max_age,
+            acr_values: asked.acr_values.as_deref(),
         },
         binding::read(&request, binding::SSO_SESSION).as_deref(),
         now,

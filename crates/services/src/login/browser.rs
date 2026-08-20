@@ -8,6 +8,7 @@ use chrono::{DateTime, Duration, Utc};
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
 use deadpool_postgres::Transaction;
+use models::entities::acr::{self, AchievedAuth};
 use models::entities::oidc::AuthorizationCode;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::{Value, json};
@@ -27,6 +28,10 @@ const CODE_LIFESPAN: i64 = 60;
 
 /// How long the login it opens lasts.
 const SSO_LIFESPAN: i64 = 36_000;
+
+/// The context value a password step reaches. The realm decides what level that
+/// is worth; this only says which name to look up.
+const PASSWORD_CONTEXT: &str = "password";
 
 /// Where a login stands after one answer.
 #[derive(Debug)]
@@ -112,6 +117,10 @@ pub async fn answer_step(
         Progress::Refused => Ok(Step::Refused),
         Progress::Admitted => {
             let subject = subject.ok_or(Unanswerable::Unrunnable)?;
+            let reached = realm
+                .acr_loa_map
+                .as_ref()
+                .and_then(|map| map.loa_of(PASSWORD_CONTEXT));
             admit(
                 transaction,
                 provider,
@@ -119,6 +128,8 @@ pub async fn answer_step(
                 &login,
                 &subject.user_id,
                 &subject.user_name,
+                reached,
+                realm.acr_loa_map.as_ref(),
                 now,
             )
             .await
@@ -192,6 +203,10 @@ pub async fn mint_code(
 }
 
 /// Open the login, mint the code, and say where the browser goes.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one login"
+)]
 async fn admit(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
@@ -199,6 +214,8 @@ async fn admit(
     login: &AuthSession,
     user_id: &str,
     user_name: &str,
+    reached: Option<i32>,
+    realm_map: Option<&models::entities::acr::AcrLoaMap>,
     now: DateTime<Utc>,
 ) -> Result<String, Unanswerable> {
     // The transient identifier becomes the durable one. The code names it as
@@ -218,7 +235,10 @@ async fn admit(
             ip_address: None,
             started_at: now.timestamp(),
             auth_time: Some(now.timestamp()),
-            loa: None,
+            // What the flow reached, under this realm's map. Only a password
+            // step exists, so that is what is looked up; a realm mapping nothing
+            // records nothing rather than a level it never defined.
+            loa: reached,
             expiration: Some((now + Duration::seconds(SSO_LIFESPAN)).timestamp()),
             state: UserSessionState::LoggedIn,
             remember_me: Some(false),
@@ -246,7 +266,20 @@ async fn admit(
             code_challenge: noted(notes, "code_challenge"),
             code_challenge_method: noted(notes, "code_challenge_method"),
             auth_time: now.timestamp(),
-            acr: None,
+            // Frozen here. By redemption the session may have stepped up in
+            // another tab, and a value resolved then would attest to a strength
+            // this code was never issued under.
+            acr: reached.and_then(|loa| {
+                realm_map.and_then(|map| {
+                    acr::acr_claim(
+                        map,
+                        AchievedAuth {
+                            loa,
+                            auth_time: now.timestamp(),
+                        },
+                    )
+                })
+            }),
         },
         now,
     )

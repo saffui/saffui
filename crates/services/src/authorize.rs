@@ -8,12 +8,13 @@
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
+use models::entities::acr::{self, AchievedAuth, AcrRequirement, AuthContextRequest, AuthDecision};
 use models::entities::attributes::AttributeValue;
 use models::entities::client::ClientModel;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::json;
 use store::providers::login::{self, AuthSession};
-use store::providers::{auth_flows, client_scopes, clients, sessions};
+use store::providers::{auth_flows, client_scopes, clients, realms, sessions};
 use store::tenancy::TenantContext;
 
 use crate::login::browser;
@@ -39,6 +40,12 @@ pub struct Requested<'a> {
     /// and both have to be refused rather than ignored.
     pub request: Option<&'a str>,
     pub request_uri: Option<&'a str>,
+    /// `none`, `login`, `consent`, `select_account`, space separated.
+    pub prompt: Option<&'a str>,
+    /// How old the authentication may be. Zero is meaningful and means always
+    /// re-authenticate, which is why it is not a flag.
+    pub max_age: Option<i64>,
+    pub acr_values: Option<&'a str>,
 }
 
 /// Where the browser goes next.
@@ -103,7 +110,60 @@ pub async fn begin(
     )
     .await?;
 
-    if let Some(login) = live_login(transaction, signed_in, now).await? {
+    // What the request asks of the authentication itself, against what the
+    // browser already holds.
+    let prompt = Prompt::read(requested.prompt)?;
+    let asked = AuthContextRequest {
+        acr_values: requested
+            .acr_values
+            .map(|raw| raw.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default(),
+        // Voluntary, always. The essential form travels in the `claims`
+        // parameter, which is not read, so reading `acr_values` as essential
+        // would fail logins the client would have accepted.
+        requirement: AcrRequirement::Voluntary,
+        max_age: requested.max_age,
+        prompt_login: prompt.login,
+    };
+    let map = realms::load(transaction, &tenant.realm_id)
+        .await
+        .map_err(|_| Refusal::Redirect("server_error"))?
+        .and_then(|realm| realm.acr_loa_map)
+        .unwrap_or_default();
+
+    let held = live_login(transaction, signed_in, now).await?;
+    let achieved = held.as_ref().map(|login| AchievedAuth {
+        loa: login.loa.unwrap_or(0),
+        auth_time: login.auth_time.unwrap_or(login.started_at),
+    });
+
+    match acr::decide(&asked, &map, achieved, now.timestamp()) {
+        AuthDecision::Satisfied => {}
+        // RFC 9470. Nothing this realm offers can meet it, so failing now beats
+        // authenticating the user and failing afterwards.
+        AuthDecision::Unsatisfiable { .. } => {
+            return Err(Refusal::Redirect("unmet_authentication_requirements"));
+        }
+        // "Never interact" and "authenticate again" are contradictory by
+        // construction, and the contradiction is the client's to resolve.
+        AuthDecision::Reauthenticate { .. } if prompt.none => {
+            return Err(Refusal::Redirect("login_required"));
+        }
+        AuthDecision::Reauthenticate { .. } => {
+            return start_login(
+                transaction,
+                provider,
+                &client,
+                redirect_uri,
+                &granted,
+                requested,
+                now,
+            )
+            .await;
+        }
+    }
+
+    if let Some(login) = held {
         let landing = browser::mint_code(
             transaction,
             provider,
@@ -121,7 +181,16 @@ pub async fn begin(
                 // The login's instant, not this one. A client asking how
                 // recently the user authenticated is asking about the login.
                 auth_time: login.auth_time.unwrap_or(login.started_at),
-                acr: None,
+                // What was reached, never what was asked for. A server that
+                // echoes the request turns the claim into decoration, and a
+                // relying party reads it to decide whether to release money.
+                acr: acr::acr_claim(
+                    &map,
+                    AchievedAuth {
+                        loa: login.loa.unwrap_or(0),
+                        auth_time: login.auth_time.unwrap_or(login.started_at),
+                    },
+                ),
             },
             now,
         )
@@ -132,7 +201,56 @@ pub async fn begin(
         });
     }
 
-    let flow = browser_flow(transaction, &client).await?;
+    start_login(
+        transaction,
+        provider,
+        &client,
+        redirect_uri,
+        &granted,
+        requested,
+        now,
+    )
+    .await
+}
+
+/// What `prompt` asked for.
+///
+/// `none` and `login` together contradict each other, and OIDC Core §3.1.2.1
+/// makes that an error rather than a precedence question.
+struct Prompt {
+    none: bool,
+    login: bool,
+}
+
+impl Prompt {
+    fn read(raw: Option<&str>) -> Result<Self, Refusal> {
+        let asked: Vec<&str> = raw.unwrap_or_default().split_whitespace().collect();
+        let prompt = Prompt {
+            none: asked.contains(&"none"),
+            login: asked.contains(&"login"),
+        };
+        if prompt.none && asked.len() > 1 {
+            return Err(Refusal::Redirect("invalid_request"));
+        }
+        Ok(prompt)
+    }
+}
+
+/// Open a login and say where it is answered.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
+async fn start_login(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    client: &ClientModel,
+    redirect_uri: &str,
+    granted: &str,
+    requested: &Requested<'_>,
+    now: DateTime<Utc>,
+) -> Result<Begun, Refusal> {
+    let flow = browser_flow(transaction, client).await?;
     let auth_session_id = draw_id(provider)?;
 
     login::start(

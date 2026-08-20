@@ -22,7 +22,7 @@ use store::tenancy::Tenancy;
 use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
-use crate::api::rest::endpoints::protocol::token;
+use crate::api::rest::endpoints::protocol::{authorize, token};
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
 use crate::middleware::admin_policy::AdminPolicy;
@@ -160,6 +160,7 @@ fn authz_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
 fn protocol_scope() -> impl HttpServiceFactory + 'static {
     web::scope("/realms/{realm}/protocol/openid-connect")
         .app_data(web::FormConfig::default().limit(PROTOCOL_BODY))
+        .service(web::resource("/auth").route(web::get().to(authorize::begin)))
         .service(web::resource("/token").route(web::post().to(token::ask)))
 }
 

@@ -1881,3 +1881,148 @@ async fn a_cookie_naming_no_live_login_starts_one() {
         "a login this realm ended still minted a code"
     );
 }
+
+async fn userinfo(plane: &Plane, bearer: Option<&str>) -> (StatusCode, serde_json::Value, String) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let mut request = test::TestRequest::get().uri(&format!(
+        "/realms/{}/protocol/openid-connect/userinfo",
+        support::REALM
+    ));
+    if let Some(bearer) = bearer {
+        request = request.insert_header(("authorization", format!("Bearer {bearer}")));
+    }
+    let response = test::call_service(&app, request.to_request()).await;
+    let status = response.status();
+    let challenge = response
+        .headers()
+        .get("www-authenticate")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    (status, test::read_body_json(response).await, challenge)
+}
+
+/// The scope gate. A token granted `openid profile` yields a username; the same
+/// token does not yield an address, because `email` is a scope this client is
+/// not attached to and `/authorize` dropped it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_yields_what_its_scope_allows_and_nothing_else() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid profile", None)
+        .await;
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+
+    let (status, told, _) = userinfo(&plane, granted["access_token"].as_str()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["sub"], support::SUBJECT);
+    assert_eq!(told["preferred_username"], support::SUBJECT);
+    assert!(
+        told.get("email").is_none(),
+        "an address was released to a scope that did not ask for it: {told}"
+    );
+}
+
+/// The scope a client asked for is not the scope it gets. Requesting `email`
+/// when nothing attached it must not release the address, or the entitlement is
+/// decoration.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_scope_the_client_is_not_attached_to_releases_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    let asked = vec![
+        ("response_type", "code"),
+        ("client_id", support::CONFIDENTIAL),
+        ("redirect_uri", REDIRECT),
+        ("scope", "openid profile email"),
+        ("state", "s"),
+    ];
+    let (_, _, opened) = authorize_with_cookies(&plane, &asked).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let landing = told["redirect_to"].as_str().expect("somewhere to land");
+    let code = landing
+        .split_once("code=")
+        .unwrap()
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(
+        granted["scope"], "openid profile",
+        "the client was granted a scope nothing attached to it"
+    );
+
+    let (_, claims, _) = userinfo(&plane, granted["access_token"].as_str()).await;
+    assert!(
+        claims.get("email").is_none(),
+        "asking for a scope was enough to get its claims: {claims}"
+    );
+}
+
+/// What is not an acceptable token. An id token is a record of a login and names
+/// the client as its audience: accepting one here would let anything that saw a
+/// login read the person behind it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn only_an_access_token_of_this_realm_is_answered() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+
+    for (label, presented) in [
+        ("an id token", granted["id_token"].as_str()),
+        ("a refresh token", granted["refresh_token"].as_str()),
+        ("not a token at all", Some("not.a.token")),
+        ("nothing", None),
+    ] {
+        let (status, told, challenge) = userinfo(&plane, presented).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{label}");
+        assert_eq!(told["error"], "invalid_token", "{label}: {told}");
+        // RFC 6750 §3: a bearer failure carries a challenge.
+        assert!(
+            challenge.starts_with("Bearer "),
+            "{label} was refused without a challenge: {challenge:?}"
+        );
+    }
+}

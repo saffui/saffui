@@ -9,6 +9,16 @@ use actix_web::HttpRequest;
 use data_encoding::BASE64;
 use secrecy::SecretBox;
 
+/// The bearer the `Authorization` header carries.
+///
+/// Here beside the Basic reader because both parse the one header, and two
+/// readers of one header are two chances to disagree about what it says.
+pub fn bearer(request: &HttpRequest) -> Option<String> {
+    let header = request.headers().get("authorization")?.to_str().ok()?;
+    let token = header.strip_prefix("Bearer ")?.trim();
+    (!token.is_empty()).then(|| token.to_owned())
+}
+
 /// The pair the header carries, or nothing if it carries something else.
 pub fn credentials(request: &HttpRequest) -> Option<(String, SecretBox<String>)> {
     let header = request.headers().get("authorization")?.to_str().ok()?;

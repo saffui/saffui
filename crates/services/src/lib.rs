@@ -20,6 +20,7 @@ pub mod context;
 pub mod grant;
 pub mod login;
 pub mod pdp;
+pub mod provisioning;
 pub mod rebac;
 pub mod token;
 pub mod userinfo;

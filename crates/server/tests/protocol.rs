@@ -6,7 +6,7 @@ use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use data_encoding::BASE64;
 use server::api::config::{Plane as Mounted, register};
-use support::Plane;
+use support::{Plane, cookie_value, pkce_pair, urlencode};
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
@@ -459,25 +459,6 @@ async fn more_than_a_token_request_holds_is_not_read() {
 }
 
 use support::REDIRECT;
-
-/// The verifier and its S256 challenge, the pair RFC 7636 §4 describes.
-use crypto::provider::CryptoProvider as _;
-
-fn pkce_pair() -> (String, String) {
-    let verifier = "a-verifier-of-at-least-forty-three-characters-long";
-    let digest = crypto::provider::openssl::OpenSslProvider::new(&crypto::provider::CryptoConfig {
-        fips_required: false,
-        pkcs11: None,
-    })
-    .expect("a software provider")
-    .digest()
-    .hash(crypto::provider::HashAlg::Sha256, verifier.as_bytes())
-    .expect("a digest");
-    (
-        verifier.to_owned(),
-        data_encoding::BASE64URL_NOPAD.encode(&digest),
-    )
-}
 
 /// A code spent yields the three tokens, and the access token is one this
 /// deployment takes back. Checking only the response proves a string came out.
@@ -1118,18 +1099,6 @@ async fn authorize_with_cookies(
     (status, location, set)
 }
 
-fn urlencode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                (byte as char).to_string()
-            }
-            other => format!("%{other:02X}"),
-        })
-        .collect()
-}
-
 fn started(client_id: &str) -> Vec<(&'static str, String)> {
     vec![
         ("response_type", "code".to_owned()),
@@ -1352,23 +1321,6 @@ async fn login_step(
         .map(|value| value.to_str().unwrap().to_owned())
         .collect::<Vec<_>>();
     (status, test::read_body_json(response).await, set)
-}
-
-/// The value of one `Set-Cookie`, or nothing when it was not set.
-fn cookie_value(set: &[String], named: &str) -> Option<String> {
-    set.iter()
-        .find(|header| header.starts_with(&format!("{named}=")))
-        .map(|header| {
-            header
-                .split_once('=')
-                .unwrap()
-                .1
-                .split(';')
-                .next()
-                .unwrap()
-                .to_owned()
-        })
-        .filter(|value| !value.is_empty())
 }
 
 /// The whole loop, once: authorize, answer the step, spend the code. Every

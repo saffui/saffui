@@ -164,3 +164,82 @@ async fn provisioning_twice_keeps_what_the_operator_changed() {
         "the attachment was not put back"
     );
 }
+
+/// Creating a realm and giving it what it cannot work without are one act. A
+/// realm whose scopes failed to seed is not half provisioned: it is one whose
+/// clients are entitled to nothing and whose tokens carry a subject and no
+/// claims, and nothing about it says so.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
+    let fixture = Fixture::empty().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
+        .await;
+    store::providers::tenants::create(&transaction, &tenant())
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    services::provisioning::provision_realm(&transaction, &realm(), &console())
+        .await
+        .unwrap();
+
+    for (name, default) in [("profile", true), ("email", true), ("phone", false)] {
+        let held = client_scopes::load_scope(&transaction, name)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{name} was not provisioned"));
+        assert_eq!(
+            held.default_scope,
+            Some(default),
+            "{name}: §5.4 gates a number behind a scope a client has to name, \
+             and a default hands it to every registration"
+        );
+    }
+
+    // And the console, so the plane the realm is administered from is reachable
+    // by a token its own protocol can mint.
+    assert!(
+        client_scopes::load_scope(&transaction, ADMIN_SCOPE)
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // Run again. An operator who added a redirect or renamed a console must be
+    // able to, and what already exists is left as it stands.
+    services::provisioning::provision_realm(&transaction, &realm(), &console())
+        .await
+        .expect("provisioning is idempotent");
+    transaction.commit().await.unwrap();
+}
+
+fn tenant() -> models::entities::tenant::TenantModel {
+    models::entities::tenant::TenantCreateModel {
+        tenant_id: "acme".into(),
+        display_name: "Acme".into(),
+        region: None,
+        limits: None,
+        created_by: Some("root".into()),
+    }
+    .into()
+}
+
+fn realm() -> models::entities::realm::RealmModel {
+    models::entities::realm::RealmCreateModel {
+        name: "main".into(),
+        display_name: "Main".into(),
+        enabled: true,
+    }
+    .into_model(
+        "main".into(),
+        AuditableModel::from_creator("acme".into(), "root".into()),
+    )
+}

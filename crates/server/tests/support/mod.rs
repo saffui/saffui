@@ -85,6 +85,9 @@ pub const SUBJECT: &str = "ada";
 pub const PASSWORD: &str = "a-password-of-decent-length";
 /// What this realm calls the level a password reaches, and one above it that
 /// nothing here can reach.
+/// The halves the subject's full name is composed from.
+pub const GIVEN_NAME: &str = "Ada";
+pub const FAMILY_NAME: &str = "Lovelace";
 pub const PASSWORD_ACR: &str = "password";
 pub const STRONG_ACR: &str = "mfa";
 /// What the browser is bound by. Named here so a test asks for the same cookie
@@ -686,25 +689,12 @@ impl Plane {
             users::create(&transaction, &account).await.unwrap();
         }
 
-        // Two scopes, and only one attached to the confidential client. The gate
-        // is only exercised when a client asks for something it may not have.
-        for (name, default) in [("profile", true), ("email", false)] {
-            store::providers::client_scopes::create_scope(
-                &transaction,
-                &models::entities::client::ClientScopeModel {
-                    client_scope_id: name.to_owned(),
-                    realm_id: REALM.into(),
-                    name: name.to_owned(),
-                    description: String::new(),
-                    protocol: models::entities::client::Protocol::OpenId,
-                    default_scope: Some(default),
-                    configs: None,
-                    metadata: metadata(),
-                },
-            )
+        // The scopes a realm gets, planted the way a deployment plants them. Only
+        // `profile` is attached below: the gate is exercised only when a client
+        // asks for something nothing attached to it.
+        services::provisioning::provision_standard_scopes(&transaction, TENANT, REALM)
             .await
             .unwrap();
-        }
         for client_id in [CONFIDENTIAL, OTHER, PUBLIC] {
             store::providers::client_scopes::attach_scope(
                 &transaction,
@@ -775,7 +765,19 @@ impl Plane {
             required_actions: None,
             not_before: None,
             user_storage: None,
-            attributes: None,
+            // What the `profile` scope releases. Held as attributes because that
+            // is where the realm keeps them, so the claim set is composed rather
+            // than read off columns that do not exist.
+            attributes: Some(std::collections::HashMap::from([
+                (
+                    models::entities::user::profile::FIRST_NAME.to_owned(),
+                    models::entities::attributes::AttributeValue::Str(GIVEN_NAME.into()),
+                ),
+                (
+                    models::entities::user::profile::LAST_NAME.to_owned(),
+                    models::entities::attributes::AttributeValue::Str(FAMILY_NAME.into()),
+                ),
+            ])),
             is_service_account: None,
             service_account_client_link: None,
         }

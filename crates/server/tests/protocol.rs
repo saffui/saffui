@@ -2553,3 +2553,282 @@ async fn a_landing_place_is_honoured_only_when_the_client_registered_it() {
     assert_eq!(status, StatusCode::OK);
     assert!(location.is_empty(), "{location}");
 }
+
+/// The code the subject's authenticator app showed at that instant.
+fn code_at(unix_seconds: u64) -> String {
+    use crypto::provider::CryptoProvider as _;
+    let provider =
+        crypto::provider::openssl::OpenSslProvider::new(&crypto::provider::CryptoConfig {
+            fips_required: false,
+            pkcs11: None,
+        })
+        .expect("a software provider");
+    let secret = data_encoding::BASE32_NOPAD
+        .decode(support::TOTP_SECRET.as_bytes())
+        .expect("a base32 secret");
+    let code = crypto::otp::totp::totp_at(
+        provider.hmac(),
+        &secrecy::SecretBox::new(Box::new(secret)),
+        unix_seconds,
+        crypto::otp::totp::TotpParams::new(crypto::provider::HashAlg::Sha1),
+    )
+    .expect("a code");
+    crypto::otp::totp::format_code(code, 6)
+}
+
+/// The code the subject's authenticator app would show right now.
+fn current_code() -> String {
+    use crypto::provider::CryptoProvider as _;
+    let provider =
+        crypto::provider::openssl::OpenSslProvider::new(&crypto::provider::CryptoConfig {
+            fips_required: false,
+            pkcs11: None,
+        })
+        .expect("a software provider");
+    let secret = data_encoding::BASE32_NOPAD
+        .decode(support::TOTP_SECRET.as_bytes())
+        .expect("a base32 secret");
+    let code = crypto::otp::totp::totp_now(
+        provider.hmac(),
+        &secrecy::SecretBox::new(Box::new(secret)),
+        crypto::otp::totp::TotpParams::new(crypto::provider::HashAlg::Sha1),
+    )
+    .expect("a code");
+    crypto::otp::totp::format_code(code, 6)
+}
+
+/// A flow of two steps asks for both, and admits only once both are answered.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_second_factor_is_asked_for_and_answered() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    // The password alone is not enough: the code step is still waiting.
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        told["status"], "challenge",
+        "a flow with an unanswered second factor admitted anyway"
+    );
+
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "totp": current_code(),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(admitted["status"], "admitted");
+}
+
+/// RFC 6238 §5.2: a code accepted once is refused when presented again. Without
+/// it, intercepting one code buys the whole acceptance window to reuse it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_code_already_spent_is_refused() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+    let code = current_code();
+
+    let answer = |session: String, code: String| {
+        let plane = &plane;
+        async move {
+            login_step(
+                plane,
+                Some(&session),
+                serde_json::json!({
+                    "username": support::SUBJECT,
+                    "password": support::PASSWORD,
+                    "totp": code,
+                }),
+            )
+            .await
+        }
+    };
+
+    let (_, _, first) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let one = cookie_value(&first, support::AUTH_SESSION_COOKIE).expect("a binding");
+    assert_eq!(answer(one, code.clone()).await.1["status"], "admitted");
+
+    // A second login, same code, still inside its window.
+    let (_, _, second) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let two = cookie_value(&second, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = answer(two, code).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(
+        told["status"], "refused",
+        "a code spent moments ago was accepted again"
+    );
+}
+
+/// A code from a step *below* the one already spent is still inside the window,
+/// so it has to be refused too. Comparing for difference rather than for order
+/// would let an intercepted earlier code through after a later one landed.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_older_code_still_in_its_window_is_refused() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+
+    // The step before this one. Still acceptable on its own, since the window
+    // reaches either side of now.
+    let previous = code_at(chrono::Utc::now().timestamp() as u64 - 30);
+
+    let (_, _, first) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let one = cookie_value(&first, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&one),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "totp": current_code(),
+        }),
+    )
+    .await;
+    assert_eq!(told["status"], "admitted", "{told}");
+
+    let (_, _, second) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let two = cookie_value(&second, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, replayed, _) = login_step(
+        &plane,
+        Some(&two),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "totp": previous,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{replayed}");
+    assert_eq!(
+        replayed["status"], "refused",
+        "a code from before the one already spent was accepted"
+    );
+}
+
+/// A wrong code refuses, and the digits are read the way an app renders them.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_code_is_read_as_typed_and_wrong_ones_refuse() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+
+    for wrong in ["000000", "not-a-code", ""] {
+        let (_, _, opened) =
+            authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+        let session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+        let (_, told, _) = login_step(
+            &plane,
+            Some(&session),
+            serde_json::json!({
+                "username": support::SUBJECT,
+                "password": support::PASSWORD,
+                "totp": wrong,
+            }),
+        )
+        .await;
+        assert_ne!(told["status"], "admitted", "{wrong} was accepted: {told}");
+    }
+
+    // Spaces, as an authenticator app renders them.
+    let spaced = current_code();
+    let spaced = format!("{} {}", &spaced[..3], &spaced[3..]);
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "totp": spaced,
+        }),
+    )
+    .await;
+    assert_eq!(
+        told["status"], "admitted",
+        "a code with the spaces an app shows was refused: {told}"
+    );
+}
+
+/// The level reported is the highest of what actually ran. A flow that reached a
+/// second factor is stronger than the password that opened it, and reading only
+/// the first would report a level the login exceeded.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn two_factors_reach_the_level_two_factors_are_worth() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "totp": current_code(),
+        }),
+    )
+    .await;
+    let landing = told["redirect_to"].as_str().expect("somewhere to land");
+    let code = landing
+        .split_once("code=")
+        .unwrap()
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(
+        plane
+            .claims_of(granted["id_token"].as_str().expect("an id token"))
+            .await["acr"],
+        support::STRONG_ACR,
+        "a login that ran two factors reported the level of one"
+    );
+}

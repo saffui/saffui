@@ -201,6 +201,12 @@ pub async fn authorization_code(
         .map_err(|_| Ungranted::Unreadable)?
         .ok_or(Ungranted::InvalidGrant)?;
 
+    // Checked again here, not only where the code was minted. An operator who
+    // switches the flow off expects the codes already in flight to stop working,
+    // and a check that only guards the mint leaves them spendable.
+    if client.standard_flow_enabled != Some(true) {
+        return Err(Ungranted::Unauthorized);
+    }
     if code.client_id != client.client_id {
         return Err(Ungranted::InvalidGrant);
     }

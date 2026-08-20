@@ -52,9 +52,14 @@ pub const REALM: &str = "main";
 /// it, and the gates take a realm from an issuer only when the prefix is theirs.
 pub const ORIGIN: &str = "https://id.test";
 
-/// The client the console asks for its tokens as. What `azp` carries.
+/// The client the console asks for its tokens as. What `azp` carries, and a
+/// client this realm actually holds: a plane reachable only by a token nobody
+/// could obtain is not reachable.
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const PARTY: &str = "saffui-console";
+/// Where the console is served, which is the only place its login may land.
+#[allow(dead_code, reason = "only the admin suite drives the console")]
+pub const CONSOLE_REDIRECT: &str = "https://console.test/callback";
 /// A confidential client, its secret, and a public one. What the token endpoint
 /// authenticates against.
 pub const CONFIDENTIAL: &str = "app";
@@ -711,6 +716,24 @@ impl Plane {
             .unwrap();
         }
 
+        // The console and the scope the admin plane requires, planted the way a
+        // deployment plants them rather than by hand. The suite that mounts the
+        // plane then reaches it the way a console does, and a change that made
+        // the scope unobtainable would fail here instead of passing against a
+        // token no protocol could have minted.
+        services::provisioning::provision_admin_console(
+            &transaction,
+            TENANT,
+            REALM,
+            &services::provisioning::AdminConsole {
+                client_id: PARTY,
+                scope: SCOPE,
+                redirect_uris: vec![CONSOLE_REDIRECT.to_owned()],
+            },
+        )
+        .await
+        .unwrap();
+
         // The flow a browser login runs. `/authorize` refuses a realm that has
         // none rather than opening a login nothing can advance.
         let flow = models::entities::auth::AuthenticationFlowMutationModel {
@@ -831,4 +854,60 @@ impl Plane {
 
         transaction.commit().await.unwrap();
     }
+}
+
+/// Percent encode a query value.
+///
+/// Written out rather than pulled in, because what a test needs is the encoding
+/// a browser performs and not whatever a dependency decided the unreserved set
+/// is this release.
+#[allow(
+    dead_code,
+    reason = "only the suites that drive a browser encode a query"
+)]
+pub fn urlencode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+/// The value of one `Set-Cookie`, or nothing when it was not set.
+#[allow(
+    dead_code,
+    reason = "only the suites that drive a browser read cookies"
+)]
+pub fn cookie_value(set: &[String], named: &str) -> Option<String> {
+    set.iter()
+        .find(|header| header.starts_with(&format!("{named}=")))
+        .map(|header| {
+            header
+                .split_once('=')
+                .unwrap()
+                .1
+                .split(';')
+                .next()
+                .unwrap()
+                .to_owned()
+        })
+        .filter(|value| !value.is_empty())
+}
+
+/// The verifier and its S256 challenge, the pair RFC 7636 §4 describes.
+#[allow(dead_code, reason = "only the suites that spend a code prove one")]
+pub fn pkce_pair() -> (String, String) {
+    let verifier = "a-verifier-of-at-least-forty-three-characters-long";
+    let digest = provider()
+        .digest()
+        .hash(crypto::provider::HashAlg::Sha256, verifier.as_bytes())
+        .expect("a digest");
+    (
+        verifier.to_owned(),
+        data_encoding::BASE64URL_NOPAD.encode(&digest),
+    )
 }

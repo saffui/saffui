@@ -351,6 +351,24 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Move the planted login's authentication back in time.
+    ///
+    /// `max_age` asks how long ago the user authenticated, not how long ago the
+    /// session began, and the two are only distinguishable when they differ.
+    #[allow(dead_code, reason = "only the protocol suite asks")]
+    pub async fn backdate_authentication(&self, seconds: i64) -> i64 {
+        let when = chrono::Utc::now().timestamp() - seconds;
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        sessions::record_authentication(&transaction, SESSION, when, None)
+            .await
+            .expect("the session table");
+        transaction.commit().await.unwrap();
+        when
+    }
+
     /// End the login every code here was minted from.
     #[allow(dead_code, reason = "only the protocol suite ends one")]
     pub async fn end_login(&self) {

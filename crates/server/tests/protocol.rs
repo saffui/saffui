@@ -1713,3 +1713,171 @@ async fn no_such_realm_publishes_nothing() {
         );
     }
 }
+/// The same, carrying the cookie that says this browser is already signed in.
+async fn authorize_signed_in(
+    plane: &Plane,
+    query: &[(&str, &str)],
+    session: &str,
+) -> (StatusCode, String) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let asked = query
+        .iter()
+        .map(|(key, value)| format!("{key}={}", urlencode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/auth?{asked}",
+                support::REALM
+            ))
+            .insert_header(("cookie", format!("{}={session}", support::SSO_COOKIE)))
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    let location = response
+        .headers()
+        .get("location")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    (status, location)
+}
+
+/// Single sign-on. A browser that already holds a login gets its code without
+/// seeing a screen, and a second client is the point: without this every
+/// `/authorize` is a fresh sign-in and the product is not one.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_browser_already_signed_in_sees_no_screen() {
+    let plane = Plane::with_actions(&[]).await;
+
+    // Sign in once, the long way.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, signed_in) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(told["status"], "admitted");
+    let session = cookie_value(&signed_in, support::SSO_COOKIE).expect("a login");
+
+    // A second client, same browser. No screen.
+    let (status, landing) = authorize_signed_in(
+        &plane,
+        &[
+            ("response_type", "code"),
+            ("client_id", support::OTHER),
+            ("redirect_uri", REDIRECT),
+            ("scope", "openid"),
+            ("state", "second-client"),
+        ],
+        &session,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        landing.starts_with(REDIRECT),
+        "the browser was sent to a login it did not need: {landing}"
+    );
+    assert!(landing.contains("state=second-client"), "{landing}");
+
+    // And the code it carries is one the second client can spend.
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (spent, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::OTHER, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(spent, StatusCode::OK, "{granted}");
+    assert_eq!(
+        plane
+            .claims_of(granted["access_token"].as_str().unwrap())
+            .await["sid"],
+        session,
+        "the second client's token names a different login"
+    );
+}
+
+/// A cookie is a claim, not a fact. A login this realm has ended, or one it
+/// never had, sends the browser to authenticate rather than minting anything.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_cookie_naming_no_live_login_starts_one() {
+    let plane = Plane::with_actions(&[]).await;
+    let owned = started(support::CONFIDENTIAL);
+    let asked = as_pairs(&owned);
+
+    for (label, session) in [
+        ("a login nobody opened", "never-opened".to_owned()),
+        (
+            "the planted login, which is open",
+            support::SESSION.to_owned(),
+        ),
+    ] {
+        let (status, location) = authorize_signed_in(&plane, &asked, &session).await;
+        assert_eq!(status, StatusCode::FOUND, "{label}");
+        if session == "never-opened" {
+            assert_eq!(location, "https://login.test", "{label}: {location}");
+        } else {
+            assert!(location.starts_with(REDIRECT), "{label}: {location}");
+        }
+    }
+
+    // The code carries the login's own instant, not this one. A client asking
+    // how recently the user authenticated is asking about the login, and a
+    // freshly stamped value answers a question nobody asked.
+    let authenticated_at = plane.backdate_authentication(3_600).await;
+    let (_, landing) = authorize_signed_in(&plane, &asked, support::SESSION).await;
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(
+        plane
+            .claims_of(granted["id_token"].as_str().expect("an id token"))
+            .await["auth_time"],
+        authenticated_at,
+        "the code was stamped with the redemption rather than the login"
+    );
+
+    // Ended, and the browser still holds the cookie.
+    plane.end_login().await;
+    let (_, after) = authorize_signed_in(&plane, &asked, support::SESSION).await;
+    assert_eq!(
+        after, "https://login.test",
+        "a login this realm ended still minted a code"
+    );
+}

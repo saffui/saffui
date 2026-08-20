@@ -6,7 +6,9 @@
 
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
+use models::entities::attributes;
 use models::entities::keys::RealmSigningKeyView;
+use models::entities::user::{UserModel, profile};
 use serde_json::{Map, Value, json};
 use store::providers::users;
 
@@ -56,6 +58,7 @@ pub async fn claims_for(
 
     if granted(&verified.scope, "profile") {
         claims.insert("preferred_username".into(), json!(subject.user_name));
+        profile_claims(&mut claims, &subject);
     }
     // An address the realm holds but never checked is still an address, so it is
     // released with the flag that says which it is rather than being withheld.
@@ -79,6 +82,41 @@ pub async fn claims_for(
     }
 
     Ok(claims)
+}
+
+/// What OIDC Core §5.4 puts behind the `profile` scope, of what this realm holds.
+///
+/// Only what is there. A claim released empty is one a relying party reads as a
+/// value, and `name` composed from nothing would be a blank the client shows.
+fn profile_claims(claims: &mut Map<String, Value>, subject: &UserModel) {
+    let Some(attributes) = subject.attributes.as_ref() else {
+        return;
+    };
+    let held =
+        |named: &str| attributes::string_at(attributes, named).filter(|value| !value.is_empty());
+
+    for (claim, attribute) in [
+        ("given_name", profile::FIRST_NAME),
+        ("family_name", profile::LAST_NAME),
+        ("nickname", profile::NICK_NAME),
+        ("gender", profile::GENDER),
+        ("birthdate", profile::BIRTH_DATE),
+    ] {
+        if let Some(value) = held(attribute) {
+            claims.insert(claim.into(), json!(value));
+        }
+    }
+
+    // §5.4 lists `name` as the full name in displayable form. Composed from the
+    // two halves, because the realm stores those and not the whole, and left out
+    // when neither is there rather than released as a space.
+    let full: Vec<&str> = [profile::FIRST_NAME, profile::LAST_NAME]
+        .into_iter()
+        .filter_map(held)
+        .collect();
+    if !full.is_empty() {
+        claims.insert("name".into(), json!(full.join(" ")));
+    }
 }
 
 /// Whole scopes, never prefixes. `profile_extended` is not `profile`, and a

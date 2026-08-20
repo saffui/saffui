@@ -10,9 +10,13 @@ use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
 use models::entities::attributes::AttributeValue;
 use models::entities::client::ClientModel;
+use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::json;
 use store::providers::login::{self, AuthSession};
-use store::providers::{auth_flows, clients};
+use store::providers::{auth_flows, client_scopes, clients, sessions};
+use store::tenancy::TenantContext;
+
+use crate::login::browser;
 
 /// How long a login may sit half finished.
 const LOGIN_LIFESPAN: i64 = 900;
@@ -31,12 +35,20 @@ pub struct Requested<'a> {
     pub nonce: Option<&'a str>,
     pub code_challenge: Option<&'a str>,
     pub code_challenge_method: Option<&'a str>,
+    /// A signed request object, or where to fetch one. Neither is read here,
+    /// and both have to be refused rather than ignored.
+    pub request: Option<&'a str>,
+    pub request_uri: Option<&'a str>,
 }
 
-/// A login opened, and where the browser goes next.
+/// Where the browser goes next.
 #[derive(Debug)]
-pub struct Begun {
-    pub auth_session_id: String,
+pub enum Begun {
+    /// Nobody is signed in here yet, so a login is opened and answered.
+    Authenticate { auth_session_id: String },
+    /// Somebody is, and the client gets its code without the user seeing a
+    /// screen. This is what single sign-on is.
+    Admitted { redirect_to: String },
 }
 
 /// Why the login did not start.
@@ -57,7 +69,9 @@ pub enum Refusal {
 pub async fn begin(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
+    tenant: &TenantContext,
     requested: &Requested<'_>,
+    signed_in: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Begun, Refusal> {
     let client = named_client(transaction, requested.client_id).await?;
@@ -65,10 +79,58 @@ pub async fn begin(
 
     // From here the client and the redirect are established, so a refusal can
     // travel to the client rather than stopping at the user.
+    // Refused, not ignored. A client sending one believes the object it signed
+    // governs the request; ignoring it and reading the query instead hands back
+    // a code minted against parameters the client did not sign. OIDC Core §6
+    // names both refusals.
+    if requested.request.is_some() {
+        return Err(Refusal::Redirect("request_not_supported"));
+    }
+    if requested.request_uri.is_some() {
+        return Err(Refusal::Redirect("request_uri_not_supported"));
+    }
     if requested.response_type != Some("code") {
         return Err(Refusal::Redirect("unsupported_response_type"));
     }
     proof_is_registered(&client, requested)?;
+
+    // A login the browser already holds, if it holds one. Everything the code
+    // needs is on that row, so nothing is asked of the user a second time.
+    let granted = granted_scope(
+        transaction,
+        &client.client_id,
+        requested.scope.unwrap_or_default(),
+    )
+    .await?;
+
+    if let Some(login) = live_login(transaction, signed_in, now).await? {
+        let landing = browser::mint_code(
+            transaction,
+            provider,
+            tenant,
+            &browser::Authorized {
+                client_id: &client.client_id,
+                user_id: &login.user_id,
+                session_id: &login.session_id,
+                redirect_uri,
+                scope: &granted,
+                state: requested.state,
+                nonce: requested.nonce,
+                code_challenge: requested.code_challenge,
+                code_challenge_method: requested.code_challenge_method,
+                // The login's instant, not this one. A client asking how
+                // recently the user authenticated is asking about the login.
+                auth_time: login.auth_time.unwrap_or(login.started_at),
+                acr: None,
+            },
+            now,
+        )
+        .await
+        .map_err(|_| Refusal::Redirect("server_error"))?;
+        return Ok(Begun::Admitted {
+            redirect_to: landing,
+        });
+    }
 
     let flow = browser_flow(transaction, &client).await?;
     let auth_session_id = draw_id(provider)?;
@@ -87,7 +149,10 @@ pub async fn begin(
             // is written once, here, because by the time the flow finishes the
             // request that carried it is gone.
             notes: json!({
-                "scope": requested.scope.unwrap_or_default(),
+                // What the client may have, not what it asked for. The code
+                // carries this into the token, and whatever releases claims by
+                // scope reads it there.
+                "scope": granted,
                 "state": requested.state,
                 "nonce": requested.nonce,
                 "code_challenge": requested.code_challenge,
@@ -98,7 +163,65 @@ pub async fn begin(
     .await
     .map_err(|_| Refusal::Redirect("server_error"))?;
 
-    Ok(Begun { auth_session_id })
+    Ok(Begun::Authenticate { auth_session_id })
+}
+
+/// The login a browser named, when it is one this realm still stands behind.
+///
+/// A cookie is a claim and not a fact. The row says whether the login is still
+/// open and whether it has run out, and both are checked here rather than being
+/// left to whatever reads the token minted from it.
+async fn live_login(
+    transaction: &Transaction<'_>,
+    signed_in: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<Option<UserSessionModel>, Refusal> {
+    let Some(session_id) = signed_in.filter(|named| !named.is_empty()) else {
+        return Ok(None);
+    };
+    Ok(sessions::load(transaction, session_id)
+        .await
+        .map_err(|_| Refusal::Redirect("server_error"))?
+        .filter(|login| login.state == UserSessionState::LoggedIn)
+        .filter(|login| login.expiration.is_none_or(|ends| ends > now.timestamp())))
+}
+
+/// The `openid` marker, which is a request marker rather than a scope a client
+/// is attached to.
+const OPENID: &str = "openid";
+
+/// What the client may actually have of what it asked for.
+///
+/// Requested and granted are not the same list, and treating them as one is a
+/// leak with a long reach: the scope rides the code into the token, and whatever
+/// releases claims by scope then releases what the client was never attached to.
+/// Unentitled scopes are dropped rather than refused, which is what RFC 6749 §3.3
+/// permits and what clients expect.
+///
+/// Default scopes are granted whether or not they were asked for. That is what
+/// makes them default.
+pub async fn granted_scope(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    requested: &str,
+) -> Result<String, Refusal> {
+    let attached = client_scopes::scopes_of_client(transaction, client_id)
+        .await
+        .map_err(|_| Refusal::Redirect("server_error"))?;
+
+    let mut granted: Vec<String> = Vec::new();
+    for asked in requested.split_whitespace() {
+        let entitled = asked == OPENID || attached.iter().any(|(scope, _)| scope.name == asked);
+        if entitled && !granted.iter().any(|held| held == asked) {
+            granted.push(asked.to_owned());
+        }
+    }
+    for (scope, _) in &attached {
+        if scope.default_scope == Some(true) && !granted.iter().any(|held| held == &scope.name) {
+            granted.push(scope.name.clone());
+        }
+    }
+    Ok(granted.join(" "))
 }
 
 /// The client, or nothing that may be redirected to.
@@ -148,11 +271,11 @@ fn registered_redirect<'a>(
 /// without one is one anybody who intercepts the redirect can spend, and by
 /// redemption it is too late to have asked.
 fn proof_is_registered(client: &ClientModel, requested: &Requested<'_>) -> Result<(), Refusal> {
-    match requested.code_challenge_method {
-        Some("S256") | None => {}
-        // `plain` is allowed by RFC 7636 §4.2 and deprecated by §7.2, and an
-        // unknown method must not be read as the weaker one.
-        Some(_) => return Err(Refusal::Redirect("invalid_request")),
+    // S256 named, or nothing. RFC 7636 §4.3 reads an absent method as `plain`,
+    // so accepting the omission is accepting `plain` under another spelling, and
+    // refusing the word while accepting the silence refuses nothing.
+    if requested.code_challenge.is_some() && requested.code_challenge_method != Some("S256") {
+        return Err(Refusal::Redirect("invalid_request"));
     }
     if client.public_client == Some(true) && requested.code_challenge.is_none() {
         return Err(Refusal::Redirect("invalid_request"));

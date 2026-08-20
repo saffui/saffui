@@ -130,6 +130,67 @@ pub async fn answer_step(
     }
 }
 
+/// What a code is minted against, gathered so two callers state the same facts.
+pub struct Authorized<'a> {
+    pub client_id: &'a str,
+    pub user_id: &'a str,
+    pub session_id: &'a str,
+    pub redirect_uri: &'a str,
+    pub scope: &'a str,
+    pub state: Option<&'a str>,
+    pub nonce: Option<&'a str>,
+    pub code_challenge: Option<&'a str>,
+    pub code_challenge_method: Option<&'a str>,
+    /// When the user authenticated, not when this code was minted. `max_age`
+    /// asks about the first, and a session begun at nine and re-authenticated
+    /// at noon is three hours old with an authentication minutes old.
+    pub auth_time: i64,
+    /// The level the login actually reached. Frozen here because by redemption
+    /// the session may have stepped up in another tab, and a value resolved
+    /// then would attest to a strength this code was never issued under.
+    pub acr: Option<&'a str>,
+}
+
+/// Mint a code and say where the browser goes with it.
+///
+/// Shared, because `/authorize` mints one when it finds a live login and this
+/// module mints one when a flow just finished. Two mintings would be two places
+/// for a field to be forgotten.
+pub async fn mint_code(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &TenantContext,
+    authorized: &Authorized<'_>,
+    now: DateTime<Utc>,
+) -> Result<String, Unanswerable> {
+    let raw = draw(provider)?;
+    oidc::mint_code(
+        transaction,
+        &AuthorizationCode {
+            code_hash: digest(provider, raw.as_bytes())?,
+            tenant: tenant.tenant.clone(),
+            realm_id: tenant.realm_id.clone(),
+            client_id: authorized.client_id.to_owned(),
+            user_id: authorized.user_id.to_owned(),
+            session_id: authorized.session_id.to_owned(),
+            redirect_uri: authorized.redirect_uri.to_owned(),
+            scope: authorized.scope.to_owned(),
+            nonce: authorized.nonce.map(str::to_owned),
+            code_challenge: authorized.code_challenge.map(str::to_owned),
+            code_challenge_method: authorized.code_challenge_method.map(str::to_owned),
+            auth_time: authorized.auth_time,
+            acr: authorized.acr.map(str::to_owned),
+            org_id: None,
+            org_name: None,
+        },
+        now + Duration::seconds(CODE_LIFESPAN),
+    )
+    .await
+    .map_err(|_| Unanswerable::Unreadable)?;
+
+    Ok(landing(authorized.redirect_uri, &raw, authorized.state))
+}
+
 /// Open the login, mint the code, and say where the browser goes.
 async fn admit(
     transaction: &Transaction<'_>,
@@ -169,31 +230,27 @@ async fn admit(
     .await
     .map_err(|_| Unanswerable::Unreadable)?;
 
-    let raw = draw(provider)?;
     let notes = &login.notes;
-    oidc::mint_code(
+    let landing = mint_code(
         transaction,
-        &AuthorizationCode {
-            code_hash: digest(provider, raw.as_bytes())?,
-            tenant: tenant.tenant.clone(),
-            realm_id: tenant.realm_id.clone(),
-            client_id: login.client_id.clone(),
-            user_id: user_id.to_owned(),
-            session_id: login.session_id.clone(),
-            redirect_uri: login.redirect_uri.clone(),
-            scope: noted(notes, "scope").unwrap_or_default().to_owned(),
-            nonce: noted(notes, "nonce").map(str::to_owned),
-            code_challenge: noted(notes, "code_challenge").map(str::to_owned),
-            code_challenge_method: noted(notes, "code_challenge_method").map(str::to_owned),
+        provider,
+        tenant,
+        &Authorized {
+            client_id: &login.client_id,
+            user_id,
+            session_id: &login.session_id,
+            redirect_uri: &login.redirect_uri,
+            scope: noted(notes, "scope").unwrap_or_default(),
+            state: noted(notes, "state"),
+            nonce: noted(notes, "nonce"),
+            code_challenge: noted(notes, "code_challenge"),
+            code_challenge_method: noted(notes, "code_challenge_method"),
             auth_time: now.timestamp(),
             acr: None,
-            org_id: None,
-            org_name: None,
         },
-        now + Duration::seconds(CODE_LIFESPAN),
+        now,
     )
-    .await
-    .map_err(|_| Unanswerable::Unreadable)?;
+    .await?;
 
     // The login in progress is over. Leaving it would let the same answer mint
     // a second code for one authorization.
@@ -201,7 +258,7 @@ async fn admit(
         .await
         .map_err(|_| Unanswerable::Unreadable)?;
 
-    Ok(landing(&login.redirect_uri, &raw, noted(notes, "state")))
+    Ok(landing)
 }
 
 /// Where the browser goes, carrying what the client will spend.

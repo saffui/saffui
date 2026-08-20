@@ -20,7 +20,10 @@ use models::entities::authz::AdminAction;
 use server::api::config::{Plane as Mounted, register};
 use server::middleware::admin_policy::AdminPolicy;
 use store::tenancy::TenantContext;
-use support::{AUDIENCE, KID, PARTY, Plane, REALM, SCOPE, SECOND_KID, SUBJECT, SigningKey, claims};
+use support::{
+    AUDIENCE, KID, PARTY, Plane, REALM, SCOPE, SECOND_KID, SUBJECT, SigningKey, claims,
+    cookie_value, pkce_pair, urlencode,
+};
 
 fn policy() -> AdminPolicy {
     AdminPolicy {
@@ -30,17 +33,46 @@ fn policy() -> AdminPolicy {
     }
 }
 
-/// Mount the plane against this database, and send one request.
-async fn request(plane: &Plane, method: Method, path: &str, bearer: Option<&str>) -> StatusCode {
-    let mounted = Mounted {
+/// What a deployment can actually configure, as against what the suite hands
+/// `decide` directly.
+///
+/// The audience is the console's own client id because that is the only value a
+/// minted token can carry: an access token names the client that asked for it,
+/// and nothing adds a second audience. A deployment naming anything else here
+/// has configured a plane its own console cannot reach.
+fn console_policy() -> AdminPolicy {
+    AdminPolicy {
+        audiences: vec![PARTY.to_owned()],
+        parties: vec![PARTY.to_owned()],
+        scope: SCOPE.to_owned(),
+    }
+}
+
+fn mounted(plane: &Plane, policy: &AdminPolicy) -> Mounted {
+    Mounted {
         pool: plane.pool(),
         tenancy: plane.tenancy(),
-        policy: policy(),
+        policy: policy.clone(),
         origin: support::origin(),
         login_ui: support::login_ui(),
         sealing: support::sealing(),
-    };
-    let app = test::init_service(App::new().configure(register(&mounted))).await;
+    }
+}
+
+/// Mount the plane against this database, and send one request.
+async fn request(plane: &Plane, method: Method, path: &str, bearer: Option<&str>) -> StatusCode {
+    request_under(plane, &policy(), method, path, bearer).await
+}
+
+/// The same, under a policy the caller names.
+async fn request_under(
+    plane: &Plane,
+    policy: &AdminPolicy,
+    method: Method,
+    path: &str,
+    bearer: Option<&str>,
+) -> StatusCode {
+    let app = test::init_service(App::new().configure(register(&mounted(plane, policy)))).await;
 
     let mut builder = test::TestRequest::with_uri(path).method(method);
     if let Some(bearer) = bearer {
@@ -503,5 +535,220 @@ async fn an_undeclared_route_is_refused_to_a_caller_holding_everything() {
         request(&plane, Method::GET, "/admin/realms/main", Some(&bearer)).await,
         StatusCode::OK,
         "a caller holding everything was refused a declared route"
+    );
+}
+
+/// One client walking the browser loop, and how it proves itself at the end.
+struct Walking<'a> {
+    client_id: &'a str,
+    redirect_uri: &'a str,
+    /// What it asks `/authorize` for, which is not what it gets.
+    asking: &'a str,
+    /// A confidential client presents this. A public one has none, and proves
+    /// the code was minted for it with a challenge instead.
+    secret: Option<&'a str>,
+}
+
+/// Authorize, answer the password step, spend the code, and hand back what the
+/// token endpoint answered.
+///
+/// One mounted app throughout, because a browser talks to one deployment: a
+/// cookie set by one and offered to another would prove nothing about either.
+async fn walk(plane: &Plane, policy: &AdminPolicy, who: &Walking<'_>) -> serde_json::Value {
+    let app = test::init_service(App::new().configure(register(&mounted(plane, policy)))).await;
+    let (verifier, challenge) = pkce_pair();
+
+    let mut query = vec![
+        ("response_type", "code"),
+        ("client_id", who.client_id),
+        ("redirect_uri", who.redirect_uri),
+        ("scope", who.asking),
+        ("state", "opaque-state"),
+    ];
+    if who.secret.is_none() {
+        query.push(("code_challenge", challenge.as_str()));
+        query.push(("code_challenge_method", "S256"));
+    }
+    let asked = query
+        .iter()
+        .map(|(key, value)| format!("{key}={}", urlencode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    let opened = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/auth?{asked}"
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        opened.status(),
+        StatusCode::FOUND,
+        "the request did not open a login"
+    );
+    let set = opened
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let binding = cookie_value(&set, support::AUTH_SESSION_COOKIE)
+        .expect("the browser was not bound to the login it just opened");
+
+    let answered = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/login"))
+            .insert_header((
+                "cookie",
+                format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+            ))
+            .set_json(serde_json::json!({
+                "username": SUBJECT,
+                "password": support::PASSWORD,
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(answered.status(), StatusCode::OK);
+    let told: serde_json::Value = test::read_body_json(answered).await;
+    let landing = told["redirect_to"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the login admitted nobody: {told}"));
+    let code = landing
+        .split_once("code=")
+        .unwrap_or_else(|| panic!("no code came back: {landing}"))
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let mut form = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("redirect_uri", who.redirect_uri),
+    ];
+    let mut spending =
+        test::TestRequest::post().uri(&format!("/realms/{REALM}/protocol/openid-connect/token"));
+    match who.secret {
+        Some(secret) => {
+            let credentials =
+                data_encoding::BASE64.encode(format!("{}:{secret}", who.client_id).as_bytes());
+            spending = spending.insert_header(("authorization", format!("Basic {credentials}")));
+        }
+        None => {
+            form.push(("client_id", who.client_id));
+            form.push(("code_verifier", verifier.as_str()));
+        }
+    }
+
+    let spent = test::call_service(&app, spending.set_form(&form).to_request()).await;
+    let status = spent.status();
+    let granted: serde_json::Value = test::read_body_json(spent).await;
+    assert_eq!(status, StatusCode::OK, "the code was not spent: {granted}");
+    granted
+}
+
+/// Whether a granted scope carries one value, matched whole.
+fn carries(granted: &serde_json::Value, wanted: &str) -> bool {
+    granted["scope"]
+        .as_str()
+        .unwrap_or_default()
+        .split_whitespace()
+        .any(|held| held == wanted)
+}
+
+/// A token obtained the way a console obtains one, and the plane it opens.
+///
+/// Every other test here signs its own token, which says what `decide` does with
+/// a payload and nothing about whether that payload is one this deployment can
+/// mint. It could not: nothing created the scope the plane requires, so
+/// `/authorize` dropped it from every request that named it, and `/admin` was
+/// reachable only by a token written by hand.
+///
+/// The console asks for nothing but `openid` here, the way an admin UI that
+/// knows only OIDC would. What puts the scope on the token is the attachment.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_console_reaches_the_plane_with_a_token_the_protocol_minted() {
+    let plane = Plane::with_actions(&[AdminAction::RealmList]).await;
+    let policy = console_policy();
+
+    let granted = walk(
+        &plane,
+        &policy,
+        &Walking {
+            client_id: PARTY,
+            redirect_uri: support::CONSOLE_REDIRECT,
+            asking: "openid",
+            secret: None,
+        },
+    )
+    .await;
+
+    // Asserted on the response as well as through the door below, so a failure
+    // says which of the two halves broke.
+    assert!(
+        carries(&granted, SCOPE),
+        "the console was granted no admin scope: {granted}"
+    );
+
+    assert_eq!(
+        request_under(
+            &plane,
+            &policy,
+            Method::GET,
+            "/admin/realms",
+            granted["access_token"].as_str(),
+        )
+        .await,
+        StatusCode::OK,
+        "a token this deployment minted did not open the plane it was minted for"
+    );
+}
+
+/// Asking is not holding. The scope now exists in the realm, so a client that is
+/// not the console can name it, and naming it must not be enough: the console is
+/// the only thing attached to it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn asking_for_the_admin_scope_is_not_holding_it() {
+    let plane = Plane::with_actions(&[AdminAction::RealmList]).await;
+    let policy = console_policy();
+
+    let granted = walk(
+        &plane,
+        &policy,
+        &Walking {
+            client_id: support::CONFIDENTIAL,
+            redirect_uri: support::REDIRECT,
+            asking: &format!("openid {SCOPE}"),
+            secret: Some(support::CLIENT_SECRET),
+        },
+    )
+    .await;
+
+    assert!(
+        !carries(&granted, SCOPE),
+        "a client nothing attached to the admin scope was granted it: {granted}"
+    );
+    // Refused for the audience, and refused before the scope is ever read: an
+    // access token names the client that asked for it, and this one is not the
+    // console. Every refusal past the token renders the same, which is what
+    // keeps the shape of this plane out of the answer.
+    assert_eq!(
+        request_under(
+            &plane,
+            &policy,
+            Method::GET,
+            "/admin/realms",
+            granted["access_token"].as_str(),
+        )
+        .await,
+        StatusCode::FORBIDDEN,
+        "asking for the admin scope was enough to reach the plane"
     );
 }

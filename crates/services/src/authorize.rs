@@ -333,8 +333,17 @@ const OPENID: &str = "openid";
 /// Unentitled scopes are dropped rather than refused, which is what RFC 6749 §3.3
 /// permits and what clients expect.
 ///
-/// Default scopes are granted whether or not they were asked for. That is what
-/// makes them default.
+/// How a client holds a scope decides the rest, and that is a property of the
+/// attachment rather than of the scope. A scope attached outright is granted
+/// whether or not it was asked for; an optional one only when the request names
+/// it. The other flag, `default_scope`, answers a different question: which
+/// scopes a client is offered when it is registered. Reading that one here made
+/// a realm-wide offer into a per-client grant, and left the plane no way to say
+/// "this client always carries this" for one client alone.
+///
+/// Which is what the admin plane needs. Its scope is attached to the console and
+/// to nothing else, so the console carries it without asking and the plane can
+/// require it by default, rather than every admin UI having to remember to ask.
 pub async fn granted_scope(
     transaction: &Transaction<'_>,
     client_id: &str,
@@ -351,8 +360,8 @@ pub async fn granted_scope(
             granted.push(asked.to_owned());
         }
     }
-    for (scope, _) in &attached {
-        if scope.default_scope == Some(true) && !granted.iter().any(|held| held == &scope.name) {
+    for (scope, optional) in &attached {
+        if !optional && !granted.iter().any(|held| held == &scope.name) {
             granted.push(scope.name.clone());
         }
     }

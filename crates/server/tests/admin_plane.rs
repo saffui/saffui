@@ -37,6 +37,7 @@ async fn request(plane: &Plane, method: Method, path: &str, bearer: Option<&str>
         tenancy: plane.tenancy(),
         policy: policy(),
         origin: support::origin(),
+        login_ui: support::login_ui(),
         sealing: support::sealing(),
     };
     let app = test::init_service(App::new().configure(register(&mounted))).await;

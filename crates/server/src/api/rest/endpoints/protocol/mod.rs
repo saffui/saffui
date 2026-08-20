@@ -7,5 +7,7 @@
 
 pub mod authorize;
 pub mod basic;
+pub mod binding;
 pub mod dto;
+pub mod login;
 pub mod token;

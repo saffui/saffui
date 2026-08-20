@@ -52,7 +52,11 @@ url = "2.5"
 # a server means turning http2 back on, and h2 0.3 is what RUSTSEC-2026-0258 is
 # about, so check whether actix-http has moved to 0.4 before doing so.
 clap           = { version = "4", features = ["derive"] }
-actix-web      = { version = "4.14", default-features = false, features = ["macros"] }
+# `cookies` is on because the binding between a browser and its login has to be
+# something the URL does not carry: a URL reaches server logs, `Referer` headers
+# and history, and a login identifier that leaks there is one somebody else can
+# answer. Everything else stays off.
+actix-web      = { version = "4.14", default-features = false, features = ["macros", "cookies"] }
 log            = "0.4"
 
 # --- Observability ---

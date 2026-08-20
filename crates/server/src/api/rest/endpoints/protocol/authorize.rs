@@ -3,14 +3,19 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
-use config::serving::PublicOrigin;
+use config::serving::LoginUi;
 use deadpool_postgres::Pool;
 use serde::Deserialize;
 use services::authorize::{self, Refusal, Requested};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
+use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::dto::uncached;
+
+/// How long the cookie naming a login in progress lasts. The row expires on its
+/// own; this stops a browser offering a name that is already gone.
+const LOGIN_LIFESPAN: i64 = 900;
 
 /// What the query carries. Every field optional here so a missing one is a
 /// refusal this endpoint decides how to deliver, rather than a 400 the extractor
@@ -34,20 +39,20 @@ pub async fn begin(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
-    origin: web::Data<PublicOrigin>,
+    login_ui: web::Data<LoginUi>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Ok(mut connection) = pool.get().await else {
-        return shown("the realm could not be read");
+        return shown("server_error", "the realm could not be read");
     };
     let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return shown("no login can start here");
+        return shown("unauthorized_client", "no login can start here");
     };
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
-        return shown("the realm could not be read");
+        return shown("server_error", "the realm could not be read");
     };
     let Some(asked) = asked else {
-        return shown("the request could not be read");
+        return shown("invalid_request", "the query could not be read");
     };
 
     let begun = authorize::begin(
@@ -70,21 +75,35 @@ pub async fn begin(
     match begun {
         Ok(begun) => {
             if transaction.commit().await.is_err() {
-                return shown("the login could not be started");
+                return shown("server_error", "the login could not be started");
             }
-            // The login carries its own identifier because there is no cookie to
-            // carry it: a browser arriving at the next step names which login it
-            // is in, and the row says everything else about it.
-            redirect(&format!(
-                "{}/realms/{}/protocol/openid-connect/login?auth_session={}",
-                origin.as_str(),
-                context.realm_id,
-                begun.auth_session_id
-            ))
+            let Some(answering) = login_ui.answering() else {
+                // Nothing to hand off to. Saying so beats inventing a URL, and
+                // the client is established by now, so it hears about it.
+                return sent(
+                    asked.redirect_uri.as_deref().unwrap_or_default(),
+                    "server_error",
+                    asked.state.as_deref(),
+                );
+            };
+            // Nothing secret travels in the URL. The browser is told where to
+            // answer, and which login it is answering rides in a cookie the
+            // page cannot read and a cross-site request cannot attach.
+            let mut response = HttpResponseBuilder::new(StatusCode::FOUND);
+            binding::set(
+                &mut response,
+                binding::AUTH_SESSION,
+                &begun.auth_session_id,
+                &context.realm_id,
+                LOGIN_LIFESPAN,
+            );
+            uncached(&mut response)
+                .insert_header(("Location", answering))
+                .finish()
         }
         // Nothing was written, so nothing is committed. Rolling back is what
         // makes a refused start leave no half opened login behind.
-        Err(Refusal::Unshowable) => shown("no login can start here"),
+        Err(Refusal::Unshowable(error)) => shown(error, "no login can start here"),
         Err(Refusal::Redirect(error)) => sent(
             asked.redirect_uri.as_deref().unwrap_or_default(),
             error,
@@ -95,10 +114,15 @@ pub async fn begin(
 
 /// A refusal the user sees. The client is not established, or the redirect is
 /// not one this realm registered, so sending it onward is the open redirector.
-fn shown(why: &str) -> HttpResponse {
-    uncached(&mut HttpResponseBuilder::new(StatusCode::BAD_REQUEST))
-        .content_type("text/plain; charset=utf-8")
-        .body(why.to_owned())
+///
+/// Still RFC 6749 §4.1.2.1's shape and its code set: the party reading this is
+/// not the client, but the codes are the vocabulary the endpoint has, and
+/// inventing a second one here would be a second thing to learn.
+fn shown(error: &'static str, description: &str) -> HttpResponse {
+    uncached(&mut HttpResponseBuilder::new(StatusCode::BAD_REQUEST)).json(serde_json::json!({
+        "error": error,
+        "error_description": description,
+    }))
 }
 
 /// A refusal the client sees, at the redirect it registered.

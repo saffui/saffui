@@ -1287,6 +1287,24 @@ async fn a_public_client_starts_nothing_without_a_challenge() {
         "a challenge was offered and no login was opened"
     );
 
+    // A challenge with no method named. RFC 7636 §4.3 reads that as `plain`, so
+    // accepting the omission accepts `plain` under another spelling and the
+    // refusal of the word refuses nothing.
+    let (_, unnamed) = authorize(
+        &plane,
+        &[
+            ("response_type", "code"),
+            ("client_id", support::PUBLIC),
+            ("redirect_uri", REDIRECT),
+            ("code_challenge", "a-challenge"),
+        ],
+    )
+    .await;
+    assert!(
+        unnamed.contains("error=invalid_request"),
+        "a challenge with no method named was accepted: {unnamed}"
+    );
+
     // An unknown method must not be read as the weaker one.
     let (_, unknown) = authorize(
         &plane,
@@ -1497,4 +1515,201 @@ async fn a_login_nobody_opened_is_not_distinguishable() {
     .await;
     assert_eq!(bare, StatusCode::NOT_FOUND);
     assert_eq!(refused["status"], "no-such-login");
+}
+
+async fn fetched(plane: &Plane, path: &str) -> (StatusCode, serde_json::Value, Vec<String>) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
+    let status = response.status();
+    let headers = response
+        .headers()
+        .get_all("cache-control")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    (status, test::read_body_json(response).await, headers)
+}
+
+/// What a relying party verifies with, and what the document that points at it
+/// says. Read together, because a key set nobody can find is not published.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realm_publishes_what_verifies_its_tokens() {
+    let plane = Plane::with_actions(&[]).await;
+    let (status, jwks, cached) = fetched(
+        &plane,
+        &format!("/realms/{}/protocol/openid-connect/certs", support::REALM),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let keys = jwks["keys"].as_array().expect("a key set");
+    assert!(!keys.is_empty(), "the realm published nothing: {jwks}");
+    let key = &keys[0];
+    assert_eq!(key["kid"], support::KID);
+    assert_eq!(key["use"], "sig", "a verifier has to guess which key signs");
+    assert!(key.get("alg").is_some(), "no algorithm named: {key}");
+    assert!(
+        key.get("d").is_none(),
+        "a private half reached the public set: {key}"
+    );
+    // A JWK a verifier can actually build a key from. RFC 7517 §4.1 makes `kty`
+    // the only always-required member, and every family needs its own on top.
+    assert_eq!(key["kty"], "EC", "{key}");
+    for member in ["crv", "x", "y"] {
+        assert!(
+            key.get(member)
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            "an EC key with no {member}: {key}"
+        );
+    }
+    assert!(
+        cached.iter().any(|value| value.contains("max-age")),
+        "the set a verifier reads on every token was made uncacheable"
+    );
+}
+
+/// Everything advertised is derived. A document naming an endpoint this build
+/// does not mount, or an algorithm the signer would refuse, configures every
+/// client wrong at once and does it silently.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn discovery_advertises_only_what_is_there() {
+    let plane = Plane::with_actions(&[]).await;
+    let (status, document, _) = fetched(
+        &plane,
+        &format!(
+            "/realms/{}/.well-known/openid-configuration",
+            support::REALM
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let issuer = document["issuer"].as_str().expect("an issuer");
+    assert_eq!(issuer, format!("https://id.test/realms/{}", support::REALM));
+
+    // Every endpoint it names is one that answers, and every one it omits is one
+    // that would have been a 404 the client reports as this realm being broken.
+    for (named, path) in [
+        ("authorization_endpoint", "/protocol/openid-connect/auth"),
+        ("token_endpoint", "/protocol/openid-connect/token"),
+        ("jwks_uri", "/protocol/openid-connect/certs"),
+    ] {
+        assert_eq!(
+            document[named].as_str().unwrap(),
+            format!("{issuer}{path}"),
+            "{named}"
+        );
+    }
+    for absent in [
+        "userinfo_endpoint",
+        "introspection_endpoint",
+        "revocation_endpoint",
+        "end_session_endpoint",
+    ] {
+        assert!(
+            document.get(absent).is_none(),
+            "{absent} is advertised and does not answer"
+        );
+    }
+
+    // The algorithms come off the keys the realm holds, so a realm holding one
+    // curve cannot advertise another.
+    let (_, jwks, _) = fetched(
+        &plane,
+        &format!("/realms/{}/protocol/openid-connect/certs", support::REALM),
+    )
+    .await;
+    let held: Vec<&str> = jwks["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|key| key["alg"].as_str())
+        .collect();
+    let advertised = document["id_token_signing_alg_values_supported"]
+        .as_array()
+        .expect("an algorithm list");
+    assert!(!advertised.is_empty());
+    for alg in advertised {
+        assert!(
+            held.contains(&alg.as_str().unwrap()),
+            "{alg} is advertised and no key holds it"
+        );
+    }
+
+    // `plain` compares the verifier against a challenge that travelled in the
+    // authorize request, and the endpoint refuses it.
+    assert_eq!(
+        document["code_challenge_methods_supported"]
+            .as_array()
+            .unwrap(),
+        &vec![serde_json::json!("S256")]
+    );
+
+    // Discovery §3 reads an absent `request_uri_parameter_supported` as `true`,
+    // so the omission is not neutral: saying nothing advertises a capability
+    // this build does not have.
+    for (named, expected) in [
+        ("request_parameter_supported", false),
+        ("request_uri_parameter_supported", false),
+        ("claims_parameter_supported", false),
+        ("authorization_response_iss_parameter_supported", false),
+    ] {
+        assert_eq!(
+            document[named].as_bool(),
+            Some(expected),
+            "{named} was left to a default that is not what this build does"
+        );
+    }
+}
+
+/// A signed request object is refused, not ignored. A client that sends one
+/// believes it governs; reading the query instead hands back a code minted
+/// against parameters the client never signed.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_request_object_is_refused_rather_than_ignored() {
+    let plane = Plane::with_actions(&[]).await;
+
+    for (named, expected) in [
+        ("request", "request_not_supported"),
+        ("request_uri", "request_uri_not_supported"),
+    ] {
+        let (status, location) = authorize(
+            &plane,
+            &[
+                ("response_type", "code"),
+                ("client_id", support::CONFIDENTIAL),
+                ("redirect_uri", REDIRECT),
+                ("state", "opaque-state"),
+                (named, "https://app.example/object.jwt"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FOUND, "{named}");
+        assert!(
+            location.contains(&format!("error={expected}")),
+            "{named} was ignored: {location}"
+        );
+    }
+}
+
+/// A realm this deployment does not hold publishes nothing. Its existence is not
+/// what these two hide: which clients it holds and which users are, and neither
+/// is answerable here.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn no_such_realm_publishes_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    for path in [
+        "/realms/no-such-realm/protocol/openid-connect/certs",
+        "/realms/no-such-realm/.well-known/openid-configuration",
+    ] {
+        assert_eq!(
+            fetched(&plane, path).await.0,
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
 }

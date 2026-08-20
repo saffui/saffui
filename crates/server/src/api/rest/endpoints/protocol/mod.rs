@@ -8,6 +8,8 @@
 pub mod authorize;
 pub mod basic;
 pub mod binding;
+pub mod discovery;
 pub mod dto;
+pub mod keys;
 pub mod login;
 pub mod token;

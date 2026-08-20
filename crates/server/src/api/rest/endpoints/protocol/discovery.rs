@@ -1,0 +1,105 @@
+//! What a client reads to configure itself.
+//!
+//! Everything here is derived rather than written down. A document that names an
+//! endpoint this build does not mount, or an algorithm the signer would refuse,
+//! configures every client wrong at once and does it silently.
+
+use actix_web::http::StatusCode;
+use actix_web::{HttpResponse, HttpResponseBuilder, web};
+use config::serving::PublicOrigin;
+use deadpool_postgres::Pool;
+use models::entities::keys::KeyUse;
+use serde_json::{Value, json};
+use store::providers::realm_keys;
+use store::tenancy::{Tenancy, resolve};
+
+use crate::api::rest::endpoints::protocol::dto::uncached;
+
+/// The realm's metadata, OpenID Connect Discovery §3.
+pub async fn published(
+    realm: web::Path<String>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    origin: web::Data<PublicOrigin>,
+) -> HttpResponse {
+    let Ok(mut connection) = pool.get().await else {
+        return refused(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
+        return refused(StatusCode::NOT_FOUND);
+    };
+    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+        return refused(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    let Ok(keys) = realm_keys::published(&transaction, KeyUse::Sig).await else {
+        return refused(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+
+    // From the keys this realm actually holds, not from the build's catalogue. A
+    // realm holding one EC key advertising RS256 sends every client that reads
+    // it to a signature it will never see.
+    let mut algorithms: Vec<String> = keys
+        .iter()
+        .filter_map(|key| match serde_json::to_value(key.algorithm) {
+            Ok(Value::String(named)) => Some(named),
+            _ => None,
+        })
+        .collect();
+    algorithms.sort_unstable();
+    algorithms.dedup();
+
+    let issuer = origin.issuer(&context.realm_id);
+    let protocol = format!("{issuer}/protocol/openid-connect");
+
+    HttpResponseBuilder::new(StatusCode::OK)
+        .insert_header(("Cache-Control", "public, max-age=300"))
+        .json(json!({
+            "issuer": issuer,
+            "authorization_endpoint": format!("{protocol}/auth"),
+            "token_endpoint": format!("{protocol}/token"),
+            "jwks_uri": format!("{protocol}/certs"),
+            // Only what is mounted. `userinfo_endpoint`, `revocation_endpoint`,
+            // `introspection_endpoint` and `end_session_endpoint` are absent
+            // because they are, and naming them would send a client to a 404 it
+            // reports as this realm being broken.
+            "response_types_supported": ["code"],
+            "response_modes_supported": ["query"],
+            "grant_types_supported": [
+                "authorization_code",
+                "refresh_token",
+                "client_credentials",
+            ],
+            "subject_types_supported": ["public"],
+            "id_token_signing_alg_values_supported": algorithms,
+            "token_endpoint_auth_methods_supported": [
+                "client_secret_basic",
+                "client_secret_post",
+                "none",
+            ],
+            // S256 and nothing else. `plain` compares the verifier against a
+            // challenge that travelled in the authorize request, and the
+            // endpoint refuses it, so advertising it would be a lie a client
+            // acts on.
+            "code_challenge_methods_supported": ["S256"],
+            "scopes_supported": ["openid"],
+            "claims_supported": [
+                "sub", "iss", "aud", "exp", "iat", "jti", "typ", "azp", "sid",
+                "scope", "auth_time", "nonce", "acr", "org_id",
+            ],
+            // Stated because the omission is not neutral. Discovery §3 reads an
+            // absent `request_uri_parameter_supported` as `true`, so saying
+            // nothing here advertises a capability this build does not have and
+            // a client that believes it sends a signed request nothing reads.
+            "request_parameter_supported": false,
+            "request_uri_parameter_supported": false,
+            "claims_parameter_supported": false,
+            "authorization_response_iss_parameter_supported": false,
+        }))
+}
+
+fn refused(status: StatusCode) -> HttpResponse {
+    uncached(&mut HttpResponseBuilder::new(status)).json(json!({
+        "error": "server_error",
+        "error_description": "no metadata is published here",
+    }))
+}

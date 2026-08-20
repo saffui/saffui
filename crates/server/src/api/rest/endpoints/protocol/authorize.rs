@@ -1,12 +1,12 @@
 //! Where a browser starts a login.
 
 use actix_web::http::StatusCode;
-use actix_web::{HttpResponse, HttpResponseBuilder, web};
+use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::LoginUi;
 use deadpool_postgres::Pool;
 use serde::Deserialize;
-use services::authorize::{self, Refusal, Requested};
+use services::authorize::{self, Begun, Refusal, Requested};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
@@ -36,6 +36,7 @@ pub struct Asked {
 
 /// Begin a login.
 pub async fn begin(
+    request: HttpRequest,
     realm: web::Path<String>,
     asked: Option<web::Query<Asked>>,
     pool: web::Data<Pool>,
@@ -60,6 +61,7 @@ pub async fn begin(
     let begun = authorize::begin(
         &transaction,
         sealing.provider.as_ref(),
+        &context,
         &Requested {
             response_type: asked.response_type.as_deref(),
             client_id: asked.client_id.as_deref(),
@@ -72,12 +74,22 @@ pub async fn begin(
             request: asked.request.as_deref(),
             request_uri: asked.request_uri.as_deref(),
         },
+        binding::read(&request, binding::SSO_SESSION).as_deref(),
         now,
     )
     .await;
 
     match begun {
-        Ok(begun) => {
+        // Nobody saw a screen, because somebody is already signed in here. The
+        // commit is still first: the code has to exist before the browser is
+        // sent somewhere to spend it.
+        Ok(Begun::Admitted { redirect_to }) => {
+            if transaction.commit().await.is_err() {
+                return shown("server_error", "the login could not be started");
+            }
+            redirect(&redirect_to)
+        }
+        Ok(Begun::Authenticate { auth_session_id }) => {
             if transaction.commit().await.is_err() {
                 return shown("server_error", "the login could not be started");
             }
@@ -97,7 +109,7 @@ pub async fn begin(
             binding::set(
                 &mut response,
                 binding::AUTH_SESSION,
-                &begun.auth_session_id,
+                &auth_session_id,
                 &context.realm_id,
                 LOGIN_LIFESPAN,
             );

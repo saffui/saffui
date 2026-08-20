@@ -160,6 +160,7 @@ fn plane() -> Result<Plane, String> {
     // the issuer baked into every token this deployment ever mints, and those
     // tokens outlive the correction.
     let origin = config::serving::PublicOrigin::from_env().map_err(|e| e.to_string())?;
+    let login_ui = config::serving::LoginUi::from_env().map_err(|e| e.to_string())?;
 
     // Read at startup, not on the first request that needs it. A deployment
     // whose wrapping key is missing refuses to start rather than refusing every
@@ -192,6 +193,7 @@ fn plane() -> Result<Plane, String> {
             scope,
         },
         origin,
+        login_ui,
         sealing: Sealing {
             provider,
             envelope: Arc::new(envelope),

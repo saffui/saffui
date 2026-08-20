@@ -18,6 +18,7 @@ fn mounted(plane: &Plane) -> Mounted {
             scope: support::SCOPE.to_owned(),
         },
         origin: support::origin(),
+        login_ui: support::login_ui(),
         sealing: support::sealing(),
     }
 }
@@ -1143,11 +1144,8 @@ async fn a_request_that_checks_out_opens_a_login() {
 
     assert_eq!(status, StatusCode::FOUND);
     assert!(
-        location.starts_with(&format!(
-            "https://id.test/realms/{}/protocol/openid-connect/login?auth_session=",
-            support::REALM
-        )),
-        "the browser was sent somewhere else: {location}"
+        location.starts_with("https://login.test?auth_session="),
+        "the browser was sent somewhere other than the configured login: {location}"
     );
     assert!(
         !location.starts_with(REDIRECT),
@@ -1270,4 +1268,168 @@ async fn a_public_client_starts_nothing_without_a_challenge() {
     )
     .await;
     assert!(unknown.contains("error=invalid_request"), "{unknown}");
+}
+
+/// Answer a login step, and hand back what the server said.
+async fn login_step(plane: &Plane, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let request = test::TestRequest::post()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/login",
+            support::REALM
+        ))
+        .set_json(&body)
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    let status = response.status();
+    (status, test::read_body_json(response).await)
+}
+
+/// The identifier `/authorize` sent the browser away with.
+fn answering(location: &str) -> String {
+    location
+        .split_once("auth_session=")
+        .expect("a login to answer")
+        .1
+        .to_owned()
+}
+
+/// The whole loop, once: authorize, answer the step, spend the code. Every
+/// piece was tested against a planted fixture before this; this is the first
+/// time the pieces have to agree with each other.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_browser_logs_in_and_the_client_spends_what_it_carries() {
+    let plane = Plane::with_actions(&[]).await;
+    let asked = started(support::CONFIDENTIAL);
+    let (_, sent_to_login) = authorize(&plane, &as_pairs(&asked)).await;
+    let auth_session = answering(&sent_to_login);
+
+    let (status, told) = login_step(
+        &plane,
+        serde_json::json!({
+            "auth_session": auth_session,
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted");
+
+    let landing = told["redirect_to"].as_str().expect("somewhere to land");
+    assert!(landing.starts_with(REDIRECT), "{landing}");
+    assert!(
+        landing.contains("state=opaque-state"),
+        "the state was not echoed back: {landing}"
+    );
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let (spent, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(spent, StatusCode::OK, "{granted}");
+    assert_eq!(
+        plane
+            .claims_of(granted["access_token"].as_str().unwrap())
+            .await["sub"],
+        support::SUBJECT
+    );
+    assert!(granted.get("id_token").is_some(), "openid was asked for");
+}
+
+/// A wrong password refuses without ending the login, so the same login can be
+/// answered again. Ending it would make one typo a fresh trip through
+/// `/authorize`.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_wrong_answer_refuses_and_the_login_survives() {
+    let plane = Plane::with_actions(&[]).await;
+    let asked = started(support::CONFIDENTIAL);
+    let (_, sent_to_login) = authorize(&plane, &as_pairs(&asked)).await;
+    let auth_session = answering(&sent_to_login);
+
+    let (status, told) = login_step(
+        &plane,
+        serde_json::json!({
+            "auth_session": auth_session,
+            "username": support::SUBJECT,
+            "password": "not-the-password",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(told["status"], "refused");
+
+    let (again, admitted) = login_step(
+        &plane,
+        serde_json::json!({
+            "auth_session": auth_session,
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(again, StatusCode::OK, "{admitted}");
+    assert_eq!(admitted["status"], "admitted");
+}
+
+/// A login mints one code. Leaving the row behind would let the same answer be
+/// replayed into a second code for one authorization.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn one_authorization_mints_one_code() {
+    let plane = Plane::with_actions(&[]).await;
+    let asked = started(support::CONFIDENTIAL);
+    let (_, sent_to_login) = authorize(&plane, &as_pairs(&asked)).await;
+    let auth_session = answering(&sent_to_login);
+    let answer = serde_json::json!({
+        "auth_session": auth_session,
+        "username": support::SUBJECT,
+        "password": support::PASSWORD,
+    });
+
+    assert_eq!(
+        login_step(&plane, answer.clone()).await.1["status"],
+        "admitted"
+    );
+
+    let (status, told) = login_step(&plane, answer).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(told["status"], "no-such-login");
+}
+
+/// A login nobody opened is answered the way one that expired is, and the same
+/// way a realm this deployment does not hold is. None of the three is something
+/// an unauthenticated caller gets to tell apart.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_login_nobody_opened_is_not_distinguishable() {
+    let plane = Plane::with_actions(&[]).await;
+    let (status, told) = login_step(
+        &plane,
+        serde_json::json!({
+            "auth_session": "never-opened",
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(told["status"], "no-such-login");
 }

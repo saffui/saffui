@@ -42,10 +42,11 @@ pub struct Begun {
 /// Why the login did not start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Refusal {
-    /// Shown to the user. Nothing here may be sent to a redirect, because what
-    /// failed is the reason to believe there is one worth sending to.
-    #[error("the request names no client this realm will redirect to")]
-    Unshowable,
+    /// Shown to the user, carrying the code that names why. Nothing here may be
+    /// sent to a redirect, because what failed is the reason to believe there is
+    /// one worth sending to.
+    #[error("{0}")]
+    Unshowable(&'static str),
     /// Sent to the registered redirect, as §4.1.2.1 requires, with the state
     /// the client asked to have echoed.
     #[error("{0}")]
@@ -107,12 +108,14 @@ async fn named_client(
 ) -> Result<ClientModel, Refusal> {
     let client_id = client_id
         .filter(|named| !named.is_empty())
-        .ok_or(Refusal::Unshowable)?;
+        .ok_or(Refusal::Unshowable("invalid_request"))?;
     clients::load(transaction, client_id)
         .await
-        .map_err(|_| Refusal::Unshowable)?
+        .map_err(|_| Refusal::Unshowable("server_error"))?
         .filter(|client| client.enabled != Some(false))
-        .ok_or(Refusal::Unshowable)
+        // One code for absent, unknown and switched off. Three would let a
+        // caller read off which clients this realm holds.
+        .ok_or(Refusal::Unshowable("unauthorized_client"))
 }
 
 /// The redirect, matched whole against what the client registered.
@@ -131,13 +134,13 @@ fn registered_redirect<'a>(
 ) -> Result<&'a str, Refusal> {
     let asked = asked
         .filter(|uri| !uri.is_empty())
-        .ok_or(Refusal::Unshowable)?;
+        .ok_or(Refusal::Unshowable("invalid_request"))?;
     client
         .redirect_uris
         .as_ref()
         .is_some_and(|registered| registered.iter().any(|uri| uri == asked))
         .then_some(asked)
-        .ok_or(Refusal::Unshowable)
+        .ok_or(Refusal::Unshowable("invalid_request"))
 }
 
 /// A public client authenticates with nothing, so the challenge is the whole of

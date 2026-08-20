@@ -30,6 +30,8 @@ pub struct Asked {
     pub nonce: Option<String>,
     pub code_challenge: Option<String>,
     pub code_challenge_method: Option<String>,
+    pub request: Option<String>,
+    pub request_uri: Option<String>,
 }
 
 /// Begin a login.
@@ -67,6 +69,8 @@ pub async fn begin(
             nonce: asked.nonce.as_deref(),
             code_challenge: asked.code_challenge.as_deref(),
             code_challenge_method: asked.code_challenge_method.as_deref(),
+            request: asked.request.as_deref(),
+            request_uri: asked.request_uri.as_deref(),
         },
         now,
     )

@@ -31,6 +31,10 @@ pub struct Requested<'a> {
     pub nonce: Option<&'a str>,
     pub code_challenge: Option<&'a str>,
     pub code_challenge_method: Option<&'a str>,
+    /// A signed request object, or where to fetch one. Neither is read here,
+    /// and both have to be refused rather than ignored.
+    pub request: Option<&'a str>,
+    pub request_uri: Option<&'a str>,
 }
 
 /// A login opened, and where the browser goes next.
@@ -65,6 +69,16 @@ pub async fn begin(
 
     // From here the client and the redirect are established, so a refusal can
     // travel to the client rather than stopping at the user.
+    // Refused, not ignored. A client sending one believes the object it signed
+    // governs the request; ignoring it and reading the query instead hands back
+    // a code minted against parameters the client did not sign. OIDC Core §6
+    // names both refusals.
+    if requested.request.is_some() {
+        return Err(Refusal::Redirect("request_not_supported"));
+    }
+    if requested.request_uri.is_some() {
+        return Err(Refusal::Redirect("request_uri_not_supported"));
+    }
     if requested.response_type != Some("code") {
         return Err(Refusal::Redirect("unsupported_response_type"));
     }
@@ -148,11 +162,11 @@ fn registered_redirect<'a>(
 /// without one is one anybody who intercepts the redirect can spend, and by
 /// redemption it is too late to have asked.
 fn proof_is_registered(client: &ClientModel, requested: &Requested<'_>) -> Result<(), Refusal> {
-    match requested.code_challenge_method {
-        Some("S256") | None => {}
-        // `plain` is allowed by RFC 7636 §4.2 and deprecated by §7.2, and an
-        // unknown method must not be read as the weaker one.
-        Some(_) => return Err(Refusal::Redirect("invalid_request")),
+    // S256 named, or nothing. RFC 7636 §4.3 reads an absent method as `plain`,
+    // so accepting the omission is accepting `plain` under another spelling, and
+    // refusing the word while accepting the silence refuses nothing.
+    if requested.code_challenge.is_some() && requested.code_challenge_method != Some("S256") {
+        return Err(Refusal::Redirect("invalid_request"));
     }
     if client.public_client == Some(true) && requested.code_challenge.is_none() {
         return Err(Refusal::Redirect("invalid_request"));

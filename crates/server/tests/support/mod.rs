@@ -78,6 +78,10 @@ pub const SESSION: &str = "session-1";
 pub const SUBJECT: &str = "ada";
 /// What the subject answers a password step with.
 pub const PASSWORD: &str = "a-password-of-decent-length";
+/// What this realm calls the level a password reaches, and one above it that
+/// nothing here can reach.
+pub const PASSWORD_ACR: &str = "password";
+pub const STRONG_ACR: &str = "mfa";
 /// What the browser is bound by. Named here so a test asks for the same cookie
 /// the server sets rather than a string that only looks like it.
 #[allow(dead_code, reason = "only the protocol suite carries a browser")]
@@ -356,13 +360,13 @@ impl Plane {
     /// `max_age` asks how long ago the user authenticated, not how long ago the
     /// session began, and the two are only distinguishable when they differ.
     #[allow(dead_code, reason = "only the protocol suite asks")]
-    pub async fn backdate_authentication(&self, seconds: i64) -> i64 {
+    pub async fn backdate_authentication(&self, session_id: &str, seconds: i64) -> i64 {
         let when = chrono::Utc::now().timestamp() - seconds;
         let mut connection = self.connection().await;
         let transaction = self
             .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
             .await;
-        sessions::record_authentication(&transaction, SESSION, when, None)
+        sessions::record_authentication(&transaction, session_id, when, None)
             .await
             .expect("the session table");
         transaction.commit().await.unwrap();
@@ -529,6 +533,16 @@ impl Plane {
         }
         .into_model(REALM.into(), metadata());
         realms::create(&transaction, &realm).await.unwrap();
+
+        // What this realm calls its levels. Without a map nothing can be asked
+        // for and nothing can be attested, so `acr` would be absent everywhere
+        // and every test about it would pass for the wrong reason.
+        let mut settings = realms::load(&transaction, REALM).await.unwrap().unwrap();
+        settings.acr_loa_map = Some(models::entities::acr::AcrLoaMap::from_pairs([
+            (PASSWORD_ACR, 1),
+            (STRONG_ACR, 2),
+        ]));
+        realms::update(&transaction, &settings).await.unwrap();
         transaction.commit().await.unwrap();
         drop(connection);
 

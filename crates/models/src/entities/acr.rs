@@ -122,8 +122,9 @@ pub struct AuthContextRequest {
     /// Requested `acr` values in order of preference, as the client wrote them.
     pub acr_values: Vec<String>,
     pub requirement: AcrRequirement,
-    /// How old the authentication may be, in seconds. Zero is meaningful and means
-    /// always re-authenticate, which is why this is not a prompt flag.
+    /// How old the authentication may be, in seconds. A number rather than a
+    /// flag because zero is a value and not an absence: it admits only an
+    /// authentication in this very second, which `prompt=login` does not express.
     pub max_age: Option<i64>,
     /// `prompt=login` was requested.
     pub prompt_login: bool,
@@ -261,8 +262,8 @@ pub fn decide(
     }
 
     if let Some(max_age) = request.max_age {
-        // `max_age = 0` means always re-authenticate, and falls out of the same
-        // comparison rather than needing a case of its own.
+        // Strictly greater, as OIDC Core §3.1.2.1 states it: an authentication
+        // exactly `max_age` old still satisfies the request.
         if now - current.auth_time > max_age {
             return AuthDecision::Reauthenticate {
                 to_loa: required,

@@ -2297,3 +2297,83 @@ async fn a_request_that_never_asks_for_openid_is_refused() {
         );
     }
 }
+
+/// What `profile` releases, and what it does not. The suite only requires `sub`
+/// and forbids claims a scope did not ask for, but a provider that answers a
+/// `profile` request with a username alone is one no relying party can build a
+/// screen from.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_profile_scope_releases_the_claims_it_names() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid profile", None)
+        .await;
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+
+    let (status, told, _) = userinfo(&plane, granted["access_token"].as_str()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["sub"], support::SUBJECT);
+    assert_eq!(told["preferred_username"], support::SUBJECT);
+    assert_eq!(told["given_name"], support::GIVEN_NAME);
+    assert_eq!(told["family_name"], support::FAMILY_NAME);
+    assert_eq!(
+        told["name"],
+        format!("{} {}", support::GIVEN_NAME, support::FAMILY_NAME),
+        "the full name was not composed from the halves the realm holds"
+    );
+
+    // Absent rather than empty. A claim released blank is one a relying party
+    // reads as a value and shows.
+    for unheld in ["nickname", "gender", "birthdate"] {
+        assert!(
+            told.get(unheld).is_none(),
+            "{unheld} was released for an attribute the realm does not hold: {told}"
+        );
+    }
+    // And nothing another scope gates. This is what the conformance suite
+    // actually asserts.
+    assert!(told.get("email").is_none(), "{told}");
+    assert!(told.get("phone_number").is_none(), "{told}");
+}
+
+/// A scope granted without `profile` releases none of it, which is the negative
+/// the conformance suite checks.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_without_the_profile_scope_carries_no_name() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+
+    let (_, told, _) = userinfo(&plane, granted["access_token"].as_str()).await;
+    for withheld in ["name", "given_name", "family_name", "preferred_username"] {
+        assert!(
+            told.get(withheld).is_none(),
+            "{withheld} was released to a token that never asked for profile: {told}"
+        );
+    }
+    assert_eq!(told["sub"], support::SUBJECT, "sub is always released");
+}

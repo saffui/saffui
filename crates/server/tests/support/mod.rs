@@ -76,6 +76,14 @@ pub const OFFBOARDED: &str = "retired";
 pub const SESSION: &str = "session-1";
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const SUBJECT: &str = "ada";
+/// What the subject answers a password step with.
+pub const PASSWORD: &str = "a-password-of-decent-length";
+/// What the browser is bound by. Named here so a test asks for the same cookie
+/// the server sets rather than a string that only looks like it.
+#[allow(dead_code, reason = "only the protocol suite carries a browser")]
+pub const AUTH_SESSION_COOKIE: &str = "saffui_auth_session";
+#[allow(dead_code, reason = "only the protocol suite carries a browser")]
+pub const SSO_COOKIE: &str = "saffui_session";
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const AUDIENCE: &str = "saffui-admin";
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
@@ -194,6 +202,13 @@ impl SigningKey {
 /// Built complete and then edited, so a test that wants a token missing one
 /// thing names that thing rather than assembling a whole payload and getting a
 /// second one wrong by accident.
+/// Where a login is answered in the suites. Absent would refuse every start,
+/// which is what a deployment that configured none does.
+#[allow(dead_code, reason = "not every suite mounts the plane")]
+pub fn login_ui() -> config::serving::LoginUi {
+    config::serving::LoginUi::parse("https://login.test").expect("a usable login ui")
+}
+
 #[allow(
     dead_code,
     reason = "not every suite mints a token or mounts the plane"
@@ -629,6 +644,23 @@ impl Plane {
             .await
             .unwrap();
 
+        // One required password step, which is the smallest flow that can admit
+        // anybody and the one the end to end suite answers.
+        let execution = models::entities::auth::AuthenticationExecutionMutationModel {
+            alias: "the-password".into(),
+            flow_id: "browser".into(),
+            priority: 10,
+            step: models::entities::auth::ExecutionStep::Authenticator {
+                authenticator: "password".into(),
+                config_id: None,
+            },
+            requirement: models::entities::auth::AuthenticatorRequirement::Required,
+        }
+        .into_model("exec-1".into(), REALM.into(), metadata());
+        store::providers::auth_flows::create_execution(&transaction, &execution)
+            .await
+            .unwrap();
+
         let user = UserCreateModel {
             user_name: SUBJECT.into(),
             enabled: true,
@@ -645,6 +677,31 @@ impl Plane {
         }
         .into_model(SUBJECT.into(), REALM.into(), metadata());
         users::create(&transaction, &user).await.unwrap();
+
+        let StoredPassword::Argon2id { encoded } = StoredPassword::hash_argon2id(
+            &provider(),
+            Argon2Params::default(),
+            &SecretBox::new(Box::new(PASSWORD.to_owned())),
+        )
+        .expect("a hashed password") else {
+            unreachable!("hash_argon2id returns the argon2id shape")
+        };
+        store::providers::credentials::create(
+            &transaction,
+            &models::entities::credentials::CredentialModel {
+                credential_id: "cred-1".into(),
+                realm_id: REALM.into(),
+                user_id: SUBJECT.into(),
+                credential_type: models::entities::credentials::CredentialType::Password,
+                secret: models::entities::credentials::CredentialSecret::new(encoded),
+                user_label: None,
+                otp: None,
+                priority: 0,
+                metadata: metadata(),
+            },
+        )
+        .await
+        .unwrap();
 
         // The login the tokens are bound to. The plane refuses a token whose
         // login it cannot find, so without this every test here refuses for a

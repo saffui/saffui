@@ -6,6 +6,7 @@
 //! are one snapshot.
 
 pub mod authenticator;
+pub mod browser;
 pub mod step;
 
 use chrono::{DateTime, Utc};

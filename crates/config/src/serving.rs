@@ -8,6 +8,45 @@
 use crate::ConfigError;
 
 const ORIGIN: &str = "PUBLIC_ORIGIN";
+const LOGIN_UI: &str = "LOGIN_UI_URL";
+
+/// Where a browser is sent to authenticate.
+///
+/// Not served here. The login screens are an application of their own, and this
+/// server's job is to say which login is being answered, not to render it.
+///
+/// Optional, and absent means interactive login cannot start. A default would be
+/// a URL nobody chose, which is worse than a refusal that names the setting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginUi(Option<String>);
+
+impl LoginUi {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        match crate::optional(LOGIN_UI) {
+            None => Ok(LoginUi(None)),
+            Some(named) => match PublicOrigin::parse(&named) {
+                Some(_) => Ok(LoginUi(Some(named.trim().trim_end_matches('/').to_owned()))),
+                None => Err(ConfigError::Invalid {
+                    key: format!("{}{LOGIN_UI}", crate::PREFIX),
+                    expected: "absolute http(s) url".to_owned(),
+                }),
+            },
+        }
+    }
+
+    /// Build from a value from anywhere, for a test that mounts a plane.
+    pub fn parse(value: &str) -> Option<Self> {
+        PublicOrigin::parse(value).map(|origin| LoginUi(Some(origin.as_str().to_owned())))
+    }
+
+    /// Where a login is answered, or nothing when none is configured.
+    ///
+    /// No identifier in it. Which login is being answered rides in a cookie,
+    /// because a URL reaches logs, `Referer` headers and history.
+    pub fn answering(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
 
 /// Where callers reach this deployment. Not the listen address: behind a proxy
 /// that is a port nobody dials, and an issuer built from it is one no client can

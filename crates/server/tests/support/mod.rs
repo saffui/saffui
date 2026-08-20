@@ -63,6 +63,9 @@ pub const PUBLIC: &str = "spa";
 /// A second confidential client, so a test can present one client's token while
 /// authenticating as another.
 pub const OTHER: &str = "batch";
+/// The one redirect every client here registers. A login may only be sent back
+/// to a value the client wrote down.
+pub const REDIRECT: &str = "https://app.example/callback";
 /// A client whose registration still enables a service account the realm has
 /// switched off. The lever an operator reaches for first.
 pub const OFFBOARDED: &str = "retired";
@@ -576,6 +579,7 @@ impl Plane {
             // create payload: one decides whether a secret is expected at all,
             // the other whether this client may act for itself.
             client.public_client = Some(public);
+            client.redirect_uris = Some(vec![REDIRECT.to_owned()]);
             // Both, including the public one. An operator can tick a service
             // account on a public client, and what refuses that has to be the
             // rule about public clients rather than the tick being absent.
@@ -610,6 +614,20 @@ impl Plane {
             account.email = format!("service-account-{client_id}@example.test");
             users::create(&transaction, &account).await.unwrap();
         }
+
+        // The flow a browser login runs. `/authorize` refuses a realm that has
+        // none rather than opening a login nothing can advance.
+        let flow = models::entities::auth::AuthenticationFlowMutationModel {
+            alias: "browser".into(),
+            provider_id: "basic-flow".into(),
+            description: String::new(),
+            top_level: Some(true),
+            built_in: Some(false),
+        }
+        .into_model("browser".into(), REALM.into(), metadata());
+        store::providers::auth_flows::create_flow(&transaction, &flow)
+            .await
+            .unwrap();
 
         let user = UserCreateModel {
             user_name: SUBJECT.into(),

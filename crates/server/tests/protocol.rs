@@ -457,7 +457,7 @@ async fn more_than_a_token_request_holds_is_not_read() {
     );
 }
 
-const REDIRECT: &str = "https://app.example/callback";
+use support::REDIRECT;
 
 /// The verifier and its S256 challenge, the pair RFC 7636 §4 describes.
 use crypto::provider::CryptoProvider as _;
@@ -1076,4 +1076,198 @@ async fn a_second_code_for_one_client_does_not_fork_the_session() {
             .1["error"],
         "invalid_grant"
     );
+}
+
+/// Where a login starts. Everything is in the query, so the helper takes pairs
+/// and a test names only what it means to get wrong.
+async fn authorize(plane: &Plane, query: &[(&str, &str)]) -> (StatusCode, String) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let asked = query
+        .iter()
+        .map(|(key, value)| format!("{key}={}", urlencode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let request = test::TestRequest::get()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/auth?{asked}",
+            support::REALM
+        ))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    let status = response.status();
+    let location = response
+        .headers()
+        .get("location")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    (status, location)
+}
+
+fn urlencode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+fn started(client_id: &str) -> Vec<(&'static str, String)> {
+    vec![
+        ("response_type", "code".to_owned()),
+        ("client_id", client_id.to_owned()),
+        ("redirect_uri", REDIRECT.to_owned()),
+        ("scope", "openid".to_owned()),
+        ("state", "opaque-state".to_owned()),
+    ]
+}
+
+fn as_pairs<'a>(owned: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a str)> {
+    owned
+        .iter()
+        .map(|(key, value)| (*key, value.as_str()))
+        .collect()
+}
+
+/// A request that checks out opens a login and sends the browser to it. The
+/// identifier travels in the URL because there is no cookie to carry it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_request_that_checks_out_opens_a_login() {
+    let plane = Plane::with_actions(&[]).await;
+    let asked = started(support::CONFIDENTIAL);
+    let (status, location) = authorize(&plane, &as_pairs(&asked)).await;
+
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.starts_with(&format!(
+            "https://id.test/realms/{}/protocol/openid-connect/login?auth_session=",
+            support::REALM
+        )),
+        "the browser was sent somewhere else: {location}"
+    );
+    assert!(
+        !location.starts_with(REDIRECT),
+        "a login that has not happened was sent back to the client"
+    );
+}
+
+/// What may never be redirected. RFC 6749 4.1.2.1: a request whose client or
+/// redirect cannot be trusted is shown to the user, because sending it onward is
+/// the open redirector.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_untrusted_redirect_is_shown_and_never_sent() {
+    let plane = Plane::with_actions(&[]).await;
+
+    for (label, client_id, redirect) in [
+        ("no such client", "no-such-client", REDIRECT),
+        (
+            "a redirect the client never registered",
+            support::CONFIDENTIAL,
+            "https://attacker.example/collect",
+        ),
+        (
+            "a redirect that only extends a registered one",
+            support::CONFIDENTIAL,
+            "https://app.example/callback/../../evil",
+        ),
+        ("no redirect at all", support::CONFIDENTIAL, ""),
+    ] {
+        let (status, location) = authorize(
+            &plane,
+            &[
+                ("response_type", "code"),
+                ("client_id", client_id),
+                ("redirect_uri", redirect),
+                ("state", "opaque-state"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}");
+        assert!(location.is_empty(), "{label} was redirected to {location}");
+    }
+}
+
+/// Once the client and the redirect are established, a refusal travels to the
+/// client, and carries the state it asked to have echoed.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_refusal_after_that_goes_to_the_client_with_its_state() {
+    let plane = Plane::with_actions(&[]).await;
+
+    let (status, location) = authorize(
+        &plane,
+        &[
+            ("response_type", "token"),
+            ("client_id", support::CONFIDENTIAL),
+            ("redirect_uri", REDIRECT),
+            ("state", "opaque state/&"),
+        ],
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.starts_with(REDIRECT),
+        "the refusal did not reach the client: {location}"
+    );
+    assert!(
+        location.contains("error=unsupported_response_type"),
+        "{location}"
+    );
+    assert!(
+        location.contains("state=opaque%20state%2F%26"),
+        "the state was not echoed, or not encoded: {location}"
+    );
+}
+
+/// A public client authenticates with nothing, so the challenge is the whole of
+/// its proof. Asked for here rather than only at redemption, where it is too
+/// late to have asked.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_public_client_starts_nothing_without_a_challenge() {
+    let plane = Plane::with_actions(&[]).await;
+    let (_, refused) = authorize(
+        &plane,
+        &[
+            ("response_type", "code"),
+            ("client_id", support::PUBLIC),
+            ("redirect_uri", REDIRECT),
+        ],
+    )
+    .await;
+    assert!(refused.contains("error=invalid_request"), "{refused}");
+
+    let (status, sent) = authorize(
+        &plane,
+        &[
+            ("response_type", "code"),
+            ("client_id", support::PUBLIC),
+            ("redirect_uri", REDIRECT),
+            ("code_challenge", "a-challenge"),
+            ("code_challenge_method", "S256"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(sent.contains("auth_session="), "{sent}");
+
+    // An unknown method must not be read as the weaker one.
+    let (_, unknown) = authorize(
+        &plane,
+        &[
+            ("response_type", "code"),
+            ("client_id", support::PUBLIC),
+            ("redirect_uri", REDIRECT),
+            ("code_challenge", "a-challenge"),
+            ("code_challenge_method", "S512"),
+        ],
+    )
+    .await;
+    assert!(unknown.contains("error=invalid_request"), "{unknown}");
 }

@@ -1552,6 +1552,8 @@ async fn discovery_advertises_only_what_is_there() {
         ("authorization_endpoint", "/protocol/openid-connect/auth"),
         ("token_endpoint", "/protocol/openid-connect/token"),
         ("jwks_uri", "/protocol/openid-connect/certs"),
+        ("userinfo_endpoint", "/protocol/openid-connect/userinfo"),
+        ("end_session_endpoint", "/protocol/openid-connect/logout"),
     ] {
         assert_eq!(
             document[named].as_str().unwrap(),
@@ -1559,12 +1561,7 @@ async fn discovery_advertises_only_what_is_there() {
             "{named}"
         );
     }
-    for absent in [
-        "userinfo_endpoint",
-        "introspection_endpoint",
-        "revocation_endpoint",
-        "end_session_endpoint",
-    ] {
+    for absent in ["introspection_endpoint", "revocation_endpoint"] {
         assert!(
             document.get(absent).is_none(),
             "{absent} is advertised and does not answer"
@@ -2376,4 +2373,183 @@ async fn a_token_without_the_profile_scope_carries_no_name() {
         );
     }
     assert_eq!(told["sub"], support::SUBJECT, "sub is always released");
+}
+
+async fn logout(
+    plane: &Plane,
+    query: &[(&str, &str)],
+    session: Option<&str>,
+) -> (StatusCode, String, Vec<String>) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let asked = query
+        .iter()
+        .map(|(key, value)| format!("{key}={}", urlencode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let mut request = test::TestRequest::get().uri(&format!(
+        "/realms/{}/protocol/openid-connect/logout?{asked}",
+        support::REALM
+    ));
+    if let Some(session) = session {
+        request = request.insert_header(("cookie", format!("{}={session}", support::SSO_COOKIE)));
+    }
+    let response = test::call_service(&app, request.to_request()).await;
+    let status = response.status();
+    let location = response
+        .headers()
+        .get("location")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    let set = response
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    (status, location, set)
+}
+
+/// A logout ends the login and stops everything hanging off it: the browser is
+/// no longer signed in, and the refresh token minted from that login renews
+/// nothing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn logging_out_ends_the_login_and_what_hangs_off_it() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+
+    // A token family from *that* login. Minted through `/authorize` carrying the
+    // cookie, because a code the fixture plants names the planted session and
+    // would hang the family off a login this test never ends.
+    let (_, landing) = authorize_signed_in(&plane, &asking_for(&[]), &session).await;
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+
+    let (status, _, cleared) = logout(&plane, &[], Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    let expiring = cleared
+        .iter()
+        .find(|header| header.starts_with(support::SSO_COOKIE))
+        .expect("the browser was not told to forget its login");
+    assert!(expiring.contains("Max-Age=0"), "{expiring}");
+
+    assert!(
+        !plane.login_is_open(&session).await,
+        "the row still says the user is signed in"
+    );
+    // Transitioned, not deleted: a session that ended is not one that never
+    // happened, and the row is the record of it.
+    assert!(
+        plane.login_exists(&session).await,
+        "the record of the login was destroyed rather than closed"
+    );
+
+    assert_eq!(
+        renew(&plane, granted["refresh_token"].as_str().unwrap())
+            .await
+            .1["error"],
+        "invalid_grant",
+        "a refresh token outlived the logout"
+    );
+}
+
+/// Idempotent. No cookie, an unknown session, an already-ended one: all succeed.
+/// Reporting "no such session" would answer a question about somebody else's
+/// login to whoever asks, and a user clicking twice has still achieved theirs.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn logging_out_says_the_same_thing_however_little_there_was_to_end() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+
+    for (label, carried) in [
+        ("no cookie at all", None),
+        ("a session nobody opened", Some("never-opened")),
+        ("a live one", Some(session.as_str())),
+        ("the same one again", Some(session.as_str())),
+    ] {
+        let (status, location, _) = logout(&plane, &[], carried).await;
+        assert_eq!(status, StatusCode::OK, "{label}");
+        assert!(location.is_empty(), "{label} redirected to {location}");
+    }
+}
+
+/// Where it sends you afterwards is the strict half. An unvalidated redirect
+/// here would be an open redirector on an endpoint everyone links to.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_landing_place_is_honoured_only_when_the_client_registered_it() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+
+    let (status, landing, _) = logout(
+        &plane,
+        &[
+            ("post_logout_redirect_uri", support::AFTER_LOGOUT),
+            ("client_id", support::CONFIDENTIAL),
+            ("state", "opaque state/&"),
+        ],
+        Some(&session),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(landing.starts_with(support::AFTER_LOGOUT), "{landing}");
+    assert!(
+        landing.contains("state=opaque%20state%2F%26"),
+        "the state was not echoed, or not encoded: {landing}"
+    );
+
+    for (label, asked, client) in [
+        (
+            "somewhere nobody registered",
+            "https://attacker.example/collect",
+            support::CONFIDENTIAL,
+        ),
+        // The login callback is registered, and not for this.
+        (
+            "the callback rather than the landing page",
+            REDIRECT,
+            support::CONFIDENTIAL,
+        ),
+        (
+            "a client that registered no landing page",
+            support::AFTER_LOGOUT,
+            "no-such-client",
+        ),
+    ] {
+        let (status, location, _) = logout(
+            &plane,
+            &[("post_logout_redirect_uri", asked), ("client_id", client)],
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{label}");
+        assert!(location.is_empty(), "{label} redirected to {location}");
+    }
+
+    // And with no client named at all there is nothing to validate against.
+    let (status, location, _) = logout(
+        &plane,
+        &[("post_logout_redirect_uri", support::AFTER_LOGOUT)],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(location.is_empty(), "{location}");
 }

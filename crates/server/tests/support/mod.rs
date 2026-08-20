@@ -71,6 +71,9 @@ pub const OTHER: &str = "batch";
 /// The one redirect every client here registers. A login may only be sent back
 /// to a value the client wrote down.
 pub const REDIRECT: &str = "https://app.example/callback";
+/// Where a client says a browser may land after logging out. Deliberately not
+/// the callback.
+pub const AFTER_LOGOUT: &str = "https://app.example/bye";
 /// A client whose registration still enables a service account the realm has
 /// switched off. The lever an operator reaches for first.
 pub const OFFBOARDED: &str = "retired";
@@ -343,6 +346,19 @@ impl Plane {
             .is_some_and(|login| {
                 login.state == models::sessions::records::UserSessionState::LoggedIn
             })
+    }
+
+    /// Whether the record of the login is still there at all, open or closed.
+    #[allow(dead_code, reason = "only the protocol suite asks")]
+    pub async fn login_exists(&self, session_id: &str) -> bool {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        sessions::load(&transaction, session_id)
+            .await
+            .expect("the session table")
+            .is_some()
     }
 
     /// Switch the subject off, the way an administrator shuts down an account.
@@ -653,6 +669,10 @@ impl Plane {
             // the other whether this client may act for itself.
             client.public_client = Some(public);
             client.redirect_uris = Some(vec![REDIRECT.to_owned()]);
+            // Its own list. A logout landing page is usually not a callback, and
+            // one set would make every logout destination a place to deliver a
+            // code.
+            client.post_logout_redirect_uris = Some(vec![AFTER_LOGOUT.to_owned()]);
             client.standard_flow_enabled = Some(true);
             // Both, including the public one. An operator can tick a service
             // account on a public client, and what refuses that has to be the

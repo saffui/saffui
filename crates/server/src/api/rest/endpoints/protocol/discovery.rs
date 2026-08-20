@@ -77,10 +77,12 @@ pub async fn published(
             "authorization_endpoint": format!("{protocol}/auth"),
             "token_endpoint": format!("{protocol}/token"),
             "jwks_uri": format!("{protocol}/certs"),
-            // Only what is mounted. `userinfo_endpoint`, `revocation_endpoint`,
-            // `introspection_endpoint` and `end_session_endpoint` are absent
-            // because they are, and naming them would send a client to a 404 it
-            // reports as this realm being broken.
+            "userinfo_endpoint": format!("{protocol}/userinfo"),
+            "end_session_endpoint": format!("{protocol}/logout"),
+            // Only what is mounted. `revocation_endpoint` and
+            // `introspection_endpoint` are absent because they are, and naming
+            // one would send a client to a 404 it reports as this realm being
+            // broken.
             "response_types_supported": ["code"],
             "response_modes_supported": ["query"],
             "grant_types_supported": [

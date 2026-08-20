@@ -1287,6 +1287,24 @@ async fn a_public_client_starts_nothing_without_a_challenge() {
         "a challenge was offered and no login was opened"
     );
 
+    // A challenge with no method named. RFC 7636 §4.3 reads that as `plain`, so
+    // accepting the omission accepts `plain` under another spelling and the
+    // refusal of the word refuses nothing.
+    let (_, unnamed) = authorize(
+        &plane,
+        &[
+            ("response_type", "code"),
+            ("client_id", support::PUBLIC),
+            ("redirect_uri", REDIRECT),
+            ("code_challenge", "a-challenge"),
+        ],
+    )
+    .await;
+    assert!(
+        unnamed.contains("error=invalid_request"),
+        "a challenge with no method named was accepted: {unnamed}"
+    );
+
     // An unknown method must not be read as the weaker one.
     let (_, unknown) = authorize(
         &plane,
@@ -1497,4 +1515,514 @@ async fn a_login_nobody_opened_is_not_distinguishable() {
     .await;
     assert_eq!(bare, StatusCode::NOT_FOUND);
     assert_eq!(refused["status"], "no-such-login");
+}
+
+async fn fetched(plane: &Plane, path: &str) -> (StatusCode, serde_json::Value, Vec<String>) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
+    let status = response.status();
+    let headers = response
+        .headers()
+        .get_all("cache-control")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    (status, test::read_body_json(response).await, headers)
+}
+
+/// What a relying party verifies with, and what the document that points at it
+/// says. Read together, because a key set nobody can find is not published.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realm_publishes_what_verifies_its_tokens() {
+    let plane = Plane::with_actions(&[]).await;
+    let (status, jwks, cached) = fetched(
+        &plane,
+        &format!("/realms/{}/protocol/openid-connect/certs", support::REALM),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let keys = jwks["keys"].as_array().expect("a key set");
+    assert!(!keys.is_empty(), "the realm published nothing: {jwks}");
+    let key = &keys[0];
+    assert_eq!(key["kid"], support::KID);
+    assert_eq!(key["use"], "sig", "a verifier has to guess which key signs");
+    assert!(key.get("alg").is_some(), "no algorithm named: {key}");
+    assert!(
+        key.get("d").is_none(),
+        "a private half reached the public set: {key}"
+    );
+    // A JWK a verifier can actually build a key from. RFC 7517 §4.1 makes `kty`
+    // the only always-required member, and every family needs its own on top.
+    assert_eq!(key["kty"], "EC", "{key}");
+    for member in ["crv", "x", "y"] {
+        assert!(
+            key.get(member)
+                .and_then(serde_json::Value::as_str)
+                .is_some(),
+            "an EC key with no {member}: {key}"
+        );
+    }
+    assert!(
+        cached.iter().any(|value| value.contains("max-age")),
+        "the set a verifier reads on every token was made uncacheable"
+    );
+}
+
+/// Everything advertised is derived. A document naming an endpoint this build
+/// does not mount, or an algorithm the signer would refuse, configures every
+/// client wrong at once and does it silently.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn discovery_advertises_only_what_is_there() {
+    let plane = Plane::with_actions(&[]).await;
+    let (status, document, _) = fetched(
+        &plane,
+        &format!(
+            "/realms/{}/.well-known/openid-configuration",
+            support::REALM
+        ),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    let issuer = document["issuer"].as_str().expect("an issuer");
+    assert_eq!(issuer, format!("https://id.test/realms/{}", support::REALM));
+
+    // Every endpoint it names is one that answers, and every one it omits is one
+    // that would have been a 404 the client reports as this realm being broken.
+    for (named, path) in [
+        ("authorization_endpoint", "/protocol/openid-connect/auth"),
+        ("token_endpoint", "/protocol/openid-connect/token"),
+        ("jwks_uri", "/protocol/openid-connect/certs"),
+    ] {
+        assert_eq!(
+            document[named].as_str().unwrap(),
+            format!("{issuer}{path}"),
+            "{named}"
+        );
+    }
+    for absent in [
+        "userinfo_endpoint",
+        "introspection_endpoint",
+        "revocation_endpoint",
+        "end_session_endpoint",
+    ] {
+        assert!(
+            document.get(absent).is_none(),
+            "{absent} is advertised and does not answer"
+        );
+    }
+
+    // The algorithms come off the keys the realm holds, so a realm holding one
+    // curve cannot advertise another.
+    let (_, jwks, _) = fetched(
+        &plane,
+        &format!("/realms/{}/protocol/openid-connect/certs", support::REALM),
+    )
+    .await;
+    let held: Vec<&str> = jwks["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|key| key["alg"].as_str())
+        .collect();
+    let advertised = document["id_token_signing_alg_values_supported"]
+        .as_array()
+        .expect("an algorithm list");
+    assert!(!advertised.is_empty());
+    for alg in advertised {
+        assert!(
+            held.contains(&alg.as_str().unwrap()),
+            "{alg} is advertised and no key holds it"
+        );
+    }
+
+    // `plain` compares the verifier against a challenge that travelled in the
+    // authorize request, and the endpoint refuses it.
+    assert_eq!(
+        document["code_challenge_methods_supported"]
+            .as_array()
+            .unwrap(),
+        &vec![serde_json::json!("S256")]
+    );
+
+    // Discovery §3 reads an absent `request_uri_parameter_supported` as `true`,
+    // so the omission is not neutral: saying nothing advertises a capability
+    // this build does not have.
+    for (named, expected) in [
+        ("request_parameter_supported", false),
+        ("request_uri_parameter_supported", false),
+        ("claims_parameter_supported", false),
+        ("authorization_response_iss_parameter_supported", false),
+    ] {
+        assert_eq!(
+            document[named].as_bool(),
+            Some(expected),
+            "{named} was left to a default that is not what this build does"
+        );
+    }
+}
+
+/// A signed request object is refused, not ignored. A client that sends one
+/// believes it governs; reading the query instead hands back a code minted
+/// against parameters the client never signed.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_request_object_is_refused_rather_than_ignored() {
+    let plane = Plane::with_actions(&[]).await;
+
+    for (named, expected) in [
+        ("request", "request_not_supported"),
+        ("request_uri", "request_uri_not_supported"),
+    ] {
+        let (status, location) = authorize(
+            &plane,
+            &[
+                ("response_type", "code"),
+                ("client_id", support::CONFIDENTIAL),
+                ("redirect_uri", REDIRECT),
+                ("state", "opaque-state"),
+                (named, "https://app.example/object.jwt"),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FOUND, "{named}");
+        assert!(
+            location.contains(&format!("error={expected}")),
+            "{named} was ignored: {location}"
+        );
+    }
+}
+
+/// A realm this deployment does not hold publishes nothing. Its existence is not
+/// what these two hide: which clients it holds and which users are, and neither
+/// is answerable here.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn no_such_realm_publishes_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    for path in [
+        "/realms/no-such-realm/protocol/openid-connect/certs",
+        "/realms/no-such-realm/.well-known/openid-configuration",
+    ] {
+        assert_eq!(
+            fetched(&plane, path).await.0,
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+}
+/// The same, carrying the cookie that says this browser is already signed in.
+async fn authorize_signed_in(
+    plane: &Plane,
+    query: &[(&str, &str)],
+    session: &str,
+) -> (StatusCode, String) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let asked = query
+        .iter()
+        .map(|(key, value)| format!("{key}={}", urlencode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/auth?{asked}",
+                support::REALM
+            ))
+            .insert_header(("cookie", format!("{}={session}", support::SSO_COOKIE)))
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    let location = response
+        .headers()
+        .get("location")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    (status, location)
+}
+
+/// Single sign-on. A browser that already holds a login gets its code without
+/// seeing a screen, and a second client is the point: without this every
+/// `/authorize` is a fresh sign-in and the product is not one.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_browser_already_signed_in_sees_no_screen() {
+    let plane = Plane::with_actions(&[]).await;
+
+    // Sign in once, the long way.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, signed_in) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(told["status"], "admitted");
+    let session = cookie_value(&signed_in, support::SSO_COOKIE).expect("a login");
+
+    // A second client, same browser. No screen.
+    let (status, landing) = authorize_signed_in(
+        &plane,
+        &[
+            ("response_type", "code"),
+            ("client_id", support::OTHER),
+            ("redirect_uri", REDIRECT),
+            ("scope", "openid"),
+            ("state", "second-client"),
+        ],
+        &session,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        landing.starts_with(REDIRECT),
+        "the browser was sent to a login it did not need: {landing}"
+    );
+    assert!(landing.contains("state=second-client"), "{landing}");
+
+    // And the code it carries is one the second client can spend.
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (spent, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::OTHER, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(spent, StatusCode::OK, "{granted}");
+    assert_eq!(
+        plane
+            .claims_of(granted["access_token"].as_str().unwrap())
+            .await["sid"],
+        session,
+        "the second client's token names a different login"
+    );
+}
+
+/// A cookie is a claim, not a fact. A login this realm has ended, or one it
+/// never had, sends the browser to authenticate rather than minting anything.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_cookie_naming_no_live_login_starts_one() {
+    let plane = Plane::with_actions(&[]).await;
+    let owned = started(support::CONFIDENTIAL);
+    let asked = as_pairs(&owned);
+
+    for (label, session) in [
+        ("a login nobody opened", "never-opened".to_owned()),
+        (
+            "the planted login, which is open",
+            support::SESSION.to_owned(),
+        ),
+    ] {
+        let (status, location) = authorize_signed_in(&plane, &asked, &session).await;
+        assert_eq!(status, StatusCode::FOUND, "{label}");
+        if session == "never-opened" {
+            assert_eq!(location, "https://login.test", "{label}: {location}");
+        } else {
+            assert!(location.starts_with(REDIRECT), "{label}: {location}");
+        }
+    }
+
+    // The code carries the login's own instant, not this one. A client asking
+    // how recently the user authenticated is asking about the login, and a
+    // freshly stamped value answers a question nobody asked.
+    let authenticated_at = plane.backdate_authentication(3_600).await;
+    let (_, landing) = authorize_signed_in(&plane, &asked, support::SESSION).await;
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(
+        plane
+            .claims_of(granted["id_token"].as_str().expect("an id token"))
+            .await["auth_time"],
+        authenticated_at,
+        "the code was stamped with the redemption rather than the login"
+    );
+
+    // Ended, and the browser still holds the cookie.
+    plane.end_login().await;
+    let (_, after) = authorize_signed_in(&plane, &asked, support::SESSION).await;
+    assert_eq!(
+        after, "https://login.test",
+        "a login this realm ended still minted a code"
+    );
+}
+
+async fn userinfo(plane: &Plane, bearer: Option<&str>) -> (StatusCode, serde_json::Value, String) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let mut request = test::TestRequest::get().uri(&format!(
+        "/realms/{}/protocol/openid-connect/userinfo",
+        support::REALM
+    ));
+    if let Some(bearer) = bearer {
+        request = request.insert_header(("authorization", format!("Bearer {bearer}")));
+    }
+    let response = test::call_service(&app, request.to_request()).await;
+    let status = response.status();
+    let challenge = response
+        .headers()
+        .get("www-authenticate")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    (status, test::read_body_json(response).await, challenge)
+}
+
+/// The scope gate. A token granted `openid profile` yields a username; the same
+/// token does not yield an address, because `email` is a scope this client is
+/// not attached to and `/authorize` dropped it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_yields_what_its_scope_allows_and_nothing_else() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid profile", None)
+        .await;
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+
+    let (status, told, _) = userinfo(&plane, granted["access_token"].as_str()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["sub"], support::SUBJECT);
+    assert_eq!(told["preferred_username"], support::SUBJECT);
+    assert!(
+        told.get("email").is_none(),
+        "an address was released to a scope that did not ask for it: {told}"
+    );
+}
+
+/// The scope a client asked for is not the scope it gets. Requesting `email`
+/// when nothing attached it must not release the address, or the entitlement is
+/// decoration.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_scope_the_client_is_not_attached_to_releases_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    let asked = vec![
+        ("response_type", "code"),
+        ("client_id", support::CONFIDENTIAL),
+        ("redirect_uri", REDIRECT),
+        ("scope", "openid profile email"),
+        ("state", "s"),
+    ];
+    let (_, _, opened) = authorize_with_cookies(&plane, &asked).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let landing = told["redirect_to"].as_str().expect("somewhere to land");
+    let code = landing
+        .split_once("code=")
+        .unwrap()
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(
+        granted["scope"], "openid profile",
+        "the client was granted a scope nothing attached to it"
+    );
+
+    let (_, claims, _) = userinfo(&plane, granted["access_token"].as_str()).await;
+    assert!(
+        claims.get("email").is_none(),
+        "asking for a scope was enough to get its claims: {claims}"
+    );
+}
+
+/// What is not an acceptable token. An id token is a record of a login and names
+/// the client as its audience: accepting one here would let anything that saw a
+/// login read the person behind it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn only_an_access_token_of_this_realm_is_answered() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+
+    for (label, presented) in [
+        ("an id token", granted["id_token"].as_str()),
+        ("a refresh token", granted["refresh_token"].as_str()),
+        ("not a token at all", Some("not.a.token")),
+        ("nothing", None),
+    ] {
+        let (status, told, challenge) = userinfo(&plane, presented).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{label}");
+        assert_eq!(told["error"], "invalid_token", "{label}: {told}");
+        // RFC 6750 §3: a bearer failure carries a challenge.
+        assert!(
+            challenge.starts_with("Bearer "),
+            "{label} was refused without a challenge: {challenge:?}"
+        );
+    }
 }

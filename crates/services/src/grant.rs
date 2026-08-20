@@ -349,13 +349,14 @@ fn verify_code_challenge(
     };
     let verifier = verifier.ok_or(Ungranted::InvalidGrant)?;
 
-    let offered = match code.code_challenge_method.as_deref() {
-        Some("S256") => BASE64URL_NOPAD.encode(&sha256(provider, verifier.as_bytes())?),
-        // RFC 7636 §4.2. Named rather than defaulted: an unknown method must
-        // not fall back to comparing the verifier against the challenge.
-        Some("plain") | None => verifier.to_owned(),
-        Some(_) => return Err(Ungranted::InvalidGrant),
+    // S256 or nothing. `plain` compares the verifier against the challenge, and
+    // the challenge travelled in the authorize request, so whoever saw that
+    // request holds the answer. `/authorize` mints no code without S256, so a
+    // code carrying anything else was not minted here.
+    let Some("S256") = code.code_challenge_method.as_deref() else {
+        return Err(Ungranted::InvalidGrant);
     };
+    let offered = BASE64URL_NOPAD.encode(&sha256(provider, verifier.as_bytes())?);
 
     constant_time::eq(offered.as_bytes(), challenge.as_bytes())
         .then_some(())

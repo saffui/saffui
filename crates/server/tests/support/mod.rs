@@ -351,6 +351,24 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Move the planted login's authentication back in time.
+    ///
+    /// `max_age` asks how long ago the user authenticated, not how long ago the
+    /// session began, and the two are only distinguishable when they differ.
+    #[allow(dead_code, reason = "only the protocol suite asks")]
+    pub async fn backdate_authentication(&self, seconds: i64) -> i64 {
+        let when = chrono::Utc::now().timestamp() - seconds;
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        sessions::record_authentication(&transaction, SESSION, when, None)
+            .await
+            .expect("the session table");
+        transaction.commit().await.unwrap();
+        when
+    }
+
     /// End the login every code here was minted from.
     #[allow(dead_code, reason = "only the protocol suite ends one")]
     pub async fn end_login(&self) {
@@ -628,6 +646,36 @@ impl Plane {
             );
             account.email = format!("service-account-{client_id}@example.test");
             users::create(&transaction, &account).await.unwrap();
+        }
+
+        // Two scopes, and only one attached to the confidential client. The gate
+        // is only exercised when a client asks for something it may not have.
+        for (name, default) in [("profile", true), ("email", false)] {
+            store::providers::client_scopes::create_scope(
+                &transaction,
+                &models::entities::client::ClientScopeModel {
+                    client_scope_id: name.to_owned(),
+                    realm_id: REALM.into(),
+                    name: name.to_owned(),
+                    description: String::new(),
+                    protocol: models::entities::client::Protocol::OpenId,
+                    default_scope: Some(default),
+                    configs: None,
+                    metadata: metadata(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        for client_id in [CONFIDENTIAL, OTHER, PUBLIC] {
+            store::providers::client_scopes::attach_scope(
+                &transaction,
+                client_id,
+                "profile",
+                false,
+            )
+            .await
+            .unwrap();
         }
 
         // The flow a browser login runs. `/authorize` refuses a realm that has

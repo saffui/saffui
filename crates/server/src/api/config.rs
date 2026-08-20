@@ -22,7 +22,7 @@ use store::tenancy::Tenancy;
 use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
-use crate::api::rest::endpoints::protocol::{authorize, login, token};
+use crate::api::rest::endpoints::protocol::{authorize, discovery, keys, login, token, userinfo};
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
 use crate::middleware::admin_policy::AdminPolicy;
@@ -94,7 +94,14 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             .app_data(web::Data::new(plane.sealing.clone()))
             .service(admin_scope(plane))
             .service(authz_scope(plane))
-            .service(protocol_scope());
+            .service(protocol_scope())
+            // Not under the protocol scope. RFC 8414 §3 fixes this path at the
+            // issuer's root, and a client builds it from the issuer rather than
+            // from anything this server tells it.
+            .service(
+                web::resource("/realms/{realm}/.well-known/openid-configuration")
+                    .route(web::get().to(discovery::published)),
+            );
     }
 }
 
@@ -166,6 +173,12 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/auth").route(web::get().to(authorize::begin)))
         .service(web::resource("/login").route(web::post().to(login::answer)))
         .service(web::resource("/token").route(web::post().to(token::ask)))
+        .service(web::resource("/certs").route(web::get().to(keys::published)))
+        .service(
+            web::resource("/userinfo")
+                .route(web::get().to(userinfo::tell))
+                .route(web::post().to(userinfo::tell)),
+        )
 }
 
 /// Register what an orchestrator asks.

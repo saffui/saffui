@@ -8,4 +8,5 @@
 pub mod authorize;
 pub mod basic;
 pub mod dto;
+pub mod login;
 pub mod token;

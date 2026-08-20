@@ -29,6 +29,7 @@ async fn ask(plane: &Plane, bearer: &str, body: serde_json::Value) -> (StatusCod
         tenancy: plane.tenancy(),
         policy: policy(),
         origin: support::origin(),
+        login_ui: support::login_ui(),
         sealing: support::sealing(),
     };
     let app = test::init_service(App::new().configure(register(&mounted))).await;
@@ -196,6 +197,7 @@ async fn the_enforcement_scope_is_guarded() {
         tenancy: plane.tenancy(),
         policy: policy(),
         origin: support::origin(),
+        login_ui: support::login_ui(),
         sealing: support::sealing(),
     };
     let app = test::init_service(App::new().configure(register(&mounted))).await;

@@ -13,7 +13,7 @@ use actix_web::dev::HttpServiceFactory;
 use actix_web::web;
 use std::sync::Arc;
 
-use config::serving::PublicOrigin;
+use config::serving::{LoginUi, PublicOrigin};
 use crypto::envelope::Envelope;
 use crypto::provider::CryptoProvider;
 use deadpool_postgres::Pool;
@@ -22,7 +22,7 @@ use store::tenancy::Tenancy;
 use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
-use crate::api::rest::endpoints::protocol::{authorize, token};
+use crate::api::rest::endpoints::protocol::{authorize, login, token};
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
 use crate::middleware::admin_policy::AdminPolicy;
@@ -58,6 +58,8 @@ pub struct Plane {
     /// Where callers reach this deployment. Every issuer minted and every
     /// issuer accepted is built from it, so both planes hold the same one.
     pub origin: PublicOrigin,
+    /// Where a browser is sent to authenticate. Not served here.
+    pub login_ui: LoginUi,
     /// What signs. Verification reads published public halves and needs none of
     /// this; minting has to open a private one, which is the envelope's job.
     pub sealing: Sealing,
@@ -88,6 +90,7 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 plane.tenancy.clone(),
             )))
             .app_data(web::Data::new(plane.origin.clone()))
+            .app_data(web::Data::new(plane.login_ui.clone()))
             .app_data(web::Data::new(plane.sealing.clone()))
             .service(admin_scope(plane))
             .service(authz_scope(plane))
@@ -161,6 +164,7 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
     web::scope("/realms/{realm}/protocol/openid-connect")
         .app_data(web::FormConfig::default().limit(PROTOCOL_BODY))
         .service(web::resource("/auth").route(web::get().to(authorize::begin)))
+        .service(web::resource("/login").route(web::post().to(login::answer)))
         .service(web::resource("/token").route(web::post().to(token::ask)))
 }
 

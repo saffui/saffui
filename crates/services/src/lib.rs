@@ -22,3 +22,4 @@ pub mod login;
 pub mod pdp;
 pub mod rebac;
 pub mod token;
+pub mod userinfo;

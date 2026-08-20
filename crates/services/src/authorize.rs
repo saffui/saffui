@@ -13,7 +13,7 @@ use models::entities::client::ClientModel;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::json;
 use store::providers::login::{self, AuthSession};
-use store::providers::{auth_flows, clients, sessions};
+use store::providers::{auth_flows, client_scopes, clients, sessions};
 use store::tenancy::TenantContext;
 
 use crate::login::browser;
@@ -96,6 +96,13 @@ pub async fn begin(
 
     // A login the browser already holds, if it holds one. Everything the code
     // needs is on that row, so nothing is asked of the user a second time.
+    let granted = granted_scope(
+        transaction,
+        &client.client_id,
+        requested.scope.unwrap_or_default(),
+    )
+    .await?;
+
     if let Some(login) = live_login(transaction, signed_in, now).await? {
         let landing = browser::mint_code(
             transaction,
@@ -106,7 +113,7 @@ pub async fn begin(
                 user_id: &login.user_id,
                 session_id: &login.session_id,
                 redirect_uri,
-                scope: requested.scope.unwrap_or_default(),
+                scope: &granted,
                 state: requested.state,
                 nonce: requested.nonce,
                 code_challenge: requested.code_challenge,
@@ -142,7 +149,10 @@ pub async fn begin(
             // is written once, here, because by the time the flow finishes the
             // request that carried it is gone.
             notes: json!({
-                "scope": requested.scope.unwrap_or_default(),
+                // What the client may have, not what it asked for. The code
+                // carries this into the token, and whatever releases claims by
+                // scope reads it there.
+                "scope": granted,
                 "state": requested.state,
                 "nonce": requested.nonce,
                 "code_challenge": requested.code_challenge,
@@ -174,6 +184,44 @@ async fn live_login(
         .map_err(|_| Refusal::Redirect("server_error"))?
         .filter(|login| login.state == UserSessionState::LoggedIn)
         .filter(|login| login.expiration.is_none_or(|ends| ends > now.timestamp())))
+}
+
+/// The `openid` marker, which is a request marker rather than a scope a client
+/// is attached to.
+const OPENID: &str = "openid";
+
+/// What the client may actually have of what it asked for.
+///
+/// Requested and granted are not the same list, and treating them as one is a
+/// leak with a long reach: the scope rides the code into the token, and whatever
+/// releases claims by scope then releases what the client was never attached to.
+/// Unentitled scopes are dropped rather than refused, which is what RFC 6749 §3.3
+/// permits and what clients expect.
+///
+/// Default scopes are granted whether or not they were asked for. That is what
+/// makes them default.
+pub async fn granted_scope(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    requested: &str,
+) -> Result<String, Refusal> {
+    let attached = client_scopes::scopes_of_client(transaction, client_id)
+        .await
+        .map_err(|_| Refusal::Redirect("server_error"))?;
+
+    let mut granted: Vec<String> = Vec::new();
+    for asked in requested.split_whitespace() {
+        let entitled = asked == OPENID || attached.iter().any(|(scope, _)| scope.name == asked);
+        if entitled && !granted.iter().any(|held| held == asked) {
+            granted.push(asked.to_owned());
+        }
+    }
+    for (scope, _) in &attached {
+        if scope.default_scope == Some(true) && !granted.iter().any(|held| held == &scope.name) {
+            granted.push(scope.name.clone());
+        }
+    }
+    Ok(granted.join(" "))
 }
 
 /// The client, or nothing that may be redirected to.

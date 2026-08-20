@@ -648,6 +648,36 @@ impl Plane {
             users::create(&transaction, &account).await.unwrap();
         }
 
+        // Two scopes, and only one attached to the confidential client. The gate
+        // is only exercised when a client asks for something it may not have.
+        for (name, default) in [("profile", true), ("email", false)] {
+            store::providers::client_scopes::create_scope(
+                &transaction,
+                &models::entities::client::ClientScopeModel {
+                    client_scope_id: name.to_owned(),
+                    realm_id: REALM.into(),
+                    name: name.to_owned(),
+                    description: String::new(),
+                    protocol: models::entities::client::Protocol::OpenId,
+                    default_scope: Some(default),
+                    configs: None,
+                    metadata: metadata(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+        for client_id in [CONFIDENTIAL, OTHER, PUBLIC] {
+            store::providers::client_scopes::attach_scope(
+                &transaction,
+                client_id,
+                "profile",
+                false,
+            )
+            .await
+            .unwrap();
+        }
+
         // The flow a browser login runs. `/authorize` refuses a realm that has
         // none rather than opening a login nothing can advance.
         let flow = models::entities::auth::AuthenticationFlowMutationModel {

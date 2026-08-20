@@ -373,10 +373,7 @@ async fn the_refusal_says_which_kind_of_failure_it_is() {
             vec![("grant_type", "authorization_code")],
             "invalid_request",
         ),
-        (
-            vec![("grant_type", "refresh_token")],
-            "unsupported_grant_type",
-        ),
+        (vec![("grant_type", "refresh_token")], "invalid_request"),
     ] {
         let (_, body) = asking(&plane, support::REALM, &form, proof).await;
         assert_eq!(body["error"], expected, "for {form:?}: {body}");
@@ -796,4 +793,287 @@ async fn no_openid_scope_means_no_id_token() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.get("id_token").is_none(), "{body}");
     assert!(body.get("access_token").is_some());
+}
+
+/// Renewing hands back a fresh set, and the token it hands back is the one that
+/// works next. Checking only that a string came out proves nothing about which.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_refresh_token_renews_and_is_replaced_by_the_one_it_hands_back() {
+    let plane = Plane::with_actions(&[]).await;
+    let first = spend_a_code(&plane, "openid").await;
+
+    let (status, renewed) = renew(&plane, first["refresh_token"].as_str().unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "{renewed}");
+
+    let successor = renewed["refresh_token"].as_str().expect("a successor");
+    assert_ne!(
+        successor,
+        first["refresh_token"].as_str().unwrap(),
+        "the same token came back, so nothing rotated"
+    );
+    assert_eq!(plane.claims_of(successor).await["typ"], "Refresh");
+    assert_eq!(
+        plane
+            .claims_of(renewed["access_token"].as_str().unwrap())
+            .await["sid"],
+        support::SESSION
+    );
+    assert!(renewed.get("id_token").is_some(), "openid was granted");
+
+    assert_eq!(
+        renew(&plane, successor).await.0,
+        StatusCode::OK,
+        "the successor did not work in its turn"
+    );
+}
+
+/// A token two rotations back is neither the one the session holds nor the one
+/// it just replaced, so it is a replay. The family ends; the login does not,
+/// because ending it would sign the user out of every other client and make one
+/// stale token a way to do that on demand.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_two_rotations_back_ends_the_family() {
+    let plane = Plane::with_actions(&[]).await;
+    let first = spend_a_code(&plane, "openid").await;
+    let stale = first["refresh_token"].as_str().unwrap().to_owned();
+
+    let second = renew(&plane, &stale).await.1["refresh_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let third = renew(&plane, &second).await.1["refresh_token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let (status, body) = renew(&plane, &stale).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_grant");
+    assert_eq!(
+        body["error_description"], "the grant presented was not honoured",
+        "the answer said a replay had been detected"
+    );
+
+    assert_eq!(
+        renew(&plane, &third).await.1["error"],
+        "invalid_grant",
+        "the newest token in the family kept working after the replay"
+    );
+    assert!(
+        plane.login_is_open(support::SESSION).await,
+        "a replay of one client's token signed the user out everywhere"
+    );
+}
+
+/// The token a rotation just replaced is still accepted. A client that fired two
+/// refreshes at once, or retried after a response that never arrived, presents
+/// exactly this, and without the window an ordinary double submit would destroy
+/// its session.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_double_submit_is_not_a_replay() {
+    let plane = Plane::with_actions(&[]).await;
+    let first = spend_a_code(&plane, "openid").await;
+    let presented = first["refresh_token"].as_str().unwrap().to_owned();
+
+    let (rotated, _) = renew(&plane, &presented).await;
+    assert_eq!(rotated, StatusCode::OK);
+
+    let (again, body) = renew(&plane, &presented).await;
+    assert_eq!(again, StatusCode::OK, "{body}");
+    assert!(
+        plane.login_is_open(support::SESSION).await,
+        "a double submit ended the login"
+    );
+}
+
+/// What must be true of the token itself. An access token that renewed would
+/// make the longest-lived credential a client holds whichever lives longest.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn only_a_refresh_token_of_this_client_renews() {
+    let plane = Plane::with_actions(&[]).await;
+    let granted = spend_a_code(&plane, "openid").await;
+
+    for (label, presented) in [
+        ("an access token", granted["access_token"].as_str().unwrap()),
+        ("an id token", granted["id_token"].as_str().unwrap()),
+        ("not a token at all", "not.a.token"),
+    ] {
+        assert_eq!(
+            renew(&plane, presented).await.1["error"],
+            "invalid_grant",
+            "{label} renewed"
+        );
+    }
+
+    // Refused, and nothing else. Read as a refresh token these would name a jti
+    // the session does not hold, and the family would end for a token its own
+    // holder was entitled to present.
+    assert_eq!(
+        renew(&plane, granted["refresh_token"].as_str().unwrap())
+            .await
+            .0,
+        StatusCode::OK,
+        "presenting an access token ended the family"
+    );
+}
+
+/// A token is a bearer thing, so the only thing tying one to a client is what it
+/// says about one. Without that check the lookup falls through to the presenting
+/// client's own session, the identifiers disagree, and one client ends another's
+/// family by presenting a token it legitimately holds.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn one_clients_refresh_token_does_not_touch_another_clients_session() {
+    let plane = Plane::with_actions(&[]).await;
+    let mine = spend_a_code(&plane, "openid").await;
+
+    // The other client gets a family of its own under the same login.
+    let code = plane
+        .mint_code(support::OTHER, REDIRECT, "openid", None)
+        .await;
+    let (status, theirs) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::OTHER, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{theirs}");
+
+    let (refused, _) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", mine["refresh_token"].as_str().unwrap()),
+        ],
+        Some((support::OTHER, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(refused, StatusCode::BAD_REQUEST);
+
+    // And theirs still works, which is the half a mismatch would have destroyed.
+    let (still, body) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", theirs["refresh_token"].as_str().unwrap()),
+        ],
+        Some((support::OTHER, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(
+        still,
+        StatusCode::OK,
+        "another client's token ended this one's family: {body}"
+    );
+}
+
+/// A logout has to end the renewals too, or the refresh token outlives the
+/// session it was minted from and the logout ended nothing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_login_that_ended_renews_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    let granted = spend_a_code(&plane, "openid").await;
+    plane.end_login().await;
+
+    assert_eq!(
+        renew(&plane, granted["refresh_token"].as_str().unwrap())
+            .await
+            .1["error"],
+        "invalid_grant"
+    );
+}
+
+/// An account switched off between two renewals stops renewing. Honouring it at
+/// login only leaves it live for as long as its refresh token lasts.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_account_switched_off_renews_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    let granted = spend_a_code(&plane, "openid").await;
+    plane.disable_subject().await;
+
+    assert_eq!(
+        renew(&plane, granted["refresh_token"].as_str().unwrap())
+            .await
+            .1["error"],
+        "invalid_grant"
+    );
+}
+
+/// Spend a code and return what came back, so a renewal test starts from a real
+/// token rather than one a test built.
+async fn spend_a_code(plane: &Plane, scope: &str) -> serde_json::Value {
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, scope, None)
+        .await;
+    let (status, granted) = asking(
+        plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    granted
+}
+
+async fn renew(plane: &Plane, refresh_token: &str) -> (StatusCode, serde_json::Value) {
+    asking(
+        plane,
+        support::REALM,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await
+}
+
+/// One login, one client, two codes. Keycloak keeps one client session per pair
+/// and so must this: a second row for the same pair makes "the session's current
+/// refresh token" ambiguous, and renewing with the newer token would find the
+/// older row and read a legitimate renewal as a replay.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_second_code_for_one_client_does_not_fork_the_session() {
+    let plane = Plane::with_actions(&[]).await;
+    let first = spend_a_code(&plane, "openid").await;
+    let second = spend_a_code(&plane, "openid").await;
+
+    assert_eq!(
+        renew(&plane, second["refresh_token"].as_str().unwrap())
+            .await
+            .0,
+        StatusCode::OK,
+        "the newest token was read against another row and taken for a replay"
+    );
+    assert!(
+        plane.login_is_open(support::SESSION).await,
+        "a legitimate second authorization ended the login"
+    );
+    // The first token belongs to the same pair, so it is the one that rotated
+    // away and is now a replay.
+    assert_eq!(
+        renew(&plane, first["refresh_token"].as_str().unwrap())
+            .await
+            .1["error"],
+        "invalid_grant"
+    );
 }

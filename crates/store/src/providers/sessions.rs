@@ -168,7 +168,12 @@ pub async fn close(transaction: &Transaction<'_>, session_id: &str) -> StoreResu
     Ok(removed > 0)
 }
 
-/// Record what a client got out of a login.
+/// Record what a client got out of a login, one row per login and client.
+///
+/// An upsert, because a client authorizing a second time under one login is
+/// renewing what it already has. A second row would make "the session's current
+/// refresh token" ambiguous, and the renewal that found the older one would read
+/// as a replay.
 pub async fn open_client_session(
     transaction: &Transaction<'_>,
     session: &ClientSessionModel,
@@ -192,11 +197,22 @@ pub async fn open_client_session(
         col("offline", &session.offline),
     ]);
 
+    let statement = format!(
+        "{} ON CONFLICT (tenant, realm_id, user_session_id, client_id) DO UPDATE \
+            SET session_id = EXCLUDED.session_id, \
+                auth_method = EXCLUDED.auth_method, \
+                redirect_uri = EXCLUDED.redirect_uri, \
+                started_at = EXCLUDED.started_at, \
+                expiration = EXCLUDED.expiration, \
+                notes = EXCLUDED.notes, \
+                current_refresh_token = EXCLUDED.current_refresh_token, \
+                current_refresh_token_use_count = EXCLUDED.current_refresh_token_use_count, \
+                offline = EXCLUDED.offline",
+        statement::insert("client_sessions", &set)
+    );
+
     transaction
-        .execute(
-            statement::insert("client_sessions", &set).as_str(),
-            &set.params(),
-        )
+        .execute(statement.as_str(), &set.params())
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(())
@@ -220,6 +236,26 @@ pub async fn client_sessions_of(
         .collect())
 }
 
+/// End what one client got out of a login, leaving the login and every other
+/// client alone.
+///
+/// What reuse detection reaches for. The row is the anchor for the whole token
+/// family, so removing it strands the successor and every access token minted
+/// from the chain, and touches nothing another client holds.
+pub async fn close_client_session(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM client_sessions WHERE session_id = $1",
+            &[&session_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
 /// Advance a client session's refresh token, and say what happened.
 ///
 /// One statement, because the caller has no way to hold the row between two.
@@ -238,23 +274,41 @@ pub async fn client_sessions_of(
 /// A successor rotates and resets the count. No successor means the realm does
 /// not rotate, so the presentation is counted instead and the caller weighs it
 /// against `refresh_token_max_reuse`.
+///
+/// The token a rotation replaced is kept, with the instant it was replaced, and
+/// is accepted again while `grace_from` has not passed it. Without that window a
+/// client firing two refreshes at once, or retrying after a response that never
+/// arrived, is indistinguishable from an attacker replaying a stolen token, and
+/// an ordinary double submit destroys the session. Outside the window the
+/// mismatch is a replay again.
 pub async fn advance_refresh_token(
     transaction: &Transaction<'_>,
     session_id: &str,
     presented: &str,
     successor: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+    grace_from: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<Refreshed> {
     let statement = format!(
         "UPDATE client_sessions \
             SET current_refresh_token = COALESCE($3, current_refresh_token), \
+                previous_refresh_token = \
+                    CASE WHEN $3 IS NULL THEN previous_refresh_token ELSE current_refresh_token END, \
+                previous_rotated_at = \
+                    CASE WHEN $3 IS NULL THEN previous_rotated_at ELSE $5 END, \
                 current_refresh_token_use_count = \
                     CASE WHEN $3 IS NULL THEN current_refresh_token_use_count + 1 ELSE 0 END \
-          WHERE session_id = $1 AND current_refresh_token = $2 \
+          WHERE session_id = $1 \
+            AND (current_refresh_token = $2 \
+                 OR (previous_refresh_token = $2 AND previous_rotated_at > $4)) \
       RETURNING {CLIENT_SESSION_COLUMNS}, current_refresh_token_use_count AS presentations"
     );
 
     if let Some(row) = transaction
-        .query_opt(statement.as_str(), &[&session_id, &presented, &successor])
+        .query_opt(
+            statement.as_str(),
+            &[&session_id, &presented, &successor, &grace_from, &now],
+        )
         .await
         .map_err(|_| StoreError::Backend)?
     {

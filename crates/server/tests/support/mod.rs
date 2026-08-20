@@ -60,6 +60,9 @@ pub const PARTY: &str = "saffui-console";
 pub const CONFIDENTIAL: &str = "app";
 pub const CLIENT_SECRET: &str = "a-registered-secret";
 pub const PUBLIC: &str = "spa";
+/// A second confidential client, so a test can present one client's token while
+/// authenticating as another.
+pub const OTHER: &str = "batch";
 /// A client whose registration still enables a service account the realm has
 /// switched off. The lever an operator reaches for first.
 pub const OFFBOARDED: &str = "retired";
@@ -297,6 +300,39 @@ impl Plane {
         raw
     }
 
+    /// Whether the login is still one a grant would accept.
+    #[allow(dead_code, reason = "only the protocol suite asks")]
+    pub async fn login_is_open(&self, session_id: &str) -> bool {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        sessions::load(&transaction, session_id)
+            .await
+            .expect("the session table")
+            .is_some_and(|login| {
+                login.state == models::sessions::records::UserSessionState::LoggedIn
+            })
+    }
+
+    /// Switch the subject off, the way an administrator shuts down an account.
+    #[allow(dead_code, reason = "only the protocol suite does")]
+    pub async fn disable_subject(&self) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut user = store::providers::users::load(&transaction, SUBJECT)
+            .await
+            .expect("the users table")
+            .expect("the planted subject");
+        user.enabled = false;
+        store::providers::users::update(&transaction, &user)
+            .await
+            .expect("the users table");
+        transaction.commit().await.unwrap();
+    }
+
     /// End the login every code here was minted from.
     #[allow(dead_code, reason = "only the protocol suite ends one")]
     pub async fn end_login(&self) {
@@ -510,6 +546,7 @@ impl Plane {
 
         for (client_id, secret, public, account_enabled) in [
             (CONFIDENTIAL, Some(CLIENT_SECRET), false, true),
+            (OTHER, Some(CLIENT_SECRET), false, true),
             (PUBLIC, None, true, true),
             (OFFBOARDED, Some(CLIENT_SECRET), false, false),
         ] {

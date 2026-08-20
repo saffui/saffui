@@ -10,12 +10,13 @@ use crypto::provider::{CryptoProvider, HashAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
-use models::entities::keys::{KeyUse, RealmSigningKey};
+use models::entities::keys::{KeyUse, RealmSigningKey, RealmSigningKeyView};
 use models::entities::oidc::AuthorizationCode;
 use models::entities::realm::RealmModel;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use serde_json::Value;
 use store::keyring::RealmKeyring;
+use store::providers::sessions::Refreshed;
 use store::providers::{oidc, realm_keys, sessions, users};
 use store::tenancy::TenantContext;
 
@@ -28,6 +29,15 @@ const DEFAULT_ACCESS_LIFESPAN: i64 = 300;
 /// Renewed on every use, so an active client never reaches this. What it bounds
 /// is how long an abandoned one stays spendable.
 const DEFAULT_REFRESH_LIFESPAN: i64 = 1_800;
+
+/// How long the token a rotation replaced is still accepted.
+///
+/// Short, and it exists for one thing: a client that fired two refreshes at once
+/// or retried after a response that never arrived is otherwise indistinguishable
+/// from an attacker replaying a stolen token, and reuse detection would destroy
+/// its session for a double submit. A stolen token presented later than this
+/// still trips it.
+const ROTATION_GRACE: i64 = 30;
 
 /// What it takes to sign. All three or none, so a new grant cannot forget one.
 pub struct Signing<'a> {
@@ -75,6 +85,10 @@ pub enum Ungranted {
     Unmintable,
     #[error("the store could not be read")]
     Unreadable,
+    /// A rotated refresh token presented again. Its own variant because the
+    /// answer is not only a refusal: the session is gone.
+    #[error("a rotated refresh token was presented again")]
+    Replayed,
 }
 
 /// A client acting for itself, RFC 6749 §4.4.
@@ -235,12 +249,22 @@ pub async fn authorization_code(
     )
     .map_err(|_| Ungranted::Unmintable)?;
 
-    let refresh = mint_token(
-        signing.provider,
-        &key,
-        minting_for(Kind::Refresh, renewal, vec![client.client_id.clone()]),
-    )
-    .map_err(|_| Ungranted::Unmintable)?;
+    // The claims a renewal reissues from. Carried on the refresh token because a
+    // renewal must not resolve them again: a step up in another tab would raise
+    // `acr` on a chain whose holder never performed it.
+    let mut renewing = minting_for(Kind::Refresh, renewal, vec![client.client_id.clone()]);
+    renewing
+        .extra
+        .insert("auth_time".into(), Value::from(code.auth_time));
+    for (named, value) in [("acr", &code.acr), ("org_id", &code.org_id)] {
+        if let Some(value) = value {
+            renewing
+                .extra
+                .insert(named.into(), Value::from(value.as_str()));
+        }
+    }
+    let refresh =
+        mint_token(signing.provider, &key, renewing).map_err(|_| Ungranted::Unmintable)?;
 
     let id_token = code
         .scope
@@ -446,4 +470,215 @@ fn draw_session_id(provider: &dyn CryptoProvider) -> Result<String, Ungranted> {
             let _ = write!(id, "{byte:02x}");
             id
         }))
+}
+
+/// What a client presents to renew.
+#[derive(Debug)]
+pub struct Renewing<'a> {
+    pub refresh_token: &'a str,
+    /// The realm's published keys. The token is one this realm signed, so it is
+    /// verified the way any presented token is.
+    pub keys: &'a [RealmSigningKeyView],
+}
+
+/// Renewing without the user, RFC 6749 §6.
+///
+/// Everything the reissue needs rides on the presented token rather than being
+/// resolved afresh. A refresh does not re-authenticate, so reading the session
+/// again would re-stamp a strength this chain never established: a step up in
+/// another tab would raise `acr` on a token whose holder never performed it.
+pub async fn refresh_token(
+    transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
+    within: &Within<'_>,
+    client: &ClientModel,
+    renewing: &Renewing<'_>,
+    now: DateTime<Utc>,
+) -> Result<Granted, Ungranted> {
+    let verified =
+        crate::token::verify_presented(transaction, renewing.keys, renewing.refresh_token, now)
+            .await
+            .map_err(|_| Ungranted::InvalidGrant)?;
+
+    // An access token must not renew anything. Without this the longest-lived
+    // credential a client holds is whichever of its tokens lives longest.
+    if claim(&verified, "typ") != Some(Kind::Refresh.claimed()) {
+        return Err(Ungranted::InvalidGrant);
+    }
+    // Issued to the client that is presenting it. A token is a bearer thing, so
+    // the only thing tying it to a client is what it says about one.
+    if claim(&verified, "azp") != Some(client.client_id.as_str()) {
+        return Err(Ungranted::InvalidGrant);
+    }
+    let (Some(session_id), Some(presented_id)) =
+        (claim(&verified, "sid"), verified.token_id.as_deref())
+    else {
+        return Err(Ungranted::InvalidGrant);
+    };
+
+    // The login has to still be open. Without it a logout ends nothing: the
+    // refresh token outlives the session it was minted from and keeps renewing.
+    let login = sessions::load(transaction, session_id)
+        .await
+        .map_err(|_| Ungranted::Unreadable)?
+        .filter(|login| login.state == UserSessionState::LoggedIn)
+        .filter(|login| login.expiration.is_none_or(|ends| ends > now.timestamp()))
+        .ok_or(Ungranted::InvalidGrant)?;
+
+    let client_session = sessions::client_sessions_of(transaction, &login.session_id)
+        .await
+        .map_err(|_| Ungranted::Unreadable)?
+        .into_iter()
+        .find(|session| session.client_id == client.client_id)
+        .ok_or(Ungranted::InvalidGrant)?;
+
+    // The account can be switched off between two renewals, and that is how an
+    // administrator shuts down a compromised one. Honouring it at login only
+    // leaves it live for as long as its refresh token lasts.
+    let subject = users::load(transaction, &verified.subject)
+        .await
+        .map_err(|_| Ungranted::Unreadable)?
+        .filter(|user| user.enabled)
+        .ok_or(Ungranted::InvalidGrant)?;
+
+    // The same cut the gate applies. Without it this endpoint keeps minting for
+    // a subject whose tokens were all invalidated, and every one of them is
+    // refused at the first resource it is presented to.
+    let minted_at = verified.claims.get("iat").and_then(Value::as_i64);
+    if subject
+        .not_before
+        .is_some_and(|cut| minted_at.is_none_or(|issued| issued < cut))
+    {
+        return Err(Ungranted::InvalidGrant);
+    }
+
+    let lifespan = Duration::seconds(
+        within
+            .realm
+            .access_token_lifespan
+            .map_or(DEFAULT_ACCESS_LIFESPAN, i64::from),
+    );
+    let renewal = Duration::seconds(DEFAULT_REFRESH_LIFESPAN);
+    let scope = verified.scope.clone();
+    let key = active_signing_key(transaction, signing).await?;
+
+    let minting_for = |kind: Kind, life: Duration| Minting {
+        kind,
+        issuer: within.issuer,
+        subject: &subject.user_id,
+        audiences: vec![client.client_id.clone()],
+        party: &client.client_id,
+        session_id,
+        scope: &scope,
+        lifespan: life,
+        now,
+        extra: serde_json::Map::new(),
+    };
+
+    // Rotation unless the realm has said otherwise. A realm that has said
+    // nothing gets the recommendation rather than the older behaviour: a token
+    // that never changes is one an interception keeps forever.
+    let rotates = within.realm.revoke_refresh_token != Some(false);
+    let successor = rotates
+        .then(|| mint_token(signing.provider, &key, minting_for(Kind::Refresh, renewal)))
+        .transpose()
+        .map_err(|_| Ungranted::Unmintable)?;
+
+    // The comparison is the write. Two renewals racing both name the same token
+    // and the second re-reads a row that no longer holds it, so there is no
+    // window between deciding and rotating for one to land in.
+    match sessions::advance_refresh_token(
+        transaction,
+        &client_session.session_id,
+        presented_id,
+        successor.as_ref().map(|minted| minted.token_id.as_str()),
+        now,
+        now - Duration::seconds(ROTATION_GRACE),
+    )
+    .await
+    .map_err(|_| Ungranted::Unreadable)?
+    {
+        Refreshed::Rotated { .. } => {}
+        // A realm that does not rotate bounds how often one token may be
+        // presented instead. Absent means unbounded, which is what not rotating
+        // asks for.
+        // The count includes this presentation, and the budget is for reuses,
+        // so the first one has to spend nothing: comparing the count itself
+        // refuses every token on a realm that allows no reuse, which is the
+        // default and would mean nothing may refresh at all.
+        Refreshed::Reused { presentations, .. } => {
+            if within
+                .realm
+                .refresh_token_max_reuse
+                .is_some_and(|allowed| presentations.saturating_sub(1) > allowed)
+            {
+                return Err(Ungranted::InvalidGrant);
+            }
+        }
+        // Verified, names this session, and is not the token the session holds.
+        // That is a rotated token being replayed, so the session ends rather
+        // than this one request being refused.
+        Refreshed::Replayed => {
+            // The family, not the login. RFC 9700 4.14.2 revokes the tokens of
+            // the client and user the replayed token belongs to; ending the SSO
+            // session would sign the user out of every other client, which makes
+            // one stale token a way to do that on demand.
+            //
+            // Closing the row strands the whole chain: the successor is anchored
+            // nowhere, and the access tokens already handed out name a client
+            // session the gate can no longer find. The failures are returned
+            // rather than swallowed, or a store fault would answer exactly like
+            // an ordinary refusal with nothing written.
+            sessions::close_client_session(transaction, &client_session.session_id)
+                .await
+                .map_err(|_| Ungranted::Unreadable)?;
+            oidc::revoke(
+                transaction,
+                presented_id,
+                now + renewal,
+                "refresh token reuse",
+            )
+            .await
+            .map_err(|_| Ungranted::Unreadable)?;
+            return Err(Ungranted::Replayed);
+        }
+        Refreshed::Unknown => return Err(Ungranted::InvalidGrant),
+    }
+
+    let access = mint_token(signing.provider, &key, minting_for(Kind::Access, lifespan))
+        .map_err(|_| Ungranted::Unmintable)?;
+
+    let id_token = wants_openid(&scope)
+        .then(|| {
+            let mut minting = minting_for(Kind::Identity, lifespan);
+            // Carried, not resolved again. A nonce belongs to the authentication
+            // that asked for it and means nothing on a renewal, so it is the one
+            // claim deliberately dropped.
+            for named in ["auth_time", "acr", "org_id"] {
+                if let Some(value) = verified.claims.get(named) {
+                    minting.extra.insert(named.to_owned(), value.clone());
+                }
+            }
+            mint_token(signing.provider, &key, minting)
+        })
+        .transpose()
+        .map_err(|_| Ungranted::Unmintable)?;
+
+    Ok(Granted {
+        access_token: access.token,
+        expires_in: lifespan.num_seconds(),
+        scope,
+        id_token: id_token.map(|minted| minted.token),
+        // Absent when the realm does not rotate, which RFC 6749 5.1 reads as
+        // "keep the one you have".
+        refresh_token: successor.map(|minted| minted.token),
+    })
+}
+
+fn claim<'a>(verified: &'a crate::token::Verified, named: &str) -> Option<&'a str> {
+    verified.claims.get(named).and_then(Value::as_str)
+}
+
+fn wants_openid(scope: &str) -> bool {
+    scope.split_whitespace().any(|asked| asked == "openid")
 }

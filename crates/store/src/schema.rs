@@ -121,6 +121,18 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V018__client_secrets_at_rest.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 19,
+            name: "one_client_session_per_login",
+            sql: include_str!("../migrations/V019__one_client_session_per_login.sql"),
+            transactional: true,
+        }),
+        Migration::Sql(SqlMigration {
+            version: 20,
+            name: "refresh_grace",
+            sql: include_str!("../migrations/V020__refresh_grace.sql"),
+            transactional: true,
+        }),
     ]
 }
 

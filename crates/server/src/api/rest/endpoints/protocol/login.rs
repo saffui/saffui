@@ -5,7 +5,7 @@
 //! shape is this server's: the three outcomes a flow has, named.
 
 use actix_web::http::StatusCode;
-use actix_web::{HttpResponse, HttpResponseBuilder, web};
+use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use deadpool_postgres::Pool;
 use secrecy::SecretBox;
@@ -15,19 +15,25 @@ use services::login::browser::{self, Step, Unanswerable};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
+use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 
 /// What the caller answers with.
+///
+/// Which login is being answered is not in here. It rides in a cookie, so a
+/// caller cannot answer a login it merely learned the name of.
 #[derive(Debug, Deserialize)]
 pub struct Answered {
-    /// Which login is being answered. There is no cookie, so it is named.
-    pub auth_session: String,
     pub username: Option<String>,
     pub password: Option<String>,
 }
 
+/// How long the login this opens lasts, matching what the flow writes.
+const SSO_LIFESPAN: i64 = 36_000;
+
 /// Run one step.
 pub async fn answer(
+    request: HttpRequest,
     realm: web::Path<String>,
     answered: Option<web::Json<Answered>>,
     pool: web::Data<Pool>,
@@ -37,6 +43,11 @@ pub async fn answer(
     let now = Utc::now();
     let Some(answered) = answered else {
         return told(StatusCode::BAD_REQUEST, "unreadable", None);
+    };
+    // No cookie, no login. A body naming one would let anybody who read an
+    // identifier off a log answer somebody else's sign-in.
+    let Some(auth_session) = binding::read(&request, binding::AUTH_SESSION) else {
+        return told(StatusCode::NOT_FOUND, "no-such-login", None);
     };
     let Ok(mut connection) = pool.get().await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable", None);
@@ -55,7 +66,7 @@ pub async fn answer(
         &transaction,
         sealing.provider.as_ref(),
         &context,
-        &answered.auth_session,
+        &auth_session,
         answered.username.as_deref(),
         answered
             .password
@@ -80,11 +91,27 @@ pub async fn answer(
                     "challenge",
                     Some(("execution", execution_id)),
                 ),
-                Step::Admitted { redirect_to } => told(
-                    StatusCode::OK,
-                    "admitted",
-                    Some(("redirect_to", redirect_to)),
-                ),
+                // The login in progress is over, so its cookie goes and the one
+                // saying this browser is signed in takes its place. That second
+                // cookie is what makes another client's `/authorize` something
+                // other than a fresh sign-in.
+                Step::Admitted {
+                    redirect_to,
+                    session_id,
+                } => {
+                    let mut response = HttpResponseBuilder::new(StatusCode::OK);
+                    binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
+                    binding::set(
+                        &mut response,
+                        binding::SSO_SESSION,
+                        &session_id,
+                        &context.realm_id,
+                        SSO_LIFESPAN,
+                    );
+                    uncached(&mut response).json(
+                        serde_json::json!({ "status": "admitted", "redirect_to": redirect_to }),
+                    )
+                }
                 Step::Refused => told(StatusCode::UNAUTHORIZED, "refused", None),
             }
         }

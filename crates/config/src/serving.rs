@@ -39,11 +39,12 @@ impl LoginUi {
         PublicOrigin::parse(value).map(|origin| LoginUi(Some(origin.as_str().to_owned())))
     }
 
-    /// Where this login is answered, or nothing when none is configured.
-    pub fn answering(&self, auth_session_id: &str) -> Option<String> {
-        self.0
-            .as_ref()
-            .map(|ui| format!("{ui}?auth_session={auth_session_id}"))
+    /// Where a login is answered, or nothing when none is configured.
+    ///
+    /// No identifier in it. Which login is being answered rides in a cookie,
+    /// because a URL reaches logs, `Referer` headers and history.
+    pub fn answering(&self) -> Option<&str> {
+        self.0.as_deref()
     }
 }
 

@@ -1232,6 +1232,7 @@ async fn a_refusal_after_that_goes_to_the_client_with_its_state() {
             ("response_type", "token"),
             ("client_id", support::CONFIDENTIAL),
             ("redirect_uri", REDIRECT),
+            ("scope", "openid"),
             ("state", "opaque state/&"),
         ],
     )
@@ -1265,6 +1266,7 @@ async fn a_public_client_starts_nothing_without_a_challenge() {
             ("response_type", "code"),
             ("client_id", support::PUBLIC),
             ("redirect_uri", REDIRECT),
+            ("scope", "openid"),
         ],
     )
     .await;
@@ -1276,6 +1278,7 @@ async fn a_public_client_starts_nothing_without_a_challenge() {
             ("response_type", "code"),
             ("client_id", support::PUBLIC),
             ("redirect_uri", REDIRECT),
+            ("scope", "openid"),
             ("code_challenge", "a-challenge"),
             ("code_challenge_method", "S256"),
         ],
@@ -1296,6 +1299,7 @@ async fn a_public_client_starts_nothing_without_a_challenge() {
             ("response_type", "code"),
             ("client_id", support::PUBLIC),
             ("redirect_uri", REDIRECT),
+            ("scope", "openid"),
             ("code_challenge", "a-challenge"),
         ],
     )
@@ -1312,6 +1316,7 @@ async fn a_public_client_starts_nothing_without_a_challenge() {
             ("response_type", "code"),
             ("client_id", support::PUBLIC),
             ("redirect_uri", REDIRECT),
+            ("scope", "openid"),
             ("code_challenge", "a-challenge"),
             ("code_challenge_method", "S512"),
         ],
@@ -2255,4 +2260,88 @@ async fn discovery_advertises_the_levels_the_realm_maps() {
             .contains(&serde_json::json!("acr")),
         "levels are mapped and the claim is not advertised"
     );
+}
+
+/// A flag nobody set is not permission. Reading an absent
+/// `standard_flow_enabled` as allowed opens every client registered before the
+/// flag existed, which is every client an import brings.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_without_the_flow_enabled_starts_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.set_standard_flow(support::CONFIDENTIAL, None).await;
+
+    let (status, location) = authorize(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.contains("error=unauthorized_client"),
+        "a client with no flow flag was let through: {location}"
+    );
+
+    plane
+        .set_standard_flow(support::CONFIDENTIAL, Some(false))
+        .await;
+    let (_, off) = authorize(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    assert!(off.contains("error=unauthorized_client"), "{off}");
+}
+
+/// The flag is read again where the code is spent. An operator who switches the
+/// flow off expects the codes already in flight to stop working, and a check
+/// that only guards the mint leaves them spendable.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_code_minted_before_the_flow_was_switched_off_is_not_spendable() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    plane
+        .set_standard_flow(support::CONFIDENTIAL, Some(false))
+        .await;
+
+    let (status, body) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "unauthorized_client", "{body}");
+}
+
+/// `openid` is what says a request is an OpenID Connect one. The cost is stated
+/// rather than hidden: a client that never asks for it is refused here, and
+/// refused with the code that says which parameter was wrong.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_request_that_never_asks_for_openid_is_refused() {
+    let plane = Plane::with_actions(&[]).await;
+
+    for (label, scope) in [
+        ("no scope at all", None),
+        ("a scope that is not openid", Some("profile")),
+        // Whole values, never prefixes.
+        ("a longer name that starts the same", Some("openid_extra")),
+    ] {
+        let mut asked = vec![
+            ("response_type", "code"),
+            ("client_id", support::CONFIDENTIAL),
+            ("redirect_uri", REDIRECT),
+            ("state", "s"),
+        ];
+        if let Some(scope) = scope {
+            asked.push(("scope", scope));
+        }
+        let (status, location) = authorize(&plane, &asked).await;
+        assert_eq!(status, StatusCode::FOUND, "{label}");
+        assert!(
+            location.contains("error=invalid_scope"),
+            "{label}: {location}"
+        );
+    }
 }

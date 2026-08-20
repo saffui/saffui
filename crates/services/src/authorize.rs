@@ -86,6 +86,12 @@ pub async fn begin(
 
     // From here the client and the redirect are established, so a refusal can
     // travel to the client rather than stopping at the user.
+    //
+    // Absent means disabled. A flag nobody set is not permission, and reading it
+    // as one opens every client that was registered before the flag existed.
+    if client.standard_flow_enabled != Some(true) {
+        return Err(Refusal::Redirect("unauthorized_client"));
+    }
     // Refused, not ignored. A client sending one believes the object it signed
     // governs the request; ignoring it and reading the query instead hands back
     // a code minted against parameters the client did not sign. OIDC Core §6
@@ -98,6 +104,17 @@ pub async fn begin(
     }
     if requested.response_type != Some("code") {
         return Err(Refusal::Redirect("unsupported_response_type"));
+    }
+    // This is an OpenID Provider, and `openid` is what says a request is one.
+    // The cost is stated rather than hidden: a plain OAuth client that never
+    // asks for it is refused here.
+    if !requested
+        .scope
+        .unwrap_or_default()
+        .split_whitespace()
+        .any(|asked| asked == OPENID)
+    {
+        return Err(Refusal::Redirect("invalid_scope"));
     }
     proof_is_registered(&client, requested)?;
 

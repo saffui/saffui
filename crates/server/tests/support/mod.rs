@@ -373,6 +373,24 @@ impl Plane {
         when
     }
 
+    /// Turn a client's authorization-code flow on, off, or back to unset.
+    #[allow(dead_code, reason = "only the protocol suite flips it")]
+    pub async fn set_standard_flow(&self, client_id: &str, enabled: Option<bool>) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.standard_flow_enabled = enabled;
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
     /// End the login every code here was minted from.
     #[allow(dead_code, reason = "only the protocol suite ends one")]
     pub async fn end_login(&self) {
@@ -627,6 +645,7 @@ impl Plane {
             // the other whether this client may act for itself.
             client.public_client = Some(public);
             client.redirect_uris = Some(vec![REDIRECT.to_owned()]);
+            client.standard_flow_enabled = Some(true);
             // Both, including the public one. An operator can tick a service
             // account on a public client, and what refuses that has to be the
             // rule about public clients rather than the tick being absent.

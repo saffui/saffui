@@ -78,6 +78,12 @@ pub const SESSION: &str = "session-1";
 pub const SUBJECT: &str = "ada";
 /// What the subject answers a password step with.
 pub const PASSWORD: &str = "a-password-of-decent-length";
+/// What the browser is bound by. Named here so a test asks for the same cookie
+/// the server sets rather than a string that only looks like it.
+#[allow(dead_code, reason = "only the protocol suite carries a browser")]
+pub const AUTH_SESSION_COOKIE: &str = "saffui_auth_session";
+#[allow(dead_code, reason = "only the protocol suite carries a browser")]
+pub const SSO_COOKIE: &str = "saffui_session";
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const AUDIENCE: &str = "saffui-admin";
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]

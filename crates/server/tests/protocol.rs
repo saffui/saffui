@@ -1082,6 +1082,15 @@ async fn a_second_code_for_one_client_does_not_fork_the_session() {
 /// Where a login starts. Everything is in the query, so the helper takes pairs
 /// and a test names only what it means to get wrong.
 async fn authorize(plane: &Plane, query: &[(&str, &str)]) -> (StatusCode, String) {
+    let (status, location, _) = authorize_with_cookies(plane, query).await;
+    (status, location)
+}
+
+/// The same, with what the response asked the browser to keep.
+async fn authorize_with_cookies(
+    plane: &Plane,
+    query: &[(&str, &str)],
+) -> (StatusCode, String, Vec<String>) {
     let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
     let asked = query
         .iter()
@@ -1101,7 +1110,12 @@ async fn authorize(plane: &Plane, query: &[(&str, &str)]) -> (StatusCode, String
         .get("location")
         .map(|value| value.to_str().unwrap().to_owned())
         .unwrap_or_default();
-    (status, location)
+    let set = response
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    (status, location, set)
 }
 
 fn urlencode(value: &str) -> String {
@@ -1140,16 +1154,31 @@ fn as_pairs<'a>(owned: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a s
 async fn a_request_that_checks_out_opens_a_login() {
     let plane = Plane::with_actions(&[]).await;
     let asked = started(support::CONFIDENTIAL);
-    let (status, location) = authorize(&plane, &as_pairs(&asked)).await;
+    let (status, location, set) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
 
     assert_eq!(status, StatusCode::FOUND);
-    assert!(
-        location.starts_with("https://login.test?auth_session="),
-        "the browser was sent somewhere other than the configured login: {location}"
+    assert_eq!(
+        location, "https://login.test",
+        "the browser was sent somewhere other than the configured login"
     );
     assert!(
-        !location.starts_with(REDIRECT),
-        "a login that has not happened was sent back to the client"
+        !location.contains("auth_session"),
+        "the login's identifier travelled in a URL: {location}"
+    );
+
+    let binding = set
+        .iter()
+        .find(|header| header.starts_with(support::AUTH_SESSION_COOKIE))
+        .expect("the browser was not bound to the login it just opened");
+    for hardening in ["HttpOnly", "Secure", "SameSite=Lax"] {
+        assert!(
+            binding.contains(hardening),
+            "{hardening} missing: {binding}"
+        );
+    }
+    assert!(
+        binding.contains(&format!("Path=/realms/{}", support::REALM)),
+        "one realm's binding was offered to another: {binding}"
     );
 }
 
@@ -1241,7 +1270,7 @@ async fn a_public_client_starts_nothing_without_a_challenge() {
     .await;
     assert!(refused.contains("error=invalid_request"), "{refused}");
 
-    let (status, sent) = authorize(
+    let (status, _, set) = authorize_with_cookies(
         &plane,
         &[
             ("response_type", "code"),
@@ -1253,7 +1282,10 @@ async fn a_public_client_starts_nothing_without_a_challenge() {
     )
     .await;
     assert_eq!(status, StatusCode::FOUND);
-    assert!(sent.contains("auth_session="), "{sent}");
+    assert!(
+        cookie_value(&set, support::AUTH_SESSION_COOKIE).is_some(),
+        "a challenge was offered and no login was opened"
+    );
 
     // An unknown method must not be read as the weaker one.
     let (_, unknown) = authorize(
@@ -1270,28 +1302,50 @@ async fn a_public_client_starts_nothing_without_a_challenge() {
     assert!(unknown.contains("error=invalid_request"), "{unknown}");
 }
 
-/// Answer a login step, and hand back what the server said.
-async fn login_step(plane: &Plane, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+/// Answer a login step, carrying the cookie that says which login it is.
+async fn login_step(
+    plane: &Plane,
+    binding: Option<&str>,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value, Vec<String>) {
     let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
-    let request = test::TestRequest::post()
+    let mut request = test::TestRequest::post()
         .uri(&format!(
             "/realms/{}/protocol/openid-connect/login",
             support::REALM
         ))
-        .set_json(&body)
-        .to_request();
-    let response = test::call_service(&app, request).await;
+        .set_json(&body);
+    if let Some(binding) = binding {
+        request = request.insert_header((
+            "cookie",
+            format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+        ));
+    }
+    let response = test::call_service(&app, request.to_request()).await;
     let status = response.status();
-    (status, test::read_body_json(response).await)
+    let set = response
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    (status, test::read_body_json(response).await, set)
 }
 
-/// The identifier `/authorize` sent the browser away with.
-fn answering(location: &str) -> String {
-    location
-        .split_once("auth_session=")
-        .expect("a login to answer")
-        .1
-        .to_owned()
+/// The value of one `Set-Cookie`, or nothing when it was not set.
+fn cookie_value(set: &[String], named: &str) -> Option<String> {
+    set.iter()
+        .find(|header| header.starts_with(&format!("{named}=")))
+        .map(|header| {
+            header
+                .split_once('=')
+                .unwrap()
+                .1
+                .split(';')
+                .next()
+                .unwrap()
+                .to_owned()
+        })
+        .filter(|value| !value.is_empty())
 }
 
 /// The whole loop, once: authorize, answer the step, spend the code. Every
@@ -1302,20 +1356,31 @@ fn answering(location: &str) -> String {
 async fn a_browser_logs_in_and_the_client_spends_what_it_carries() {
     let plane = Plane::with_actions(&[]).await;
     let asked = started(support::CONFIDENTIAL);
-    let (_, sent_to_login) = authorize(&plane, &as_pairs(&asked)).await;
-    let auth_session = answering(&sent_to_login);
+    let (_, _, opened) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
 
-    let (status, told) = login_step(
+    let (status, told, signed_in) = login_step(
         &plane,
-        serde_json::json!({
-            "auth_session": auth_session,
-            "username": support::SUBJECT,
-            "password": support::PASSWORD,
-        }),
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{told}");
     assert_eq!(told["status"], "admitted");
+    assert!(
+        cookie_value(&signed_in, support::SSO_COOKIE).is_some(),
+        "the browser was not bound to the login it just completed"
+    );
+    // Told to expire, not merely absent. A response that says nothing about it
+    // leaves the browser offering a login that is gone.
+    let expiring = signed_in
+        .iter()
+        .find(|header| header.starts_with(support::AUTH_SESSION_COOKIE))
+        .expect("the login in progress was not told to expire");
+    assert!(
+        expiring.contains("Max-Age=0"),
+        "the login in progress is over and its cookie outlived it: {expiring}"
+    );
 
     let landing = told["redirect_to"].as_str().expect("somewhere to land");
     assert!(landing.starts_with(REDIRECT), "{landing}");
@@ -1361,28 +1426,22 @@ async fn a_browser_logs_in_and_the_client_spends_what_it_carries() {
 async fn a_wrong_answer_refuses_and_the_login_survives() {
     let plane = Plane::with_actions(&[]).await;
     let asked = started(support::CONFIDENTIAL);
-    let (_, sent_to_login) = authorize(&plane, &as_pairs(&asked)).await;
-    let auth_session = answering(&sent_to_login);
+    let (_, _, opened) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
 
-    let (status, told) = login_step(
+    let (status, told, _) = login_step(
         &plane,
-        serde_json::json!({
-            "auth_session": auth_session,
-            "username": support::SUBJECT,
-            "password": "not-the-password",
-        }),
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": "not-the-password" }),
     )
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(told["status"], "refused");
 
-    let (again, admitted) = login_step(
+    let (again, admitted, _) = login_step(
         &plane,
-        serde_json::json!({
-            "auth_session": auth_session,
-            "username": support::SUBJECT,
-            "password": support::PASSWORD,
-        }),
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
     )
     .await;
     assert_eq!(again, StatusCode::OK, "{admitted}");
@@ -1396,20 +1455,18 @@ async fn a_wrong_answer_refuses_and_the_login_survives() {
 async fn one_authorization_mints_one_code() {
     let plane = Plane::with_actions(&[]).await;
     let asked = started(support::CONFIDENTIAL);
-    let (_, sent_to_login) = authorize(&plane, &as_pairs(&asked)).await;
-    let auth_session = answering(&sent_to_login);
-    let answer = serde_json::json!({
-        "auth_session": auth_session,
-        "username": support::SUBJECT,
-        "password": support::PASSWORD,
-    });
+    let (_, _, opened) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let answer = serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD });
 
     assert_eq!(
-        login_step(&plane, answer.clone()).await.1["status"],
+        login_step(&plane, Some(&auth_session), answer.clone())
+            .await
+            .1["status"],
         "admitted"
     );
 
-    let (status, told) = login_step(&plane, answer).await;
+    let (status, told, _) = login_step(&plane, Some(&auth_session), answer).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(told["status"], "no-such-login");
 }
@@ -1421,15 +1478,23 @@ async fn one_authorization_mints_one_code() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_login_nobody_opened_is_not_distinguishable() {
     let plane = Plane::with_actions(&[]).await;
-    let (status, told) = login_step(
+    let (status, told, _) = login_step(
         &plane,
-        serde_json::json!({
-            "auth_session": "never-opened",
-            "username": support::SUBJECT,
-            "password": support::PASSWORD,
-        }),
+        Some("never-opened"),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(told["status"], "no-such-login");
+
+    // And with no cookie at all, which is what a caller who read an identifier
+    // off a log has.
+    let (bare, refused, _) = login_step(
+        &plane,
+        None,
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(bare, StatusCode::NOT_FOUND);
+    assert_eq!(refused["status"], "no-such-login");
 }

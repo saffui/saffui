@@ -34,7 +34,11 @@ pub enum Step {
     /// A step is waiting. The caller answers again, naming the same login.
     Challenge { execution_id: String },
     /// Admitted. The browser goes here, and the client spends what it carries.
-    Admitted { redirect_to: String },
+    /// The session is named so the transport can bind the browser to it.
+    Admitted {
+        redirect_to: String,
+        session_id: String,
+    },
     /// Refused, and no further answer changes that.
     Refused,
 }
@@ -118,7 +122,10 @@ pub async fn answer_step(
                 now,
             )
             .await
-            .map(|redirect_to| Step::Admitted { redirect_to })
+            .map(|redirect_to| Step::Admitted {
+                redirect_to,
+                session_id: login.session_id.clone(),
+            })
         }
     }
 }

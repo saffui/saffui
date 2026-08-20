@@ -10,7 +10,12 @@ use services::authorize::{self, Refusal, Requested};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
+use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::dto::uncached;
+
+/// How long the cookie naming a login in progress lasts. The row expires on its
+/// own; this stops a browser offering a name that is already gone.
+const LOGIN_LIFESPAN: i64 = 900;
 
 /// What the query carries. Every field optional here so a missing one is a
 /// refusal this endpoint decides how to deliver, rather than a 400 the extractor
@@ -72,7 +77,7 @@ pub async fn begin(
             if transaction.commit().await.is_err() {
                 return shown("server_error", "the login could not be started");
             }
-            let Some(answering) = login_ui.answering(&begun.auth_session_id) else {
+            let Some(answering) = login_ui.answering() else {
                 // Nothing to hand off to. Saying so beats inventing a URL, and
                 // the client is established by now, so it hears about it.
                 return sent(
@@ -81,10 +86,20 @@ pub async fn begin(
                     asked.state.as_deref(),
                 );
             };
-            // The login screens are an application of their own. What travels is
-            // the identifier of the login being answered, because there is no
-            // cookie to carry it and the row holds everything else.
-            redirect(&answering)
+            // Nothing secret travels in the URL. The browser is told where to
+            // answer, and which login it is answering rides in a cookie the
+            // page cannot read and a cross-site request cannot attach.
+            let mut response = HttpResponseBuilder::new(StatusCode::FOUND);
+            binding::set(
+                &mut response,
+                binding::AUTH_SESSION,
+                &begun.auth_session_id,
+                &context.realm_id,
+                LOGIN_LIFESPAN,
+            );
+            uncached(&mut response)
+                .insert_header(("Location", answering))
+                .finish()
         }
         // Nothing was written, so nothing is committed. Rolling back is what
         // makes a refused start leave no half opened login behind.

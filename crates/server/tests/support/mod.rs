@@ -236,6 +236,84 @@ pub struct Plane {
 }
 
 impl Plane {
+    /// Mint a code the way `/authorize` will, and hand back the raw value.
+    ///
+    /// The row keeps only the digest, so a test that wants to spend a code has
+    /// to be the thing that made it. Everything a redemption re-checks is a
+    /// parameter, because every one of them is something a test needs to get
+    /// wrong on purpose.
+    #[allow(dead_code, reason = "only the protocol suite spends a code")]
+    pub async fn mint_code(
+        &self,
+        client_id: &str,
+        redirect_uri: &str,
+        scope: &str,
+        challenge: Option<(&str, &str)>,
+    ) -> String {
+        let provider = OpenSslProvider::new(&CryptoConfig {
+            fips_required: false,
+            pkcs11: None,
+        })
+        .expect("a software provider");
+
+        // Drawn, not built from the arguments. Two codes minted for one client
+        // and one scope would land on the same digest, which is the primary key.
+        let mut drawn = [0_u8; 16];
+        provider.rand().fill(&mut drawn).expect("a fresh code");
+        let raw = data_encoding::HEXLOWER.encode(&drawn);
+        let digest = provider
+            .digest()
+            .hash(crypto::provider::HashAlg::Sha256, raw.as_bytes())
+            .expect("a digest");
+
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::oidc::mint_code(
+            &transaction,
+            &models::entities::oidc::AuthorizationCode {
+                code_hash: data_encoding::HEXLOWER.encode(&digest),
+                tenant: TENANT.into(),
+                realm_id: REALM.into(),
+                client_id: client_id.to_owned(),
+                user_id: SUBJECT.into(),
+                session_id: SESSION.into(),
+                redirect_uri: redirect_uri.to_owned(),
+                scope: scope.to_owned(),
+                nonce: Some("n-once".into()),
+                code_challenge: challenge.map(|(value, _)| value.to_owned()),
+                code_challenge_method: challenge.map(|(_, method)| method.to_owned()),
+                auth_time: 1_700_000_000,
+                acr: Some("password".into()),
+                org_id: None,
+                org_name: None,
+            },
+            chrono::Utc::now() + chrono::Duration::minutes(1),
+        )
+        .await
+        .expect("a minted code");
+        transaction.commit().await.unwrap();
+        raw
+    }
+
+    /// End the login every code here was minted from.
+    #[allow(dead_code, reason = "only the protocol suite ends one")]
+    pub async fn end_login(&self) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        sessions::set_state(
+            &transaction,
+            SESSION,
+            models::sessions::records::UserSessionState::LoggedOut,
+        )
+        .await
+        .expect("the session table");
+        transaction.commit().await.unwrap();
+    }
+
     /// What a token this realm minted actually carries.
     ///
     /// Verified against the published key rather than decoded, so a test reading

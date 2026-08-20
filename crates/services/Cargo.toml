@@ -27,6 +27,9 @@ serde_json = { workspace = true }
 deadpool-postgres = { workspace = true }
 thiserror = { workspace = true }
 secrecy = { workspace = true }
+# Hex for the code digest a redemption looks a row up by, base64url for the
+# PKCE challenge, both spelled by the specs that fixed them.
+data-encoding = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }

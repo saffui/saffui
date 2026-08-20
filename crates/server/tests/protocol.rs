@@ -368,9 +368,10 @@ async fn the_refusal_says_which_kind_of_failure_it_is() {
             vec![("grant_type", "urn:nonsense")],
             "unsupported_grant_type",
         ),
+        // A grant this build performs, asked for without what it needs.
         (
             vec![("grant_type", "authorization_code")],
-            "unsupported_grant_type",
+            "invalid_request",
         ),
         (
             vec![("grant_type", "refresh_token")],
@@ -457,4 +458,342 @@ async fn more_than_a_token_request_holds_is_not_read() {
         body["error"], "invalid_request",
         "a body past the ceiling was read as a grant"
     );
+}
+
+const REDIRECT: &str = "https://app.example/callback";
+
+/// The verifier and its S256 challenge, the pair RFC 7636 §4 describes.
+use crypto::provider::CryptoProvider as _;
+
+fn pkce_pair() -> (String, String) {
+    let verifier = "a-verifier-of-at-least-forty-three-characters-long";
+    let digest = crypto::provider::openssl::OpenSslProvider::new(&crypto::provider::CryptoConfig {
+        fips_required: false,
+        pkcs11: None,
+    })
+    .expect("a software provider")
+    .digest()
+    .hash(crypto::provider::HashAlg::Sha256, verifier.as_bytes())
+    .expect("a digest");
+    (
+        verifier.to_owned(),
+        data_encoding::BASE64URL_NOPAD.encode(&digest),
+    )
+}
+
+/// A code spent yields the three tokens, and the access token is one this
+/// deployment takes back. Checking only the response proves a string came out.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_code_spent_yields_tokens_this_realm_takes_back() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid profile", None)
+        .await;
+
+    let (status, body) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["scope"], "openid profile");
+    let access = body["access_token"].as_str().expect("an access token");
+    let claims = plane.claims_of(access).await;
+    assert_eq!(claims["sub"], support::SUBJECT);
+    assert_eq!(claims["sid"], support::SESSION);
+    assert_eq!(claims["typ"], "Bearer");
+
+    let id_token = body["id_token"].as_str().expect("an id token");
+    let identity = plane.claims_of(id_token).await;
+    assert_eq!(identity["typ"], "ID");
+    assert_eq!(identity["nonce"], "n-once");
+    assert_eq!(
+        identity["auth_time"], 1_700_000_000,
+        "auth_time is the login's instant, not the redemption's"
+    );
+    assert_eq!(identity["acr"], "password");
+
+    let refresh = body["refresh_token"].as_str().expect("a refresh token");
+    let renewal = plane.claims_of(refresh).await;
+    assert_eq!(renewal["typ"], "Refresh");
+    assert!(
+        plane.session_exists(support::SESSION).await,
+        "the login the tokens name is not there"
+    );
+}
+
+/// A code is spent by the attempt, not by the attempt succeeding. Otherwise a
+/// code refused for one reason can be presented again without it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_code_is_spent_once_however_it_ends() {
+    let plane = Plane::with_actions(&[]).await;
+    let spend = |code: String, redirect: &'static str| {
+        let plane = &plane;
+        async move {
+            asking(
+                plane,
+                support::REALM,
+                &[
+                    ("grant_type", "authorization_code"),
+                    ("code", &code),
+                    ("redirect_uri", redirect),
+                ],
+                Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+            )
+            .await
+        }
+    };
+
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    assert_eq!(spend(code.clone(), REDIRECT).await.0, StatusCode::OK);
+    let (status, body) = spend(code, REDIRECT).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_grant");
+
+    // Refused for the redirect, and gone all the same.
+    let second = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    assert_eq!(
+        spend(second.clone(), "https://elsewhere.example/cb")
+            .await
+            .1["error"],
+        "invalid_grant"
+    );
+    assert_eq!(
+        spend(second, REDIRECT).await.1["error"],
+        "invalid_grant",
+        "a code refused for its redirect was still spendable with the right one"
+    );
+}
+
+/// Everything a redemption re-checks, and one answer for all of them. A client
+/// that could tell them apart could learn whether a code it does not hold
+/// exists.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn nothing_about_a_code_is_readable_from_a_refusal() {
+    let plane = Plane::with_actions(&[]).await;
+
+    for (label, minted_for, presented_redirect) in [
+        (
+            "a code minted for another client",
+            support::PUBLIC,
+            REDIRECT,
+        ),
+        (
+            "a redirect the code was not minted against",
+            support::CONFIDENTIAL,
+            "https://elsewhere.example/cb",
+        ),
+    ] {
+        let code = plane.mint_code(minted_for, REDIRECT, "openid", None).await;
+        let (status, body) = asking(
+            &plane,
+            support::REALM,
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", presented_redirect),
+            ],
+            Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}");
+        assert_eq!(body["error"], "invalid_grant", "{label}");
+    }
+
+    // A code nobody minted.
+    let (_, unknown) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", "never-minted"),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(unknown["error"], "invalid_grant");
+}
+
+/// The proof RFC 7636 describes, and the two ways of not having it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_challenge_is_answered_or_the_code_is_not_spent() {
+    let plane = Plane::with_actions(&[]).await;
+    let (verifier, challenge) = pkce_pair();
+
+    let spend = |code: String, verifier: Option<String>| {
+        let plane = &plane;
+        async move {
+            let mut form = vec![
+                ("grant_type".to_owned(), "authorization_code".to_owned()),
+                ("code".to_owned(), code),
+                ("redirect_uri".to_owned(), REDIRECT.to_owned()),
+            ];
+            if let Some(verifier) = verifier {
+                form.push(("code_verifier".to_owned(), verifier));
+            }
+            let borrowed: Vec<(&str, &str)> = form
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str()))
+                .collect();
+            asking(
+                plane,
+                support::REALM,
+                &borrowed,
+                Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+            )
+            .await
+        }
+    };
+
+    let held = plane
+        .mint_code(
+            support::CONFIDENTIAL,
+            REDIRECT,
+            "openid",
+            Some((&challenge, "S256")),
+        )
+        .await;
+    assert_eq!(
+        spend(held, Some(verifier.clone())).await.0,
+        StatusCode::OK,
+        "the verifier the challenge was built from was refused"
+    );
+
+    for (label, offered) in [
+        ("no verifier at all", None),
+        (
+            "the wrong one",
+            Some("a-different-verifier-of-decent-length".to_owned()),
+        ),
+        (
+            "the challenge presented as its own verifier",
+            Some(challenge.clone()),
+        ),
+    ] {
+        let code = plane
+            .mint_code(
+                support::CONFIDENTIAL,
+                REDIRECT,
+                "openid",
+                Some((&challenge, "S256")),
+            )
+            .await;
+        assert_eq!(
+            spend(code, offered).await.1["error"],
+            "invalid_grant",
+            "{label}"
+        );
+    }
+
+    // A method this build does not know must not fall back to comparing the
+    // verifier against the challenge, which is what treating it as `plain`
+    // would do: the challenge travels in the authorize request, so anyone who
+    // saw that request would hold the answer.
+    let unknown = plane
+        .mint_code(
+            support::CONFIDENTIAL,
+            REDIRECT,
+            "openid",
+            Some((&verifier, "S512")),
+        )
+        .await;
+    assert_eq!(
+        spend(unknown, Some(verifier)).await.1["error"],
+        "invalid_grant",
+        "an unknown challenge method was treated as plain"
+    );
+}
+
+/// A public client authenticates with nothing, so the challenge is the whole of
+/// its proof. A code minted for one without a challenge is one anybody who
+/// intercepted the redirect can spend.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_public_client_without_a_challenge_spends_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::PUBLIC, REDIRECT, "openid", None)
+        .await;
+
+    let (status, body) = ask(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+            ("client_id", support::PUBLIC),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_grant");
+}
+
+/// A code outlives nothing. Logging out between authorizing and redeeming has
+/// to stop the redemption, or the tokens name a login the gate cannot find.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_login_that_ended_spends_no_code() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    plane.end_login().await;
+
+    let (status, body) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_grant");
+}
+
+/// An id token is what `openid` asks for. Minting one for a scope that did not
+/// ask hands out a record of a login nobody requested.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn no_openid_scope_means_no_id_token() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "profile", None)
+        .await;
+
+    let (status, body) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body.get("id_token").is_none(), "{body}");
+    assert!(body.get("access_token").is_some());
 }

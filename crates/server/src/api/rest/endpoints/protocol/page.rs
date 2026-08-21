@@ -16,10 +16,10 @@ const SCRIPT: &str = include_str!("ui/login.js");
 const STYLE: &str = include_str!("ui/login.css");
 
 /// What the browser may do on this page: load this server's script and style,
-/// call this server back, and nothing else. No inline code, no frames, no
-/// form submission that bypasses the script.
+/// call this server back or post the form to it, and nothing else. No inline
+/// code, no frames, no submission to anywhere but here.
 const POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
-                      connect-src 'self'; form-action 'none'; frame-ancestors 'none'; \
+                      connect-src 'self'; form-action 'self'; frame-ancestors 'none'; \
                       base-uri 'none'";
 
 /// Where `/auth` sends a browser when the deployment names no other page.

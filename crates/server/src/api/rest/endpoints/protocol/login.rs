@@ -31,6 +31,8 @@ pub struct Answered {
     pub totp: Option<String>,
     /// What a key handed back, as the JSON the browser produced.
     pub webauthn: Option<String>,
+    /// The attestation for a key the realm told this user to enrol.
+    pub webauthn_register: Option<String>,
 }
 
 /// How long the login this opens lasts, matching what the flow writes.
@@ -90,6 +92,7 @@ pub async fn answer(
         // was given, so a login resumed with a second factor still has to
         // satisfy the first, and each step takes the kind it understands.
         &answers,
+        answered.webauthn_register.as_deref(),
         now,
     )
     .await;

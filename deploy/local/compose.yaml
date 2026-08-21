@@ -53,6 +53,9 @@ services:
       - --redirect=${SAFFUI_CLIENT_REDIRECT:-https://localhost.emobix.co.uk:8443/test/a/saffui/callback}
       - --user=ada
       - --email=ada@example.test
+      - --given-name=Ada
+      - --family-name=Lovelace
+      - --phone=+33123456789
     environment:
       <<: *saffui-env
       SAFFUI_PROVISION_CLIENT_SECRET: ${SAFFUI_CLIENT_SECRET:-a-conformance-client-secret}

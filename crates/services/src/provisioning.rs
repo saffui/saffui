@@ -19,6 +19,8 @@ use crypto::provider::{Argon2Params, CryptoProvider, SignAlg};
 use crypto::thumbprint::jwk_sha256_thumbprint;
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
+use models::entities::acr::AcrLoaMap;
+use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::auth::{
     AuthenticationExecutionMutationModel, AuthenticationFlowMutationModel,
     AuthenticatorRequirement, ExecutionStep,
@@ -28,7 +30,7 @@ use models::entities::credentials::{CredentialModel, CredentialSecret, Credentia
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey};
 use models::entities::realm::RealmModel;
 use models::entities::tenant::{TenantCreateModel, TenantModel};
-use models::entities::user::UserCreateModel;
+use models::entities::user::{UserCreateModel, profile};
 use secrecy::SecretBox;
 use store::error::{StoreError, StoreResult};
 use store::keyring;
@@ -298,6 +300,23 @@ pub async fn provision_signing_key(
     Ok(true)
 }
 
+/// What this realm calls its levels, unless it already says.
+///
+/// A realm mapping nothing can be asked for nothing and attests to nothing:
+/// `acr_values` is refused and no `acr` is ever issued. Two levels, one per
+/// factor a fresh realm can run, so a login says how strong it was.
+pub async fn provision_levels(transaction: &Transaction<'_>, realm_id: &str) -> StoreResult<bool> {
+    let Some(mut realm) = realms::load(transaction, realm_id).await? else {
+        return Ok(false);
+    };
+    if realm.acr_loa_map.is_some() {
+        return Ok(false);
+    }
+    realm.acr_loa_map = Some(AcrLoaMap::from_pairs([("password", 1), ("mfa", 2)]));
+    realms::update(transaction, &realm).await?;
+    Ok(true)
+}
+
 /// The flow a browser login runs: one required password step, unless the
 /// realm already has a flow by that alias. `/authorize` refuses a realm that
 /// has none rather than opening a login nothing can advance.
@@ -417,6 +436,11 @@ pub struct Person<'a> {
     pub user_name: &'a str,
     pub email: &'a str,
     pub password: &'a SecretBox<String>,
+    /// What the `profile` scope releases, when a deployment has it to release.
+    pub given_name: Option<&'a str>,
+    pub family_name: Option<&'a str>,
+    /// What the `phone` scope releases. Verified by being written here.
+    pub phone: Option<&'a str>,
 }
 
 /// Create a user with a password, unless one by that name exists.
@@ -434,17 +458,26 @@ pub async fn provision_user(
         return Ok(false);
     }
     let metadata = AuditableModel::from_creator(tenant.to_owned(), PROVISIONER.to_owned());
+    let mut attributes = AttributesMap::new();
+    for (named, value) in [
+        (profile::FIRST_NAME, person.given_name),
+        (profile::LAST_NAME, person.family_name),
+    ] {
+        if let Some(value) = value.filter(|value| !value.is_empty()) {
+            attributes.insert(named.to_owned(), AttributeValue::Str(value.to_owned()));
+        }
+    }
     let user = UserCreateModel {
         user_name: person.user_name.to_owned(),
         enabled: true,
         email: person.email.to_owned(),
         email_verified: Some(!person.email.is_empty()),
-        phone_number: None,
-        phone_number_verified: None,
+        phone_number: person.phone.map(str::to_owned),
+        phone_number_verified: person.phone.map(|_| true),
         required_actions: None,
         not_before: None,
         user_storage: None,
-        attributes: None,
+        attributes: (!attributes.is_empty()).then_some(attributes),
         is_service_account: None,
         service_account_client_link: None,
     }

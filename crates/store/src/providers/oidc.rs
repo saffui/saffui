@@ -54,30 +54,84 @@ pub async fn mint_code(
 ///
 /// An expired code is not returned, and is removed all the same. Leaving it
 /// would let a caller that ignores the answer try again.
+/// What presenting a code found.
+#[derive(Debug)]
+pub enum Redemption {
+    /// Unspent until now. Spent by this call.
+    Fresh(Box<AuthorizationCode>),
+    /// Spent before, by whoever holds what it bought.
+    Reused { issued_token_ids: Vec<String> },
+    /// Never minted, or gone.
+    Unknown,
+}
+
+/// Spend a code, or learn that it was spent.
+///
+/// Spent is a mark, not a deletion: a second presentation has to be told
+/// apart from a code that never was, because the first wants the tokens it
+/// bought revoked and the second has nothing to revoke.
 pub async fn redeem_code(
     transaction: &Transaction<'_>,
     code_hash: &str,
-) -> StoreResult<Option<AuthorizationCode>> {
-    Ok(transaction
+) -> StoreResult<Redemption> {
+    let fresh = transaction
         .query_opt(
-            "DELETE FROM oidc_auth_codes WHERE code_hash = $1 \
+            "UPDATE oidc_auth_codes SET redeemed_at = now() \
+             WHERE code_hash = $1 AND redeemed_at IS NULL AND expires_at > now() \
              RETURNING tenant, realm_id, code_hash, client_id, user_id, session_id, \
                        redirect_uri, scope, nonce, code_challenge, code_challenge_method, \
                        auth_time, acr, org_id, expires_at",
             &[&code_hash],
         )
         .await
+        .map_err(|_| StoreError::Backend)?;
+    if let Some(row) = fresh {
+        return Ok(Redemption::Fresh(Box::new(read_code(row))));
+    }
+    Ok(transaction
+        .query_opt(
+            "SELECT issued_token_ids FROM oidc_auth_codes \
+             WHERE code_hash = $1 AND redeemed_at IS NOT NULL",
+            &[&code_hash],
+        )
+        .await
         .map_err(|_| StoreError::Backend)?
-        .and_then(|row| {
-            let expires_at: chrono::DateTime<chrono::Utc> = row.get("expires_at");
-            (expires_at > chrono::Utc::now()).then(|| read_code(row))
+        .map_or(Redemption::Unknown, |row| Redemption::Reused {
+            issued_token_ids: row.get("issued_token_ids"),
         }))
 }
 
-/// Drop what nobody can spend any more.
+/// What a redemption bought, so a later presentation can take it back.
+pub async fn record_issued(
+    transaction: &Transaction<'_>,
+    code_hash: &str,
+    token_ids: &[String],
+) -> StoreResult<()> {
+    transaction
+        .execute(
+            "UPDATE oidc_auth_codes SET issued_token_ids = $2 WHERE code_hash = $1",
+            &[&code_hash, &token_ids],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// How long a spent code is remembered past its expiry, so a late replay can
+/// still be answered with a revocation. The refresh token's default lifespan:
+/// after that, what the code bought has expired on its own.
+const SPENT_CODE_MEMORY: &str = "30 minutes";
+
+/// Drop what nobody can spend any more: unspent codes past their expiry, and
+/// spent ones once there is nothing left to revoke.
 pub async fn drop_expired_codes(transaction: &Transaction<'_>) -> StoreResult<u64> {
     transaction
-        .execute("DELETE FROM oidc_auth_codes WHERE expires_at <= now()", &[])
+        .execute(
+            "DELETE FROM oidc_auth_codes \
+             WHERE (redeemed_at IS NULL AND expires_at <= now()) \
+                OR redeemed_at <= now() - ($1::text)::interval",
+            &[&SPENT_CODE_MEMORY],
+        )
         .await
         .map_err(|_| StoreError::Backend)
 }

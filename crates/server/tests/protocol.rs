@@ -3108,3 +3108,218 @@ async fn a_key_step_with_nothing_enrolled_refuses() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
     assert_eq!(told["status"], "refused");
 }
+
+/// The realm told this user to enrol a key, so the login pauses after the flow
+/// admits: creation options out, attestation in, credential kept, instruction
+/// struck. Then the proof that it was all real: the key that was just enrolled
+/// answers a keyed flow's challenge and gets its holder in.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_required_key_is_enrolled_and_then_lets_the_subject_in() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .require_of_subject(RequiredAction::ConfigureWebauthn)
+        .await;
+    let mut key = support::soft_key::SoftKey::new();
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    // The password admits the flow, but the login is not over: the realm's
+    // instruction runs first.
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge");
+    assert_eq!(told["execution"], "webauthn-register");
+    let asks = told.get("asks").expect("creation options");
+    assert!(
+        asks["publicKey"].get("user").is_some(),
+        "not the create ceremony: {asks}"
+    );
+    assert!(
+        plane
+            .login_notes(&auth_session)
+            .await
+            .get("webauthn-register")
+            .is_some(),
+        "the registration state was not remembered"
+    );
+
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "webauthn_register": key.attest(asks, support::ORIGIN).to_string(),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(admitted["status"], "admitted");
+    assert_eq!(plane.subject_owes().await, vec![], "the instruction stands");
+    assert_eq!(
+        plane.subject_keys().await,
+        vec![key.credential_id.clone()],
+        "the ceremony's credential is not what the store holds"
+    );
+
+    // The enrolled key is a working credential, not just a row.
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::KEYED_FLOW)
+        .await;
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "webauthn": key.answer(told.get("asks").expect("a challenge"), support::ORIGIN),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        told["status"], "admitted",
+        "a key enrolled through the ceremony could not log in"
+    );
+}
+
+/// An attestation that does not verify enrols nothing: the login fails, the
+/// instruction stands, and no credential reaches the store.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_forged_attestation_is_refused_and_the_instruction_stands() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .require_of_subject(RequiredAction::ConfigureWebauthn)
+        .await;
+    let key = support::soft_key::SoftKey::new();
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+
+    let mut attested = key.attest(told.get("asks").expect("creation options"), support::ORIGIN);
+    let blob = attested["response"]["attestationObject"]
+        .as_str()
+        .expect("an attestation object")
+        .to_owned();
+    let mut flipped: Vec<char> = blob.chars().collect();
+    flipped[10] = if flipped[10] == 'A' { 'B' } else { 'A' };
+    attested["response"]["attestationObject"] =
+        serde_json::json!(flipped.iter().collect::<String>());
+
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "webauthn_register": attested.to_string(),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["status"], "refused");
+    assert_eq!(
+        plane.subject_owes().await,
+        vec![RequiredAction::ConfigureWebauthn],
+        "a forged attestation struck the instruction"
+    );
+    assert_eq!(
+        plane.subject_keys().await,
+        Vec::<Vec<u8>>::new(),
+        "a forged attestation left a credential behind"
+    );
+}
+
+/// What is already enrolled is excluded from a new enrolment, so a browser
+/// offers the user their unregistered keys rather than the one it finds first.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_enrolment_excludes_what_is_already_held() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    let held = plane.enrol_soft_passkey().await;
+    plane
+        .require_of_subject(RequiredAction::ConfigureWebauthn)
+        .await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+
+    let excluded: Vec<String> = told["asks"]["publicKey"]["excludeCredentials"]
+        .as_array()
+        .expect("an exclude list")
+        .iter()
+        .filter_map(|entry| entry["id"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(
+        excluded,
+        vec![data_encoding::BASE64URL_NOPAD.encode(&held.credential_id)],
+        "the key already held is not excluded from re-enrolment"
+    );
+}
+
+/// An instruction this build has no ceremony for leaves the login alone: the
+/// debt stays recorded on the user, and the realm is not locked out of fixing
+/// its own configuration.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_instruction_without_a_ceremony_leaves_the_login_alone() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    plane.require_of_subject(RequiredAction::VerifyEmail).await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted");
+    assert_eq!(
+        plane.subject_owes().await,
+        vec![RequiredAction::VerifyEmail],
+        "an unrunnable instruction was struck by a login that did not run it"
+    );
+}

@@ -1297,3 +1297,58 @@ fn hash(secret: &str) -> String {
     };
     encoded
 }
+
+/// A required action struck is struck alone: the others stand, and striking
+/// what is not there says the user was found and changes nothing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_required_action_is_struck_alone() {
+    use models::entities::user::RequiredAction;
+
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    plant_realm(&pool, &tenancy, "acme", "main").await;
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+    let mut planted = user("acme", "main", "ada");
+    planted.required_actions = Some(vec![
+        RequiredAction::ConfigureWebauthn,
+        RequiredAction::VerifyEmail,
+    ]);
+    users::create(&transaction, &planted).await.unwrap();
+
+    assert!(
+        users::clear_required_action(&transaction, "ada", RequiredAction::ConfigureWebauthn)
+            .await
+            .unwrap()
+    );
+    let held = users::load(&transaction, "ada")
+        .await
+        .unwrap()
+        .expect("the user")
+        .required_actions;
+    assert_eq!(
+        held,
+        Some(vec![RequiredAction::VerifyEmail]),
+        "striking one action took its neighbour with it"
+    );
+
+    assert!(
+        users::clear_required_action(&transaction, "ada", RequiredAction::ConfigureWebauthn)
+            .await
+            .unwrap(),
+        "the user exists, so the strike answers yes with nothing to do"
+    );
+    assert!(
+        !users::clear_required_action(&transaction, "nobody", RequiredAction::VerifyEmail)
+            .await
+            .unwrap(),
+        "a user that is not there cannot be relieved of anything"
+    );
+    transaction.commit().await.unwrap();
+}

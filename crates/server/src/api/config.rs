@@ -172,7 +172,11 @@ fn authz_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
 fn protocol_scope() -> impl HttpServiceFactory + 'static {
     web::scope("/realms/{realm}/protocol/openid-connect")
         .app_data(web::FormConfig::default().limit(PROTOCOL_BODY))
-        .service(web::resource("/auth").route(web::get().to(authorize::begin)))
+        .service(
+            web::resource("/auth")
+                .route(web::get().to(authorize::begin))
+                .route(web::post().to(authorize::begin_posted)),
+        )
         // One URL, two verbs: a browser is sent here to be shown the page, and
         // the page posts its answers back to where it came from.
         .service(

@@ -23,8 +23,10 @@ use crate::login::step::{Decided, Outcome, Step};
 /// Where a login stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Progress {
-    /// Everything the flow required is established.
-    Admitted,
+    /// Everything the flow required is established, by these authenticators.
+    /// Named rather than counted, because the level a login reached is the
+    /// realm's reading of what actually ran.
+    Admitted { by: Vec<Authenticator> },
     /// It cannot be, and no further answer changes that.
     Refused,
     /// A step is waiting on the caller, named so it can be asked.
@@ -63,7 +65,7 @@ pub async fn run_flow(
     realm: &RealmModel,
     flow_id: &str,
     subject: Option<&UserModel>,
-    answer: Option<&Answer>,
+    answers: &[Answer],
     _now: DateTime<Utc>,
 ) -> Result<Progress, Unrunnable> {
     let executions = auth_flows::executions_of(transaction, flow_id)
@@ -75,6 +77,7 @@ pub async fn run_flow(
 
     let mut steps = Vec::with_capacity(executions.len());
     let mut waiting = None;
+    let mut passed = Vec::new();
 
     for execution in &executions {
         if !execution.is_enabled() {
@@ -91,11 +94,14 @@ pub async fn run_flow(
         let named: Authenticator = authenticator.parse()?;
 
         let outcome =
-            authenticator::verify_answer(transaction, provider, realm, subject, named, answer)
+            authenticator::verify_answer(transaction, provider, realm, subject, named, answers)
                 .await;
 
         if outcome == Outcome::Pending && waiting.is_none() {
             waiting = Some(execution.execution_id.clone());
+        }
+        if outcome == Outcome::Passed {
+            passed.push(named);
         }
         steps.push(Step {
             requirement: execution.requirement,
@@ -104,7 +110,7 @@ pub async fn run_flow(
     }
 
     Ok(match step::decide(&steps) {
-        Decided::Admitted => Progress::Admitted,
+        Decided::Admitted => Progress::Admitted { by: passed },
         Decided::Refused => Progress::Refused,
         // The fold said a step waits; which one is the first that did, so a
         // caller is asked the earliest question rather than an arbitrary one.

@@ -91,6 +91,12 @@ pub const PASSWORD: &str = "a-password-of-decent-length";
 /// The halves the subject's full name is composed from.
 pub const GIVEN_NAME: &str = "Ada";
 pub const FAMILY_NAME: &str = "Lovelace";
+/// The shared secret the subject's authenticator app holds, base32 as an app is
+/// handed it.
+pub const TOTP_SECRET: &str = "JBSWY3DPEHPK3PXP";
+/// A flow that runs a password and then a code, so a test can reach a level the
+/// default flow cannot.
+pub const STRONG_FLOW: &str = "browser-strong";
 pub const PASSWORD_ACR: &str = "password";
 pub const STRONG_ACR: &str = "mfa";
 /// What the browser is bound by. Named here so a test asks for the same cookie
@@ -359,6 +365,27 @@ impl Plane {
             .await
             .expect("the session table")
             .is_some()
+    }
+
+    /// Point a client's browser login at another flow.
+    #[allow(dead_code, reason = "only the protocol suite asks for a second factor")]
+    pub async fn bind_browser_flow(&self, client_id: &str, flow: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.auth_flow_binding_overrides = Some(std::collections::HashMap::from([(
+            "browser".to_owned(),
+            models::entities::attributes::AttributeValue::Str(flow.to_owned()),
+        )]));
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
     }
 
     /// Switch the subject off, the way an administrator shuts down an account.
@@ -775,6 +802,39 @@ impl Plane {
             .await
             .unwrap();
 
+        // A second flow, password then a code. What lets a test reach a level
+        // the first flow cannot, which is what `acr_values` asks about.
+        let strong = models::entities::auth::AuthenticationFlowMutationModel {
+            alias: STRONG_FLOW.into(),
+            provider_id: "basic-flow".into(),
+            description: String::new(),
+            top_level: Some(true),
+            built_in: Some(false),
+        }
+        .into_model(STRONG_FLOW.into(), REALM.into(), metadata());
+        store::providers::auth_flows::create_flow(&transaction, &strong)
+            .await
+            .unwrap();
+        for (id, authenticator, priority) in [
+            ("exec-strong-1", "password", 10),
+            ("exec-strong-2", "totp", 20),
+        ] {
+            let step = models::entities::auth::AuthenticationExecutionMutationModel {
+                alias: id.into(),
+                flow_id: STRONG_FLOW.into(),
+                priority,
+                step: models::entities::auth::ExecutionStep::Authenticator {
+                    authenticator: authenticator.into(),
+                    config_id: None,
+                },
+                requirement: models::entities::auth::AuthenticatorRequirement::Required,
+            }
+            .into_model(id.into(), REALM.into(), metadata());
+            store::providers::auth_flows::create_execution(&transaction, &step)
+                .await
+                .unwrap();
+        }
+
         let user = UserCreateModel {
             user_name: SUBJECT.into(),
             enabled: true,
@@ -825,6 +885,24 @@ impl Plane {
                 priority: 0,
                 metadata: metadata(),
             },
+        )
+        .await
+        .unwrap();
+
+        // A second factor for the subject. The secret is base32 because that is
+        // what an authenticator app is handed and what the store keeps.
+        store::providers::credentials::create(
+            &transaction,
+            &models::entities::credentials::CredentialModel::otp(
+                "cred-totp".into(),
+                REALM.into(),
+                SUBJECT.into(),
+                models::entities::credentials::CredentialSecret::new(TOTP_SECRET.to_owned()),
+                models::entities::credentials::OtpAlgorithm::Sha1,
+                models::entities::credentials::OtpParameters::totp(6, 30)
+                    .expect("a usable time step"),
+                metadata(),
+            ),
         )
         .await
         .unwrap();

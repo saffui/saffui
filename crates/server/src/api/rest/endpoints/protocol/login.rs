@@ -26,6 +26,8 @@ use crate::api::rest::endpoints::protocol::dto::uncached;
 pub struct Answered {
     pub username: Option<String>,
     pub password: Option<String>,
+    /// The digits from an authenticator app, as typed.
+    pub totp: Option<String>,
 }
 
 /// How long the login this opens lasts, matching what the flow writes.
@@ -62,17 +64,24 @@ pub async fn answer(
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable", None);
     };
 
+    let mut answers = Vec::new();
+    if let Some(secret) = answered.password.clone() {
+        answers.push(Answer::Password(SecretBox::new(Box::new(secret))));
+    }
+    if let Some(typed) = answered.totp.clone() {
+        answers.push(Answer::Totp(typed));
+    }
+
     let step = browser::answer_step(
         &transaction,
         sealing.provider.as_ref(),
         &context,
         &auth_session,
         answered.username.as_deref(),
-        answered
-            .password
-            .clone()
-            .map(|secret| Answer::Password(SecretBox::new(Box::new(secret))))
-            .as_ref(),
+        // Everything the body carried. The flow runs every step against what it
+        // was given, so a login resumed with a second factor still has to
+        // satisfy the first, and each step takes the kind it understands.
+        &answers,
         now,
     )
     .await;

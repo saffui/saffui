@@ -14,14 +14,16 @@ use models::entities::keys::{KeyUse, RealmSigningKey, RealmSigningKeyView};
 use models::entities::oidc::AuthorizationCode;
 use models::entities::realm::RealmModel;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use store::keyring::RealmKeyring;
 use store::providers::oidc::Redemption;
 use store::providers::sessions::Refreshed;
 use store::providers::{oidc, realm_keys, sessions, users};
 use store::tenancy::TenantContext;
 
+use crate::claims_request::{self, ClaimsRequest};
 use crate::token::issuance::{Kind, Minted, Minting, mint_token};
+use crate::userinfo;
 
 /// Short, because an unconfigured realm is not a reason to hand out a
 /// long-lived credential.
@@ -176,6 +178,36 @@ pub async fn client_credentials(
     })
 }
 
+/// What a request named for the identity token, of what the realm holds of
+/// the person. Nothing asked is nothing resolved, and no reading of the person
+/// either.
+async fn claims_asked_of(
+    transaction: &Transaction<'_>,
+    asked: Option<&Value>,
+    client_id: &str,
+    user_id: &str,
+) -> Result<Map<String, Value>, Ungranted> {
+    let Some(asked) = asked.map(ClaimsRequest::from_value) else {
+        return Ok(Map::new());
+    };
+    if asked.id_token.is_empty() {
+        return Ok(Map::new());
+    }
+    let Some(person) = users::load(transaction, user_id)
+        .await
+        .map_err(|_| Ungranted::Unreadable)?
+    else {
+        return Ok(Map::new());
+    };
+    let entitled = userinfo::entitled_scopes(transaction, client_id)
+        .await
+        .map_err(|_| Ungranted::Unreadable)?;
+    Ok(userinfo::within_entitlement(
+        claims_request::release(&asked.id_token, &userinfo::held_claims(&person)),
+        &entitled,
+    ))
+}
+
 /// What a client presents to spend a code.
 #[derive(Debug)]
 pub struct Redeeming<'a> {
@@ -256,6 +288,18 @@ pub async fn authorization_code(
     );
     let renewal = Duration::seconds(DEFAULT_REFRESH_LIFESPAN);
 
+    // What the request named for the identity token, §5.5, of what the realm
+    // holds of this person. Resolved now and not carried on the refresh token:
+    // a claim about a person is the person's current value, not the value at
+    // the login, and the request itself is what the client session keeps.
+    let asked_of_person = claims_asked_of(
+        transaction,
+        code.claims.as_ref(),
+        &client.client_id,
+        &code.user_id,
+    )
+    .await?;
+
     let minting_for = |kind: Kind, life: Duration, audiences: Vec<String>| Minting {
         kind,
         issuer: within.issuer,
@@ -321,6 +365,7 @@ pub async fn authorization_code(
                     .extra
                     .insert("org_id".into(), Value::from(org.as_str()));
             }
+            minting.extra.extend(asked_of_person.clone());
             mint_token(signing.provider, &key, minting)
         })
         .transpose()
@@ -355,6 +400,7 @@ pub async fn authorization_code(
             current_refresh_token: Some(refresh.token_id.clone()),
             current_refresh_token_use_count: Some(0),
             offline: Some(false),
+            requested_claims: code.claims.clone(),
         },
     )
     .await
@@ -491,6 +537,7 @@ async fn open_login(
             current_refresh_token: None,
             current_refresh_token_use_count: Some(0),
             offline: Some(false),
+            requested_claims: None,
         },
     )
     .await
@@ -580,6 +627,25 @@ pub async fn refresh_token(
         .map_err(|_| Ungranted::Unreadable)?
         .filter(|user| user.enabled)
         .ok_or(Ungranted::InvalidGrant)?;
+
+    // What the request named for the identity token, §5.5, resolved again
+    // from the person: their current values, off the request the client
+    // session kept.
+    let asked_of_person = match client_session.requested_claims.as_ref() {
+        Some(asked) => {
+            let entitled = userinfo::entitled_scopes(transaction, &client.client_id)
+                .await
+                .map_err(|_| Ungranted::Unreadable)?;
+            userinfo::within_entitlement(
+                claims_request::release(
+                    &ClaimsRequest::from_value(asked).id_token,
+                    &userinfo::held_claims(&subject),
+                ),
+                &entitled,
+            )
+        }
+        None => Map::new(),
+    };
 
     // The same cut the gate applies. Without it this endpoint keeps minting for
     // a subject whose tokens were all invalidated, and every one of them is
@@ -699,6 +765,7 @@ pub async fn refresh_token(
                     minting.extra.insert(named.to_owned(), value.clone());
                 }
             }
+            minting.extra.extend(asked_of_person.clone());
             mint_token(signing.provider, &key, minting)
         })
         .transpose()

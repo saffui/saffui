@@ -24,6 +24,7 @@ fn code(hash: &str) -> AuthorizationCode {
         acr: Some("gold".to_owned()),
         org_id: None,
         org_name: None,
+        claims: None,
     }
 }
 

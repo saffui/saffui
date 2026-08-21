@@ -12,11 +12,12 @@ use models::entities::acr::{self, AchievedAuth, AcrRequirement, AuthContextReque
 use models::entities::attributes::AttributeValue;
 use models::entities::client::ClientModel;
 use models::sessions::records::{UserSessionModel, UserSessionState};
-use serde_json::json;
+use serde_json::{Value, json};
 use store::providers::login::{self, AuthSession};
 use store::providers::{auth_flows, client_scopes, clients, realms, sessions};
 use store::tenancy::TenantContext;
 
+use crate::claims_request::ClaimsRequest;
 use crate::login::browser;
 
 /// How long a login may sit half finished.
@@ -46,6 +47,8 @@ pub struct Requested<'a> {
     /// re-authenticate, which is why it is not a flag.
     pub max_age: Option<i64>,
     pub acr_values: Option<&'a str>,
+    /// The `claims` parameter, OIDC Core §5.5, as the client sent it.
+    pub claims: Option<&'a str>,
 }
 
 /// Where the browser goes next.
@@ -118,6 +121,14 @@ pub async fn begin(
     }
     proof_is_registered(&client, requested)?;
 
+    // Read in full before anything is decided on it. A request for claims that
+    // cannot be read is a request whose wishes are unknown, and answering it
+    // with a guess is answering a different request.
+    let asked_claims = match requested.claims {
+        None => ClaimsRequest::default(),
+        Some(raw) => ClaimsRequest::parse(raw).map_err(|_| Refusal::Redirect("invalid_request"))?,
+    };
+
     // A login the browser already holds, if it holds one. Everything the code
     // needs is on that row, so nothing is asked of the user a second time.
     let granted = granted_scope(
@@ -130,15 +141,35 @@ pub async fn begin(
     // What the request asks of the authentication itself, against what the
     // browser already holds.
     let prompt = Prompt::read(requested.prompt)?;
+    // `acr_values` is voluntary by definition. An `acr` named in `claims` is
+    // as hard as the client said: essential must be met or the login fails,
+    // §5.5.1.1; voluntary is the same hint `acr_values` is. Both given at once
+    // is unspecified, and the one that can fail a login is the one honoured.
+    let (acr_values, requirement) = match asked_claims.contexts_asked() {
+        Some((named, true)) => (named, AcrRequirement::Essential),
+        Some((named, false)) => (
+            requested
+                .acr_values
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(str::to_owned)
+                .chain(named)
+                .collect(),
+            AcrRequirement::Voluntary,
+        ),
+        None => (
+            requested
+                .acr_values
+                .unwrap_or_default()
+                .split_whitespace()
+                .map(str::to_owned)
+                .collect(),
+            AcrRequirement::Voluntary,
+        ),
+    };
     let asked = AuthContextRequest {
-        acr_values: requested
-            .acr_values
-            .map(|raw| raw.split_whitespace().map(str::to_owned).collect())
-            .unwrap_or_default(),
-        // Voluntary, always. The essential form travels in the `claims`
-        // parameter, which is not read, so reading `acr_values` as essential
-        // would fail logins the client would have accepted.
-        requirement: AcrRequirement::Voluntary,
+        acr_values,
+        requirement,
         max_age: requested.max_age,
         prompt_login: prompt.login,
     };
@@ -148,11 +179,22 @@ pub async fn begin(
         .and_then(|realm| realm.acr_loa_map)
         .unwrap_or_default();
 
-    let held = live_login(transaction, signed_in, now).await?;
+    // A session somebody else holds does not answer a request for this
+    // subject, §3.1.2.2. It is not reused; whoever the client named has to
+    // log in, and the flow's end is where a different outcome is refused.
+    let held = live_login(transaction, signed_in, now)
+        .await?
+        .filter(|login| {
+            asked_claims
+                .subject_asked()
+                .is_none_or(|wanted| wanted == login.user_id)
+        });
     let achieved = held.as_ref().map(|login| AchievedAuth {
         loa: login.loa.unwrap_or(0),
         auth_time: login.auth_time.unwrap_or(login.started_at),
     });
+
+    let stored_claims = (!asked_claims.is_empty()).then(|| asked_claims.to_value());
 
     match acr::decide(&asked, &map, achieved, now.timestamp()) {
         AuthDecision::Satisfied => {}
@@ -174,6 +216,7 @@ pub async fn begin(
                 redirect_uri,
                 &granted,
                 requested,
+                stored_claims.as_ref(),
                 now,
             )
             .await;
@@ -208,6 +251,7 @@ pub async fn begin(
                         auth_time: login.auth_time.unwrap_or(login.started_at),
                     },
                 ),
+                claims: stored_claims.as_ref(),
             },
             now,
         )
@@ -225,6 +269,7 @@ pub async fn begin(
         redirect_uri,
         &granted,
         requested,
+        stored_claims.as_ref(),
         now,
     )
     .await
@@ -265,6 +310,7 @@ async fn start_login(
     redirect_uri: &str,
     granted: &str,
     requested: &Requested<'_>,
+    claims: Option<&Value>,
     now: DateTime<Utc>,
 ) -> Result<Begun, Refusal> {
     let flow = browser_flow(transaction, client).await?;
@@ -292,6 +338,10 @@ async fn start_login(
                 "nonce": requested.nonce,
                 "code_challenge": requested.code_challenge,
                 "code_challenge_method": requested.code_challenge_method,
+                // What the client named, already read and kept in the shape
+                // the store reads back, so the door is the only place it is
+                // parsed.
+                "claims": claims,
             }),
         },
     )

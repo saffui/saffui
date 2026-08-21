@@ -49,6 +49,7 @@ fn client_session(id: &str, user_session: &str) -> ClientSessionModel {
         current_refresh_token: Some("rt-s3cr3t".into()),
         current_refresh_token_use_count: Some(0),
         offline: Some(false),
+        requested_claims: None,
     }
 }
 

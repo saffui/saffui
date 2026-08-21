@@ -3,6 +3,12 @@
 (function () {
   "use strict";
 
+  // A browser without `fetch` keeps the form it has: the submission goes to
+  // the server as a form, and the server sends the browser on.
+  if (typeof fetch !== "function") {
+    return;
+  }
+
   const form = document.getElementById("login");
   const credentials = document.getElementById("credentials");
   const code = document.getElementById("code");

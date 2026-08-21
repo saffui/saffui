@@ -36,5 +36,7 @@ button {
   border-radius: .25rem;
 }
 button:disabled { opacity: .6; }
-#notice { margin: 1rem 0 0; color: #b91c1c; }
-[hidden] { display: none !important; }
+#notice, .flash { margin: 1rem 0 0; color: #b91c1c; }
+[hidden], .flash { display: none; }
+/* The fragment names the outcome, and the element it names shows itself. */
+#code:target, .flash:target { display: block; }

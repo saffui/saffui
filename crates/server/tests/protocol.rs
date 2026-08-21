@@ -3416,3 +3416,74 @@ async fn a_start_with_no_page_named_lands_on_this_servers_page() {
         "the login was not bound to the browser it sent away"
     );
 }
+
+/// A browser running no script posts the form and is sent on: to the client
+/// with a code when admitted, back to the page with the outcome in the
+/// fragment when not. A blank field is a field not answered.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_form_is_answered_by_being_sent_on() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let path = format!("/realms/{}/protocol/openid-connect/login", support::REALM);
+    let post = |form: &'static [(&'static str, &'static str)]| {
+        test::TestRequest::post()
+            .uri(&path)
+            .insert_header((
+                "cookie",
+                format!("{}={auth_session}", support::AUTH_SESSION_COOKIE),
+            ))
+            .set_form(form)
+            .to_request()
+    };
+
+    let refused = test::call_service(
+        &app,
+        post(&[
+            ("username", support::SUBJECT),
+            ("password", "not-the-password"),
+            ("totp", ""),
+        ]),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        refused.headers().get("location").unwrap().to_str().unwrap(),
+        format!("{path}#refused"),
+        "a refusal did not send the browser back to the page"
+    );
+
+    let admitted = test::call_service(
+        &app,
+        post(&[
+            ("username", support::SUBJECT),
+            ("password", support::PASSWORD),
+            ("totp", ""),
+        ]),
+    )
+    .await;
+    assert_eq!(admitted.status(), StatusCode::SEE_OTHER);
+    let landing = admitted
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        landing.starts_with(REDIRECT) && landing.contains("code="),
+        "an admission did not send the browser to the client with a code: {landing}"
+    );
+    let set = admitted
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        cookie_value(&set, support::SSO_COOKIE).is_some(),
+        "the browser was sent on without being signed in"
+    );
+}

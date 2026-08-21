@@ -1,11 +1,13 @@
 //! Answering a login a browser started.
 //!
-//! JSON, because the screens are an application of their own and this answers
-//! them rather than rendering them. Not an endpoint any RFC specifies, so the
-//! shape is this server's: the three outcomes a flow has, named.
+//! Two ways in, one flow behind them. JSON for the screens that are an
+//! application of their own, answered in JSON. A form for the page this server
+//! renders and for any browser that runs no script, answered the way a browser
+//! understands: sent on. Not an endpoint any RFC specifies, so the shape is this
+//! server's: the three outcomes a flow has, named.
 
 use actix_web::http::StatusCode;
-use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
+use actix_web::{Either, HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
@@ -35,6 +37,16 @@ pub struct Answered {
     pub webauthn_register: Option<String>,
 }
 
+/// How the answer arrived, which is how the outcome is told.
+#[derive(Clone, Copy)]
+enum Spoken {
+    Json,
+    /// A form: every outcome is a place to go. The page shows what the
+    /// fragment names, without a script and without this server rendering
+    /// anything into it.
+    Form,
+}
+
 /// How long the login this opens lasts, matching what the flow writes.
 const SSO_LIFESPAN: i64 = 36_000;
 
@@ -42,44 +54,57 @@ const SSO_LIFESPAN: i64 = 36_000;
 pub async fn answer(
     request: HttpRequest,
     realm: web::Path<String>,
-    answered: Option<web::Json<Answered>>,
+    answered: Option<Either<web::Json<Answered>, web::Form<Answered>>>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
     let now = Utc::now();
-    let Some(answered) = answered else {
-        return told(StatusCode::BAD_REQUEST, "unreadable", None);
+    let (answered, spoken) = match answered {
+        Some(Either::Left(json)) => (json.into_inner(), Spoken::Json),
+        Some(Either::Right(form)) => (form.into_inner(), Spoken::Form),
+        None => return told(StatusCode::BAD_REQUEST, "unreadable"),
     };
+    let page = request.path().to_owned();
+    let tell = |status: StatusCode, named: &str| match spoken {
+        Spoken::Json => told(status, named),
+        Spoken::Form => shown(&page, named),
+    };
+
     // No cookie, no login. A body naming one would let anybody who read an
     // identifier off a log answer somebody else's sign-in.
     let Some(auth_session) = binding::read(&request, binding::AUTH_SESSION) else {
-        return told(StatusCode::NOT_FOUND, "no-such-login", None);
+        return tell(StatusCode::NOT_FOUND, "no-such-login");
     };
     let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable", None);
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
     // Resolved before anything is read, and answered the same way a login that
     // does not exist is: which realms a deployment holds is not something an
     // unauthenticated caller gets to enumerate.
     let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(StatusCode::NOT_FOUND, "no-such-login", None);
+        return tell(StatusCode::NOT_FOUND, "no-such-login");
     };
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable", None);
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
 
+    // A field left blank is a field not answered. A form posts every input it
+    // has, and a step handed an empty code has been answered wrongly rather
+    // than not yet.
+    let filled = |field: &Option<String>| field.clone().filter(|value| !value.is_empty());
     let mut answers = Vec::new();
-    if let Some(secret) = answered.password.clone() {
+    if let Some(secret) = filled(&answered.password) {
         answers.push(Answer::Password(SecretBox::new(Box::new(secret))));
     }
-    if let Some(typed) = answered.totp.clone() {
+    if let Some(typed) = filled(&answered.totp) {
         answers.push(Answer::Totp(typed));
     }
-    if let Some(handed_back) = answered.webauthn.clone() {
+    if let Some(handed_back) = filled(&answered.webauthn) {
         answers.push(Answer::Webauthn(handed_back));
     }
+    let attestation = filled(&answered.webauthn_register);
 
     let step = browser::answer_step(
         &transaction,
@@ -87,12 +112,12 @@ pub async fn answer(
         &context,
         &origin,
         &auth_session,
-        answered.username.as_deref(),
+        filled(&answered.username).as_deref(),
         // Everything the body carried. The flow runs every step against what it
         // was given, so a login resumed with a second factor still has to
         // satisfy the first, and each step takes the kind it understands.
         &answers,
-        answered.webauthn_register.as_deref(),
+        attestation.as_deref(),
         now,
     )
     .await;
@@ -103,23 +128,34 @@ pub async fn answer(
         // hands out a code whose login the redemption cannot find.
         Ok(step) => {
             if transaction.commit().await.is_err() {
-                return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable", None);
+                return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
             }
             match step {
-                Step::Challenge { execution_id, asks } => {
-                    let mut body = serde_json::json!({
-                        "status": "challenge",
-                        "execution": execution_id,
-                    });
-                    // Only when a step issued one. A password form is the
-                    // caller's own and carries no server state, so a body
-                    // claiming a challenge that is not there would have the
-                    // caller wait for a device that was never asked.
-                    if let (Some(asks), Some(map)) = (asks, body.as_object_mut()) {
-                        map.insert("asks".to_owned(), asks);
+                Step::Challenge { execution_id, asks } => match spoken {
+                    Spoken::Json => {
+                        let mut body = serde_json::json!({
+                            "status": "challenge",
+                            "execution": execution_id,
+                        });
+                        // Only when a step issued one. A password form is the
+                        // caller's own and carries no server state, so a body
+                        // claiming a challenge that is not there would have
+                        // the caller wait for a device that was never asked.
+                        if let (Some(asks), Some(map)) = (asks, body.as_object_mut()) {
+                            map.insert("asks".to_owned(), asks);
+                        }
+                        uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(body)
                     }
-                    uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(body)
-                }
+                    // A key needs the script; a code needs only the field.
+                    Spoken::Form => shown(
+                        &page,
+                        if asks.is_some() {
+                            "key-needs-script"
+                        } else {
+                            "code"
+                        },
+                    ),
+                },
                 // The login in progress is over, so its cookie goes and the one
                 // saying this browser is signed in takes its place. That second
                 // cookie is what makes another client's `/authorize` something
@@ -128,7 +164,10 @@ pub async fn answer(
                     redirect_to,
                     session_id,
                 } => {
-                    let mut response = HttpResponseBuilder::new(StatusCode::OK);
+                    let mut response = HttpResponseBuilder::new(match spoken {
+                        Spoken::Json => StatusCode::OK,
+                        Spoken::Form => StatusCode::SEE_OTHER,
+                    });
                     binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
                     binding::set(
                         &mut response,
@@ -137,24 +176,35 @@ pub async fn answer(
                         &context.realm_id,
                         SSO_LIFESPAN,
                     );
-                    uncached(&mut response).json(
-                        serde_json::json!({ "status": "admitted", "redirect_to": redirect_to }),
-                    )
+                    match spoken {
+                        Spoken::Json => uncached(&mut response).json(
+                            serde_json::json!({ "status": "admitted", "redirect_to": redirect_to }),
+                        ),
+                        Spoken::Form => uncached(&mut response)
+                            .insert_header(("Location", redirect_to))
+                            .finish(),
+                    }
                 }
-                Step::Refused => told(StatusCode::UNAUTHORIZED, "refused", None),
+                Step::Refused => tell(StatusCode::UNAUTHORIZED, "refused"),
             }
         }
-        Err(Unanswerable::NoSuchLogin) => told(StatusCode::NOT_FOUND, "no-such-login", None),
-        Err(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable", None),
+        Err(Unanswerable::NoSuchLogin) => tell(StatusCode::NOT_FOUND, "no-such-login"),
+        Err(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     }
 }
 
 /// One shape for every outcome. Never cached: a challenge and an admission both
 /// name a login in progress, and a cache would answer the next caller with it.
-fn told(status: StatusCode, status_name: &str, carried: Option<(&str, String)>) -> HttpResponse {
-    let mut body = serde_json::json!({ "status": status_name });
-    if let (Some((named, value)), Some(map)) = (carried, body.as_object_mut()) {
-        map.insert(named.to_owned(), serde_json::Value::String(value));
-    }
-    uncached(&mut HttpResponseBuilder::new(status)).json(body)
+fn told(status: StatusCode, status_name: &str) -> HttpResponse {
+    uncached(&mut HttpResponseBuilder::new(status))
+        .json(serde_json::json!({ "status": status_name }))
+}
+
+/// Back to the page, the outcome in the fragment. A fragment never reaches
+/// this server again, so what the page shows is never something it was told
+/// to show by a request.
+fn shown(page: &str, named: &str) -> HttpResponse {
+    uncached(&mut HttpResponseBuilder::new(StatusCode::SEE_OTHER))
+        .insert_header(("Location", format!("{page}#{named}")))
+        .finish()
 }

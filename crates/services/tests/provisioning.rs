@@ -243,3 +243,197 @@ fn realm() -> models::entities::realm::RealmModel {
         AuditableModel::from_creator("acme".into(), "root".into()),
     )
 }
+
+/// A deployment stands up from nothing, and standing it up again changes
+/// nothing: every piece says whether it was created, and the second pass says
+/// no everywhere. What was created is usable, not merely present: the key is
+/// published, the flow is the one `/authorize` looks up, the password verifies.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_deployment_is_provisioned_once_and_left_alone_after() {
+    use crypto::envelope::Envelope;
+    use crypto::password::migration::verify_and_plan;
+    use crypto::password::storage::StoredPassword;
+    use models::entities::credentials::CredentialType;
+    use models::entities::keys::KeyUse;
+    use secrecy::SecretBox;
+    use services::provisioning::{
+        Person, Registration, provision_browser_flow, provision_client, provision_signing_key,
+        provision_tenant, provision_user,
+    };
+    use std::sync::Arc;
+    use store::providers::{auth_flows, clients, credentials, realm_keys, users};
+
+    let fixture = Fixture::empty().await;
+    let provider = support::provider();
+    let envelope = Envelope::new(
+        Arc::new(support::provider()),
+        "a-wrapping-key-of-decent-length",
+    )
+    .expect("an envelope");
+    let secret = SecretBox::new(Box::new("a-client-secret".to_owned()));
+    let password = SecretBox::new(Box::new("a-password-of-decent-length".to_owned()));
+
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::tenant_wide("local"))
+        .await;
+    assert!(
+        provision_tenant(&transaction, "local", "Local")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !provision_tenant(&transaction, "local", "Local")
+            .await
+            .unwrap()
+    );
+    let realm = models::entities::realm::RealmCreateModel {
+        name: "main".into(),
+        display_name: "Main".into(),
+        enabled: true,
+    }
+    .into_model(
+        "main".into(),
+        AuditableModel::from_creator("local".into(), "provisioner".into()),
+    );
+    store::providers::realms::create(&transaction, &realm)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("local", "main"))
+        .await;
+    let registration = Registration {
+        client_id: "app",
+        secret: Some(&secret),
+        redirect_uris: vec!["https://app.example/callback".into()],
+    };
+    let person = Person {
+        user_name: "ada",
+        email: "ada@example.test",
+        password: &password,
+        given_name: Some("Ada"),
+        family_name: Some("Lovelace"),
+        phone: Some("+33123456789"),
+    };
+    for (pass, expected) in [("first", true), ("second", false)] {
+        assert_eq!(
+            provision_signing_key(
+                &transaction,
+                &provider,
+                &envelope,
+                "local",
+                "main",
+                1_700_000_000
+            )
+            .await
+            .unwrap(),
+            expected,
+            "{pass} pass, signing key"
+        );
+        assert_eq!(
+            provision_browser_flow(&transaction, "local", "main")
+                .await
+                .unwrap(),
+            expected,
+            "{pass} pass, browser flow"
+        );
+        assert_eq!(
+            provision_client(&transaction, &provider, "local", "main", &registration)
+                .await
+                .unwrap(),
+            expected,
+            "{pass} pass, client"
+        );
+        assert_eq!(
+            provision_user(&transaction, &provider, "local", "main", &person)
+                .await
+                .unwrap(),
+            expected,
+            "{pass} pass, user"
+        );
+    }
+
+    let published = realm_keys::published(&transaction, KeyUse::Sig)
+        .await
+        .unwrap();
+    assert_eq!(published.len(), 1, "one key, published once");
+    assert_eq!(
+        published[0].kid,
+        crypto::thumbprint::jwk_sha256_thumbprint(
+            &provider,
+            &crypto::jose::jwk::Jwk::from_map(
+                published[0].public_jwk.as_object().expect("a jwk").clone()
+            )
+            .expect("the published key")
+        )
+        .expect("its thumbprint"),
+        "the key is not named by its thumbprint"
+    );
+
+    let flow = auth_flows::flow_by_alias(&transaction, "browser")
+        .await
+        .unwrap()
+        .expect("the flow /authorize looks up");
+    assert_eq!(
+        auth_flows::executions_of(&transaction, &flow.flow_id)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "one password step"
+    );
+
+    let client = clients::load(&transaction, "app")
+        .await
+        .unwrap()
+        .expect("the client");
+    assert_eq!(
+        client.public_client,
+        Some(false),
+        "a client with a secret is confidential"
+    );
+    assert_eq!(client.standard_flow_enabled, Some(true));
+    assert!(
+        services::authorize::granted_scope(&transaction, "app", "openid profile email")
+            .await
+            .unwrap()
+            .contains("email"),
+        "the default scopes were not attached"
+    );
+
+    let user = users::load_by_name(&transaction, "ada")
+        .await
+        .unwrap()
+        .expect("the user");
+    assert_eq!(user.phone_number.as_deref(), Some("+33123456789"));
+    assert_eq!(user.phone_number_verified, Some(true));
+    assert_eq!(
+        user.attributes
+            .as_ref()
+            .and_then(|held| models::entities::attributes::string_at(
+                held,
+                models::entities::user::profile::FIRST_NAME
+            )),
+        Some("Ada"),
+        "the given name was not kept where the profile scope reads it"
+    );
+    let held =
+        credentials::load_for_user_of_type(&transaction, &user.user_id, CredentialType::Password)
+            .await
+            .unwrap();
+    let stored = StoredPassword::Argon2id {
+        encoded: held[0].secret.expose().to_owned(),
+    }
+    .to_legacy_hash()
+    .expect("a password in the shape the login reads");
+    assert!(
+        verify_and_plan(&provider, &password, &stored)
+            .expect("a verification")
+            .valid,
+        "the provisioned password does not verify"
+    );
+    transaction.commit().await.unwrap();
+}

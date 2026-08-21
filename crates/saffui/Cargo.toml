@@ -18,7 +18,11 @@ crypto = { workspace = true }
 secrecy = { workspace = true }
 pgcore = { workspace = true }
 server = { workspace = true }
+# Provisioning: what a deployment needs before anybody can log in.
+services = { workspace = true }
 store = { workspace = true }
+models = { workspace = true }
+chrono = { workspace = true }
 
 actix-web = { workspace = true }
 clap = { workspace = true }

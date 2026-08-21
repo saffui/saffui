@@ -11,12 +11,34 @@
 //! exist yet when it runs, addressed to a client id the deployment names in its
 //! own configuration.
 
+use crypto::envelope::Envelope;
+use crypto::jose::jwk::alg::ec::EcKeyPair;
+use crypto::jose::jwk::{Jwk, KeyPair, P_256};
+use crypto::password::storage::StoredPassword;
+use crypto::provider::{Argon2Params, CryptoProvider, SignAlg};
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
+use models::entities::auth::{
+    AuthenticationExecutionMutationModel, AuthenticationFlowMutationModel,
+    AuthenticatorRequirement, ExecutionStep,
+};
 use models::entities::client::{ClientCreateModel, ClientScopeModel, Protocol};
+use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
+use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey};
 use models::entities::realm::RealmModel;
-use store::error::StoreResult;
-use store::providers::{client_scopes, clients, realms};
+use models::entities::tenant::{TenantCreateModel, TenantModel};
+use models::entities::user::UserCreateModel;
+use secrecy::SecretBox;
+use store::error::{StoreError, StoreResult};
+use store::keyring;
+use store::providers::{
+    auth_flows, client_scopes, clients, credentials, realm_keys, realms, tenants, users,
+};
+
+/// Who the audit trail names for rows nobody typed in.
+const PROVISIONER: &str = "provisioner";
+/// The alias `/authorize` runs when a client binds no other.
+const BROWSER_FLOW: &str = "browser";
 
 /// What the admin plane requires on a token unless a deployment renames it.
 ///
@@ -193,4 +215,264 @@ pub async fn provision_admin_console(
     }
 
     client_scopes::attach_scope(transaction, console.client_id, console.scope, false).await
+}
+
+/// A tenant, created unless it already is. Runs tenant wide, because a realm
+/// cannot be scoped to before its tenant exists.
+pub async fn provision_tenant(
+    transaction: &Transaction<'_>,
+    tenant_id: &str,
+    display_name: &str,
+) -> StoreResult<bool> {
+    if tenants::exists(transaction).await? {
+        return Ok(false);
+    }
+    let tenant: TenantModel = TenantCreateModel {
+        tenant_id: tenant_id.to_owned(),
+        display_name: display_name.to_owned(),
+        region: None,
+        limits: None,
+        created_by: Some(PROVISIONER.to_owned()),
+    }
+    .into();
+    tenants::create(transaction, &tenant).await?;
+    Ok(true)
+}
+
+/// The realm's first signing key, unless it holds one by this name.
+///
+/// The ring comes first: a key is stored sealed under it, so there is nowhere
+/// to write one until it exists. The key is ES256, the one algorithm every
+/// relying party must support, and the private half never leaves this
+/// transaction unsealed.
+pub async fn provision_signing_key(
+    transaction: &Transaction<'_>,
+    envelope: &Envelope,
+    tenant: &str,
+    realm_id: &str,
+    kid: &str,
+    now: i64,
+) -> StoreResult<bool> {
+    keyring::provision(transaction, envelope, tenant, realm_id).await?;
+    let ring = keyring::load(transaction, envelope, tenant, realm_id).await?;
+    // Published is enough to know it is there; opening it would unseal a
+    // private half nothing here needs.
+    if realm_keys::published(transaction, KeyUse::Sig)
+        .await?
+        .iter()
+        .any(|key| key.kid == kid)
+    {
+        return Ok(false);
+    }
+
+    let mut private = Jwk::generate_ec_key(P_256).map_err(|_| StoreError::Backend)?;
+    private.set_key_id(kid);
+    private.set_algorithm("ES256");
+    let mut public = private.to_public_key().map_err(|_| StoreError::Backend)?;
+    public.set_key_id(kid);
+    public.set_algorithm("ES256");
+    let private_pem = EcKeyPair::from_jwk(&private)
+        .map_err(|_| StoreError::Backend)?
+        .to_pem_private_key();
+
+    realm_keys::create(
+        transaction,
+        &ring,
+        envelope,
+        &RealmSigningKey {
+            tenant: tenant.to_owned(),
+            realm_id: realm_id.to_owned(),
+            kid: kid.to_owned(),
+            algorithm: SignAlg::Es256,
+            key_use: KeyUse::Sig,
+            status: KeyStatus::Active,
+            priority: 10,
+            private_pem,
+            public_jwk: serde_json::to_value(public.as_ref()).map_err(|_| StoreError::Backend)?,
+            created_at: now,
+        },
+    )
+    .await?;
+    Ok(true)
+}
+
+/// The flow a browser login runs: one required password step, unless the
+/// realm already has a flow by that alias. `/authorize` refuses a realm that
+/// has none rather than opening a login nothing can advance.
+pub async fn provision_browser_flow(
+    transaction: &Transaction<'_>,
+    tenant: &str,
+    realm_id: &str,
+) -> StoreResult<bool> {
+    if auth_flows::flow_by_alias(transaction, BROWSER_FLOW)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let metadata = AuditableModel::from_creator(tenant.to_owned(), PROVISIONER.to_owned());
+    let flow = AuthenticationFlowMutationModel {
+        alias: BROWSER_FLOW.to_owned(),
+        provider_id: "basic-flow".to_owned(),
+        description: "Username and password".to_owned(),
+        top_level: Some(true),
+        built_in: Some(true),
+    }
+    .into_model(
+        BROWSER_FLOW.to_owned(),
+        realm_id.to_owned(),
+        metadata.clone(),
+    );
+    auth_flows::create_flow(transaction, &flow).await?;
+
+    let step = AuthenticationExecutionMutationModel {
+        alias: "password".to_owned(),
+        flow_id: BROWSER_FLOW.to_owned(),
+        priority: 10,
+        step: ExecutionStep::Authenticator {
+            authenticator: "password".to_owned(),
+            config_id: None,
+        },
+        requirement: AuthenticatorRequirement::Required,
+    }
+    .into_model(
+        format!("{BROWSER_FLOW}-password"),
+        realm_id.to_owned(),
+        metadata,
+    );
+    auth_flows::create_execution(transaction, &step).await?;
+    Ok(true)
+}
+
+/// A relying party to register. Confidential when it has a secret, public
+/// when it has none.
+pub struct Registration<'a> {
+    pub client_id: &'a str,
+    pub secret: Option<&'a SecretBox<String>>,
+    pub redirect_uris: Vec<String>,
+}
+
+/// Register a client, unless one by that id exists, and attach it to every
+/// scope a fresh realm grants by default.
+pub async fn provision_client(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &str,
+    realm_id: &str,
+    registration: &Registration<'_>,
+) -> StoreResult<bool> {
+    if clients::load(transaction, registration.client_id)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let metadata = AuditableModel::from_creator(tenant.to_owned(), PROVISIONER.to_owned());
+    let mut client = ClientCreateModel {
+        name: registration.client_id.to_owned(),
+        display_name: registration.client_id.to_owned(),
+        description: String::new(),
+        enabled: Some(true),
+    }
+    .into_model(
+        registration.client_id.to_owned(),
+        realm_id.to_owned(),
+        metadata,
+    );
+    client.protocol = Some(Protocol::OpenId);
+    client.public_client = Some(registration.secret.is_none());
+    client.standard_flow_enabled = Some(true);
+    client.service_account_enabled = Some(false);
+    client.direct_access_grants_enabled = Some(false);
+    client.implicit_flow_enabled = Some(false);
+    client.redirect_uris = Some(registration.redirect_uris.clone());
+    clients::create(transaction, &client).await?;
+    clients::update(transaction, &client).await?;
+
+    if let Some(secret) = registration.secret {
+        let StoredPassword::Argon2id { encoded } =
+            StoredPassword::hash_argon2id(provider, Argon2Params::default(), secret)
+                .map_err(|_| StoreError::Backend)?
+        else {
+            return Err(StoreError::Backend);
+        };
+        clients::rotate_secret(transaction, registration.client_id, &encoded, None).await?;
+    }
+
+    // The scopes first, so attaching never depends on who ran before. It is
+    // idempotent, and a realm that already has them keeps what it has.
+    provision_standard_scopes(transaction, tenant, realm_id).await?;
+    for (scope, default, _) in STANDARD_SCOPES {
+        if default {
+            client_scopes::attach_scope(transaction, registration.client_id, scope, false).await?;
+        }
+    }
+    Ok(true)
+}
+
+/// A person who can log in.
+pub struct Person<'a> {
+    pub user_name: &'a str,
+    pub email: &'a str,
+    pub password: &'a SecretBox<String>,
+}
+
+/// Create a user with a password, unless one by that name exists.
+pub async fn provision_user(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &str,
+    realm_id: &str,
+    person: &Person<'_>,
+) -> StoreResult<bool> {
+    if users::load_by_name(transaction, person.user_name)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let metadata = AuditableModel::from_creator(tenant.to_owned(), PROVISIONER.to_owned());
+    let user = UserCreateModel {
+        user_name: person.user_name.to_owned(),
+        enabled: true,
+        email: person.email.to_owned(),
+        email_verified: Some(!person.email.is_empty()),
+        phone_number: None,
+        phone_number_verified: None,
+        required_actions: None,
+        not_before: None,
+        user_storage: None,
+        attributes: None,
+        is_service_account: None,
+        service_account_client_link: None,
+    }
+    .into_model(
+        person.user_name.to_owned(),
+        realm_id.to_owned(),
+        metadata.clone(),
+    );
+    users::create(transaction, &user).await?;
+
+    let StoredPassword::Argon2id { encoded } =
+        StoredPassword::hash_argon2id(provider, Argon2Params::default(), person.password)
+            .map_err(|_| StoreError::Backend)?
+    else {
+        return Err(StoreError::Backend);
+    };
+    credentials::create(
+        transaction,
+        &CredentialModel {
+            credential_id: format!("{}-password", person.user_name),
+            realm_id: realm_id.to_owned(),
+            user_id: person.user_name.to_owned(),
+            credential_type: CredentialType::Password,
+            secret: CredentialSecret::new(encoded),
+            user_label: None,
+            otp: None,
+            priority: 0,
+            metadata,
+        },
+    )
+    .await?;
+    Ok(true)
 }

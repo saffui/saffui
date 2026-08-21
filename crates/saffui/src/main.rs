@@ -70,11 +70,13 @@ enum Command {
         /// to a value written here.
         #[arg(long = "console-redirect")]
         console_redirects: Vec<String>,
-        /// A client to register. Its secret is read from
-        /// `SAFFUI_PROVISION_CLIENT_SECRET`; absent, the client is public.
-        #[arg(long)]
-        client: Option<String>,
-        /// The client's redirect URIs.
+        /// Clients to register, every one with the same redirect URIs and,
+        /// when `SAFFUI_PROVISION_CLIENT_SECRET` is set, the same secret.
+        /// One secret for several clients is a local deployment's shortcut,
+        /// not a registration policy: absent, they are public.
+        #[arg(long = "client")]
+        clients: Vec<String>,
+        /// The clients' redirect URIs.
         #[arg(long = "redirect")]
         redirects: Vec<String>,
         /// A user to create. The password is read from
@@ -83,6 +85,12 @@ enum Command {
         user: Option<String>,
         #[arg(long, default_value = "")]
         email: String,
+        #[arg(long)]
+        given_name: Option<String>,
+        #[arg(long)]
+        family_name: Option<String>,
+        #[arg(long)]
+        phone: Option<String>,
     },
 }
 
@@ -100,19 +108,25 @@ fn main() -> ExitCode {
                         tenant,
                         realm,
                         console_redirects,
-                        client,
+                        clients,
                         redirects,
                         user,
                         email,
+                        given_name,
+                        family_name,
+                        phone,
                     } => {
                         provision(&Wanted {
                             tenant,
                             realm,
                             console_redirects,
-                            client,
+                            clients,
                             redirects,
                             user,
                             email,
+                            given_name,
+                            family_name,
+                            phone,
                         })
                         .await
                     }
@@ -231,10 +245,13 @@ struct Wanted {
     tenant: String,
     realm: String,
     console_redirects: Vec<String>,
-    client: Option<String>,
+    clients: Vec<String>,
     redirects: Vec<String>,
     user: Option<String>,
     email: String,
+    given_name: Option<String>,
+    family_name: Option<String>,
+    phone: Option<String>,
 }
 
 /// Create what is missing, and say what was created.
@@ -330,7 +347,13 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
     {
         println!("browser flow created");
     }
-    if let Some(client_id) = wanted.client.as_deref() {
+    if provisioning::provision_levels(&transaction, realm)
+        .await
+        .map_err(unreadable)?
+    {
+        println!("levels mapped");
+    }
+    for client_id in &wanted.clients {
         let created = provisioning::provision_client(
             &transaction,
             plane.sealing.provider.as_ref(),
@@ -361,6 +384,9 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
                 user_name,
                 email: &wanted.email,
                 password,
+                given_name: wanted.given_name.as_deref(),
+                family_name: wanted.family_name.as_deref(),
+                phone: wanted.phone.as_deref(),
             },
         )
         .await

@@ -314,6 +314,9 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         user_name: "ada",
         email: "ada@example.test",
         password: &password,
+        given_name: Some("Ada"),
+        family_name: Some("Lovelace"),
+        phone: Some("+33123456789"),
     };
     for (pass, expected) in [("first", true), ("second", false)] {
         assert_eq!(
@@ -405,6 +408,18 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         .await
         .unwrap()
         .expect("the user");
+    assert_eq!(user.phone_number.as_deref(), Some("+33123456789"));
+    assert_eq!(user.phone_number_verified, Some(true));
+    assert_eq!(
+        user.attributes
+            .as_ref()
+            .and_then(|held| models::entities::attributes::string_at(
+                held,
+                models::entities::user::profile::FIRST_NAME
+            )),
+        Some("Ada"),
+        "the given name was not kept where the profile scope reads it"
+    );
     let held =
         credentials::load_for_user_of_type(&transaction, &user.user_id, CredentialType::Password)
             .await

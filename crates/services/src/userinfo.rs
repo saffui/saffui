@@ -98,13 +98,24 @@ fn profile_claims(claims: &mut Map<String, Value>, subject: &UserModel) {
     for (claim, attribute) in [
         ("given_name", profile::FIRST_NAME),
         ("family_name", profile::LAST_NAME),
+        ("middle_name", profile::MIDDLE_NAME),
         ("nickname", profile::NICK_NAME),
+        ("profile", profile::PROFILE_PAGE),
+        ("picture", profile::PICTURE),
+        ("website", profile::WEBSITE),
         ("gender", profile::GENDER),
         ("birthdate", profile::BIRTH_DATE),
+        ("zoneinfo", profile::ZONEINFO),
+        ("locale", profile::LOCALE),
     ] {
         if let Some(value) = held(attribute) {
             claims.insert(claim.into(), json!(value));
         }
+    }
+    // §5.1: when the profile was last changed, as seconds. The record's own
+    // stamp, because nothing else knows.
+    if let Some(updated) = subject.metadata.updated_at {
+        claims.insert("updated_at".into(), json!(updated.timestamp()));
     }
 
     // §5.4 lists `name` as the full name in displayable form. Composed from the

@@ -317,6 +317,7 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         given_name: Some("Ada"),
         family_name: Some("Lovelace"),
         phone: Some("+33123456789"),
+        attributes: vec![("user.profile.locale", "en-GB")],
     };
     for (pass, expected) in [("first", true), ("second", false)] {
         assert_eq!(
@@ -396,12 +397,19 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         "a client with a secret is confidential"
     );
     assert_eq!(client.standard_flow_enabled, Some(true));
-    assert!(
-        services::authorize::granted_scope(&transaction, "app", "openid profile email")
+    assert_eq!(
+        services::authorize::granted_scope(&transaction, "app", "openid profile email phone")
             .await
-            .unwrap()
-            .contains("email"),
-        "the default scopes were not attached"
+            .unwrap(),
+        "openid profile email phone",
+        "a standard scope asked for was not granted"
+    );
+    assert_eq!(
+        services::authorize::granted_scope(&transaction, "app", "openid email")
+            .await
+            .unwrap(),
+        "openid email",
+        "a scope nobody asked for was granted anyway"
     );
 
     let user = users::load_by_name(&transaction, "ada")

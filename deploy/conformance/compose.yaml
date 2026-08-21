@@ -1,0 +1,135 @@
+# saffui under the OpenID conformance suite, on one machine.
+#
+# The suite's prebuilt images beside the deployment from ../local, with saffui
+# behind TLS: the suite refuses any discovery document whose endpoints are not
+# https. The certificate is Caddy's own, which the suite's client accepts
+# unverified, and `saffui.test` resolves inside this network only.
+#
+# Needs a checkout of gitlab.com/openid/conformance-suite for the runner
+# script: CONFORMANCE_SUITE_DIR=/path/to/it docker compose up runner
+
+services:
+  postgres:
+    extends:
+      file: ../local/compose.yaml
+      service: postgres
+
+  migrate:
+    extends:
+      file: ../local/compose.yaml
+      service: migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Three relying parties: the plan presents one while authenticating as
+  # another, and runs one through `client_secret_post`.
+  provision:
+    extends:
+      file: ../local/compose.yaml
+      service: provision
+    command:
+      - provision
+      - --tenant=local
+      - --realm=main
+      - --console-redirect=http://localhost:5173/callback
+      - --client=conformance
+      - --client=conformance-second
+      - --client=conformance-post
+      - --redirect=https://localhost.emobix.co.uk:8443/test/a/saffui/callback
+      - --user=ada
+      - --email=ada@example.test
+      - --given-name=Ada
+      - --family-name=Lovelace
+      - --phone=+33123456789
+      - --attribute=user.profile.middle_name=Augusta
+      - --attribute=user.profile.nick_name=ada
+      - --attribute=user.profile.profile=https://saffui.test/ada
+      - --attribute=user.profile.picture=https://saffui.test/ada.png
+      - --attribute=user.profile.website=https://saffui.test
+      - --attribute=user.profile.gender=female
+      - --attribute=user.profile.birthdate=1990-12-10
+      - --attribute=user.profile.zoneinfo=Europe/London
+      - --attribute=user.profile.locale=en-GB
+    environment:
+      SAFFUI_PUBLIC_ORIGIN: https://saffui.test
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  saffui:
+    extends:
+      file: ../local/compose.yaml
+      service: saffui
+    ports: !reset []
+    environment:
+      SAFFUI_PUBLIC_ORIGIN: https://saffui.test
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
+  tls:
+    image: caddy:2
+    command: ["caddy", "reverse-proxy", "--from", "saffui.test", "--to", "saffui:8080", "--internal-certs"]
+    networks:
+      default:
+        aliases:
+          - saffui.test
+    depends_on:
+      saffui:
+        condition: service_healthy
+
+  mongodb:
+    image: mongo:6.0.13
+
+  nginx:
+    image: registry.gitlab.com/openid/conformance-suite/nginx:latest
+    ports:
+      - "8443:8443"
+    networks:
+      default:
+        aliases:
+          # The suite's own public name, so its redirects resolve in here.
+          - localhost.emobix.co.uk
+    depends_on:
+      - server
+
+  server:
+    image: registry.gitlab.com/openid/conformance-suite:latest
+    environment:
+      BASE_URL: https://localhost.emobix.co.uk:8443
+      BASE_MTLS_URL: https://localhost.emobix.co.uk:8444
+      MONGODB_HOST: mongodb
+      SPRING_PROFILES_ACTIVE: dev
+      OIDC_GOOGLE_CLIENTID: unused
+      OIDC_GOOGLE_SECRET: unused
+      OIDC_GITLAB_CLIENTID: unused
+      OIDC_GITLAB_SECRET: unused
+      JAVA_EXTRA_ARGS: -Dfintechlabs.devmode=true
+    depends_on:
+      - mongodb
+      - tls
+
+  # The suite's own runner, against the plan and configuration in this
+  # directory. Results land in ./results.
+  runner:
+    image: python:3.12-slim
+    profiles: ["run"]
+    environment:
+      CONFORMANCE_SERVER: https://localhost.emobix.co.uk:8443/
+      CONFORMANCE_DEV_MODE: "1"
+    volumes:
+      - ${CONFORMANCE_SUITE_DIR:?a checkout of gitlab.com/openid/conformance-suite}/scripts:/suite/scripts:ro
+      - ./basic.json:/plans/basic.json:ro
+      - ./results:/results
+    working_dir: /suite/scripts
+    command:
+      - sh
+      - -c
+      - >
+        pip install -q -r requirements.txt &&
+        python3 run-test-plan.py --export-dir /results --verbose --no-parallel
+        "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
+        /plans/basic.json
+    depends_on:
+      - nginx

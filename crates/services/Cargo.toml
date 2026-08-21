@@ -20,6 +20,9 @@ commons = { workspace = true }
 models = { workspace = true }
 crypto = { workspace = true }
 store = { workspace = true }
+# The relying party a credential is scoped to is built from the deployment's
+# own origin, never from anything a request carried.
+config = { workspace = true }
 authz = { workspace = true }
 
 chrono = { workspace = true }
@@ -30,6 +33,8 @@ secrecy = { workspace = true }
 # Hex for the code digest a redemption looks a row up by, base64url for the
 # PKCE challenge, both spelled by the specs that fixed them.
 data-encoding = { workspace = true }
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+url.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }

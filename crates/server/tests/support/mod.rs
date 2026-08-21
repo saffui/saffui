@@ -97,6 +97,8 @@ pub const TOTP_SECRET: &str = "JBSWY3DPEHPK3PXP";
 /// A flow that runs a password and then a code, so a test can reach a level the
 /// default flow cannot.
 pub const STRONG_FLOW: &str = "browser-strong";
+/// A flow whose second step is a key rather than a code.
+pub const KEYED_FLOW: &str = "browser-keyed";
 pub const PASSWORD_ACR: &str = "password";
 pub const STRONG_ACR: &str = "mfa";
 /// What the browser is bound by. Named here so a test asks for the same cookie
@@ -365,6 +367,45 @@ impl Plane {
             .await
             .expect("the session table")
             .is_some()
+    }
+
+    /// Enrol a passkey for the subject, as a registration ceremony would leave
+    /// it. The blob is the library's own format, which is what the store keeps.
+    #[allow(dead_code, reason = "only the protocol suite enrols one")]
+    pub async fn enrol_passkey(&self, passkey: serde_json::Value, credential_id: Vec<u8>) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::webauthn::enrol(
+            &transaction,
+            &store::providers::webauthn::EnrolledCredential {
+                credential_id,
+                user_id: SUBJECT.into(),
+                label: "a key".into(),
+                passkey,
+                sign_count: 0,
+                last_used_at: None,
+            },
+        )
+        .await
+        .expect("the credential table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// What a login in progress remembers, which is where a challenge's state
+    /// lands.
+    #[allow(dead_code, reason = "only the protocol suite asks")]
+    pub async fn login_notes(&self, auth_session: &str) -> serde_json::Value {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::login::resume(&transaction, auth_session)
+            .await
+            .expect("the auth session table")
+            .map(|login| login.notes)
+            .unwrap_or(serde_json::Value::Null)
     }
 
     /// Point a client's browser login at another flow.
@@ -801,6 +842,39 @@ impl Plane {
         store::providers::auth_flows::create_execution(&transaction, &execution)
             .await
             .unwrap();
+
+        // A flow whose second step is a key. What exercises a challenge the
+        // server issues and has to remember, which a code never needed.
+        let keyed = models::entities::auth::AuthenticationFlowMutationModel {
+            alias: KEYED_FLOW.into(),
+            provider_id: "basic-flow".into(),
+            description: String::new(),
+            top_level: Some(true),
+            built_in: Some(false),
+        }
+        .into_model(KEYED_FLOW.into(), REALM.into(), metadata());
+        store::providers::auth_flows::create_flow(&transaction, &keyed)
+            .await
+            .unwrap();
+        for (id, authenticator, priority) in [
+            ("exec-keyed-1", "password", 10),
+            ("exec-keyed-2", "webauthn", 20),
+        ] {
+            let step = models::entities::auth::AuthenticationExecutionMutationModel {
+                alias: id.into(),
+                flow_id: KEYED_FLOW.into(),
+                priority,
+                step: models::entities::auth::ExecutionStep::Authenticator {
+                    authenticator: authenticator.into(),
+                    config_id: None,
+                },
+                requirement: models::entities::auth::AuthenticatorRequirement::Required,
+            }
+            .into_model(id.into(), REALM.into(), metadata());
+            store::providers::auth_flows::create_execution(&transaction, &step)
+                .await
+                .unwrap();
+        }
 
         // A second flow, password then a code. What lets a test reach a level
         // the first flow cannot, which is what `acr_values` asks about.

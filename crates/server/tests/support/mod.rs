@@ -39,6 +39,11 @@ use store::schema::migrations;
 use store::tenancy::{Tenancy, TenantContext};
 use tokio::sync::{Mutex, MutexGuard};
 use tokio_postgres::{Config, NoTls};
+use webauthn_rs::WebauthnBuilder;
+use webauthn_rs::prelude::{RegisterPublicKeyCredential, Url, Uuid};
+
+#[allow(dead_code, reason = "only the protocol suite runs a key")]
+pub mod soft_key;
 
 /// One database, so the suites take turns on it.
 static DATABASE: Mutex<()> = Mutex::const_new(());
@@ -367,6 +372,39 @@ impl Plane {
             .await
             .expect("the session table")
             .is_some()
+    }
+
+    /// Enrol a soft key by running the real registration ceremony: the server
+    /// side issues the challenge and writes the stored blob, the soft key
+    /// attests, and the verifier arbitrates between them.
+    #[allow(dead_code, reason = "only the protocol suite enrols one")]
+    pub async fn enrol_soft_passkey(&self) -> soft_key::SoftKey {
+        let url = Url::parse(ORIGIN).expect("the fixture origin");
+        let party = WebauthnBuilder::new(url.domain().expect("a host"), &url)
+            .and_then(WebauthnBuilder::build)
+            .expect("a relying party");
+        // The subject's user handle. Fixed rather than derived: its value only
+        // rides inside the ceremony state, and the tests never read it back.
+        let (creation, state) = party
+            .start_passkey_registration(Uuid::from_u128(0xada), SUBJECT, SUBJECT, None)
+            .expect("a registration challenge");
+
+        let key = soft_key::SoftKey::new();
+        let attested: RegisterPublicKeyCredential = serde_json::from_value(key.attest(
+            &serde_json::to_value(&creation).expect("the wire shape"),
+            ORIGIN,
+        ))
+        .expect("the shape a browser posts");
+        let passkey = party
+            .finish_passkey_registration(&attested, &state)
+            .expect("an attestation the verifier accepts");
+
+        self.enrol_passkey(
+            serde_json::to_value(&passkey).expect("the stored shape"),
+            passkey.cred_id().as_ref().to_vec(),
+        )
+        .await;
+        key
     }
 
     /// Enrol a passkey for the subject, as a registration ceremony would leave

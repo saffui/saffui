@@ -58,7 +58,9 @@
     say("");
     try {
       const { status, told } = await post();
-      if (told.status === "admitted") {
+      // Admitted, or refused for the client to hear: either way the
+      // browser goes where the server said.
+      if (told.status === "admitted" || told.status === "sent_back") {
         location.assign(told.redirect_to);
         return;
       }

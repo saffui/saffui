@@ -10,8 +10,9 @@ use models::entities::attributes;
 use models::entities::keys::RealmSigningKeyView;
 use models::entities::user::{UserModel, profile};
 use serde_json::{Map, Value, json};
-use store::providers::users;
+use store::providers::{client_scopes, sessions, users};
 
+use crate::claims_request::{self, ClaimsRequest};
 use crate::token;
 use crate::token::issuance::Kind;
 
@@ -28,6 +29,10 @@ pub enum Untold {
 }
 
 /// The claims this token allows.
+///
+/// Two ways a claim gets in, and they add up: the scopes the token carries
+/// name sets of claims (§5.4), and the `claims` the request named one by one
+/// (§5.5) are read off the client session the login opened for this client.
 pub async fn claims_for(
     transaction: &Transaction<'_>,
     keys: &[RealmSigningKeyView],
@@ -50,51 +55,121 @@ pub async fn claims_for(
         .map_err(|_| Untold::Unreadable)?
         .filter(|user| user.enabled)
         .ok_or(Untold::InvalidToken)?;
+    let held = held_claims(&subject);
 
     // OIDC Core §5.3.2. A response whose `sub` differs from the token's is one a
     // client must reject, so it is the token's or there is no response.
     let mut claims = Map::new();
     claims.insert("sub".into(), json!(verified.subject));
+    for (scope, named) in SCOPE_CLAIMS {
+        if granted(&verified.scope, scope) {
+            for claim in named {
+                if let Some(value) = held.get(*claim) {
+                    claims.insert((*claim).to_owned(), value.clone());
+                }
+            }
+        }
+    }
 
-    if granted(&verified.scope, "profile") {
-        claims.insert("preferred_username".into(), json!(subject.user_name));
-        profile_claims(&mut claims, &subject);
-    }
-    // An address the realm holds but never checked is still an address, so it is
-    // released with the flag that says which it is rather than being withheld.
-    if granted(&verified.scope, "email") && !subject.email.is_empty() {
-        claims.insert("email".into(), json!(subject.email));
-        claims.insert(
-            "email_verified".into(),
-            json!(subject.email_verified.unwrap_or(false)),
-        );
-    }
-    if let Some(number) = subject
-        .phone_number
-        .filter(|held| !held.is_empty())
-        .filter(|_| granted(&verified.scope, "phone"))
-    {
-        claims.insert("phone_number".into(), json!(number));
-        claims.insert(
-            "phone_number_verified".into(),
-            json!(subject.phone_number_verified.unwrap_or(false)),
-        );
+    let asked = match (
+        verified.claims.get("sid").and_then(Value::as_str),
+        verified.claims.get("azp").and_then(Value::as_str),
+    ) {
+        (Some(sid), Some(client_id)) => sessions::requested_claims_of(transaction, sid, client_id)
+            .await
+            .map_err(|_| Untold::Unreadable)?,
+        _ => None,
+    };
+    if let Some(asked) = asked {
+        let entitled = entitled_scopes(
+            transaction,
+            verified
+                .claims
+                .get("azp")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+        .await
+        .map_err(|_| Untold::Unreadable)?;
+        claims.extend(within_entitlement(
+            claims_request::release(&ClaimsRequest::from_value(&asked).userinfo, &held),
+            &entitled,
+        ));
     }
 
     Ok(claims)
 }
 
-/// What OIDC Core §5.4 puts behind the `profile` scope, of what this realm holds.
-///
-/// Only what is there. A claim released empty is one a relying party reads as a
-/// value, and `name` composed from nothing would be a blank the client shows.
-fn profile_claims(claims: &mut Map<String, Value>, subject: &UserModel) {
-    let Some(attributes) = subject.attributes.as_ref() else {
-        return;
-    };
-    let held =
-        |named: &str| attributes::string_at(attributes, named).filter(|value| !value.is_empty());
+/// The standard scopes this client may have at all, attached as default or
+/// as optional. What a client may be told by name is bounded by the same
+/// registration that bounds what it may be told by scope: §5.5.1 makes a
+/// scope shorthand for a set of claims, and naming one of the set is not a
+/// way around the registration that never granted the set.
+pub async fn entitled_scopes(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+) -> Result<Vec<String>, ()> {
+    let attached = client_scopes::scopes_of_client(transaction, client_id)
+        .await
+        .map_err(|_| ())?;
+    Ok(attached.into_iter().map(|(scope, _)| scope.name).collect())
+}
 
+/// Of claims released by name, those whose scope the client may have. A
+/// claim no standard scope names is nobody's to give this way.
+pub fn within_entitlement(released: Map<String, Value>, entitled: &[String]) -> Map<String, Value> {
+    released
+        .into_iter()
+        .filter(|(claim, _)| {
+            claim == "sub"
+                || SCOPE_CLAIMS.iter().any(|(scope, named)| {
+                    named.contains(&claim.as_str()) && entitled.iter().any(|held| held == scope)
+                })
+        })
+        .collect()
+}
+
+/// What OIDC Core §5.4 puts behind each scope, by name.
+const SCOPE_CLAIMS: [(&str, &[&str]); 3] = [
+    (
+        "profile",
+        &[
+            "name",
+            "given_name",
+            "family_name",
+            "middle_name",
+            "nickname",
+            "preferred_username",
+            "profile",
+            "picture",
+            "website",
+            "gender",
+            "birthdate",
+            "zoneinfo",
+            "locale",
+            "updated_at",
+        ],
+    ),
+    ("email", &["email", "email_verified"]),
+    ("phone", &["phone_number", "phone_number_verified"]),
+];
+
+/// Every standard claim this realm holds of a person, regardless of who may
+/// have it. Resolved once, and selected from by scope and by name.
+///
+/// Only what is there. A claim released empty is one a relying party reads as
+/// a value, and `name` composed from nothing would be a blank the client shows.
+pub fn held_claims(subject: &UserModel) -> Map<String, Value> {
+    let mut claims = Map::new();
+    claims.insert("sub".into(), json!(subject.user_id));
+    claims.insert("preferred_username".into(), json!(subject.user_name));
+
+    let attributes = subject.attributes.as_ref();
+    let held = |named: &str| {
+        attributes
+            .and_then(|held| attributes::string_at(held, named))
+            .filter(|value| !value.is_empty())
+    };
     for (claim, attribute) in [
         ("given_name", profile::FIRST_NAME),
         ("family_name", profile::LAST_NAME),
@@ -112,13 +187,6 @@ fn profile_claims(claims: &mut Map<String, Value>, subject: &UserModel) {
             claims.insert(claim.into(), json!(value));
         }
     }
-    // §5.1: when the profile was last changed, as seconds. The record's own
-    // stamp, because nothing else knows; a record never changed since it was
-    // made was last changed when it was made.
-    if let Some(updated) = subject.metadata.updated_at.or(subject.metadata.created_at) {
-        claims.insert("updated_at".into(), json!(updated.timestamp()));
-    }
-
     // §5.4 lists `name` as the full name in displayable form. Composed from the
     // two halves, because the realm stores those and not the whole, and left out
     // when neither is there rather than released as a space.
@@ -129,6 +197,34 @@ fn profile_claims(claims: &mut Map<String, Value>, subject: &UserModel) {
     if !full.is_empty() {
         claims.insert("name".into(), json!(full.join(" ")));
     }
+    // §5.1: when the profile was last changed, as seconds. The record's own
+    // stamp, because nothing else knows; a record never changed since it was
+    // made was last changed when it was made.
+    if let Some(updated) = subject.metadata.updated_at.or(subject.metadata.created_at) {
+        claims.insert("updated_at".into(), json!(updated.timestamp()));
+    }
+
+    // An address the realm holds but never checked is still an address, so it
+    // is released with the flag that says which it is rather than withheld.
+    if !subject.email.is_empty() {
+        claims.insert("email".into(), json!(subject.email));
+        claims.insert(
+            "email_verified".into(),
+            json!(subject.email_verified.unwrap_or(false)),
+        );
+    }
+    if let Some(number) = subject
+        .phone_number
+        .as_deref()
+        .filter(|held| !held.is_empty())
+    {
+        claims.insert("phone_number".into(), json!(number));
+        claims.insert(
+            "phone_number_verified".into(),
+            json!(subject.phone_number_verified.unwrap_or(false)),
+        );
+    }
+    claims
 }
 
 /// Whole scopes, never prefixes. `profile_extended` is not `profile`, and a

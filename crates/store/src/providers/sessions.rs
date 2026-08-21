@@ -42,7 +42,8 @@ const SESSION_COLUMNS: &str = "tenant, realm_id, session_id, user_id, login_user
 /// somebody wrote the call.
 const CLIENT_SESSION_COLUMNS: &str = "tenant, realm_id, session_id, user_session_id, user_id, \
                                       client_id, auth_method, redirect_uri, started_at, \
-                                      expiration, notes, current_refresh_token_use_count, offline";
+                                      expiration, notes, current_refresh_token_use_count, offline, \
+                                      requested_claims";
 
 /// Open a session.
 pub async fn open(transaction: &Transaction<'_>, session: &UserSessionModel) -> StoreResult<()> {
@@ -195,6 +196,7 @@ pub async fn open_client_session(
         col("current_refresh_token", &session.current_refresh_token),
         col("current_refresh_token_use_count", &use_count),
         col("offline", &session.offline),
+        col("requested_claims", &session.requested_claims),
     ]);
 
     let statement = format!(
@@ -207,7 +209,8 @@ pub async fn open_client_session(
                 notes = EXCLUDED.notes, \
                 current_refresh_token = EXCLUDED.current_refresh_token, \
                 current_refresh_token_use_count = EXCLUDED.current_refresh_token_use_count, \
-                offline = EXCLUDED.offline",
+                offline = EXCLUDED.offline, \
+                requested_claims = EXCLUDED.requested_claims",
         statement::insert("client_sessions", &set)
     );
 
@@ -395,5 +398,23 @@ fn read_client_session(row: Row) -> ClientSessionModel {
         current_refresh_token: None,
         current_refresh_token_use_count: row.get("current_refresh_token_use_count"),
         offline: row.get("offline"),
+        requested_claims: row.get("requested_claims"),
     }
+}
+
+/// What one client asked for by name, in one login.
+pub async fn requested_claims_of(
+    transaction: &Transaction<'_>,
+    user_session_id: &str,
+    client_id: &str,
+) -> StoreResult<Option<serde_json::Value>> {
+    Ok(transaction
+        .query_opt(
+            "SELECT requested_claims FROM client_sessions \
+             WHERE user_session_id = $1 AND client_id = $2",
+            &[&user_session_id, &client_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .and_then(|row| row.get("requested_claims")))
 }

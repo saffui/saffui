@@ -73,6 +73,10 @@ pub struct ClientSessionModel {
     /// replay is what this is for, so it counts rather than flagging.
     pub current_refresh_token_use_count: Option<i32>,
     pub offline: Option<bool>,
+    /// What the client asked for by name, OIDC Core §5.5. Read by the userinfo
+    /// endpoint and by every renewal, which is why it outlives the code.
+    #[serde(default)]
+    pub requested_claims: Option<serde_json::Value>,
 }
 
 str_enum! {
@@ -218,6 +222,7 @@ mod tests {
             current_refresh_token: Some("rt-s3cr3t".into()),
             current_refresh_token_use_count: Some(1),
             offline: Some(false),
+            requested_claims: None,
         }
     }
 

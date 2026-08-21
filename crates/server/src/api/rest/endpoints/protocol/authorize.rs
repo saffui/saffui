@@ -35,6 +35,8 @@ pub struct Asked {
     pub prompt: Option<String>,
     pub max_age: Option<i64>,
     pub acr_values: Option<String>,
+    /// OIDC Core §5.5, JSON as the client sent it.
+    pub claims: Option<String>,
 }
 
 /// Begin a login, asked in the query.
@@ -131,6 +133,7 @@ async fn start(
             prompt: asked.prompt.as_deref(),
             max_age: asked.max_age,
             acr_values: asked.acr_values.as_deref(),
+            claims: asked.claims.as_deref(),
         },
         binding::read(&request, binding::SSO_SESSION).as_deref(),
         now,

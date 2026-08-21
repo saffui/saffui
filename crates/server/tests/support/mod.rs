@@ -337,6 +337,7 @@ impl Plane {
                 acr: Some("password".into()),
                 org_id: None,
                 org_name: None,
+                claims: None,
             },
             chrono::Utc::now() + chrono::Duration::minutes(1),
         )

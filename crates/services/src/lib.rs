@@ -15,6 +15,7 @@
 //! not a scheduled sweep, not a test.
 
 pub mod authorize;
+pub mod claims_request;
 pub mod client;
 pub mod context;
 pub mod grant;

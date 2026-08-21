@@ -1612,7 +1612,7 @@ async fn discovery_advertises_only_what_is_there() {
     for (named, expected) in [
         ("request_parameter_supported", false),
         ("request_uri_parameter_supported", false),
-        ("claims_parameter_supported", false),
+        ("claims_parameter_supported", true),
         ("authorization_response_iss_parameter_supported", false),
     ] {
         assert_eq!(
@@ -3848,5 +3848,237 @@ async fn the_profile_scope_releases_everything_the_realm_holds_of_it() {
         told["updated_at"].is_i64(),
         "updated_at is not seconds: {}",
         told["updated_at"]
+    );
+}
+
+/// The whole loop with extra authorization parameters: start, log in, and
+/// spend the code. What the token endpoint granted.
+async fn granted_through_login(plane: &Plane, extra: &[(&'static str, &str)]) -> serde_json::Value {
+    let mut asked = started(support::CONFIDENTIAL);
+    for (key, value) in extra {
+        // Replaced, not repeated: a parameter twice over is a different
+        // request, and one the endpoint is right to refuse.
+        asked.retain(|(named, _)| named != key);
+        asked.push((key, (*value).to_owned()));
+    }
+    let (status, location, opened) = authorize_with_cookies(plane, &as_pairs(&asked)).await;
+    assert_eq!(status, StatusCode::FOUND, "{location}");
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, admitted, _) = login_step(
+        plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    let code = code_in(admitted["redirect_to"].as_str().expect("a landing"));
+    let (status, granted) = asking(
+        plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    granted
+}
+
+/// OIDC Core §5.5: a claim named in the request is released without the
+/// scope that would have named it, within what the client may have at all.
+/// The client here may have `profile` and not `email`, so naming `name` works
+/// and naming `email` is not a way around the registration.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_claim_asked_by_name_is_released_within_what_the_client_may_have() {
+    let plane = Plane::with_actions(&[]).await;
+    let granted = granted_through_login(
+        &plane,
+        &[
+            ("scope", "openid"),
+            (
+                "claims",
+                r#"{"userinfo": {"name": {"essential": true}, "email": {"essential": true}}}"#,
+            ),
+        ],
+    )
+    .await;
+    let (status, told, _) = userinfo(&plane, granted["access_token"].as_str()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        told["name"],
+        format!("{} {}", support::GIVEN_NAME, support::FAMILY_NAME),
+        "a claim asked for by name was not released: {told}"
+    );
+    assert!(
+        told.get("email").is_none(),
+        "naming a claim of a scope the client may not have released it: {told}"
+    );
+}
+
+/// A claim asked for the identity token rides in it, at the redemption and
+/// again at every renewal, read from what the realm holds now, and within
+/// what the client may have.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_claim_asked_for_the_id_token_rides_in_it_and_on_renewal() {
+    let plane = Plane::with_actions(&[]).await;
+    let granted = granted_through_login(
+        &plane,
+        &[
+            ("scope", "openid"),
+            (
+                "claims",
+                r#"{"id_token": {"email": null, "given_name": null, "family_name": null}}"#,
+            ),
+        ],
+    )
+    .await;
+    let identity = plane
+        .claims_of(granted["id_token"].as_str().expect("an id token"))
+        .await;
+    assert_eq!(identity["given_name"], support::GIVEN_NAME, "{identity}");
+    assert_eq!(identity["family_name"], support::FAMILY_NAME);
+    assert!(
+        identity.get("email").is_none(),
+        "a claim of a scope the client may not have rode in the id token: {identity}"
+    );
+
+    let (status, renewed) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", granted["refresh_token"].as_str().unwrap()),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renewed}");
+    let identity = plane
+        .claims_of(renewed["id_token"].as_str().expect("a renewed id token"))
+        .await;
+    assert_eq!(
+        identity["given_name"],
+        support::GIVEN_NAME,
+        "a renewal dropped what the request asked for: {identity}"
+    );
+}
+
+/// §5.5.1: a claim asked with a value the realm does not hold is left out,
+/// never an error; asked with the value it holds, it is released.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_claim_asked_with_a_value_is_released_only_when_the_value_matches() {
+    let plane = Plane::with_actions(&[]).await;
+    let granted = granted_through_login(
+        &plane,
+        &[
+            ("scope", "openid"),
+            (
+                "claims",
+                r#"{"userinfo": {"email": {"value": "somebody-else@example.test"},
+                                 "given_name": {"values": ["Grace", "Ada"]}}}"#,
+            ),
+        ],
+    )
+    .await;
+    let (status, told, _) = userinfo(&plane, granted["access_token"].as_str()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(
+        told.get("email").is_none(),
+        "a claim whose value the client would not take was released: {told}"
+    );
+    assert_eq!(told["given_name"], support::GIVEN_NAME);
+}
+
+/// §3.1.2.2: a request for one subject is answered for that subject or not
+/// at all. A session somebody else holds is not reused, and a login by
+/// somebody else ends at the client with an error and no session.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_request_for_another_subject_is_not_answered_for_this_one() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+    let for_grace = asking_for(&[("claims", r#"{"id_token": {"sub": {"value": "grace"}}}"#)]);
+
+    // The live session is ada's, so it does not answer: a login starts.
+    let (status, sent) = authorize_signed_in(&plane, &for_grace, &session).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        sent.starts_with("https://login.test"),
+        "a session of another subject answered a request naming grace: {sent}"
+    );
+
+    // Ada logs in anyway. The client hears, and nobody is signed in.
+    let (_, _, opened) = authorize_with_cookies(&plane, &for_grace).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, set) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "sent_back");
+    let landing = told["redirect_to"].as_str().expect("somewhere to land");
+    assert!(
+        landing.starts_with(REDIRECT) && landing.contains("error=login_required"),
+        "{landing}"
+    );
+    assert!(
+        cookie_value(&set, support::SSO_COOKIE).is_none(),
+        "a login for the wrong subject signed the browser in"
+    );
+}
+
+/// A `claims` parameter that cannot be read is a request whose wishes are
+/// unknown, refused rather than guessed at.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_unreadable_claims_parameter_is_refused() {
+    let plane = Plane::with_actions(&[]).await;
+    let mut asked = started(support::CONFIDENTIAL);
+    asked.push(("claims", r#"{"userinfo": ["name"]}"#.to_owned()));
+    let (status, location, _) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.starts_with(REDIRECT) && location.contains("error=invalid_request"),
+        "{location}"
+    );
+}
+
+/// §5.5.1.1: an `acr` asked as essential with values the realm cannot reach
+/// fails the request, before anybody is asked to log in for nothing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_essential_context_the_realm_cannot_reach_fails_the_request() {
+    let plane = Plane::with_actions(&[]).await;
+    let mut asked = started(support::CONFIDENTIAL);
+    asked.push((
+        "claims",
+        r#"{"id_token": {"acr": {"essential": true, "values": ["platinum"]}}}"#.to_owned(),
+    ));
+    let (status, location, _) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.contains("error=unmet_authentication_requirements"),
+        "{location}"
+    );
+
+    // The same values, voluntary: a hint, and the login proceeds.
+    let mut asked = started(support::CONFIDENTIAL);
+    asked.push((
+        "claims",
+        r#"{"id_token": {"acr": {"values": ["platinum"]}}}"#.to_owned(),
+    ));
+    let (status, location, _) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.starts_with("https://login.test"),
+        "a voluntary context the realm cannot reach refused the login: {location}"
     );
 }

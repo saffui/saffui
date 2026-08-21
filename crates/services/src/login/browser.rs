@@ -17,6 +17,7 @@ use store::providers::login::AuthSession;
 use store::providers::{login, oidc, realms, sessions, users};
 use store::tenancy::TenantContext;
 
+use crate::claims_request::ClaimsRequest;
 use crate::login::authenticator::Answer;
 use crate::login::enrolment::{self, Enrolment};
 use crate::login::{Progress, run_flow};
@@ -48,6 +49,10 @@ pub enum Step {
     },
     /// Refused, and no further answer changes that.
     Refused,
+    /// Authenticated, and still not what the client asked for: it named a
+    /// subject and somebody else logged in. The client hears, at its redirect,
+    /// and no session opens, since §3.1.2.2 forbids answering for another user.
+    SentBack { redirect_to: String },
 }
 
 /// Why the step could not be run.
@@ -169,6 +174,28 @@ pub async fn answer_step(
                     });
                 }
             }
+            // A request for one subject is answered for that subject or not at
+            // all. The login is over either way; what differs is who hears.
+            let asked = login
+                .notes
+                .get("claims")
+                .map(ClaimsRequest::from_value)
+                .unwrap_or_default();
+            if asked
+                .subject_asked()
+                .is_some_and(|wanted| wanted != subject.user_id)
+            {
+                login::finish(transaction, &login.session_id)
+                    .await
+                    .map_err(|_| Unanswerable::Unreadable)?;
+                return Ok(Step::SentBack {
+                    redirect_to: sent_back(
+                        &login.redirect_uri,
+                        "login_required",
+                        noted(&login.notes, "state"),
+                    ),
+                });
+            }
             // The highest of what actually ran. A flow that reached a second
             // factor is stronger than the password that opened it, and reading
             // only the first would report a level the login exceeded.
@@ -215,6 +242,8 @@ pub struct Authorized<'a> {
     /// the session may have stepped up in another tab, and a value resolved
     /// then would attest to a strength this code was never issued under.
     pub acr: Option<&'a str>,
+    /// The `claims` the request named, as the store keeps them.
+    pub claims: Option<&'a Value>,
 }
 
 /// Mint a code and say where the browser goes with it.
@@ -248,6 +277,7 @@ pub async fn mint_code(
             acr: authorized.acr.map(str::to_owned),
             org_id: None,
             org_name: None,
+            claims: authorized.claims.cloned(),
         },
         now + Duration::seconds(CODE_LIFESPAN),
     )
@@ -320,6 +350,7 @@ async fn admit(
             nonce: noted(notes, "nonce"),
             code_challenge: noted(notes, "code_challenge"),
             code_challenge_method: noted(notes, "code_challenge_method"),
+            claims: notes.get("claims").filter(|asked| asked.is_object()),
             auth_time: now.timestamp(),
             // Frozen here. By redemption the session may have stepped up in
             // another tab, and a value resolved then would attest to a strength
@@ -347,6 +378,17 @@ async fn admit(
         .map_err(|_| Unanswerable::Unreadable)?;
 
     Ok(landing)
+}
+
+/// Where the browser goes when the client is told no, RFC 6749 §4.1.2.1:
+/// the error at the redirect, with the state the client asked to have echoed.
+fn sent_back(redirect_uri: &str, error: &str, state: Option<&str>) -> String {
+    let separator = if redirect_uri.contains('?') { '&' } else { '?' };
+    let mut landing = format!("{redirect_uri}{separator}error={}", escaped(error));
+    if let Some(state) = state {
+        landing.push_str(&format!("&state={}", escaped(state)));
+    }
+    landing
 }
 
 /// Where the browser goes, carrying what the client will spend.

@@ -492,7 +492,12 @@ async fn a_code_spent_yields_tokens_this_realm_takes_back() {
 
     let id_token = body["id_token"].as_str().expect("an id token");
     let identity = plane.claims_of(id_token).await;
-    assert_eq!(identity["typ"], "ID");
+    for never_in_an_id_token in ["typ", "scope"] {
+        assert!(
+            identity.get(never_in_an_id_token).is_none(),
+            "an identity token carried '{never_in_an_id_token}', which no relying party asked for"
+        );
+    }
     assert_eq!(identity["nonce"], "n-once");
     assert_eq!(
         identity["auth_time"], 1_700_000_000,
@@ -3321,6 +3326,126 @@ async fn an_instruction_without_a_ceremony_leaves_the_login_alone() {
         plane.subject_owes().await,
         vec![RequiredAction::VerifyEmail],
         "an unrunnable instruction was struck by a login that did not run it"
+    );
+}
+
+/// OIDC Core §3.1.2.1: the authorization request arrives by GET or by POST,
+/// with the same parameters, and nothing a client can tell apart.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_login_may_be_asked_for_with_a_form_post() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let asked = started(support::CONFIDENTIAL);
+    let form: Vec<(&str, &str)> = as_pairs(&asked);
+    let request = test::TestRequest::post()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/auth",
+            support::REALM
+        ))
+        .set_form(&form)
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let set = response
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        cookie_value(&set, support::AUTH_SESSION_COOKIE).is_some(),
+        "a login asked for by POST was not bound to the browser"
+    );
+}
+
+/// A refusal with nowhere to go is shown where the caller stands: a page to a
+/// browser, JSON to anything else, and the same refusal in both.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_refusal_with_nowhere_to_go_is_a_page_for_a_browser() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let unregistered = format!(
+        "/realms/{}/protocol/openid-connect/auth?response_type=code&client_id={}&scope=openid&redirect_uri=https://elsewhere.example/cb",
+        support::REALM,
+        support::CONFIDENTIAL
+    );
+
+    let browser = test::TestRequest::get()
+        .uri(&unregistered)
+        .insert_header(("accept", "text/html,application/xhtml+xml"))
+        .to_request();
+    let response = test::call_service(&app, browser).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        response
+            .headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"),
+        "a browser was shown JSON"
+    );
+    let page = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+    assert!(
+        page.contains("could not start") && page.contains("invalid_request"),
+        "the page does not say what was refused: {page}"
+    );
+
+    let client = test::TestRequest::get().uri(&unregistered).to_request();
+    let response = test::call_service(&app, client).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let told: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(told["error"], "invalid_request");
+}
+
+/// RFC 6750 §2.2: the token may ride in the form body. §2: never in two places
+/// at once, so a request carrying both is refused rather than read twice.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_may_ride_in_the_form_body_and_never_in_two_places() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid profile", None)
+        .await;
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let access = granted["access_token"].as_str().expect("an access token");
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let path = format!(
+        "/realms/{}/protocol/openid-connect/userinfo",
+        support::REALM
+    );
+
+    let in_body = test::TestRequest::post()
+        .uri(&path)
+        .set_form([("access_token", access)])
+        .to_request();
+    let response = test::call_service(&app, in_body).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let told: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(told["sub"], support::SUBJECT);
+
+    let twice = test::TestRequest::post()
+        .uri(&path)
+        .insert_header(("authorization", format!("Bearer {access}")))
+        .set_form([("access_token", access)])
+        .to_request();
+    let response = test::call_service(&app, twice).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNAUTHORIZED,
+        "a token presented twice over was accepted"
     );
 }
 

@@ -313,10 +313,10 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
     .map_err(unreadable)?;
     if provisioning::provision_signing_key(
         &transaction,
+        plane.sealing.provider.as_ref(),
         &plane.sealing.envelope,
         tenant,
         realm,
-        &format!("{realm}-{now}"),
         now,
     )
     .await

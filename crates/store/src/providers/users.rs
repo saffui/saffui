@@ -153,6 +153,24 @@ pub async fn update(transaction: &Transaction<'_>, user: &UserModel) -> StoreRes
 }
 
 /// Remove a user, and say whether there was one to remove.
+/// Strike one required action, done or not: the caller says it no longer
+/// stands. Says whether the user was there, not whether the action was.
+pub async fn clear_required_action(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    action: RequiredAction,
+) -> StoreResult<bool> {
+    let cleared = transaction
+        .execute(
+            "UPDATE users SET required_actions = array_remove(required_actions, $2) \
+             WHERE user_id = $1",
+            &[&user_id, &action],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(cleared > 0)
+}
+
 pub async fn delete(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM users WHERE user_id = $1", &[&user_id])

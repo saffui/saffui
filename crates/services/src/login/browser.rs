@@ -18,6 +18,7 @@ use store::providers::{login, oidc, realms, sessions, users};
 use store::tenancy::TenantContext;
 
 use crate::login::authenticator::Answer;
+use crate::login::enrolment::{self, Enrolment};
 use crate::login::{Progress, run_flow};
 
 /// How long a code may sit before it is spent.
@@ -76,6 +77,9 @@ pub async fn answer_step(
     auth_session_id: &str,
     username: Option<&str>,
     answers: &[Answer],
+    // The attestation finishing an enrolment, when the realm required one.
+    // Not an [`Answer`]: it proves nothing about who is answering.
+    attestation: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
     let login = login::resume(transaction, auth_session_id)
@@ -134,6 +138,37 @@ pub async fn answer_step(
         Progress::Refused => Ok(Step::Refused),
         Progress::Admitted { by } => {
             let subject = subject.ok_or(Unanswerable::Unrunnable)?;
+            // Admitted is not yet in: what the realm required of this user
+            // runs now, under an identity the flow has finished proving, and
+            // the login completes only once nothing more is required.
+            match enrolment::required(transaction, origin, &subject, attestation, &login.notes)
+                .await
+            {
+                Enrolment::Settled => {}
+                Enrolment::Refused => return Ok(Step::Refused),
+                Enrolment::Asked(challenge) => {
+                    let mut remember = serde_json::Map::new();
+                    remember.insert(
+                        enrolment::CONFIGURE_WEBAUTHN.to_owned(),
+                        challenge.remembered,
+                    );
+                    login::record_step(
+                        transaction,
+                        auth_session_id,
+                        Some(&subject.user_id),
+                        // The ceremony is not an execution row, and the
+                        // column holds a foreign key to those.
+                        None,
+                        &Value::Object(remember),
+                    )
+                    .await
+                    .map_err(|_| Unanswerable::Unreadable)?;
+                    return Ok(Step::Challenge {
+                        execution_id: enrolment::CONFIGURE_WEBAUTHN.to_owned(),
+                        asks: Some(challenge.shown),
+                    });
+                }
+            }
             // The highest of what actually ran. A flow that reached a second
             // factor is stronger than the password that opened it, and reading
             // only the first would report a level the login exceeded.

@@ -467,6 +467,57 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Put an instruction on the subject, the way an administrator requires a
+    /// credential to be set up at the next login.
+    #[allow(dead_code, reason = "only the protocol suite does")]
+    pub async fn require_of_subject(&self, action: models::entities::user::RequiredAction) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut user = store::providers::users::load(&transaction, SUBJECT)
+            .await
+            .expect("the users table")
+            .expect("the planted subject");
+        user.required_actions
+            .get_or_insert_with(Vec::new)
+            .push(action);
+        store::providers::users::update(&transaction, &user)
+            .await
+            .expect("the users table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// What still stands against the subject.
+    #[allow(dead_code, reason = "only the protocol suite asks")]
+    pub async fn subject_owes(&self) -> Vec<models::entities::user::RequiredAction> {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::users::load(&transaction, SUBJECT)
+            .await
+            .expect("the users table")
+            .expect("the planted subject")
+            .required_actions
+            .unwrap_or_default()
+    }
+
+    /// The keys the subject holds, by identifier.
+    #[allow(dead_code, reason = "only the protocol suite asks")]
+    pub async fn subject_keys(&self) -> Vec<Vec<u8>> {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::webauthn::of_user(&transaction, SUBJECT)
+            .await
+            .expect("the credential table")
+            .into_iter()
+            .map(|credential| credential.credential_id)
+            .collect()
+    }
+
     /// Switch the subject off, the way an administrator shuts down an account.
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn disable_subject(&self) {

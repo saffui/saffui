@@ -7,6 +7,7 @@
 
 pub mod authenticator;
 pub mod browser;
+pub mod enrolment;
 pub mod step;
 
 use chrono::{DateTime, Utc};

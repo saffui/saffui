@@ -410,7 +410,7 @@ async fn webauthn(
 }
 
 /// The party a credential is scoped to.
-fn relying_party(origin: &PublicOrigin) -> Result<Webauthn, ()> {
+pub(crate) fn relying_party(origin: &PublicOrigin) -> Result<Webauthn, ()> {
     let url = Url::parse(origin.as_str()).map_err(|_| ())?;
     WebauthnBuilder::new(origin.host(), &url)
         .and_then(WebauthnBuilder::build)

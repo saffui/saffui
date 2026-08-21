@@ -186,6 +186,24 @@ pub async fn answer(
                     }
                 }
                 Step::Refused => tell(StatusCode::UNAUTHORIZED, "refused"),
+                // Over, and not admitted: the client hears why at its
+                // redirect, and the browser carries it there. The login's
+                // cookie goes; no session replaces it.
+                Step::SentBack { redirect_to } => {
+                    let mut response = HttpResponseBuilder::new(match spoken {
+                        Spoken::Json => StatusCode::OK,
+                        Spoken::Form => StatusCode::SEE_OTHER,
+                    });
+                    binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
+                    match spoken {
+                        Spoken::Json => uncached(&mut response).json(
+                            serde_json::json!({ "status": "sent_back", "redirect_to": redirect_to }),
+                        ),
+                        Spoken::Form => uncached(&mut response)
+                            .insert_header(("Location", redirect_to))
+                            .finish(),
+                    }
+                }
             }
         }
         Err(Unanswerable::NoSuchLogin) => tell(StatusCode::NOT_FOUND, "no-such-login"),

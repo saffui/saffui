@@ -20,10 +20,10 @@ pub async fn mint_code(
             "INSERT INTO oidc_auth_codes \
                  (tenant, realm_id, code_hash, client_id, user_id, session_id, redirect_uri, \
                   scope, nonce, code_challenge, code_challenge_method, auth_time, acr, org_id, \
-                  expires_at) \
+                  expires_at, claims) \
              SELECT current_setting('saffui.current_tenant', true), \
                     current_setting('saffui.current_realm', true), \
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13",
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14",
             &[
                 &code.code_hash,
                 &code.client_id,
@@ -38,6 +38,7 @@ pub async fn mint_code(
                 &code.acr,
                 &code.org_id,
                 &expires_at,
+                &code.claims,
             ],
         )
         .await
@@ -80,7 +81,7 @@ pub async fn redeem_code(
              WHERE code_hash = $1 AND redeemed_at IS NULL AND expires_at > now() \
              RETURNING tenant, realm_id, code_hash, client_id, user_id, session_id, \
                        redirect_uri, scope, nonce, code_challenge, code_challenge_method, \
-                       auth_time, acr, org_id, expires_at",
+                       auth_time, acr, org_id, expires_at, claims",
             &[&code_hash],
         )
         .await
@@ -236,5 +237,6 @@ fn read_code(row: Row) -> AuthorizationCode {
         acr: row.get("acr"),
         org_id: row.get("org_id"),
         org_name: None,
+        claims: row.get("claims"),
     }
 }

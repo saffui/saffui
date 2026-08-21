@@ -44,6 +44,9 @@ pub struct AuthorizationCode {
     pub org_id: Option<String>,
     #[serde(default)]
     pub org_name: Option<String>,
+    /// The `claims` request parameter, OIDC Core §5.5, as the client sent it.
+    #[serde(default)]
+    pub claims: Option<serde_json::Value>,
 }
 
 str_enum! {
@@ -125,6 +128,7 @@ mod tests {
             acr: None,
             org_id: None,
             org_name: None,
+            claims: None,
         };
 
         let encoded = serde_json::to_string(&code).unwrap();

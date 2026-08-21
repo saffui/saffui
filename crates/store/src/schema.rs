@@ -145,6 +145,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V022__code_reuse.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 23,
+            name: "claims_request",
+            sql: include_str!("../migrations/V023__claims_request.sql"),
+            transactional: true,
+        }),
     ]
 }
 

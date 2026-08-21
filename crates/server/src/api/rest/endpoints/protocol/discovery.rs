@@ -111,7 +111,7 @@ pub async fn published(
             "acr_values_supported": contexts,
             "request_parameter_supported": false,
             "request_uri_parameter_supported": false,
-            "claims_parameter_supported": false,
+            "claims_parameter_supported": true,
             "authorization_response_iss_parameter_supported": false,
         }))
 }

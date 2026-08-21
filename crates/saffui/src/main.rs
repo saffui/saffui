@@ -106,11 +106,11 @@ fn main() -> ExitCode {
 
     // Before anything that could have something to say. What is logged and
     // how are the operator's, from the environment; absent, every record at
-    // `info` and above, one JSON object per line, which is what a collector
-    // reads and a person can still grep.
+    // `info` and above, as text a person reads at a terminal. A collector
+    // that wants one JSON object per line asks for `json`.
     commons::observability::init(
         &config::optional("LOG").unwrap_or_else(|| "info".to_owned()),
-        &config::optional("LOG_FORMAT").unwrap_or_else(|| "json".to_owned()),
+        &config::optional("LOG_FORMAT").unwrap_or_else(|| "text".to_owned()),
     );
 
     let outcome = tokio::runtime::Runtime::new()

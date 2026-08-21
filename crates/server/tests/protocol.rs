@@ -2832,3 +2832,279 @@ async fn two_factors_reach_the_level_two_factors_are_worth() {
         "a login that ran two factors reported the level of one"
     );
 }
+
+/// A password step issues nothing. The form is the caller's own and the server
+/// keeps no state in it, so a body claiming a challenge would have the caller
+/// wait for a device nobody asked for.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_password_step_issues_no_challenge() {
+    let plane = Plane::with_actions(&[]).await;
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    let (_, told, _) = login_step(&plane, Some(&auth_session), serde_json::json!({})).await;
+    assert_eq!(told["status"], "challenge");
+    assert!(
+        told.get("asks").is_none(),
+        "a password form was announced as a challenge: {told}"
+    );
+}
+
+/// The whole key ceremony, end to end: the challenge is handed out, its other
+/// half is remembered, an authenticator answers it, and the login it admits
+/// reaches the level a second factor is worth.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_key_answers_the_challenge_it_was_issued() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::KEYED_FLOW)
+        .await;
+    let mut key = plane.enrol_soft_passkey().await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge");
+    let asks = told.get("asks").expect("a key step issues a challenge");
+    assert!(
+        asks.get("publicKey").is_some(),
+        "not what a browser hands navigator.credentials.get: {asks}"
+    );
+    // The half the verification will need reached the store, under the step's
+    // own name.
+    let remembered = plane.login_notes(&auth_session).await;
+    assert!(
+        remembered.get("webauthn").is_some(),
+        "a challenge was handed out and not remembered: {remembered}"
+    );
+
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "webauthn": key.answer(asks, support::ORIGIN),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(admitted["status"], "admitted");
+
+    let landing = admitted["redirect_to"].as_str().expect("somewhere to land");
+    let code = landing
+        .split_once("code=")
+        .unwrap()
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(
+        plane
+            .claims_of(granted["id_token"].as_str().expect("an id token"))
+            .await["acr"],
+        support::STRONG_ACR,
+        "a login that ran a key reported less than a second factor"
+    );
+}
+
+/// An assertion that does not verify is refused. The signature is flipped
+/// rather than dropped, so what fails is the verification and not the parse.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_tampered_assertion_is_refused() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::KEYED_FLOW)
+        .await;
+    let mut key = plane.enrol_soft_passkey().await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let asks = told.get("asks").expect("a challenge");
+
+    let mut answer: serde_json::Value =
+        serde_json::from_str(&key.answer(asks, support::ORIGIN)).unwrap();
+    let signature = answer["response"]["signature"]
+        .as_str()
+        .expect("a signature")
+        .to_owned();
+    let mut flipped: Vec<char> = signature.chars().collect();
+    flipped[10] = if flipped[10] == 'A' { 'B' } else { 'A' };
+    answer["response"]["signature"] = serde_json::json!(flipped.iter().collect::<String>());
+
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "webauthn": answer.to_string(),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["status"], "refused");
+}
+
+/// A challenge is bound to the login it was issued for. A valid answer to one
+/// login's challenge, presented to another, is a replay of something seen
+/// elsewhere.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_answer_to_another_logins_challenge_is_refused() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::KEYED_FLOW)
+        .await;
+    let mut key = plane.enrol_soft_passkey().await;
+
+    let (_, _, first) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let overheard = cookie_value(&first, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&overheard),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let answer = key.answer(told.get("asks").expect("a challenge"), support::ORIGIN);
+
+    let (_, _, second) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&second, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert!(
+        told.get("asks").is_some(),
+        "the second login has its own challenge"
+    );
+
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "webauthn": answer,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["status"], "refused");
+}
+
+/// An authenticator's counter only goes up. One that repeats is the signature
+/// of a clone being used beside the original, and the whole point of keeping
+/// the counter is that this login fails.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_key_that_repeats_its_counter_is_refused() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::KEYED_FLOW)
+        .await;
+    let mut key = plane.enrol_soft_passkey().await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "webauthn": key.answer(told.get("asks").expect("a challenge"), support::ORIGIN),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+
+    // The clone: same key, same state, a counter that has not moved.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    key.counter = 0;
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "webauthn": key.answer(told.get("asks").expect("a challenge"), support::ORIGIN),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["status"], "refused");
+}
+
+/// A flow that requires a key nobody enrolled refuses rather than asks: a
+/// challenge no key can answer is a screen the user waits at forever.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_key_step_with_nothing_enrolled_refuses() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::KEYED_FLOW)
+        .await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["status"], "refused");
+}

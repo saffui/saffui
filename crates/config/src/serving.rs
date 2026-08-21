@@ -15,8 +15,8 @@ const LOGIN_UI: &str = "LOGIN_UI_URL";
 /// Not served here. The login screens are an application of their own, and this
 /// server's job is to say which login is being answered, not to render it.
 ///
-/// Optional, and absent means interactive login cannot start. A default would be
-/// a URL nobody chose, which is worse than a refusal that names the setting.
+/// Optional. Absent, the server renders its own page; named, the browser is
+/// sent there instead, and that page answers the same endpoint this one does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginUi(Option<String>);
 
@@ -39,7 +39,12 @@ impl LoginUi {
         PublicOrigin::parse(value).map(|origin| LoginUi(Some(origin.as_str().to_owned())))
     }
 
-    /// Where a login is answered, or nothing when none is configured.
+    /// No page but this server's own.
+    pub fn none() -> Self {
+        LoginUi(None)
+    }
+
+    /// Where a login is answered, or nothing when this server's page is.
     ///
     /// No identifier in it. Which login is being answered rides in a cookie,
     /// because a URL reaches logs, `Referer` headers and history.

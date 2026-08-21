@@ -13,5 +13,6 @@ pub mod dto;
 pub mod keys;
 pub mod login;
 pub mod logout;
+pub mod page;
 pub mod token;
 pub mod userinfo;

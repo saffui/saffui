@@ -423,6 +423,7 @@ impl Plane {
                 label: "a key".into(),
                 passkey,
                 sign_count: 0,
+                enrolled_at: None,
                 last_used_at: None,
             },
         )

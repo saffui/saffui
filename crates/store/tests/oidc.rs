@@ -3,7 +3,7 @@
 mod support;
 
 use models::entities::oidc::AuthorizationCode;
-use store::providers::oidc;
+use store::providers::oidc::{self, Redemption};
 use store::tenancy::TenantContext;
 use support::Fixture;
 
@@ -67,10 +67,9 @@ async fn a_code_carries_what_redemption_must_recheck() {
         .await
         .unwrap();
 
-    let spent = oidc::redeem_code(&transaction, "hash-1")
-        .await
-        .unwrap()
-        .expect("the code was not found");
+    let Redemption::Fresh(spent) = oidc::redeem_code(&transaction, "hash-1").await.unwrap() else {
+        panic!("the code was not found");
+    };
     assert_eq!(spent.redirect_uri, "https://app.example/callback");
     assert_eq!(spent.code_challenge.as_deref(), Some("challenge"));
     assert_eq!(spent.code_challenge_method.as_deref(), Some("S256"));
@@ -80,10 +79,12 @@ async fn a_code_carries_what_redemption_must_recheck() {
     assert_eq!(spent.scope, "openid profile");
 }
 
-/// A code is spent by the attempt, not by the attempt succeeding.
+/// A code is spent by the attempt, not by the attempt succeeding, and a second
+/// attempt is told apart from a code that never was: it names what the first
+/// bought, so that can be taken back.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn a_code_is_spent_once() {
+async fn a_code_is_spent_once_and_a_replay_names_what_it_bought() {
     let fixture = Fixture::with_user_and_client().await;
     plant_session(&fixture).await;
     let mut connection = fixture.connection().await;
@@ -95,32 +96,36 @@ async fn a_code_is_spent_once() {
         .await
         .unwrap();
 
-    assert!(
-        oidc::redeem_code(&transaction, "hash-1")
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        oidc::redeem_code(&transaction, "hash-1")
-            .await
-            .unwrap()
-            .is_none(),
-        "a code was redeemed twice"
-    );
-    assert!(
+    assert!(matches!(
+        oidc::redeem_code(&transaction, "hash-1").await.unwrap(),
+        Redemption::Fresh(_)
+    ));
+    oidc::record_issued(
+        &transaction,
+        "hash-1",
+        &["jti-access".into(), "jti-refresh".into()],
+    )
+    .await
+    .unwrap();
+    match oidc::redeem_code(&transaction, "hash-1").await.unwrap() {
+        Redemption::Reused { issued_token_ids } => {
+            assert_eq!(issued_token_ids, vec!["jti-access", "jti-refresh"]);
+        }
+        other => panic!("a replayed code was not seen as one: {other:?}"),
+    }
+    assert!(matches!(
         oidc::redeem_code(&transaction, "never-minted")
             .await
-            .unwrap()
-            .is_none()
-    );
+            .unwrap(),
+        Redemption::Unknown
+    ));
 }
 
-/// An expired code is not handed back, and is spent all the same, so a caller
-/// that ignores the answer cannot try again.
+/// An expired code is not handed back, however often it is tried, and the
+/// sweep is what removes it.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn an_expired_code_is_refused_and_still_spent() {
+async fn an_expired_code_is_refused_until_swept() {
     let fixture = Fixture::with_user_and_client().await;
     plant_session(&fixture).await;
     let mut connection = fixture.connection().await;
@@ -142,13 +147,16 @@ async fn an_expired_code_is_refused_and_still_spent() {
         .await
         .unwrap();
 
-    assert!(
-        oidc::redeem_code(&transaction, "stale")
-            .await
-            .unwrap()
-            .is_none(),
-        "an expired code was handed back"
-    );
+    for attempt in ["first", "second"] {
+        assert!(
+            matches!(
+                oidc::redeem_code(&transaction, "stale").await.unwrap(),
+                Redemption::Unknown
+            ),
+            "an expired code was handed back on the {attempt} attempt"
+        );
+    }
+    oidc::drop_expired_codes(&transaction).await.unwrap();
     let left: i64 = transaction
         .query_one(
             "SELECT count(*) FROM oidc_auth_codes WHERE code_hash = 'stale'",
@@ -157,7 +165,7 @@ async fn an_expired_code_is_refused_and_still_spent() {
         .await
         .unwrap()
         .get(0);
-    assert_eq!(left, 0, "an expired code survived the attempt to redeem it");
+    assert_eq!(left, 0, "an expired code survived the sweep");
 }
 
 /// A challenge and the method that reads it travel together.
@@ -343,12 +351,10 @@ async fn what_expired_is_swept() {
         oidc::drop_expired_assertions(&transaction).await.unwrap(),
         1
     );
-    assert!(
-        oidc::redeem_code(&transaction, "live")
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert!(matches!(
+        oidc::redeem_code(&transaction, "live").await.unwrap(),
+        Redemption::Fresh(_)
+    ));
 }
 
 #[tokio::test]
@@ -377,10 +383,10 @@ async fn none_of_it_is_visible_from_another_realm() {
         .scoped(&mut connection, &TenantContext::new("acme", "other"))
         .await;
     assert!(
-        oidc::redeem_code(&transaction, "hash-1")
-            .await
-            .unwrap()
-            .is_none(),
+        matches!(
+            oidc::redeem_code(&transaction, "hash-1").await.unwrap(),
+            Redemption::Unknown
+        ),
         "another realm redeemed this realm's code"
     );
     assert!(

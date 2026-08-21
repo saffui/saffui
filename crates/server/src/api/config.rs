@@ -9,9 +9,12 @@
 //! registered outside that table would be reachable and charged for nothing,
 //! which is why registration walks it rather than being written twice.
 
-use actix_web::dev::HttpServiceFactory;
-use actix_web::web;
+use actix_web::body::MessageBody;
+use actix_web::dev::{HttpServiceFactory, ServiceFactory, ServiceRequest, ServiceResponse};
+use actix_web::{App, Error, web};
+use commons::observability::{SaffuiRootSpan, WithRequestId};
 use std::sync::Arc;
+use tracing_actix_web::TracingLogger;
 
 use config::serving::{LoginUi, PublicOrigin};
 use crypto::envelope::Envelope;
@@ -105,6 +108,26 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                     .route(web::get().to(discovery::published)),
             );
     }
+}
+
+/// An application that is watched: every request gets an id and a span, and
+/// every record a handler makes lands under that span.
+///
+/// Built here so a binary and a test mount the same two middlewares in the
+/// same order. The id is outermost, because it has to exist before the span
+/// opens and has to reach the response after the span closes.
+pub fn observed() -> App<
+    impl ServiceFactory<
+        ServiceRequest,
+        Config = (),
+        Response = ServiceResponse<impl MessageBody>,
+        Error = Error,
+        InitError = (),
+    >,
+> {
+    App::new()
+        .wrap(TracingLogger::<SaffuiRootSpan>::new())
+        .wrap(WithRequestId)
 }
 
 /// The administrative plane: a capability per route, from the table.

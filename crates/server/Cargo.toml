@@ -6,7 +6,11 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-commons = { workspace = true, features = ["http"] }
+commons = { workspace = true, features = ["http", "request-span"] }
+# Every record a handler emits lands under the request's span, and the two
+# middlewares that open that span are what a binary and a test both mount.
+tracing = { workspace = true }
+tracing-actix-web = { workspace = true }
 crypto = { workspace = true }
 models = { workspace = true }
 store = { workspace = true }
@@ -37,6 +41,10 @@ config = { workspace = true }
 # the moment it is read rather than from where it is compared.
 secrecy = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
+# A subscriber a test can read back, to prove what a line holds and what it
+# does not.
+tracing-subscriber = { workspace = true }
+tracing = { workspace = true }
 # The end to end plane mounts a real schema and signs real tokens, so the test
 # side reaches the migration runner and the software crypto provider directly.
 pgcore = { workspace = true }

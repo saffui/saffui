@@ -18,7 +18,7 @@ use deadpool_postgres::{Manager, Pool};
 use models::auditable::AuditableModel;
 use models::entities::realm::RealmCreateModel;
 use secrecy::ExposeSecret;
-use server::api::config::{Plane, Sealing, register, register_ops};
+use server::api::config::{Plane, Sealing, observed, register, register_ops};
 use server::api::rest::endpoints::ops::health::Vitals;
 use server::middleware::admin_policy::AdminPolicy;
 use services::provisioning;
@@ -104,6 +104,15 @@ enum Command {
 fn main() -> ExitCode {
     let command = Cli::parse().command;
 
+    // Before anything that could have something to say. What is logged and
+    // how are the operator's, from the environment; absent, every record at
+    // `info` and above, as text a person reads at a terminal. A collector
+    // that wants one JSON object per line asks for `json`.
+    commons::observability::init(
+        &config::optional("LOG").unwrap_or_else(|| "info".to_owned()),
+        &config::optional("LOG_FORMAT").unwrap_or_else(|| "text".to_owned()),
+    );
+
     let outcome = tokio::runtime::Runtime::new()
         .map_err(|reason| reason.to_string())
         .and_then(|runtime| {
@@ -175,7 +184,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
 
     // Bound before anything is announced, so a port already taken fails here
     // rather than after the log line says it is serving.
-    let plane = HttpServer::new(move || App::new().configure(register(&plane)))
+    let plane = HttpServer::new(move || observed().configure(register(&plane)))
         .bind(bind)
         .map_err(|reason| format!("cannot listen on {bind}: {reason}"))?
         .run();

@@ -1,0 +1,81 @@
+# A whole deployment on one machine: the database, the schema, a provisioned
+# realm, and the server. Development values throughout; nothing here is a
+# secret worth keeping, and every one of them is a reference a deployment
+# would point elsewhere.
+
+# One image for every command, built once under the `saffui` service: a
+# service that declared its own build would get an image of its own, rebuilt
+# on its own schedule, and two builds of one binary are one too many.
+x-saffui: &saffui
+  image: saffui:local
+  pull_policy: never
+  environment: &saffui-env
+    SAFFUI_DATABASE_URL: host=postgres user=saffui_app password=saffui_app dbname=saffui
+    SAFFUI_PUBLIC_ORIGIN: ${SAFFUI_PUBLIC_ORIGIN:-http://localhost:8080}
+    SAFFUI_ADMIN_AUDIENCES: saffui-console
+    SAFFUI_ADMIN_PARTIES: saffui-console
+    SAFFUI_CRYPTO_KEK: a-development-wrapping-key-of-decent-length
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: saffui
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d saffui"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  # As the owner: the schema, and the login the application role connects with.
+  migrate:
+    <<: *saffui
+    command: ["migrate"]
+    environment:
+      <<: *saffui-env
+      SAFFUI_DATABASE_URL: host=postgres user=postgres password=postgres dbname=saffui
+      SAFFUI_APP_ROLE_PASSWORD: saffui_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # As the application: a tenant, a realm, a relying party and a person.
+  provision:
+    <<: *saffui
+    command:
+      - provision
+      - --tenant=local
+      - --realm=main
+      - --console-redirect=http://localhost:5173/callback
+      - --client=${SAFFUI_CLIENT_ID:-conformance}
+      - --redirect=${SAFFUI_CLIENT_REDIRECT:-https://localhost.emobix.co.uk:8443/test/a/saffui/callback}
+      - --user=ada
+      - --email=ada@example.test
+      - --given-name=Ada
+      - --family-name=Lovelace
+      - --phone=+33123456789
+    environment:
+      <<: *saffui-env
+      SAFFUI_PROVISION_CLIENT_SECRET: ${SAFFUI_CLIENT_SECRET:-a-conformance-client-secret}
+      SAFFUI_PROVISION_USER_PASSWORD: ${SAFFUI_USER_PASSWORD:-a-password-of-decent-length}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  saffui:
+    <<: *saffui
+    build:
+      context: ../..
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    depends_on:
+      provision:
+        condition: service_completed_successfully

@@ -752,3 +752,146 @@ async fn asking_for_the_admin_scope_is_not_holding_it() {
         "asking for the admin scope was enough to reach the plane"
     );
 }
+
+/// The same, answering with the body so a listing can be read.
+async fn fetched(
+    plane: &Plane,
+    method: Method,
+    path: &str,
+    bearer: &str,
+) -> (StatusCode, serde_json::Value) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane, &policy())))).await;
+    let request = test::TestRequest::with_uri(path)
+        .method(method)
+        .insert_header(("authorization", format!("Bearer {bearer}")))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    let status = response.status();
+    (status, test::read_body_json(response).await)
+}
+
+/// A user's keys are listed by what recognises and revokes them, and the
+/// stored credential stays home: a response is not an export.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_users_keys_are_listed_and_the_stored_credential_stays_home() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead]).await;
+    let key = plane.enrol_soft_passkey().await;
+    let bearer = plane.token(&claims());
+
+    let (status, listed) = fetched(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/users/{SUBJECT}/keys"),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let items = listed.as_array().expect("a list");
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0]["credential_id"],
+        data_encoding::BASE64URL_NOPAD.encode(&key.credential_id),
+        "not the identifier the revocation path spells"
+    );
+    assert!(
+        items[0].get("passkey").is_none(),
+        "the stored credential went on the wire: {listed}"
+    );
+
+    let (status, told) = fetched(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/users/nobody/keys"),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+}
+
+/// A revoked key is gone from the store, so the next keyed login has nothing
+/// to present. Revoking it again is a miss, and a user nobody has is told
+/// apart from a credential nobody has.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_revoked_key_is_gone_and_a_second_revocation_misses() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead, AdminAction::UserWrite]).await;
+    let key = plane.enrol_soft_passkey().await;
+    let bearer = plane.token(&claims());
+    let spelled = data_encoding::BASE64URL_NOPAD.encode(&key.credential_id);
+
+    assert_eq!(
+        request(
+            &plane,
+            Method::DELETE,
+            &format!("/admin/realms/{REALM}/users/{SUBJECT}/keys/{spelled}"),
+            Some(&bearer),
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        plane.subject_keys().await,
+        Vec::<Vec<u8>>::new(),
+        "the revoked key is still in the store"
+    );
+    assert_eq!(
+        request(
+            &plane,
+            Method::DELETE,
+            &format!("/admin/realms/{REALM}/users/{SUBJECT}/keys/{spelled}"),
+            Some(&bearer),
+        )
+        .await,
+        StatusCode::NOT_FOUND,
+        "revoking what is already gone reported a success"
+    );
+    assert_eq!(
+        request(
+            &plane,
+            Method::DELETE,
+            &format!("/admin/realms/{REALM}/users/nobody/keys/{spelled}"),
+            Some(&bearer),
+        )
+        .await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(
+            &plane,
+            Method::DELETE,
+            &format!("/admin/realms/{REALM}/users/{SUBJECT}/keys/not-base64url!"),
+            Some(&bearer),
+        )
+        .await,
+        StatusCode::BAD_REQUEST,
+        "a malformed identifier read as a credential that happens to be absent"
+    );
+}
+
+/// Reading a user does not authorize disarming one: the listing and the
+/// revocation cost what the table says, separately.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn reading_keys_does_not_authorize_revoking_one() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead]).await;
+    let key = plane.enrol_soft_passkey().await;
+    let bearer = plane.token(&claims());
+    let spelled = data_encoding::BASE64URL_NOPAD.encode(&key.credential_id);
+
+    assert_eq!(
+        request(
+            &plane,
+            Method::DELETE,
+            &format!("/admin/realms/{REALM}/users/{SUBJECT}/keys/{spelled}"),
+            Some(&bearer),
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        plane.subject_keys().await,
+        vec![key.credential_id.clone()],
+        "a refused revocation went through anyway"
+    );
+}

@@ -17,6 +17,8 @@ pub struct EnrolledCredential {
     /// Public key, transports and flags, as serialised.
     pub passkey: Value,
     pub sign_count: i64,
+    /// Stamped by the store on enrolment; whatever a caller sets is ignored.
+    pub enrolled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -51,7 +53,8 @@ pub async fn by_id(
 ) -> StoreResult<Option<EnrolledCredential>> {
     Ok(transaction
         .query_opt(
-            "SELECT credential_id, user_id, label, passkey, sign_count, last_used_at \
+            "SELECT credential_id, user_id, label, passkey, sign_count, enrolled_at, \
+                    last_used_at \
              FROM webauthn_credentials WHERE credential_id = $1",
             &[&credential_id],
         )
@@ -70,7 +73,8 @@ pub async fn of_user(
 ) -> StoreResult<Vec<EnrolledCredential>> {
     Ok(transaction
         .query(
-            "SELECT credential_id, user_id, label, passkey, sign_count, last_used_at \
+            "SELECT credential_id, user_id, label, passkey, sign_count, enrolled_at, \
+                    last_used_at \
              FROM webauthn_credentials WHERE user_id = $1 \
              ORDER BY enrolled_at ASC, credential_id ASC",
             &[&user_id],
@@ -105,12 +109,19 @@ pub async fn record_use(
     Ok(advanced > 0)
 }
 
-/// Revoke one, and say whether there was one to revoke.
-pub async fn revoke(transaction: &Transaction<'_>, credential_id: &[u8]) -> StoreResult<bool> {
+/// Revoke one of this user's keys, and say whether there was one to revoke.
+///
+/// The user is part of the question, not a nicety: a caller naming a user and
+/// an identifier must not reach past that user, however it learned the name.
+pub async fn revoke(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    credential_id: &[u8],
+) -> StoreResult<bool> {
     let removed = transaction
         .execute(
-            "DELETE FROM webauthn_credentials WHERE credential_id = $1",
-            &[&credential_id],
+            "DELETE FROM webauthn_credentials WHERE user_id = $1 AND credential_id = $2",
+            &[&user_id, &credential_id],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
@@ -124,6 +135,7 @@ fn read(row: Row) -> EnrolledCredential {
         label: row.get("label"),
         passkey: row.get("passkey"),
         sign_count: row.get("sign_count"),
+        enrolled_at: row.get("enrolled_at"),
         last_used_at: row.get("last_used_at"),
     }
 }

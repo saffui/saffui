@@ -133,6 +133,7 @@ async fn finish(
             // counter is the high-water mark of *use*, and this key has not
             // been used yet.
             sign_count: 0,
+            enrolled_at: None,
             last_used_at: None,
         },
     )

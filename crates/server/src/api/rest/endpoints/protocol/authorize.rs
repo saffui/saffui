@@ -37,7 +37,7 @@ pub struct Asked {
     pub acr_values: Option<String>,
 }
 
-/// Begin a login.
+/// Begin a login, asked in the query.
 #[allow(
     clippy::too_many_arguments,
     reason = "each is a distinct fact about one request"
@@ -52,18 +52,65 @@ pub async fn begin(
     login_ui: web::Data<LoginUi>,
     origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
+    let asked = asked.map(web::Query::into_inner);
+    start(
+        request, &realm, asked, &pool, &tenancy, &sealing, &login_ui, &origin,
+    )
+    .await
+}
+
+/// Begin a login, asked in a form. OIDC Core §3.1.2.1: both verbs, the same
+/// parameters, and nothing a client can tell apart.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
+pub async fn begin_posted(
+    request: HttpRequest,
+    realm: web::Path<String>,
+    asked: Option<web::Form<Asked>>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    login_ui: web::Data<LoginUi>,
+    origin: web::Data<PublicOrigin>,
+) -> HttpResponse {
+    let asked = asked.map(web::Form::into_inner);
+    start(
+        request, &realm, asked, &pool, &tenancy, &sealing, &login_ui, &origin,
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
+async fn start(
+    request: HttpRequest,
+    realm: &str,
+    asked: Option<Asked>,
+    pool: &Pool,
+    tenancy: &Tenancy,
+    sealing: &Sealing,
+    login_ui: &LoginUi,
+    origin: &PublicOrigin,
+) -> HttpResponse {
     let now = Utc::now();
+    // What a refusal nobody can be sent to looks like: a page for a browser,
+    // JSON for anything else.
+    let shown = |error: &'static str, description: &str| shown(&request, error, description);
     let Ok(mut connection) = pool.get().await else {
         return shown("server_error", "the realm could not be read");
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
+    let Ok(context) = resolve::realm_by_name(&connection, realm).await else {
         return shown("unauthorized_client", "no login can start here");
     };
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
         return shown("server_error", "the realm could not be read");
     };
     let Some(asked) = asked else {
-        return shown("invalid_request", "the query could not be read");
+        return shown("invalid_request", "the request could not be read");
     };
 
     let begun = authorize::begin(
@@ -108,7 +155,7 @@ pub async fn begin(
             let answering = login_ui
                 .answering()
                 .map(str::to_owned)
-                .unwrap_or_else(|| page::location(&origin, &realm));
+                .unwrap_or_else(|| page::location(origin, realm));
             // Nothing secret travels in the URL. The browser is told where to
             // answer, and which login it is answering rides in a cookie the
             // page cannot read and a cross-site request cannot attach.
@@ -141,11 +188,54 @@ pub async fn begin(
 /// Still RFC 6749 §4.1.2.1's shape and its code set: the party reading this is
 /// not the client, but the codes are the vocabulary the endpoint has, and
 /// inventing a second one here would be a second thing to learn.
-fn shown(error: &'static str, description: &str) -> HttpResponse {
-    uncached(&mut HttpResponseBuilder::new(StatusCode::BAD_REQUEST)).json(serde_json::json!({
+/// A refusal with nowhere to go: no redirect was trustworthy, so whoever asked
+/// is told where they stand. A browser gets a page, anything else the JSON.
+fn shown(request: &HttpRequest, error: &'static str, description: &str) -> HttpResponse {
+    let wants_page = request
+        .headers()
+        .get("accept")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"));
+    let mut response = HttpResponseBuilder::new(StatusCode::BAD_REQUEST);
+    if wants_page {
+        return uncached(&mut response)
+            .insert_header(("Content-Type", "text/html; charset=utf-8"))
+            .insert_header((
+                "Content-Security-Policy",
+                "default-src 'none'; style-src 'self'",
+            ))
+            .insert_header(("X-Content-Type-Options", "nosniff"))
+            .body(format!(
+                "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+                 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+                 <title>Sign-in could not start</title>\
+                 <link rel=\"stylesheet\" href=\"login.css\"></head>\
+                 <body><main><h1>Sign-in could not start</h1>\
+                 <p class=\"flash\" style=\"display:block\">{}: {}</p>\
+                 <p>Go back to the application and try again.</p></main></body></html>",
+                escaped_text(error),
+                escaped_text(description),
+            ));
+    }
+    uncached(&mut response).json(serde_json::json!({
         "error": error,
         "error_description": description,
     }))
+}
+
+/// The five characters HTML reads as markup, spelled so it does not.
+fn escaped_text(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| match c {
+            '&' => "&amp;".to_owned(),
+            '<' => "&lt;".to_owned(),
+            '>' => "&gt;".to_owned(),
+            '"' => "&quot;".to_owned(),
+            '\'' => "&#39;".to_owned(),
+            other => other.to_string(),
+        })
+        .collect()
 }
 
 /// A refusal the client sees, at the redirect it registered.

@@ -148,12 +148,15 @@ pub fn mint_token(
             .map_err(|_| Unmintable::Unsignable)?;
     }
 
-    for (claim, value) in [
-        ("typ", minting.kind.claimed()),
-        ("azp", minting.party),
-        ("sid", minting.session_id),
-        ("scope", minting.scope),
-    ] {
+    // An identity token says who logged in and for whom; what a bearer may
+    // do and what kind of token it is are an access token's business, and a
+    // relying party reading claims it never asked for is a finding.
+    let mut claims = vec![("azp", minting.party), ("sid", minting.session_id)];
+    if minting.kind != Kind::Identity {
+        claims.push(("typ", minting.kind.claimed()));
+        claims.push(("scope", minting.scope));
+    }
+    for (claim, value) in claims {
         payload
             .set_claim(claim, Some(Value::from(value)))
             .map_err(|_| Unmintable::Unsignable)?;

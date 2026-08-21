@@ -164,6 +164,7 @@ pub async fn answer(
                     redirect_to,
                     session_id,
                 } => {
+                    tracing::info!(session = %session_id, "login admitted");
                     let mut response = HttpResponseBuilder::new(match spoken {
                         Spoken::Json => StatusCode::OK,
                         Spoken::Form => StatusCode::SEE_OTHER,
@@ -185,11 +186,15 @@ pub async fn answer(
                             .finish(),
                     }
                 }
-                Step::Refused => tell(StatusCode::UNAUTHORIZED, "refused"),
+                Step::Refused => {
+                    tracing::warn!("login refused");
+                    tell(StatusCode::UNAUTHORIZED, "refused")
+                }
                 // Over, and not admitted: the client hears why at its
                 // redirect, and the browser carries it there. The login's
                 // cookie goes; no session replaces it.
                 Step::SentBack { redirect_to } => {
+                    tracing::warn!(error = "login_required", "login sent back");
                     let mut response = HttpResponseBuilder::new(match spoken {
                         Spoken::Json => StatusCode::OK,
                         Spoken::Form => StatusCode::SEE_OTHER,
@@ -206,7 +211,10 @@ pub async fn answer(
                 }
             }
         }
-        Err(Unanswerable::NoSuchLogin) => tell(StatusCode::NOT_FOUND, "no-such-login"),
+        Err(Unanswerable::NoSuchLogin) => {
+            tracing::warn!("no such login");
+            tell(StatusCode::NOT_FOUND, "no-such-login")
+        }
         Err(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     }
 }

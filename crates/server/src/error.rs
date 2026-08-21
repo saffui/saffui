@@ -18,7 +18,7 @@ use crate::middleware::admin_policy::Refusal;
 pub fn refused(refusal: Refusal) -> ApiError {
     // The reason is not lost: it is what the decision returned, and the log
     // records it. This is only what travels back.
-    let _ = refusal;
+    tracing::warn!(reason = ?refusal, "admin request refused");
     ApiError::new(ErrorCode::AccessDenied)
 }
 

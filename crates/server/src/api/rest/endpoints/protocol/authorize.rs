@@ -176,13 +176,32 @@ async fn start(
         }
         // Nothing was written, so nothing is committed. Rolling back is what
         // makes a refused start leave no half opened login behind.
-        Err(Refusal::Unshowable(error)) => shown(error, "no login can start here"),
-        Err(Refusal::Redirect(error)) => sent(
-            asked.redirect_uri.as_deref().unwrap_or_default(),
-            error,
-            asked.state.as_deref(),
-        ),
+        Err(Refusal::Unshowable(error)) => {
+            noted_refusal(error, asked.client_id.as_deref(), "shown");
+            shown(error, "no login can start here")
+        }
+        Err(Refusal::Redirect(error)) => {
+            noted_refusal(error, asked.client_id.as_deref(), "sent");
+            sent(
+                asked.redirect_uri.as_deref().unwrap_or_default(),
+                error,
+                asked.state.as_deref(),
+            )
+        }
     }
+}
+
+/// The refusal, on the record, with the client that asked and where the
+/// answer went. The client id is the caller's, so it is cleaned first; nothing
+/// else of the request is written, since the rest of it is what a log must
+/// never hold.
+fn noted_refusal(error: &str, client_id: Option<&str>, delivered: &str) {
+    tracing::warn!(
+        error,
+        client_id = %commons::observability::sanitize_for_log(client_id.unwrap_or_default()),
+        delivered,
+        "authorization refused"
+    );
 }
 
 /// A refusal the user sees. The client is not established, or the redirect is

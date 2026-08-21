@@ -244,6 +244,7 @@ fn answer(granted: Granted) -> HttpResponse {
 /// A client that authenticated and may not have what it asked for is told so,
 /// which §5.2 separates from failing to authenticate at all.
 fn ungranted(why: Ungranted) -> HttpResponse {
+    tracing::warn!(why = ?why, "grant refused");
     match why {
         Ungranted::Unauthorized => {
             Denied::UnauthorizedClient.answer("this client may not use this grant")
@@ -261,6 +262,7 @@ fn ungranted(why: Ungranted) -> HttpResponse {
 /// What a client is told. Everything about who it is collapses to one answer;
 /// only the two protocol faults are named, because a caller can act on those.
 fn refused(why: Unauthenticated) -> HttpResponse {
+    tracing::warn!(why = ?why, "client not established");
     match why {
         Unauthenticated::Ambiguous => {
             Denied::InvalidRequest.answer("more than one client authentication method was used")

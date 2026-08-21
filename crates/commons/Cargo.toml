@@ -21,7 +21,7 @@ tracing-json = ["dep:tracing", "dep:tracing-subscriber", "dep:tracing-log"]
 
 # The per-request root span. Needs both the tracing stack and the web framework,
 # so it is its own feature rather than a silent consequence of enabling two.
-request-span = ["http", "tracing-json", "dep:tracing-actix-web"]
+request-span = ["http", "tracing-json", "dep:tracing-actix-web", "dep:uuid"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -39,3 +39,4 @@ tracing = { workspace = true, optional = true }
 tracing-subscriber = { workspace = true, optional = true }
 tracing-log = { workspace = true, optional = true }
 tracing-actix-web = { workspace = true, optional = true }
+uuid = { version = "1", features = ["v4"], optional = true }

@@ -42,12 +42,17 @@ pub fn init(directives: &str, format: &str) {
     let filter = tracing_subscriber::EnvFilter::try_new(directives)
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
 
-    let layer = tracing_subscriber::fmt::layer();
+    // A span's close is the one line every request leaves: its fields, and
+    // how long it was busy. That line is the access log, and there is no
+    // second one written by hand to disagree with it.
+    let layer = tracing_subscriber::fmt::layer()
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE);
     let layer = match format {
         "json" => layer
             .json()
+            .flatten_event(true)
             .with_current_span(true)
-            .with_span_list(true)
+            .with_span_list(false)
             .boxed(),
         _ => layer.compact().boxed(),
     };
@@ -63,10 +68,22 @@ pub fn init(directives: &str, format: &str) {
 /// The per-request root span, and the id every line under it carries.
 #[cfg(feature = "request-span")]
 mod request_span {
-    use actix_web::dev::{ServiceRequest, ServiceResponse};
+    use std::future::{Ready, ready};
+    use std::pin::Pin;
+
+    use actix_web::body::MessageBody;
+    use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
+    use actix_web::http::header::{HeaderName, HeaderValue};
     use actix_web::{Error, HttpMessage};
     use tracing::Span;
     use tracing_actix_web::RootSpanBuilder;
+
+    /// The header the id travels in, both ways.
+    pub const REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
+
+    /// The most an id a caller supplies may be. Longer is not an id, it is a
+    /// payload looking for a log to land in.
+    const LONGEST_ID: usize = 128;
 
     /// The correlation id for one request.
     ///
@@ -75,12 +92,95 @@ mod request_span {
     #[derive(Clone, Debug)]
     pub struct RequestId(pub String);
 
+    impl RequestId {
+        /// The caller's, when it is shaped like one; ours otherwise.
+        ///
+        /// A caller's id is kept so a gateway can trace a request across every
+        /// service it crossed. It is kept only when it is plainly an
+        /// identifier: bounded, and nothing but printable ASCII, so it can
+        /// neither end the line it is written on nor smuggle a payload into
+        /// every record of the request.
+        fn for_request(request: &ServiceRequest) -> Self {
+            let supplied = request
+                .headers()
+                .get(REQUEST_ID)
+                .and_then(|value| value.to_str().ok())
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.len() <= LONGEST_ID
+                        && value.bytes().all(|byte| byte.is_ascii_graphic())
+                });
+            match supplied {
+                Some(theirs) => RequestId(theirs.to_owned()),
+                None => RequestId(uuid::Uuid::new_v4().to_string()),
+            }
+        }
+    }
+
+    /// Gives every request its id, before anything else looks.
+    ///
+    /// Its own middleware, outermost, rather than a line in the span builder:
+    /// the id has to exist before the span opens and has to reach the
+    /// response after the span closes, and a builder sees neither end.
+    pub struct WithRequestId;
+
+    impl<S, B> Transform<S, ServiceRequest> for WithRequestId
+    where
+        S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+        B: MessageBody + 'static,
+    {
+        type Response = ServiceResponse<B>;
+        type Error = Error;
+        type Transform = RequestIdService<S>;
+        type InitError = ();
+        type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+        fn new_transform(&self, service: S) -> Self::Future {
+            ready(Ok(RequestIdService { service }))
+        }
+    }
+
+    pub struct RequestIdService<S> {
+        service: S,
+    }
+
+    impl<S, B> Service<ServiceRequest> for RequestIdService<S>
+    where
+        S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error> + 'static,
+        B: MessageBody + 'static,
+    {
+        type Response = ServiceResponse<B>;
+        type Error = Error;
+        type Future =
+            Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>>>>;
+
+        actix_web::dev::forward_ready!(service);
+
+        fn call(&self, request: ServiceRequest) -> Self::Future {
+            let id = RequestId::for_request(&request);
+            request.extensions_mut().insert(id.clone());
+            let answering = self.service.call(request);
+            Box::pin(async move {
+                let mut response = answering.await?;
+                if let Ok(value) = HeaderValue::from_str(&id.0) {
+                    response.headers_mut().insert(REQUEST_ID, value);
+                }
+                Ok(response)
+            })
+        }
+    }
+
     /// Opens the span every later record inherits.
     ///
-    /// `tenant` and `realm` are declared empty and recorded once whatever
-    /// resolves them has run. Declaring them here rather than adding them later
-    /// is what lets a record made before resolution still carry the field, empty
-    /// — a log where the field sometimes does not exist cannot be queried on.
+    /// `route`, `realm` and `status` are declared empty and recorded once the
+    /// request has been routed and answered. Declaring them at the start
+    /// rather than adding them later is what lets a record made before
+    /// routing still carry the field, empty: a log where a field sometimes
+    /// does not exist cannot be queried on.
+    ///
+    /// The path is recorded and the query is not. What a protocol request
+    /// carries in its query is a state, a nonce, a code: the things a log
+    /// must never hold, and the one place they could get in is closed here.
     pub struct SaffuiRootSpan;
 
     impl RootSpanBuilder for SaffuiRootSpan {
@@ -98,22 +198,35 @@ mod request_span {
                 // The path is caller-controlled, so it is cleaned before it
                 // reaches a line.
                 path = %super::sanitize_for_log(request.path()),
-                tenant = tracing::field::Empty,
+                route = tracing::field::Empty,
                 realm = tracing::field::Empty,
                 status = tracing::field::Empty,
             )
         }
 
         fn on_request_end<B>(span: Span, outcome: &Result<ServiceResponse<B>, Error>) {
-            if let Ok(response) = outcome {
-                span.record("status", response.status().as_u16());
+            match outcome {
+                Ok(response) => {
+                    span.record("status", response.status().as_u16());
+                    // Known only once routed: the pattern, which is what a
+                    // dashboard groups by, and the realm the path named.
+                    if let Some(route) = response.request().match_pattern() {
+                        span.record("route", route);
+                    }
+                    if let Some(realm) = response.request().match_info().get("realm") {
+                        span.record("realm", super::sanitize_for_log(realm));
+                    }
+                }
+                Err(error) => {
+                    span.record("status", error.as_response_error().status_code().as_u16());
+                }
             }
         }
     }
 }
 
 #[cfg(feature = "request-span")]
-pub use request_span::{RequestId, SaffuiRootSpan};
+pub use request_span::{REQUEST_ID, RequestId, SaffuiRootSpan, WithRequestId};
 
 #[cfg(test)]
 mod tests {

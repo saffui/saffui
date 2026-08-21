@@ -3612,3 +3612,53 @@ async fn a_form_is_answered_by_being_sent_on() {
         "the browser was sent on without being signed in"
     );
 }
+
+/// RFC 6749 §4.1.2: a code presented twice is refused, and what its first
+/// presentation bought is taken back: the access token stops opening
+/// `/userinfo`, and the refresh token stops renewing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_replayed_code_takes_back_what_it_bought() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid profile", None)
+        .await;
+    let redeem = [
+        ("grant_type", "authorization_code"),
+        ("code", &code),
+        ("redirect_uri", REDIRECT),
+    ];
+    let client = Some((support::CONFIDENTIAL, support::CLIENT_SECRET));
+
+    let (status, granted) = asking(&plane, support::REALM, &redeem, client).await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+    let access = granted["access_token"].as_str().expect("an access token");
+    let refresh = granted["refresh_token"].as_str().expect("a refresh token");
+    assert_eq!(
+        userinfo(&plane, Some(access)).await.0,
+        StatusCode::OK,
+        "the token did not work before the replay"
+    );
+
+    let (status, told) = asking(&plane, support::REALM, &redeem, client).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(told["error"], "invalid_grant");
+
+    assert_eq!(
+        userinfo(&plane, Some(access)).await.0,
+        StatusCode::UNAUTHORIZED,
+        "the access token bought by a replayed code still works"
+    );
+    let (status, told) = asking(
+        &plane,
+        support::REALM,
+        &[("grant_type", "refresh_token"), ("refresh_token", refresh)],
+        client,
+    )
+    .await;
+    assert_eq!(
+        (status, told["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid_grant")),
+        "the refresh token bought by a replayed code still renews"
+    );
+}

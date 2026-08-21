@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::attributes;
 use models::entities::keys::RealmSigningKeyView;
-use models::entities::user::{UserModel, profile};
+use models::entities::user::{UserModel, address, profile};
 use serde_json::{Map, Value, json};
 use store::providers::{client_scopes, sessions, users};
 
@@ -130,7 +130,7 @@ pub fn within_entitlement(released: Map<String, Value>, entitled: &[String]) -> 
 }
 
 /// What OIDC Core §5.4 puts behind each scope, by name.
-const SCOPE_CLAIMS: [(&str, &[&str]); 3] = [
+const SCOPE_CLAIMS: [(&str, &[&str]); 4] = [
     (
         "profile",
         &[
@@ -152,6 +152,7 @@ const SCOPE_CLAIMS: [(&str, &[&str]); 3] = [
     ),
     ("email", &["email", "email_verified"]),
     ("phone", &["phone_number", "phone_number_verified"]),
+    ("address", &["address"]),
 ];
 
 /// Every standard claim this realm holds of a person, regardless of who may
@@ -223,6 +224,18 @@ pub fn held_claims(subject: &UserModel) -> Map<String, Value> {
             "phone_number_verified".into(),
             json!(subject.phone_number_verified.unwrap_or(false)),
         );
+    }
+    // §5.1.1: one object, of whichever components the realm holds. A realm
+    // that holds a country and nothing finer releases a country, which the
+    // spec allows by name; an address with no component at all is no address.
+    let postal: Map<String, Value> = address::COMPONENTS
+        .into_iter()
+        .filter_map(|(member, attribute)| {
+            held(attribute).map(|value| (member.to_owned(), json!(value)))
+        })
+        .collect();
+    if !postal.is_empty() {
+        claims.insert("address".into(), Value::Object(postal));
     }
     claims
 }

@@ -4082,3 +4082,71 @@ async fn an_essential_context_the_realm_cannot_reach_fails_the_request() {
         "a voluntary context the realm cannot reach refused the login: {location}"
     );
 }
+
+/// OIDC Core §5.1.1: the `address` scope releases one object, of whichever
+/// components the realm holds, as strings. Asked for by scope, and by name.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_address_scope_releases_one_object_of_what_is_held() {
+    use models::entities::attributes::AttributeValue;
+    use models::entities::user::address;
+
+    let plane = Plane::with_actions(&[]).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let mut user = store::providers::users::load(&transaction, support::SUBJECT)
+            .await
+            .unwrap()
+            .expect("the subject");
+        let held = user.attributes.get_or_insert_with(Default::default);
+        for (named, value) in [
+            (address::STREET_ADDRESS, "1 Saint James's Square"),
+            (address::LOCALITY, "London"),
+            (address::POSTAL_CODE, "SW1Y 4JH"),
+            (address::COUNTRY, "United Kingdom"),
+        ] {
+            held.insert(named.to_owned(), AttributeValue::Str(value.to_owned()));
+        }
+        store::providers::users::update(&transaction, &user)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    let by_scope = granted_through_login(&plane, &[("scope", "openid address")]).await;
+    let (status, told, _) = userinfo(&plane, by_scope["access_token"].as_str()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        told["address"],
+        serde_json::json!({
+            "street_address": "1 Saint James's Square",
+            "locality": "London",
+            "postal_code": "SW1Y 4JH",
+            "country": "United Kingdom",
+        }),
+        "{told}"
+    );
+    assert!(
+        told.get("region").is_none() && told["address"].get("region").is_none(),
+        "a component the realm does not hold was released: {told}"
+    );
+
+    let by_name = granted_through_login(
+        &plane,
+        &[
+            ("scope", "openid"),
+            ("claims", r#"{"id_token": {"address": null}}"#),
+        ],
+    )
+    .await;
+    let identity = plane
+        .claims_of(by_name["id_token"].as_str().expect("an id token"))
+        .await;
+    assert_eq!(identity["address"]["locality"], "London", "{identity}");
+}

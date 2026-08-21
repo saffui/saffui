@@ -43,3 +43,9 @@ pgcore = { workspace = true }
 tokio-postgres = { workspace = true }
 actix-web = { workspace = true }
 chrono = { workspace = true }
+# The verifier under test doubles as the oracle: the soft authenticator's
+# output is checked by the same code that will check a browser's.
+webauthn-rs = { version = "0.5" }
+# CBOR, which is what an attestation object and a COSE key are written in.
+serde_cbor_2 = { version = "0.13" }
+data-encoding = { workspace = true }

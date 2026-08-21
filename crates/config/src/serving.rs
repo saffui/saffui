@@ -86,6 +86,29 @@ impl PublicOrigin {
         &self.0
     }
 
+    /// The host alone, which is what a relying party identifier is.
+    ///
+    /// No scheme and no port. WebAuthn scopes a credential to a domain, so
+    /// `https://id.example:8443` and `https://id.example` are one party and a
+    /// credential enrolled against either answers for both. Including the port
+    /// would strand every credential the moment a deployment moved behind a
+    /// different one.
+    pub fn host(&self) -> &str {
+        let rest = self
+            .0
+            .strip_prefix("https://")
+            .or_else(|| self.0.strip_prefix("http://"))
+            .unwrap_or(&self.0);
+        let host = rest.split('/').next().unwrap_or(rest);
+        host.rsplit_once(':').map_or(host, |(before, port)| {
+            if port.chars().all(|c| c.is_ascii_digit()) {
+                before
+            } else {
+                host
+            }
+        })
+    }
+
     /// What a token minted for this realm states as its issuer. The protocol
     /// paths under it are published by discovery and may move; this one is
     /// quoted in every token in flight.
@@ -157,6 +180,22 @@ mod tests {
                 .issuer("main"),
             "https://id.example/realms/main"
         );
+    }
+
+    /// A relying party is a domain, so the port and the path are not part of it.
+    #[test]
+    fn a_relying_party_is_the_host_and_nothing_else() {
+        for (origin, host) in [
+            ("https://id.example", "id.example"),
+            ("http://localhost:8080", "localhost"),
+            ("https://id.example/auth", "id.example"),
+        ] {
+            assert_eq!(
+                PublicOrigin::parse(origin).unwrap().host(),
+                host,
+                "{origin}"
+            );
+        }
     }
 
     /// The prefix is what makes `iss` load bearing rather than decorative.

@@ -7,6 +7,7 @@
 
 use std::str::FromStr;
 
+use config::serving::PublicOrigin;
 use crypto::otp::totp::{TotpParams, totp_verify_step};
 use crypto::password::StoredPassword;
 use crypto::password::migration::{burn_verification_time, verify_and_plan};
@@ -18,8 +19,50 @@ use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
 use secrecy::SecretBox;
 use store::providers::credentials;
+use url::Url;
+use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PublicKeyCredential};
+use webauthn_rs::{Webauthn, WebauthnBuilder};
 
 use crate::login::step::Outcome;
+
+/// What a step answered, and what it needs shown before it can answer again.
+///
+/// Two values rather than one, because the fold is pure and a challenge is not:
+/// it is issued by a step, carries state that has to be kept between two
+/// requests, and is the caller's to render. Folding it into [`Outcome`] would
+/// put credential material into the part that decides who is let in.
+#[derive(Debug)]
+pub struct Answered {
+    pub outcome: Outcome,
+    /// What the caller must be shown, when the step issued one. A password step
+    /// issues nothing: the form is the caller's and the server has no state in
+    /// it. A step that must hand out a nonce and remember it does.
+    pub asks: Option<Challenge>,
+}
+
+impl Answered {
+    /// A step that needs nothing shown.
+    pub fn plain(outcome: Outcome) -> Self {
+        Answered {
+            outcome,
+            asks: None,
+        }
+    }
+}
+
+/// Something the caller is shown, and what the server has to remember about it.
+///
+/// The two travel together because they are one act. A challenge handed out and
+/// not remembered is one nothing can verify against, and remembering one that
+/// was never handed out leaves state nobody will ever answer.
+#[derive(Debug)]
+pub struct Challenge {
+    /// What the caller renders or hands to a device, as it goes on the wire.
+    pub shown: serde_json::Value,
+    /// What verifying the answer will need, kept in the login's notes under the
+    /// authenticator's own name so two steps cannot overwrite each other.
+    pub remembered: serde_json::Value,
+}
 
 /// The authenticators this build knows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +71,8 @@ pub enum Authenticator {
     Password,
     /// A time-based code, against the shared secret the realm stores.
     Totp,
+    /// A key the user holds, answering a challenge this server issued.
+    Webauthn,
 }
 
 /// A name no build knows. Refused where a flow is read, so a realm cannot be
@@ -43,6 +88,7 @@ impl FromStr for Authenticator {
         match name {
             "password" => Ok(Self::Password),
             "totp" => Ok(Self::Totp),
+            "webauthn" => Ok(Self::Webauthn),
             other => Err(Unknown(other.to_owned())),
         }
     }
@@ -53,6 +99,7 @@ impl Authenticator {
         match self {
             Self::Password => "password",
             Self::Totp => "totp",
+            Self::Webauthn => "webauthn",
         }
     }
 
@@ -67,6 +114,9 @@ impl Authenticator {
         match self {
             Self::Password => "password",
             Self::Totp => "mfa",
+            // A key is a second factor like a code is. What the realm maps is
+            // the class, not which device the flow happened to run.
+            Self::Webauthn => "mfa",
         }
     }
 }
@@ -81,23 +131,39 @@ pub enum Answer {
     /// The digits typed, as typed. Parsed where it is verified, so a code with
     /// the spaces an app renders is the code the user read.
     Totp(String),
+    /// The credential the browser handed back, as the JSON it produced.
+    Webauthn(String),
 }
 
 /// Say whether an answer satisfies one authenticator.
 ///
 /// The subject is resolved before this: an authenticator says whether the
 /// answer is right, not who is answering.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one step"
+)]
 pub async fn verify_answer(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
+    origin: &PublicOrigin,
     subject: Option<&UserModel>,
     authenticator: Authenticator,
     answers: &[Answer],
-) -> Outcome {
+    // What the previous round of this same authenticator issued. A step that
+    // hands out a challenge verifies against what it remembered, and one that
+    // issues nothing never looks.
+    remembered: Option<&serde_json::Value>,
+) -> Answered {
     match authenticator {
-        Authenticator::Password => password(transaction, provider, realm, subject, answers).await,
-        Authenticator::Totp => totp(transaction, provider, subject, answers).await,
+        Authenticator::Password => {
+            Answered::plain(password(transaction, provider, realm, subject, answers).await)
+        }
+        Authenticator::Totp => Answered::plain(totp(transaction, provider, subject, answers).await),
+        Authenticator::Webauthn => {
+            webauthn(transaction, origin, subject, answers, remembered).await
+        }
     }
 }
 
@@ -256,4 +322,97 @@ async fn totp(
 /// The digits, tolerating the spaces an authenticator app renders.
 fn parse_code(typed: &str) -> Option<u32> {
     typed.split_whitespace().collect::<String>().parse().ok()
+}
+
+/// A key the user holds, answering a challenge this server issued.
+///
+/// Two rounds, and both are here. Nothing answered means the challenge is
+/// issued and remembered; an answer is checked against what was remembered. A
+/// challenge verified against anything else is one an attacker can supply both
+/// halves of.
+async fn webauthn(
+    transaction: &Transaction<'_>,
+    origin: &PublicOrigin,
+    subject: Option<&UserModel>,
+    answers: &[Answer],
+    remembered: Option<&serde_json::Value>,
+) -> Answered {
+    // Where this deployment answers from, not anything a request carried. A
+    // relying party a caller could name is one a caller could impersonate, and a
+    // credential is scoped to the party it was enrolled against for exactly that
+    // reason.
+    let Ok(party) = relying_party(origin) else {
+        return Answered::plain(Outcome::Failed);
+    };
+    let Some(subject) = subject else {
+        return Answered::plain(Outcome::Failed);
+    };
+
+    let Ok(enrolled) = store::providers::webauthn::of_user(transaction, &subject.user_id).await
+    else {
+        return Answered::plain(Outcome::Failed);
+    };
+    let held: Vec<Passkey> = enrolled
+        .iter()
+        .filter_map(|credential| serde_json::from_value(credential.passkey.clone()).ok())
+        .collect();
+    if held.is_empty() {
+        // Nothing enrolled. Refused rather than asked, because a challenge no
+        // key can answer is a screen the user waits at forever.
+        return Answered::plain(Outcome::Failed);
+    }
+
+    let Some(Answer::Webauthn(handed_back)) =
+        of_kind(answers, |answer| matches!(answer, Answer::Webauthn(_)))
+    else {
+        let Ok((shown, state)) = party.start_passkey_authentication(&held) else {
+            return Answered::plain(Outcome::Failed);
+        };
+        let (Ok(shown), Ok(remembered)) =
+            (serde_json::to_value(shown), serde_json::to_value(&state))
+        else {
+            return Answered::plain(Outcome::Failed);
+        };
+        return Answered {
+            outcome: Outcome::Pending,
+            asks: Some(Challenge { shown, remembered }),
+        };
+    };
+
+    // No state, no answer. A round that verifies against a challenge it cannot
+    // find is one where the caller supplied both halves.
+    let Some(state) = remembered
+        .and_then(|held| serde_json::from_value::<PasskeyAuthentication>(held.clone()).ok())
+    else {
+        return Answered::plain(Outcome::Failed);
+    };
+    let Ok(presented) = serde_json::from_str::<PublicKeyCredential>(handed_back) else {
+        return Answered::plain(Outcome::Failed);
+    };
+    let Ok(result) = party.finish_passkey_authentication(&presented, &state) else {
+        return Answered::plain(Outcome::Failed);
+    };
+
+    // The counter, which is what tells a cloned authenticator from the real one.
+    // The library says the assertion checks out; the store says whether this
+    // device has gone backwards, and one that has is refused rather than
+    // recorded.
+    let advanced = store::providers::webauthn::record_use(
+        transaction,
+        result.cred_id().as_ref(),
+        i64::from(result.counter()),
+    )
+    .await;
+    match advanced {
+        Ok(true) => Answered::plain(Outcome::Passed),
+        _ => Answered::plain(Outcome::Failed),
+    }
+}
+
+/// The party a credential is scoped to.
+fn relying_party(origin: &PublicOrigin) -> Result<Webauthn, ()> {
+    let url = Url::parse(origin.as_str()).map_err(|_| ())?;
+    WebauthnBuilder::new(origin.host(), &url)
+        .and_then(WebauthnBuilder::build)
+        .map_err(|_| ())
 }

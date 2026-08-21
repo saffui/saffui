@@ -5,13 +5,14 @@
 //! the SSO session and the code the client comes back to spend.
 
 use chrono::{DateTime, Duration, Utc};
+use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
 use deadpool_postgres::Transaction;
 use models::entities::acr::{self, AchievedAuth};
 use models::entities::oidc::AuthorizationCode;
 use models::sessions::records::{UserSessionModel, UserSessionState};
-use serde_json::{Value, json};
+use serde_json::Value;
 use store::providers::login::AuthSession;
 use store::providers::{login, oidc, realms, sessions, users};
 use store::tenancy::TenantContext;
@@ -32,8 +33,12 @@ const SSO_LIFESPAN: i64 = 36_000;
 /// Where a login stands after one answer.
 #[derive(Debug)]
 pub enum Step {
-    /// A step is waiting. The caller answers again, naming the same login.
-    Challenge { execution_id: String },
+    /// A step is waiting. The caller answers again, naming the same login, and
+    /// is shown what the step issued when it issued anything.
+    Challenge {
+        execution_id: String,
+        asks: Option<Value>,
+    },
     /// Admitted. The browser goes here, and the client spends what it carries.
     /// The session is named so the transport can bind the browser to it.
     Admitted {
@@ -59,10 +64,15 @@ pub enum Unanswerable {
 }
 
 /// Run one step of the login named by `auth_session_id`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one step"
+)]
 pub async fn answer_step(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
+    origin: &PublicOrigin,
     auth_session_id: &str,
     username: Option<&str>,
     answers: &[Answer],
@@ -87,28 +97,39 @@ pub async fn answer_step(
         transaction,
         provider,
         &realm,
+        origin,
         &login.flow_id,
         subject.as_ref(),
         answers,
+        // What the previous round of this same login remembered. A challenge is
+        // verified against what was handed out, never against what came back.
+        &login.notes,
         now,
     )
     .await
     .map_err(|_| Unanswerable::Unrunnable)?;
 
     match progress {
-        Progress::Waiting { execution_id } => {
+        Progress::Waiting {
+            execution_id,
+            asks,
+            remember,
+        } => {
             // Written before the answer is asked for, so a login resumed on
             // another connection knows which step it is on.
+            // What the step issued goes down with where the flow stands. The
+            // notes merge rather than replace, so a second step's state does not
+            // drop the first's.
             login::record_step(
                 transaction,
                 auth_session_id,
                 subject.as_ref().map(|user| user.user_id.as_str()),
                 Some(&execution_id),
-                &json!({}),
+                &Value::Object(remember),
             )
             .await
             .map_err(|_| Unanswerable::Unreadable)?;
-            Ok(Step::Challenge { execution_id })
+            Ok(Step::Challenge { execution_id, asks })
         }
         Progress::Refused => Ok(Step::Refused),
         Progress::Admitted { by } => {

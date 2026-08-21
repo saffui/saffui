@@ -1,0 +1,105 @@
+{
+  "alias": "saffui",
+  "description": "saffui, basic OP profile",
+  "server": {
+    "discoveryUrl": "https://saffui.test/realms/main/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance",
+    "client_secret": "a-conformance-client-secret"
+  },
+  "client2": {
+    "client_id": "conformance-second",
+    "client_secret": "a-conformance-client-secret"
+  },
+  "browser": [
+    {
+      "match": "https://saffui.test/realms/main/protocol/openid-connect/auth*",
+      "tasks": [
+        {
+          "task": "Login",
+          "optional": true,
+          "match": "https://saffui.test/realms/main/protocol/openid-connect/login*",
+          "commands": [
+            [
+              "wait",
+              "xpath",
+              "//*",
+              10,
+              ".*Sign in.*",
+              "update-image-placeholder-optional"
+            ],
+            [
+              "text",
+              "name",
+              "username",
+              "ada",
+              "optional"
+            ],
+            [
+              "text",
+              "name",
+              "password",
+              "a-password-of-decent-length",
+              "optional"
+            ],
+            [
+              "click",
+              "css",
+              "button[type=submit]"
+            ]
+          ]
+        },
+        {
+          "task": "Refused where it stands",
+          "optional": true,
+          "match": "https://saffui.test/realms/main/protocol/openid-connect/auth*",
+          "commands": [
+            [
+              "wait",
+              "xpath",
+              "//*",
+              10,
+              ".*could not start.*",
+              "update-image-placeholder"
+            ]
+          ]
+        },
+        {
+          "task": "Verify Complete",
+          "match": "https://localhost.emobix.co.uk:8443/test/*/callback*",
+          "commands": [
+            [
+              "wait",
+              "id",
+              "submission_complete",
+              10
+            ]
+          ],
+          "optional": true
+        }
+      ]
+    },
+    {
+      "match": "https://saffui.test/realms/main/protocol/openid-connect/logout*",
+      "tasks": [
+        {
+          "task": "Verify Complete",
+          "match": "*/test/*/post_logout_redirect*",
+          "commands": [
+            [
+              "wait",
+              "id",
+              "submission_complete",
+              10
+            ]
+          ]
+        }
+      ]
+    }
+  ],
+  "client_secret_post": {
+    "client_id": "conformance-post",
+    "client_secret": "a-conformance-client-secret"
+  }
+}

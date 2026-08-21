@@ -138,6 +138,33 @@ pub async fn replace_secret(
 }
 
 /// Remove a credential, and say whether there was one to remove.
+/// Spend a one-time code's step, once.
+///
+/// The comparison is the write. Reading the last step, comparing it and writing
+/// the new one as three calls means three snapshots, and two submissions of the
+/// same code racing both read the same value and both pass. Here the second one
+/// waits on the row lock, re-reads a step that has moved, and matches nothing.
+///
+/// Strictly greater, not merely different: a step *below* the last consumed one
+/// is still inside the acceptance window, so a replay of an older code has to be
+/// refused too.
+pub async fn consume_otp_step(
+    transaction: &Transaction<'_>,
+    credential_id: &str,
+    step: i64,
+) -> StoreResult<bool> {
+    let spent = transaction
+        .execute(
+            "UPDATE user_credentials SET otp_last_step = $2 \
+             WHERE credential_id = $1 \
+               AND (otp_last_step IS NULL OR otp_last_step < $2)",
+            &[&credential_id, &step],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(spent > 0)
+}
+
 pub async fn delete(transaction: &Transaction<'_>, credential_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(

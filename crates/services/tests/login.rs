@@ -109,7 +109,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
         &realm,
         &flow,
         Some(&user),
-        None,
+        &[],
         Utc::now(),
     )
     .await
@@ -123,20 +123,20 @@ async fn a_password_flow_admits_refuses_and_asks() {
     );
 
     let right = Answer::Password(SecretBox::new(Box::new("correct horse".to_owned())));
-    assert_eq!(
+    assert!(matches!(
         run_flow(
             &transaction,
             &provider(),
             &realm,
             &flow,
             Some(&user),
-            Some(&right),
+            std::slice::from_ref(&right),
             Utc::now()
         )
         .await
         .unwrap(),
-        Progress::Admitted
-    );
+        Progress::Admitted { .. }
+    ));
 
     let wrong = Answer::Password(SecretBox::new(Box::new("battery staple".to_owned())));
     assert_eq!(
@@ -146,7 +146,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
             &realm,
             &flow,
             Some(&user),
-            Some(&wrong),
+            std::slice::from_ref(&wrong),
             Utc::now()
         )
         .await
@@ -176,7 +176,7 @@ async fn an_unknown_subject_is_refused_like_a_wrong_password() {
             &realm,
             &flow,
             None,
-            Some(&offered),
+            std::slice::from_ref(&offered),
             Utc::now()
         )
         .await
@@ -210,7 +210,7 @@ async fn a_step_this_build_cannot_run_stops_the_flow() {
             &realm,
             &flow,
             None,
-            None,
+            &[],
             Utc::now()
         )
         .await,
@@ -234,7 +234,7 @@ async fn a_flow_that_is_not_there_is_not_a_refusal() {
             &realm,
             "no-such-flow",
             None,
-            None,
+            &[],
             Utc::now()
         )
         .await
@@ -268,7 +268,7 @@ async fn a_flow_whose_only_step_is_disabled_admits_nobody() {
             &realm,
             &flow,
             Some(&user),
-            Some(&right),
+            std::slice::from_ref(&right),
             Utc::now()
         )
         .await

@@ -133,6 +133,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V020__refresh_grace.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 21,
+            name: "otp_replay",
+            sql: include_str!("../migrations/V021__otp_replay.sql"),
+            transactional: true,
+        }),
     ]
 }
 

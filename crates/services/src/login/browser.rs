@@ -29,10 +29,6 @@ const CODE_LIFESPAN: i64 = 60;
 /// How long the login it opens lasts.
 const SSO_LIFESPAN: i64 = 36_000;
 
-/// The context value a password step reaches. The realm decides what level that
-/// is worth; this only says which name to look up.
-const PASSWORD_CONTEXT: &str = "password";
-
 /// Where a login stands after one answer.
 #[derive(Debug)]
 pub enum Step {
@@ -69,7 +65,7 @@ pub async fn answer_step(
     tenant: &TenantContext,
     auth_session_id: &str,
     username: Option<&str>,
-    answer: Option<&Answer>,
+    answers: &[Answer],
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
     let login = login::resume(transaction, auth_session_id)
@@ -93,7 +89,7 @@ pub async fn answer_step(
         &realm,
         &login.flow_id,
         subject.as_ref(),
-        answer,
+        answers,
         now,
     )
     .await
@@ -115,12 +111,15 @@ pub async fn answer_step(
             Ok(Step::Challenge { execution_id })
         }
         Progress::Refused => Ok(Step::Refused),
-        Progress::Admitted => {
+        Progress::Admitted { by } => {
             let subject = subject.ok_or(Unanswerable::Unrunnable)?;
+            // The highest of what actually ran. A flow that reached a second
+            // factor is stronger than the password that opened it, and reading
+            // only the first would report a level the login exceeded.
             let reached = realm
                 .acr_loa_map
                 .as_ref()
-                .and_then(|map| map.loa_of(PASSWORD_CONTEXT));
+                .and_then(|map| by.iter().filter_map(|ran| map.loa_of(ran.context())).max());
             admit(
                 transaction,
                 provider,

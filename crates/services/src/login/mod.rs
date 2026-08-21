@@ -10,6 +10,7 @@ pub mod browser;
 pub mod step;
 
 use chrono::{DateTime, Utc};
+use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
 use models::entities::auth::ExecutionStep;
@@ -29,8 +30,15 @@ pub enum Progress {
     Admitted { by: Vec<Authenticator> },
     /// It cannot be, and no further answer changes that.
     Refused,
-    /// A step is waiting on the caller, named so it can be asked.
-    Waiting { execution_id: String },
+    /// A step is waiting on the caller, named so it can be asked, and carrying
+    /// both halves of anything it issued: what to show, and what verifying the
+    /// answer will need. The second is the caller's to persist — a challenge
+    /// handed out and not remembered is one nothing can verify against.
+    Waiting {
+        execution_id: String,
+        asks: Option<serde_json::Value>,
+        remember: serde_json::Map<String, serde_json::Value>,
+    },
 }
 
 /// Why a login could not be run at all.
@@ -59,13 +67,20 @@ pub enum Unrunnable {
 /// Every enabled step is run, not merely the ones before the first refusal: a
 /// flow of alternatives has to try them all before it can say none of them let
 /// this caller in, and the fold cannot see what was never run.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one pass of one flow"
+)]
 pub async fn run_flow(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
+    origin: &PublicOrigin,
     flow_id: &str,
     subject: Option<&UserModel>,
     answers: &[Answer],
+    // What the previous round issued, under each authenticator's own name.
+    remembered_before: &serde_json::Value,
     _now: DateTime<Utc>,
 ) -> Result<Progress, Unrunnable> {
     let executions = auth_flows::executions_of(transaction, flow_id)
@@ -77,6 +92,8 @@ pub async fn run_flow(
 
     let mut steps = Vec::with_capacity(executions.len());
     let mut waiting = None;
+    let mut asked = None;
+    let mut remembered = serde_json::Map::new();
     let mut passed = Vec::new();
 
     for execution in &executions {
@@ -93,10 +110,27 @@ pub async fn run_flow(
         };
         let named: Authenticator = authenticator.parse()?;
 
-        let outcome =
-            authenticator::verify_answer(transaction, provider, realm, subject, named, answers)
-                .await;
+        let answered = authenticator::verify_answer(
+            transaction,
+            provider,
+            realm,
+            origin,
+            subject,
+            named,
+            answers,
+            remembered_before.get(named.as_str()),
+        )
+        .await;
+        let outcome = answered.outcome;
 
+        if let Some(challenge) = answered.asks {
+            // Under the authenticator's own name, so two steps issuing
+            // challenges cannot overwrite each other's state.
+            remembered.insert(named.as_str().to_owned(), challenge.remembered);
+            if asked.is_none() {
+                asked = Some(challenge.shown);
+            }
+        }
         if outcome == Outcome::Pending && waiting.is_none() {
             waiting = Some(execution.execution_id.clone());
         }
@@ -115,7 +149,11 @@ pub async fn run_flow(
         // The fold said a step waits; which one is the first that did, so a
         // caller is asked the earliest question rather than an arbitrary one.
         Decided::Waiting => match waiting {
-            Some(execution_id) => Progress::Waiting { execution_id },
+            Some(execution_id) => Progress::Waiting {
+                execution_id,
+                asks: asked,
+                remember: remembered,
+            },
             None => Progress::Refused,
         },
     })

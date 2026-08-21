@@ -2832,3 +2832,22 @@ async fn two_factors_reach_the_level_two_factors_are_worth() {
         "a login that ran two factors reported the level of one"
     );
 }
+
+/// A password step issues nothing. The form is the caller's own and the server
+/// keeps no state in it, so a body claiming a challenge would have the caller
+/// wait for a device nobody asked for.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_password_step_issues_no_challenge() {
+    let plane = Plane::with_actions(&[]).await;
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    let (_, told, _) = login_step(&plane, Some(&auth_session), serde_json::json!({})).await;
+    assert_eq!(told["status"], "challenge");
+    assert!(
+        told.get("asks").is_none(),
+        "a password form was announced as a challenge: {told}"
+    );
+}

@@ -7,6 +7,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
+use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
 use secrecy::SecretBox;
 use serde::Deserialize;
@@ -28,6 +29,8 @@ pub struct Answered {
     pub password: Option<String>,
     /// The digits from an authenticator app, as typed.
     pub totp: Option<String>,
+    /// What a key handed back, as the JSON the browser produced.
+    pub webauthn: Option<String>,
 }
 
 /// How long the login this opens lasts, matching what the flow writes.
@@ -41,6 +44,7 @@ pub async fn answer(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Some(answered) = answered else {
@@ -71,11 +75,15 @@ pub async fn answer(
     if let Some(typed) = answered.totp.clone() {
         answers.push(Answer::Totp(typed));
     }
+    if let Some(handed_back) = answered.webauthn.clone() {
+        answers.push(Answer::Webauthn(handed_back));
+    }
 
     let step = browser::answer_step(
         &transaction,
         sealing.provider.as_ref(),
         &context,
+        &origin,
         &auth_session,
         answered.username.as_deref(),
         // Everything the body carried. The flow runs every step against what it
@@ -95,11 +103,20 @@ pub async fn answer(
                 return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable", None);
             }
             match step {
-                Step::Challenge { execution_id } => told(
-                    StatusCode::OK,
-                    "challenge",
-                    Some(("execution", execution_id)),
-                ),
+                Step::Challenge { execution_id, asks } => {
+                    let mut body = serde_json::json!({
+                        "status": "challenge",
+                        "execution": execution_id,
+                    });
+                    // Only when a step issued one. A password form is the
+                    // caller's own and carries no server state, so a body
+                    // claiming a challenge that is not there would have the
+                    // caller wait for a device that was never asked.
+                    if let (Some(asks), Some(map)) = (asks, body.as_object_mut()) {
+                        map.insert("asks".to_owned(), asks);
+                    }
+                    uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(body)
+                }
                 // The login in progress is over, so its cookie goes and the one
                 // saying this browser is signed in takes its place. That second
                 // cookie is what makes another client's `/authorize` something

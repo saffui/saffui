@@ -107,9 +107,11 @@ async fn a_password_flow_admits_refuses_and_asks() {
         &transaction,
         &provider(),
         &realm,
+        &origin(),
         &flow,
         Some(&user),
         &[],
+        &serde_json::Value::Null,
         Utc::now(),
     )
     .await
@@ -117,7 +119,9 @@ async fn a_password_flow_admits_refuses_and_asks() {
     assert_eq!(
         asked,
         Progress::Waiting {
-            execution_id: "exec-1".to_owned()
+            execution_id: "exec-1".to_owned(),
+            asks: None,
+            remember: serde_json::Map::new(),
         },
         "a step with no answer refused instead of asking"
     );
@@ -128,9 +132,11 @@ async fn a_password_flow_admits_refuses_and_asks() {
             &transaction,
             &provider(),
             &realm,
+            &origin(),
             &flow,
             Some(&user),
             std::slice::from_ref(&right),
+            &serde_json::Value::Null,
             Utc::now()
         )
         .await
@@ -144,9 +150,11 @@ async fn a_password_flow_admits_refuses_and_asks() {
             &transaction,
             &provider(),
             &realm,
+            &origin(),
             &flow,
             Some(&user),
             std::slice::from_ref(&wrong),
+            &serde_json::Value::Null,
             Utc::now()
         )
         .await
@@ -174,9 +182,11 @@ async fn an_unknown_subject_is_refused_like_a_wrong_password() {
             &transaction,
             &provider(),
             &realm,
+            &origin(),
             &flow,
             None,
             std::slice::from_ref(&offered),
+            &serde_json::Value::Null,
             Utc::now()
         )
         .await
@@ -208,9 +218,11 @@ async fn a_step_this_build_cannot_run_stops_the_flow() {
             &transaction,
             &provider(),
             &realm,
+            &origin(),
             &flow,
             None,
             &[],
+            &serde_json::Value::Null,
             Utc::now()
         )
         .await,
@@ -232,9 +244,11 @@ async fn a_flow_that_is_not_there_is_not_a_refusal() {
             &transaction,
             &provider(),
             &realm,
+            &origin(),
             "no-such-flow",
             None,
             &[],
+            &serde_json::Value::Null,
             Utc::now()
         )
         .await
@@ -266,9 +280,11 @@ async fn a_flow_whose_only_step_is_disabled_admits_nobody() {
             &transaction,
             &provider(),
             &realm,
+            &origin(),
             &flow,
             Some(&user),
             std::slice::from_ref(&right),
+            &serde_json::Value::Null,
             Utc::now()
         )
         .await
@@ -276,4 +292,10 @@ async fn a_flow_whose_only_step_is_disabled_admits_nobody() {
         Progress::Refused,
         "a disabled step let somebody in"
     );
+}
+
+/// Where the suite's deployment answers from. A relying party is built from it,
+/// so a flow that runs a key needs one even when no key is enrolled.
+fn origin() -> config::serving::PublicOrigin {
+    config::serving::PublicOrigin::parse("https://id.test").expect("a usable origin")
 }

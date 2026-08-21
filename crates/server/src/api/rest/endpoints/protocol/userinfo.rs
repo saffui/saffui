@@ -49,6 +49,7 @@ pub async fn tell(
             uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(Value::Object(claims))
         }
         Err(Untold::InvalidToken) => {
+            tracing::warn!("userinfo refused");
             challenged("the token presented is not one this realm accepts")
         }
         Err(Untold::Unreadable) => faulted(),

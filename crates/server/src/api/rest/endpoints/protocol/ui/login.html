@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in</title>
+<link rel="stylesheet" href="login.css">
+</head>
+<body>
+<main>
+  <h1>Sign in</h1>
+  <form id="login" method="post" novalidate>
+    <div id="credentials">
+      <label>Username
+        <input name="username" autocomplete="username" required autofocus>
+      </label>
+      <label>Password
+        <input name="password" type="password" autocomplete="current-password" required>
+      </label>
+    </div>
+    <div id="code" hidden>
+      <label>One-time code
+        <input name="totp" inputmode="numeric" autocomplete="one-time-code">
+      </label>
+    </div>
+    <p id="key" hidden>Touch your security key, or use this device, to continue.</p>
+    <button type="submit">Continue</button>
+  </form>
+  <p id="notice" role="alert" hidden></p>
+  <!-- Without a script, the outcome arrives as a fragment and these show themselves. -->
+  <p id="refused" class="flash" role="alert">Sign-in refused.</p>
+  <p id="no-such-login" class="flash" role="alert">This sign-in has expired or was never started. Go back to the application and try again.</p>
+  <p id="key-needs-script" class="flash" role="alert">A security key needs scripts enabled on this page.</p>
+</main>
+<script src="login.js"></script>
+</body>
+</html>

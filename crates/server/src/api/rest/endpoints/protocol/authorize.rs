@@ -3,15 +3,15 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
-use config::serving::LoginUi;
+use config::serving::{LoginUi, PublicOrigin};
 use deadpool_postgres::Pool;
 use serde::Deserialize;
 use services::authorize::{self, Begun, Refusal, Requested};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
-use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::dto::uncached;
+use crate::api::rest::endpoints::protocol::{binding, page};
 
 /// How long the cookie naming a login in progress lasts. The row expires on its
 /// own; this stops a browser offering a name that is already gone.
@@ -38,6 +38,10 @@ pub struct Asked {
 }
 
 /// Begin a login.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
 pub async fn begin(
     request: HttpRequest,
     realm: web::Path<String>,
@@ -46,6 +50,7 @@ pub async fn begin(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     login_ui: web::Data<LoginUi>,
+    origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Ok(mut connection) = pool.get().await else {
@@ -99,15 +104,11 @@ pub async fn begin(
             if transaction.commit().await.is_err() {
                 return shown("server_error", "the login could not be started");
             }
-            let Some(answering) = login_ui.answering() else {
-                // Nothing to hand off to. Saying so beats inventing a URL, and
-                // the client is established by now, so it hears about it.
-                return sent(
-                    asked.redirect_uri.as_deref().unwrap_or_default(),
-                    "server_error",
-                    asked.state.as_deref(),
-                );
-            };
+            // The page a deployment named, or the one this server renders.
+            let answering = login_ui
+                .answering()
+                .map(str::to_owned)
+                .unwrap_or_else(|| page::location(&origin, &realm));
             // Nothing secret travels in the URL. The browser is told where to
             // answer, and which login it is answering rides in a cookie the
             // page cannot read and a cross-site request cannot attach.

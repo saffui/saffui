@@ -3323,3 +3323,167 @@ async fn an_instruction_without_a_ceremony_leaves_the_login_alone() {
         "an unrunnable instruction was struck by a login that did not run it"
     );
 }
+
+/// The page is served at the URL it posts to, with its script and style as
+/// files of their own, under a policy that allows nothing inline.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_login_page_is_served_where_it_posts() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+
+    for (asset, content_type, marker) in [
+        ("login", "text/html; charset=utf-8", "<form"),
+        (
+            "login.js",
+            "text/javascript; charset=utf-8",
+            "navigator.credentials",
+        ),
+        ("login.css", "text/css; charset=utf-8", "main"),
+    ] {
+        let request = test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/{asset}",
+                support::REALM
+            ))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK, "{asset}");
+        let header = |named: &str| {
+            response
+                .headers()
+                .get(named)
+                .map(|value| value.to_str().unwrap().to_owned())
+                .unwrap_or_default()
+        };
+        assert_eq!(header("content-type"), content_type, "{asset}");
+        assert!(
+            header("content-security-policy").contains("script-src 'self'"),
+            "{asset} is served without the policy that forbids inline code"
+        );
+        assert_eq!(header("cache-control"), "no-store", "{asset}");
+        assert_eq!(header("x-content-type-options"), "nosniff", "{asset}");
+        let body = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+        assert!(body.contains(marker), "{asset} does not carry {marker}");
+    }
+}
+
+/// A deployment naming no page of its own lands the browser on this server's,
+/// bound the same way it would be to any other.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_start_with_no_page_named_lands_on_this_servers_page() {
+    let plane = Plane::with_actions(&[]).await;
+    let mut without = mounted(&plane);
+    without.login_ui = config::serving::LoginUi::none();
+    let app = test::init_service(App::new().configure(register(&without))).await;
+
+    let started = started(support::CONFIDENTIAL);
+    let asked = as_pairs(&started)
+        .iter()
+        .map(|(key, value)| format!("{key}={}", urlencode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let request = test::TestRequest::get()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/auth?{asked}",
+            support::REALM
+        ))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(
+        response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        format!(
+            "{}/realms/{}/protocol/openid-connect/login",
+            support::ORIGIN,
+            support::REALM
+        ),
+        "the browser was sent somewhere other than this server's own page"
+    );
+    let set = response
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        cookie_value(&set, support::AUTH_SESSION_COOKIE).is_some(),
+        "the login was not bound to the browser it sent away"
+    );
+}
+
+/// A browser running no script posts the form and is sent on: to the client
+/// with a code when admitted, back to the page with the outcome in the
+/// fragment when not. A blank field is a field not answered.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_form_is_answered_by_being_sent_on() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let path = format!("/realms/{}/protocol/openid-connect/login", support::REALM);
+    let post = |form: &'static [(&'static str, &'static str)]| {
+        test::TestRequest::post()
+            .uri(&path)
+            .insert_header((
+                "cookie",
+                format!("{}={auth_session}", support::AUTH_SESSION_COOKIE),
+            ))
+            .set_form(form)
+            .to_request()
+    };
+
+    let refused = test::call_service(
+        &app,
+        post(&[
+            ("username", support::SUBJECT),
+            ("password", "not-the-password"),
+            ("totp", ""),
+        ]),
+    )
+    .await;
+    assert_eq!(refused.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        refused.headers().get("location").unwrap().to_str().unwrap(),
+        format!("{path}#refused"),
+        "a refusal did not send the browser back to the page"
+    );
+
+    let admitted = test::call_service(
+        &app,
+        post(&[
+            ("username", support::SUBJECT),
+            ("password", support::PASSWORD),
+            ("totp", ""),
+        ]),
+    )
+    .await;
+    assert_eq!(admitted.status(), StatusCode::SEE_OTHER);
+    let landing = admitted
+        .headers()
+        .get("location")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        landing.starts_with(REDIRECT) && landing.contains("code="),
+        "an admission did not send the browser to the client with a code: {landing}"
+    );
+    let set = admitted
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        cookie_value(&set, support::SSO_COOKIE).is_some(),
+        "the browser was sent on without being signed in"
+    );
+}

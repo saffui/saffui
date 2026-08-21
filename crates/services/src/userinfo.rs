@@ -113,8 +113,9 @@ fn profile_claims(claims: &mut Map<String, Value>, subject: &UserModel) {
         }
     }
     // §5.1: when the profile was last changed, as seconds. The record's own
-    // stamp, because nothing else knows.
-    if let Some(updated) = subject.metadata.updated_at {
+    // stamp, because nothing else knows; a record never changed since it was
+    // made was last changed when it was made.
+    if let Some(updated) = subject.metadata.updated_at.or(subject.metadata.created_at) {
         claims.insert("updated_at".into(), json!(updated.timestamp()));
     }
 

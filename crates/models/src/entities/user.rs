@@ -44,6 +44,12 @@ pub mod profile {
     pub const NICK_NAME: &str = "user.profile.nick_name";
     pub const GENDER: &str = "user.profile.gender";
     pub const BIRTH_DATE: &str = "user.profile.birthdate";
+    pub const MIDDLE_NAME: &str = "user.profile.middle_name";
+    pub const PROFILE_PAGE: &str = "user.profile.profile";
+    pub const PICTURE: &str = "user.profile.picture";
+    pub const WEBSITE: &str = "user.profile.website";
+    pub const ZONEINFO: &str = "user.profile.zoneinfo";
+    pub const LOCALE: &str = "user.profile.locale";
     pub const EMAIL: &str = "user.profile.email";
     pub const MOBILE: &str = "user.profile.mobile";
     pub const TELEPHONE: &str = "user.profile.telephone";

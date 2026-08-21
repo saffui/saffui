@@ -16,6 +16,7 @@ use models::entities::realm::RealmModel;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use serde_json::Value;
 use store::keyring::RealmKeyring;
+use store::providers::oidc::Redemption;
 use store::providers::sessions::Refreshed;
 use store::providers::{oidc, realm_keys, sessions, users};
 use store::tenancy::TenantContext;
@@ -196,10 +197,32 @@ pub async fn authorization_code(
     now: DateTime<Utc>,
 ) -> Result<Granted, Ungranted> {
     let digest = code_digest(signing.provider, redeeming.code.as_bytes())?;
-    let code = oidc::redeem_code(transaction, &digest)
+    let code = match oidc::redeem_code(transaction, &digest)
         .await
         .map_err(|_| Ungranted::Unreadable)?
-        .ok_or(Ungranted::InvalidGrant)?;
+    {
+        Redemption::Fresh(code) => *code,
+        Redemption::Unknown => return Err(Ungranted::InvalidGrant),
+        // RFC 6749 §4.1.2: refused, and what the first presentation bought is
+        // taken back. Whoever holds those tokens got them from a code that was
+        // then presented again, and one of the two presenters was not the
+        // client.
+        Redemption::Reused { issued_token_ids } => {
+            let until = now + Duration::seconds(DEFAULT_REFRESH_LIFESPAN);
+            for token_id in &issued_token_ids {
+                oidc::revoke(transaction, token_id, until, "authorization code reused")
+                    .await
+                    .map_err(|_| Ungranted::Unreadable)?;
+                // The client session is anchored by the refresh token's own
+                // identifier, so closing it ends every renewal descended from
+                // it, not only the token in hand.
+                sessions::close_client_session(transaction, token_id)
+                    .await
+                    .map_err(|_| Ungranted::Unreadable)?;
+            }
+            return Err(Ungranted::InvalidGrant);
+        }
+    };
 
     // Checked again here, not only where the code was minted. An operator who
     // switches the flow off expects the codes already in flight to stop working,
@@ -302,6 +325,16 @@ pub async fn authorization_code(
         })
         .transpose()
         .map_err(|_| Ungranted::Unmintable)?;
+
+    // Remembered against the code, so a second presentation of it can take
+    // these back.
+    oidc::record_issued(
+        transaction,
+        &digest,
+        &[access.token_id.clone(), refresh.token_id.clone()],
+    )
+    .await
+    .map_err(|_| Ungranted::Unreadable)?;
 
     // Anchored by the refresh token's own identifier, so a later presentation
     // is compared against what was handed out.

@@ -5,6 +5,7 @@ use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use deadpool_postgres::Pool;
 use models::entities::keys::KeyUse;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use services::userinfo::{self, Untold};
 use store::providers::realm_keys;
@@ -20,11 +21,12 @@ use crate::api::rest::endpoints::protocol::dto::uncached;
 pub async fn tell(
     request: HttpRequest,
     realm: web::Path<String>,
+    body: Option<web::Form<Carried>>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
 ) -> HttpResponse {
     let now = Utc::now();
-    let Some(bearer) = presented(&request) else {
+    let Some(bearer) = presented(&request, body.as_deref()) else {
         return challenged("a bearer token is required");
     };
     let Ok(mut connection) = pool.get().await else {
@@ -53,10 +55,26 @@ pub async fn tell(
     }
 }
 
-/// The header, or the form field OIDC Core §5.3.1 also allows. The query form is
-/// deliberately not read: a token in a URL lands in logs and history.
-fn presented(request: &HttpRequest) -> Option<String> {
-    basic::bearer(request)
+/// What a form body may carry, RFC 6750 §2.2.
+#[derive(Debug, Deserialize)]
+pub struct Carried {
+    pub access_token: Option<String>,
+}
+
+/// The header, or the form field RFC 6750 §2.2 also allows, and never both.
+/// The query form is deliberately not read: a token in a URL lands in logs
+/// and history.
+fn presented(request: &HttpRequest, body: Option<&Carried>) -> Option<String> {
+    match (
+        basic::bearer(request),
+        body.and_then(|form| form.access_token.clone()),
+    ) {
+        (Some(header), None) => Some(header),
+        (None, Some(field)) if !field.is_empty() => Some(field),
+        // Two tokens is one more than a request may carry: §2 forbids it, and
+        // picking one would let the other ride along unexamined.
+        _ => None,
+    }
 }
 
 /// RFC 6750 §3: a bearer failure carries a challenge saying what was wrong with

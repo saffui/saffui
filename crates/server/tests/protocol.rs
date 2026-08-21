@@ -3662,3 +3662,191 @@ async fn a_replayed_code_takes_back_what_it_bought() {
         "the refresh token bought by a replayed code still renews"
     );
 }
+
+/// A browser already signed in is told to prove it again, does, and the code
+/// that second login mints spends like the first: `prompt=login` opens a new
+/// login, not a broken one.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_second_login_in_the_same_browser_mints_a_code_that_spends() {
+    let plane = Plane::with_actions(&[]).await;
+    let client = Some((support::CONFIDENTIAL, support::CLIENT_SECRET));
+
+    // First login: the browser ends up signed in, and the code spends.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, admitted, set) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let sso = cookie_value(&set, support::SSO_COOKIE).expect("signed in");
+    let first = code_in(admitted["redirect_to"].as_str().unwrap());
+    let (status, _) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &first),
+            ("redirect_uri", REDIRECT),
+        ],
+        client,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Second login, forced, in the same browser.
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let mut again = started(support::CONFIDENTIAL);
+    again.push(("prompt", "login".to_owned()));
+    let asked = as_pairs(&again)
+        .iter()
+        .map(|(key, value)| format!("{key}={}", urlencode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/auth?{asked}",
+                support::REALM
+            ))
+            .insert_header(("cookie", format!("{}={sso}", support::SSO_COOKIE)))
+            .to_request(),
+    )
+    .await;
+    let set = response
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let auth_session = cookie_value(&set, support::AUTH_SESSION_COOKIE)
+        .expect("prompt=login opened a second login");
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    let second = code_in(admitted["redirect_to"].as_str().unwrap());
+
+    let (status, told) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &second),
+            ("redirect_uri", REDIRECT),
+        ],
+        client,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the code a forced second login minted does not spend: {told}"
+    );
+}
+
+fn code_in(landing: &str) -> String {
+    landing
+        .split_once("code=")
+        .expect("a code in the landing")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned()
+}
+
+/// Everything OIDC Core §5.4 puts behind `profile`, when the realm holds it.
+/// Fourteen claims, the last of them the record's own stamp.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_profile_scope_releases_everything_the_realm_holds_of_it() {
+    use models::entities::attributes::AttributeValue;
+    use models::entities::user::profile;
+
+    let plane = Plane::with_actions(&[]).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let mut user = store::providers::users::load(&transaction, support::SUBJECT)
+            .await
+            .unwrap()
+            .expect("the subject");
+        let held = user.attributes.get_or_insert_with(Default::default);
+        for (named, value) in [
+            (profile::MIDDLE_NAME, "Augusta"),
+            (profile::NICK_NAME, "ada"),
+            (profile::PROFILE_PAGE, "https://example.test/ada"),
+            (profile::PICTURE, "https://example.test/ada.png"),
+            (profile::WEBSITE, "https://example.test"),
+            (profile::GENDER, "female"),
+            (profile::BIRTH_DATE, "1815-12-10"),
+            (profile::ZONEINFO, "Europe/London"),
+            (profile::LOCALE, "en-GB"),
+        ] {
+            held.insert(named.to_owned(), AttributeValue::Str(value.to_owned()));
+        }
+        store::providers::users::update(&transaction, &user)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid profile", None)
+        .await;
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let (status, told, _) = userinfo(&plane, granted["access_token"].as_str()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    for claim in [
+        "name",
+        "given_name",
+        "family_name",
+        "middle_name",
+        "nickname",
+        "preferred_username",
+        "profile",
+        "picture",
+        "website",
+        "gender",
+        "birthdate",
+        "zoneinfo",
+        "locale",
+        "updated_at",
+    ] {
+        assert!(
+            told.get(claim).is_some(),
+            "the profile scope left out '{claim}': {told}"
+        );
+    }
+    assert_eq!(
+        told["name"],
+        format!("{} {}", support::GIVEN_NAME, support::FAMILY_NAME)
+    );
+    assert!(
+        told["updated_at"].is_i64(),
+        "updated_at is not seconds: {}",
+        told["updated_at"]
+    );
+}

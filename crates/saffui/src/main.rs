@@ -38,6 +38,10 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "parsed once, at startup, into the one command that runs"
+)]
 enum Command {
     /// Serve the admin plane.
     Serve {
@@ -91,6 +95,9 @@ enum Command {
         family_name: Option<String>,
         #[arg(long)]
         phone: Option<String>,
+        /// Any other attribute of the user, as `name=value`.
+        #[arg(long = "attribute")]
+        attributes: Vec<String>,
     },
 }
 
@@ -115,6 +122,7 @@ fn main() -> ExitCode {
                         given_name,
                         family_name,
                         phone,
+                        attributes,
                     } => {
                         provision(&Wanted {
                             tenant,
@@ -127,6 +135,7 @@ fn main() -> ExitCode {
                             given_name,
                             family_name,
                             phone,
+                            attributes,
                         })
                         .await
                     }
@@ -252,6 +261,7 @@ struct Wanted {
     given_name: Option<String>,
     family_name: Option<String>,
     phone: Option<String>,
+    attributes: Vec<String>,
 }
 
 /// Create what is missing, and say what was created.
@@ -387,6 +397,11 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
                 given_name: wanted.given_name.as_deref(),
                 family_name: wanted.family_name.as_deref(),
                 phone: wanted.phone.as_deref(),
+                attributes: wanted
+                    .attributes
+                    .iter()
+                    .filter_map(|pair| pair.split_once('='))
+                    .collect(),
             },
         )
         .await

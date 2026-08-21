@@ -422,11 +422,13 @@ pub async fn provision_client(
 
     // The scopes first, so attaching never depends on who ran before. It is
     // idempotent, and a realm that already has them keeps what it has.
+    //
+    // Every standard scope, and every one optional: granted when asked for and
+    // not otherwise. §5.4 makes a scope a request for a set of claims, and a
+    // client asking for `email` alone must not be told a name.
     provision_standard_scopes(transaction, tenant, realm_id).await?;
-    for (scope, default, _) in STANDARD_SCOPES {
-        if default {
-            client_scopes::attach_scope(transaction, registration.client_id, scope, false).await?;
-        }
+    for (scope, _, _) in STANDARD_SCOPES {
+        client_scopes::attach_scope(transaction, registration.client_id, scope, true).await?;
     }
     Ok(true)
 }
@@ -441,6 +443,8 @@ pub struct Person<'a> {
     pub family_name: Option<&'a str>,
     /// What the `phone` scope releases. Verified by being written here.
     pub phone: Option<&'a str>,
+    /// Anything else the realm holds of them, by attribute name.
+    pub attributes: Vec<(&'a str, &'a str)>,
 }
 
 /// Create a user with a password, unless one by that name exists.
@@ -459,10 +463,12 @@ pub async fn provision_user(
     }
     let metadata = AuditableModel::from_creator(tenant.to_owned(), PROVISIONER.to_owned());
     let mut attributes = AttributesMap::new();
-    for (named, value) in [
+    let named = [
         (profile::FIRST_NAME, person.given_name),
         (profile::LAST_NAME, person.family_name),
-    ] {
+    ];
+    let extra = person.attributes.iter().map(|(k, v)| (*k, Some(*v)));
+    for (named, value) in named.into_iter().chain(extra) {
         if let Some(value) = value.filter(|value| !value.is_empty()) {
             attributes.insert(named.to_owned(), AttributeValue::Str(value.to_owned()));
         }

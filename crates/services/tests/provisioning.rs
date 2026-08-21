@@ -319,10 +319,10 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         assert_eq!(
             provision_signing_key(
                 &transaction,
+                &provider,
                 &envelope,
                 "local",
                 "main",
-                "kid-1",
                 1_700_000_000
             )
             .await
@@ -357,7 +357,18 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         .await
         .unwrap();
     assert_eq!(published.len(), 1, "one key, published once");
-    assert_eq!(published[0].kid, "kid-1");
+    assert_eq!(
+        published[0].kid,
+        crypto::thumbprint::jwk_sha256_thumbprint(
+            &provider,
+            &crypto::jose::jwk::Jwk::from_map(
+                published[0].public_jwk.as_object().expect("a jwk").clone()
+            )
+            .expect("the published key")
+        )
+        .expect("its thumbprint"),
+        "the key is not named by its thumbprint"
+    );
 
     let flow = auth_flows::flow_by_alias(&transaction, "browser")
         .await

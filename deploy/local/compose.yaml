@@ -3,9 +3,12 @@
 # secret worth keeping, and every one of them is a reference a deployment
 # would point elsewhere.
 
+# One image for every command, built once under the `saffui` service: a
+# service that declared its own build would get an image of its own, rebuilt
+# on its own schedule, and two builds of one binary are one too many.
 x-saffui: &saffui
-  build:
-    context: ../..
+  image: saffui:local
+  pull_policy: never
   environment: &saffui-env
     SAFFUI_DATABASE_URL: host=postgres user=saffui_app password=saffui_app dbname=saffui
     SAFFUI_PUBLIC_ORIGIN: ${SAFFUI_PUBLIC_ORIGIN:-http://localhost:8080}
@@ -60,6 +63,8 @@ services:
 
   saffui:
     <<: *saffui
+    build:
+      context: ../..
     ports:
       - "8080:8080"
       - "8081:8081"

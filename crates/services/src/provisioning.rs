@@ -16,6 +16,7 @@ use crypto::jose::jwk::alg::ec::EcKeyPair;
 use crypto::jose::jwk::{Jwk, KeyPair, P_256};
 use crypto::password::storage::StoredPassword;
 use crypto::provider::{Argon2Params, CryptoProvider, SignAlg};
+use crypto::thumbprint::jwk_sha256_thumbprint;
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::auth::{
@@ -239,37 +240,38 @@ pub async fn provision_tenant(
     Ok(true)
 }
 
-/// The realm's first signing key, unless it holds one by this name.
+/// The realm's first signing key, unless it already publishes one.
 ///
 /// The ring comes first: a key is stored sealed under it, so there is nowhere
 /// to write one until it exists. The key is ES256, the one algorithm every
-/// relying party must support, and the private half never leaves this
-/// transaction unsealed.
+/// relying party must support; its name is its RFC 7638 thumbprint, so the
+/// same key is never written twice under two names; and the private half
+/// never leaves this transaction unsealed.
 pub async fn provision_signing_key(
     transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
     envelope: &Envelope,
     tenant: &str,
     realm_id: &str,
-    kid: &str,
     now: i64,
 ) -> StoreResult<bool> {
     keyring::provision(transaction, envelope, tenant, realm_id).await?;
     let ring = keyring::load(transaction, envelope, tenant, realm_id).await?;
-    // Published is enough to know it is there; opening it would unseal a
-    // private half nothing here needs.
-    if realm_keys::published(transaction, KeyUse::Sig)
+    // Any published key means the realm can sign. One per use is active at a
+    // time, so a second would be refused rather than added.
+    if !realm_keys::published(transaction, KeyUse::Sig)
         .await?
-        .iter()
-        .any(|key| key.kid == kid)
+        .is_empty()
     {
         return Ok(false);
     }
 
     let mut private = Jwk::generate_ec_key(P_256).map_err(|_| StoreError::Backend)?;
-    private.set_key_id(kid);
-    private.set_algorithm("ES256");
     let mut public = private.to_public_key().map_err(|_| StoreError::Backend)?;
-    public.set_key_id(kid);
+    let kid = jwk_sha256_thumbprint(provider, &public).map_err(|_| StoreError::Backend)?;
+    private.set_key_id(&kid);
+    private.set_algorithm("ES256");
+    public.set_key_id(&kid);
     public.set_algorithm("ES256");
     let private_pem = EcKeyPair::from_jwk(&private)
         .map_err(|_| StoreError::Backend)?
@@ -282,7 +284,7 @@ pub async fn provision_signing_key(
         &RealmSigningKey {
             tenant: tenant.to_owned(),
             realm_id: realm_id.to_owned(),
-            kid: kid.to_owned(),
+            kid,
             algorithm: SignAlg::Es256,
             key_use: KeyUse::Sig,
             status: KeyStatus::Active,

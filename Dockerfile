@@ -9,10 +9,14 @@ RUN apt-get update \
 WORKDIR /src
 COPY . .
 # The registry and the target directory survive between builds, so a change to
-# one crate rebuilds that crate and not the dependency graph.
+# one crate rebuilds that crate and not the dependency graph. Cargo decides
+# freshness by mtime, and a file copied in can carry a time older than a cached
+# artifact built from its previous contents, so the workspace's own sources are
+# touched: its crates always rebuild, the dependency graph never does.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release -p saffui \
+    find crates -name '*.rs' -exec touch {} + \
+ && cargo build --release -p saffui \
  && install -D target/release/saffui /out/saffui
 
 # Nothing but the binary, its shared libraries, and a user that is not root.

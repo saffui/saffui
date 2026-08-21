@@ -2098,11 +2098,13 @@ dependencies = [
  "pgcore",
  "secrecy",
  "serde",
+ "serde_cbor_2",
  "serde_json",
  "services",
  "store",
  "tokio",
  "tokio-postgres",
+ "webauthn-rs",
 ]
 
 [[package]]

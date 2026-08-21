@@ -15,10 +15,10 @@ x-saffui: &saffui
     SAFFUI_ADMIN_AUDIENCES: saffui-console
     SAFFUI_ADMIN_PARTIES: saffui-console
     SAFFUI_CRYPTO_KEK: a-development-wrapping-key-of-decent-length
-    # What is logged and how. `info` and JSON are the defaults; a person at a
-    # terminal wants `text`.
+    # What is logged and how. `info` and text are the defaults; a collector
+    # wants `json`.
     SAFFUI_LOG: ${SAFFUI_LOG:-info}
-    SAFFUI_LOG_FORMAT: ${SAFFUI_LOG_FORMAT:-json}
+    SAFFUI_LOG_FORMAT: ${SAFFUI_LOG_FORMAT:-text}
 
 services:
   postgres:

@@ -29,3 +29,15 @@ impl From<models::entities::realm::RealmModel> for RealmBrief {
         }
     }
 }
+
+/// A key as a listing shows it: enough to recognise and revoke, never the
+/// stored credential. The public key stays home; a response is not an export.
+#[derive(Debug, Serialize)]
+pub struct KeyBrief {
+    /// base64url without padding of the raw identifier, the spelling the
+    /// export format and the revocation path both use.
+    pub credential_id: String,
+    pub label: String,
+    pub enrolled_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
+}

@@ -27,6 +27,7 @@ fn credential(id: &[u8], user: &str, label: &str) -> EnrolledCredential {
         label: label.to_owned(),
         passkey: serde_json::json!({"kty": "EC", "alg": -7}),
         sign_count: 0,
+        enrolled_at: None,
         last_used_at: None,
     }
 }
@@ -350,8 +351,22 @@ async fn a_user_presents_what_they_enrolled() {
         "the list is not in a stated order"
     );
 
-    assert!(webauthn::revoke(&transaction, b"key-1").await.unwrap());
-    assert!(!webauthn::revoke(&transaction, b"key-1").await.unwrap());
+    assert!(
+        !webauthn::revoke(&transaction, "grace", b"key-1")
+            .await
+            .unwrap(),
+        "a key was revoked past the user who holds it"
+    );
+    assert!(
+        webauthn::revoke(&transaction, "ada", b"key-1")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !webauthn::revoke(&transaction, "ada", b"key-1")
+            .await
+            .unwrap()
+    );
     assert_eq!(
         webauthn::of_user(&transaction, "ada").await.unwrap().len(),
         1

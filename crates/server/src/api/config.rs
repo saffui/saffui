@@ -23,7 +23,7 @@ use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::rest::endpoints::protocol::{
-    authorize, discovery, keys, login, logout, token, userinfo,
+    authorize, discovery, keys, login, logout, page, token, userinfo,
 };
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
@@ -173,7 +173,15 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
     web::scope("/realms/{realm}/protocol/openid-connect")
         .app_data(web::FormConfig::default().limit(PROTOCOL_BODY))
         .service(web::resource("/auth").route(web::get().to(authorize::begin)))
-        .service(web::resource("/login").route(web::post().to(login::answer)))
+        // One URL, two verbs: a browser is sent here to be shown the page, and
+        // the page posts its answers back to where it came from.
+        .service(
+            web::resource("/login")
+                .route(web::get().to(page::login))
+                .route(web::post().to(login::answer)),
+        )
+        .service(web::resource("/login.js").route(web::get().to(page::script)))
+        .service(web::resource("/login.css").route(web::get().to(page::style)))
         .service(web::resource("/token").route(web::post().to(token::ask)))
         .service(web::resource("/certs").route(web::get().to(keys::published)))
         .service(

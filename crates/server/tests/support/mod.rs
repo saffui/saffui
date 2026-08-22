@@ -588,6 +588,25 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Register where a client is loaded in the browser at logout.
+    #[allow(dead_code, reason = "only the protocol suite is loaded")]
+    pub async fn register_frontchannel(&self, client_id: &str, uri: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.frontchannel_logout_uri = Some(uri.to_owned());
+        client.frontchannel_logout_session_required = true;
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
     /// Switch the subject off, the way an administrator shuts down an account.
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn disable_subject(&self) {

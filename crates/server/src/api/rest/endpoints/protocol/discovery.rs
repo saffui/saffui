@@ -81,6 +81,8 @@ pub async fn published(
             "end_session_endpoint": format!("{protocol}/logout"),
             "introspection_endpoint": format!("{protocol}/introspect"),
             "revocation_endpoint": format!("{protocol}/revoke"),
+            "frontchannel_logout_supported": true,
+            "frontchannel_logout_session_supported": true,
             "backchannel_logout_supported": true,
             "backchannel_logout_session_supported": true,
             // Only what is mounted. `revocation_endpoint` and

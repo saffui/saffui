@@ -24,6 +24,9 @@ pub struct Spec {
     /// Where a logout token is posted when a login this client took part in
     /// ends.
     pub backchannel_logout_uri: Option<String>,
+    /// Where the browser loads a frame when a login this client took part in
+    /// ends.
+    pub frontchannel_logout_uri: Option<String>,
 }
 
 /// What a registered client is reshaped to. Nothing named is nothing changed.
@@ -34,6 +37,7 @@ pub struct Reshape {
     pub post_logout_redirect_uris: Option<Vec<String>>,
     /// Doubly optional: nothing named leaves it alone, `Some(None)` clears it.
     pub backchannel_logout_uri: Option<Option<String>>,
+    pub frontchannel_logout_uri: Option<Option<String>>,
 }
 
 /// Where a confidential client's secret comes from.
@@ -176,6 +180,10 @@ pub async fn update(
             .backchannel_logout_uri
             .clone()
             .unwrap_or_else(|| client.backchannel_logout_uri.clone()),
+        frontchannel_logout_uri: reshape
+            .frontchannel_logout_uri
+            .clone()
+            .unwrap_or_else(|| client.frontchannel_logout_uri.clone()),
     };
     check(&spec)?;
     if let Some(name) = &spec.name {
@@ -222,6 +230,8 @@ fn apply(client: &mut ClientModel, spec: &Spec) {
         .then(|| spec.post_logout_redirect_uris.clone());
     client.backchannel_logout_uri = spec.backchannel_logout_uri.clone();
     client.backchannel_logout_session_required = spec.backchannel_logout_uri.is_some();
+    client.frontchannel_logout_uri = spec.frontchannel_logout_uri.clone();
+    client.frontchannel_logout_session_required = spec.frontchannel_logout_uri.is_some();
 }
 
 /// RFC 6749 §3.1.2: a redirect is absolute and carries no fragment. The same
@@ -231,7 +241,8 @@ fn check(spec: &Spec) -> Result<(), Unregistrable> {
         .redirect_uris
         .iter()
         .chain(&spec.post_logout_redirect_uris)
-        .chain(spec.backchannel_logout_uri.as_ref());
+        .chain(spec.backchannel_logout_uri.as_ref())
+        .chain(spec.frontchannel_logout_uri.as_ref());
     for uri in places {
         let parsed =
             Url::parse(uri).map_err(|_| Unregistrable::Invalid("a URI is not absolute"))?;

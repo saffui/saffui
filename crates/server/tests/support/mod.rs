@@ -550,6 +550,25 @@ impl Plane {
             .collect()
     }
 
+    /// The authenticator-app secrets the subject holds, base32 as stored.
+    #[allow(dead_code, reason = "only the protocol suite asks")]
+    pub async fn subject_totp_secrets(&self) -> Vec<String> {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::credentials::load_for_user_of_type(
+            &transaction,
+            SUBJECT,
+            models::entities::credentials::CredentialType::Totp,
+        )
+        .await
+        .expect("the credential table")
+        .into_iter()
+        .map(|credential| credential.secret.expose().to_owned())
+        .collect()
+    }
+
     /// Switch the subject off, the way an administrator shuts down an account.
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn disable_subject(&self) {

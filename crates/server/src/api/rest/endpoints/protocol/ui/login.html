@@ -24,6 +24,14 @@
       </label>
     </div>
     <p id="key" hidden>Touch your security key, or use this device, to continue.</p>
+    <div id="app" hidden>
+      <p>Add this account to your authenticator app, then enter the code it shows.</p>
+      <p><a id="otpauth" href="">Open in your authenticator app</a></p>
+      <p>Or enter this key by hand: <code id="secret"></code></p>
+      <label>Code from the app
+        <input name="totp_register" inputmode="numeric" autocomplete="one-time-code">
+      </label>
+    </div>
     <button type="submit">Continue</button>
   </form>
   <p id="notice" role="alert" hidden></p>

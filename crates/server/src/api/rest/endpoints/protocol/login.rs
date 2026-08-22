@@ -35,6 +35,9 @@ pub struct Answered {
     pub webauthn: Option<String>,
     /// The attestation for a key the realm told this user to enrol.
     pub webauthn_register: Option<String>,
+    /// The code proving an authenticator app the realm told this user to set
+    /// up was set up.
+    pub totp_register: Option<String>,
 }
 
 /// How the answer arrived, which is how the outcome is told.
@@ -105,6 +108,7 @@ pub async fn answer(
         answers.push(Answer::Webauthn(handed_back));
     }
     let attestation = filled(&answered.webauthn_register);
+    let code = filled(&answered.totp_register);
 
     let step = browser::answer_step(
         &transaction,
@@ -117,7 +121,10 @@ pub async fn answer(
         // was given, so a login resumed with a second factor still has to
         // satisfy the first, and each step takes the kind it understands.
         &answers,
-        attestation.as_deref(),
+        services::login::enrolment::Answers {
+            attestation: attestation.as_deref(),
+            code: code.as_deref(),
+        },
         now,
     )
     .await;

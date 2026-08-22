@@ -1,0 +1,2 @@
+subjectAltName=DNS:localhost.emobix.co.uk,DNS:localhost
+extendedKeyUsage=serverAuth

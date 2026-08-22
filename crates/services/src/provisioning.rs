@@ -384,6 +384,9 @@ pub struct Registration<'a> {
     pub secret: Option<&'a SecretBox<String>>,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
+    /// Where a logout token is posted when a login this client took part in
+    /// ends.
+    pub backchannel_logout_uri: Option<String>,
 }
 
 /// Register a client, unless one by that id exists, and attach it to every
@@ -422,6 +425,8 @@ pub async fn provision_client(
     client.redirect_uris = Some(registration.redirect_uris.clone());
     client.post_logout_redirect_uris = (!registration.post_logout_redirect_uris.is_empty())
         .then(|| registration.post_logout_redirect_uris.clone());
+    client.backchannel_logout_uri = registration.backchannel_logout_uri.clone();
+    client.backchannel_logout_session_required = registration.backchannel_logout_uri.is_some();
     clients::create(transaction, &client).await?;
     clients::update(transaction, &client).await?;
 

@@ -64,6 +64,26 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Its own client for the back-channel plan: the other plans' modules refuse
+  # a logout token they did not ask for, and a registration is per client.
+  provision-backchannel:
+    extends:
+      file: ../local/compose.yaml
+      service: provision
+    command:
+      - provision
+      - --tenant=local
+      - --realm=main
+      - --client=conformance-backchannel
+      - --redirect=https://localhost.emobix.co.uk:8443/test/a/saffui/callback
+      - --after-logout=https://localhost.emobix.co.uk:8443/test/a/saffui/post_logout_redirect
+      - --backchannel-logout=https://localhost.emobix.co.uk:8443/test/a/saffui/backchannel_logout
+    environment:
+      SAFFUI_PUBLIC_ORIGIN: https://saffui.test
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
   saffui:
     extends:
       file: ../local/compose.yaml
@@ -71,8 +91,12 @@ services:
     ports: !reset []
     environment:
       SAFFUI_PUBLIC_ORIGIN: https://saffui.test
+    volumes:
+      - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     depends_on:
-      provision:
+      provision-backchannel:
+        condition: service_completed_successfully
+      ca-bundle:
         condition: service_completed_successfully
 
   tls:
@@ -86,6 +110,46 @@ services:
       saffui:
         condition: service_healthy
 
+  # A certificate for the name the suite answers to, issued by an authority
+  # of this bench's own, and a trust store that holds the authority. The one
+  # in the suite's image is for `localhost`, which nothing accepts for
+  # `localhost.emobix.co.uk`; a bare self-signed leaf is no authority to a
+  # verifier either; and a deployment that skipped the check to get past
+  # either would be testing a server nobody should run.
+  suite-cert:
+    image: alpine/openssl:latest
+    entrypoint: ["sh", "-c"]
+    command:
+      - >
+        test -f /certs/suite.crt || (
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650
+        -subj "/CN=saffui conformance bench"
+        -addext "basicConstraints=critical,CA:TRUE"
+        -addext "keyUsage=critical,keyCertSign,cRLSign"
+        -keyout /certs/bench-ca.key -out /certs/bench-ca.crt &&
+        openssl req -newkey rsa:2048 -nodes
+        -subj "/CN=localhost.emobix.co.uk"
+        -keyout /certs/suite.key -out /certs/suite.csr &&
+        printf "subjectAltName=DNS:localhost.emobix.co.uk,DNS:localhost\nextendedKeyUsage=serverAuth\n" > /certs/suite.ext &&
+        openssl x509 -req -days 3650 -in /certs/suite.csr
+        -CA /certs/bench-ca.crt -CAkey /certs/bench-ca.key -CAcreateserial
+        -extfile /certs/suite.ext -out /certs/suite.crt )
+    volumes:
+      - ./certs:/certs
+
+  # The deployment's own trust store with that certificate added, built from
+  # the image that will use it so nothing else about it changes.
+  ca-bundle:
+    image: saffui:local
+    entrypoint: ["sh", "-c"]
+    command:
+      - cat /etc/ssl/certs/ca-certificates.crt /certs/bench-ca.crt > /certs/ca-bundle.crt
+    volumes:
+      - ./certs:/certs
+    depends_on:
+      suite-cert:
+        condition: service_completed_successfully
+
   mongodb:
     image: mongo:6.0.13
 
@@ -93,13 +157,19 @@ services:
     image: registry.gitlab.com/openid/conformance-suite/nginx:latest
     ports:
       - "8443:8443"
+    volumes:
+      - ./certs/suite.crt:/etc/ssl/certs/nginx-selfsigned.crt:ro
+      - ./certs/suite.key:/etc/ssl/private/nginx-selfsigned.key:ro
     networks:
       default:
         aliases:
           # The suite's own public name, so its redirects resolve in here.
           - localhost.emobix.co.uk
     depends_on:
-      - server
+      server:
+        condition: service_started
+      suite-cert:
+        condition: service_completed_successfully
 
   server:
     image: registry.gitlab.com/openid/conformance-suite:latest
@@ -128,6 +198,7 @@ services:
     volumes:
       - ${CONFORMANCE_SUITE_DIR:?a checkout of gitlab.com/openid/conformance-suite}/scripts:/suite/scripts:ro
       - ./basic.json:/plans/basic.json:ro
+      - ./backchannel.json:/plans/backchannel.json:ro
       - ./results:/results
     working_dir: /suite/scripts
     # Three plans, one run: the Basic OP profile, its discovery-only sibling,
@@ -144,5 +215,8 @@ services:
         /plans/basic.json
         "oidcc-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]"
         /plans/basic.json
+        "oidcc-backchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]"
+        /plans/backchannel.json
     depends_on:
       - nginx
+

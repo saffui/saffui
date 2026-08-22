@@ -15,6 +15,9 @@ allow = [
     # Weak file-level copyleft. The webauthn-rs stack ships under it; consumed
     # unmodified, its obligations stop at those files and reach none of ours.
     "MPL-2.0",
+    # Permissive data licence, on the root certificates the outbound client
+    # verifies against.
+    "CDLA-Permissive-2.0",
     "Unicode-3.0",
     "Zlib",
 ]

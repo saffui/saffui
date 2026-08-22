@@ -439,6 +439,24 @@ pub async fn close_client_session_of(
     Ok(removed > 0)
 }
 
+/// Every client with a session in this login, each once.
+pub async fn clients_of(
+    transaction: &Transaction<'_>,
+    user_session_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "SELECT DISTINCT client_id FROM client_sessions WHERE user_session_id = $1 \
+             ORDER BY client_id",
+            &[&user_session_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("client_id"))
+        .collect())
+}
+
 pub async fn requested_claims_of(
     transaction: &Transaction<'_>,
     user_session_id: &str,

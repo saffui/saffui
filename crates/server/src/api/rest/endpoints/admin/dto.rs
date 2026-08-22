@@ -113,6 +113,7 @@ pub struct ClientSpec {
     pub confidential: Option<bool>,
     pub redirect_uris: Option<Vec<String>>,
     pub post_logout_redirect_uris: Option<Vec<String>>,
+    pub backchannel_logout_uri: Option<String>,
 }
 
 /// What the plane is asked to create or reshape a person as.

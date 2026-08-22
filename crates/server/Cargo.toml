@@ -31,6 +31,9 @@ serde_json = { workspace = true }
 # to fetch. The JOSE layer has no read that skips the signature check.
 data-encoding = { workspace = true }
 tokio = { workspace = true, features = ["time"] }
+# Reaching out: a logout token is posted to every client that registered
+# where to be told. Blocking and small, run off the request thread.
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
 
 [dev-dependencies]
 services = { workspace = true }

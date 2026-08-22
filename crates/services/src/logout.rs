@@ -142,3 +142,90 @@ fn escaped(value: &str) -> String {
         })
         .collect()
 }
+
+/// One client to be told a login ended, and the token that tells it.
+/// OpenID Connect Back-Channel Logout 1.0 §2.4.
+#[derive(Debug, Clone)]
+pub struct Notice {
+    pub client_id: String,
+    pub uri: String,
+    pub logout_token: String,
+}
+
+/// How long a logout token stays acceptable. Short: it is delivered now, and
+/// a client is told to refuse one it has seen (§2.6).
+const NOTICE_LIFESPAN: i64 = 120;
+
+/// The notices for every client that took part in this login and registered
+/// where to be told. Minted here, delivered by whoever can reach out.
+pub async fn notices_for(
+    transaction: &Transaction<'_>,
+    signing: &crate::grant::Signing<'_>,
+    issuer: &str,
+    session_id: &str,
+    now: DateTime<Utc>,
+) -> Vec<Notice> {
+    let Ok(Some(session)) = sessions::load(transaction, session_id).await else {
+        tracing::warn!(session = %session_id, "no login to tell anybody about");
+        return Vec::new();
+    };
+    let Ok(party_ids) = sessions::clients_of(transaction, session_id).await else {
+        tracing::warn!(session = %session_id, "the clients of a login could not be read");
+        return Vec::new();
+    };
+    tracing::debug!(session = %session_id, clients = party_ids.len(), "clients of the login");
+    let mut notices = Vec::new();
+    for client_id in party_ids {
+        let Ok(Some(client)) = clients::load(transaction, &client_id).await else {
+            // A client that took part and cannot be read now: on the record,
+            // since it is one nobody will tell.
+            tracing::warn!(%client_id, "a client of the login could not be read");
+            continue;
+        };
+        let Some(uri) = client
+            .backchannel_logout_uri
+            .clone()
+            .filter(|uri| !uri.is_empty())
+        else {
+            continue;
+        };
+        // Signed as the client reads identity tokens, since that is the key it
+        // verifies logout tokens with (§2.4).
+        let Ok(key) = crate::grant::identity_key_for(transaction, signing, &client).await else {
+            // Registered to be told and cannot be: on the record, since the
+            // client will go on believing the login is live.
+            tracing::warn!(%client_id, "no key to sign a logout token with");
+            continue;
+        };
+        let mut extra = serde_json::Map::new();
+        extra.insert(
+            "events".into(),
+            serde_json::json!({ "http://schemas.openid.net/event/backchannel-logout": {} }),
+        );
+        let minted = token::issuance::mint_token(
+            signing.provider,
+            &key,
+            token::issuance::Minting {
+                kind: token::issuance::Kind::Logout,
+                issuer,
+                subject: &session.user_id,
+                audiences: vec![client_id.clone()],
+                party: &client_id,
+                session_id,
+                scope: "",
+                lifespan: chrono::Duration::seconds(NOTICE_LIFESPAN),
+                now,
+                extra,
+            },
+        );
+        match minted {
+            Ok(minted) => notices.push(Notice {
+                client_id,
+                uri,
+                logout_token: minted.token,
+            }),
+            Err(why) => tracing::warn!(%client_id, why = ?why, "no logout token to tell with"),
+        }
+    }
+    notices
+}

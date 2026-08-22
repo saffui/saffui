@@ -129,6 +129,7 @@ pub async fn update(
         name: asked.name.clone(),
         redirect_uris: asked.redirect_uris.clone(),
         post_logout_redirect_uris: asked.post_logout_redirect_uris.clone(),
+        backchannel_logout_uri: asked.backchannel_logout_uri.clone().map(Some),
     };
     let client = registry::update(&transaction, &client_id, &reshape)
         .await
@@ -185,6 +186,7 @@ fn spec_of(asked: &ClientSpec) -> Spec {
         confidential: asked.confidential.unwrap_or(true),
         redirect_uris: asked.redirect_uris.clone().unwrap_or_default(),
         post_logout_redirect_uris: asked.post_logout_redirect_uris.clone().unwrap_or_default(),
+        backchannel_logout_uri: asked.backchannel_logout_uri.clone(),
     }
 }
 

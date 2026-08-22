@@ -3,14 +3,19 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
+use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
 use models::entities::keys::KeyUse;
 use serde::Deserialize;
 use serde_json::json;
+use services::grant::Signing;
 use services::logout::{self, EndedAt, Requested};
+use store::keyring;
 use store::providers::realm_keys;
 use store::tenancy::{Tenancy, resolve};
 
+use crate::api::config::Sealing;
+use crate::api::rest::endpoints::protocol::backchannel;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::api::rest::endpoints::protocol::{binding, page};
 
@@ -32,9 +37,11 @@ pub async fn end(
     asked: Option<web::Query<Asked>>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
     let asked = asked.map(web::Query::into_inner).unwrap_or_default();
-    run(&request, &realm, asked, &pool, &tenancy).await
+    run(&request, &realm, asked, &pool, &tenancy, &sealing, &origin).await
 }
 
 pub async fn end_posted(
@@ -43,17 +50,25 @@ pub async fn end_posted(
     asked: Option<web::Form<Asked>>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
     let asked = asked.map(web::Form::into_inner).unwrap_or_default();
-    run(&request, &realm, asked, &pool, &tenancy).await
+    run(&request, &realm, asked, &pool, &tenancy, &sealing, &origin).await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
 async fn run(
     request: &HttpRequest,
     realm: &str,
     asked: Asked,
     pool: &Pool,
     tenancy: &Tenancy,
+    sealing: &Sealing,
+    origin: &PublicOrigin,
 ) -> HttpResponse {
     let now = Utc::now();
     let told = |realm_id: &str, ended: EndedAt| tell(request, realm_id, &asked, ended);
@@ -73,6 +88,7 @@ async fn run(
         return told(&context.realm_id, EndedAt::Nowhere);
     };
 
+    let signed_in = binding::read(request, binding::SSO_SESSION);
     let ended = logout::end_session(
         &transaction,
         &keys,
@@ -83,14 +99,46 @@ async fn run(
             state: asked.state.as_deref(),
             confirmed: asked.confirmed.as_deref() == Some("yes"),
         },
-        binding::read(request, binding::SSO_SESSION).as_deref(),
+        signed_in.as_deref(),
         now,
     )
     .await;
 
+    // Minted while the login's record is still readable, delivered once the
+    // ending is written: a client told of a logout that then failed to commit
+    // would drop a session the user still holds.
+    let mut notices = Vec::new();
+    let ending = signed_in
+        .as_deref()
+        .filter(|named| !named.is_empty() && ended != EndedAt::Confirm);
+    if let Some(session_id) = ending
+        && let Ok(ring) = keyring::load(
+            &transaction,
+            &sealing.envelope,
+            &context.tenant,
+            &context.realm_id,
+        )
+        .await
+    {
+        let signing = Signing {
+            provider: sealing.provider.as_ref(),
+            ring: &ring,
+            envelope: &sealing.envelope,
+        };
+        notices = logout::notices_for(
+            &transaction,
+            &signing,
+            &origin.issuer(realm),
+            session_id,
+            now,
+        )
+        .await;
+    }
+
     if transaction.commit().await.is_err() {
         return told(&context.realm_id, EndedAt::Nowhere);
     }
+    backchannel::deliver(notices).await;
     told(&context.realm_id, ended)
 }
 

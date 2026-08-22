@@ -25,6 +25,8 @@ const COLUMNS: &str = "tenant, realm_id, client_id, name, display_name, descript
                        direct_access_grants_enabled, standard_flow_enabled, \
                        front_channel_logout, \
                        root_url, web_origins, redirect_uris, post_logout_redirect_uris, \
+                       backchannel_logout_uri, backchannel_logout_session_required, \
+                       frontchannel_logout_uri, frontchannel_logout_session_required, \
                        id_token_signed_response_alg, userinfo_signed_response_alg, \
                        request_object_signing_alg, \
                        id_token_encryption_alg, id_token_encryption_enc, \
@@ -289,6 +291,16 @@ pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
                 "post_logout_redirect_uris",
                 &client.post_logout_redirect_uris,
             ),
+            col("backchannel_logout_uri", &client.backchannel_logout_uri),
+            col(
+                "backchannel_logout_session_required",
+                &client.backchannel_logout_session_required,
+            ),
+            col("frontchannel_logout_uri", &client.frontchannel_logout_uri),
+            col(
+                "frontchannel_logout_session_required",
+                &client.frontchannel_logout_session_required,
+            ),
             col("id_token_signed_response_alg", &id_token_alg),
             col("userinfo_signed_response_alg", &userinfo_alg),
             col("request_object_signing_alg", &request_object_alg),
@@ -335,6 +347,10 @@ fn read(row: Row) -> ClientModel {
         web_origins: row.get("web_origins"),
         redirect_uris: row.get("redirect_uris"),
         post_logout_redirect_uris: row.get("post_logout_redirect_uris"),
+        backchannel_logout_uri: row.get("backchannel_logout_uri"),
+        backchannel_logout_session_required: row.get("backchannel_logout_session_required"),
+        frontchannel_logout_uri: row.get("frontchannel_logout_uri"),
+        frontchannel_logout_session_required: row.get("frontchannel_logout_session_required"),
         id_token_signed_response_alg: read_signing_alg(&row, "id_token_signed_response_alg"),
         userinfo_signed_response_alg: read_signing_alg(&row, "userinfo_signed_response_alg"),
         request_object_signing_alg: read_signing_alg(&row, "request_object_signing_alg"),

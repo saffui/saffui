@@ -4737,3 +4737,111 @@ async fn a_required_authenticator_app_is_set_up_inside_the_login() {
         "the secret shown is not the one kept"
     );
 }
+
+/// A client's ear: one HTTP request accepted on a port of its own, its body
+/// handed back, a 200 sent. What a relying party's back-channel endpoint is.
+fn listening_client() -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().unwrap().port();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a caller");
+        let mut raw = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut chunk).unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&raw).to_string();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let length: usize = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .or_else(|| {
+                        head.lines()
+                            .find_map(|line| line.strip_prefix("content-length: "))
+                    })
+                    .and_then(|value| value.trim().parse().ok())
+                    .unwrap_or(0);
+                if body.len() >= length {
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                    let _ = sender.send(body[..length].to_owned());
+                    break;
+                }
+            }
+        }
+    });
+    (format!("http://127.0.0.1:{port}/logout-token"), receiver)
+}
+
+/// Back-Channel Logout 1.0: when a login ends, every client that took part
+/// and said where is posted a logout token naming the session, signed as
+/// that client reads identity tokens, with the event and without a nonce.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_is_told_when_the_login_it_took_part_in_ends() {
+    let plane = Plane::with_actions(&[]).await;
+    let (uri, received) = listening_client();
+    plane
+        .register_backchannel(support::CONFIDENTIAL, &uri)
+        .await;
+
+    let session = signed_in_once(&plane).await;
+    let (_, landing) = authorize_signed_in(&plane, &asking_for(&[]), &session).await;
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let hint = granted["id_token"].as_str().expect("an id token");
+
+    let (status, _, _) = logout(&plane, &[("id_token_hint", hint)], Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let body = received
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the client was never told");
+    let token = body
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("logout_token="))
+        .expect("a logout token in the form");
+    // A compact token is base64url and dots, which a form leaves as they are.
+    let token = token.to_owned();
+
+    assert_eq!(header_of(&token)["typ"], "logout+jwt");
+    let claims = plane.claims_of(&token).await;
+    assert_eq!(claims["iss"], support::origin().issuer(support::REALM));
+    assert_eq!(claims["sub"], support::SUBJECT);
+    assert_eq!(claims["aud"], support::CONFIDENTIAL);
+    assert_eq!(claims["sid"], session);
+    assert!(
+        claims.get("jti").is_some() && claims.get("iat").is_some() && claims.get("exp").is_some()
+    );
+    assert!(
+        claims["events"]
+            .get("http://schemas.openid.net/event/backchannel-logout")
+            .is_some(),
+        "{claims}"
+    );
+    assert!(
+        claims.get("nonce").is_none(),
+        "a logout token must carry no nonce"
+    );
+}

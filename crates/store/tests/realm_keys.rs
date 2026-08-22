@@ -85,7 +85,7 @@ async fn the_private_half_lands_sealed_and_comes_back_whole() {
         "the private key is present in the column"
     );
 
-    let loaded = realm_keys::active(&transaction, &ring, &envelope, KeyUse::Sig)
+    let loaded = realm_keys::active(&transaction, &ring, &envelope, KeyUse::Sig, None)
         .await
         .unwrap()
         .expect("the realm signs with nothing");
@@ -99,10 +99,11 @@ async fn the_private_half_lands_sealed_and_comes_back_whole() {
     );
 }
 
-/// Two keys signing would have tokens signed under whichever was read first.
+/// Two keys of one algorithm signing would have tokens signed under whichever
+/// was read first; one per algorithm is what discovery's RS256 needs.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn one_key_signs_per_use() {
+async fn one_key_signs_per_use_and_algorithm() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope();
     let mut connection = fixture.connection().await;
@@ -124,16 +125,50 @@ async fn one_key_signs_per_use() {
     )
     .await
     .unwrap();
+    // Another algorithm signs beside it; a second key of the same one is
+    // refused, so a rotation stays observable.
+    realm_keys::create(
+        &transaction,
+        &ring,
+        &envelope,
+        &key("kid-2", SignAlg::Rs256, KeyStatus::Active, 20),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        realm_keys::active(
+            &transaction,
+            &ring,
+            &envelope,
+            KeyUse::Sig,
+            Some(SignAlg::Rs256)
+        )
+        .await
+        .unwrap()
+        .expect("the RSA key")
+        .kid,
+        "kid-2"
+    );
+    assert_eq!(
+        realm_keys::active(&transaction, &ring, &envelope, KeyUse::Sig, None)
+            .await
+            .unwrap()
+            .expect("a key")
+            .kid,
+        "kid-2",
+        "asked for any, the highest priority answers"
+    );
+    // Last: a refused statement ends what the transaction can still answer.
     assert!(
         realm_keys::create(
             &transaction,
             &ring,
             &envelope,
-            &key("kid-2", SignAlg::Rs256, KeyStatus::Active, 20),
+            &key("kid-3", SignAlg::Es256, KeyStatus::Active, 30),
         )
         .await
         .is_err(),
-        "a second key was made to sign beside the first"
+        "a second key of one algorithm was made to sign beside the first"
     );
 }
 
@@ -174,7 +209,7 @@ async fn a_rotated_key_still_verifies_and_stops_signing() {
     .await
     .unwrap();
 
-    let signing = realm_keys::active(&transaction, &ring, &envelope, KeyUse::Sig)
+    let signing = realm_keys::active(&transaction, &ring, &envelope, KeyUse::Sig, None)
         .await
         .unwrap()
         .expect("nothing signs after a rotation");

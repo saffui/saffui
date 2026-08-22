@@ -189,12 +189,42 @@ impl SigningKey {
         }
     }
 
+    /// An RSA pair, for the algorithm discovery requires of every provider.
+    #[allow(
+        dead_code,
+        reason = "only the protocol suite signs with a second algorithm"
+    )]
+    pub fn generate_rsa(kid: &str) -> Self {
+        let mut private = Jwk::generate_rsa_key(2048).expect("a key pair");
+        private.set_key_id(kid);
+        private.set_algorithm("RS256");
+        SigningKey {
+            kid: kid.to_owned(),
+            private,
+        }
+    }
+
+    #[allow(dead_code, reason = "only the protocol suite publishes a second key")]
+    pub fn algorithm(&self) -> SignAlg {
+        if self.private.key_type() == "RSA" {
+            SignAlg::Rs256
+        } else {
+            SignAlg::Es256
+        }
+    }
+
     /// The private half as the store keeps it. Minting opens a PEM out of the
     /// sealed column, so a placeholder there proves the token endpoint parses
     /// its input and nothing about whether it can sign.
     pub fn private_pem(&self) -> Vec<u8> {
         use crypto::jose::jwk::KeyPair;
         use crypto::jose::jwk::alg::ec::EcKeyPair;
+        use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+        if self.private.key_type() == "RSA" {
+            return RsaKeyPair::from_jwk(&self.private)
+                .expect("the private half")
+                .to_pem_private_key();
+        }
         EcKeyPair::from_jwk(&self.private)
             .expect("the private half")
             .to_pem_private_key()
@@ -568,6 +598,59 @@ impl Plane {
             .expect("the clients table")
             .expect("a planted client");
         client.standard_flow_enabled = enabled;
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// Publish one more signing key, active beside the planted one.
+    #[allow(
+        dead_code,
+        reason = "only the protocol suite signs with a second algorithm"
+    )]
+    pub async fn publish_key(&self, key: &SigningKey) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let ring = keyring::load(&transaction, &envelope(), TENANT, REALM)
+            .await
+            .expect("the realm's ring");
+        realm_keys::create(
+            &transaction,
+            &ring,
+            &envelope(),
+            &RealmSigningKey {
+                tenant: TENANT.into(),
+                realm_id: REALM.into(),
+                kid: key.kid.clone(),
+                algorithm: key.algorithm(),
+                key_use: KeyUse::Sig,
+                status: KeyStatus::Active,
+                priority: 10,
+                private_pem: key.private_pem(),
+                public_jwk: serde_json::to_value(key.public().as_ref()).expect("a public jwk"),
+                created_at: 1_700_000_000,
+            },
+        )
+        .await
+        .expect("the key table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// Register how a client wants its identity tokens signed.
+    #[allow(dead_code, reason = "only the protocol suite asks")]
+    pub async fn register_id_token_alg(&self, client_id: &str, algorithm: Option<SignAlg>) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.id_token_signed_response_alg = algorithm;
         clients::update(&transaction, &client)
             .await
             .expect("the clients table");

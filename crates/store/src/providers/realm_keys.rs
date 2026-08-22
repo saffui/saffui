@@ -6,6 +6,7 @@
 //! clear and sealing it later would be a data migration over private keys.
 
 use crypto::envelope::Envelope;
+use crypto::provider::SignAlg;
 use deadpool_postgres::Transaction;
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey, RealmSigningKeyView};
 use tokio_postgres::Row;
@@ -59,19 +60,23 @@ pub async fn create(
     Ok(())
 }
 
-/// The key a realm signs with, private half opened.
+/// The key a realm signs with, private half opened: the active one of the
+/// algorithm asked for, or of any when none is, highest priority first.
 pub async fn active(
     transaction: &Transaction<'_>,
     ring: &RealmKeyring,
     envelope: &Envelope,
     key_use: KeyUse,
+    algorithm: Option<SignAlg>,
 ) -> StoreResult<Option<RealmSigningKey>> {
     let statement = format!(
         "SELECT {COLUMNS} FROM realm_signing_keys \
-         WHERE key_use = $1 AND status = 'active'"
+         WHERE key_use = $1 AND status = 'active' AND ($2::text IS NULL OR algorithm = $2) \
+         ORDER BY priority DESC, kid ASC LIMIT 1"
     );
+    let named = algorithm.map(|algorithm| algorithm.name().to_owned());
     let Some(row) = transaction
-        .query_opt(statement.as_str(), &[&key_use])
+        .query_opt(statement.as_str(), &[&key_use, &named])
         .await
         .map_err(|_| StoreError::Backend)?
     else {

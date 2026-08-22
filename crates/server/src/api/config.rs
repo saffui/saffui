@@ -11,7 +11,7 @@
 
 use actix_web::body::MessageBody;
 use actix_web::dev::{HttpServiceFactory, ServiceFactory, ServiceRequest, ServiceResponse};
-use actix_web::{App, Error, web};
+use actix_web::{App, Error, Route, web};
 use commons::observability::{SaffuiRootSpan, WithRequestId};
 use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
@@ -146,6 +146,10 @@ fn admin_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
             origin: plane.origin.clone(),
         });
 
+    // One resource per path, carrying every verb the table declares for it:
+    // two resources on one path would have the second shadow the first, and
+    // every verb of the first answer 405.
+    let mut by_path: Vec<(&'static str, Vec<Route>)> = Vec::new();
     for route in routes::routes() {
         let Some(build) = route.handler else {
             // Declared, and nothing answers it yet. The cost is settled first,
@@ -159,7 +163,17 @@ fn admin_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
             .pattern
             .strip_prefix("/admin")
             .expect("an admin route is declared under /admin");
-        scope = scope.service(web::resource(within).route(build()));
+        match by_path.iter_mut().find(|(path, _)| *path == within) {
+            Some((_, verbs)) => verbs.push(build()),
+            None => by_path.push((within, vec![build()])),
+        }
+    }
+    for (path, verbs) in by_path {
+        let mut resource = web::resource(path);
+        for verb in verbs {
+            resource = resource.route(verb);
+        }
+        scope = scope.service(resource);
     }
     scope
 }

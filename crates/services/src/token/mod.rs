@@ -24,7 +24,9 @@ use crypto::jose::jwt::{self, JwtPayload};
 use crypto::provider::SignAlg;
 use deadpool_postgres::Transaction;
 use models::entities::keys::RealmSigningKeyView;
-use store::providers::oidc;
+use models::sessions::records::UserSessionState;
+use serde_json::Value;
+use store::providers::{oidc, sessions};
 
 /// What a token established, once it was accepted.
 ///
@@ -67,6 +69,9 @@ pub enum Refused {
     /// Withdrawn before its expiry.
     #[error("the token has been withdrawn")]
     Revoked,
+    /// The login it was minted for is over. A token outlives nothing.
+    #[error("the login the token belongs to has ended")]
+    Ended,
     /// The store could not be asked whether it was withdrawn. Refused, because
     /// not having found a withdrawal is not the same as there not being one.
     #[error("whether the token was withdrawn could not be established")]
@@ -156,6 +161,17 @@ pub async fn verify_presented(
             .map_err(|_| Refused::Unestablished)?;
         if withdrawn {
             return Err(Refused::Revoked);
+        }
+    }
+    // Bound to a login, and refused with it: a logout that left the tokens it
+    // minted working would be a logout in name.
+    if let Some(session_id) = verified.claims.get("sid").and_then(Value::as_str) {
+        let live = sessions::load(transaction, session_id)
+            .await
+            .map_err(|_| Refused::Unestablished)?
+            .is_some_and(|session| session.state == UserSessionState::LoggedIn);
+        if !live {
+            return Err(Refused::Ended);
         }
     }
 

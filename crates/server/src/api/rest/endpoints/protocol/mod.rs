@@ -8,11 +8,14 @@
 pub mod authorize;
 pub mod basic;
 pub mod binding;
+pub mod caller;
 pub mod discovery;
 pub mod dto;
+pub mod introspect;
 pub mod keys;
 pub mod login;
 pub mod logout;
 pub mod page;
+pub mod revoke;
 pub mod token;
 pub mod userinfo;

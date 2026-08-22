@@ -22,7 +22,7 @@ use actix_web::http::Method;
 use actix_web::web;
 use models::entities::authz::AdminAction;
 
-use crate::api::rest::endpoints::admin::{keys, realms};
+use crate::api::rest::endpoints::admin::{clients, keys, realms, users};
 
 /// One route: the verb, the path, what it costs, and what answers it.
 ///
@@ -78,6 +78,78 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}",
             action: AdminAction::RealmWrite,
             handler: None,
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/clients",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(clients::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/clients",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::post().to(clients::create)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/clients/{client}",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(clients::get)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/clients/{client}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::put().to(clients::update)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/clients/{client}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::delete().to(clients::remove)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/clients/{client}/secret",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::post().to(clients::rotate_secret)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(users::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/users",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::post().to(users::create)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(users::get)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/users/{user}",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::put().to(users::update)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/users/{user}",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::delete().to(users::remove)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/users/{user}/password",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::put().to(users::set_password)),
         },
         AdminRoute {
             method: Method::GET,

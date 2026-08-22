@@ -895,3 +895,283 @@ async fn reading_keys_does_not_authorize_revoking_one() {
         "a refused revocation went through anyway"
     );
 }
+
+/// A write to the plane, with a JSON body, answered with status and body.
+async fn written(
+    plane: &Plane,
+    method: Method,
+    path: &str,
+    bearer: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane, &policy())))).await;
+    let request = test::TestRequest::with_uri(path)
+        .method(method)
+        .insert_header(("authorization", format!("Bearer {bearer}")))
+        .set_json(body)
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    let status = response.status();
+    let raw = test::read_body(response).await;
+    let told = if raw.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null)
+    };
+    (status, told)
+}
+
+/// The whole life of a client over the plane: registered with a secret shown
+/// once and never again, read back, reshaped, its secret rotated, and gone.
+/// The secret it was given is one the token endpoint accepts.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_is_born_reshaped_and_retired_over_the_plane() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/clients");
+
+    let (status, born) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "client_id": "shop",
+            "name": "The shop",
+            "confidential": true,
+            "redirect_uris": ["https://shop.example/cb"],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let secret = born["client_secret"]
+        .as_str()
+        .expect("the secret, this once")
+        .to_owned();
+    assert_eq!(born["confidential"], true);
+
+    // What the plane told is what the token endpoint believes.
+    let app = test::init_service(App::new().configure(register(&mounted(&plane, &policy())))).await;
+    let basic = data_encoding::BASE64.encode(format!("shop:{secret}").as_bytes());
+    let asking = test::TestRequest::post()
+        .uri(&format!("/realms/{REALM}/protocol/openid-connect/token"))
+        .insert_header(("authorization", format!("Basic {basic}")))
+        .set_form([("grant_type", "authorization_code"), ("code", "none")])
+        .to_request();
+    let response = test::call_service(&app, asking).await;
+    let told: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(
+        told["error"], "invalid_grant",
+        "the client was not established with its own secret: {told}"
+    );
+
+    let (status, read) = fetched(&plane, Method::GET, &format!("{base}/shop"), &bearer).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        read.get("client_secret").is_none(),
+        "a read showed the secret: {read}"
+    );
+    assert_eq!(
+        read["redirect_uris"],
+        serde_json::json!(["https://shop.example/cb"])
+    );
+
+    let (status, again) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({ "client_id": "shop", "redirect_uris": ["https://shop.example/cb"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{again}");
+
+    let (status, bad) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({ "client_id": "shop2", "redirect_uris": ["shop.example/cb#frag"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}");
+
+    let (status, reshaped) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/shop"),
+        &bearer,
+        serde_json::json!({ "post_logout_redirect_uris": ["https://shop.example/bye"] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reshaped}");
+    assert_eq!(
+        reshaped["redirect_uris"],
+        serde_json::json!(["https://shop.example/cb"]),
+        "a list left out was not left alone"
+    );
+    assert_eq!(
+        reshaped["post_logout_redirect_uris"],
+        serde_json::json!(["https://shop.example/bye"])
+    );
+
+    let (status, rotated) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/shop/secret"),
+        &bearer,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{rotated}");
+    assert_ne!(rotated["client_secret"].as_str().unwrap(), secret);
+
+    let (status, listed) =
+        fetched(&plane, Method::GET, &format!("{base}?count=true"), &bearer).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["client_id"] == "shop"),
+        "{listed}"
+    );
+
+    assert_eq!(
+        request(
+            &plane,
+            Method::DELETE,
+            &format!("{base}/shop"),
+            Some(&bearer)
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        request(
+            &plane,
+            Method::DELETE,
+            &format!("{base}/shop"),
+            Some(&bearer)
+        )
+        .await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// A person created over the plane, with a password, can sign in with it;
+/// reshaped and retired after. Reading people does not authorize writing them.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_is_created_signs_in_and_is_retired_over_the_plane() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead, AdminAction::UserWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/users");
+
+    let (status, born) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "user_name": "grace",
+            "email": "grace@example.test",
+            "given_name": "Grace",
+            "family_name": "Hopper",
+            "password": "a-fresh-password-of-decent-length",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    assert_eq!(born["given_name"], "Grace");
+    assert!(born.get("password").is_none() && born.get("credentials").is_none());
+
+    // The password the plane was given is one the login accepts.
+    let app = test::init_service(App::new().configure(register(&mounted(&plane, &policy())))).await;
+    let (_, _, opened) = {
+        let asked = format!(
+            "/realms/{REALM}/protocol/openid-connect/auth?response_type=code&client_id={}&scope=openid&redirect_uri={}&state=s",
+            support::CONFIDENTIAL,
+            support::REDIRECT
+        );
+        let response =
+            test::call_service(&app, test::TestRequest::get().uri(&asked).to_request()).await;
+        let set = response
+            .headers()
+            .get_all("set-cookie")
+            .map(|value| value.to_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        (response.status(), (), set)
+    };
+    let binding = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let answered = test::TestRequest::post()
+        .uri(&format!("/realms/{REALM}/protocol/openid-connect/login"))
+        .insert_header(("cookie", format!("{}={binding}", support::AUTH_SESSION_COOKIE)))
+        .set_json(serde_json::json!({ "username": "grace", "password": "a-fresh-password-of-decent-length" }))
+        .to_request();
+    let response = test::call_service(&app, answered).await;
+    let told: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(told["status"], "admitted", "{told}");
+
+    let (status, reshaped) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/grace"),
+        &bearer,
+        serde_json::json!({ "enabled": false, "phone_number": "+33100000000" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{reshaped}");
+    assert_eq!(reshaped["enabled"], false);
+    assert_eq!(
+        reshaped["given_name"], "Grace",
+        "a field left out was not left alone"
+    );
+    assert_eq!(reshaped["phone_number"], "+33100000000");
+
+    let (status, again) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({ "user_name": "grace" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{again}");
+
+    assert_eq!(
+        request(
+            &plane,
+            Method::DELETE,
+            &format!("{base}/grace"),
+            Some(&bearer)
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    let (status, _) = fetched(&plane, Method::GET, &format!("{base}/grace"), &bearer).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// Reading people is not writing them: the table charges the two apart.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn reading_people_does_not_authorize_writing_them() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/users");
+
+    let (status, _) = fetched(&plane, Method::GET, &base, &bearer).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({ "user_name": "nobody" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

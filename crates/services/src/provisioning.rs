@@ -15,29 +15,25 @@ use crypto::envelope::Envelope;
 use crypto::jose::jwk::alg::ec::EcKeyPair;
 use crypto::jose::jwk::alg::rsa::RsaKeyPair;
 use crypto::jose::jwk::{KeyPair, P_256};
-use crypto::password::storage::StoredPassword;
-use crypto::provider::{Argon2Params, CryptoProvider, SignAlg};
+use crypto::provider::{CryptoProvider, SignAlg};
 use crypto::thumbprint::jwk_sha256_thumbprint;
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::acr::AcrLoaMap;
-use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::auth::{
     AuthenticationExecutionMutationModel, AuthenticationFlowMutationModel,
     AuthenticatorRequirement, ExecutionStep,
 };
 use models::entities::client::{ClientCreateModel, ClientScopeModel, Protocol};
-use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey};
 use models::entities::realm::RealmModel;
 use models::entities::tenant::{TenantCreateModel, TenantModel};
-use models::entities::user::{UserCreateModel, profile};
 use secrecy::SecretBox;
 use store::error::{StoreError, StoreResult};
 use store::keyring;
-use store::providers::{
-    auth_flows, client_scopes, clients, credentials, realm_keys, realms, tenants, users,
-};
+
+use crate::admin;
+use store::providers::{auth_flows, client_scopes, clients, realm_keys, realms, tenants, users};
 
 /// Who the audit trail names for rows nobody typed in.
 const PROVISIONER: &str = "provisioner";
@@ -78,7 +74,7 @@ pub struct AdminConsole<'a> {
 /// `profile` and `email` are defaults, which is what every client gets without
 /// asking. `phone` is not: §5.4 gates a number behind a scope a client has to
 /// name, and a default would hand it out to every registration.
-const STANDARD_SCOPES: [(&str, bool, &str); 4] = [
+pub const STANDARD_SCOPES: [(&str, bool, &str); 4] = [
     ("profile", true, "Basic profile claims"),
     ("email", true, "Email address and whether it is verified"),
     ("phone", false, "Phone number and whether it is verified"),
@@ -401,50 +397,28 @@ pub async fn provision_client(
     {
         return Ok(false);
     }
-    let metadata = AuditableModel::from_creator(tenant.to_owned(), PROVISIONER.to_owned());
-    let mut client = ClientCreateModel {
-        name: registration.client_id.to_owned(),
-        display_name: registration.client_id.to_owned(),
-        description: String::new(),
-        enabled: Some(true),
-    }
-    .into_model(
-        registration.client_id.to_owned(),
-        realm_id.to_owned(),
-        metadata,
-    );
-    client.protocol = Some(Protocol::OpenId);
-    client.public_client = Some(registration.secret.is_none());
-    client.standard_flow_enabled = Some(true);
-    client.service_account_enabled = Some(false);
-    client.direct_access_grants_enabled = Some(false);
-    client.implicit_flow_enabled = Some(false);
-    client.redirect_uris = Some(registration.redirect_uris.clone());
-    client.post_logout_redirect_uris = (!registration.post_logout_redirect_uris.is_empty())
-        .then(|| registration.post_logout_redirect_uris.clone());
-    clients::create(transaction, &client).await?;
-    clients::update(transaction, &client).await?;
-
-    if let Some(secret) = registration.secret {
-        let StoredPassword::Argon2id { encoded } =
-            StoredPassword::hash_argon2id(provider, Argon2Params::default(), secret)
-                .map_err(|_| StoreError::Backend)?
-        else {
-            return Err(StoreError::Backend);
-        };
-        clients::rotate_secret(transaction, registration.client_id, &encoded, None).await?;
-    }
-
-    // The scopes first, so attaching never depends on who ran before. It is
-    // idempotent, and a realm that already has them keeps what it has.
-    //
-    // Every standard scope, and every one optional: granted when asked for and
-    // not otherwise. §5.4 makes a scope a request for a set of claims, and a
-    // client asking for `email` alone must not be told a name.
-    provision_standard_scopes(transaction, tenant, realm_id).await?;
-    for (scope, _, _) in STANDARD_SCOPES {
-        client_scopes::attach_scope(transaction, registration.client_id, scope, true).await?;
-    }
+    let spec = admin::clients::Spec {
+        name: None,
+        confidential: registration.secret.is_some(),
+        redirect_uris: registration.redirect_uris.clone(),
+        post_logout_redirect_uris: registration.post_logout_redirect_uris.clone(),
+    };
+    let secret = match registration.secret {
+        Some(given) => admin::clients::Secret::Given(given),
+        None => admin::clients::Secret::Drawn,
+    };
+    admin::clients::register(
+        transaction,
+        provider,
+        tenant,
+        realm_id,
+        PROVISIONER,
+        registration.client_id,
+        &spec,
+        secret,
+    )
+    .await
+    .map_err(|_| StoreError::Backend)?;
     Ok(true)
 }
 
@@ -476,59 +450,48 @@ pub async fn provision_user(
     {
         return Ok(false);
     }
-    let metadata = AuditableModel::from_creator(tenant.to_owned(), PROVISIONER.to_owned());
-    let mut attributes = AttributesMap::new();
-    let named = [
-        (profile::FIRST_NAME, person.given_name),
-        (profile::LAST_NAME, person.family_name),
-    ];
-    let extra = person.attributes.iter().map(|(k, v)| (*k, Some(*v)));
-    for (named, value) in named.into_iter().chain(extra) {
-        if let Some(value) = value.filter(|value| !value.is_empty()) {
-            attributes.insert(named.to_owned(), AttributeValue::Str(value.to_owned()));
-        }
-    }
-    let user = UserCreateModel {
-        user_name: person.user_name.to_owned(),
-        enabled: true,
-        email: person.email.to_owned(),
-        email_verified: Some(!person.email.is_empty()),
-        phone_number: person.phone.map(str::to_owned),
-        phone_number_verified: person.phone.map(|_| true),
+    let spec = admin::users::Spec {
+        email: Some(person.email.to_owned()),
+        email_verified: Some(true),
+        enabled: Some(true),
+        given_name: person.given_name.map(str::to_owned),
+        family_name: person.family_name.map(str::to_owned),
+        phone: person.phone.map(str::to_owned),
         required_actions: None,
-        not_before: None,
-        user_storage: None,
-        attributes: (!attributes.is_empty()).then_some(attributes),
-        is_service_account: None,
-        service_account_client_link: None,
-    }
-    .into_model(
-        person.user_name.to_owned(),
-        realm_id.to_owned(),
-        metadata.clone(),
-    );
-    users::create(transaction, &user).await?;
-
-    let StoredPassword::Argon2id { encoded } =
-        StoredPassword::hash_argon2id(provider, Argon2Params::default(), person.password)
-            .map_err(|_| StoreError::Backend)?
-    else {
-        return Err(StoreError::Backend);
+        attributes: person
+            .attributes
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect(),
     };
-    credentials::create(
+    admin::users::create(
         transaction,
-        &CredentialModel {
-            credential_id: format!("{}-password", person.user_name),
-            realm_id: realm_id.to_owned(),
-            user_id: person.user_name.to_owned(),
-            credential_type: CredentialType::Password,
-            secret: CredentialSecret::new(encoded),
-            user_label: None,
-            otp: None,
-            priority: 0,
-            metadata,
-        },
+        tenant,
+        realm_id,
+        PROVISIONER,
+        person.user_name,
+        &spec,
     )
-    .await?;
+    .await
+    .map_err(|_| StoreError::Backend)?;
+    // Provisioned numbers are the operator's own, so they count as verified.
+    if person.phone.is_some() {
+        let mut user = users::load(transaction, person.user_name)
+            .await?
+            .ok_or(StoreError::Backend)?;
+        user.phone_number_verified = Some(true);
+        users::update(transaction, &user).await?;
+    }
+    admin::users::set_password(
+        transaction,
+        provider,
+        tenant,
+        realm_id,
+        PROVISIONER,
+        person.user_name,
+        person.password,
+    )
+    .await
+    .map_err(|_| StoreError::Backend)?;
     Ok(true)
 }

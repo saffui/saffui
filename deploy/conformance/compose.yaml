@@ -51,6 +51,12 @@ services:
       - --attribute=user.profile.birthdate=1990-12-10
       - --attribute=user.profile.zoneinfo=Europe/London
       - --attribute=user.profile.locale=en-GB
+      - --attribute=user.address.street_address=1 Saint James's Square
+      - --attribute=user.address.locality=London
+      - --attribute=user.address.region=England
+      - --attribute=user.address.postal_code=SW1Y 4JH
+      - --attribute=user.address.country=United Kingdom
+      - --attribute=user.address.formatted=1 Saint James's Square, London SW1Y 4JH, United Kingdom
     environment:
       SAFFUI_PUBLIC_ORIGIN: https://saffui.test
     depends_on:

@@ -102,7 +102,7 @@ pub async fn published(
             // endpoint refuses it, so advertising it would be a lie a client
             // acts on.
             "code_challenge_methods_supported": ["S256"],
-            "scopes_supported": ["openid", "profile", "email", "phone"],
+            "scopes_supported": ["openid", "profile", "email", "phone", "address"],
             "claims_supported": claims_named(!contexts.is_empty()),
             // Stated because the omission is not neutral. Discovery §3 reads an
             // absent `request_uri_parameter_supported` as `true`, so saying
@@ -133,6 +133,9 @@ fn claims_named(maps_contexts: bool) -> Vec<&'static str> {
         "preferred_username",
         "email",
         "email_verified",
+        "phone_number",
+        "phone_number_verified",
+        "address",
     ];
     if maps_contexts {
         named.push("acr");

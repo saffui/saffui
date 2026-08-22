@@ -58,6 +58,27 @@ pub mod profile {
     pub const BASIC: [&str; 2] = [FIRST_NAME, LAST_NAME];
 }
 
+/// Where a postal address is kept, one attribute per component OIDC Core
+/// §5.1.1 names, plus the whole as a mailing label when the realm has it.
+pub mod address {
+    pub const FORMATTED: &str = "user.address.formatted";
+    pub const STREET_ADDRESS: &str = "user.address.street_address";
+    pub const LOCALITY: &str = "user.address.locality";
+    pub const REGION: &str = "user.address.region";
+    pub const POSTAL_CODE: &str = "user.address.postal_code";
+    pub const COUNTRY: &str = "user.address.country";
+
+    /// Every component, paired with the member it becomes in the claim.
+    pub const COMPONENTS: [(&str, &str); 6] = [
+        ("formatted", FORMATTED),
+        ("street_address", STREET_ADDRESS),
+        ("locality", LOCALITY),
+        ("region", REGION),
+        ("postal_code", POSTAL_CODE),
+        ("country", COUNTRY),
+    ];
+}
+
 /// A user of a realm.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserModel {

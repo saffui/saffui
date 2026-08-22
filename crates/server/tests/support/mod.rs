@@ -884,6 +884,11 @@ impl Plane {
             .await
             .unwrap();
         }
+        // Optional, so a test has to ask for it: what exercises a scope that
+        // is granted only by name.
+        store::providers::client_scopes::attach_scope(&transaction, CONFIDENTIAL, "address", true)
+            .await
+            .unwrap();
 
         // The console and the scope the admin plane requires, planted the way a
         // deployment plants them rather than by hand. The suite that mounts the

@@ -77,10 +77,11 @@ pub struct AdminConsole<'a> {
 /// `profile` and `email` are defaults, which is what every client gets without
 /// asking. `phone` is not: §5.4 gates a number behind a scope a client has to
 /// name, and a default would hand it out to every registration.
-const STANDARD_SCOPES: [(&str, bool, &str); 3] = [
+const STANDARD_SCOPES: [(&str, bool, &str); 4] = [
     ("profile", true, "Basic profile claims"),
     ("email", true, "Email address and whether it is verified"),
     ("phone", false, "Phone number and whether it is verified"),
+    ("address", false, "Postal address"),
 ];
 
 /// Create a realm and everything it cannot work without.

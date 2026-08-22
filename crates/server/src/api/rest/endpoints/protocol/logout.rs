@@ -11,24 +11,21 @@ use services::logout::{self, EndedAt, Requested};
 use store::providers::realm_keys;
 use store::tenancy::{Tenancy, resolve};
 
-use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::dto::uncached;
+use crate::api::rest::endpoints::protocol::{binding, page};
 
-/// What the query carries. Every parameter is optional: RP-Initiated Logout §2
-/// makes `id_token_hint` recommended and the rest optional, and a logout with
-/// none of them is still a logout.
-#[derive(Debug, Deserialize)]
+/// What the request carried, by either verb. §2 allows both: a browser
+/// arriving by link uses one, a form posting a hint too long for a URL the
+/// other, and the page that asks the person answers by the second.
+#[derive(Debug, Default, Deserialize)]
 pub struct Asked {
     pub id_token_hint: Option<String>,
     pub post_logout_redirect_uri: Option<String>,
     pub client_id: Option<String>,
     pub state: Option<String>,
+    pub confirmed: Option<String>,
 }
 
-/// End the login.
-///
-/// Both verbs. §2 allows either, and a browser arriving by link uses one while a
-/// form posting a hint too long for a URL uses the other.
 pub async fn end(
     request: HttpRequest,
     realm: web::Path<String>,
@@ -36,27 +33,44 @@ pub async fn end(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
 ) -> HttpResponse {
+    let asked = asked.map(web::Query::into_inner).unwrap_or_default();
+    run(&request, &realm, asked, &pool, &tenancy).await
+}
+
+pub async fn end_posted(
+    request: HttpRequest,
+    realm: web::Path<String>,
+    asked: Option<web::Form<Asked>>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+) -> HttpResponse {
+    let asked = asked.map(web::Form::into_inner).unwrap_or_default();
+    run(&request, &realm, asked, &pool, &tenancy).await
+}
+
+async fn run(
+    request: &HttpRequest,
+    realm: &str,
+    asked: Asked,
+    pool: &Pool,
+    tenancy: &Tenancy,
+) -> HttpResponse {
     let now = Utc::now();
-    let asked = asked.map(web::Query::into_inner).unwrap_or(Asked {
-        id_token_hint: None,
-        post_logout_redirect_uri: None,
-        client_id: None,
-        state: None,
-    });
+    let told = |realm_id: &str, ended: EndedAt| tell(request, realm_id, &asked, ended);
 
     let Ok(mut connection) = pool.get().await else {
-        return done(&realm, None);
+        return told(realm, EndedAt::Nowhere);
     };
     // An unknown realm ends nothing and says so the same way. Which realms exist
     // is not a question this endpoint answers, and everyone links to it.
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return done(&realm, None);
+    let Ok(context) = resolve::realm_by_name(&connection, realm).await else {
+        return told(realm, EndedAt::Nowhere);
     };
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
-        return done(&context.realm_id, None);
+        return told(&context.realm_id, EndedAt::Nowhere);
     };
     let Ok(keys) = realm_keys::published(&transaction, KeyUse::Sig).await else {
-        return done(&context.realm_id, None);
+        return told(&context.realm_id, EndedAt::Nowhere);
     };
 
     let ended = logout::end_session(
@@ -67,36 +81,101 @@ pub async fn end(
             post_logout_redirect_uri: asked.post_logout_redirect_uri.as_deref(),
             client_id: asked.client_id.as_deref(),
             state: asked.state.as_deref(),
+            confirmed: asked.confirmed.as_deref() == Some("yes"),
         },
-        binding::read(&request, binding::SSO_SESSION).as_deref(),
+        binding::read(request, binding::SSO_SESSION).as_deref(),
         now,
     )
     .await;
 
-    // The cookie goes whether or not a row moved. A browser that keeps offering
-    // a login the server has ended is a browser that looks signed in.
     if transaction.commit().await.is_err() {
-        return done(&context.realm_id, None);
+        return told(&context.realm_id, EndedAt::Nowhere);
     }
+    told(&context.realm_id, ended)
+}
+
+/// What the browser is told. A page to a browser, JSON to anything else; the
+/// cookies go whenever the login did, and stay while the person is still
+/// being asked.
+fn tell(request: &HttpRequest, realm_id: &str, asked: &Asked, ended: EndedAt) -> HttpResponse {
+    let as_page = page::wants_page(request);
     match ended {
-        EndedAt::Nowhere => done(&context.realm_id, None),
-        EndedAt::Redirect(landing) => done(&context.realm_id, Some(&landing)),
+        EndedAt::Confirm => {
+            if as_page {
+                return page::notice(StatusCode::OK, "Sign out?", &confirm_form(asked));
+            }
+            uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+                .json(json!({ "status": "confirm" }))
+        }
+        EndedAt::Redirect(landing) => {
+            let mut response = HttpResponseBuilder::new(StatusCode::FOUND);
+            forget(&mut response, realm_id);
+            uncached(&mut response)
+                .insert_header(("Location", landing))
+                .finish()
+        }
+        EndedAt::Nowhere | EndedAt::Refused => {
+            let refused = ended == EndedAt::Refused;
+            if as_page {
+                let mut response = page::notice(
+                    StatusCode::OK,
+                    "You are signed out",
+                    if refused {
+                        "<p class=\"told\">The application asked to send you to an address it \
+                         never registered, so you stay here.</p>"
+                    } else {
+                        "<p class=\"told\">You can close this window.</p>"
+                    },
+                );
+                forget_on(&mut response, realm_id);
+                return response;
+            }
+            let mut response = HttpResponseBuilder::new(StatusCode::OK);
+            forget(&mut response, realm_id);
+            let mut body = json!({ "status": "logged-out" });
+            if refused {
+                body["redirect"] = json!("refused");
+            }
+            uncached(&mut response).json(body)
+        }
     }
 }
 
-/// One answer for every way of getting here, so nothing about whose login
-/// existed is readable from the shape of the reply.
-fn done(realm_id: &str, landing: Option<&str>) -> HttpResponse {
-    let mut response = HttpResponseBuilder::new(match landing {
-        Some(_) => StatusCode::FOUND,
-        None => StatusCode::OK,
-    });
-    binding::clear(&mut response, binding::SSO_SESSION, realm_id);
-    binding::clear(&mut response, binding::AUTH_SESSION, realm_id);
-    match landing {
-        Some(landing) => uncached(&mut response)
-            .insert_header(("Location", landing))
-            .finish(),
-        None => uncached(&mut response).json(json!({ "status": "logged-out" })),
+/// The question, carrying the request back so the answer ends the same
+/// logout. A same-site post; the cookie it ends is withheld from any other.
+fn confirm_form(asked: &Asked) -> String {
+    let mut form = String::from(
+        "<p class=\"told\">An application asked to sign you out.</p>\
+         <form method=\"post\"><input type=\"hidden\" name=\"confirmed\" value=\"yes\">",
+    );
+    for (named, value) in [
+        ("id_token_hint", &asked.id_token_hint),
+        ("post_logout_redirect_uri", &asked.post_logout_redirect_uri),
+        ("client_id", &asked.client_id),
+        ("state", &asked.state),
+    ] {
+        if let Some(value) = value {
+            form.push_str(&format!(
+                "<input type=\"hidden\" name=\"{named}\" value=\"{}\">",
+                page::escaped(value)
+            ));
+        }
+    }
+    form.push_str("<button type=\"submit\">Sign out</button></form>");
+    form
+}
+
+fn forget(response: &mut HttpResponseBuilder, realm_id: &str) {
+    binding::clear(response, binding::SSO_SESSION, realm_id);
+    binding::clear(response, binding::AUTH_SESSION, realm_id);
+}
+
+/// The same, on a response already built.
+fn forget_on(response: &mut HttpResponse, realm_id: &str) {
+    let mut builder = HttpResponseBuilder::new(StatusCode::OK);
+    forget(&mut builder, realm_id);
+    let built = builder.finish();
+    for cookie in built.cookies() {
+        let _ = response.add_cookie(&cookie);
     }
 }

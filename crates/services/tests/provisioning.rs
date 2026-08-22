@@ -309,6 +309,7 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         client_id: "app",
         secret: Some(&secret),
         redirect_uris: vec!["https://app.example/callback".into()],
+        post_logout_redirect_uris: vec!["https://app.example/bye".into()],
     };
     let person = Person {
         user_name: "ada",
@@ -397,6 +398,11 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         "a client with a secret is confidential"
     );
     assert_eq!(client.standard_flow_enabled, Some(true));
+    assert_eq!(
+        client.post_logout_redirect_uris.as_deref(),
+        Some(&["https://app.example/bye".to_owned()][..]),
+        "where a logout may land was not registered"
+    );
     assert_eq!(
         services::authorize::granted_scope(&transaction, "app", "openid profile email phone")
             .await

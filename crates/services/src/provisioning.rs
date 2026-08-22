@@ -372,6 +372,7 @@ pub struct Registration<'a> {
     pub client_id: &'a str,
     pub secret: Option<&'a SecretBox<String>>,
     pub redirect_uris: Vec<String>,
+    pub post_logout_redirect_uris: Vec<String>,
 }
 
 /// Register a client, unless one by that id exists, and attach it to every
@@ -408,6 +409,8 @@ pub async fn provision_client(
     client.direct_access_grants_enabled = Some(false);
     client.implicit_flow_enabled = Some(false);
     client.redirect_uris = Some(registration.redirect_uris.clone());
+    client.post_logout_redirect_uris = (!registration.post_logout_redirect_uris.is_empty())
+        .then(|| registration.post_logout_redirect_uris.clone());
     clients::create(transaction, &client).await?;
     clients::update(transaction, &client).await?;
 

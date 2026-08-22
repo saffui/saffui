@@ -214,7 +214,7 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(
             web::resource("/logout")
                 .route(web::get().to(logout::end))
-                .route(web::post().to(logout::end)),
+                .route(web::post().to(logout::end_posted)),
         )
         .service(
             web::resource("/userinfo")

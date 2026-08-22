@@ -37,6 +37,7 @@ services:
       - --client=conformance-second
       - --client=conformance-post
       - --redirect=https://localhost.emobix.co.uk:8443/test/a/saffui/callback
+      - --after-logout=https://localhost.emobix.co.uk:8443/test/a/saffui/post_logout_redirect
       - --user=ada
       - --email=ada@example.test
       - --given-name=Ada
@@ -129,6 +130,8 @@ services:
       - ./basic.json:/plans/basic.json:ro
       - ./results:/results
     working_dir: /suite/scripts
+    # Three plans, one run: the Basic OP profile, its discovery-only sibling,
+    # and RP-Initiated Logout. The same static client serves all three.
     command:
       - sh
       - -c
@@ -136,6 +139,10 @@ services:
         pip install -q -r requirements.txt &&
         python3 run-test-plan.py --export-dir /results --verbose --no-parallel
         "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
+        /plans/basic.json
+        "oidcc-config-certification-test-plan"
+        /plans/basic.json
+        "oidcc-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]"
         /plans/basic.json
     depends_on:
       - nginx

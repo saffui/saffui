@@ -6,11 +6,11 @@
   },
   "client": {
     "client_id": "conformance",
-    "client_secret": "a-conformance-client-secret"
+    "client_secret": "a-conformance-client-secret-of-thirty-two-bytes-or-more"
   },
   "client2": {
     "client_id": "conformance-second",
-    "client_secret": "a-conformance-client-secret"
+    "client_secret": "a-conformance-client-secret-of-thirty-two-bytes-or-more"
   },
   "browser": [
     {
@@ -84,13 +84,49 @@
       "match": "https://saffui.test/realms/main/protocol/openid-connect/logout*",
       "tasks": [
         {
-          "task": "Verify Complete",
-          "match": "*/test/*/post_logout_redirect*",
+          "task": "Asked, or told",
+          "optional": true,
+          "match": "https://saffui.test/realms/main/protocol/openid-connect/logout*",
           "commands": [
             [
               "wait",
-              "id",
-              "submission_complete",
+              "xpath",
+              "//*",
+              10,
+              ".*(Sign out\\?|signed out).*"
+            ],
+            [
+              "click",
+              "xpath",
+              "//button[@type='submit']",
+              "optional"
+            ]
+          ]
+        },
+        {
+          "task": "Told it is over",
+          "optional": true,
+          "match": "https://saffui.test/realms/main/protocol/openid-connect/logout*",
+          "commands": [
+            [
+              "wait",
+              "xpath",
+              "//*",
+              10,
+              ".*signed out.*",
+              "update-image-placeholder-optional"
+            ]
+          ]
+        },
+        {
+          "task": "Verify Complete",
+          "optional": true,
+          "match": "https://localhost.emobix.co.uk:8443/test/*/post_logout_redirect*",
+          "commands": [
+            [
+              "wait",
+              "contains",
+              "/post_logout_redirect",
               10
             ]
           ]
@@ -100,6 +136,6 @@
   ],
   "client_secret_post": {
     "client_id": "conformance-post",
-    "client_secret": "a-conformance-client-secret"
+    "client_secret": "a-conformance-client-secret-of-thirty-two-bytes-or-more"
   }
 }

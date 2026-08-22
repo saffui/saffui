@@ -6,7 +6,7 @@
 use chrono::{DateTime, Duration, Utc};
 use crypto::constant_time;
 use crypto::envelope::Envelope;
-use crypto::provider::{CryptoProvider, HashAlg};
+use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
@@ -143,10 +143,7 @@ pub async fn client_credentials(
     )
     .await?;
 
-    let key = realm_keys::active(transaction, signing.ring, signing.envelope, KeyUse::Sig)
-        .await
-        .map_err(|_| Ungranted::Unreadable)?
-        .ok_or(Ungranted::NoKey)?;
+    let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
 
     // Its own audience, so no downstream check has to decide what an absent one
     // means.
@@ -313,8 +310,11 @@ pub async fn authorization_code(
         extra: serde_json::Map::new(),
     };
 
-    // Once. Three reads are three chances for a rotation to land between them.
-    let key = active_signing_key(transaction, signing).await?;
+    // Once each. Three reads are three chances for a rotation to land between
+    // them. The identity token is signed as the client registered, RS256
+    // unless it said; the others with the realm's own preference.
+    let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
+    let identity_key = identity_key(transaction, signing, client).await?;
     let access = mint_token(
         signing.provider,
         &key,
@@ -366,7 +366,7 @@ pub async fn authorization_code(
                     .insert("org_id".into(), Value::from(org.as_str()));
             }
             minting.extra.extend(asked_of_person.clone());
-            mint_token(signing.provider, &key, minting)
+            mint_token(signing.provider, &identity_key, minting)
         })
         .transpose()
         .map_err(|_| Ungranted::Unmintable)?;
@@ -448,14 +448,50 @@ fn verify_code_challenge(
         .ok_or(Ungranted::InvalidGrant)
 }
 
-async fn active_signing_key(
+/// The active key of this algorithm, or of any when the realm has none of it.
+async fn preferred_key(
     transaction: &Transaction<'_>,
     signing: &Signing<'_>,
+    algorithm: SignAlg,
 ) -> Result<RealmSigningKey, Ungranted> {
-    realm_keys::active(transaction, signing.ring, signing.envelope, KeyUse::Sig)
+    for wanted in [Some(algorithm), None] {
+        let found = realm_keys::active(
+            transaction,
+            signing.ring,
+            signing.envelope,
+            KeyUse::Sig,
+            wanted,
+        )
+        .await
+        .map_err(|_| Ungranted::Unreadable)?;
+        if let Some(key) = found {
+            return Ok(key);
+        }
+    }
+    Err(Ungranted::NoKey)
+}
+
+/// The key an identity token for this client is signed with: what it
+/// registered, and nothing else when it did; OIDC Core §2's RS256 when it did
+/// not, falling back to what the realm has.
+async fn identity_key(
+    transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
+    client: &ClientModel,
+) -> Result<RealmSigningKey, Ungranted> {
+    match client.id_token_signed_response_alg {
+        Some(registered) => realm_keys::active(
+            transaction,
+            signing.ring,
+            signing.envelope,
+            KeyUse::Sig,
+            Some(registered),
+        )
         .await
         .map_err(|_| Ungranted::Unreadable)?
-        .ok_or(Ungranted::NoKey)
+        .ok_or(Ungranted::NoKey),
+        None => preferred_key(transaction, signing, SignAlg::Rs256).await,
+    }
 }
 
 fn sha256(provider: &dyn CryptoProvider, data: &[u8]) -> Result<Vec<u8>, Ungranted> {
@@ -666,7 +702,8 @@ pub async fn refresh_token(
     );
     let renewal = Duration::seconds(DEFAULT_REFRESH_LIFESPAN);
     let scope = verified.scope.clone();
-    let key = active_signing_key(transaction, signing).await?;
+    let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
+    let identity_key = identity_key(transaction, signing, client).await?;
 
     let minting_for = |kind: Kind, life: Duration| Minting {
         kind,
@@ -766,7 +803,7 @@ pub async fn refresh_token(
                 }
             }
             minting.extra.extend(asked_of_person.clone());
-            mint_token(signing.provider, &key, minting)
+            mint_token(signing.provider, &identity_key, minting)
         })
         .transpose()
         .map_err(|_| Ungranted::Unmintable)?;

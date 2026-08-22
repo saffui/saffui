@@ -254,6 +254,7 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
     use crypto::envelope::Envelope;
     use crypto::password::migration::verify_and_plan;
     use crypto::password::storage::StoredPassword;
+    use crypto::provider::SignAlg;
     use models::entities::credentials::CredentialType;
     use models::entities::keys::KeyUse;
     use secrecy::SecretBox;
@@ -361,19 +362,27 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
     let published = realm_keys::published(&transaction, KeyUse::Sig)
         .await
         .unwrap();
-    assert_eq!(published.len(), 1, "one key, published once");
+    let mut algorithms: Vec<_> = published.iter().map(|key| key.algorithm).collect();
+    algorithms.sort_by_key(|algorithm| algorithm.name());
     assert_eq!(
-        published[0].kid,
-        crypto::thumbprint::jwk_sha256_thumbprint(
-            &provider,
-            &crypto::jose::jwk::Jwk::from_map(
-                published[0].public_jwk.as_object().expect("a jwk").clone()
-            )
-            .expect("the published key")
-        )
-        .expect("its thumbprint"),
-        "the key is not named by its thumbprint"
+        algorithms,
+        vec![SignAlg::Es256, SignAlg::Rs256],
+        "one key per algorithm a fresh realm signs with, published once"
     );
+    for key in &published {
+        assert_eq!(
+            key.kid,
+            crypto::thumbprint::jwk_sha256_thumbprint(
+                &provider,
+                &crypto::jose::jwk::Jwk::from_map(
+                    key.public_jwk.as_object().expect("a jwk").clone()
+                )
+                .expect("the published key")
+            )
+            .expect("its thumbprint"),
+            "the key is not named by its thumbprint"
+        );
+    }
 
     let flow = auth_flows::flow_by_alias(&transaction, "browser")
         .await

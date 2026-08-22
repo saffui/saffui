@@ -13,7 +13,8 @@
 
 use crypto::envelope::Envelope;
 use crypto::jose::jwk::alg::ec::EcKeyPair;
-use crypto::jose::jwk::{Jwk, KeyPair, P_256};
+use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+use crypto::jose::jwk::{KeyPair, P_256};
 use crypto::password::storage::StoredPassword;
 use crypto::provider::{Argon2Params, CryptoProvider, SignAlg};
 use crypto::thumbprint::jwk_sha256_thumbprint;
@@ -260,45 +261,55 @@ pub async fn provision_signing_key(
 ) -> StoreResult<bool> {
     keyring::provision(transaction, envelope, tenant, realm_id).await?;
     let ring = keyring::load(transaction, envelope, tenant, realm_id).await?;
-    // Any published key means the realm can sign. One per use is active at a
-    // time, so a second would be refused rather than added.
-    if !realm_keys::published(transaction, KeyUse::Sig)
-        .await?
-        .is_empty()
-    {
-        return Ok(false);
+    let published = realm_keys::published(transaction, KeyUse::Sig).await?;
+
+    // One key per algorithm a fresh realm signs with: RS256, which Discovery
+    // §3 requires of every provider, and ES256. A realm already holding one of
+    // them keeps it.
+    let mut made = false;
+    for algorithm in [SignAlg::Rs256, SignAlg::Es256] {
+        if published.iter().any(|key| key.algorithm == algorithm) {
+            continue;
+        }
+        let (mut private, private_pem) = match algorithm {
+            SignAlg::Rs256 => {
+                let pair = RsaKeyPair::generate(2048).map_err(|_| StoreError::Backend)?;
+                (pair.to_jwk_key_pair(), pair.to_pem_private_key())
+            }
+            _ => {
+                let pair = EcKeyPair::generate(P_256).map_err(|_| StoreError::Backend)?;
+                (pair.to_jwk_key_pair(), pair.to_pem_private_key())
+            }
+        };
+        let mut public = private.to_public_key().map_err(|_| StoreError::Backend)?;
+        let kid = jwk_sha256_thumbprint(provider, &public).map_err(|_| StoreError::Backend)?;
+        private.set_key_id(&kid);
+        private.set_algorithm(algorithm.name());
+        public.set_key_id(&kid);
+        public.set_algorithm(algorithm.name());
+
+        realm_keys::create(
+            transaction,
+            &ring,
+            envelope,
+            &RealmSigningKey {
+                tenant: tenant.to_owned(),
+                realm_id: realm_id.to_owned(),
+                kid,
+                algorithm,
+                key_use: KeyUse::Sig,
+                status: KeyStatus::Active,
+                priority: 10,
+                private_pem,
+                public_jwk: serde_json::to_value(public.as_ref())
+                    .map_err(|_| StoreError::Backend)?,
+                created_at: now,
+            },
+        )
+        .await?;
+        made = true;
     }
-
-    let mut private = Jwk::generate_ec_key(P_256).map_err(|_| StoreError::Backend)?;
-    let mut public = private.to_public_key().map_err(|_| StoreError::Backend)?;
-    let kid = jwk_sha256_thumbprint(provider, &public).map_err(|_| StoreError::Backend)?;
-    private.set_key_id(&kid);
-    private.set_algorithm("ES256");
-    public.set_key_id(&kid);
-    public.set_algorithm("ES256");
-    let private_pem = EcKeyPair::from_jwk(&private)
-        .map_err(|_| StoreError::Backend)?
-        .to_pem_private_key();
-
-    realm_keys::create(
-        transaction,
-        &ring,
-        envelope,
-        &RealmSigningKey {
-            tenant: tenant.to_owned(),
-            realm_id: realm_id.to_owned(),
-            kid,
-            algorithm: SignAlg::Es256,
-            key_use: KeyUse::Sig,
-            status: KeyStatus::Active,
-            priority: 10,
-            private_pem,
-            public_jwk: serde_json::to_value(public.as_ref()).map_err(|_| StoreError::Backend)?,
-            created_at: now,
-        },
-    )
-    .await?;
-    Ok(true)
+    Ok(made)
 }
 
 /// What this realm calls its levels, unless it already says.

@@ -151,6 +151,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V023__claims_request.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 24,
+            name: "one_active_key_per_algorithm",
+            sql: include_str!("../migrations/V024__one_active_key_per_algorithm.sql"),
+            transactional: true,
+        }),
     ]
 }
 

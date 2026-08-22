@@ -4349,3 +4349,77 @@ async fn a_browser_is_asked_in_a_page_and_told_in_one() {
     assert!(page.contains("You are signed out"), "{page}");
     assert!(!plane.login_is_open(&session).await);
 }
+
+/// The header of a token, which names how it was signed.
+fn header_of(token: &str) -> serde_json::Value {
+    let head = token.split('.').next().expect("a compact token");
+    serde_json::from_slice(
+        &data_encoding::BASE64URL_NOPAD
+            .decode(head.as_bytes())
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+/// An identity token is signed as the client registered, RS256 when it did
+/// not say (OIDC Core §2), and with nothing else when it asked for something
+/// the realm does not have. The access token keeps the realm's own choice.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_identity_token_is_signed_as_the_client_registered() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .publish_key(&support::SigningKey::generate_rsa("kid-rsa"))
+        .await;
+
+    let granted = granted_through_login(&plane, &[("scope", "openid")]).await;
+    assert_eq!(
+        header_of(granted["id_token"].as_str().expect("an id token"))["alg"],
+        "RS256",
+        "a client that registered nothing did not get the default"
+    );
+    assert_eq!(
+        header_of(granted["access_token"].as_str().expect("an access token"))["alg"],
+        "ES256",
+        "the access token did not keep the realm's own choice"
+    );
+
+    plane
+        .register_id_token_alg(
+            support::CONFIDENTIAL,
+            Some(crypto::provider::SignAlg::Es256),
+        )
+        .await;
+    let granted = granted_through_login(&plane, &[("scope", "openid")]).await;
+    assert_eq!(
+        header_of(granted["id_token"].as_str().expect("an id token"))["alg"],
+        "ES256",
+        "what the client registered was not honoured"
+    );
+
+    plane
+        .register_id_token_alg(
+            support::CONFIDENTIAL,
+            Some(crypto::provider::SignAlg::Ps256),
+        )
+        .await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    let (status, told) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "signed with something other than what the client registered: {told}"
+    );
+}

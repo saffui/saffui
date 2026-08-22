@@ -84,6 +84,13 @@ pub struct ClientModel {
     /// Registered post-logout redirect URIs, separate from `redirect_uris` so a
     /// logout destination is not thereby an authorization code destination.
     pub post_logout_redirect_uris: Option<Vec<String>>,
+    /// Where a logout token is posted when a login this client took part in
+    /// ends, and whether it insists on being told which session.
+    pub backchannel_logout_uri: Option<String>,
+    pub backchannel_logout_session_required: bool,
+    /// The same, loaded by the browser at logout instead of posted to.
+    pub frontchannel_logout_uri: Option<String>,
+    pub frontchannel_logout_session_required: bool,
 
     /// Never serialised. The store binds it as a column; a client rendered into
     /// a response must not carry the credential that authenticates it.
@@ -168,6 +175,10 @@ impl ClientCreateModel {
             web_origins: None,
             redirect_uris: None,
             post_logout_redirect_uris: None,
+            backchannel_logout_uri: None,
+            backchannel_logout_session_required: false,
+            frontchannel_logout_uri: None,
+            frontchannel_logout_session_required: false,
             registration_token: None,
             secret: None,
             secret_created_at: None,

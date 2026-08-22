@@ -314,7 +314,7 @@ pub async fn authorization_code(
     // them. The identity token is signed as the client registered, RS256
     // unless it said; the others with the realm's own preference.
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
-    let identity_key = identity_key(transaction, signing, client).await?;
+    let identity_key = identity_key_for(transaction, signing, client).await?;
     let access = mint_token(
         signing.provider,
         &key,
@@ -474,7 +474,7 @@ async fn preferred_key(
 /// The key an identity token for this client is signed with: what it
 /// registered, and nothing else when it did; OIDC Core §2's RS256 when it did
 /// not, falling back to what the realm has.
-async fn identity_key(
+pub async fn identity_key_for(
     transaction: &Transaction<'_>,
     signing: &Signing<'_>,
     client: &ClientModel,
@@ -703,7 +703,7 @@ pub async fn refresh_token(
     let renewal = Duration::seconds(DEFAULT_REFRESH_LIFESPAN);
     let scope = verified.scope.clone();
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
-    let identity_key = identity_key(transaction, signing, client).await?;
+    let identity_key = identity_key_for(transaction, signing, client).await?;
 
     let minting_for = |kind: Kind, life: Duration| Minting {
         kind,

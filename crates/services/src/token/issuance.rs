@@ -25,6 +25,10 @@ pub enum Kind {
     Access,
     Identity,
     Refresh,
+    /// Back-Channel Logout 1.0 §2.4: tells a client a login ended. Not a
+    /// credential and not a record of a login, and a client must refuse it
+    /// wherever an identity token is expected.
+    Logout,
 }
 
 impl Kind {
@@ -38,6 +42,7 @@ impl Kind {
         match self {
             Kind::Access => "at+jwt",
             Kind::Identity | Kind::Refresh => "JWT",
+            Kind::Logout => "logout+jwt",
         }
     }
 
@@ -48,6 +53,7 @@ impl Kind {
             Kind::Access => "Bearer",
             Kind::Identity => "ID",
             Kind::Refresh => "Refresh",
+            Kind::Logout => "Logout",
         }
     }
 }
@@ -152,7 +158,7 @@ pub fn mint_token(
     // do and what kind of token it is are an access token's business, and a
     // relying party reading claims it never asked for is a finding.
     let mut claims = vec![("azp", minting.party), ("sid", minting.session_id)];
-    if minting.kind != Kind::Identity {
+    if minting.kind != Kind::Identity && minting.kind != Kind::Logout {
         claims.push(("typ", minting.kind.claimed()));
         claims.push(("scope", minting.scope));
     }

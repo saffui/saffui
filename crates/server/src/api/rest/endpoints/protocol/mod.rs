@@ -6,6 +6,7 @@
 //! move, the issuer, carries no version for exactly that reason.
 
 pub mod authorize;
+pub mod backchannel;
 pub mod basic;
 pub mod binding;
 pub mod caller;

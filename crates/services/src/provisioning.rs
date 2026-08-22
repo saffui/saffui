@@ -380,6 +380,9 @@ pub struct Registration<'a> {
     pub secret: Option<&'a SecretBox<String>>,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
+    /// Where a logout token is posted when a login this client took part in
+    /// ends.
+    pub backchannel_logout_uri: Option<String>,
 }
 
 /// Register a client, unless one by that id exists, and attach it to every
@@ -402,6 +405,7 @@ pub async fn provision_client(
         confidential: registration.secret.is_some(),
         redirect_uris: registration.redirect_uris.clone(),
         post_logout_redirect_uris: registration.post_logout_redirect_uris.clone(),
+        backchannel_logout_uri: registration.backchannel_logout_uri.clone(),
     };
     let secret = match registration.secret {
         Some(given) => admin::clients::Secret::Given(given),

@@ -311,6 +311,7 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         secret: Some(&secret),
         redirect_uris: vec!["https://app.example/callback".into()],
         post_logout_redirect_uris: vec!["https://app.example/bye".into()],
+        backchannel_logout_uri: Some("https://app.example/logout-token".into()),
     };
     let person = Person {
         user_name: "ada",

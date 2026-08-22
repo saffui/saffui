@@ -81,6 +81,8 @@ pub async fn published(
             "end_session_endpoint": format!("{protocol}/logout"),
             "introspection_endpoint": format!("{protocol}/introspect"),
             "revocation_endpoint": format!("{protocol}/revoke"),
+            "backchannel_logout_supported": true,
+            "backchannel_logout_session_supported": true,
             // Only what is mounted. `revocation_endpoint` and
             // `introspection_endpoint` are absent because they are, and naming
             // one would send a client to a 404 it reports as this realm being

@@ -2642,6 +2642,11 @@ fn code_at(unix_seconds: u64) -> String {
 
 /// The code the subject's authenticator app would show right now.
 fn current_code() -> String {
+    code_for(support::TOTP_SECRET)
+}
+
+/// The code an app holding this base32 secret shows right now.
+fn code_for(secret: &str) -> String {
     use crypto::provider::CryptoProvider as _;
     let provider =
         crypto::provider::openssl::OpenSslProvider::new(&crypto::provider::CryptoConfig {
@@ -2650,7 +2655,7 @@ fn current_code() -> String {
         })
         .expect("a software provider");
     let secret = data_encoding::BASE32_NOPAD
-        .decode(support::TOTP_SECRET.as_bytes())
+        .decode(secret.as_bytes())
         .expect("a base32 secret");
     let code = crypto::otp::totp::totp_now(
         provider.hmac(),
@@ -4641,4 +4646,94 @@ async fn a_client_takes_back_its_own_tokens_and_nobody_elses() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
     assert_eq!(told["error"], "unauthorized_client");
+}
+
+/// The realm told this user to set up an authenticator app: after the flow
+/// admits, a fresh secret is shown once, the code the app derives from it
+/// proves the app, the credential is kept with that step spent, and the
+/// instruction is struck. A wrong code keeps it standing and keeps nothing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_required_authenticator_app_is_set_up_inside_the_login() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .require_of_subject(RequiredAction::ConfigureTotp)
+        .await;
+    let before = plane.subject_totp_secrets().await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge");
+    assert_eq!(told["execution"], "totp-register");
+    let secret = told["asks"]["secret"]
+        .as_str()
+        .expect("a secret to enter")
+        .to_owned();
+    let otpauth = told["asks"]["otpauth"].as_str().expect("a URI to scan");
+    assert!(
+        otpauth.starts_with("otpauth://totp/") && otpauth.contains(&format!("secret={secret}")),
+        "{otpauth}"
+    );
+
+    // A wrong code proves nothing: the instruction stands, nothing is kept.
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "totp_register": "000000",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(
+        plane.subject_owes().await,
+        vec![RequiredAction::ConfigureTotp]
+    );
+    assert_eq!(plane.subject_totp_secrets().await, before);
+
+    // The right one, from a fresh login since the refused one is over.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let secret = told["asks"]["secret"]
+        .as_str()
+        .expect("a secret")
+        .to_owned();
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "totp_register": code_for(&secret),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(admitted["status"], "admitted");
+    assert_eq!(plane.subject_owes().await, vec![], "the instruction stands");
+    let after = plane.subject_totp_secrets().await;
+    assert_eq!(after.len(), before.len() + 1);
+    assert!(
+        after.contains(&secret),
+        "the secret shown is not the one kept"
+    );
 }

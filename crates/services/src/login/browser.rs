@@ -82,9 +82,9 @@ pub async fn answer_step(
     auth_session_id: &str,
     username: Option<&str>,
     answers: &[Answer],
-    // The attestation finishing an enrolment, when the realm required one.
-    // Not an [`Answer`]: it proves nothing about who is answering.
-    attestation: Option<&str>,
+    // What finishes an enrolment, when the realm required one. Not an
+    // [`Answer`]: it proves nothing about who is answering.
+    enrolling: enrolment::Answers<'_>,
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
     let login = login::resume(transaction, auth_session_id)
@@ -146,17 +146,23 @@ pub async fn answer_step(
             // Admitted is not yet in: what the realm required of this user
             // runs now, under an identity the flow has finished proving, and
             // the login completes only once nothing more is required.
-            match enrolment::required(transaction, origin, &subject, attestation, &login.notes)
-                .await
+            match enrolment::required(
+                transaction,
+                provider,
+                tenant,
+                &realm,
+                origin,
+                &subject,
+                enrolling,
+                &login.notes,
+            )
+            .await
             {
                 Enrolment::Settled => {}
                 Enrolment::Refused => return Ok(Step::Refused),
-                Enrolment::Asked(challenge) => {
+                Enrolment::Asked { named, challenge } => {
                     let mut remember = serde_json::Map::new();
-                    remember.insert(
-                        enrolment::CONFIGURE_WEBAUTHN.to_owned(),
-                        challenge.remembered,
-                    );
+                    remember.insert(named.to_owned(), challenge.remembered);
                     login::record_step(
                         transaction,
                         auth_session_id,
@@ -169,7 +175,7 @@ pub async fn answer_step(
                     .await
                     .map_err(|_| Unanswerable::Unreadable)?;
                     return Ok(Step::Challenge {
-                        execution_id: enrolment::CONFIGURE_WEBAUTHN.to_owned(),
+                        execution_id: named.to_owned(),
                         asks: Some(challenge.shown),
                     });
                 }

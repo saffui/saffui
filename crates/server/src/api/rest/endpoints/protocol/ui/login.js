@@ -13,6 +13,7 @@
   const credentials = document.getElementById("credentials");
   const code = document.getElementById("code");
   const key = document.getElementById("key");
+  const app = document.getElementById("app");
   const notice = document.getElementById("notice");
   const button = form.querySelector("button");
 
@@ -26,10 +27,11 @@
     notice.hidden = !text;
   }
 
-  function show(credentialsOn, codeOn, keyOn) {
+  function show(credentialsOn, codeOn, keyOn, appOn) {
     credentials.hidden = !credentialsOn;
     code.hidden = !codeOn;
     key.hidden = !keyOn;
+    app.hidden = !appOn;
   }
 
   function forget() {
@@ -37,8 +39,10 @@
     delete answered.totp;
     delete answered.webauthn;
     delete answered.webauthn_register;
+    delete answered.totp_register;
     form.password.value = "";
     form.totp.value = "";
+    form.totp_register.value = "";
   }
 
   // The page is served at the URL it posts to, so the realm is never parsed.
@@ -76,6 +80,13 @@
       }
       if (told.status !== "challenge") {
         say("Something went wrong. Try again.");
+        return;
+      }
+      if (told.execution === "totp-register" && told.asks) {
+        document.getElementById("otpauth").href = told.asks.otpauth;
+        document.getElementById("secret").textContent = told.asks.secret;
+        show(false, false, false, true);
+        form.totp_register.focus();
         return;
       }
       if (told.asks) {
@@ -129,6 +140,7 @@
     if (form.username.value) answered.username = form.username.value;
     if (form.password.value) answered.password = form.password.value;
     if (form.totp.value) answered.totp = form.totp.value;
+    if (form.totp_register.value) answered.totp_register = form.totp_register.value;
     round();
   });
 })();

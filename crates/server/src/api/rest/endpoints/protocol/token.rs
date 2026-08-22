@@ -261,7 +261,7 @@ fn ungranted(why: Ungranted) -> HttpResponse {
 
 /// What a client is told. Everything about who it is collapses to one answer;
 /// only the two protocol faults are named, because a caller can act on those.
-fn refused(why: Unauthenticated) -> HttpResponse {
+pub(crate) fn refused(why: Unauthenticated) -> HttpResponse {
     tracing::warn!(why = ?why, "client not established");
     match why {
         Unauthenticated::Ambiguous => {

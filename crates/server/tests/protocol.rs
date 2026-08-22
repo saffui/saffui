@@ -1559,6 +1559,11 @@ async fn discovery_advertises_only_what_is_there() {
         ("jwks_uri", "/protocol/openid-connect/certs"),
         ("userinfo_endpoint", "/protocol/openid-connect/userinfo"),
         ("end_session_endpoint", "/protocol/openid-connect/logout"),
+        (
+            "introspection_endpoint",
+            "/protocol/openid-connect/introspect",
+        ),
+        ("revocation_endpoint", "/protocol/openid-connect/revoke"),
     ] {
         assert_eq!(
             document[named].as_str().unwrap(),
@@ -1566,12 +1571,10 @@ async fn discovery_advertises_only_what_is_there() {
             "{named}"
         );
     }
-    for absent in ["introspection_endpoint", "revocation_endpoint"] {
-        assert!(
-            document.get(absent).is_none(),
-            "{absent} is advertised and does not answer"
-        );
-    }
+    assert!(
+        document.get("registration_endpoint").is_none(),
+        "registration_endpoint is advertised and does not answer"
+    );
 
     // The algorithms come off the keys the realm holds, so a realm holding one
     // curve cannot advertise another.
@@ -2518,6 +2521,11 @@ async fn logging_out_ends_the_login_and_what_hangs_off_it() {
             .1["error"],
         "invalid_grant",
         "a refresh token outlived the logout"
+    );
+    assert_eq!(
+        userinfo(&plane, granted["access_token"].as_str()).await.0,
+        StatusCode::UNAUTHORIZED,
+        "an access token outlived the logout"
     );
 }
 
@@ -4422,4 +4430,215 @@ async fn an_identity_token_is_signed_as_the_client_registered() {
         StatusCode::BAD_REQUEST,
         "signed with something other than what the client registered: {told}"
     );
+}
+
+/// One call to a client-authenticated endpoint under the protocol scope.
+async fn asking_at(
+    plane: &Plane,
+    endpoint: &str,
+    form: &[(&str, &str)],
+    basic: Option<(&str, &str)>,
+) -> (StatusCode, serde_json::Value) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let mut request = test::TestRequest::post()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/{endpoint}",
+            support::REALM
+        ))
+        .set_form(form);
+    if let Some((client_id, secret)) = basic {
+        let encoded = BASE64.encode(format!("{client_id}:{secret}").as_bytes());
+        request = request.insert_header(("authorization", format!("Basic {encoded}")));
+    }
+    let response = test::call_service(&app, request.to_request()).await;
+    let status = response.status();
+    let body = test::read_body(response).await;
+    let told = if body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null)
+    };
+    (status, told)
+}
+
+/// RFC 7662: a live token says what it carries; every way of being dead is
+/// `active: false` and nothing more, and a client that cannot keep a secret
+/// is not told anything.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_token_is_introspected_live_and_dead_alike() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+    let (_, landing) = authorize_signed_in(&plane, &asking_for(&[]), &session).await;
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let access = granted["access_token"].as_str().expect("an access token");
+    let refresh = granted["refresh_token"].as_str().expect("a refresh token");
+    let id_token = granted["id_token"].as_str().expect("an id token");
+    let me = Some((support::CONFIDENTIAL, support::CLIENT_SECRET));
+
+    let (status, told) = asking_at(&plane, "introspect", &[("token", access)], me).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["active"], true, "{told}");
+    assert_eq!(told["client_id"], support::CONFIDENTIAL);
+    assert_eq!(told["token_type"], "Bearer");
+    assert_eq!(told["sub"], support::SUBJECT);
+    assert!(
+        told.get("exp").is_some() && told.get("scope").is_some(),
+        "{told}"
+    );
+
+    // Any confidential client of the realm may ask: a resource server is
+    // rarely the client a token was minted for.
+    let (_, told) = asking_at(
+        &plane,
+        "introspect",
+        &[("token", access)],
+        Some((support::OTHER, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(
+        told["active"], true,
+        "another confidential client was refused"
+    );
+
+    let (_, told) = asking_at(&plane, "introspect", &[("token", refresh)], me).await;
+    assert_eq!(
+        told["active"], true,
+        "a current refresh token is live: {told}"
+    );
+    let (_, renewed) = renew(&plane, refresh).await;
+    let (_, told) = asking_at(&plane, "introspect", &[("token", refresh)], me).await;
+    assert_eq!(
+        told,
+        serde_json::json!({ "active": false }),
+        "a rotated-out refresh token is dead however unexpired"
+    );
+    let successor = renewed["refresh_token"].as_str().expect("a successor");
+    let (_, told) = asking_at(&plane, "introspect", &[("token", successor)], me).await;
+    assert_eq!(told["active"], true);
+
+    for (label, dead) in [("an identity token", id_token), ("garbage", "not-a-token")] {
+        let (status, told) = asking_at(&plane, "introspect", &[("token", dead)], me).await;
+        assert_eq!(status, StatusCode::OK, "{label}");
+        assert_eq!(told, serde_json::json!({ "active": false }), "{label}");
+    }
+
+    let (status, told) = asking_at(
+        &plane,
+        "introspect",
+        &[("token", access), ("client_id", support::PUBLIC)],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["error"], "invalid_client");
+    let (status, _) = asking_at(&plane, "introspect", &[("token", access)], None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "asked by nobody");
+
+    logout_confirmed(&plane, &[], Some(&session)).await;
+    let (_, told) = asking_at(&plane, "introspect", &[("token", access)], me).await;
+    assert_eq!(
+        told,
+        serde_json::json!({ "active": false }),
+        "a token of an ended login is still live"
+    );
+}
+
+/// One grant's tokens, minted for the confidential client.
+async fn grant(plane: &Plane) -> serde_json::Value {
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid profile", None)
+        .await;
+    asking(
+        plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await
+    .1
+}
+
+/// RFC 7009: a client takes back what it was issued, and with it every renewal
+/// of the same grant; what it was not issued is refused; what cannot be read
+/// is taken back without complaint.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_takes_back_its_own_tokens_and_nobody_elses() {
+    let plane = Plane::with_actions(&[]).await;
+    let me = Some((support::CONFIDENTIAL, support::CLIENT_SECRET));
+
+    // An access token taken back stops opening userinfo, and the refresh
+    // token of the same grant stops renewing.
+    let granted = grant(&plane).await;
+    let access = granted["access_token"].as_str().unwrap();
+    let refresh = granted["refresh_token"].as_str().unwrap();
+    let (status, _) = asking_at(&plane, "revoke", &[("token", access)], me).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        userinfo(&plane, Some(access)).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(renew(&plane, refresh).await.1["error"], "invalid_grant");
+
+    // A refresh token taken back stops renewing.
+    let granted = grant(&plane).await;
+    let refresh = granted["refresh_token"].as_str().unwrap();
+    let (status, _) = asking_at(&plane, "revoke", &[("token", refresh)], me).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(renew(&plane, refresh).await.1["error"], "invalid_grant");
+
+    // Somebody else's token is refused, and left alone.
+    let granted = grant(&plane).await;
+    let access = granted["access_token"].as_str().unwrap();
+    let (status, told) = asking_at(
+        &plane,
+        "revoke",
+        &[("token", access)],
+        Some((support::OTHER, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(told["error"], "unauthorized_client");
+    assert_eq!(userinfo(&plane, Some(access)).await.0, StatusCode::OK);
+
+    for (label, unreadable) in [
+        ("garbage", "not-a-token"),
+        ("an identity token", granted["id_token"].as_str().unwrap()),
+    ] {
+        let (status, _) = asking_at(&plane, "revoke", &[("token", unreadable)], me).await;
+        assert_eq!(status, StatusCode::OK, "{label} was complained about");
+    }
+    // A public client may revoke, but only its own: this one is not its.
+    let (status, told) = asking_at(
+        &plane,
+        "revoke",
+        &[("token", access), ("client_id", support::PUBLIC)],
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(told["error"], "unauthorized_client");
 }

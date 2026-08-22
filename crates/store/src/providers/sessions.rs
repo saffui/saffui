@@ -403,6 +403,42 @@ fn read_client_session(row: Row) -> ClientSessionModel {
 }
 
 /// What one client asked for by name, in one login.
+/// Whether this refresh token is the one the client session currently
+/// anchors on. A rotated-out token is not current, however unexpired.
+pub async fn refresh_is_current(
+    transaction: &Transaction<'_>,
+    user_session_id: &str,
+    client_id: &str,
+    token_id: &str,
+) -> StoreResult<bool> {
+    Ok(transaction
+        .query_opt(
+            "SELECT 1 FROM client_sessions \
+             WHERE user_session_id = $1 AND client_id = $2 AND current_refresh_token = $3",
+            &[&user_session_id, &client_id, &token_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .is_some())
+}
+
+/// Close the client session a token belongs to, which ends every renewal
+/// descended from it.
+pub async fn close_client_session_of(
+    transaction: &Transaction<'_>,
+    user_session_id: &str,
+    client_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM client_sessions WHERE user_session_id = $1 AND client_id = $2",
+            &[&user_session_id, &client_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
 pub async fn requested_claims_of(
     transaction: &Transaction<'_>,
     user_session_id: &str,

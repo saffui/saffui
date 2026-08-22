@@ -79,6 +79,8 @@ pub async fn published(
             "jwks_uri": format!("{protocol}/certs"),
             "userinfo_endpoint": format!("{protocol}/userinfo"),
             "end_session_endpoint": format!("{protocol}/logout"),
+            "introspection_endpoint": format!("{protocol}/introspect"),
+            "revocation_endpoint": format!("{protocol}/revoke"),
             // Only what is mounted. `revocation_endpoint` and
             // `introspection_endpoint` are absent because they are, and naming
             // one would send a client to a 404 it reports as this realm being
@@ -93,6 +95,18 @@ pub async fn published(
             "subject_types_supported": ["public"],
             "id_token_signing_alg_values_supported": algorithms,
             "token_endpoint_auth_methods_supported": [
+                "client_secret_basic",
+                "client_secret_post",
+                "none",
+            ],
+            // Introspection turns a stolen token into its claims, so never for
+            // a client that keeps no secret; a revocation is a client's own to
+            // ask, secret or not.
+            "introspection_endpoint_auth_methods_supported": [
+                "client_secret_basic",
+                "client_secret_post",
+            ],
+            "revocation_endpoint_auth_methods_supported": [
                 "client_secret_basic",
                 "client_secret_post",
                 "none",

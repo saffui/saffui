@@ -2380,6 +2380,39 @@ async fn a_token_without_the_profile_scope_carries_no_name() {
     assert_eq!(told["sub"], support::SUBJECT, "sub is always released");
 }
 
+/// The page's answer: the same request, posted, with the person's yes.
+async fn logout_confirmed(
+    plane: &Plane,
+    form: &[(&str, &str)],
+    session: Option<&str>,
+) -> (StatusCode, String, Vec<String>) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let mut fields: Vec<(&str, &str)> = form.to_vec();
+    fields.push(("confirmed", "yes"));
+    let mut request = test::TestRequest::post()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/logout",
+            support::REALM
+        ))
+        .set_form(fields);
+    if let Some(session) = session {
+        request = request.insert_header(("cookie", format!("{}={session}", support::SSO_COOKIE)));
+    }
+    let response = test::call_service(&app, request.to_request()).await;
+    let status = response.status();
+    let location = response
+        .headers()
+        .get("location")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    let set = response
+        .headers()
+        .get_all("set-cookie")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    (status, location, set)
+}
+
 async fn logout(
     plane: &Plane,
     query: &[(&str, &str)],
@@ -2446,7 +2479,21 @@ async fn logging_out_ends_the_login_and_what_hangs_off_it() {
     )
     .await;
 
+    // Nothing vouched for the request, so the person is asked and nothing
+    // has ended yet.
     let (status, _, cleared) = logout(&plane, &[], Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !cleared
+            .iter()
+            .any(|header| header.starts_with(support::SSO_COOKIE)),
+        "the browser was told to forget a login that was not ended"
+    );
+    assert!(plane.login_is_open(&session).await, "ended without asking");
+
+    // The identity token the client holds names this very login: vouched.
+    let hint = granted["id_token"].as_str().expect("an id token");
+    let (status, _, cleared) = logout(&plane, &[("id_token_hint", hint)], Some(&session)).await;
     assert_eq!(status, StatusCode::OK);
     let expiring = cleared
         .iter()
@@ -2492,7 +2539,11 @@ async fn logging_out_says_the_same_thing_however_little_there_was_to_end() {
         let (status, location, _) = logout(&plane, &[], carried).await;
         assert_eq!(status, StatusCode::OK, "{label}");
         assert!(location.is_empty(), "{label} redirected to {location}");
+        let (status, location, _) = logout_confirmed(&plane, &[], carried).await;
+        assert_eq!(status, StatusCode::OK, "{label}, confirmed");
+        assert!(location.is_empty(), "{label} redirected to {location}");
     }
+    assert!(!plane.login_is_open(&session).await);
 }
 
 /// Where it sends you afterwards is the strict half. An unvalidated redirect
@@ -2503,7 +2554,7 @@ async fn a_landing_place_is_honoured_only_when_the_client_registered_it() {
     let plane = Plane::with_actions(&[]).await;
     let session = signed_in_once(&plane).await;
 
-    let (status, landing, _) = logout(
+    let (status, landing, _) = logout_confirmed(
         &plane,
         &[
             ("post_logout_redirect_uri", support::AFTER_LOGOUT),
@@ -4149,4 +4200,152 @@ async fn the_address_scope_releases_one_object_of_what_is_held() {
         .claims_of(by_name["id_token"].as_str().expect("an id token"))
         .await;
     assert_eq!(identity["address"]["locality"], "London", "{identity}");
+}
+
+/// RP-Initiated Logout §2: a hint that is not this realm's, or names another
+/// login, vouches for nothing, and the person is asked before anything ends.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_hint_for_another_login_or_a_forged_one_asks_first() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+    let other = signed_in_once(&plane).await;
+    let (_, landing) = authorize_signed_in(&plane, &asking_for(&[]), &other).await;
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let others_hint = granted["id_token"]
+        .as_str()
+        .expect("an id token")
+        .to_owned();
+    let mut forged: Vec<char> = others_hint.chars().collect();
+    let last = forged.len() - 1;
+    forged[last] = if forged[last] == 'A' { 'B' } else { 'A' };
+    let forged: String = forged.into_iter().collect();
+
+    for (label, hint) in [
+        ("another login's hint", others_hint.as_str()),
+        ("a forged hint", forged.as_str()),
+    ] {
+        let (status, location, cleared) = logout(
+            &plane,
+            &[
+                ("id_token_hint", hint),
+                ("post_logout_redirect_uri", support::AFTER_LOGOUT),
+            ],
+            Some(&session),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{label}");
+        assert!(location.is_empty(), "{label} was sent to {location}");
+        assert!(
+            !cleared
+                .iter()
+                .any(|header| header.starts_with(support::SSO_COOKIE)),
+            "{label} ended a login it did not vouch for"
+        );
+    }
+    assert!(plane.login_is_open(&session).await);
+    assert!(plane.login_is_open(&other).await);
+}
+
+/// A landing this realm will not vouch for keeps the browser here, and says
+/// so: the login ends, the redirect does not happen.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_refused_landing_keeps_the_browser_here_and_says_so() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+
+    let (status, location, cleared) = logout_confirmed(
+        &plane,
+        &[
+            (
+                "post_logout_redirect_uri",
+                "https://attacker.example/collect",
+            ),
+            ("client_id", support::CONFIDENTIAL),
+        ],
+        Some(&session),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(location.is_empty(), "{location}");
+    assert!(
+        cleared
+            .iter()
+            .any(|header| header.starts_with(support::SSO_COOKIE)),
+        "the login was not ended"
+    );
+    assert!(!plane.login_is_open(&session).await);
+}
+
+/// A browser is asked in a page whose form carries the request back, and is
+/// told in a page when it is over.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_browser_is_asked_in_a_page_and_told_in_one() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let path = format!(
+        "/realms/{}/protocol/openid-connect/logout?client_id={}&post_logout_redirect_uri={}&state=s1",
+        support::REALM,
+        support::CONFIDENTIAL,
+        urlencode(support::AFTER_LOGOUT)
+    );
+
+    let asked = test::TestRequest::get()
+        .uri(&path)
+        .insert_header(("accept", "text/html"))
+        .insert_header(("cookie", format!("{}={session}", support::SSO_COOKIE)))
+        .to_request();
+    let response = test::call_service(&app, asked).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+    assert!(
+        page.contains("Sign out?") && page.contains("method=\"post\""),
+        "{page}"
+    );
+    assert!(
+        page.contains("name=\"confirmed\" value=\"yes\"")
+            && page.contains("name=\"state\" value=\"s1\"")
+            && page.contains("name=\"client_id\""),
+        "the form does not carry the request back: {page}"
+    );
+    assert!(
+        plane.login_is_open(&session).await,
+        "a page ended the login"
+    );
+
+    let answered = test::TestRequest::post()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/logout",
+            support::REALM
+        ))
+        .insert_header(("accept", "text/html"))
+        .insert_header(("cookie", format!("{}={session}", support::SSO_COOKIE)))
+        .set_form([("confirmed", "yes")])
+        .to_request();
+    let response = test::call_service(&app, answered).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+    assert!(page.contains("You are signed out"), "{page}");
+    assert!(!plane.login_is_open(&session).await);
 }

@@ -83,6 +83,9 @@ enum Command {
         /// The clients' redirect URIs.
         #[arg(long = "redirect")]
         redirects: Vec<String>,
+        /// Where the clients may send a browser after a logout.
+        #[arg(long = "after-logout")]
+        after_logout: Vec<String>,
         /// A user to create. The password is read from
         /// `SAFFUI_PROVISION_USER_PASSWORD`.
         #[arg(long)]
@@ -126,6 +129,7 @@ fn main() -> ExitCode {
                         console_redirects,
                         clients,
                         redirects,
+                        after_logout,
                         user,
                         email,
                         given_name,
@@ -139,6 +143,7 @@ fn main() -> ExitCode {
                             console_redirects,
                             clients,
                             redirects,
+                            after_logout,
                             user,
                             email,
                             given_name,
@@ -265,6 +270,7 @@ struct Wanted {
     console_redirects: Vec<String>,
     clients: Vec<String>,
     redirects: Vec<String>,
+    after_logout: Vec<String>,
     user: Option<String>,
     email: String,
     given_name: Option<String>,
@@ -382,6 +388,7 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
                 client_id,
                 secret: client_secret.as_ref(),
                 redirect_uris: wanted.redirects.clone(),
+                post_logout_redirect_uris: wanted.after_logout.clone(),
             },
         )
         .await

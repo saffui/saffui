@@ -213,51 +213,22 @@ fn noted_refusal(error: &str, client_id: Option<&str>, delivered: &str) {
 /// A refusal with nowhere to go: no redirect was trustworthy, so whoever asked
 /// is told where they stand. A browser gets a page, anything else the JSON.
 fn shown(request: &HttpRequest, error: &'static str, description: &str) -> HttpResponse {
-    let wants_page = request
-        .headers()
-        .get("accept")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|accept| accept.contains("text/html"));
-    let mut response = HttpResponseBuilder::new(StatusCode::BAD_REQUEST);
-    if wants_page {
-        return uncached(&mut response)
-            .insert_header(("Content-Type", "text/html; charset=utf-8"))
-            .insert_header((
-                "Content-Security-Policy",
-                "default-src 'none'; style-src 'self'",
-            ))
-            .insert_header(("X-Content-Type-Options", "nosniff"))
-            .body(format!(
-                "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-                 <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-                 <title>Sign-in could not start</title>\
-                 <link rel=\"stylesheet\" href=\"login.css\"></head>\
-                 <body><main><h1>Sign-in could not start</h1>\
-                 <p class=\"flash\" style=\"display:block\">{}: {}</p>\
-                 <p>Go back to the application and try again.</p></main></body></html>",
-                escaped_text(error),
-                escaped_text(description),
-            ));
+    if page::wants_page(request) {
+        return page::notice(
+            StatusCode::BAD_REQUEST,
+            "Sign-in could not start",
+            &format!(
+                "<p class=\"told\">{}: {}</p><p>Go back to the application and try again.</p>",
+                page::escaped(error),
+                page::escaped(description),
+            ),
+        );
     }
+    let mut response = HttpResponseBuilder::new(StatusCode::BAD_REQUEST);
     uncached(&mut response).json(serde_json::json!({
         "error": error,
         "error_description": description,
     }))
-}
-
-/// The five characters HTML reads as markup, spelled so it does not.
-fn escaped_text(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| match c {
-            '&' => "&amp;".to_owned(),
-            '<' => "&lt;".to_owned(),
-            '>' => "&gt;".to_owned(),
-            '"' => "&quot;".to_owned(),
-            '\'' => "&#39;".to_owned(),
-            other => other.to_string(),
-        })
-        .collect()
 }
 
 /// A refusal the client sees, at the redirect it registered.

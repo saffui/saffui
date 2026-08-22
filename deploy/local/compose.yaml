@@ -62,7 +62,7 @@ services:
       - --phone=+33123456789
     environment:
       <<: *saffui-env
-      SAFFUI_PROVISION_CLIENT_SECRET: ${SAFFUI_CLIENT_SECRET:-a-conformance-client-secret}
+      SAFFUI_PROVISION_CLIENT_SECRET: ${SAFFUI_CLIENT_SECRET:-a-conformance-client-secret-of-thirty-two-bytes-or-more}
       SAFFUI_PROVISION_USER_PASSWORD: ${SAFFUI_USER_PASSWORD:-a-password-of-decent-length}
     depends_on:
       migrate:

@@ -1,9 +1,11 @@
 //! Ending a login the browser holds.
 //!
-//! Permissive about what it ends and strict about where it sends you after. A
-//! user clicking logout twice has still achieved their goal, so no cookie, an
-//! unknown session and an already-ended one all succeed: reporting "no such
-//! session" would answer a question about somebody else's login to whoever asks.
+//! Strict about who may end it and where it sends you after. RP-Initiated
+//! Logout §2: the person is asked before their login ends unless a hint signed
+//! by this realm names the very session the browser holds. And a user clicking
+//! logout twice has still achieved their goal, so no cookie and an already-ended
+//! login both succeed: reporting "no such session" would answer a question
+//! about somebody else's login to whoever asks.
 
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
@@ -21,16 +23,24 @@ pub struct Requested<'a> {
     pub post_logout_redirect_uri: Option<&'a str>,
     pub client_id: Option<&'a str>,
     pub state: Option<&'a str>,
+    /// The person said yes on the page that asked. Only a same-site form can
+    /// say it: the cookie it ends is withheld from a cross-site post.
+    pub confirmed: bool,
 }
 
 /// What the browser does next.
 #[derive(Debug, PartialEq, Eq)]
 pub enum EndedAt {
-    /// Nowhere to send it that this realm will vouch for.
+    /// Ended, and nowhere was asked for.
     Nowhere,
-    /// A registered landing place, with the state the client asked to have
-    /// echoed.
+    /// Ended, and a registered landing place with the state echoed.
     Redirect(String),
+    /// Ended, but the landing asked for is not one this realm vouches for,
+    /// so the browser stays and is told.
+    Refused,
+    /// Not ended. Nothing signed by this realm named the login the browser
+    /// holds, so the person is asked first.
+    Confirm,
 }
 
 /// End the login, and say where the browser goes.
@@ -54,15 +64,17 @@ pub async fn end_session(
         .id_token_hint
         .and_then(|token| token::verify_signature(keys, token).ok());
 
-    let ending = signed_in
-        .filter(|named| !named.is_empty())
-        .map(str::to_owned)
-        .or_else(|| claim(hint.as_ref(), "sid"));
-
-    if let Some(session_id) = ending {
+    let held = signed_in.filter(|named| !named.is_empty());
+    if let Some(session_id) = held {
+        // The hint vouches only when it names this very session: one for
+        // another login is somebody else's record, however well signed.
+        let vouched = claim(hint.as_ref(), "sid").is_some_and(|named| named == session_id);
+        if !vouched && !requested.confirmed {
+            return EndedAt::Confirm;
+        }
         // Transitioned, not deleted. The row is the record of a login, and a
         // session that ended is not a session that never happened.
-        let _ = sessions::set_state(transaction, &session_id, UserSessionState::LoggedOut).await;
+        let _ = sessions::set_state(transaction, session_id, UserSessionState::LoggedOut).await;
     }
 
     match requested.post_logout_redirect_uri {
@@ -86,10 +98,10 @@ async fn landing(
 ) -> EndedAt {
     let Some(client_id) = claim(hint, "azp").or_else(|| requested.client_id.map(str::to_owned))
     else {
-        return EndedAt::Nowhere;
+        return EndedAt::Refused;
     };
     let Ok(Some(client)) = clients::load(transaction, &client_id).await else {
-        return EndedAt::Nowhere;
+        return EndedAt::Refused;
     };
 
     // Exact, and against the logout list rather than the login one. A logout
@@ -100,7 +112,7 @@ async fn landing(
         .as_ref()
         .is_some_and(|registered| registered.iter().any(|uri| uri == asked))
     {
-        return EndedAt::Nowhere;
+        return EndedAt::Refused;
     }
 
     let mut landing = asked.to_owned();

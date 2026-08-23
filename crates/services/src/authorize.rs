@@ -168,6 +168,13 @@ pub async fn begin(
     // What the request asks of the authentication itself, against what the
     // browser already holds.
     let prompt = Prompt::read(requested.prompt)?;
+    // OIDC Core §11: without `prompt=consent` the request for offline access is
+    // ignored rather than refused, and the rest of it is served.
+    let granted = if prompt.consent {
+        granted
+    } else {
+        drop_scope(&granted, OFFLINE_ACCESS)
+    };
     // `acr_values` is voluntary by definition. An `acr` named in `claims` is
     // as hard as the client said: essential must be met or the login fails,
     // §5.5.1.1; voluntary is the same hint `acr_values` is. Both given at once
@@ -309,6 +316,7 @@ pub async fn begin(
 struct Prompt {
     none: bool,
     login: bool,
+    consent: bool,
 }
 
 impl Prompt {
@@ -317,6 +325,7 @@ impl Prompt {
         let prompt = Prompt {
             none: asked.contains(&"none"),
             login: asked.contains(&"login"),
+            consent: asked.contains(&"consent"),
         };
         if prompt.none && asked.len() > 1 {
             return Err(Refusal::Redirect("invalid_request"));
@@ -401,6 +410,17 @@ async fn live_login(
 /// The `openid` marker, which is a request marker rather than a scope a client
 /// is attached to.
 const OPENID: &str = "openid";
+
+/// A grant that outlives the login it came from, OIDC Core §11.
+pub const OFFLINE_ACCESS: &str = "offline_access";
+
+fn drop_scope(granted: &str, dropped: &str) -> String {
+    granted
+        .split_whitespace()
+        .filter(|held| *held != dropped)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// What the client may actually have of what it asked for.
 ///

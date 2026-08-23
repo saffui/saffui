@@ -1089,6 +1089,14 @@ impl Plane {
         store::providers::client_scopes::attach_scope(&transaction, CONFIDENTIAL, "address", true)
             .await
             .unwrap();
+        store::providers::client_scopes::attach_scope(
+            &transaction,
+            CONFIDENTIAL,
+            "offline_access",
+            true,
+        )
+        .await
+        .unwrap();
 
         // The console and the scope the admin plane requires, planted the way a
         // deployment plants them rather than by hand. The suite that mounts the
@@ -1381,4 +1389,65 @@ pub fn pkce_pair() -> (String, String) {
         verifier.to_owned(),
         data_encoding::BASE64URL_NOPAD.encode(&digest),
     )
+}
+
+/// What `/authorize` actually granted, read off the login it opened. The scope
+/// rides the code into the token, so this is what the request was allowed.
+#[allow(dead_code, reason = "only the offline suite reads a granted scope")]
+pub async fn granted_scope_of(plane: &Plane, asked: &[(&str, &str)]) -> String {
+    let query = asked
+        .iter()
+        .map(|(key, value)| format!("{key}={}", urlencode(value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let mounted = server::api::config::Plane {
+        pool: plane.pool(),
+        tenancy: plane.tenancy(),
+        policy: server::middleware::admin_policy::AdminPolicy {
+            audiences: vec![AUDIENCE.to_owned()],
+            parties: vec![PARTY.to_owned()],
+            scope: SCOPE.to_owned(),
+        },
+        origin: origin(),
+        login_ui: login_ui(),
+        hops: config::proxying::Proxying::none(),
+        sealing: sealing(),
+    };
+    let app = actix_web::test::init_service(
+        actix_web::App::new().configure(server::api::config::register(&mounted)),
+    )
+    .await;
+    let response = actix_web::test::call_service(
+        &app,
+        actix_web::test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/auth?{query}"
+            ))
+            .to_request(),
+    )
+    .await;
+    let binding = response
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .find_map(|set| {
+            set.split(';')
+                .next()?
+                .strip_prefix(&format!("{AUTH_SESSION_COOKIE}="))
+                .map(str::to_owned)
+        })
+        .expect("a login was opened");
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+        .await;
+    let login = store::providers::login::resume(&transaction, &binding)
+        .await
+        .expect("the login")
+        .expect("a login");
+    login.notes["scope"]
+        .as_str()
+        .expect("a granted scope")
+        .to_owned()
 }

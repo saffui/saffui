@@ -174,14 +174,19 @@ pub async fn close(transaction: &Transaction<'_>, session_id: &str) -> StoreResu
 /// sessions go with them, by the cascade.
 ///
 /// A login with no expiry stays: absent means opened without one, not ended at
-/// the epoch.
+/// the epoch. So does one an offline grant still hangs off, since the client
+/// sessions cascade and taking the login would take the grant with it.
 pub async fn drop_expired_sessions(
     transaction: &Transaction<'_>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<u64> {
     transaction
         .execute(
-            "DELETE FROM user_sessions WHERE expiration IS NOT NULL AND expiration <= $1",
+            "DELETE FROM user_sessions u \
+             WHERE u.expiration IS NOT NULL AND u.expiration <= $1 \
+               AND NOT EXISTS (SELECT 1 FROM client_sessions c \
+                               WHERE c.user_session_id = u.session_id AND c.offline \
+                                 AND (c.expiration IS NULL OR c.expiration > $1))",
             &[&now.timestamp()],
         )
         .await
@@ -256,6 +261,22 @@ pub async fn client_sessions_of(
         .into_iter()
         .map(read_client_session)
         .collect())
+}
+
+/// Push a client session's end further out, which is what a sliding bound is.
+pub async fn extend_client_session(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    expiration: i64,
+) -> StoreResult<bool> {
+    let moved = transaction
+        .execute(
+            "UPDATE client_sessions SET expiration = $2 WHERE session_id = $1",
+            &[&session_id, &expiration],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(moved > 0)
 }
 
 /// End what one client got out of a login, leaving the login and every other

@@ -121,7 +121,14 @@ pub async fn published(
             // endpoint refuses it, so advertising it would be a lie a client
             // acts on.
             "code_challenge_methods_supported": ["S256"],
-            "scopes_supported": ["openid", "profile", "email", "phone", "address"],
+            "scopes_supported": [
+                "openid",
+                "profile",
+                "email",
+                "phone",
+                "address",
+                "offline_access",
+            ],
             "claims_supported": claims_named(!contexts.is_empty()),
             "acr_values_supported": contexts,
             // OIDC Core §6.1 is supported and §6.2 is not: an object a client

@@ -115,6 +115,8 @@ pub struct RealmModel {
     pub refresh_token_max_reuse: Option<i32>,
     /// Lifespans, in seconds.
     pub access_token_lifespan: Option<i32>,
+    /// How long a grant carrying `offline_access` may keep renewing.
+    pub offline_session_lifespan: Option<i32>,
     pub action_tokens_lifespan: Option<i32>,
     pub access_code_lifespan: Option<i32>,
     pub access_code_lifespan_user_action: Option<i32>,
@@ -166,6 +168,7 @@ impl RealmCreateModel {
             revoke_refresh_token: None,
             refresh_token_max_reuse: None,
             access_token_lifespan: None,
+            offline_session_lifespan: None,
             action_tokens_lifespan: None,
             access_code_lifespan: None,
             access_code_lifespan_user_action: None,
@@ -203,6 +206,8 @@ pub struct RealmUpdateModel {
     pub revoke_refresh_token: Option<bool>,
     pub refresh_token_max_reuse: Option<i32>,
     pub access_token_lifespan: Option<i32>,
+    /// How long a grant carrying `offline_access` may keep renewing.
+    pub offline_session_lifespan: Option<i32>,
     pub action_tokens_lifespan: Option<i32>,
     pub access_code_lifespan: Option<i32>,
     pub access_code_lifespan_user_action: Option<i32>,

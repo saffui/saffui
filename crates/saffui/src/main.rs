@@ -107,6 +107,10 @@ enum Command {
         /// Any other attribute of the user, as `name=value`.
         #[arg(long = "attribute")]
         attributes: Vec<String>,
+        /// Offer a mailed sign-in link as an alternative to the password. What
+        /// a login costs then includes whoever can read the mailbox.
+        #[arg(long = "magic-link", default_value_t = false)]
+        magic_link: bool,
     },
 }
 
@@ -144,6 +148,7 @@ fn main() -> ExitCode {
                         family_name,
                         phone,
                         attributes,
+                        magic_link,
                     } => {
                         provision(&Wanted {
                             tenant,
@@ -160,6 +165,7 @@ fn main() -> ExitCode {
                             family_name,
                             phone,
                             attributes,
+                            magic_link,
                         })
                         .await
                     }
@@ -301,6 +307,7 @@ struct Wanted {
     family_name: Option<String>,
     phone: Option<String>,
     attributes: Vec<String>,
+    magic_link: bool,
 }
 
 /// Create what is missing, and say what was created.
@@ -395,6 +402,13 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
         .map_err(unreadable)?
     {
         println!("browser flow created");
+    }
+    if wanted.magic_link
+        && provisioning::provision_mailed_login(&transaction, tenant, realm)
+            .await
+            .map_err(unreadable)?
+    {
+        println!("mailed sign-in offered");
     }
     if provisioning::provision_levels(&transaction, realm)
         .await
@@ -537,6 +551,14 @@ fn plane() -> Result<Plane, String> {
         login_ui,
         hops: config::proxying::Proxying::from_env().map_err(|e| e.to_string())?,
         sealing: Sealing {
+            sender: match config::messaging::Sink::from_env().map_err(|e| e.to_string())? {
+                config::messaging::Sink::None => None,
+                config::messaging::Sink::Smtp => Some(Arc::new(server::messaging::Smtp)),
+                config::messaging::Sink::Logged => Some(Arc::new(server::messaging::Logged)),
+                config::messaging::Sink::Webhook { url } => Some(Arc::new(
+                    server::messaging::Webhook::new(url, config::optional("MESSAGE_WEBHOOK_TOKEN")),
+                )),
+            },
             provider,
             envelope: Arc::new(envelope),
         },

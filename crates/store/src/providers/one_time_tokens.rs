@@ -41,6 +41,9 @@ pub async fn mint(
     digest: &dyn DigestProvider,
     owner: Owner<'_>,
     raw_token: &str,
+    // The login this token finishes, when it finishes one. A token that binds
+    // to nothing is spendable from any browser.
+    bound_to: Option<&str>,
     expires_at: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<()> {
     let (tenant, realm_id, user_id, purpose) =
@@ -51,13 +54,23 @@ pub async fn mint(
 
     transaction
         .execute(
-            "INSERT INTO one_time_tokens (tenant, realm_id, user_id, purpose, token_hash, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+            "INSERT INTO one_time_tokens \
+                 (tenant, realm_id, user_id, purpose, token_hash, bound_to, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7) \
              ON CONFLICT (tenant, realm_id, user_id, purpose) DO UPDATE \
              SET token_hash = EXCLUDED.token_hash, \
+                 bound_to = EXCLUDED.bound_to, \
                  expires_at = EXCLUDED.expires_at, \
                  created_at = now()",
-            &[&tenant, &realm_id, &user_id, &purpose, &hash, &expires_at],
+            &[
+                &tenant,
+                &realm_id,
+                &user_id,
+                &purpose,
+                &hash,
+                &bound_to,
+                &expires_at,
+            ],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
@@ -79,6 +92,9 @@ pub async fn spend(
     user_id: &str,
     purpose: Purpose<'_>,
     presented: &str,
+    // The login presenting it. A token bound to another is not spendable here,
+    // whoever holds it.
+    bound_to: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<bool> {
     let hash = digest
@@ -88,12 +104,34 @@ pub async fn spend(
     let spent = transaction
         .execute(
             "DELETE FROM one_time_tokens \
-             WHERE user_id = $1 AND purpose = $2 AND token_hash = $3 AND expires_at > $4",
-            &[&user_id, &purpose, &hash, &now],
+             WHERE user_id = $1 AND purpose = $2 AND token_hash = $3 AND expires_at > $4 \
+               AND bound_to IS NOT DISTINCT FROM $5",
+            &[&user_id, &purpose, &hash, &now, &bound_to],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(spent > 0)
+}
+
+/// When the live token for this user and purpose was minted, if there is one.
+///
+/// What a caller deciding whether to send another needs: not its value, and not
+/// merely that one exists, but how long ago the last one went out.
+pub async fn minted_at(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    purpose: Purpose<'_>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> StoreResult<Option<chrono::DateTime<chrono::Utc>>> {
+    Ok(transaction
+        .query_opt(
+            "SELECT created_at FROM one_time_tokens \
+             WHERE user_id = $1 AND purpose = $2 AND expires_at > $3",
+            &[&user_id, &purpose, &now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(|row| row.get(0)))
 }
 
 /// Whether a token is outstanding for this user and purpose.

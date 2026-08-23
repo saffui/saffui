@@ -84,6 +84,9 @@ pub struct Plane {
 /// and there is no reason for a second copy to exist.
 #[derive(Clone)]
 pub struct Sealing {
+    /// What carries a message out, when this deployment has said how. Absent
+    /// refuses to send rather than choosing a way nobody asked for.
+    pub sender: Option<std::sync::Arc<dyn services::messaging::Deliver>>,
     pub provider: Arc<dyn CryptoProvider>,
     pub envelope: Arc<Envelope>,
 }
@@ -223,7 +226,7 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         // the page posts its answers back to where it came from.
         .service(
             web::resource("/login")
-                .route(web::get().to(page::login))
+                .route(web::get().to(page::magic_link))
                 .route(web::post().to(login::answer)),
         )
         .service(web::resource("/login.js").route(web::get().to(page::script)))

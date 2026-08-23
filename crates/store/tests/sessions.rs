@@ -160,6 +160,7 @@ async fn a_token_is_spent_once_and_only_by_its_own_value() {
         provider().digest(),
         owner,
         "the-raw-link",
+        None,
         now + Duration::minutes(10),
     )
     .await
@@ -177,6 +178,7 @@ async fn a_token_is_spent_once_and_only_by_its_own_value() {
             "ada",
             "magic-link",
             "guessed",
+            None,
             now
         )
         .await
@@ -190,6 +192,7 @@ async fn a_token_is_spent_once_and_only_by_its_own_value() {
             "ada",
             "reset",
             "the-raw-link",
+            None,
             now
         )
         .await
@@ -204,6 +207,7 @@ async fn a_token_is_spent_once_and_only_by_its_own_value() {
             "ada",
             "magic-link",
             "the-raw-link",
+            None,
             now
         )
         .await
@@ -216,6 +220,7 @@ async fn a_token_is_spent_once_and_only_by_its_own_value() {
             "ada",
             "magic-link",
             "the-raw-link",
+            None,
             now
         )
         .await
@@ -254,6 +259,7 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
         provider().digest(),
         owner,
         "first",
+        None,
         now + Duration::minutes(10),
     )
     .await
@@ -263,6 +269,7 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
         provider().digest(),
         owner,
         "second",
+        None,
         now + Duration::minutes(10),
     )
     .await
@@ -275,6 +282,7 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
             "ada",
             "magic-link",
             "first",
+            None,
             now
         )
         .await
@@ -288,6 +296,7 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
             "ada",
             "magic-link",
             "second",
+            None,
             now
         )
         .await
@@ -300,6 +309,7 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
         provider().digest(),
         owner,
         "the-raw-link",
+        None,
         now + Duration::minutes(10),
     )
     .await
@@ -321,6 +331,7 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
             "ada",
             "magic-link",
             "the-raw-link",
+            None,
             later
         )
         .await

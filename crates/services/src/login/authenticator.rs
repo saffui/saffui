@@ -7,18 +7,22 @@
 
 use std::str::FromStr;
 
+use chrono::{DateTime, Utc};
 use config::serving::PublicOrigin;
 use crypto::otp::totp::{TotpParams, totp_verify_step};
 use crypto::password::StoredPassword;
 use crypto::password::migration::{burn_verification_time, verify_and_plan};
 use crypto::provider::CryptoProvider;
-use data_encoding::BASE32_NOPAD;
+use data_encoding::{BASE32_NOPAD, BASE64URL_NOPAD};
 use deadpool_postgres::Transaction;
 use models::entities::credentials::{CredentialType, OtpCredentialData, OtpParameters};
+use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
-use secrecy::SecretBox;
-use store::providers::credentials;
+use secrecy::{ExposeSecret, SecretBox};
+use store::providers::{credentials, one_time_tokens};
+
+use crate::messaging::{Message, Outgoing};
 use url::Url;
 use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PublicKeyCredential};
 use webauthn_rs::{Webauthn, WebauthnBuilder};
@@ -38,6 +42,11 @@ pub struct Answered {
     /// issues nothing: the form is the caller's and the server has no state in
     /// it. A step that must hand out a nonce and remember it does.
     pub asks: Option<Challenge>,
+    /// A message the step produced, to be sent once the caller has committed.
+    /// Never sent here: a transaction held open across a conversation with
+    /// somebody else's mail server is a pooled connection taken from every
+    /// other request.
+    pub sending: Option<Outgoing>,
 }
 
 impl Answered {
@@ -46,6 +55,7 @@ impl Answered {
         Answered {
             outcome,
             asks: None,
+            sending: None,
         }
     }
 }
@@ -73,6 +83,8 @@ pub enum Authenticator {
     Totp,
     /// A key the user holds, answering a challenge this server issued.
     Webauthn,
+    /// A link mailed to the address the realm holds, followed back here.
+    MagicLink,
 }
 
 /// A name no build knows. Refused where a flow is read, so a realm cannot be
@@ -89,6 +101,7 @@ impl FromStr for Authenticator {
             "password" => Ok(Self::Password),
             "totp" => Ok(Self::Totp),
             "webauthn" => Ok(Self::Webauthn),
+            "magic-link" => Ok(Self::MagicLink),
             other => Err(Unknown(other.to_owned())),
         }
     }
@@ -100,6 +113,7 @@ impl Authenticator {
             Self::Password => "password",
             Self::Totp => "totp",
             Self::Webauthn => "webauthn",
+            Self::MagicLink => "magic-link",
         }
     }
 
@@ -117,6 +131,9 @@ impl Authenticator {
             // A key is a second factor like a code is. What the realm maps is
             // the class, not which device the flow happened to run.
             Self::Webauthn => "mfa",
+            // One factor, like a password. What the class names is how many
+            // things were proved, not which of them was.
+            Self::MagicLink => "password",
         }
     }
 }
@@ -133,6 +150,8 @@ pub enum Answer {
     Totp(String),
     /// The credential the browser handed back, as the JSON it produced.
     Webauthn(String),
+    /// The value carried by a link that was followed back here.
+    MagicLink(SecretBox<String>),
 }
 
 /// Say whether an answer satisfies one authenticator.
@@ -155,6 +174,9 @@ pub async fn verify_answer(
     // hands out a challenge verifies against what it remembered, and one that
     // issues nothing never looks.
     remembered: Option<&serde_json::Value>,
+    // Where a mailed link points back to, and how this realm sends. Absent
+    // where no step needs them.
+    posting: Option<Posting<'_>>,
 ) -> Answered {
     match authenticator {
         Authenticator::Password => {
@@ -164,6 +186,168 @@ pub async fn verify_answer(
         Authenticator::Webauthn => {
             webauthn(transaction, origin, subject, answers, remembered).await
         }
+        Authenticator::MagicLink => {
+            magic_link(transaction, provider, origin, subject, answers, posting).await
+        }
+    }
+}
+
+/// What a mailed step needs beyond the answer: which login the link finishes,
+/// and how this realm sends.
+#[derive(Clone, Copy)]
+pub struct Posting<'a> {
+    pub auth_session_id: &'a str,
+    pub realm_name: &'a str,
+    pub mail: Option<&'a MailSettings>,
+    /// Whether anything at all carries a message out of this deployment. Apart
+    /// from the settings: a realm can name a server while the deployment has
+    /// chosen no way to reach one.
+    pub can_send: bool,
+    pub now: DateTime<Utc>,
+}
+
+/// How long a mailed link stays good.
+const LINK_LIFESPAN: i64 = 600;
+
+/// How soon another may be asked for. Without it a caller loops the endpoint
+/// and this server floods somebody else's mailbox on their behalf.
+const LINK_COOLDOWN: i64 = 60;
+
+const MAGIC_LINK: &str = "magic-link";
+
+/// Issue a link, or spend one that was followed back.
+///
+/// The link is bound to this login, so one sent to a person cannot finish a
+/// login somebody else started. It is never remembered in the notes: the token
+/// row is the state, and a copy in a column a challenge is built from is a copy
+/// that reaches whoever reads the challenge.
+async fn magic_link(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    origin: &PublicOrigin,
+    subject: Option<&UserModel>,
+    answers: &[Answer],
+    posting: Option<Posting<'_>>,
+) -> Answered {
+    let Some(posting) = posting else {
+        return Answered::plain(Outcome::Failed);
+    };
+    // Resolved before this step, and a step that cannot name whose mailbox to
+    // send to has nothing to do. Refused rather than skipped: a flow reaching
+    // here with nobody is a flow that would otherwise admit nobody in.
+    let Some(subject) = subject else {
+        return Answered::plain(Outcome::Failed);
+    };
+
+    if let Some(Answer::MagicLink(presented)) =
+        of_kind(answers, |answer| matches!(answer, Answer::MagicLink(_)))
+    {
+        let spent = one_time_tokens::spend(
+            transaction,
+            provider.digest(),
+            &subject.user_id,
+            MAGIC_LINK,
+            presented.expose_secret(),
+            Some(posting.auth_session_id),
+            posting.now,
+        )
+        .await;
+        return Answered::plain(match spent {
+            Ok(true) => Outcome::Passed,
+            Ok(false) => Outcome::Failed,
+            Err(_) => Outcome::Failed,
+        });
+    }
+
+    // Both halves, and before anything is minted. A realm that names no server
+    // cannot be sent from, and neither can a deployment that chose no way to
+    // reach one. Failed rather than pending either way: a login left waiting on
+    // a message nothing will send is one that never ends, and a token minted
+    // for it is a credential nobody will ever be told.
+    let Some(settings) = posting.mail.filter(|_| posting.can_send) else {
+        tracing::warn!("a login asked for a mailed link and nothing here can send one");
+        return Answered::plain(Outcome::Failed);
+    };
+    if subject.email.trim().is_empty() {
+        return Answered::plain(Outcome::Failed);
+    }
+
+    // One in flight is enough. Asking again inside the window is answered the
+    // way the first was, so nothing is told apart by whether a mail went out.
+    let recent =
+        one_time_tokens::minted_at(transaction, &subject.user_id, MAGIC_LINK, posting.now).await;
+    if let Ok(Some(sent)) = recent
+        && posting.now - sent < chrono::Duration::seconds(LINK_COOLDOWN)
+    {
+        return Answered {
+            outcome: Outcome::Pending,
+            asks: Some(Challenge {
+                shown: serde_json::json!({ "sent_to": redacted(&subject.email) }),
+                remembered: serde_json::Value::Null,
+            }),
+            sending: None,
+        };
+    }
+
+    let mut drawn = [0u8; 32];
+    if provider.rand().fill(&mut drawn).is_err() {
+        return Answered::plain(Outcome::Failed);
+    }
+    let token = BASE64URL_NOPAD.encode(&drawn);
+    let minted = one_time_tokens::mint(
+        transaction,
+        provider.digest(),
+        one_time_tokens::Owner {
+            tenant: &subject.metadata.tenant,
+            realm_id: &subject.realm_id,
+            user_id: &subject.user_id,
+            purpose: MAGIC_LINK,
+        },
+        &token,
+        Some(posting.auth_session_id),
+        posting.now + chrono::Duration::seconds(LINK_LIFESPAN),
+    )
+    .await;
+    if minted.is_err() {
+        return Answered::plain(Outcome::Failed);
+    }
+
+    let link = format!(
+        "{}/realms/{}/protocol/openid-connect/login?magic_link={token}",
+        origin.as_str(),
+        posting.realm_name,
+    );
+    Answered {
+        outcome: Outcome::Pending,
+        // Nothing of the link. What is shown says a message went out, and the
+        // link is in the message.
+        asks: Some(Challenge {
+            shown: serde_json::json!({ "sent_to": redacted(&subject.email) }),
+            remembered: serde_json::Value::Null,
+        }),
+        sending: Some(Outgoing {
+            settings: settings.duplicate(),
+            message: Message {
+                to: subject.email.clone(),
+                subject: "Your sign-in link".to_owned(),
+                body: format!(
+                    "Follow this link to sign in. It works once, and only in the browser \
+                     you started from.\n\n{link}\n"
+                ),
+            },
+        }),
+    }
+}
+
+/// Enough of an address for the person to recognise their own, and not enough
+/// for whoever else is looking at the screen to read it.
+fn redacted(email: &str) -> String {
+    match email.split_once('@') {
+        Some((name, domain)) => {
+            let kept: String = name.chars().take(2).collect();
+            format!("{kept}\u{2026}@{domain}")
+        }
+        None => "\u{2026}".to_owned(),
     }
 }
 
@@ -374,6 +558,7 @@ async fn webauthn(
             return Answered::plain(Outcome::Failed);
         };
         return Answered {
+            sending: None,
             outcome: Outcome::Pending,
             asks: Some(Challenge { shown, remembered }),
         };

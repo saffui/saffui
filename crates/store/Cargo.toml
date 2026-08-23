@@ -23,6 +23,9 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
+# A realm's mail password is carried through this crate to be sealed, and a
+# `String` on the way there is one that reaches a log by accident.
+secrecy = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

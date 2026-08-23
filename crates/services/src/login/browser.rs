@@ -32,6 +32,13 @@ const CODE_LIFESPAN: i64 = 60;
 /// How long the login it opens lasts.
 const SSO_LIFESPAN: i64 = 36_000;
 
+/// What it takes to open a realm's sealed values.
+#[derive(Clone, Copy)]
+pub struct Sealing<'a> {
+    pub ring: &'a store::keyring::RealmKeyring,
+    pub envelope: &'a crypto::envelope::Envelope,
+}
+
 /// Where a login stands after one answer.
 #[derive(Debug)]
 pub enum Step {
@@ -40,6 +47,12 @@ pub enum Step {
     Challenge {
         execution_id: String,
         asks: Option<Value>,
+        /// A message this round produced, to be sent once the caller has
+        /// committed. Never sent inside the transaction that made it.
+        ///
+        /// Boxed: it carries a realm's whole mail settings, and every other
+        /// variant would otherwise be as large as the one that has them.
+        sending: Option<Box<crate::messaging::Outgoing>>,
     },
     /// Admitted. The browser goes here, and the client spends what it carries.
     /// The session is named so the transport can bind the browser to it.
@@ -86,6 +99,11 @@ pub async fn answer_step(
     // [`Answer`]: it proves nothing about who is answering.
     enrolling: enrolment::Answers<'_>,
     seen: &crate::provenance::Provenance,
+    // Whether anything carries a message out of this deployment.
+    sends: bool,
+    // What it takes to open this realm's sealed values. Absent where a caller
+    // has no step that needs one, which is every flow but a mailed one.
+    sealing: Option<Sealing<'_>>,
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
     let login = login::resume(transaction, auth_session_id)
@@ -103,7 +121,16 @@ pub async fn answer_step(
     // through as absent, and the flow spends the same time on it.
     let subject = named_subject(transaction, &login, username).await?;
 
-    let progress = run_flow(
+    // Read before the flow rather than inside a step: a step that reached for
+    // the realm's keyring would be one every other step pays for.
+    let mail = match sealing {
+        None => None,
+        Some(sealing) => store::providers::mail::load(transaction, sealing.ring, sealing.envelope)
+            .await
+            .map_err(|_| Unanswerable::Unreadable)?,
+    };
+
+    let (progress, sending) = run_flow(
         transaction,
         provider,
         &realm,
@@ -114,7 +141,13 @@ pub async fn answer_step(
         // What the previous round of this same login remembered. A challenge is
         // verified against what was handed out, never against what came back.
         &login.notes,
-        now,
+        Some(crate::login::authenticator::Posting {
+            auth_session_id,
+            realm_name: &realm.name,
+            mail: mail.as_ref(),
+            can_send: sends,
+            now,
+        }),
     )
     .await
     .map_err(|_| Unanswerable::Unrunnable)?;
@@ -139,7 +172,11 @@ pub async fn answer_step(
             )
             .await
             .map_err(|_| Unanswerable::Unreadable)?;
-            Ok(Step::Challenge { execution_id, asks })
+            Ok(Step::Challenge {
+                execution_id,
+                asks,
+                sending,
+            })
         }
         Progress::Refused => Ok(Step::Refused),
         Progress::Admitted { by } => {
@@ -176,6 +213,7 @@ pub async fn answer_step(
                     .await
                     .map_err(|_| Unanswerable::Unreadable)?;
                     return Ok(Step::Challenge {
+                        sending: None,
                         execution_id: named.to_owned(),
                         asks: Some(challenge.shown),
                     });

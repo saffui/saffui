@@ -25,6 +25,7 @@ pub mod housekeeping;
 pub mod introspection;
 pub mod login;
 pub mod logout;
+pub mod messaging;
 pub mod pdp;
 pub mod provenance;
 pub mod provisioning;

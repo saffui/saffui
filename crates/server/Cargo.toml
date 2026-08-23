@@ -34,6 +34,8 @@ tokio = { workspace = true, features = ["time"] }
 # Reaching out: a logout token is posted to every client that registered
 # where to be told. Blocking and small, run off the request thread.
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
+lettre = { workspace = true }
+async-trait = { workspace = true }
 
 [dev-dependencies]
 services = { workspace = true }

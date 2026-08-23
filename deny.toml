@@ -12,6 +12,8 @@ allow = [
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
+    # Public-domain equivalent: no conditions at all, not even attribution.
+    "0BSD",
     # Weak file-level copyleft. The webauthn-rs stack ships under it; consumed
     # unmodified, its obligations stop at those files and reach none of ours.
     "MPL-2.0",

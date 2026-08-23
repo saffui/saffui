@@ -84,15 +84,23 @@ pub fn decide(steps: &[Step]) -> Decided {
         return Decided::Refused;
     }
 
-    if enabled.iter().any(|step| step.outcome == Outcome::Pending) {
-        return Decided::Waiting;
-    }
-
     let conditions_met = required.iter().all(|step| step.outcome == Outcome::Passed);
     let a_way_in = alternatives.is_empty()
         || alternatives
             .iter()
             .any(|step| step.outcome == Outcome::Passed);
+
+    // A way in that was taken settles every other way in. Waiting on one that
+    // is merely still offered would hold a login open on a question the caller
+    // has already answered another way, and a flow offering two ways would
+    // admit through neither.
+    let waiting = enabled.iter().any(|step| {
+        step.outcome == Outcome::Pending
+            && (step.requirement == AuthenticatorRequirement::Required || !a_way_in)
+    });
+    if waiting {
+        return Decided::Waiting;
+    }
 
     if conditions_met && a_way_in {
         Decided::Admitted
@@ -108,6 +116,53 @@ pub fn decide(steps: &[Step]) -> Decided {
 mod tests {
     use super::*;
     use AuthenticatorRequirement::{Alternative, Disabled, Required};
+
+    /// A flow offering two ways in admits through the one that was taken. The
+    /// other is still offered, and offering is not waiting.
+    #[test]
+    fn a_way_in_that_was_taken_settles_the_ones_that_were_not() {
+        assert_eq!(
+            decide(&[
+                Step {
+                    requirement: Alternative,
+                    outcome: Outcome::Pending
+                },
+                Step {
+                    requirement: Alternative,
+                    outcome: Outcome::Passed
+                },
+            ]),
+            Decided::Admitted
+        );
+        // And a required step still holds it, whichever way in was taken.
+        assert_eq!(
+            decide(&[
+                Step {
+                    requirement: Required,
+                    outcome: Outcome::Pending
+                },
+                Step {
+                    requirement: Alternative,
+                    outcome: Outcome::Passed
+                },
+            ]),
+            Decided::Waiting
+        );
+        // With none of them taken, the offer is what the caller answers.
+        assert_eq!(
+            decide(&[
+                Step {
+                    requirement: Alternative,
+                    outcome: Outcome::Pending
+                },
+                Step {
+                    requirement: Alternative,
+                    outcome: Outcome::Pending
+                },
+            ]),
+            Decided::Waiting
+        );
+    }
 
     fn step(requirement: AuthenticatorRequirement, outcome: Outcome) -> Step {
         Step {

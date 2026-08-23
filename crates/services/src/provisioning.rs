@@ -375,6 +375,59 @@ pub async fn provision_browser_flow(
     Ok(true)
 }
 
+/// Offer a mailed link as an alternative to the password.
+///
+/// Its own call, and never on by default. Accepting a link wherever a password
+/// is accepted moves what a login costs from something the person knows to
+/// whoever can read their mail, which is a realm's decision and not a
+/// deployment's.
+///
+/// Both steps become alternatives: leaving the password required would make the
+/// link a second factor rather than another way in.
+pub async fn provision_mailed_login(
+    transaction: &Transaction<'_>,
+    tenant: &str,
+    realm_id: &str,
+) -> StoreResult<bool> {
+    let existing = auth_flows::executions_of(transaction, BROWSER_FLOW).await?;
+    if existing.is_empty() {
+        return Ok(false);
+    }
+    if existing.iter().any(|execution| {
+        matches!(&execution.step, ExecutionStep::Authenticator { authenticator, .. }
+                 if authenticator == "magic-link")
+    }) {
+        return Ok(false);
+    }
+
+    let metadata = AuditableModel::from_creator(tenant.to_owned(), PROVISIONER.to_owned());
+    for execution in existing {
+        auth_flows::set_requirement(
+            transaction,
+            &execution.execution_id,
+            AuthenticatorRequirement::Alternative,
+        )
+        .await?;
+    }
+    let step = AuthenticationExecutionMutationModel {
+        alias: "magic-link".to_owned(),
+        flow_id: BROWSER_FLOW.to_owned(),
+        priority: 20,
+        step: ExecutionStep::Authenticator {
+            authenticator: "magic-link".to_owned(),
+            config_id: None,
+        },
+        requirement: AuthenticatorRequirement::Alternative,
+    }
+    .into_model(
+        format!("{BROWSER_FLOW}-magic-link"),
+        realm_id.to_owned(),
+        metadata,
+    );
+    auth_flows::create_execution(transaction, &step).await?;
+    Ok(true)
+}
+
 /// A relying party to register. Confidential when it has a secret, public
 /// when it has none.
 pub struct Registration<'a> {

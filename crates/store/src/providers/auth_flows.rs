@@ -158,6 +158,22 @@ pub async fn create_execution(
 ///
 /// The order is stated rather than left to the plan: it decides which
 /// authenticator a user meets first.
+/// Change what one step costs the flow.
+pub async fn set_requirement(
+    transaction: &Transaction<'_>,
+    execution_id: &str,
+    requirement: AuthenticatorRequirement,
+) -> StoreResult<bool> {
+    let changed = transaction
+        .execute(
+            "UPDATE authentication_executions SET requirement = $2 WHERE execution_id = $1",
+            &[&execution_id, &requirement],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
 pub async fn executions_of(
     transaction: &Transaction<'_>,
     flow_id: &str,

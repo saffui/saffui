@@ -12,6 +12,7 @@ authors.workspace = true
 # knew either would put that answer within reach of every caller.
 
 [dependencies]
+secrecy = { workspace = true }
 serde = { workspace = true }
 crypto = { workspace = true }
 serde_json = { workspace = true }

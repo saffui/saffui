@@ -37,6 +37,7 @@ webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"]
 url.workspace = true
 uuid = { version = "1", features = ["v5"] }
 tracing.workspace = true
+async-trait = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }

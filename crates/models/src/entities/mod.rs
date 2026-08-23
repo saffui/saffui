@@ -8,6 +8,7 @@ pub mod client;
 pub mod consent;
 pub mod credentials;
 pub mod keys;
+pub mod mail;
 pub mod oidc;
 pub mod organization;
 pub mod realm;

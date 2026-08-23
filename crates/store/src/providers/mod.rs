@@ -15,6 +15,7 @@ pub mod client_scopes;
 pub mod clients;
 pub mod credentials;
 pub mod login;
+pub mod mail;
 pub mod oidc;
 pub mod one_time_tokens;
 pub mod organizations;

@@ -193,6 +193,18 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V030__offline_access.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 31,
+            name: "magic_link",
+            sql: include_str!("../migrations/V031__magic_link.sql"),
+            transactional: true,
+        }),
+        Migration::Sql(SqlMigration {
+            version: 32,
+            name: "realm_mail",
+            sql: include_str!("../migrations/V032__realm_mail.sql"),
+            transactional: true,
+        }),
     ]
 }
 

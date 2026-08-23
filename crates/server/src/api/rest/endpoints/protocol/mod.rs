@@ -16,6 +16,7 @@ pub mod introspect;
 pub mod keys;
 pub mod login;
 pub mod logout;
+pub mod mail;
 pub mod page;
 pub mod par;
 pub mod revoke;

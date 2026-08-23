@@ -21,6 +21,7 @@ use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::dto::uncached;
+use crate::api::rest::endpoints::protocol::mail::deliver;
 
 /// What the caller answers with.
 ///
@@ -39,6 +40,8 @@ pub struct Answered {
     /// The code proving an authenticator app the realm told this user to set
     /// up was set up.
     pub totp_register: Option<String>,
+    /// What a mailed link carried, as the page it landed on posted it.
+    pub magic_link: Option<String>,
 }
 
 /// How the answer arrived, which is how the outcome is told.
@@ -108,8 +111,25 @@ pub async fn answer(
     if let Some(handed_back) = filled(&answered.webauthn) {
         answers.push(Answer::Webauthn(handed_back));
     }
+    if let Some(followed) = filled(&answered.magic_link) {
+        answers.push(Answer::MagicLink(secrecy::SecretBox::new(Box::new(
+            followed,
+        ))));
+    }
     let attestation = filled(&answered.webauthn_register);
     let code = filled(&answered.totp_register);
+
+    // A mailed step needs the realm's own key to open how it sends. Absent
+    // where the realm holds no keyring, which is a realm nothing has mailed
+    // from either.
+    let ring = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    .ok();
 
     let step = browser::answer_step(
         &transaction,
@@ -127,6 +147,11 @@ pub async fn answer(
             code: code.as_deref(),
         },
         &read_provenance(&request),
+        sealing.sender.is_some(),
+        ring.as_ref().map(|ring| browser::Sealing {
+            ring,
+            envelope: &sealing.envelope,
+        }),
         now,
     )
     .await;
@@ -140,31 +165,40 @@ pub async fn answer(
                 return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
             }
             match step {
-                Step::Challenge { execution_id, asks } => match spoken {
-                    Spoken::Json => {
-                        let mut body = serde_json::json!({
-                            "status": "challenge",
-                            "execution": execution_id,
-                        });
-                        // Only when a step issued one. A password form is the
-                        // caller's own and carries no server state, so a body
-                        // claiming a challenge that is not there would have
-                        // the caller wait for a device that was never asked.
-                        if let (Some(asks), Some(map)) = (asks, body.as_object_mut()) {
-                            map.insert("asks".to_owned(), asks);
-                        }
-                        uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(body)
+                Step::Challenge {
+                    execution_id,
+                    asks,
+                    sending,
+                } => {
+                    if let Some(outgoing) = sending {
+                        deliver(&sealing, *outgoing).await;
                     }
-                    // A key needs the script; a code needs only the field.
-                    Spoken::Form => shown(
-                        &page,
-                        if asks.is_some() {
-                            "key-needs-script"
-                        } else {
-                            "code"
-                        },
-                    ),
-                },
+                    match spoken {
+                        Spoken::Json => {
+                            let mut body = serde_json::json!({
+                                "status": "challenge",
+                                "execution": execution_id,
+                            });
+                            // Only when a step issued one. A password form is the
+                            // caller's own and carries no server state, so a body
+                            // claiming a challenge that is not there would have
+                            // the caller wait for a device that was never asked.
+                            if let (Some(asks), Some(map)) = (asks, body.as_object_mut()) {
+                                map.insert("asks".to_owned(), asks);
+                            }
+                            uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(body)
+                        }
+                        // A key needs the script; a code needs only the field.
+                        Spoken::Form => shown(
+                            &page,
+                            if asks.is_some() {
+                                "key-needs-script"
+                            } else {
+                                "code"
+                            },
+                        ),
+                    }
+                }
                 // The login in progress is over, so its cookie goes and the one
                 // saying this browser is signed in takes its place. That second
                 // cookie is what makes another client's `/authorize` something

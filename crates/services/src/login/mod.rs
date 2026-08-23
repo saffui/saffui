@@ -10,7 +10,6 @@ pub mod browser;
 pub mod enrolment;
 pub mod step;
 
-use chrono::{DateTime, Utc};
 use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
@@ -19,8 +18,9 @@ use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
 use store::providers::auth_flows;
 
-use crate::login::authenticator::{Answer, Authenticator};
+use crate::login::authenticator::{Answer, Authenticator, Posting};
 use crate::login::step::{Decided, Outcome, Step};
+use crate::messaging::Outgoing;
 
 /// Where a login stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,8 +82,9 @@ pub async fn run_flow(
     answers: &[Answer],
     // What the previous round issued, under each authenticator's own name.
     remembered_before: &serde_json::Value,
-    _now: DateTime<Utc>,
-) -> Result<Progress, Unrunnable> {
+    // What a mailed step needs. Absent where no step in this flow is one.
+    posting: Option<Posting<'_>>,
+) -> Result<(Progress, Option<Box<Outgoing>>), Unrunnable> {
     let executions = auth_flows::executions_of(transaction, flow_id)
         .await
         .map_err(|_| Unrunnable::Unreadable)?;
@@ -92,6 +93,7 @@ pub async fn run_flow(
     }
 
     let mut steps = Vec::with_capacity(executions.len());
+    let mut sending = None;
     let mut waiting = None;
     let mut asked = None;
     let mut remembered = serde_json::Map::new();
@@ -120,9 +122,13 @@ pub async fn run_flow(
             named,
             answers,
             remembered_before.get(named.as_str()),
+            posting,
         )
         .await;
         let outcome = answered.outcome;
+        if let Some(message) = answered.sending {
+            sending = Some(Box::new(message));
+        }
 
         if let Some(challenge) = answered.asks {
             // Under the authenticator's own name, so two steps issuing
@@ -144,7 +150,7 @@ pub async fn run_flow(
         });
     }
 
-    Ok(match step::decide(&steps) {
+    let progress = match step::decide(&steps) {
         Decided::Admitted => Progress::Admitted { by: passed },
         Decided::Refused => Progress::Refused,
         // The fold said a step waits; which one is the first that did, so a
@@ -157,5 +163,6 @@ pub async fn run_flow(
             },
             None => Progress::Refused,
         },
-    })
+    };
+    Ok((progress, sending))
 }

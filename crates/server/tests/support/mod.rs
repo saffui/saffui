@@ -89,6 +89,8 @@ pub const OFFBOARDED: &str = "retired";
 pub const SESSION: &str = "session-1";
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const SUBJECT: &str = "ada";
+#[allow(dead_code, reason = "only the mailed suite reads an address")]
+pub const SUBJECT_EMAIL: &str = "ada@example.test";
 /// What the subject answers a password step with.
 pub const PASSWORD: &str = "a-password-of-decent-length";
 /// What this realm calls the level a password reaches, and one above it that
@@ -142,10 +144,44 @@ fn provider() -> OpenSslProvider {
 
 #[allow(dead_code, reason = "not every suite mints a token")]
 pub fn sealing() -> server::api::config::Sealing {
+    sealing_sending(None)
+}
+
+/// The same, with something to carry a message out.
+#[allow(dead_code, reason = "only the mailed suite sends")]
+pub fn sealing_sending(
+    sender: Option<Arc<dyn services::messaging::Deliver>>,
+) -> server::api::config::Sealing {
     let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
     server::api::config::Sealing {
+        sender,
         envelope: Arc::new(Envelope::new(Arc::clone(&shared), KEK).expect("an envelope")),
         provider: shared,
+    }
+}
+
+/// Keeps every message instead of sending it, so a test can read what a person
+/// would have received.
+#[derive(Default, Clone)]
+#[allow(dead_code, reason = "only the mailed suite sends")]
+pub struct Postbox(Arc<std::sync::Mutex<Vec<services::messaging::Message>>>);
+
+#[allow(dead_code, reason = "only the mailed suite sends")]
+impl Postbox {
+    pub fn held(&self) -> Vec<services::messaging::Message> {
+        self.0.lock().expect("the postbox").clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl services::messaging::Deliver for Postbox {
+    async fn send(
+        &self,
+        _settings: &models::entities::mail::MailSettings,
+        message: &services::messaging::Message,
+    ) -> Result<(), services::messaging::Undelivered> {
+        self.0.lock().expect("the postbox").push(message.clone());
+        Ok(())
     }
 }
 

@@ -96,6 +96,10 @@ subtle         = "2.6"
 # or copied by accident; async-trait is what lets the key store be a trait
 # object, since a PKCS#11 or KMS store answers over I/O.
 secrecy        = "0.10"
+# SMTP, with the platform TLS the outbound HTTP client already uses. Default
+# features off: they pull a second TLS stack and an async runtime this crate
+# does not send from.
+lettre         = { version = "0.11", default-features = false, features = ["smtp-transport", "native-tls", "builder"] }
 async-trait    = "0.1"
 
 # --- Password storage ---

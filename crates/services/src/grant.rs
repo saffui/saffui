@@ -42,6 +42,26 @@ const DEFAULT_REFRESH_LIFESPAN: i64 = 1_800;
 /// still trips it.
 const ROTATION_GRACE: i64 = 30;
 
+/// Thirty days. A grant that outlives its login is renewed by something with no
+/// user in front of it, so the bound is the grant's own and not a login's.
+const DEFAULT_OFFLINE_LIFESPAN: i64 = 2_592_000;
+
+fn offline_or_refresh_lifespan(realm: &models::entities::realm::RealmModel, offline: bool) -> i64 {
+    if offline {
+        realm
+            .offline_session_lifespan
+            .map_or(DEFAULT_OFFLINE_LIFESPAN, i64::from)
+    } else {
+        DEFAULT_REFRESH_LIFESPAN
+    }
+}
+
+fn holds_offline_access(scope: &str) -> bool {
+    scope
+        .split_whitespace()
+        .any(|held| held == crate::authorize::OFFLINE_ACCESS)
+}
+
 /// What it takes to sign. All three or none, so a new grant cannot forget one.
 pub struct Signing<'a> {
     pub provider: &'a dyn CryptoProvider,
@@ -285,7 +305,8 @@ pub async fn authorization_code(
             .access_token_lifespan
             .map_or(DEFAULT_ACCESS_LIFESPAN, i64::from),
     );
-    let renewal = Duration::seconds(DEFAULT_REFRESH_LIFESPAN);
+    let offline = holds_offline_access(&code.scope);
+    let renewal = Duration::seconds(offline_or_refresh_lifespan(within.realm, offline));
 
     // What the request named for the identity token, §5.5, of what the realm
     // holds of this person. Resolved now and not carried on the refresh token:
@@ -401,7 +422,7 @@ pub async fn authorization_code(
             notes: None,
             current_refresh_token: Some(refresh.token_id.clone()),
             current_refresh_token_use_count: Some(0),
-            offline: Some(false),
+            offline: Some(offline),
             requested_claims: code.claims.clone(),
         },
     )
@@ -643,21 +664,35 @@ pub async fn refresh_token(
         return Err(Ungranted::InvalidGrant);
     };
 
-    // The login has to still be open. Without it a logout ends nothing: the
-    // refresh token outlives the session it was minted from and keeps renewing.
     let login = sessions::load(transaction, session_id)
         .await
         .map_err(|_| Ungranted::Unreadable)?
-        .filter(|login| login.state == UserSessionState::LoggedIn)
-        .filter(|login| login.expiration.is_none_or(|ends| ends > now.timestamp()))
         .ok_or(Ungranted::InvalidGrant)?;
 
+    // By client, which is unambiguous: one login holds one row per client, and
+    // a token further back than the row remembers has to reach the rotation to
+    // be recognised as the replay it is.
     let client_session = sessions::client_sessions_of(transaction, &login.session_id)
         .await
         .map_err(|_| Ungranted::Unreadable)?
         .into_iter()
         .find(|session| session.client_id == client.client_id)
         .ok_or(Ungranted::InvalidGrant)?;
+
+    // Which end applies. An online grant ends when its login does, or a logout
+    // ends nothing and the token keeps renewing past it. An offline grant is
+    // the one thing that outlives a login, §11, so its own end is the bound.
+    let ended = if client_session.offline == Some(true) {
+        client_session
+            .expiration
+            .is_some_and(|ends| ends <= now.timestamp())
+    } else {
+        login.state != UserSessionState::LoggedIn
+            || login.expiration.is_some_and(|ends| ends <= now.timestamp())
+    };
+    if ended {
+        return Err(Ungranted::InvalidGrant);
+    }
 
     // The account can be switched off between two renewals, and that is how an
     // administrator shuts down a compromised one. Honouring it at login only
@@ -704,7 +739,8 @@ pub async fn refresh_token(
             .access_token_lifespan
             .map_or(DEFAULT_ACCESS_LIFESPAN, i64::from),
     );
-    let renewal = Duration::seconds(DEFAULT_REFRESH_LIFESPAN);
+    let offline = client_session.offline == Some(true);
+    let renewal = Duration::seconds(offline_or_refresh_lifespan(within.realm, offline));
     let scope = verified.scope.clone();
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
     let identity_key = identity_key_for(transaction, signing, client).await?;
@@ -790,6 +826,21 @@ pub async fn refresh_token(
             return Err(Ungranted::Replayed);
         }
         Refreshed::Unknown => return Err(Ungranted::InvalidGrant),
+    }
+
+    // The bound slides. An offline grant is held by something that may be away
+    // for weeks, so what has to stay inside the window is the gap between two
+    // renewals and not the age of the grant. An absolute bound is stated as
+    // absent rather than implied: nothing here caps a grant that keeps checking
+    // in.
+    if offline {
+        sessions::extend_client_session(
+            transaction,
+            &client_session.session_id,
+            (now + renewal).timestamp(),
+        )
+        .await
+        .map_err(|_| Ungranted::Unreadable)?;
     }
 
     let access = mint_token(signing.provider, &key, minting_for(Kind::Access, lifespan))

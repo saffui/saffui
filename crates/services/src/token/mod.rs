@@ -165,11 +165,20 @@ pub async fn verify_presented(
     }
     // Bound to a login, and refused with it: a logout that left the tokens it
     // minted working would be a logout in name.
+    //
+    // Except the one grant that exists to outlive a login. OIDC Core §11 asks
+    // for an access token that reaches the UserInfo endpoint with the user
+    // away, so a token carrying `offline_access` needs its login to be there
+    // and not to be open.
     if let Some(session_id) = verified.claims.get("sid").and_then(Value::as_str) {
+        let offline = verified
+            .scope
+            .split_whitespace()
+            .any(|held| held == crate::authorize::OFFLINE_ACCESS);
         let live = sessions::load(transaction, session_id)
             .await
             .map_err(|_| Refused::Unestablished)?
-            .is_some_and(|session| session.state == UserSessionState::LoggedIn);
+            .is_some_and(|session| offline || session.state == UserSessionState::LoggedIn);
         if !live {
             return Err(Refused::Ended);
         }

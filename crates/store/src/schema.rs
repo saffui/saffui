@@ -187,6 +187,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V029__session_provenance.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 30,
+            name: "offline_access",
+            sql: include_str!("../migrations/V030__offline_access.sql"),
+            transactional: true,
+        }),
     ]
 }
 

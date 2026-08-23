@@ -74,11 +74,13 @@ pub struct AdminConsole<'a> {
 /// `profile` and `email` are defaults, which is what every client gets without
 /// asking. `phone` is not: §5.4 gates a number behind a scope a client has to
 /// name, and a default would hand it out to every registration.
-pub const STANDARD_SCOPES: [(&str, bool, &str); 4] = [
+pub const STANDARD_SCOPES: [(&str, bool, &str); 5] = [
     ("profile", true, "Basic profile claims"),
     ("email", true, "Email address and whether it is verified"),
     ("phone", false, "Phone number and whether it is verified"),
     ("address", false, "Postal address"),
+    // Never a default: it hands out a credential that outlives the login.
+    ("offline_access", false, "Renewing while the user is away"),
 ];
 
 /// Create a realm and everything it cannot work without.

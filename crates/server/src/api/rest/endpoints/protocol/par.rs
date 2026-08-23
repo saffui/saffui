@@ -1,0 +1,88 @@
+//! RFC 9126: a client pushes its authorization request here and sends the
+//! browser with a reference to it.
+
+use actix_web::http::StatusCode;
+use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
+use chrono::Utc;
+use deadpool_postgres::Pool;
+use serde_json::{Map, Value, json};
+use services::pushed::{self, Unpushable};
+use store::tenancy::{Tenancy, resolve};
+
+use crate::api::config::Sealing;
+use crate::api::rest::endpoints::protocol::caller;
+use crate::api::rest::endpoints::protocol::dto::{Denied, uncached};
+
+pub async fn keep(
+    request: HttpRequest,
+    realm: web::Path<String>,
+    body: Option<web::Form<Vec<(String, String)>>>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+) -> HttpResponse {
+    let now = Utc::now();
+    let Some(body) = body else {
+        return Denied::InvalidRequest.answer("the body could not be read as a form");
+    };
+    let mut parameters = Map::new();
+    let (mut client_id, mut client_secret) = (None, None);
+    for (named, value) in body.into_inner() {
+        match named.as_str() {
+            "client_id" => {
+                client_id = Some(value.clone());
+                parameters.insert(named, Value::String(value));
+            }
+            "client_secret" => client_secret = Some(value),
+            _ => {
+                parameters.insert(named, Value::String(value));
+            }
+        }
+    }
+
+    let Ok(mut connection) = pool.get().await else {
+        return Denied::InvalidRequest.answer("the realm could not be read");
+    };
+    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
+        return Denied::InvalidClient.answer("the client could not be authenticated");
+    };
+    let (transaction, client) = match caller::establish(
+        &request,
+        client_id.as_deref(),
+        client_secret,
+        &mut connection,
+        &tenancy,
+        sealing.provider.as_ref(),
+        &context,
+        now,
+    )
+    .await
+    {
+        Ok(established) => established,
+        Err(response) => return response,
+    };
+
+    match pushed::keep_request(
+        &transaction,
+        sealing.provider.as_ref(),
+        &client,
+        &parameters,
+        now,
+    )
+    .await
+    {
+        Ok((handle, lifespan)) => {
+            if transaction.commit().await.is_err() {
+                return Denied::InvalidRequest.answer("the request could not be kept");
+            }
+            uncached(&mut HttpResponseBuilder::new(StatusCode::CREATED))
+                .json(json!({ "request_uri": handle, "expires_in": lifespan }))
+        }
+        Err(refusal @ (Unpushable::NotTheClient | Unpushable::CarriesAReference)) => {
+            Denied::InvalidRequest.answer(&refusal.to_string())
+        }
+        Err(Unpushable::Unwritable) => {
+            Denied::InvalidRequest.answer("the request could not be kept")
+        }
+    }
+}

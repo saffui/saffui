@@ -19,6 +19,7 @@ use store::tenancy::TenantContext;
 
 use crate::claims_request::ClaimsRequest;
 use crate::login::browser;
+use crate::pushed;
 use crate::request_object;
 
 /// How long a login may sit half finished.
@@ -86,6 +87,24 @@ pub async fn begin(
     signed_in: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Begun, Refusal> {
+    // A reference this server issued stands for the whole request, so it is
+    // taken first and the browser's own query is not read at all.
+    let taken;
+    let asked = match asked.request_uri {
+        None => asked,
+        Some(handle) => {
+            taken = pushed::spend_reference(transaction, provider, handle)
+                .await
+                .ok_or(Refusal::Unshowable("invalid_request_uri"))?;
+            if asked
+                .client_id
+                .is_some_and(|named| named != taken.client_id)
+            {
+                return Err(Refusal::Unshowable("invalid_request_uri"));
+            }
+            &taken.as_request()
+        }
+    };
     let client = named_client(transaction, asked.client_id).await?;
 
     // What the client signed governs the request, so it is read before the
@@ -112,12 +131,6 @@ pub async fn begin(
     // as one opens every client that was registered before the flag existed.
     if client.standard_flow_enabled != Some(true) {
         return Err(Refusal::Redirect("unauthorized_client"));
-    }
-    // Refused by name rather than fetched: a URI a caller supplies is a
-    // request this server would make on their behalf, to wherever they point
-    // it. OIDC Core §6 names the refusal.
-    if requested.request_uri.is_some() {
-        return Err(Refusal::Redirect("request_uri_not_supported"));
     }
     if requested.response_type != Some("code") {
         return Err(Refusal::Redirect("unsupported_response_type"));

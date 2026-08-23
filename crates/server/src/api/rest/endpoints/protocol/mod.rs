@@ -17,6 +17,7 @@ pub mod keys;
 pub mod login;
 pub mod logout;
 pub mod page;
+pub mod par;
 pub mod revoke;
 pub mod token;
 pub mod userinfo;

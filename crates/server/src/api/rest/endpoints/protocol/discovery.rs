@@ -123,22 +123,20 @@ pub async fn published(
             "code_challenge_methods_supported": ["S256"],
             "scopes_supported": ["openid", "profile", "email", "phone", "address"],
             "claims_supported": claims_named(!contexts.is_empty()),
-            // Stated because the omission is not neutral. Discovery §3 reads an
-            // absent `request_uri_parameter_supported` as `true`, so saying
-            // nothing here advertises a capability this build does not have and
-            // a client that believes it sends a signed request nothing reads.
             "acr_values_supported": contexts,
-            // §6.1 is supported and §6.2 is not: an object a client signs and
-            // sends is read, one this server would have to fetch is refused.
+            // OIDC Core §6.1 is supported and §6.2 is not: an object a client
+            // signs and sends is read, one this server would have to fetch is
+            // refused. What a reference may name is therefore only what RFC
+            // 9126 pushed here, never a URL.
             "request_parameter_supported": true,
-            "request_uri_parameter_supported": false,
+            "request_uri_parameter_supported": true,
             "require_request_uri_registration": false,
             "request_object_signing_alg_values_supported": SignAlg::ALL
                 .iter()
                 .map(|algorithm| algorithm.name())
                 .collect::<Vec<_>>(),
-            "request_parameter_supported": false,
-            "request_uri_parameter_supported": false,
+            "pushed_authorization_request_endpoint": format!("{protocol}/par"),
+            "require_pushed_authorization_requests": false,
             "claims_parameter_supported": true,
             "authorization_response_iss_parameter_supported": false,
         }))

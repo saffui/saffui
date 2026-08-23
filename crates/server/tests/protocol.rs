@@ -1609,12 +1609,13 @@ async fn discovery_advertises_only_what_is_there() {
         &vec![serde_json::json!("S256")]
     );
 
-    // Discovery §3 reads an absent `request_uri_parameter_supported` as `true`,
-    // so the omission is not neutral: saying nothing advertises a capability
-    // this build does not have.
+    // Discovery §3 reads an absent flag as a default that is not neutral, so
+    // each is stated and each is what the endpoints do.
     for (named, expected) in [
-        ("request_parameter_supported", false),
-        ("request_uri_parameter_supported", false),
+        ("request_parameter_supported", true),
+        ("request_uri_parameter_supported", true),
+        ("require_pushed_authorization_requests", false),
+        ("require_request_uri_registration", false),
         ("claims_parameter_supported", true),
         ("authorization_response_iss_parameter_supported", false),
     ] {
@@ -1626,35 +1627,38 @@ async fn discovery_advertises_only_what_is_there() {
     }
 }
 
-/// A signed request object is refused, not ignored. A client that sends one
-/// believes it governs; reading the query instead hands back a code minted
-/// against parameters the client never signed.
+/// A request object is refused, not ignored. A client that sends one believes
+/// it governs; reading the query instead hands back a code minted against
+/// parameters the client never signed.
+///
+/// The two halves refuse differently on purpose. An object the client signed
+/// arrives with a query whose `redirect_uri` is registered, so the error is
+/// delivered there. A reference is the whole request, so one this server never
+/// issued leaves nothing to deliver to and nothing to fetch.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_request_object_is_refused_rather_than_ignored() {
     let plane = Plane::with_actions(&[]).await;
+    let sent = |named: &'static str| {
+        [
+            ("response_type", "code"),
+            ("client_id", support::CONFIDENTIAL),
+            ("redirect_uri", REDIRECT),
+            ("state", "opaque-state"),
+            (named, "https://app.example/object.jwt"),
+        ]
+    };
 
-    for (named, expected) in [
-        ("request", "request_not_supported"),
-        ("request_uri", "request_uri_not_supported"),
-    ] {
-        let (status, location) = authorize(
-            &plane,
-            &[
-                ("response_type", "code"),
-                ("client_id", support::CONFIDENTIAL),
-                ("redirect_uri", REDIRECT),
-                ("state", "opaque-state"),
-                (named, "https://app.example/object.jwt"),
-            ],
-        )
-        .await;
-        assert_eq!(status, StatusCode::FOUND, "{named}");
-        assert!(
-            location.contains(&format!("error={expected}")),
-            "{named} was ignored: {location}"
-        );
-    }
+    // This client registered no signing algorithm, so it may not state one.
+    let (status, location) = authorize(&plane, &sent("request")).await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert!(
+        location.contains("error=request_not_supported"),
+        "an object was ignored: {location}"
+    );
+
+    let (status, _, _) = authorize_with_cookies(&plane, &sent("request_uri")).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a URL was fetched");
 }
 
 /// A realm this deployment does not hold publishes nothing. Its existence is not
@@ -5064,4 +5068,158 @@ async fn a_signed_request_object_governs_the_request() {
         landing.contains("error=request_not_supported"),
         "an unregistered client was allowed an object: {landing}"
     );
+}
+
+/// RFC 9126: a client pushes its request here and sends the browser with a
+/// reference. What was pushed is what governs, the reference is spent once,
+/// and it belongs to the client that pushed it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_pushed_request_is_spent_once_by_the_client_that_pushed_it() {
+    let plane = Plane::with_actions(&[]).await;
+    let me = Some((support::CONFIDENTIAL, support::CLIENT_SECRET));
+    let pushing = [
+        ("response_type", "code"),
+        ("client_id", support::CONFIDENTIAL),
+        ("redirect_uri", REDIRECT),
+        ("scope", "openid profile"),
+        ("state", "pushed-state"),
+        ("nonce", "pushed-nonce"),
+    ];
+
+    let (status, told) = asking_at(&plane, "par", &pushing, me).await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let handle = told["request_uri"]
+        .as_str()
+        .expect("a reference")
+        .to_owned();
+    assert!(
+        handle.starts_with("urn:ietf:params:oauth:request_uri:"),
+        "not a reference this server issued: {handle}"
+    );
+    assert!(told["expires_in"].as_i64().is_some_and(|held| held > 0));
+
+    // The browser carries the reference and nothing else of the request.
+    let (status, _, opened) = authorize_with_cookies(
+        &plane,
+        &[
+            ("client_id", support::CONFIDENTIAL),
+            ("request_uri", &handle),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FOUND);
+    let binding = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a login");
+    let (_, admitted, _) = login_step(
+        &plane,
+        Some(&binding),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let landing = admitted["redirect_to"].as_str().expect("somewhere to land");
+    assert!(
+        landing.starts_with(REDIRECT) && landing.contains("state=pushed-state"),
+        "what was pushed did not govern: {landing}"
+    );
+
+    // §4: one use.
+    let (status, again, _) = authorize_with_cookies(
+        &plane,
+        &[
+            ("client_id", support::CONFIDENTIAL),
+            ("request_uri", &handle),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{again}");
+    assert!(
+        again.contains("invalid_request_uri") || again.is_empty(),
+        "{again}"
+    );
+
+    // Somebody else's reference, and a reference nobody issued.
+    let (_, told) = asking_at(&plane, "par", &pushing, me).await;
+    let held = told["request_uri"]
+        .as_str()
+        .expect("a reference")
+        .to_owned();
+    let (status, _, _) = authorize_with_cookies(
+        &plane,
+        &[("client_id", support::OTHER), ("request_uri", &held)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "another client spent it");
+    let (status, _, _) = authorize_with_cookies(
+        &plane,
+        &[
+            ("client_id", support::CONFIDENTIAL),
+            ("request_uri", "https://attacker.example/request"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a URL was fetched");
+
+    // §2.2: a reference outlives its request by nothing.
+    let (_, told) = asking_at(&plane, "par", &pushing, me).await;
+    let stale = told["request_uri"]
+        .as_str()
+        .expect("a reference")
+        .to_owned();
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        transaction
+            .execute(
+                "UPDATE pushed_requests SET pushed_at = now() - interval '2 minutes', \
+                 expires_at = now() - interval '1 second'",
+                &[],
+            )
+            .await
+            .expect("an ageing");
+        transaction.commit().await.expect("the ageing kept");
+    }
+    let (status, _, _) = authorize_with_cookies(
+        &plane,
+        &[
+            ("client_id", support::CONFIDENTIAL),
+            ("request_uri", &stale),
+        ],
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "an expired reference was spent"
+    );
+
+    // Pushing is a client's own act: no client, no push.
+    let (status, _) = asking_at(&plane, "par", &pushing, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // And a client cannot push a request naming another.
+    let (status, told) = asking_at(
+        &plane,
+        "par",
+        &[("response_type", "code"), ("client_id", support::OTHER)],
+        me,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    // §2.1: nor a request that carries a reference to another one.
+    let (status, told) = asking_at(
+        &plane,
+        "par",
+        &[
+            ("response_type", "code"),
+            ("client_id", support::CONFIDENTIAL),
+            ("request_uri", &held),
+        ],
+        me,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
 }

@@ -25,6 +25,7 @@ pub mod login;
 pub mod logout;
 pub mod pdp;
 pub mod provisioning;
+pub mod pushed;
 pub mod rebac;
 pub mod request_object;
 pub mod revocation;

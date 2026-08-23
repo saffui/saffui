@@ -26,7 +26,7 @@ use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::rest::endpoints::protocol::{
-    authorize, discovery, introspect, keys, login, logout, page, revoke, token, userinfo,
+    authorize, discovery, introspect, keys, login, logout, page, par, revoke, token, userinfo,
 };
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
@@ -224,6 +224,7 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/login.js").route(web::get().to(page::script)))
         .service(web::resource("/login.css").route(web::get().to(page::style)))
         .service(web::resource("/token").route(web::post().to(token::ask)))
+        .service(web::resource("/par").route(web::post().to(par::keep)))
         .service(web::resource("/introspect").route(web::post().to(introspect::tell)))
         .service(web::resource("/revoke").route(web::post().to(revoke::take_back)))
         .service(web::resource("/certs").route(web::get().to(keys::published)))

@@ -220,16 +220,24 @@ services:
       - ./basic.json:/plans/basic.json:ro
       - ./backchannel.json:/plans/backchannel.json:ro
       - ./frontchannel.json:/plans/frontchannel.json:ro
+      - ./expected-skips.json:/plans/expected-skips.json:ro
       - ./results:/results
     working_dir: /suite/scripts
-    # Three plans, one run: the Basic OP profile, its discovery-only sibling,
-    # and RP-Initiated Logout. The same static client serves all three.
+    # Five plans, one run: the Basic OP profile, its discovery-only sibling,
+    # and the three logout profiles. The same static client serves the first
+    # three; each logout channel is registered on a client of its own.
+    #
+    # The skips it is told to expect are the two Basic OP modules that sign
+    # their request object with `alg: none`. No client here may register that
+    # algorithm, because reading an object at whatever `alg` its header names
+    # is how a swapped one replaces the redirect target.
     command:
       - sh
       - -c
       - >
         pip install -q -r requirements.txt &&
         python3 run-test-plan.py --export-dir /results --verbose --no-parallel
+        --expected-skips-file /plans/expected-skips.json
         "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json
         "oidcc-config-certification-test-plan"

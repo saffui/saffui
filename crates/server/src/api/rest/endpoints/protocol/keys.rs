@@ -7,9 +7,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use deadpool_postgres::Pool;
-use models::entities::keys::KeyUse;
 use serde_json::{Value, json};
-use store::providers::realm_keys;
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -31,7 +29,7 @@ pub async fn published(
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
         return refused(StatusCode::INTERNAL_SERVER_ERROR);
     };
-    let Ok(keys) = realm_keys::published(&transaction, KeyUse::Sig).await else {
+    let Ok(keys) = services::realm::published_keys(&transaction).await else {
         return refused(StatusCode::INTERNAL_SERVER_ERROR);
     };
 

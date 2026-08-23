@@ -15,8 +15,6 @@ use crypto::envelope::Envelope;
 use crypto::provider::CryptoProvider;
 use crypto::provider::openssl::OpenSslProvider;
 use deadpool_postgres::{Manager, Pool};
-use models::auditable::AuditableModel;
-use models::entities::realm::RealmCreateModel;
 use secrecy::ExposeSecret;
 use server::api::config::{Plane, Sealing, observed, register, register_ops};
 use server::api::rest::endpoints::ops::health::Vitals;
@@ -339,23 +337,10 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
     {
         println!("tenant {} created", wanted.tenant);
     }
-    if store::providers::realms::load(&transaction, &wanted.realm)
+    if provisioning::provision_realm_row(&transaction, &wanted.tenant, &wanted.realm)
         .await
         .map_err(unreadable)?
-        .is_none()
     {
-        let realm = RealmCreateModel {
-            name: wanted.realm.clone(),
-            display_name: wanted.realm.clone(),
-            enabled: true,
-        }
-        .into_model(
-            wanted.realm.clone(),
-            AuditableModel::from_creator(wanted.tenant.clone(), "provisioner".to_owned()),
-        );
-        store::providers::realms::create(&transaction, &realm)
-            .await
-            .map_err(unreadable)?;
         println!("realm {} created", wanted.realm);
     }
     transaction.commit().await.map_err(|e| e.to_string())?;

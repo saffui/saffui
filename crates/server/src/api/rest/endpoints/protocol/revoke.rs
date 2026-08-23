@@ -4,10 +4,8 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use deadpool_postgres::Pool;
-use models::entities::keys::KeyUse;
 use serde::Deserialize;
 use services::revocation::{self, Unrevokable};
-use store::providers::realm_keys;
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
@@ -59,7 +57,7 @@ pub async fn take_back(
     let Some(token) = asked.token.as_deref().filter(|token| !token.is_empty()) else {
         return Denied::InvalidRequest.answer("token is required");
     };
-    let Ok(keys) = realm_keys::published(&transaction, KeyUse::Sig).await else {
+    let Ok(keys) = services::realm::published_keys(&transaction).await else {
         return Denied::InvalidRequest.answer("the realm could not be read");
     };
 

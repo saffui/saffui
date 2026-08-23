@@ -16,6 +16,7 @@
 
 pub mod admin;
 pub mod agent;
+pub mod authorization;
 pub mod authorize;
 pub mod claims_request;
 pub mod client;
@@ -30,6 +31,7 @@ pub mod pdp;
 pub mod provenance;
 pub mod provisioning;
 pub mod pushed;
+pub mod realm;
 pub mod rebac;
 pub mod request_object;
 pub mod revocation;

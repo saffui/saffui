@@ -5,13 +5,11 @@ use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
-use models::entities::keys::KeyUse;
 use serde::Deserialize;
 use serde_json::json;
 use services::grant::Signing;
 use services::logout::{self, EndedAt, Frame, Requested};
 use store::keyring;
-use store::providers::realm_keys;
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
@@ -86,7 +84,7 @@ async fn run(
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
         return told(&context.realm_id, EndedAt::Nowhere, &[]);
     };
-    let Ok(keys) = realm_keys::published(&transaction, KeyUse::Sig).await else {
+    let Ok(keys) = services::realm::published_keys(&transaction).await else {
         return told(&context.realm_id, EndedAt::Nowhere, &[]);
     };
 

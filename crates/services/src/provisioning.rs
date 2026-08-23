@@ -26,7 +26,7 @@ use models::entities::auth::{
 };
 use models::entities::client::{ClientCreateModel, ClientScopeModel, Protocol};
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey};
-use models::entities::realm::RealmModel;
+use models::entities::realm::{RealmCreateModel, RealmModel};
 use models::entities::tenant::{TenantCreateModel, TenantModel};
 use secrecy::SecretBox;
 use store::error::{StoreError, StoreResult};
@@ -102,6 +102,32 @@ pub async fn provision_realm(
     }
     provision_standard_scopes(transaction, tenant, &realm.realm_id).await?;
     provision_admin_console(transaction, tenant, &realm.realm_id, console).await
+}
+
+/// The realm's own row, and nothing else it needs.
+///
+/// Apart from [`provision_realm`] because it runs somewhere else: a realm
+/// cannot be scoped to before it exists, so the row is written tenant wide and
+/// everything that belongs inside it is written after, scoped to it.
+pub async fn provision_realm_row(
+    transaction: &Transaction<'_>,
+    tenant: &str,
+    realm_name: &str,
+) -> StoreResult<bool> {
+    if realms::load(transaction, realm_name).await?.is_some() {
+        return Ok(false);
+    }
+    let realm = RealmCreateModel {
+        name: realm_name.to_owned(),
+        display_name: realm_name.to_owned(),
+        enabled: true,
+    }
+    .into_model(
+        realm_name.to_owned(),
+        AuditableModel::from_creator(tenant.to_owned(), PROVISIONER.to_owned()),
+    );
+    realms::create(transaction, &realm).await?;
+    Ok(true)
 }
 
 /// The scopes a client can be attached to, and nothing attached yet.

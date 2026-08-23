@@ -9,9 +9,7 @@ use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;
 use crypto::provider::SignAlg;
 use deadpool_postgres::Pool;
-use models::entities::keys::KeyUse;
 use serde_json::{Value, json};
-use store::providers::{realm_keys, realms};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -32,7 +30,7 @@ pub async fn published(
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
         return refused(StatusCode::INTERNAL_SERVER_ERROR);
     };
-    let Ok(keys) = realm_keys::published(&transaction, KeyUse::Sig).await else {
+    let Ok(keys) = services::realm::published_keys(&transaction).await else {
         return refused(StatusCode::INTERNAL_SERVER_ERROR);
     };
 
@@ -52,7 +50,7 @@ pub async fn published(
     // What the realm calls its authentication levels, weakest first. A realm
     // mapping nothing omits this and the `acr` claim with it: an empty list
     // claims the server supports no authentication contexts at all.
-    let mapped = realms::load(&transaction, &context.realm_id)
+    let mapped = services::realm::named(&transaction, &context.realm_id)
         .await
         .ok()
         .flatten()

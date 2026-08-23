@@ -11,7 +11,6 @@ use commons::http::ApiError;
 use deadpool_postgres::Pool;
 use models::paging::PagingParams;
 use models::representation::RepresentationParams;
-use store::providers::realms;
 use store::query::list_query::ListQuery;
 use store::tenancy::{Tenancy, TenantContext};
 
@@ -46,7 +45,7 @@ pub async fn list(
     // tiebreaker, or an offset window serves one row twice and another never.
     let query = ListQuery::new(window)
         .sorted_by("name", store::query::list_query::SortDirection::Ascending);
-    let found = realms::list(&transaction, &query, paging.count.unwrap_or(false))
+    let found = services::realm::listed(&transaction, &query, paging.count.unwrap_or(false))
         .await
         .map_err(|_| internal())?;
 
@@ -77,7 +76,7 @@ pub async fn get(
         .await
         .map_err(|_| internal())?;
 
-    let found = realms::load(&transaction, &realm_id)
+    let found = services::realm::named(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::RealmNotFound))?;

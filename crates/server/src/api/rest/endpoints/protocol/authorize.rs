@@ -7,11 +7,12 @@ use config::serving::{LoginUi, PublicOrigin};
 use deadpool_postgres::Pool;
 use serde::Deserialize;
 use services::authorize::{self, Begun, Refusal, Requested};
+use services::landing::{Landing, ResponseMode};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
-use crate::api::rest::endpoints::protocol::{binding, page};
+use crate::api::rest::endpoints::protocol::{answering, binding, page};
 
 /// How long the cookie naming a login in progress lasts. The row expires on its
 /// own; this stops a browser offering a name that is already gone.
@@ -32,6 +33,8 @@ pub struct Asked {
     pub code_challenge_method: Option<String>,
     pub request: Option<String>,
     pub request_uri: Option<String>,
+    /// How the client asked to be answered.
+    pub response_mode: Option<String>,
     pub prompt: Option<String>,
     pub max_age: Option<i64>,
     pub acr_values: Option<String>,
@@ -131,6 +134,7 @@ async fn start(
             code_challenge_method: asked.code_challenge_method.as_deref(),
             request: asked.request.as_deref(),
             request_uri: asked.request_uri.as_deref(),
+            response_mode: asked.response_mode.as_deref(),
             prompt: asked.prompt.as_deref(),
             max_age: asked.max_age,
             acr_values: asked.acr_values.as_deref(),
@@ -145,11 +149,11 @@ async fn start(
         // Nobody saw a screen, because somebody is already signed in here. The
         // commit is still first: the code has to exist before the browser is
         // sent somewhere to spend it.
-        Ok(Begun::Admitted { redirect_to }) => {
+        Ok(Begun::Admitted { landing }) => {
             if transaction.commit().await.is_err() {
                 return shown("server_error", "the login could not be started");
             }
-            redirect(&redirect_to)
+            answering::answer(&landing)
         }
         Ok(Begun::Authenticate { auth_session_id }) => {
             if transaction.commit().await.is_err() {
@@ -183,10 +187,16 @@ async fn start(
         }
         Err(Refusal::Redirect(error)) => {
             noted_refusal(error, asked.client_id.as_deref(), "sent");
-            sent(
-                asked.redirect_uri.as_deref().unwrap_or_default(),
-                error,
-                asked.state.as_deref(),
+            // The refusal travels the way the request asked, and a mode this
+            // build does not know is one it cannot answer in: those are told
+            // as a query, which is the mode a request naming none would get.
+            answering::answer(
+                &Landing::new(
+                    asked.redirect_uri.as_deref().unwrap_or_default(),
+                    ResponseMode::read(asked.response_mode.as_deref()).unwrap_or_default(),
+                )
+                .carrying("error", error)
+                .carrying_any("state", asked.state.as_deref()),
             )
         }
     }
@@ -230,35 +240,4 @@ fn shown(request: &HttpRequest, error: &'static str, description: &str) -> HttpR
         "error": error,
         "error_description": description,
     }))
-}
-
-/// A refusal the client sees, at the redirect it registered.
-fn sent(redirect_uri: &str, error: &str, state: Option<&str>) -> HttpResponse {
-    let mut query = format!("error={}", encoded(error));
-    if let Some(state) = state {
-        query.push_str(&format!("&state={}", encoded(state)));
-    }
-    let separator = if redirect_uri.contains('?') { '&' } else { '?' };
-    redirect(&format!("{redirect_uri}{separator}{query}"))
-}
-
-fn redirect(location: &str) -> HttpResponse {
-    uncached(&mut HttpResponseBuilder::new(StatusCode::FOUND))
-        .insert_header(("Location", location))
-        .finish()
-}
-
-/// Percent encoding for what goes in a query. Written out rather than pulled in:
-/// the alphabet is RFC 3986 §2.3 and everything else is escaped, which is the
-/// safe direction when the value came from a caller.
-fn encoded(value: &str) -> String {
-    value
-        .bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                (byte as char).to_string()
-            }
-            other => format!("%{other:02X}"),
-        })
-        .collect()
 }

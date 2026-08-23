@@ -113,6 +113,15 @@ pub async fn login() -> HttpResponse {
     serve("text/html; charset=utf-8", PAGE)
 }
 
+/// What sends the form-post page on. Served rather than written into it: a
+/// page that allows inline script allows every inline script.
+pub async fn form_post_script() -> HttpResponse {
+    serve(
+        "text/javascript; charset=utf-8",
+        crate::api::rest::endpoints::protocol::answering::SCRIPT,
+    )
+}
+
 pub async fn script() -> HttpResponse {
     serve("text/javascript; charset=utf-8", SCRIPT)
 }

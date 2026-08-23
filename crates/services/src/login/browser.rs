@@ -18,6 +18,7 @@ use store::providers::{login, oidc, realms, sessions, users};
 use store::tenancy::TenantContext;
 
 use crate::claims_request::ClaimsRequest;
+use crate::landing::{Landing, ResponseMode};
 use crate::login::authenticator::Answer;
 use crate::login::enrolment::{self, Enrolment};
 use crate::login::{Progress, run_flow};
@@ -57,7 +58,7 @@ pub enum Step {
     /// Admitted. The browser goes here, and the client spends what it carries.
     /// The session is named so the transport can bind the browser to it.
     Admitted {
-        redirect_to: String,
+        landing: Landing,
         session_id: String,
     },
     /// Refused, and no further answer changes that.
@@ -65,7 +66,7 @@ pub enum Step {
     /// Authenticated, and still not what the client asked for: it named a
     /// subject and somebody else logged in. The client hears, at its redirect,
     /// and no session opens, since §3.1.2.2 forbids answering for another user.
-    SentBack { redirect_to: String },
+    SentBack { landing: Landing },
 }
 
 /// Why the step could not be run.
@@ -234,10 +235,11 @@ pub async fn answer_step(
                     .await
                     .map_err(|_| Unanswerable::Unreadable)?;
                 return Ok(Step::SentBack {
-                    redirect_to: sent_back(
+                    landing: sent_back(
                         &login.redirect_uri,
                         "login_required",
                         noted(&login.notes, "state"),
+                        answering(&login.notes),
                     ),
                 });
             }
@@ -261,8 +263,8 @@ pub async fn answer_step(
                 now,
             )
             .await
-            .map(|redirect_to| Step::Admitted {
-                redirect_to,
+            .map(|landing| Step::Admitted {
+                landing,
                 session_id: login.session_id.clone(),
             })
         }
@@ -277,6 +279,8 @@ pub struct Authorized<'a> {
     pub redirect_uri: &'a str,
     pub scope: &'a str,
     pub state: Option<&'a str>,
+    /// How the answer travels, as the request that opened this named it.
+    pub mode: ResponseMode,
     pub nonce: Option<&'a str>,
     pub code_challenge: Option<&'a str>,
     pub code_challenge_method: Option<&'a str>,
@@ -303,7 +307,7 @@ pub async fn mint_code(
     tenant: &TenantContext,
     authorized: &Authorized<'_>,
     now: DateTime<Utc>,
-) -> Result<String, Unanswerable> {
+) -> Result<Landing, Unanswerable> {
     let raw = draw(provider)?;
     oidc::mint_code(
         transaction,
@@ -330,7 +334,12 @@ pub async fn mint_code(
     .await
     .map_err(|_| Unanswerable::Unreadable)?;
 
-    Ok(landing(authorized.redirect_uri, &raw, authorized.state))
+    Ok(landing(
+        authorized.redirect_uri,
+        &raw,
+        authorized.state,
+        authorized.mode,
+    ))
 }
 
 /// Open the login, mint the code, and say where the browser goes.
@@ -349,7 +358,7 @@ async fn admit(
     realm_map: Option<&models::entities::acr::AcrLoaMap>,
     seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
-) -> Result<String, Unanswerable> {
+) -> Result<Landing, Unanswerable> {
     // The transient identifier becomes the durable one. The code names it as
     // `sid`, and one identifier means a login and the session it opened cannot
     // drift apart.
@@ -395,6 +404,7 @@ async fn admit(
             redirect_uri: &login.redirect_uri,
             scope: noted(notes, "scope").unwrap_or_default(),
             state: noted(notes, "state"),
+            mode: answering(notes),
             nonce: noted(notes, "nonce"),
             code_challenge: noted(notes, "code_challenge"),
             code_challenge_method: noted(notes, "code_challenge_method"),
@@ -428,39 +438,25 @@ async fn admit(
     Ok(landing)
 }
 
-/// Where the browser goes when the client is told no, RFC 6749 §4.1.2.1:
-/// the error at the redirect, with the state the client asked to have echoed.
-fn sent_back(redirect_uri: &str, error: &str, state: Option<&str>) -> String {
-    let separator = if redirect_uri.contains('?') { '&' } else { '?' };
-    let mut landing = format!("{redirect_uri}{separator}error={}", escaped(error));
-    if let Some(state) = state {
-        landing.push_str(&format!("&state={}", escaped(state)));
-    }
-    landing
+/// How this login's answer travels. A login opened before this build knew
+/// about modes carries none, and the one a code gets is the answer.
+fn answering(notes: &Value) -> ResponseMode {
+    ResponseMode::read(noted(notes, "response_mode")).unwrap_or_default()
 }
 
-/// Where the browser goes, carrying what the client will spend.
-fn landing(redirect_uri: &str, code: &str, state: Option<&str>) -> String {
-    let separator = if redirect_uri.contains('?') { '&' } else { '?' };
-    let mut landing = format!("{redirect_uri}{separator}code={}", escaped(code));
-    if let Some(state) = state {
-        landing.push_str(&format!("&state={}", escaped(state)));
-    }
-    landing
+/// What the client is told no with, RFC 6749 §4.1.2.1: the error at the
+/// redirect, with the state the client asked to have echoed.
+fn sent_back(redirect_uri: &str, error: &str, state: Option<&str>, mode: ResponseMode) -> Landing {
+    Landing::new(redirect_uri, mode)
+        .carrying("error", error)
+        .carrying_any("state", state)
 }
 
-/// Percent encoding for a query value, RFC 3986 §2.3's unreserved set kept and
-/// everything else escaped.
-fn escaped(value: &str) -> String {
-    value
-        .bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                (byte as char).to_string()
-            }
-            other => format!("%{other:02X}"),
-        })
-        .collect()
+/// What the client will spend, where it goes.
+fn landing(redirect_uri: &str, code: &str, state: Option<&str>, mode: ResponseMode) -> Landing {
+    Landing::new(redirect_uri, mode)
+        .carrying("code", code)
+        .carrying_any("state", state)
 }
 
 fn noted<'a>(notes: &'a Value, named: &str) -> Option<&'a str> {

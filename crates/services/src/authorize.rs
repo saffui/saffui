@@ -18,6 +18,7 @@ use store::providers::{auth_flows, client_scopes, clients, realms, sessions};
 use store::tenancy::TenantContext;
 
 use crate::claims_request::ClaimsRequest;
+use crate::landing::{Landing, ResponseMode};
 use crate::login::browser;
 use crate::pushed;
 use crate::request_object;
@@ -43,6 +44,8 @@ pub struct Requested<'a> {
     /// and both have to be refused rather than ignored.
     pub request: Option<&'a str>,
     pub request_uri: Option<&'a str>,
+    /// How the client asked to be answered.
+    pub response_mode: Option<&'a str>,
     /// `none`, `login`, `consent`, `select_account`, space separated.
     pub prompt: Option<&'a str>,
     /// How old the authentication may be. Zero is meaningful and means always
@@ -60,7 +63,7 @@ pub enum Begun {
     Authenticate { auth_session_id: String },
     /// Somebody is, and the client gets its code without the user seeing a
     /// screen. This is what single sign-on is.
-    Admitted { redirect_to: String },
+    Admitted { landing: Landing },
 }
 
 /// Why the login did not start.
@@ -135,6 +138,14 @@ pub async fn begin(
     if requested.response_type != Some("code") {
         return Err(Refusal::Redirect("unsupported_response_type"));
     }
+    // Read before anything is answered, since the refusal itself travels the
+    // way the request asked. A mode this build does not know is refused rather
+    // than answered as `query`: a response put where the client is not reading
+    // is one it never sees, and for anything but a code it is one that lands
+    // somewhere it should not.
+    let Some(mode) = ResponseMode::read(requested.response_mode) else {
+        return Err(Refusal::Redirect("unsupported_response_mode"));
+    };
     // This is an OpenID Provider, and `openid` is what says a request is one.
     // The cost is stated rather than hidden: a plain OAuth client that never
     // asks for it is refused here.
@@ -248,6 +259,7 @@ pub async fn begin(
                 provider,
                 &client,
                 redirect_uri,
+                mode,
                 &granted,
                 requested,
                 stored_claims.as_ref(),
@@ -269,6 +281,7 @@ pub async fn begin(
                 redirect_uri,
                 scope: &granted,
                 state: requested.state,
+                mode,
                 nonce: requested.nonce,
                 code_challenge: requested.code_challenge,
                 code_challenge_method: requested.code_challenge_method,
@@ -291,9 +304,7 @@ pub async fn begin(
         )
         .await
         .map_err(|_| Refusal::Redirect("server_error"))?;
-        return Ok(Begun::Admitted {
-            redirect_to: landing,
-        });
+        return Ok(Begun::Admitted { landing });
     }
 
     start_login(
@@ -301,6 +312,7 @@ pub async fn begin(
         provider,
         &client,
         redirect_uri,
+        mode,
         &granted,
         requested,
         stored_claims.as_ref(),
@@ -344,6 +356,7 @@ async fn start_login(
     provider: &dyn CryptoProvider,
     client: &ClientModel,
     redirect_uri: &str,
+    mode: ResponseMode,
     granted: &str,
     requested: &Requested<'_>,
     claims: Option<&Value>,
@@ -378,6 +391,9 @@ async fn start_login(
                 // the store reads back, so the door is the only place it is
                 // parsed.
                 "claims": claims,
+                // How the answer travels. Kept because by the time the flow
+                // finishes, the request that named it is gone.
+                "response_mode": mode.as_str(),
             }),
         },
     )

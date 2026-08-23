@@ -24,6 +24,7 @@ pub mod context;
 pub mod grant;
 pub mod housekeeping;
 pub mod introspection;
+pub mod landing;
 pub mod login;
 pub mod logout;
 pub mod messaging;

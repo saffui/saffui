@@ -113,6 +113,7 @@ impl PushedRequest {
             code_challenge_method: self.text("code_challenge_method"),
             request: self.text("request"),
             request_uri: None,
+            response_mode: self.text("response_mode"),
             prompt: self.text("prompt"),
             max_age: self.map.get("max_age").and_then(|held| {
                 held.as_i64()

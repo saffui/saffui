@@ -89,7 +89,7 @@ pub async fn published(
             // one would send a client to a 404 it reports as this realm being
             // broken.
             "response_types_supported": ["code"],
-            "response_modes_supported": ["query"],
+            "response_modes_supported": ["query", "form_post"],
             "grant_types_supported": [
                 "authorization_code",
                 "refresh_token",

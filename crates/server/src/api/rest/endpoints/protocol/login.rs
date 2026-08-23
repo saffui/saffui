@@ -13,15 +13,16 @@ use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
 use secrecy::SecretBox;
 use serde::Deserialize;
+use services::landing::{Landing, ResponseMode};
 use services::login::authenticator::Answer;
 use services::login::browser::{self, Step, Unanswerable};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
-use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::api::rest::endpoints::protocol::mail::deliver;
+use crate::api::rest::endpoints::protocol::{answering, binding};
 
 /// What the caller answers with.
 ///
@@ -204,7 +205,7 @@ pub async fn answer(
                 // cookie is what makes another client's `/authorize` something
                 // other than a fresh sign-in.
                 Step::Admitted {
-                    redirect_to,
+                    landing,
                     session_id,
                 } => {
                     tracing::info!(session = %session_id, "login admitted");
@@ -220,14 +221,7 @@ pub async fn answer(
                         &context.realm_id,
                         SSO_LIFESPAN,
                     );
-                    match spoken {
-                        Spoken::Json => uncached(&mut response).json(
-                            serde_json::json!({ "status": "admitted", "redirect_to": redirect_to }),
-                        ),
-                        Spoken::Form => uncached(&mut response)
-                            .insert_header(("Location", redirect_to))
-                            .finish(),
-                    }
+                    told_landing(&mut response, spoken, "admitted", &landing)
                 }
                 Step::Refused => {
                     tracing::warn!("login refused");
@@ -236,21 +230,14 @@ pub async fn answer(
                 // Over, and not admitted: the client hears why at its
                 // redirect, and the browser carries it there. The login's
                 // cookie goes; no session replaces it.
-                Step::SentBack { redirect_to } => {
+                Step::SentBack { landing } => {
                     tracing::warn!(error = "login_required", "login sent back");
                     let mut response = HttpResponseBuilder::new(match spoken {
                         Spoken::Json => StatusCode::OK,
                         Spoken::Form => StatusCode::SEE_OTHER,
                     });
                     binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
-                    match spoken {
-                        Spoken::Json => uncached(&mut response).json(
-                            serde_json::json!({ "status": "sent_back", "redirect_to": redirect_to }),
-                        ),
-                        Spoken::Form => uncached(&mut response)
-                            .insert_header(("Location", redirect_to))
-                            .finish(),
-                    }
+                    told_landing(&mut response, spoken, "sent_back", &landing)
                 }
             }
         }
@@ -259,6 +246,34 @@ pub async fn answer(
             tell(StatusCode::NOT_FOUND, "no-such-login")
         }
         Err(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
+    }
+}
+
+/// The outcome, the way the request asked to be answered.
+///
+/// A caller reading JSON is told where to post rather than where to go when the
+/// mode is `form_post`: handing it a URL with the answer in the query is the
+/// one thing that mode exists to prevent.
+fn told_landing(
+    response: &mut HttpResponseBuilder,
+    spoken: Spoken,
+    status: &str,
+    landing: &Landing,
+) -> HttpResponse {
+    match (spoken, landing.mode) {
+        (Spoken::Json, ResponseMode::Query) => uncached(response)
+            .json(serde_json::json!({ "status": status, "redirect_to": landing.as_query() })),
+        (Spoken::Json, ResponseMode::FormPost) => uncached(response).json(serde_json::json!({
+            "status": status,
+            "response_mode": landing.mode.as_str(),
+            "post_to": landing.redirect_uri,
+            "parameters": landing
+                .parameters
+                .iter()
+                .map(|(named, value)| ((*named).to_owned(), serde_json::json!(value)))
+                .collect::<serde_json::Map<String, serde_json::Value>>(),
+        })),
+        (Spoken::Form, _) => answering::onto(response, landing),
     }
 }
 

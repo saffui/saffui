@@ -26,6 +26,7 @@ pub mod logout;
 pub mod pdp;
 pub mod provisioning;
 pub mod rebac;
+pub mod request_object;
 pub mod revocation;
 pub mod token;
 pub mod userinfo;

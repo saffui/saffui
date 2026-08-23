@@ -4912,3 +4912,156 @@ async fn a_client_is_loaded_in_the_browser_when_the_login_ends() {
     );
     assert!(!plane.login_is_open(&session).await);
 }
+
+/// An authorization request the client signed. OIDC Core §6.1: what the object
+/// carries governs, the query fills what it left out, and the redirect it
+/// names is checked like any other.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_signed_request_object_governs_the_request() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = support::SigningKey::generate("client-key");
+    plane
+        .register_client_keys(
+            support::CONFIDENTIAL,
+            &key,
+            crypto::provider::SignAlg::Es256,
+        )
+        .await;
+
+    let object = |change: &dyn Fn(&mut crypto::jose::jwt::JwtPayload)| {
+        let mut payload = crypto::jose::jwt::JwtPayload::new();
+        for (named, value) in [
+            ("iss", support::CONFIDENTIAL),
+            ("aud", &support::origin().issuer(support::REALM)),
+            ("client_id", support::CONFIDENTIAL),
+            ("response_type", "code"),
+            ("redirect_uri", REDIRECT),
+            ("scope", "openid profile"),
+            ("state", "signed-state"),
+            ("nonce", "signed-nonce"),
+        ] {
+            payload
+                .set_claim(named, Some(serde_json::json!(value)))
+                .expect("a claim");
+        }
+        change(&mut payload);
+        key.sign(&payload, "client-key")
+    };
+
+    // The query carries only what the endpoint needs to find the client; the
+    // object carries the rest, and what it says is what the code is minted on.
+    let signed = object(&|_| {});
+    let (status, landing, opened) = authorize_with_cookies(
+        &plane,
+        &[
+            ("client_id", support::CONFIDENTIAL),
+            ("response_type", "code"),
+            ("scope", "openid"),
+            ("request", signed.as_str()),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::FOUND, "{landing}");
+    let binding = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a login");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&binding),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let landing = told["redirect_to"].as_str().expect("somewhere to land");
+    assert!(
+        landing.starts_with(REDIRECT) && landing.contains("state=signed-state"),
+        "the object's own parameters were not honoured: {landing}"
+    );
+    let code = landing
+        .split_once("code=")
+        .unwrap()
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let identity = plane
+        .claims_of(granted["id_token"].as_str().expect("an id token"))
+        .await;
+    assert_eq!(identity["nonce"], "signed-nonce", "{identity}");
+    assert_eq!(
+        granted["scope"], "openid profile",
+        "the object's scope was not used"
+    );
+
+    // Every way of not being this client's object.
+    let mut forged: Vec<char> = signed.chars().collect();
+    let last = forged.len() - 1;
+    forged[last] = if forged[last] == 'A' { 'B' } else { 'A' };
+    let forged: String = forged.into_iter().collect();
+    let elsewhere = object(&|payload| {
+        payload
+            .set_claim("aud", Some(serde_json::json!("https://elsewhere.example")))
+            .expect("a claim");
+    });
+    let nested = object(&|payload| {
+        payload
+            .set_claim("request", Some(serde_json::json!("another.object.here")))
+            .expect("a claim");
+    });
+    let disagreeing = object(&|payload| {
+        payload
+            .set_claim("response_type", Some(serde_json::json!("token")))
+            .expect("a claim");
+    });
+    for (label, raw) in [
+        ("a forged signature", forged.as_str()),
+        ("an object for another issuer", elsewhere.as_str()),
+        ("an object carrying another", nested.as_str()),
+        (
+            "a response_type that disagrees with the query",
+            disagreeing.as_str(),
+        ),
+    ] {
+        let (status, landing, _) = authorize_with_cookies(
+            &plane,
+            &[
+                ("client_id", support::CONFIDENTIAL),
+                ("response_type", "code"),
+                ("scope", "openid"),
+                ("request", raw),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::FOUND, "{label}");
+        assert!(
+            landing.contains("error=invalid_request_object"),
+            "{label} was not refused: {landing}"
+        );
+    }
+
+    // A client that registered nothing cannot sign one.
+    let (_, landing, _) = authorize_with_cookies(
+        &plane,
+        &[
+            ("client_id", support::OTHER),
+            ("response_type", "code"),
+            ("scope", "openid"),
+            ("request", signed.as_str()),
+        ],
+    )
+    .await;
+    assert!(
+        landing.contains("error=request_not_supported"),
+        "an unregistered client was allowed an object: {landing}"
+    );
+}

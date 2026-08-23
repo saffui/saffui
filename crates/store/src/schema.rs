@@ -163,6 +163,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V025__logout_notification_uris.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 26,
+            name: "client_keys",
+            sql: include_str!("../migrations/V026__client_keys.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -16,7 +16,6 @@ use deadpool_postgres::Pool;
 use deadpool_postgres::Transaction;
 use models::entities::authz::AdminAction;
 use services::context::{self, Acting, Context};
-use store::providers::{organizations, realm_keys, roles};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::routes;
@@ -137,7 +136,7 @@ async fn establish(
         .await
         .map_err(|_| unauthenticated())?;
 
-    let keys = realm_keys::published(&transaction, models::entities::keys::KeyUse::Sig)
+    let keys = services::realm::published_keys(&transaction)
         .await
         .map_err(|_| unauthenticated())?;
 
@@ -183,23 +182,11 @@ async fn capabilities(
     transaction: &Transaction<'_>,
     established: &Context,
 ) -> Result<Vec<AdminAction>, commons::http::ApiError> {
-    let subject = established.principal.id();
-
-    let mut roles = roles::effective_roles(transaction, subject)
+    let within = match &established.acting {
+        Acting::In { org_id } => Some(org_id.as_str()),
+        _ => None,
+    };
+    services::authorization::admin_actions(transaction, established.principal.id(), within)
         .await
-        .map_err(|_| unauthenticated())?;
-
-    if let Acting::In { org_id } = &established.acting {
-        roles.extend(
-            organizations::roles_of_member(transaction, org_id, subject)
-                .await
-                .map_err(|_| unauthenticated())?,
-        );
-    }
-
-    Ok(roles
-        .into_iter()
-        .filter_map(|role| role.admin_actions)
-        .flatten()
-        .collect())
+        .map_err(|_| unauthenticated())
 }

@@ -10,7 +10,6 @@ use deadpool_postgres::{Object, Transaction};
 use models::entities::client::ClientModel;
 use secrecy::SecretBox;
 use services::client;
-use store::providers::realms;
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::rest::endpoints::protocol::basic;
@@ -43,7 +42,7 @@ pub async fn establish<'a>(
         .transaction(connection, context)
         .await
         .map_err(|_| Denied::InvalidRequest.answer("the realm could not be read"))?;
-    let realm = realms::load(&transaction, &context.realm_id)
+    let realm = services::realm::named(&transaction, &context.realm_id)
         .await
         .ok()
         .flatten()

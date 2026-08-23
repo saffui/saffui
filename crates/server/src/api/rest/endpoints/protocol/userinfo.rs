@@ -4,11 +4,9 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use deadpool_postgres::Pool;
-use models::entities::keys::KeyUse;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use services::userinfo::{self, Untold};
-use store::providers::realm_keys;
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::rest::endpoints::protocol::basic;
@@ -40,7 +38,7 @@ pub async fn tell(
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
         return faulted();
     };
-    let Ok(keys) = realm_keys::published(&transaction, KeyUse::Sig).await else {
+    let Ok(keys) = services::realm::published_keys(&transaction).await else {
         return faulted();
     };
 

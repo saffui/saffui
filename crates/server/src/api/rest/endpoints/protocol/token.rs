@@ -12,7 +12,6 @@ use secrecy::SecretBox;
 use services::client::{self, Unauthenticated};
 use services::grant::{self, Granted, Ungranted};
 use store::keyring;
-use store::providers::{realm_keys, realms};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
@@ -65,7 +64,7 @@ pub async fn ask(
         return Denied::InvalidRequest.answer("the realm could not be read");
     };
 
-    let Ok(Some(realm)) = realms::load(&transaction, &context.realm_id).await else {
+    let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
         return Denied::InvalidRequest.answer("the realm could not be read");
     };
     // What the realm mints passwords at. A secret converted from the plaintext
@@ -173,7 +172,7 @@ pub async fn ask(
                     &context.realm_id,
                 )
                 .await,
-                realm_keys::published(&transaction, models::entities::keys::KeyUse::Sig).await,
+                services::realm::published_keys(&transaction).await,
             ) else {
                 return Denied::InvalidRequest.answer("the realm could not be read");
             };

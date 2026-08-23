@@ -8,7 +8,7 @@ use commons::error::ErrorCode;
 use commons::http::ApiError;
 use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Pool;
-use store::providers::{users, webauthn};
+use services::admin::keys::Unreachable;
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::rest::endpoints::admin::dto::KeyBrief;
@@ -32,15 +32,9 @@ pub async fn list(
         .await
         .map_err(|_| internal())?;
 
-    // The user first, so an empty list means "no keys" and never "no user".
-    users::load(&transaction, &user_id)
+    let held = services::admin::keys::of_user(&transaction, &user_id)
         .await
-        .map_err(|_| internal())?
-        .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;
-
-    let held = webauthn::of_user(&transaction, &user_id)
-        .await
-        .map_err(|_| internal())?;
+        .map_err(refused)?;
     Ok(HttpResponse::Ok().json(
         held.into_iter()
             .map(|credential| KeyBrief {
@@ -76,22 +70,22 @@ pub async fn revoke(
         .await
         .map_err(|_| internal())?;
 
-    users::load(&transaction, &user_id)
-        .await
-        .map_err(|_| internal())?
-        .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;
-
     // Scoped to the user in the path: a caller must not reach past the user it
     // named, however it learned the identifier.
-    let revoked = webauthn::revoke(&transaction, &user_id, &credential_id)
+    services::admin::keys::revoke(&transaction, &user_id, &credential_id)
         .await
-        .map_err(|_| internal())?;
-    if !revoked {
-        return Err(ApiError::new(ErrorCode::CredentialNotFound));
-    }
+        .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
 
     Ok(HttpResponse::NoContent().finish())
+}
+
+fn refused(why: Unreachable) -> ApiError {
+    ApiError::new(match why {
+        Unreachable::NoSuchUser => ErrorCode::UserNotFound,
+        Unreachable::NotFound => ErrorCode::CredentialNotFound,
+        Unreachable::Unreadable => ErrorCode::InternalError,
+    })
 }
 
 fn internal() -> ApiError {

@@ -7,7 +7,6 @@
 use actix_web::dev::ServiceRequest;
 use chrono::Utc;
 use data_encoding::BASE64URL_NOPAD;
-use store::providers::realm_keys;
 use store::tenancy::resolve;
 
 use crate::error::unauthenticated;
@@ -61,7 +60,7 @@ pub(crate) async fn admitted(
         .await
         .map_err(|_| unauthenticated())?;
 
-    let keys = realm_keys::published(&transaction, models::entities::keys::KeyUse::Sig)
+    let keys = services::realm::published_keys(&transaction)
         .await
         .map_err(|_| unauthenticated())?;
 

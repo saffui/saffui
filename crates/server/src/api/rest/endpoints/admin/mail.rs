@@ -4,11 +4,9 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use deadpool_postgres::Pool;
-use models::entities::mail::{MailCredentials, MailSettings};
-use secrecy::SecretBox;
 use serde::{Deserialize, Serialize};
+use services::admin::mail::Unsettable;
 use store::keyring;
-use store::providers::mail;
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::config::Sealing;
@@ -70,12 +68,10 @@ pub async fn read(
     .await
     .map_err(|_| internal())?;
 
-    let held = mail::load(&transaction, &ring, &sealing.envelope)
+    let view = services::admin::mail::read(&transaction, &ring, &sealing.envelope)
         .await
-        .map_err(|_| internal())?
-        .ok_or_else(|| ApiError::new(ErrorCode::MailSettingsNotFound))?;
-
-    let view = held.as_view();
+        .map_err(refused)?
+        .as_view();
     Ok(HttpResponse::Ok().json(MailBrief {
         host: view.host,
         port: view.port,
@@ -115,40 +111,23 @@ pub async fn write(
     .await
     .map_err(|_| internal())?;
 
-    // A password left out keeps the one held, and only for the same user: a
-    // username changed without a password is a credential half replaced.
-    let held = mail::load(&transaction, &ring, &sealing.envelope)
-        .await
-        .map_err(|_| internal())?;
-    let credentials = match (asked.username, asked.password) {
-        (Some(username), Some(password)) => Some(MailCredentials {
-            username,
-            password: SecretBox::new(Box::new(password)),
-        }),
-        (Some(username), None) => held
-            .and_then(|held| held.credentials)
-            .filter(|held| held.username == username)
-            .ok_or_else(|| ApiError::new(ErrorCode::BadRequest))
-            .map(Some)?,
-        (None, _) => None,
-    };
-
-    mail::keep(
+    services::admin::mail::write(
         &transaction,
         &ring,
         &sealing.envelope,
-        &MailSettings {
+        services::admin::mail::Wanted {
             host: asked.host,
             port: asked.port,
             from_address: asked.from_address,
             from_name: asked.from_name,
             reply_to: asked.reply_to,
             implicit_tls: asked.implicit_tls,
-            credentials,
+            username: asked.username,
+            password: asked.password,
         },
     )
     .await
-    .map_err(|_| ApiError::new(ErrorCode::ValidationError))?;
+    .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -168,11 +147,19 @@ pub async fn forget(
         )
         .await
         .map_err(|_| internal())?;
-    if !mail::forget(&transaction).await.map_err(|_| internal())? {
-        return Err(ApiError::new(ErrorCode::MailSettingsNotFound));
-    }
+    services::admin::mail::forget(&transaction)
+        .await
+        .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+fn refused(why: Unsettable) -> ApiError {
+    ApiError::new(match why {
+        Unsettable::NotFound => ErrorCode::MailSettingsNotFound,
+        Unsettable::HalfACredential => ErrorCode::BadRequest,
+        Unsettable::Unwritable => ErrorCode::InternalError,
+    })
 }
 
 fn internal() -> ApiError {

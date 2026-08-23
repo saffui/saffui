@@ -4,8 +4,8 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use deadpool_postgres::Pool;
+use services::admin::sessions::Unreachable;
 use services::agent::read_agent;
-use store::providers::{sessions, users};
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::rest::endpoints::admin::dto::{GrantBrief, SessionBrief};
@@ -35,19 +35,15 @@ pub async fn list(
         .map_err(|_| internal())?;
 
     // The user first, so an empty list means "no logins" and never "no user".
-    users::load(&transaction, &user_id)
+    services::admin::users::get(&transaction, &user_id)
         .await
-        .map_err(|_| internal())?
-        .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;
+        .map_err(|_| ApiError::new(ErrorCode::UserNotFound))?;
 
-    let open = sessions::load_for_user(&transaction, &user_id)
+    let open = services::admin::sessions::of_user(&transaction, &user_id)
         .await
-        .map_err(|_| internal())?;
+        .map_err(refused)?;
     let mut shown = Vec::with_capacity(open.len());
-    for session in open {
-        let grants = sessions::client_sessions_of(&transaction, &session.session_id)
-            .await
-            .map_err(|_| internal())?;
+    for (session, grants) in open {
         let read = session.user_agent.as_deref().map(read_agent);
         shown.push(SessionBrief {
             grants: grants
@@ -92,15 +88,9 @@ pub async fn close(
 
     // Named by the user it belongs to, so an identifier from another user's
     // listing ends nothing here.
-    let held = sessions::load(&transaction, &session_id)
+    services::admin::sessions::close(&transaction, &user_id, &session_id)
         .await
-        .map_err(|_| internal())?
-        .filter(|session| session.user_id == user_id)
-        .ok_or_else(|| ApiError::new(ErrorCode::SessionNotFound))?;
-
-    sessions::close(&transaction, &held.session_id)
-        .await
-        .map_err(|_| internal())?;
+        .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -124,20 +114,19 @@ pub async fn revoke(
         .await
         .map_err(|_| internal())?;
 
-    sessions::load(&transaction, &session_id)
+    services::admin::sessions::revoke_grant(&transaction, &user_id, &session_id, &client_id)
         .await
-        .map_err(|_| internal())?
-        .filter(|session| session.user_id == user_id)
-        .ok_or_else(|| ApiError::new(ErrorCode::SessionNotFound))?;
-
-    let taken = sessions::close_client_session_of(&transaction, &session_id, &client_id)
-        .await
-        .map_err(|_| internal())?;
-    if !taken {
-        return Err(ApiError::new(ErrorCode::GrantNotFound));
-    }
+        .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+fn refused(why: Unreachable) -> ApiError {
+    ApiError::new(match why {
+        Unreachable::NotFound => ErrorCode::SessionNotFound,
+        Unreachable::NoSuchGrant => ErrorCode::GrantNotFound,
+        Unreachable::Unreadable => ErrorCode::InternalError,
+    })
 }
 
 fn internal() -> ApiError {

@@ -57,6 +57,16 @@ pub struct SessionBrief {
     pub started_at: i64,
     pub auth_time: Option<i64>,
     pub expiration: Option<i64>,
+    /// What each client got out of this login, which is what a revocation
+    /// names. The offline ones are the grants that outlive the login itself.
+    pub grants: Vec<GrantBrief>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GrantBrief {
+    pub client_id: String,
+    pub offline: bool,
+    pub expiration: Option<i64>,
 }
 
 /// A client as the plane shows it. Never its secret: that is shown once,

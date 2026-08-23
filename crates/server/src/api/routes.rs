@@ -169,6 +169,18 @@ pub fn routes() -> Vec<AdminRoute> {
             action: AdminAction::UserRead,
             handler: Some(|| web::get().to(sessions::list)),
         },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/users/{user}/sessions/{session}",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::delete().to(sessions::close)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/users/{user}/sessions/{session}/grants/{client}",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::delete().to(sessions::revoke)),
+        },
     ]
 }
 

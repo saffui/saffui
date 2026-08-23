@@ -2,7 +2,7 @@
 
 mod support;
 
-use actix_web::http::StatusCode;
+use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test};
 use data_encoding::BASE64;
 use models::sessions::records::UserSessionState;
@@ -381,4 +381,234 @@ async fn set_offline_end(plane: &Plane, at: i64) {
         .await
         .expect("an ageing");
     transaction.commit().await.expect("the ageing kept");
+}
+
+/// A grant that ran out does not renew, whatever its login is doing. Reading
+/// only the login's end kept renewing one that was over.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_grant_that_ran_out_does_not_renew_under_a_login_that_has_not() {
+    let plane = Plane::with_actions(&[]).await;
+    let ordinary = granted(&plane, "openid profile").await;
+    let refresh = ordinary["refresh_token"].as_str().expect("a refresh token");
+
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        // The login is untouched and still open. Only the grant is over.
+        transaction
+            .execute(
+                "UPDATE client_sessions SET expiration = $1",
+                &[&(chrono::Utc::now().timestamp() - 1)],
+            )
+            .await
+            .expect("an ageing");
+        let open: i64 = transaction
+            .query_one(
+                "SELECT count(*) FROM user_sessions WHERE state = 'logged-in'",
+                &[],
+            )
+            .await
+            .expect("a count")
+            .get(0);
+        assert_eq!(open, 1, "the login under test was not left open");
+        transaction.commit().await.expect("the ageing kept");
+    }
+
+    assert_eq!(renews(&plane, refresh).await, StatusCode::BAD_REQUEST);
+}
+
+/// And an ordinary grant that keeps renewing keeps its end moving, or checking
+/// that end would have ended every one of them at the first window.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn renewing_moves_an_ordinary_grant_further_out() {
+    let plane = Plane::with_actions(&[]).await;
+    let ordinary = granted(&plane, "openid profile").await;
+    let refresh = ordinary["refresh_token"].as_str().expect("a refresh token");
+
+    let before = ends_at(&plane).await;
+    set_end(&plane, chrono::Utc::now().timestamp() + 60).await;
+    assert_eq!(renews(&plane, refresh).await, StatusCode::OK);
+
+    assert!(
+        ends_at(&plane).await > before - 5,
+        "renewing did not move the end out"
+    );
+}
+
+async fn ends_at(plane: &Plane) -> i64 {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    transaction
+        .query_one("SELECT expiration FROM client_sessions", &[])
+        .await
+        .expect("a grant")
+        .get(0)
+}
+
+async fn set_end(plane: &Plane, at: i64) {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    transaction
+        .execute("UPDATE client_sessions SET expiration = $1", &[&at])
+        .await
+        .expect("an ageing");
+    transaction.commit().await.expect("the ageing kept");
+}
+
+/// The plane can take back an offline grant. It outlives the login, so ending
+/// the login is not what ends it, and until something reached the grant itself
+/// nothing could.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_plane_revokes_an_offline_grant() {
+    let plane = Plane::with_actions(&[
+        models::entities::authz::AdminAction::UserRead,
+        models::entities::authz::AdminAction::UserWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let offline = granted(&plane, "openid offline_access").await;
+    let refresh = offline["refresh_token"].as_str().expect("a refresh token");
+
+    let shown = admin(&plane, &bearer, Method::GET, "sessions").await;
+    let held = &shown[0]["grants"][0];
+    assert_eq!(held["client_id"], support::CONFIDENTIAL);
+    assert_eq!(held["offline"], true, "the listing did not name the grant");
+
+    assert_eq!(renews(&plane, refresh).await, StatusCode::OK);
+    let taken = admin_status(
+        &plane,
+        &bearer,
+        Method::DELETE,
+        &format!(
+            "sessions/{}/grants/{}",
+            support::SESSION,
+            support::CONFIDENTIAL
+        ),
+    )
+    .await;
+    assert_eq!(taken, StatusCode::NO_CONTENT);
+    assert_eq!(
+        renews(&plane, refresh).await,
+        StatusCode::BAD_REQUEST,
+        "a revoked grant kept renewing"
+    );
+
+    // A second one, and one for a client that holds nothing here, both miss
+    // rather than reporting they took something.
+    for client in [support::CONFIDENTIAL, support::OTHER] {
+        assert_eq!(
+            admin_status(
+                &plane,
+                &bearer,
+                Method::DELETE,
+                &format!("sessions/{}/grants/{client}", support::SESSION),
+            )
+            .await,
+            StatusCode::NOT_FOUND,
+            "{client}"
+        );
+    }
+}
+
+/// And can end a login outright, which takes every grant under it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_plane_ends_a_login() {
+    let plane = Plane::with_actions(&[models::entities::authz::AdminAction::UserWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let ordinary = granted(&plane, "openid profile").await;
+    let refresh = ordinary["refresh_token"].as_str().expect("a refresh token");
+
+    // A login nobody opened misses rather than reporting it ended something.
+    assert_eq!(
+        admin_status(&plane, &bearer, Method::DELETE, "sessions/never-opened").await,
+        StatusCode::NOT_FOUND
+    );
+
+    // Ended last: the admin's own token names this very login, so what ends it
+    // ends the caller's reach as well.
+    assert_eq!(
+        admin_status(
+            &plane,
+            &bearer,
+            Method::DELETE,
+            &format!("sessions/{}", support::SESSION)
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(renews(&plane, refresh).await, StatusCode::BAD_REQUEST);
+}
+
+/// A session identifier from somewhere else does not reach this user's.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_session_is_reached_only_through_the_user_it_belongs_to() {
+    let plane = Plane::with_actions(&[models::entities::authz::AdminAction::UserWrite]).await;
+    let bearer = plane.token(&support::claims());
+    granted(&plane, "openid profile").await;
+
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let request = test::TestRequest::default()
+        .method(Method::DELETE)
+        .uri(&format!(
+            "/admin/realms/{}/users/nobody/sessions/{}",
+            support::REALM,
+            support::SESSION
+        ))
+        .insert_header(("authorization", format!("Bearer {bearer}")))
+        .to_request();
+    assert_eq!(
+        test::call_service(&app, request).await.status(),
+        StatusCode::NOT_FOUND,
+        "a session was ended through a user it does not belong to"
+    );
+}
+
+async fn admin(plane: &Plane, bearer: &str, method: Method, path: &str) -> serde_json::Value {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let request = test::TestRequest::default()
+        .method(method)
+        .uri(&format!(
+            "/admin/realms/{}/users/{}/{path}",
+            support::REALM,
+            support::SUBJECT
+        ))
+        .insert_header(("authorization", format!("Bearer {bearer}")))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    test::read_body_json(response).await
+}
+
+async fn admin_status(plane: &Plane, bearer: &str, method: Method, path: &str) -> StatusCode {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let request = test::TestRequest::default()
+        .method(method)
+        .uri(&format!(
+            "/admin/realms/{}/users/{}/{path}",
+            support::REALM,
+            support::SUBJECT
+        ))
+        .insert_header(("authorization", format!("Bearer {bearer}")))
+        .to_request();
+    test::call_service(&app, request).await.status()
 }

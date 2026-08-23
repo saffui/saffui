@@ -76,6 +76,8 @@ catalogue! {
     ProtocolMapperAlreadyExists = 321, 409, "protocol_mapper.already_exists", "a protocol mapper with this name already exists";
     NoActiveFlow = 411, 503, "auth.no_active_flow", "no active login flow for this realm";
     SessionExpired = 410, 400, "auth.session_expired", "the login session has expired; start again";
+    SessionNotFound = 412, 404, "auth.session.not_found", "session not found";
+    GrantNotFound = 413, 404, "auth.grant.not_found", "this client holds nothing from that session";
     AuthFlowNotFound = 420, 404, "auth.flow.not_found", "authentication flow not found";
     AuthFlowAlreadyExists = 421, 409, "auth.flow.already_exists", "an authentication flow with this alias already exists";
     AuthExecutionNotFound = 430, 404, "auth.execution.not_found", "authentication execution not found";
@@ -176,7 +178,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 43);
+        assert_eq!(ErrorCode::ALL.len(), 45);
     }
 
     /// A message never restates the slug, and never carries a value.

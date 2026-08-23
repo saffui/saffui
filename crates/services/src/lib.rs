@@ -20,6 +20,7 @@ pub mod claims_request;
 pub mod client;
 pub mod context;
 pub mod grant;
+pub mod housekeeping;
 pub mod introspection;
 pub mod login;
 pub mod logout;

@@ -169,6 +169,24 @@ pub async fn close(transaction: &Transaction<'_>, session_id: &str) -> StoreResu
     Ok(removed > 0)
 }
 
+/// Remove the logins that have run out, and say how many went. Their client
+/// sessions go with them, by the cascade.
+///
+/// A login with no expiry stays: absent means opened without one, not ended at
+/// the epoch.
+pub async fn drop_expired_sessions(
+    transaction: &Transaction<'_>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> StoreResult<u64> {
+    transaction
+        .execute(
+            "DELETE FROM user_sessions WHERE expiration IS NOT NULL AND expiration <= $1",
+            &[&now.timestamp()],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)
+}
+
 /// Record what a client got out of a login, one row per login and client.
 ///
 /// An upsert, because a client authorizing a second time under one login is

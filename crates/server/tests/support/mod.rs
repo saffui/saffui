@@ -849,6 +849,46 @@ impl Plane {
         self.pool.get().await.expect("a connection")
     }
 
+    /// A second realm of the same tenant, for work that has to visit more than
+    /// the one every other suite uses.
+    #[allow(dead_code, reason = "only the sweep visits more than one realm")]
+    pub async fn plant_realm(&self, realm_id: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::tenant_wide(TENANT))
+            .await;
+        let realm = RealmCreateModel {
+            name: realm_id.into(),
+            display_name: realm_id.into(),
+            enabled: true,
+        }
+        .into_model(
+            realm_id.into(),
+            AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned()),
+        );
+        realms::create(&transaction, &realm).await.unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    /// Pin this deployment's tenant to a region, so a node elsewhere is refused
+    /// it. Residency is opted into on both sides, so a test of the refusal has
+    /// to write the tenant's half.
+    #[allow(dead_code, reason = "only the sweep is tested against a pin")]
+    pub async fn pin_tenant(&self, region: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::tenant_wide(TENANT))
+            .await;
+        transaction
+            .execute(
+                "UPDATE tenants SET region = $1 WHERE tenant_id = $2",
+                &[&region, &TENANT],
+            )
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
     pub async fn scoped<'c>(
         &self,
         connection: &'c mut Object,

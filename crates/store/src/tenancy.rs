@@ -281,6 +281,21 @@ pub mod resolve {
         .await
     }
 
+    /// Every realm this deployment holds, disabled ones included, each
+    /// carrying its residency so a node still refuses one pinned elsewhere.
+    pub async fn every_realm(connection: &Object) -> StoreResult<Vec<TenantContext>> {
+        Ok(connection
+            .query("SELECT tenant, realm_id, region FROM every_realm()", &[])
+            .await
+            .map_err(|_| StoreError::Backend)?
+            .into_iter()
+            .map(|row| {
+                TenantContext::new(row.get::<_, String>(0), row.get::<_, String>(1))
+                    .with_region(row.get::<_, Option<String>>(2))
+            })
+            .collect())
+    }
+
     /// One answer, or a refusal.
     ///
     /// Two answers is a refusal and not a choice. A name is unique within a

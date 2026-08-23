@@ -187,6 +187,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         .max()
         .unwrap_or(0);
     let vitals = Vitals::new(plane.pool.clone(), schema);
+    let (swept_pool, swept_tenancy) = (plane.pool.clone(), plane.tenancy.clone());
 
     // Bound before anything is announced, and before the probes say started.
     let probes = {
@@ -207,6 +208,14 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     // Both ports are bound, so a probe asking now gets a true answer.
     vitals.started();
 
+    // After the ports, so a deployment that cannot listen fails before it has
+    // deleted anything.
+    let sweeping = server::jobs::sweep_expired_rows(
+        swept_pool,
+        swept_tenancy,
+        config::jobs::sweep_every().map_err(|reason| reason.to_string())?,
+    );
+
     let draining = vitals.clone();
     let plane_handle = plane.handle();
     let probes_handle = probes.handle();
@@ -224,6 +233,9 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     });
 
     let (served, _) = tokio::join!(plane, probes);
+    if let Some(sweeping) = sweeping {
+        sweeping.abort();
+    }
     served.map_err(|reason| reason.to_string())
 }
 

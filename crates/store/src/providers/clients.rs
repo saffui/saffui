@@ -28,7 +28,7 @@ const COLUMNS: &str = "tenant, realm_id, client_id, name, display_name, descript
                        backchannel_logout_uri, backchannel_logout_session_required, \
                        frontchannel_logout_uri, frontchannel_logout_session_required, \
                        id_token_signed_response_alg, userinfo_signed_response_alg, \
-                       request_object_signing_alg, \
+                       request_object_signing_alg, jwks, \
                        id_token_encryption_alg, id_token_encryption_enc, \
                        userinfo_encryption_alg, userinfo_encryption_enc, \
                        request_object_encryption_alg, request_object_encryption_enc, \
@@ -304,6 +304,7 @@ pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
             col("id_token_signed_response_alg", &id_token_alg),
             col("userinfo_signed_response_alg", &userinfo_alg),
             col("request_object_signing_alg", &request_object_alg),
+            col("jwks", &client.jwks),
             col("id_token_encryption_alg", &id_token_enc_alg),
             col("id_token_encryption_enc", &id_token_enc),
             col("userinfo_encryption_alg", &userinfo_enc_alg),
@@ -354,6 +355,7 @@ fn read(row: Row) -> ClientModel {
         id_token_signed_response_alg: read_signing_alg(&row, "id_token_signed_response_alg"),
         userinfo_signed_response_alg: read_signing_alg(&row, "userinfo_signed_response_alg"),
         request_object_signing_alg: read_signing_alg(&row, "request_object_signing_alg"),
+        jwks: row.get("jwks"),
         id_token_encryption: read_encryption(&row, "id_token_encryption"),
         userinfo_encryption: read_encryption(&row, "userinfo_encryption"),
         request_object_encryption: read_encryption(&row, "request_object_encryption"),

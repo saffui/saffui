@@ -19,6 +19,7 @@ use store::tenancy::TenantContext;
 
 use crate::claims_request::ClaimsRequest;
 use crate::login::browser;
+use crate::request_object;
 
 /// How long a login may sit half finished.
 const LOGIN_LIFESPAN: i64 = 900;
@@ -80,11 +81,28 @@ pub async fn begin(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
-    requested: &Requested<'_>,
+    issuer: &str,
+    asked: &Requested<'_>,
     signed_in: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Begun, Refusal> {
-    let client = named_client(transaction, requested.client_id).await?;
+    let client = named_client(transaction, asked.client_id).await?;
+
+    // What the client signed governs the request, so it is read before the
+    // redirect is looked up: the object is where a client states one.
+    let carried;
+    let merged;
+    let requested = match asked.request {
+        None => asked,
+        Some(raw) => {
+            carried = request_object::read(&client, raw, issuer, now)
+                .map_err(|why| Refusal::Redirect(why.told()))?;
+            merged = carried
+                .over(asked)
+                .map_err(|why| Refusal::Redirect(why.told()))?;
+            &merged
+        }
+    };
     let redirect_uri = registered_redirect(&client, requested.redirect_uri)?;
 
     // From here the client and the redirect are established, so a refusal can
@@ -95,13 +113,9 @@ pub async fn begin(
     if client.standard_flow_enabled != Some(true) {
         return Err(Refusal::Redirect("unauthorized_client"));
     }
-    // Refused, not ignored. A client sending one believes the object it signed
-    // governs the request; ignoring it and reading the query instead hands back
-    // a code minted against parameters the client did not sign. OIDC Core §6
-    // names both refusals.
-    if requested.request.is_some() {
-        return Err(Refusal::Redirect("request_not_supported"));
-    }
+    // Refused by name rather than fetched: a URI a caller supplies is a
+    // request this server would make on their behalf, to wherever they point
+    // it. OIDC Core §6 names the refusal.
     if requested.request_uri.is_some() {
         return Err(Refusal::Redirect("request_uri_not_supported"));
     }

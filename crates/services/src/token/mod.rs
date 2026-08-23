@@ -207,7 +207,10 @@ fn instant(now: DateTime<Utc>) -> SystemTime {
 /// Exhaustive over the catalogue rather than a lookup with a fallback: an
 /// algorithm this build does not implement must fail to compile here, not fail
 /// to verify at runtime and read as a bad token.
-fn verifier_for(algorithm: SignAlg, jwk: &Jwk) -> Option<Box<dyn crypto::jose::jws::JwsVerifier>> {
+pub(crate) fn verifier_for(
+    algorithm: SignAlg,
+    jwk: &Jwk,
+) -> Option<Box<dyn crypto::jose::jws::JwsVerifier>> {
     let verifier =
         match algorithm {
             SignAlg::Rs256 => Box::new(RS256.verifier_from_jwk(jwk).ok()?)

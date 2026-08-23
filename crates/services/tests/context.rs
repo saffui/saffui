@@ -51,6 +51,7 @@ fn login(session_id: &str, user_id: &str) -> UserSessionModel {
         broker_user_id: None,
         auth_method: None,
         ip_address: None,
+        user_agent: None,
         started_at: Utc::now().timestamp(),
         auth_time: None,
         loa: None,

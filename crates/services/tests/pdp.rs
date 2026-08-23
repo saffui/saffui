@@ -56,6 +56,7 @@ async fn plant(transaction: &deadpool_postgres::Transaction<'_>) {
             broker_user_id: None,
             auth_method: None,
             ip_address: None,
+            user_agent: None,
             started_at: Utc::now().timestamp(),
             auth_time: None,
             loa: None,

@@ -42,6 +42,23 @@ pub struct KeyBrief {
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// A login as the plane shows it. The agent is given both as it arrived and as
+/// this build reads it, so a caller that disagrees with the reading has the
+/// string to read for itself.
+#[derive(Debug, Serialize)]
+pub struct SessionBrief {
+    pub session_id: String,
+    pub auth_method: Option<String>,
+    pub ip_address: Option<String>,
+    pub browser: Option<&'static str>,
+    pub system: Option<&'static str>,
+    pub mobile: bool,
+    pub user_agent: Option<String>,
+    pub started_at: i64,
+    pub auth_time: Option<i64>,
+    pub expiration: Option<i64>,
+}
+
 /// A client as the plane shows it. Never its secret: that is shown once,
 /// when it is made, and by its own response.
 #[derive(Debug, Serialize)]

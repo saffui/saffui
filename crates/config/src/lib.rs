@@ -10,6 +10,7 @@ use secrecy::SecretBox;
 
 pub mod crypto;
 pub mod jobs;
+pub mod proxying;
 pub mod serving;
 
 /// The prefix every variable shares.

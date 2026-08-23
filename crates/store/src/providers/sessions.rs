@@ -32,7 +32,7 @@ pub enum Refreshed {
 }
 
 const SESSION_COLUMNS: &str = "tenant, realm_id, session_id, user_id, login_username, \
-                               broker_session_id, broker_user_id, auth_method, ip_address, \
+                               broker_session_id, broker_user_id, auth_method, ip_address, user_agent, \
                                started_at, auth_time, loa, expiration, state, remember_me, \
                                last_session_refresh, is_offline, notes";
 
@@ -58,6 +58,7 @@ pub async fn open(transaction: &Transaction<'_>, session: &UserSessionModel) -> 
         col("broker_user_id", &session.broker_user_id),
         col("auth_method", &session.auth_method),
         col("ip_address", &session.ip_address),
+        col("user_agent", &session.user_agent),
         col("started_at", &session.started_at),
         col("auth_time", &session.auth_time),
         col("loa", &session.loa),
@@ -388,6 +389,7 @@ fn read_session(row: Row) -> UserSessionModel {
         broker_user_id: row.get("broker_user_id"),
         auth_method: row.get("auth_method"),
         ip_address: row.get("ip_address"),
+        user_agent: row.get("user_agent"),
         started_at: row.get("started_at"),
         auth_time: row.get("auth_time"),
         loa: row.get("loa"),

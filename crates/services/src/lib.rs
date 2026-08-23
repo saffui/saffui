@@ -15,6 +15,7 @@
 //! not a scheduled sweep, not a test.
 
 pub mod admin;
+pub mod agent;
 pub mod authorize;
 pub mod claims_request;
 pub mod client;
@@ -25,6 +26,7 @@ pub mod introspection;
 pub mod login;
 pub mod logout;
 pub mod pdp;
+pub mod provenance;
 pub mod provisioning;
 pub mod pushed;
 pub mod rebac;

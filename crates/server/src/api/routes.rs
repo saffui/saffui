@@ -22,7 +22,7 @@ use actix_web::http::Method;
 use actix_web::web;
 use models::entities::authz::AdminAction;
 
-use crate::api::rest::endpoints::admin::{clients, keys, realms, users};
+use crate::api::rest::endpoints::admin::{clients, keys, realms, sessions, users};
 
 /// One route: the verb, the path, what it costs, and what answers it.
 ///
@@ -162,6 +162,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/users/{user}/keys/{credential}",
             action: AdminAction::UserWrite,
             handler: Some(|| web::delete().to(keys::revoke)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/sessions",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(sessions::list)),
         },
     ]
 }

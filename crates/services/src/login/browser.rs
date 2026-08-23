@@ -85,6 +85,7 @@ pub async fn answer_step(
     // What finishes an enrolment, when the realm required one. Not an
     // [`Answer`]: it proves nothing about who is answering.
     enrolling: enrolment::Answers<'_>,
+    seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
     let login = login::resume(transaction, auth_session_id)
@@ -218,6 +219,7 @@ pub async fn answer_step(
                 &subject.user_name,
                 reached,
                 realm.acr_loa_map.as_ref(),
+                seen,
                 now,
             )
             .await
@@ -307,6 +309,7 @@ async fn admit(
     user_name: &str,
     reached: Option<i32>,
     realm_map: Option<&models::entities::acr::AcrLoaMap>,
+    seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
 ) -> Result<String, Unanswerable> {
     // The transient identifier becomes the durable one. The code names it as
@@ -323,7 +326,8 @@ async fn admit(
             broker_session_id: None,
             broker_user_id: None,
             auth_method: Some("browser".to_owned()),
-            ip_address: None,
+            ip_address: seen.address.clone(),
+            user_agent: seen.agent.clone(),
             started_at: now.timestamp(),
             auth_time: Some(now.timestamp()),
             // What the flow reached, under this realm's map. Only a password

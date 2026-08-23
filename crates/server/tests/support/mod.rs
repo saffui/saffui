@@ -1292,6 +1292,7 @@ impl Plane {
                 broker_user_id: None,
                 auth_method: None,
                 ip_address: None,
+                user_agent: None,
                 started_at: chrono::Utc::now().timestamp(),
                 auth_time: None,
                 loa: None,

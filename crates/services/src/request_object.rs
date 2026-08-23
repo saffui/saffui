@@ -85,6 +85,7 @@ impl Carried {
             // Neither travels inside an object: one is what carried it.
             request: None,
             request_uri: None,
+            response_mode: self.text("response_mode").or(outer.response_mode),
             prompt: self.text("prompt").or(outer.prompt),
             max_age: self
                 .map

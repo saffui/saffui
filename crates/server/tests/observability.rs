@@ -83,6 +83,51 @@ fn watched() -> (Captured, tracing::subscriber::DefaultGuard) {
     (captured, tracing::subscriber::set_default(subscriber))
 }
 
+/// The readable format is one line a person can scan: when, how loud, where
+/// from, then the facts.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_line_meant_for_a_person_reads_as_one() {
+    let plane = Plane::with_actions(&[]).await;
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        .with_writer(captured.clone())
+        .with_ansi(false)
+        .event_format(commons::observability::Readable)
+        .finish();
+    let _scope = tracing::subscriber::set_default(subscriber);
+    let app = test::init_service(observed().configure(register(&mounted(&plane)))).await;
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/.well-known/openid-configuration",
+                support::REALM
+            ))
+            .insert_header(("x-request-id", "req-readable"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+
+    let text = captured.text();
+    assert!(
+        text.contains("req-readable"),
+        "the id is not on the line: {text}"
+    );
+    assert!(
+        text.contains("main"),
+        "the realm is not on the line: {text}"
+    );
+    assert!(
+        text.contains("[http-request]"),
+        "the line is not named for what it is: {text}"
+    );
+}
+
 /// Every request gets an id and is told it. A caller's own is kept when it is
 /// shaped like one, and replaced when it is shaped like a payload.
 #[tokio::test]

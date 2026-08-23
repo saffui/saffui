@@ -54,7 +54,8 @@ pub fn init(directives: &str, format: &str) {
             .with_current_span(true)
             .with_span_list(false)
             .boxed(),
-        _ => layer.compact().boxed(),
+        "compact" => layer.compact().boxed(),
+        _ => layer.event_format(Readable).boxed(),
     };
 
     // `try_init` rather than `init`: a second call is a caller's mistake, not a
@@ -63,6 +64,81 @@ pub fn init(directives: &str, format: &str) {
         .with(filter)
         .with(layer)
         .try_init();
+}
+
+/// One line, meant for a person: when, how loud, where from, what happened,
+/// and the facts behind it.
+///
+/// ```text
+/// 2026-08-23 09:15:42.123 INFO  [protocol::logout] logout told client_id=app status=200
+/// ```
+#[cfg(feature = "tracing-json")]
+pub struct Readable;
+
+#[cfg(feature = "tracing-json")]
+impl<S, N> tracing_subscriber::fmt::FormatEvent<S, N> for Readable
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        context: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        use tracing_subscriber::fmt::FormatFields as _;
+
+        let metadata = event.metadata();
+        let level = *metadata.level();
+        write!(
+            writer,
+            "{} {level:<5} [{}] ",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            named(metadata)
+        )?;
+
+        // What happened, then what it happened to. The spans come from the
+        // event's own scope and not from what is current, because a span's
+        // closing line is emitted as it leaves.
+        context.format_fields(writer.by_ref(), event)?;
+        if let Some(scope) = context.event_scope() {
+            for span in scope.from_root() {
+                let extensions = span.extensions();
+                if let Some(fields) =
+                    extensions.get::<tracing_subscriber::fmt::FormattedFields<N>>()
+                    && !fields.is_empty()
+                {
+                    write!(writer, " {fields}")?;
+                }
+            }
+        }
+        writeln!(writer)
+    }
+}
+
+/// What to call the line's origin: a span's own name where there is one, and
+/// the module otherwise. A span is named for what it does (`http-request`),
+/// which beats the module that happens to declare it.
+#[cfg(feature = "tracing-json")]
+fn named(metadata: &tracing::Metadata<'_>) -> String {
+    let name = metadata.name();
+    // What `tracing` calls an ordinary event: the macro names it by file and
+    // line, which is not a name anybody reads.
+    if name.starts_with("event ") {
+        shortened(metadata.target())
+    } else {
+        name.to_owned()
+    }
+}
+
+/// The last two segments of a module path. `server::api::rest::endpoints::
+/// protocol::logout` is a column of noise; `protocol::logout` is the answer.
+#[cfg(feature = "tracing-json")]
+fn shortened(target: &str) -> String {
+    let mut parts: Vec<&str> = target.rsplit("::").take(2).collect();
+    parts.reverse();
+    parts.join("::")
 }
 
 /// The per-request root span, and the id every line under it carries.
@@ -227,6 +303,26 @@ mod request_span {
 
 #[cfg(feature = "request-span")]
 pub use request_span::{REQUEST_ID, RequestId, SaffuiRootSpan, WithRequestId};
+
+#[cfg(all(test, feature = "tracing-json"))]
+mod readable {
+    use super::shortened;
+
+    /// A target is where a line came from, not the path to get there.
+    #[test]
+    fn a_target_is_shortened_to_what_names_it() {
+        assert_eq!(
+            shortened("server::api::rest::endpoints::protocol::logout"),
+            "protocol::logout"
+        );
+        assert_eq!(
+            shortened("commons::observability"),
+            "commons::observability"
+        );
+        assert_eq!(shortened("saffui"), "saffui");
+        assert_eq!(shortened(""), "");
+    }
+}
 
 #[cfg(test)]
 mod tests {

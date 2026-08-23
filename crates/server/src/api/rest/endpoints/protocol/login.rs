@@ -18,6 +18,7 @@ use services::login::browser::{self, Step, Unanswerable};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
+use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 
@@ -125,6 +126,7 @@ pub async fn answer(
             attestation: attestation.as_deref(),
             code: code.as_deref(),
         },
+        &read_provenance(&request),
         now,
     )
     .await;

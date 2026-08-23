@@ -16,6 +16,7 @@ use store::providers::{realm_keys, realms};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
+use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::basic;
 use crate::api::rest::endpoints::protocol::dto::{Asked, Denied, uncached};
 
@@ -121,6 +122,7 @@ pub async fn ask(
                     issuer: &origin.issuer(&context.realm_id),
                 },
                 &client,
+                &read_provenance(&request),
                 now,
             )
             .await

@@ -21,6 +21,7 @@ fn session(id: &str, started_at: i64) -> UserSessionModel {
         broker_user_id: None,
         auth_method: Some("password".into()),
         ip_address: Some("198.51.100.7".into()),
+        user_agent: None,
         started_at,
         auth_time: Some(started_at),
         loa: Some(1),

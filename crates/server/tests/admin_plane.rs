@@ -55,6 +55,7 @@ fn mounted(plane: &Plane, policy: &AdminPolicy) -> Mounted {
         policy: policy.clone(),
         origin: support::origin(),
         login_ui: support::login_ui(),
+        hops: config::proxying::Proxying::none(),
         sealing: support::sealing(),
     }
 }

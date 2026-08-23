@@ -109,6 +109,8 @@ services:
     ports: !reset []
     environment:
       SAFFUI_PUBLIC_ORIGIN: https://saffui.test
+      # One proxy, the TLS terminator below, and it writes the header.
+      SAFFUI_PROXY_HOPS: "1"
     volumes:
       - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     depends_on:

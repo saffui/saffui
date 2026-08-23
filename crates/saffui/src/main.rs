@@ -535,6 +535,7 @@ fn plane() -> Result<Plane, String> {
         },
         origin,
         login_ui,
+        hops: config::proxying::Proxying::from_env().map_err(|e| e.to_string())?,
         sealing: Sealing {
             provider,
             envelope: Arc::new(envelope),

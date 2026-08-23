@@ -16,6 +16,7 @@ use commons::observability::{SaffuiRootSpan, WithRequestId};
 use std::sync::Arc;
 use tracing_actix_web::TracingLogger;
 
+use config::proxying::Proxying;
 use config::serving::{LoginUi, PublicOrigin};
 use crypto::envelope::Envelope;
 use crypto::provider::CryptoProvider;
@@ -65,6 +66,9 @@ pub struct Plane {
     pub origin: PublicOrigin,
     /// Where a browser is sent to authenticate. Not served here.
     pub login_ui: LoginUi,
+    /// How many proxies stand in front, which is what makes a forwarded
+    /// address readable rather than a value the caller chose.
+    pub hops: Proxying,
     /// What signs. Verification reads published public halves and needs none of
     /// this; minting has to open a private one, which is the envelope's job.
     pub sealing: Sealing,
@@ -95,6 +99,7 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 plane.tenancy.clone(),
             )))
             .app_data(web::Data::new(plane.origin.clone()))
+            .app_data(web::Data::new(plane.hops))
             .app_data(web::Data::new(plane.login_ui.clone()))
             .app_data(web::Data::new(plane.sealing.clone()))
             .service(admin_scope(plane))

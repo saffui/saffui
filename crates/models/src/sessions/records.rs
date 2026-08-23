@@ -35,6 +35,9 @@ pub struct UserSessionModel {
     pub broker_user_id: Option<String>,
     pub auth_method: Option<String>,
     pub ip_address: Option<String>,
+    /// The `User-Agent` header verbatim, capped. Not parsed: a browser read out
+    /// of it is a heuristic, and one written into a row ages with the row.
+    pub user_agent: Option<String>,
     pub started_at: i64,
     /// When the user last actually authenticated, which is not when the session
     /// began. None where it was never tracked, never zero, which reads as the epoch.

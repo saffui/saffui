@@ -19,6 +19,10 @@ x-saffui: &saffui
     # wants `json`.
     SAFFUI_LOG: ${SAFFUI_LOG:-info}
     SAFFUI_LOG_FORMAT: ${SAFFUI_LOG_FORMAT:-text}
+    # How many proxies stand in front. 0, the default, records the peer that
+    # dialled and reads no header at all.
+    SAFFUI_PROXY_HOPS: ${SAFFUI_PROXY_HOPS:-0}
+    SAFFUI_PROXY_HEADER: ${SAFFUI_PROXY_HEADER:-x-forwarded-for}
     # How often expired rows are taken away. 0 never takes them.
     SAFFUI_SWEEP_SECONDS: ${SAFFUI_SWEEP_SECONDS:-300}
 

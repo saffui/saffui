@@ -104,6 +104,7 @@ pub async fn client_credentials(
     signing: &Signing<'_>,
     within: &Within<'_>,
     client: &ClientModel,
+    seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
 ) -> Result<Granted, Ungranted> {
     // §4.4: authentication by credential alone, and a public client has none it
@@ -138,6 +139,7 @@ pub async fn client_credentials(
         &account.user_name,
         &session_id,
         client,
+        seen,
         now,
         lifespan,
     )
@@ -519,6 +521,7 @@ async fn open_login(
     user_name: &str,
     session_id: &str,
     client: &ClientModel,
+    seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
     lifespan: Duration,
 ) -> Result<(), Ungranted> {
@@ -537,7 +540,8 @@ async fn open_login(
             broker_session_id: None,
             broker_user_id: None,
             auth_method: Some("client_credentials".to_owned()),
-            ip_address: None,
+            ip_address: seen.address.clone(),
+            user_agent: seen.agent.clone(),
             started_at: now.timestamp(),
             auth_time: Some(now.timestamp()),
             // A secret authenticates no person, so a level here would be a

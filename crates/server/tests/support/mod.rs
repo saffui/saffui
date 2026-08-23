@@ -607,6 +607,26 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Register the keys a client signs its request objects with, and the
+    /// algorithm it signs them at.
+    #[allow(dead_code, reason = "only the protocol suite signs an object")]
+    pub async fn register_client_keys(&self, client_id: &str, key: &SigningKey, alg: SignAlg) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.request_object_signing_alg = Some(alg);
+        client.jwks = Some(serde_json::json!({ "keys": [key.public().as_ref()] }));
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
     /// Switch the subject off, the way an administrator shuts down an account.
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn disable_subject(&self) {

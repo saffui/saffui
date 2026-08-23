@@ -7,6 +7,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;
+use crypto::provider::SignAlg;
 use deadpool_postgres::Pool;
 use models::entities::keys::KeyUse;
 use serde_json::{Value, json};
@@ -127,6 +128,15 @@ pub async fn published(
             // nothing here advertises a capability this build does not have and
             // a client that believes it sends a signed request nothing reads.
             "acr_values_supported": contexts,
+            // §6.1 is supported and §6.2 is not: an object a client signs and
+            // sends is read, one this server would have to fetch is refused.
+            "request_parameter_supported": true,
+            "request_uri_parameter_supported": false,
+            "require_request_uri_registration": false,
+            "request_object_signing_alg_values_supported": SignAlg::ALL
+                .iter()
+                .map(|algorithm| algorithm.name())
+                .collect::<Vec<_>>(),
             "request_parameter_supported": false,
             "request_uri_parameter_supported": false,
             "claims_parameter_supported": true,

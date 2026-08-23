@@ -4845,3 +4845,70 @@ async fn a_client_is_told_when_the_login_it_took_part_in_ends() {
         "a logout token must carry no nonce"
     );
 }
+
+/// Front-Channel Logout 1.0: a client that registered a frame is loaded in
+/// the browser when a login it took part in ends, with `iss` and `sid` and
+/// nothing else, and the landing is reached from that page rather than by a
+/// redirect the browser follows before the frames load.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_is_loaded_in_the_browser_when_the_login_ends() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .register_frontchannel(support::CONFIDENTIAL, "https://app.example/logout-frame")
+        .await;
+    let session = signed_in_once(&plane).await;
+    let (_, landing) = authorize_signed_in(&plane, &asking_for(&[]), &session).await;
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let hint = granted["id_token"].as_str().expect("an id token");
+
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let asked = format!(
+        "/realms/{}/protocol/openid-connect/logout?id_token_hint={hint}&post_logout_redirect_uri={}&state=s",
+        support::REALM,
+        urlencode(support::AFTER_LOGOUT)
+    );
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&asked)
+            .insert_header(("accept", "text/html"))
+            .insert_header(("cookie", format!("{}={session}", support::SSO_COOKIE)))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a redirect outran the frames"
+    );
+    let page = String::from_utf8(test::read_body(response).await.to_vec()).unwrap();
+    assert!(page.contains("<iframe"), "no frame was loaded: {page}");
+    assert!(
+        page.contains(&format!("sid={session}")) && page.contains("iss=https"),
+        "the frame does not name the login: {page}"
+    );
+    assert!(
+        page.contains(&format!("2;url={}", support::AFTER_LOGOUT)),
+        "the browser is never sent on: {page}"
+    );
+    assert!(!plane.login_is_open(&session).await);
+}

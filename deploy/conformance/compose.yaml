@@ -66,6 +66,24 @@ services:
 
   # Its own client for the back-channel plan: the other plans' modules refuse
   # a logout token they did not ask for, and a registration is per client.
+  provision-frontchannel:
+    extends:
+      file: ../local/compose.yaml
+      service: provision
+    command:
+      - provision
+      - --tenant=local
+      - --realm=main
+      - --client=conformance-frontchannel
+      - --redirect=https://localhost.emobix.co.uk:8443/test/a/saffui/callback
+      - --after-logout=https://localhost.emobix.co.uk:8443/test/a/saffui/post_logout_redirect
+      - --frontchannel-logout=https://localhost.emobix.co.uk:8443/test/a/saffui/frontchannel_logout
+    environment:
+      SAFFUI_PUBLIC_ORIGIN: https://saffui.test
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
   provision-backchannel:
     extends:
       file: ../local/compose.yaml
@@ -95,6 +113,8 @@ services:
       - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     depends_on:
       provision-backchannel:
+        condition: service_completed_successfully
+      provision-frontchannel:
         condition: service_completed_successfully
       ca-bundle:
         condition: service_completed_successfully
@@ -199,6 +219,7 @@ services:
       - ${CONFORMANCE_SUITE_DIR:?a checkout of gitlab.com/openid/conformance-suite}/scripts:/suite/scripts:ro
       - ./basic.json:/plans/basic.json:ro
       - ./backchannel.json:/plans/backchannel.json:ro
+      - ./frontchannel.json:/plans/frontchannel.json:ro
       - ./results:/results
     working_dir: /suite/scripts
     # Three plans, one run: the Basic OP profile, its discovery-only sibling,
@@ -217,6 +238,8 @@ services:
         /plans/basic.json
         "oidcc-backchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]"
         /plans/backchannel.json
+        "oidcc-frontchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]"
+        /plans/frontchannel.json
     depends_on:
       - nginx
 

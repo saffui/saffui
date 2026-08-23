@@ -43,11 +43,37 @@ pub fn wants_page(request: &actix_web::HttpRequest) -> bool {
 /// A notice with nothing to run: a title and the body's inner HTML, which the
 /// caller has already escaped, under the same style as the login page.
 pub fn notice(status: StatusCode, title: &str, inner: &str) -> HttpResponse {
+    told(status, title, inner, false, None)
+}
+
+/// The same, allowing the frames a front-channel logout puts in the page and
+/// leaving for `landing` once they have had a moment to load.
+pub fn notice_with_frames(
+    status: StatusCode,
+    title: &str,
+    inner: &str,
+    landing: Option<&str>,
+) -> HttpResponse {
+    told(status, title, inner, true, landing)
+}
+
+fn told(
+    status: StatusCode,
+    title: &str,
+    inner: &str,
+    frames: bool,
+    landing: Option<&str>,
+) -> HttpResponse {
     uncached(&mut HttpResponseBuilder::new(status))
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
         .insert_header((
             "Content-Security-Policy",
-            "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'",
+            if frames {
+                "default-src 'none'; style-src 'self'; form-action 'self'; \
+                 frame-ancestors 'none'; frame-src https:"
+            } else {
+                "default-src 'none'; style-src 'self'; form-action 'self'; frame-ancestors 'none'"
+            },
         ))
         .insert_header(("X-Content-Type-Options", "nosniff"))
         .insert_header(("X-Frame-Options", "DENY"))
@@ -55,9 +81,16 @@ pub fn notice(status: StatusCode, title: &str, inner: &str) -> HttpResponse {
         .body(format!(
             "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
              <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-             <title>{title}</title><link rel=\"stylesheet\" href=\"login.css\"></head>\
+             {leaving}<title>{title}</title>\
+             <link rel=\"stylesheet\" href=\"login.css\"></head>\
              <body><main><h1>{title}</h1>{inner}</main></body></html>",
             title = escaped(title),
+            // Markup rather than a script, because this page runs none. Two
+            // seconds is what the frames get before the browser leaves.
+            leaving = landing.map_or_else(String::new, |landing| format!(
+                "<meta http-equiv=\"refresh\" content=\"2;url={}\">",
+                escaped(landing)
+            )),
         ))
 }
 

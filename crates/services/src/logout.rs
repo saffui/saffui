@@ -152,6 +152,52 @@ pub struct Notice {
     pub logout_token: String,
 }
 
+/// One client to be loaded in the browser, Front-Channel Logout 1.0 §2.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Frame {
+    pub client_id: String,
+    pub uri: String,
+}
+
+/// The frames for every client that took part and registered where to be
+/// loaded. `iss` and `sid` are added when the client asked to be told which
+/// session (§2.1); nothing else goes in the query.
+pub async fn frames_for(
+    transaction: &Transaction<'_>,
+    issuer: &str,
+    session_id: &str,
+) -> Vec<Frame> {
+    let Ok(party_ids) = sessions::clients_of(transaction, session_id).await else {
+        return Vec::new();
+    };
+    let mut frames = Vec::new();
+    for client_id in party_ids {
+        let Ok(Some(client)) = clients::load(transaction, &client_id).await else {
+            tracing::warn!(%client_id, "a client of the login could not be read");
+            continue;
+        };
+        let Some(uri) = client
+            .frontchannel_logout_uri
+            .clone()
+            .filter(|uri| !uri.is_empty())
+        else {
+            continue;
+        };
+        let uri = if client.frontchannel_logout_session_required {
+            let separator = if uri.contains('?') { '&' } else { '?' };
+            format!(
+                "{uri}{separator}iss={}&sid={}",
+                escaped(issuer),
+                escaped(session_id)
+            )
+        } else {
+            uri
+        };
+        frames.push(Frame { client_id, uri });
+    }
+    frames
+}
+
 /// How long a logout token stays acceptable. Short: it is delivered now, and
 /// a client is told to refuse one it has seen (§2.6).
 const NOTICE_LIFESPAN: i64 = 120;

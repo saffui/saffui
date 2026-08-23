@@ -9,7 +9,7 @@ use models::entities::keys::KeyUse;
 use serde::Deserialize;
 use serde_json::json;
 use services::grant::Signing;
-use services::logout::{self, EndedAt, Requested};
+use services::logout::{self, EndedAt, Frame, Requested};
 use store::keyring;
 use store::providers::realm_keys;
 use store::tenancy::{Tenancy, resolve};
@@ -71,21 +71,23 @@ async fn run(
     origin: &PublicOrigin,
 ) -> HttpResponse {
     let now = Utc::now();
-    let told = |realm_id: &str, ended: EndedAt| tell(request, realm_id, &asked, ended);
+    let told = |realm_id: &str, ended: EndedAt, frames: &[Frame]| {
+        tell(request, realm_id, &asked, ended, frames)
+    };
 
     let Ok(mut connection) = pool.get().await else {
-        return told(realm, EndedAt::Nowhere);
+        return told(realm, EndedAt::Nowhere, &[]);
     };
     // An unknown realm ends nothing and says so the same way. Which realms exist
     // is not a question this endpoint answers, and everyone links to it.
     let Ok(context) = resolve::realm_by_name(&connection, realm).await else {
-        return told(realm, EndedAt::Nowhere);
+        return told(realm, EndedAt::Nowhere, &[]);
     };
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
-        return told(&context.realm_id, EndedAt::Nowhere);
+        return told(&context.realm_id, EndedAt::Nowhere, &[]);
     };
     let Ok(keys) = realm_keys::published(&transaction, KeyUse::Sig).await else {
-        return told(&context.realm_id, EndedAt::Nowhere);
+        return told(&context.realm_id, EndedAt::Nowhere, &[]);
     };
 
     let signed_in = binding::read(request, binding::SSO_SESSION);
@@ -108,6 +110,7 @@ async fn run(
     // ending is written: a client told of a logout that then failed to commit
     // would drop a session the user still holds.
     let mut notices = Vec::new();
+    let mut frames = Vec::new();
     let ending = signed_in
         .as_deref()
         .filter(|named| !named.is_empty() && ended != EndedAt::Confirm);
@@ -134,18 +137,27 @@ async fn run(
         )
         .await;
     }
+    if let Some(session_id) = ending {
+        frames = logout::frames_for(&transaction, &origin.issuer(realm), session_id).await;
+    }
 
     if transaction.commit().await.is_err() {
-        return told(&context.realm_id, EndedAt::Nowhere);
+        return told(&context.realm_id, EndedAt::Nowhere, &[]);
     }
     backchannel::deliver(notices).await;
-    told(&context.realm_id, ended)
+    told(&context.realm_id, ended, &frames)
 }
 
 /// What the browser is told. A page to a browser, JSON to anything else; the
 /// cookies go whenever the login did, and stay while the person is still
 /// being asked.
-fn tell(request: &HttpRequest, realm_id: &str, asked: &Asked, ended: EndedAt) -> HttpResponse {
+fn tell(
+    request: &HttpRequest,
+    realm_id: &str,
+    asked: &Asked,
+    ended: EndedAt,
+    frames: &[Frame],
+) -> HttpResponse {
     let as_page = page::wants_page(request);
     match ended {
         EndedAt::Confirm => {
@@ -156,6 +168,23 @@ fn tell(request: &HttpRequest, realm_id: &str, asked: &Asked, ended: EndedAt) ->
                 .json(json!({ "status": "confirm" }))
         }
         EndedAt::Redirect(landing) => {
+            // Front-Channel Logout §3: the frames have to load before the
+            // browser leaves, so a landing that has any is reached from the
+            // page rather than by a redirect the browser follows at once.
+            if !frames.is_empty() && as_page {
+                let mut response = page::notice_with_frames(
+                    StatusCode::OK,
+                    "You are signed out",
+                    &format!(
+                        "{}<p class=\"told\"><a href=\"{}\">Continue</a></p>",
+                        loading(frames),
+                        page::escaped(&landing)
+                    ),
+                    Some(&landing),
+                );
+                forget_on(&mut response, realm_id);
+                return response;
+            }
             let mut response = HttpResponseBuilder::new(StatusCode::FOUND);
             forget(&mut response, realm_id);
             uncached(&mut response)
@@ -165,8 +194,7 @@ fn tell(request: &HttpRequest, realm_id: &str, asked: &Asked, ended: EndedAt) ->
         EndedAt::Nowhere | EndedAt::Refused => {
             let refused = ended == EndedAt::Refused;
             if as_page {
-                let mut response = page::notice(
-                    StatusCode::OK,
+                let mut response = signed_out(
                     "You are signed out",
                     if refused {
                         "<p class=\"told\">The application asked to send you to an address it \
@@ -174,6 +202,7 @@ fn tell(request: &HttpRequest, realm_id: &str, asked: &Asked, ended: EndedAt) ->
                     } else {
                         "<p class=\"told\">You can close this window.</p>"
                     },
+                    frames,
                 );
                 forget_on(&mut response, realm_id);
                 return response;
@@ -187,6 +216,31 @@ fn tell(request: &HttpRequest, realm_id: &str, asked: &Asked, ended: EndedAt) ->
             uncached(&mut response).json(body)
         }
     }
+}
+
+/// The page that says it is over, carrying whatever frames were asked for.
+fn signed_out(title: &str, said: &str, frames: &[Frame]) -> HttpResponse {
+    let inner = format!("{said}{}", loading(frames));
+    if frames.is_empty() {
+        page::notice(StatusCode::OK, title, &inner)
+    } else {
+        page::notice_with_frames(StatusCode::OK, title, &inner, None)
+    }
+}
+
+/// One hidden frame per client that asked to be loaded at logout. Hidden
+/// because the person is not meant to see another application's page here.
+fn loading(frames: &[Frame]) -> String {
+    frames
+        .iter()
+        .map(|frame| {
+            format!(
+                "<iframe src=\"{}\" title=\"{}\" hidden></iframe>",
+                page::escaped(&frame.uri),
+                page::escaped(&frame.client_id)
+            )
+        })
+        .collect()
 }
 
 /// The question, carrying the request back so the answer ends the same

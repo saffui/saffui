@@ -89,6 +89,9 @@ enum Command {
         /// Where the clients are posted a logout token when a login ends.
         #[arg(long = "backchannel-logout")]
         backchannel_logout: Option<String>,
+        /// Where the browser loads a frame for the clients when a login ends.
+        #[arg(long = "frontchannel-logout")]
+        frontchannel_logout: Option<String>,
         /// A user to create. The password is read from
         /// `SAFFUI_PROVISION_USER_PASSWORD`.
         #[arg(long)]
@@ -134,6 +137,7 @@ fn main() -> ExitCode {
                         redirects,
                         after_logout,
                         backchannel_logout,
+                        frontchannel_logout,
                         user,
                         email,
                         given_name,
@@ -149,6 +153,7 @@ fn main() -> ExitCode {
                             redirects,
                             after_logout,
                             backchannel_logout,
+                            frontchannel_logout,
                             user,
                             email,
                             given_name,
@@ -277,6 +282,7 @@ struct Wanted {
     redirects: Vec<String>,
     after_logout: Vec<String>,
     backchannel_logout: Option<String>,
+    frontchannel_logout: Option<String>,
     user: Option<String>,
     email: String,
     given_name: Option<String>,
@@ -396,6 +402,7 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
                 redirect_uris: wanted.redirects.clone(),
                 post_logout_redirect_uris: wanted.after_logout.clone(),
                 backchannel_logout_uri: wanted.backchannel_logout.clone(),
+                frontchannel_logout_uri: wanted.frontchannel_logout.clone(),
             },
         )
         .await

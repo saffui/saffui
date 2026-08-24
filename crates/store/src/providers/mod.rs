@@ -19,6 +19,7 @@ pub mod mail;
 pub mod oidc;
 pub mod one_time_tokens;
 pub mod organizations;
+pub mod pairwise;
 pub mod pushed;
 pub mod realm_keys;
 pub mod realms;

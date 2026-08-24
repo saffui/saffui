@@ -53,6 +53,8 @@ pub struct Registered {
     pub default_acr_values: Option<Vec<String>>,
     pub initiate_login_uri: Option<String>,
     pub request_uris: Option<Vec<String>>,
+    pub subject_type: Option<String>,
+    pub sector_identifier_uri: Option<String>,
     /// How this client proves it is itself, as the column spells it.
     pub method: String,
     pub token_endpoint_auth_signing_alg: Option<SignAlg>,
@@ -81,6 +83,8 @@ impl Registered {
             default_acr_values: client.default_acr_values.clone(),
             initiate_login_uri: client.initiate_login_uri.clone(),
             request_uris: client.request_uris.clone(),
+            subject_type: client.subject_type.clone(),
+            sector_identifier_uri: client.sector_identifier_uri.clone(),
             method: client
                 .client_authenticator_type
                 .clone()
@@ -322,6 +326,8 @@ fn apply(client: &mut ClientModel, spec: &Spec) {
     client.default_acr_values = registered.default_acr_values.clone();
     client.initiate_login_uri = registered.initiate_login_uri.clone();
     client.request_uris = registered.request_uris.clone();
+    client.subject_type = registered.subject_type.clone();
+    client.sector_identifier_uri = registered.sector_identifier_uri.clone();
     client.token_endpoint_auth_signing_alg = registered.token_endpoint_auth_signing_alg;
     if !registered.method.is_empty() {
         client.client_authenticator_type = Some(registered.method.clone());

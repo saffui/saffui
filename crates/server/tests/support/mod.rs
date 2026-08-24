@@ -681,6 +681,24 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Tell this client a different identifier from every other sector, §8.
+    #[allow(dead_code, reason = "only the pairwise suite switches one over")]
+    pub async fn pair_subjects(&self, client_id: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.subject_type = Some("pairwise".to_owned());
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
     /// Switch the subject off, the way an administrator shuts down an account.
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn disable_subject(&self) {

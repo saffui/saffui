@@ -223,6 +223,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V035__registered_request_uris.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 36,
+            name: "pairwise_subjects",
+            sql: include_str!("../migrations/V036__pairwise_subjects.sql"),
+            transactional: true,
+        }),
     ]
 }
 

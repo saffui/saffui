@@ -13,6 +13,7 @@ use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
+use crate::api::rest::endpoints::protocol::hosted;
 use config::serving::PublicOrigin;
 
 /// RFC 7591 §3.1: the caller may carry an initial access token, and RFC 7592
@@ -56,6 +57,10 @@ fn answered(document: Value, status: StatusCode) -> HttpResponse {
     uncached(&mut HttpResponse::build(status)).json(document)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one registration"
+)]
 pub async fn create(
     request: HttpRequest,
     realm: web::Path<String>,
@@ -64,6 +69,7 @@ pub async fn create(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Some(body) = body else {
@@ -99,6 +105,15 @@ pub async fn create(
     )
     .await
     .ok();
+    // §5: fetched here, because reaching the network is the transport's, and
+    // read by the service, which is what decides.
+    let sector = match body.sector_identifier_uri.as_deref() {
+        Some(named) => match hosted::fetch(named.to_owned(), **egress).await {
+            Some(document) => serde_json::from_str::<Vec<String>>(&document).ok(),
+            None => None,
+        },
+        None => None,
+    };
     let registered = match registration::register(
         &transaction,
         sealing.provider.as_ref(),
@@ -106,6 +121,7 @@ pub async fn create(
         &context.tenant,
         &context.realm_id,
         &body,
+        sector.as_deref(),
         now,
     )
     .await

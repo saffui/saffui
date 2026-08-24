@@ -153,6 +153,10 @@ pub struct ClientModel {
     pub initiate_login_uri: Option<String>,
     /// Where this client hosts request objects, §6.2. Only these are fetched.
     pub request_uris: Option<Vec<String>>,
+    /// `public` or `pairwise`, §8. Absent is public.
+    pub subject_type: Option<String>,
+    /// What names this client's sector, §8.1. Absent, the redirect hosts do.
+    pub sector_identifier_uri: Option<String>,
     /// When this client registered itself. `None` for one an administrator made.
     pub registered_at: Option<DateTime<Utc>>,
 
@@ -236,6 +240,8 @@ impl ClientCreateModel {
             default_acr_values: None,
             initiate_login_uri: None,
             request_uris: None,
+            subject_type: None,
+            sector_identifier_uri: None,
             registered_at: None,
             protocol: None,
             public_client: None,

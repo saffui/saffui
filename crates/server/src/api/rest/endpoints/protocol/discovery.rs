@@ -106,7 +106,7 @@ pub async fn published(
                 "refresh_token",
                 "client_credentials",
             ],
-            "subject_types_supported": ["public"],
+            "subject_types_supported": ["public", "pairwise"],
             "id_token_signing_alg_values_supported": algorithms,
             "token_endpoint_auth_methods_supported": [
                 "client_secret_basic",

@@ -304,10 +304,15 @@ pub async fn authorization_code(
     )
     .await?;
 
+    // §8: what this client calls the account, which is its own identifier
+    // unless the client asked to be told a different one from every sector.
+    let told = crate::pairwise::subject_for(transaction, signing.provider, client, &code.user_id)
+        .await
+        .map_err(|_| Ungranted::Unreadable)?;
     let minting_for = |kind: Kind, life: Duration, audiences: Vec<String>| Minting {
         kind,
         issuer: within.issuer,
-        subject: &code.user_id,
+        subject: &told,
         audiences,
         party: &client.client_id,
         session_id: &code.session_id,
@@ -682,7 +687,10 @@ pub async fn refresh_token(
     // The account can be switched off between two renewals, and that is how an
     // administrator shuts down a compromised one. Honouring it at login only
     // leaves it live for as long as its refresh token lasts.
-    let subject = users::load(transaction, &verified.subject)
+    let account = crate::pairwise::account_for(transaction, Some(client), &verified.subject)
+        .await
+        .map_err(|_| Ungranted::InvalidGrant)?;
+    let subject = users::load(transaction, &account)
         .await
         .map_err(|_| Ungranted::Unreadable)?
         .filter(|user| user.enabled)
@@ -729,10 +737,14 @@ pub async fn refresh_token(
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
     let identity_key = identity_key_for(transaction, signing, client).await?;
 
+    let told =
+        crate::pairwise::subject_for(transaction, signing.provider, client, &subject.user_id)
+            .await
+            .map_err(|_| Ungranted::Unreadable)?;
     let minting_for = |kind: Kind, life: Duration| Minting {
         kind,
         issuer: within.issuer,
-        subject: &subject.user_id,
+        subject: &told,
         audiences: vec![client.client_id.clone()],
         party: &client.client_id,
         session_id,

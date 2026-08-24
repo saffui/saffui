@@ -297,8 +297,8 @@ async fn metadata_this_provider_cannot_honour_is_refused() {
             json!({"redirect_uris": ["https://app.example/cb"], "id_token_signed_response_alg": "none"}),
         ),
         (
-            "a pairwise subject",
-            json!({"redirect_uris": ["https://app.example/cb"], "subject_type": "pairwise"}),
+            "a subject type §8 does not name",
+            json!({"redirect_uris": ["https://app.example/cb"], "subject_type": "shared"}),
         ),
         (
             "keys published two ways",

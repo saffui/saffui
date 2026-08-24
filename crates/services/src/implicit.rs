@@ -67,10 +67,18 @@ pub async fn issue(
         .await
         .map_err(|_| Unmintable)?;
 
+    let told = crate::pairwise::subject_for(
+        transaction,
+        signing.provider,
+        established.client,
+        established.user_id,
+    )
+    .await
+    .map_err(|_| Unmintable)?;
     let minting = |kind: Kind, extra: Map<String, Value>| Minting {
         kind,
         issuer: established.issuer,
-        subject: established.user_id,
+        subject: &told,
         audiences: vec![established.client.client_id.clone()],
         party: &established.client.client_id,
         session_id: established.session_id,

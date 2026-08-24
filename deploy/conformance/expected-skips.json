@@ -8,5 +8,20 @@
     "test-name": "oidcc-ensure-request-object-with-redirect-uri",
     "variant": "*",
     "configuration-filename": "*basic.json"
+  },
+  {
+    "test-name": "oidcc-request-uri-unsigned",
+    "variant": "*",
+    "configuration-filename": "*basic.json"
+  },
+  {
+    "test-name": "oidcc-request-uri-unsigned-supported-correctly-or-rejected-as-unsupported",
+    "variant": "*",
+    "configuration-filename": "*basic.json"
+  },
+  {
+    "test-name": "oidcc-idtoken-unsigned",
+    "variant": "*",
+    "configuration-filename": "*basic.json"
   }
 ]

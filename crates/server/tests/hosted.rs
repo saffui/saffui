@@ -1,5 +1,3 @@
-//! A request object the client hosts, OIDC Core §6.2.
-
 mod support;
 
 use std::sync::Arc;

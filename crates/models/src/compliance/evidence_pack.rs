@@ -1,22 +1,3 @@
-//! The evidence a controller assembles when there is no certificate to point at.
-//!
-//! A verifiable audit chain, the consent records, the request log, the breach
-//! register and a current registration, in one artefact. It is what a tender asks
-//! for when it cannot ask for a certificate.
-//!
-//! # Two properties make it worth anything
-//!
-//! **It is anchored.** The chain verification is not one section among several,
-//! it is what makes the others credible. Consent records and a request log are
-//! assertions by the controller; a verified chain is the reason to believe them.
-//! A pack whose chain does not verify says so before anything else, and a reader
-//! who sees that should discount everything below.
-//!
-//! **It never quietly truncates.** Every section that was capped, filtered or
-//! failed to load says so. A pack that silently drops half a breach register
-//! looks exactly like a pack from a controller who had no breaches, and telling
-//! those apart is the entire point of producing one.
-
 use serde::{Deserialize, Serialize};
 
 /// What verifying a realm's audit chain found.

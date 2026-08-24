@@ -1,6 +1,3 @@
-//! How many reverse proxies stand in front, and which header they write. The
-//! two together are the only thing that makes a forwarded address readable.
-
 use crate::ConfigError;
 
 const HOPS: &str = "PROXY_HOPS";

@@ -1,10 +1,3 @@
-//! Where a login starts, and what may be sent onward from it.
-//!
-//! The split that matters here is not success against failure but showable
-//! against sendable. RFC 6749 §4.1.2.1: a request whose client or redirect
-//! cannot be trusted is shown to the user and never redirected, because
-//! redirecting it is the open redirector.
-
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;

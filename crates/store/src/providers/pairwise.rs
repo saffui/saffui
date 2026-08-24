@@ -1,5 +1,3 @@
-//! The identifier one account wears in front of one sector, OIDC Core §8.
-
 use deadpool_postgres::Transaction;
 
 use crate::error::{StoreError, StoreResult};

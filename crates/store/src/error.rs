@@ -1,5 +1,3 @@
-//! What the store says when it cannot do something.
-
 /// Why a statement could not be run.
 ///
 /// The write path refusals below are worth stating in one place, since each is

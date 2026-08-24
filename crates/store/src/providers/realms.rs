@@ -1,9 +1,3 @@
-//! The realm directory.
-//!
-//! The rules on this table key on the tenant alone. A realm's own boundary is
-//! enforced on the tables that hang off it, so a transaction listing realms is
-//! scoped to a tenant rather than to one of them.
-
 use deadpool_postgres::Transaction;
 use models::entities::realm::{ClientRegistration, RealmModel, SslEnforcement};
 use models::paging::Page;

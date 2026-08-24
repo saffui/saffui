@@ -1,5 +1,3 @@
-//! Registering, reshaping and retiring a client.
-
 use crypto::password::storage::StoredPassword;
 use crypto::provider::SignAlg;
 use crypto::provider::{Argon2Params, CryptoProvider};

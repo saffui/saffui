@@ -7,8 +7,6 @@
 // doctest wiring is dropped and the module paths are rewritten from `crate::`
 // to `crate::jose::`. See THIRD-PARTY.md at the repository root.
 
-//! JOSE — JWT, JWS, JWE, JWA, JWK.
-
 pub mod jwe;
 pub mod jwk;
 pub mod jws;

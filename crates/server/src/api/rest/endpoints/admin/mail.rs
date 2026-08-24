@@ -1,5 +1,3 @@
-//! How a realm sends mail, over the admin plane.
-
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;

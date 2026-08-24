@@ -1,22 +1,3 @@
-//! Which action each route requires.
-//!
-//! One table, read by the guard. The alternative is deriving the action from
-//! the path, and that produces wrong answers quietly: a branch that splits
-//! on path segments puts an organization's branding under the theme family, and
-//! one that ignores the method charges a read the price of a write. Both are
-//! silent, and the tests that catch them are tests of the derivation rather than
-//! of the route.
-//!
-//! Declaring it beside the path removes the class. A route absent from this
-//! table is refused rather than guessed at, so adding a handler and forgetting
-//! its action closes the door instead of opening it.
-//!
-//! The word is `action` and not `capability`. A capability is an unforgeable
-//! thing whose holder may act by holding it; here a caller presents an identity
-//! and the server looks up what that identity may do, which is the opposite
-//! arrangement. The type is already called `AdminAction`, and a third name for
-//! one thing is one more thing that can disagree.
-
 use actix_web::Route;
 use actix_web::http::Method;
 use actix_web::web;

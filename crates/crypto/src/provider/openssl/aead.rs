@@ -1,9 +1,3 @@
-//! AEAD over OpenSSL.
-//!
-//! The cipher table lives here rather than beside the digest one: this is its
-//! only consumer, and hoisting it would put a mapping in a shared place that
-//! nothing else shares.
-
 use openssl::symm::Cipher;
 use secrecy::{ExposeSecret, SecretBox};
 

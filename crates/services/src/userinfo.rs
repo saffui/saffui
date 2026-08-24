@@ -1,9 +1,3 @@
-//! What an access token's scope allows a client to learn about its holder.
-//!
-//! The scope gate is the whole point: a token granted only `openid` must not
-//! yield an address. What is released is decided here rather than by whoever
-//! renders it, so a second renderer cannot release more.
-
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::attributes;

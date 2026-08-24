@@ -6,8 +6,6 @@
 // crate as the `jose` module; module paths rewritten from `crate::` to
 // `crate::jose::`. See THIRD-PARTY.md at the repository root.
 
-//! JSON Web Encryption (JWE) support.
-
 pub mod alg;
 pub mod enc;
 mod jwe_algorithm;

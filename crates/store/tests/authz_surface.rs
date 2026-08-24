@@ -1,5 +1,3 @@
-//! The surface a protected application exposes, against a database.
-
 mod support;
 
 use models::auditable::AuditableModel;

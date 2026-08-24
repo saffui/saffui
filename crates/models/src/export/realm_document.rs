@@ -1,5 +1,3 @@
-//! A realm's configuration as a document, and what refusing to import one says.
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

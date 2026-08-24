@@ -1,11 +1,3 @@
-//! Following edges from an object back to a subject, under bounds it cannot
-//! exceed.
-//!
-//! Walking is the part that has to be made to stop. Every bound here is an
-//! error rather than a refusal: a walk that ran out of budget did not find the
-//! subject unrelated. It takes the caller's transaction, so a check sees the
-//! edges written beside it.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use authz::rebac::{CompiledSchema, Rule};

@@ -1,5 +1,3 @@
-//! Organizations, the domains that route a login to one, and who belongs.
-
 use deadpool_postgres::Transaction;
 use models::entities::organization::{
     OrgMembershipType, OrganizationDomain, OrganizationMemberModel, OrganizationModel,

@@ -1,9 +1,3 @@
-//! What the administrative plane puts on the wire.
-//!
-//! A shape of its own wherever the stored record would say too much. Answering
-//! with the row carries every switch an entity has, and adding a column then
-//! widens a public response without anybody deciding to.
-
 use serde::{Deserialize, Serialize};
 
 /// A realm as a listing shows it.

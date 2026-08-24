@@ -1,9 +1,3 @@
-//! Building each crate's configuration from the environment.
-//!
-//! Every variable is read under one prefix, every secret goes through a
-//! reference rather than being written inline, and a value that is set but
-//! cannot be read is a named failure — not a default quietly taking its place.
-
 use std::str::FromStr;
 
 use secrecy::SecretBox;

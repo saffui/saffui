@@ -1,14 +1,3 @@
-//! Saying who a statement is for, so the rules can be applied to it.
-//!
-//! The schema's policies read two settings and match nothing when neither is
-//! written, so a connection that does not say who it is reads and writes
-//! nothing. This is what writes them, and it is the only thing that does.
-//!
-//! They are written with transaction scope, so they cannot survive onto the next
-//! borrower of a pooled connection. The caller commits explicitly and dropping
-//! the transaction rolls it back, which makes the drop the boundary rather than
-//! a call somebody has to remember.
-
 use deadpool_postgres::{Object, Transaction};
 use tokio_postgres::IsolationLevel;
 

@@ -1,9 +1,3 @@
-//! Comparing a secret without reporting how far off it was.
-//!
-//! A comparison that stops at the first differing byte answers faster for a
-//! wrong guess that shares a prefix, and a caller who can measure that recovers
-//! the secret one byte at a time.
-
 use subtle::ConstantTimeEq;
 
 /// Equal, in time that does not depend on where they differ.

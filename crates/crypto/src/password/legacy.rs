@@ -1,14 +1,3 @@
-//! The catalogue of password formats a customer can arrive with.
-//!
-//! A migration only ever happens during a successful login, because that is the
-//! one moment the plaintext exists. So every format a customer might already
-//! have needs a name here, including the ones this crate cannot yet check: an
-//! importer that cannot name a format has to reject the whole import, and a
-//! customer with one unrecognised column cannot move at all.
-//!
-//! The serde tag is the persisted form. Adding a variant is safe; renaming one
-//! orphans every credential already imported under the old name.
-
 use data_encoding::{BASE64, HEXLOWER_PERMISSIVE};
 use secrecy::{ExposeSecret, SecretBox};
 use serde::{Deserialize, Serialize};

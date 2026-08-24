@@ -1,12 +1,3 @@
-//! The TLS policy every Postgres connection goes through.
-//!
-//! One connector, built once from configuration and threaded through every
-//! path — the pool, the advisory lock, the migration runner — so no connection
-//! can end up on a weaker policy than the deployment asked for.
-//!
-//! OpenSSL is the only TLS stack here, the one `crypto` already links. A second
-//! one would mean two places to configure a policy and two to get it wrong.
-
 use std::path::PathBuf;
 
 use openssl::error::ErrorStack;

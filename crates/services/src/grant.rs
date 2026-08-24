@@ -1,8 +1,3 @@
-//! Turning an authenticated client into tokens.
-//!
-//! The client is established before anything here runs, so nothing here asks
-//! who is calling.
-
 use chrono::{DateTime, Duration, Utc};
 use crypto::constant_time;
 use crypto::envelope::Envelope;

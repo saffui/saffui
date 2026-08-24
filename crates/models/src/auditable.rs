@@ -1,5 +1,3 @@
-//! What every audited row carries: who owns it, who touched it, and when.
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

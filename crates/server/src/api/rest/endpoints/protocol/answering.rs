@@ -1,5 +1,3 @@
-//! Answering an authorization request the way it asked to be answered.
-
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder};
 use services::landing::{Landing, ResponseMode};

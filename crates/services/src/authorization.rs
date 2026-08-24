@@ -1,5 +1,3 @@
-//! What a caller may do on the admin plane.
-
 use deadpool_postgres::Transaction;
 use models::entities::authz::AdminAction;
 use store::providers::{organizations, roles};

@@ -1,5 +1,3 @@
-//! What the client asked to be given back, OIDC Core §3.
-
 /// The set a `response_type` names. An ordered list would make one request
 /// written two ways into two requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

@@ -1,13 +1,3 @@
-//! Reading a browser and a system out of a `User-Agent`.
-//!
-//! A heuristic, and read rather than stored for that reason: the string a
-//! browser sent does not change, and what can be told from it does. A parse
-//! written into a column ages with the row and cannot be improved without one
-//! migration per improvement.
-//!
-//! It answers for the common browsers and nothing more. Privacy browsers spell
-//! themselves as Chrome on purpose, so this reports what they chose to say.
-
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Reading {
     pub browser: Option<&'static str>,

@@ -1,5 +1,3 @@
-//! A personal data breach, from finding it to filing it.
-
 use serde::{Deserialize, Serialize};
 
 use crate::compliance::subject_request::Jurisdiction;

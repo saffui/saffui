@@ -1,5 +1,3 @@
-//! TOTP: time-based one-time passwords (RFC 6238), over [`super::hotp`].
-
 use data_encoding::BASE32_NOPAD;
 use secrecy::{ExposeSecret, SecretBox};
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};

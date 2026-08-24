@@ -1,9 +1,3 @@
-//! The relationship tables, against a database.
-//!
-//! What is asserted here is the shape rather than any engine: the key that
-//! keeps two tenants apart, the schema a realm's edges hang from, and the
-//! isolation every realm scoped table promises.
-
 mod support;
 
 use store::tenancy::TenantContext;

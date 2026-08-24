@@ -1,13 +1,3 @@
-//! What this build can do, and what this deployment asked it to do.
-//!
-//! A capability resolves on two axes: whether it was compiled in, and whether
-//! the deployment wants it. It is on only if both. Asking for one that was not
-//! compiled is a startup failure, never a silent no-op — an operator who
-//! enabled a feature and got a binary without it should be told, not left
-//! running something else.
-//!
-//! Nothing here has a dependency, so any layer can ask.
-
 /// How finished a capability is, which decides whether it is on by default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lifecycle {

@@ -1,5 +1,3 @@
-//! Key derivation over OpenSSL.
-
 use openssl::hash::Hasher;
 use openssl::pkey::PKey;
 use openssl::sign::Signer;

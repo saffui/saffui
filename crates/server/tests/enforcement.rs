@@ -1,9 +1,3 @@
-//! The point of application, from an HTTP request to a recorded decision.
-//!
-//! Everything under it exists to answer this. Until something asks over a
-//! socket, none of it runs: an engine reachable only from its own tests is one
-//! nobody has enforced anything with.
-
 mod support;
 
 use actix_web::http::StatusCode;

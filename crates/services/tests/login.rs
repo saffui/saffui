@@ -1,5 +1,3 @@
-//! Running a flow against what a realm holds.
-
 mod support;
 
 use chrono::Utc;

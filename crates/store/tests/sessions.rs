@@ -1,5 +1,3 @@
-//! What a login leaves behind, against a database.
-
 mod support;
 
 use chrono::{Duration, Utc};

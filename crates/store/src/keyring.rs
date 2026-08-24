@@ -1,16 +1,3 @@
-//! The generations of a realm's data encryption key, and sealing under them.
-//!
-//! A realm's reversible secrets are encrypted under a key this database holds
-//! only in wrapped form. The ring is what turns a row of wrapped bytes into a
-//! usable generation: it unwraps under the deployment's key, keeps the
-//! generations it has opened, and directs every read at the generation the blob
-//! itself names.
-//!
-//! Every method is async although nothing in it awaits today. A deployment that
-//! keeps its wrapping key inside a token calls into that token to unwrap, which
-//! blocks, and blocking work belongs off the runtime's threads. Deciding that
-//! later would mean changing every caller instead of this file.
-
 use std::collections::HashMap;
 
 use crypto::envelope::{Envelope, RealmDek, SecretScope};

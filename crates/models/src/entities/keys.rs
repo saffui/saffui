@@ -1,10 +1,3 @@
-//! A realm's signing keys, and the JOSE catalogues a client may register
-//! against.
-//!
-//! The signing algorithm itself is [`crypto::provider::SignAlg`] — naming it a
-//! second time here is how a record and a token header end up disagreeing about
-//! one choice.
-
 use crypto::provider::SignAlg;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

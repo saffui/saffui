@@ -1,6 +1,3 @@
-//! A client registering itself: RFC 7591 to create one, RFC 7592 to read,
-//! replace or withdraw it.
-
 use actix_web::http::{StatusCode, header};
 use actix_web::{HttpRequest, HttpResponse, web};
 use chrono::Utc;

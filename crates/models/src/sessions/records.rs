@@ -1,5 +1,3 @@
-//! The rows a session leaves behind.
-
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};

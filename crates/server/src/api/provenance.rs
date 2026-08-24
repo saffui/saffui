@@ -1,5 +1,3 @@
-//! Reading off a request what it said about where it came from.
-
 use actix_web::HttpRequest;
 use actix_web::http::header::{self, HeaderName};
 use config::proxying::Proxying;

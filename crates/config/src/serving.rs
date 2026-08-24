@@ -1,10 +1,3 @@
-//! Where this deployment answers from, and the issuer built out of it.
-//!
-//! `iss` is the one string an IAM can never change, since every relying party
-//! compares it byte for byte. Keycloak carried an `/auth` prefix on everything
-//! and dropping it in 17 made every deployment rewrite its issuer, so this one
-//! is `{origin}/realms/{realm}` and carries no product name and no version.
-
 use crate::ConfigError;
 
 const ORIGIN: &str = "PUBLIC_ORIGIN";

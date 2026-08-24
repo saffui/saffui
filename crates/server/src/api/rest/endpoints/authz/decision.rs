@@ -1,9 +1,3 @@
-//! Where a protected application asks whether its caller may do something.
-//!
-//! What is asked about comes from the body. Who is asking never does: the
-//! subject is the token's, so an application cannot name somebody else and
-//! learn what they may do.
-
 use crate::api::rest::endpoints::authz::dto::{Ask, Asked, Told};
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;

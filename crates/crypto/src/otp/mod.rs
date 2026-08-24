@@ -1,5 +1,3 @@
-//! One-time passwords.
-
 pub mod hotp;
 pub mod recovery_codes;
 pub mod totp;

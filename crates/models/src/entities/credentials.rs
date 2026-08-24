@@ -1,6 +1,3 @@
-//! Stored credentials: what a user authenticates with, and under what
-//! parameters it was minted.
-
 use crypto::provider::HashAlg;
 use serde::{Deserialize, Serialize};
 

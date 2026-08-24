@@ -1,9 +1,3 @@
-//! What a client signs to say it is itself: RFC 7523 §2.2 and OIDC Core §9.
-//!
-//! Driven at the introspection endpoint, which authenticates exactly as the
-//! token endpoint does and needs no grant to have happened first, so what a
-//! case proves is the authentication and nothing else.
-
 mod support;
 
 use actix_web::http::StatusCode;

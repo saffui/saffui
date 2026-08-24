@@ -1,5 +1,3 @@
-//! A login while it is still happening, and what a realm counts against a user.
-
 use deadpool_postgres::Transaction;
 use models::sessions::login_failure::UserLoginFailure;
 use serde_json::Value;

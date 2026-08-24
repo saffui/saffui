@@ -1,5 +1,3 @@
-//! A realm's data encryption key, its generations, and what they seal.
-
 mod support;
 
 use std::sync::Arc;

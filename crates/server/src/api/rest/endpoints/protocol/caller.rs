@@ -1,8 +1,3 @@
-//! Establishing the client behind a request, the way the token endpoint does.
-//!
-//! Introspection and revocation authenticate exactly as the token endpoint
-//! does, RFC 7662 §2.1 and RFC 7009 §2.1, so one sequence serves all three.
-
 use actix_web::{HttpRequest, HttpResponse};
 use chrono::{DateTime, Utc};
 use deadpool_postgres::{Object, Transaction};

@@ -1,9 +1,3 @@
-//! The link between a local user and the account they hold upstream.
-//!
-//! Keyed on the upstream subject and nothing else. An email address or a
-//! username is mutable at the provider, so keying on either means a user who
-//! changes theirs arrives as a different person, or worse as someone else's.
-
 use serde::{Deserialize, Serialize};
 
 use crate::broker::BrokerSecret;

@@ -6,8 +6,6 @@
 // crate as the `jose` module; module paths rewritten from `crate::` to
 // `crate::jose::`. See THIRD-PARTY.md at the repository root.
 
-//! Distinguished Encoding Rules (DER) utilities.
-
 mod der_builder;
 mod der_class;
 mod der_error;

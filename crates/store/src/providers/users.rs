@@ -1,9 +1,3 @@
-//! The users of a realm.
-//!
-//! Every statement here runs inside a transaction scoped to both keys, so a
-//! lookup by name, address or phone number answers within one realm and says
-//! nothing about any other.
-
 use deadpool_postgres::Transaction;
 use models::entities::user::{RequiredAction, UserModel, UserStorage};
 use models::paging::Page;

@@ -1,10 +1,3 @@
-//! Letting somebody in, one step at a time.
-//!
-//! A flow is walked, each enabled step is run against what the realm holds, and
-//! what the flow makes of the answers decides. The walk takes the caller's
-//! transaction like everything else here, so a login and the session it opens
-//! are one snapshot.
-
 pub mod authenticator;
 pub mod browser;
 pub mod enrolment;

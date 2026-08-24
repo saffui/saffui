@@ -1,9 +1,3 @@
-//! What the token endpoint takes and gives back.
-//!
-//! Its own shapes, because RFC 6749 §5.1 and §5.2 fix them. A client library
-//! reads those field names and no others, so this server's usual envelope would
-//! parse as a token response carrying no token.
-
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder};
 use serde::{Deserialize, Serialize};

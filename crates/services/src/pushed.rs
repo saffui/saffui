@@ -1,9 +1,3 @@
-//! Pushing an authorization request here before sending the browser, RFC 9126.
-//!
-//! What the browser then carries is a reference, not the request: a URL bar,
-//! a history and a referrer header hold the reference and learn nothing from
-//! it, and nothing between the client and here can rewrite what was pushed.
-
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::{CryptoProvider, HashAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};

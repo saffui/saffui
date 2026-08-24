@@ -1,10 +1,3 @@
-//! What the evaluator answers, arm by arm and guarantee by guarantee.
-//!
-//! The tests that matter most here are the ones with no permit in them. A
-//! policy layer is not hard to make grant when it should; it is hard to stop
-//! granting when it cannot tell, and every arm below is asked what it does with
-//! a fact nobody could establish.
-
 use std::collections::BTreeSet;
 
 use authz::{

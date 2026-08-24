@@ -1,9 +1,3 @@
-//! The gate the administrative plane uses.
-//!
-//! A middleware and not an extractor on purpose. An extractor is something a
-//! handler can be written without, and a handler written without it is an
-//! unguarded route that looks exactly like a guarded one.
-
 use std::future::{Ready, ready};
 use std::rc::Rc;
 

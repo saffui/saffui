@@ -1,9 +1,3 @@
-//! What a token says, told to a client that may ask. RFC 7662.
-//!
-//! Every way of being dead is one answer, `active: false`: unknown, expired,
-//! withdrawn, rotated out and malformed are not told apart, so the endpoint
-//! leaks nothing about why.
-
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;

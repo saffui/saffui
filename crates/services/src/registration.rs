@@ -1,6 +1,3 @@
-//! A client registering itself. RFC 7591, RFC 7592, and OpenID Connect
-//! Dynamic Client Registration 1.0.
-
 use chrono::{DateTime, Utc};
 use crypto::envelope::Envelope;
 use crypto::password::migration::verify_and_plan;

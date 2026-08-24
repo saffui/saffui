@@ -1,5 +1,3 @@
-//! Named grants against a database.
-
 mod support;
 
 use models::auditable::AuditableModel;

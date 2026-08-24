@@ -1,16 +1,3 @@
-//! What a realm needs before anybody can administer it.
-//!
-//! The admin plane refuses a token whose `scope` claim lacks the one it was
-//! configured with, and `/authorize` drops a scope no client is attached to.
-//! Between the two there is no client registration endpoint and no realm
-//! creation handler, so nothing ever created the scope or the client that holds
-//! it: the only token that reached `/admin` was one a test built by hand.
-//!
-//! This is the provisioning that closes it. Not a migration: a migration runs
-//! against a schema, and both halves of this are rows in a realm that does not
-//! exist yet when it runs, addressed to a client id the deployment names in its
-//! own configuration.
-
 use crypto::envelope::Envelope;
 use crypto::jose::jwk::alg::ec::EcKeyPair;
 use crypto::jose::jwk::alg::rsa::RsaKeyPair;

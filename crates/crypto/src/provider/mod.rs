@@ -1,14 +1,3 @@
-//! The `CryptoProvider` seam.
-//!
-//! Every crypto operation goes through one of the traits below, so the rest of
-//! the workspace holds a trait object and never a backend type. Nothing in this
-//! module names OpenSSL: an algorithm is an identifier here, and mapping it to
-//! a cipher or a digest is the backend's job alone.
-//!
-//! The vendored JOSE layer is the standing exception. It calls OpenSSL
-//! directly, and routing it through this seam would mean rewriting third-party
-//! code we want to keep diffable against upstream (see THIRD-PARTY.md).
-
 pub mod openssl;
 
 use async_trait::async_trait;

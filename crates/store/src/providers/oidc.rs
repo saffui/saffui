@@ -1,5 +1,3 @@
-//! What `/authorize` mints, what `/token` spends, and what a realm refuses.
-
 use deadpool_postgres::Transaction;
 use models::entities::oidc::AuthorizationCode;
 use tokio_postgres::Row;

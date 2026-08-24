@@ -1,5 +1,3 @@
-//! A realm's signing keys, against a database.
-
 mod support;
 
 use std::sync::Arc;

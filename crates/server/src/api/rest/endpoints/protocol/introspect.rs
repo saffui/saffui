@@ -1,5 +1,3 @@
-//! RFC 7662: a client asks what a token says.
-
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;

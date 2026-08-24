@@ -1,11 +1,3 @@
-//! What a decision was, and why.
-//!
-//! Two answers are kept and not one. What a caller is told has two values,
-//! because there is no third answer to give somebody; what the evaluation
-//! reached has three. They are the same on an ordinary decision and differ in
-//! exactly the two cases an auditor is looking for: a permissive server
-//! reporting a permit over a refusal, and an evaluation that reached nothing.
-
 use models::entities::authz::{
     Decision, FactSource, PolicyEnforcementMode, PolicyType, ReportedDecision, WindowDefect,
 };

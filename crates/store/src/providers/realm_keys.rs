@@ -1,10 +1,3 @@
-//! The keys a realm signs with.
-//!
-//! The private half is sealed on the way in and opened on the way out, under
-//! the realm's own data encryption key. This is the first column in the schema
-//! that is stored sealed, and the reason the ring came first: writing it in the
-//! clear and sealing it later would be a data migration over private keys.
-
 use crypto::envelope::Envelope;
 use crypto::provider::SignAlg;
 use deadpool_postgres::Transaction;

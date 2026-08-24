@@ -1,10 +1,3 @@
-//! What a step actually runs.
-//!
-//! Named rather than looked up. A registry keyed by string turns a flow that
-//! names an authenticator this build does not have into a step that quietly
-//! does nothing, and a step that does nothing in a flow of alternatives is a
-//! way in nobody wrote.
-
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};

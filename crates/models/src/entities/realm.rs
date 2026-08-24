@@ -1,5 +1,3 @@
-//! A realm: an isolated set of users, clients and the rules they log in under.
-
 use serde::{Deserialize, Serialize};
 
 use crypto::provider::Argon2Params;

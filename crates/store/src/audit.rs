@@ -1,18 +1,3 @@
-//! The chain an auditor is shown.
-//!
-//! Entries are linked: each names the hash of the one before it, so changing
-//! one changes its hash and breaks every entry after it. What that buys is
-//! narrow. It does not stop someone with write access from rewriting the chain
-//! from a point onwards; it stops them from rewriting one entry and leaving the
-//! rest, and an anchor published where they do not decide bounds how far back a
-//! rewrite can reach unseen.
-//!
-//! Appending happens in the database and only there. The canonical form of an
-//! entry therefore has one owner: what `jsonb` renders back as text. A second
-//! canonicaliser here would be a second answer to the question "which bytes were
-//! hashed", and the two would agree until the day they did not. The verifier
-//! reads those bytes rather than producing them, which is what keeps it pure.
-
 use crypto::provider::{DigestProvider, HashAlg};
 use deadpool_postgres::Transaction;
 use serde_json::Value;

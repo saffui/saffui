@@ -1,5 +1,3 @@
-//! A login in progress, what it has failed at, and what a user may present.
-
 mod support;
 
 use store::providers::login::{self, AuthSession};

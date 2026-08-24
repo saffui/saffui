@@ -1,5 +1,3 @@
-//! What the providers do under the rules, against a database.
-
 use crypto::password::storage::StoredPassword;
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{Argon2Params, CryptoConfig, CryptoProvider};

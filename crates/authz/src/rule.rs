@@ -1,9 +1,3 @@
-//! What one policy answers, one kind at a time.
-//!
-//! Eleven arms, named, with no catch-all. A twelfth kind does not compile until
-//! it has said here what it decides on, which is the difference between adding
-//! a kind and adding one that silently decides nothing.
-
 use std::collections::BTreeSet;
 
 use models::entities::authz::{Decision, FactSource, PolicyModel, PolicyRule, PolicyType};

@@ -1,8 +1,3 @@
-//! The keys a person enrolled, over the admin plane.
-//!
-//! Listing and revocation, and deliberately nothing else: enrolling happens in
-//! the login, where the key's holder is the one holding the ceremony.
-
 use deadpool_postgres::Transaction;
 use store::providers::webauthn::{self, EnrolledCredential};
 

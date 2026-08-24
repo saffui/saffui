@@ -1,5 +1,3 @@
-//! The logins a person has open, and ending them.
-
 use deadpool_postgres::Transaction;
 use models::sessions::records::{ClientSessionModel, UserSessionModel};
 use store::providers::sessions;

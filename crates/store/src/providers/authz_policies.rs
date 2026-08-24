@@ -1,18 +1,3 @@
-//! What a policy decides, what it decides on, and what was decided.
-//!
-//! The write path is where a policy is made sound. A constraint reads one row,
-//! so it can hold that a rule names its own kind and that no binding hangs from
-//! a kind that would not read it, and it cannot hold that a role policy names a
-//! role, that a permission has a condition, that a pattern compiles, or that an
-//! aggregation does not lead back to where it started. Each of those is a
-//! property of the whole shape, and each is refused here.
-//!
-//! What that buys is on the read side. By the time an evaluator meets a policy,
-//! the answer it owes is a decision, and every one of these faults would have
-//! to be answered with one. A permission with no condition can only refuse, and
-//! refusing for want of a condition is indistinguishable from refusing because a
-//! condition said no.
-
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 

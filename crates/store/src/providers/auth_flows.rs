@@ -1,6 +1,3 @@
-//! How a realm authenticates: the flows, their steps, the settings those steps
-//! read, and the actions a user still owes.
-
 use deadpool_postgres::Transaction;
 use models::entities::auth::{
     AuthenticationExecutionModel, AuthenticationFlowModel, AuthenticatorConfigModel,

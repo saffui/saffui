@@ -1,5 +1,3 @@
-//! Clients: what may ask for a token, and how its tokens are protected.
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

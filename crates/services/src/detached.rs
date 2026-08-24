@@ -1,6 +1,3 @@
-//! Binding a token or a code to the identity token it came back with, OIDC
-//! Core §3.2.2.9 and §3.3.2.11.
-
 use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use data_encoding::BASE64URL_NOPAD;
 

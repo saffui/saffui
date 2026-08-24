@@ -1,9 +1,3 @@
-//! The schema, and the migrations that build it.
-//!
-//! Forward only and consolidated by concern rather than by the date a fix was
-//! needed. A database this creates has no history to replay, so a migration here
-//! describes a part of the schema rather than a correction to an earlier one.
-
 use pgcore::migrations::{Migration, SqlMigration};
 
 /// Every migration this build carries, in order.

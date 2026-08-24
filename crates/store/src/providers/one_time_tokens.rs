@@ -1,10 +1,3 @@
-//! The single use, short lived things a login hands out: the code in a message,
-//! the link in a mail, a reset token.
-//!
-//! Only the digest is stored. The value travels in a message or a URL and lands
-//! in inboxes, browser history and proxy logs, so reading this table yields
-//! nothing that can be presented.
-
 use crypto::provider::{DigestProvider, HashAlg};
 use deadpool_postgres::Transaction;
 

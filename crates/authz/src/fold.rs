@@ -1,11 +1,3 @@
-//! How several answers become one, and how one is inverted.
-//!
-//! One fold, used at every level: an aggregate over its conditions, a
-//! permission over its conditions, an application over the permissions that
-//! govern a request. There is no second combinator with the opposite convention
-//! for the empty set, because two of them is how a layer comes to refuse an
-//! empty set in one place and permit it vacantly in another.
-
 use models::entities::authz::{Decision, DecisionLogic, DecisionStrategy};
 
 /// The one place a boolean becomes a decision.

@@ -1,9 +1,3 @@
-//! What a client reads to configure itself.
-//!
-//! Everything here is derived rather than written down. A document that names an
-//! endpoint this build does not mount, or an algorithm the signer would refuse,
-//! configures every client wrong at once and does it silently.
-
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;

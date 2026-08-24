@@ -1,6 +1,3 @@
-//! What a relying party's iframe compares a login against, OIDC Session
-//! Management 1.0 §4.2.
-
 use crypto::provider::{CryptoProvider, HashAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use url::Url;

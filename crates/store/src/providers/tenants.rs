@@ -1,5 +1,3 @@
-//! The tenant registry.
-
 use deadpool_postgres::Transaction;
 use models::entities::tenant::{TenantLimits, TenantModel, TenantState};
 

@@ -1,16 +1,3 @@
-//! Consent receipts.
-//!
-//! Not OAuth scope consent. That answers "may this client read your email
-//! address": per client, revocable from a settings page, and meaningless to a
-//! data protection authority. This answers "on what lawful basis, for what
-//! purpose, under which version of which notice are you processing my personal
-//! data", which is the question a regulatory filing has to answer and the one a
-//! data subject exercises rights against.
-//!
-//! Two separate types on purpose. They share the word consent and nothing else,
-//! and one model would end up missing the fields that make a receipt evidence:
-//! the notice version, the lawful basis, the collection method.
-
 use serde::{Deserialize, Serialize};
 
 use crate::str_enum::str_enum;

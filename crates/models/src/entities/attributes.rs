@@ -1,5 +1,3 @@
-//! The open attribute map an entity carries alongside its declared columns.
-
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};

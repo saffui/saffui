@@ -1,5 +1,3 @@
-//! How a realm sends mail.
-
 use secrecy::SecretBox;
 
 /// A realm's mail settings, password included, as the sender needs them.

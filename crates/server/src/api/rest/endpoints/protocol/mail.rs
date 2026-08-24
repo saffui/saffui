@@ -1,5 +1,3 @@
-//! Sending what a step produced, once the caller has committed.
-
 use services::messaging::Outgoing;
 
 use crate::api::config::Sealing;

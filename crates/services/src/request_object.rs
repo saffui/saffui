@@ -1,9 +1,3 @@
-//! The authorization parameters a client signs, OIDC Core §6 and RFC 9101.
-//!
-//! Read against the algorithm the client registered and no other, because a
-//! header that chooses is a header an attacker chooses: a swapped `alg` is
-//! how a redirect target gets replaced. No registration, no request object.
-
 use chrono::{DateTime, Utc};
 use crypto::jose::jwk::{Jwk, JwkSet};
 use crypto::jose::jwt;

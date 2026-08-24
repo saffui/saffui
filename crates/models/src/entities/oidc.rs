@@ -1,6 +1,3 @@
-//! OIDC protocol records: the authorization code minted by `/authorize` and
-//! redeemed once at `/token`, and the backchannel request a client polls on.
-
 use serde::{Deserialize, Serialize};
 
 use crate::str_enum::str_enum;

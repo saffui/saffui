@@ -1,5 +1,3 @@
-//! The clients of a realm.
-
 use deadpool_postgres::Transaction;
 use models::entities::client::{ClientModel, ClientSecret, JweRegistration, Protocol};
 use models::entities::keys::{JweAlgorithm, JweEncryption};

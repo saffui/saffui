@@ -1,10 +1,3 @@
-//! Fetching a request object the client hosts, OIDC Core §6.2.
-//!
-//! The address is checked at resolution and the connection is made to exactly
-//! the address that passed, so a name that answers publicly once and privately
-//! a moment later does not get a second chance. Nothing is followed, nothing
-//! unbounded is read, and only what a client registered is ever asked for.
-
 use config::serving::Egress;
 use std::net::IpAddr;
 use std::time::Duration;

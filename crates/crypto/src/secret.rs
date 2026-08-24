@@ -1,15 +1,3 @@
-//! Newtypes that stop one kind of secret being passed as another.
-//!
-//! Every secret here is already a `SecretBox`: zeroized on drop, and redacted
-//! by its own `Debug`. What that does not give is a way to tell two secrets
-//! apart. A data encryption key and the key that wraps it are both
-//! `SecretBox<Vec<u8>>`, and code that passes one where the other belongs
-//! compiles, runs, and produces ciphertext nothing can open.
-//!
-//! So these carry no behaviour. They exist to make that swap a compile error,
-//! and the wrapper is thin on purpose: anything it added would be a reason to
-//! reach for it in places where the distinction is not the point.
-
 use secrecy::{ExposeSecret, SecretBox};
 
 /// Declare a newtype over secret bytes.

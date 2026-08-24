@@ -1,9 +1,3 @@
-//! What a request establishes about its caller, against a real schema.
-//!
-//! Every one of these arranges exactly one thing to be wrong, because the whole
-//! point of the type is that a caller the realm no longer stands behind is a
-//! refusal here rather than an absence something downstream has to interpret.
-
 mod support;
 
 use chrono::{Duration, Utc};

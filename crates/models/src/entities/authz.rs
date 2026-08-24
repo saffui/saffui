@@ -1,6 +1,3 @@
-//! Who may do what: the capability vocabulary, roles, groups, and the identity
-//! providers a realm federates to.
-
 use serde::{Deserialize, Serialize};
 
 use crate::auditable::AuditableModel;

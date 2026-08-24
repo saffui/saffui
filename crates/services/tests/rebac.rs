@@ -1,9 +1,3 @@
-//! Following edges, and stopping.
-//!
-//! Half of these are about the stopping. A walk that runs out of budget has not
-//! established that a subject is unrelated, so every ceiling here is asserted to
-//! be an error rather than a no.
-
 mod support;
 
 use authz::rebac::{CompiledSchema, compile, parse};

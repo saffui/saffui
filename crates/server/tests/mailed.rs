@@ -1,5 +1,3 @@
-//! Signing in by a link that arrives in the post.
-
 mod support;
 
 use std::sync::Arc;

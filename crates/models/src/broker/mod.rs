@@ -1,5 +1,3 @@
-//! Logging a user in through an upstream identity provider.
-
 use serde::{Deserialize, Serialize};
 
 pub mod apple_secret;

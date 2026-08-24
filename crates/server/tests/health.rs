@@ -1,8 +1,3 @@
-//! What an orchestrator asks, and what it does with each answer.
-//!
-//! These are asserted apart because confusing them is the classic fault: a
-//! database nobody can reach must take a pod out of service, not restart it.
-
 mod support;
 
 use actix_web::http::StatusCode;

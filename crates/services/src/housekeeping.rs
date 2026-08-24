@@ -1,9 +1,3 @@
-//! Taking away what has run out.
-//!
-//! Seven tables hold rows that stop meaning anything at a stated moment, and
-//! every read already treats such a row as absent. Nothing here changes what
-//! this server answers, only how much it keeps while answering it.
-
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use store::providers::{login, oidc, one_time_tokens, pushed, sessions};

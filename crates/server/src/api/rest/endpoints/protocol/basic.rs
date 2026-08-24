@@ -1,10 +1,3 @@
-//! Reading the `Authorization: Basic` a client authenticates with.
-//!
-//! RFC 6749 §2.3.1 does not send the raw id and secret: both are
-//! `application/x-www-form-urlencoded` first, so a secret containing `:` or `+`
-//! survives. A server that skips the decoding refuses exactly the secrets that
-//! were generated with the widest alphabet.
-
 use actix_web::HttpRequest;
 use data_encoding::BASE64;
 use secrecy::SecretBox;

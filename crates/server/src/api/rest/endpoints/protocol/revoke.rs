@@ -1,5 +1,3 @@
-//! RFC 7009: a client takes back a token it was issued.
-
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;

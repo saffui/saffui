@@ -1,5 +1,3 @@
-//! HMAC over OpenSSL.
-
 use openssl::memcmp;
 use openssl::pkey::PKey;
 use openssl::sign::Signer;

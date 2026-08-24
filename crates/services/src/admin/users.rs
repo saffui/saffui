@@ -1,6 +1,3 @@
-//! Creating, reshaping and retiring a person, and setting what they sign in
-//! with.
-
 use crypto::password::storage::StoredPassword;
 use crypto::provider::{Argon2Params, CryptoProvider};
 use deadpool_postgres::Transaction;

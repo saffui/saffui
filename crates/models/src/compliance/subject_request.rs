@@ -1,10 +1,3 @@
-//! Requests a data subject makes about their own data.
-//!
-//! Five kinds, and collapsing any two of them is the mistake that matters.
-//! Objection is what someone who wants to keep their account but not be profiled
-//! is asking for, and reading it as erasure turns "stop emailing me" into a
-//! deleted account.
-
 use serde::{Deserialize, Serialize};
 
 use crate::str_enum::str_enum;

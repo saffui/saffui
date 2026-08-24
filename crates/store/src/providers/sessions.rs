@@ -1,5 +1,3 @@
-//! What a login leaves behind, and the short lived things it hands out.
-
 use deadpool_postgres::Transaction;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use tokio_postgres::Row;

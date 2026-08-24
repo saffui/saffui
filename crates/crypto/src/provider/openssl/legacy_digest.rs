@@ -1,5 +1,3 @@
-//! Bare digests for legacy password formats.
-
 use openssl::hash::{Hasher, MessageDigest};
 
 use crate::provider::{CryptoError, LegacyDigest, LegacyDigestProvider, Result};

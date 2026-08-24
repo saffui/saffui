@@ -1,12 +1,3 @@
-//! Ending a login the browser holds.
-//!
-//! Strict about who may end it and where it sends you after. RP-Initiated
-//! Logout §2: the person is asked before their login ends unless a hint signed
-//! by this realm names the very session the browser holds. And a user clicking
-//! logout twice has still achieved their goal, so no cookie and an already-ended
-//! login both succeed: reporting "no such session" would answer a question
-//! about somebody else's login to whoever asks.
-
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::keys::RealmSigningKeyView;

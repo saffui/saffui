@@ -1,5 +1,3 @@
-//! Authorization requests a client pushed before sending the browser.
-
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use serde_json::Value;

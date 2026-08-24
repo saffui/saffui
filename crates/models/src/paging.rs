@@ -1,5 +1,3 @@
-//! What a collection endpoint accepts, and the window it resolves to.
-
 use serde::{Deserialize, Serialize};
 
 /// The page size a caller gets when it does not ask.

@@ -1,5 +1,3 @@
-//! What a user authenticates with.
-
 use deadpool_postgres::Transaction;
 use models::entities::credentials::{
     CredentialModel, CredentialSecret, CredentialType, OtpCredentialData,

@@ -1,5 +1,3 @@
-//! Why a migration run stopped.
-
 /// Each names what is wrong with the set or the history, never how to fix it —
 /// these reach a startup log, and the fix depends on which of the two is right.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]

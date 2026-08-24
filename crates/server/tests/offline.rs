@@ -1,5 +1,3 @@
-//! A grant that outlives the login it came from, OIDC Core §11.
-
 mod support;
 
 use actix_web::http::{Method, StatusCode};

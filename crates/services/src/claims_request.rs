@@ -1,13 +1,3 @@
-//! The `claims` request parameter, OIDC Core §5.5.
-//!
-//! A client naming the claims it wants, one by one, beside the scopes that
-//! name them in sets. Two halves, one for each place a claim can be returned:
-//! the userinfo endpoint and the identity token. A claim may be voluntary or
-//! essential, and may ask for one value or one of several; none of that ever
-//! makes a missing claim an error, §5.5.1 says so in as many words, with two
-//! exceptions the spec names and this module leaves to the callers that own
-//! them: `sub` and `acr`.
-
 use std::collections::BTreeMap;
 
 use serde_json::{Map, Value};

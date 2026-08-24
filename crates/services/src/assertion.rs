@@ -1,11 +1,3 @@
-//! What a client signs to say it is itself: RFC 7523 §2.2 and OIDC Core §9.
-//!
-//! Two methods, one shape. `private_key_jwt` verifies against the keys the
-//! client published; `client_secret_jwt` recomputes an HMAC over the secret
-//! only this deployment and that client hold. The method decides which family
-//! of algorithms is acceptable, so an assertion cannot be verified with a
-//! published key as if it were a shared one.
-
 use chrono::{DateTime, Utc};
 use crypto::jose::jwk::{Jwk, JwkSet};
 use crypto::jose::jws::{HS256, HS384, HS512, JwsVerifier};

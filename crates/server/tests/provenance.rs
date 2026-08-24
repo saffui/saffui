@@ -1,5 +1,3 @@
-//! What a login records about where it came from.
-
 mod support;
 
 use actix_web::http::StatusCode;

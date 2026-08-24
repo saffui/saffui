@@ -1,9 +1,3 @@
-//! Where a client asks for a token.
-//!
-//! Reached without a bearer, because the caller is asking for one. The only door
-//! on this plane with no gate in front of it, so what a gate would have checked,
-//! it checks itself.
-
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;

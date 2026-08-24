@@ -6,8 +6,6 @@
 // crate as the `jose` module; module paths rewritten from `crate::` to
 // `crate::jose::`. See THIRD-PARTY.md at the repository root.
 
-//! JSON Web Key (JWK) support.
-
 pub mod alg;
 
 // Upstream layout: `jwk::jwk` holds the `Jwk` type. Renaming it is a structural

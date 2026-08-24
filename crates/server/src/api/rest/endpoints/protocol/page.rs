@@ -1,10 +1,3 @@
-//! The login page this server renders when no other is configured.
-//!
-//! Static, and deliberately so: the page carries no data, so there is nothing
-//! to template and nothing a response could leak. Which login it is answering
-//! rides in the cookie, and the script posts to the very URL that served it.
-//! Its policy allows nothing inline, which is what lets the policy be short.
-
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;

@@ -1,6 +1,3 @@
-//! How a realm authenticates: the flows, the steps in them, and the actions a
-//! user still owes before a session is complete.
-
 use serde::{Deserialize, Serialize};
 
 use crate::auditable::AuditableModel;

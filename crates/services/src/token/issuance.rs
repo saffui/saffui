@@ -1,11 +1,3 @@
-//! Minting a token this realm will accept back.
-//!
-//! The mirror of the verifiers next door, and written against the same rules
-//! rather than against a specification read twice. Every claim the accept path
-//! requires is minted here unconditionally: a token that omits one is not a
-//! lenient token, it is a token that some gate will wave through because it has
-//! nothing to check.
-
 use chrono::{DateTime, Duration, Utc};
 use crypto::jose::jws::{
     ES256, ES384, ES512, EdDSA, JwsHeader, JwsSigner, PS256, PS384, PS512, RS256, RS384, RS512,

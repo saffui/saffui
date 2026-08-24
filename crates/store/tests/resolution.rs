@@ -1,5 +1,3 @@
-//! Answering whose realm this is, against a database.
-
 mod support;
 
 use models::auditable::AuditableModel;

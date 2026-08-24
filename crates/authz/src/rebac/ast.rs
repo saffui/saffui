@@ -1,11 +1,3 @@
-//! What a schema says, as written.
-//!
-//! Every node carries where it was written. The reference parses positions and
-//! then drops them, so a schema that parses but does not compile is reported by
-//! naming strings, and an author with a typo in one of forty definitions is
-//! told which name is wrong but never where it is. Positions cost one field per
-//! node here and cannot be retrofitted later without touching every node.
-
 /// Where something was written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct At {

@@ -1,5 +1,3 @@
-//! HOTP: HMAC-based one-time passwords (RFC 4226).
-
 use secrecy::SecretBox;
 
 use crate::provider::{CryptoError, HashAlg, HmacProvider, Result};

@@ -1,10 +1,3 @@
-//! What the admin plane asks before it lets a request through.
-//!
-//! Four questions, in order, and each is refused rather than assumed. The
-//! decision itself is a pure function: what reaches it is what the transport
-//! managed to establish, and what it answers is the only thing that opens the
-//! door.
-
 use models::entities::authz::AdminAction;
 use services::token::Verified;
 

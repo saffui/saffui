@@ -1,10 +1,3 @@
-//! The two questions this crate answers.
-//!
-//! Both go through the same evaluation over the same facts. One surface that
-//! tests a policy and another that decides a real request would be two
-//! evaluators, and the one an administrator tries a rule against would not be
-//! the one that later refuses somebody.
-
 use models::entities::authz::{
     Decision, PolicyEnforcementMode, ReportedDecision, ResourceServerModel,
 };

@@ -1,5 +1,3 @@
-//! What a realm does about a password being guessed at.
-
 mod support;
 
 use actix_web::http::StatusCode;

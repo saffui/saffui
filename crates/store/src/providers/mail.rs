@@ -1,5 +1,3 @@
-//! How a realm sends mail, password sealed.
-
 use crypto::envelope::Envelope;
 use deadpool_postgres::Transaction;
 use models::entities::mail::{MailCredentials, MailSettings};

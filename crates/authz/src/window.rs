@@ -1,9 +1,3 @@
-//! One instant against one window.
-//!
-//! Whether the window is one any instant could satisfy is a separate question,
-//! answered by `TimeWindow::defect` in the model and asked before this. What is
-//! left here is the comparison.
-
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use models::entities::authz::TimeWindow;
 

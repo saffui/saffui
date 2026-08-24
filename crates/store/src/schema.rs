@@ -205,6 +205,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V032__realm_mail.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 33,
+            name: "client_registration",
+            sql: include_str!("../migrations/V033__client_registration.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -125,6 +125,32 @@ pub struct ClientModel {
     /// exactly this pair; a plaintext one from such a client is refused.
     pub request_object_encryption: Option<JweRegistration>,
 
+    /// Where this client publishes its keys, when it publishes them rather
+    /// than handing them over. One or the other, never both.
+    pub jwks_uri: Option<String>,
+
+    /// What the client registered about itself, OIDC Registration §2. Held
+    /// because §3.2.1 answers a registration with every value it kept, and
+    /// what is not kept cannot be answered with.
+    pub client_uri: Option<String>,
+    pub logo_uri: Option<String>,
+    pub policy_uri: Option<String>,
+    pub tos_uri: Option<String>,
+    pub contacts: Option<Vec<String>>,
+    /// `web` or `native`, which decides whether a redirect may be loopback or
+    /// a scheme of the client's own.
+    pub application_type: Option<String>,
+    /// The response types registered. Absent is no bound, which is what every
+    /// client made by an administrator has.
+    pub response_types: Option<Vec<String>>,
+    /// Applied where a request names no `max_age` of its own.
+    pub default_max_age: Option<i32>,
+    pub default_acr_values: Option<Vec<String>>,
+    /// Where a third party sends a person for this client to start a login.
+    pub initiate_login_uri: Option<String>,
+    /// When this client registered itself. `None` for one an administrator made.
+    pub registered_at: Option<DateTime<Utc>>,
+
     pub protocol: Option<Protocol>,
     pub public_client: Option<bool>,
     pub client_authenticator_type: Option<String>,
@@ -192,6 +218,18 @@ impl ClientCreateModel {
             id_token_encryption: None,
             userinfo_encryption: None,
             request_object_encryption: None,
+            jwks_uri: None,
+            client_uri: None,
+            logo_uri: None,
+            policy_uri: None,
+            tos_uri: None,
+            contacts: None,
+            application_type: None,
+            response_types: None,
+            default_max_age: None,
+            default_acr_values: None,
+            initiate_login_uri: None,
+            registered_at: None,
             protocol: None,
             public_client: None,
             client_authenticator_type: None,

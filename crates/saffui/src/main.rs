@@ -113,6 +113,10 @@ enum Command {
         /// mints, rather than only a code to exchange.
         #[arg(long = "implicit", default_value_t = false)]
         implicit: bool,
+        /// Let a client register itself here, RFC 7591. Open registration:
+        /// anyone who can reach the endpoint may create a client.
+        #[arg(long = "open-registration", default_value_t = false)]
+        open_registration: bool,
     },
 }
 
@@ -152,6 +156,7 @@ fn main() -> ExitCode {
                         attributes,
                         magic_link,
                         implicit,
+                        open_registration,
                     } => {
                         provision(&Wanted {
                             tenant,
@@ -170,6 +175,7 @@ fn main() -> ExitCode {
                             attributes,
                             magic_link,
                             implicit,
+                            open_registration,
                         })
                         .await
                     }
@@ -313,6 +319,7 @@ struct Wanted {
     attributes: Vec<String>,
     magic_link: bool,
     implicit: bool,
+    open_registration: bool,
 }
 
 /// Create what is missing, and say what was created.
@@ -407,6 +414,13 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
         .map_err(unreadable)?
     {
         println!("levels mapped");
+    }
+    if wanted.open_registration
+        && provisioning::open_client_registration(&transaction, realm)
+            .await
+            .map_err(unreadable)?
+    {
+        println!("client registration opened");
     }
     for client_id in &wanted.clients {
         let created = provisioning::provision_client(

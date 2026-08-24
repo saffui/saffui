@@ -27,7 +27,8 @@ use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::rest::endpoints::protocol::{
-    authorize, discovery, introspect, keys, login, logout, page, par, revoke, token, userinfo,
+    authorize, discovery, introspect, keys, login, logout, page, par, registration, revoke, token,
+    userinfo,
 };
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
@@ -234,6 +235,18 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/login.css").route(web::get().to(page::style)))
         .service(web::resource("/token").route(web::post().to(token::ask)))
         .service(web::resource("/par").route(web::post().to(par::keep)))
+        .service(
+            web::resource("/register")
+                .app_data(web::JsonConfig::default().limit(PROTOCOL_BODY))
+                .route(web::post().to(registration::create)),
+        )
+        .service(
+            web::resource("/register/{client}")
+                .app_data(web::JsonConfig::default().limit(PROTOCOL_BODY))
+                .route(web::get().to(registration::read))
+                .route(web::put().to(registration::replace))
+                .route(web::delete().to(registration::withdraw)),
+        )
         .service(web::resource("/introspect").route(web::post().to(introspect::tell)))
         .service(web::resource("/revoke").route(web::post().to(revoke::take_back)))
         .service(web::resource("/certs").route(web::get().to(keys::published)))

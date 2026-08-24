@@ -717,6 +717,30 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Let clients register themselves, on the terms named.
+    #[allow(dead_code, reason = "only the registration suite opens it")]
+    pub async fn allow_registration(
+        &self,
+        policy: models::entities::realm::ClientRegistration,
+        secret: Option<&str>,
+    ) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.client_registration = policy;
+        realm.registration_secret = secret
+            .map(|held| services::registration::hashed(&provider(), held).expect("a hashed token"));
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.unwrap();
+    }
+
     /// Let this client receive what the authorization endpoint mints. Off
     /// everywhere until a test says otherwise, as it is on a deployment.
     #[allow(dead_code, reason = "only the hybrid suite asks for it")]

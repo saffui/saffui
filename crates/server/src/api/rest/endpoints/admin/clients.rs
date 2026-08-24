@@ -183,6 +183,7 @@ pub async fn remove(
 
 fn spec_of(asked: &ClientSpec) -> Spec {
     Spec {
+        registered: Default::default(),
         name: asked.name.clone(),
         confidential: asked.confidential.unwrap_or(true),
         redirect_uris: asked.redirect_uris.clone().unwrap_or_default(),

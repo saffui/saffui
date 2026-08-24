@@ -9,6 +9,7 @@ use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;
 use crypto::provider::SignAlg;
 use deadpool_postgres::Pool;
+use models::entities::realm::ClientRegistration;
 use serde_json::{Value, json};
 use store::tenancy::{Tenancy, resolve};
 
@@ -50,10 +51,14 @@ pub async fn published(
     // What the realm calls its authentication levels, weakest first. A realm
     // mapping nothing omits this and the `acr` claim with it: an empty list
     // claims the server supports no authentication contexts at all.
-    let mapped = services::realm::named(&transaction, &context.realm_id)
+    let held = services::realm::named(&transaction, &context.realm_id)
         .await
         .ok()
-        .flatten()
+        .flatten();
+    let registers = held
+        .as_ref()
+        .is_some_and(|realm| realm.client_registration != ClientRegistration::Disabled);
+    let mapped = held
         .and_then(|realm| realm.acr_loa_map)
         .filter(|map| !map.is_empty());
     let contexts: Vec<String> = mapped
@@ -69,9 +74,7 @@ pub async fn published(
     let issuer = origin.issuer(&context.realm_id);
     let protocol = format!("{issuer}/protocol/openid-connect");
 
-    HttpResponseBuilder::new(StatusCode::OK)
-        .insert_header(("Cache-Control", "public, max-age=300"))
-        .json(json!({
+    let mut document = json!({
             "issuer": issuer,
             "authorization_endpoint": format!("{protocol}/auth"),
             "token_endpoint": format!("{protocol}/token"),
@@ -152,7 +155,19 @@ pub async fn published(
             "require_pushed_authorization_requests": false,
             "claims_parameter_supported": true,
             "authorization_response_iss_parameter_supported": false,
-        }))
+    });
+    // Named only where a realm answers it. A client sent to an endpoint that
+    // is not there reports the realm as broken rather than as closed.
+    if registers {
+        document.as_object_mut().expect("a json object").insert(
+            "registration_endpoint".to_owned(),
+            Value::from(format!("{protocol}/register")),
+        );
+    }
+
+    HttpResponseBuilder::new(StatusCode::OK)
+        .insert_header(("Cache-Control", "public, max-age=300"))
+        .json(document)
 }
 
 /// What a token here may carry. `acr` only when the realm maps something, since

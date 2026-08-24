@@ -20,6 +20,7 @@ pub mod logout;
 pub mod mail;
 pub mod page;
 pub mod par;
+pub mod registration;
 pub mod revoke;
 pub mod token;
 pub mod userinfo;

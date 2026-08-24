@@ -28,7 +28,10 @@ const COLUMNS: &str = "tenant, realm_id, client_id, name, display_name, descript
                        backchannel_logout_uri, backchannel_logout_session_required, \
                        frontchannel_logout_uri, frontchannel_logout_session_required, \
                        id_token_signed_response_alg, userinfo_signed_response_alg, \
-                       request_object_signing_alg, jwks, \
+                       request_object_signing_alg, jwks, jwks_uri, \
+                       client_uri, logo_uri, policy_uri, tos_uri, contacts, \
+                       application_type, response_types, default_max_age, \
+                       default_acr_values, initiate_login_uri, registered_at, \
                        id_token_encryption_alg, id_token_encryption_enc, \
                        userinfo_encryption_alg, userinfo_encryption_enc, \
                        request_object_encryption_alg, request_object_encryption_enc, \
@@ -54,6 +57,9 @@ pub async fn create(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
         col("secret_expires_at", &client.secret_expires_at),
         col("public_client", &client.public_client),
         col("protocol", &client.protocol),
+        // Written here and never by `update`: registering is one event, and an
+        // edit afterwards is not a second registration.
+        col("registered_at", &client.registered_at),
         col("created_by", &client.metadata.created_by),
     ]);
 
@@ -114,6 +120,38 @@ pub async fn load_secret(
                 .get::<_, Option<String>>("secret")
                 .map(|plain| StoredSecret::Plain(ClientSecret::new(plain))),
         }))
+}
+
+/// What a registration access token is checked against, RFC 7592 §2.
+pub async fn load_registration_token(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+) -> StoreResult<Option<String>> {
+    Ok(transaction
+        .query_opt(
+            "SELECT registration_token FROM clients WHERE client_id = $1",
+            &[&client_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .and_then(|row| row.get::<_, Option<String>>("registration_token")))
+}
+
+/// Set the hash a registration access token is checked against.
+pub async fn rotate_registration_token(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    encoded: &str,
+) -> StoreResult<bool> {
+    let set = WriteSet::update(
+        vec![col("registration_token", &encoded)],
+        vec![col("client_id", &client_id)],
+    );
+    let changed = transaction
+        .execute(statement::update("clients", &set).as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
 }
 
 /// Put a hash where a plaintext secret was, without touching anything else.
@@ -305,6 +343,17 @@ pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
             col("userinfo_signed_response_alg", &userinfo_alg),
             col("request_object_signing_alg", &request_object_alg),
             col("jwks", &client.jwks),
+            col("jwks_uri", &client.jwks_uri),
+            col("client_uri", &client.client_uri),
+            col("logo_uri", &client.logo_uri),
+            col("policy_uri", &client.policy_uri),
+            col("tos_uri", &client.tos_uri),
+            col("contacts", &client.contacts),
+            col("application_type", &client.application_type),
+            col("response_types", &client.response_types),
+            col("default_max_age", &client.default_max_age),
+            col("default_acr_values", &client.default_acr_values),
+            col("initiate_login_uri", &client.initiate_login_uri),
             col("id_token_encryption_alg", &id_token_enc_alg),
             col("id_token_encryption_enc", &id_token_enc),
             col("userinfo_encryption_alg", &userinfo_enc_alg),
@@ -356,6 +405,18 @@ fn read(row: Row) -> ClientModel {
         userinfo_signed_response_alg: read_signing_alg(&row, "userinfo_signed_response_alg"),
         request_object_signing_alg: read_signing_alg(&row, "request_object_signing_alg"),
         jwks: row.get("jwks"),
+        jwks_uri: row.get("jwks_uri"),
+        client_uri: row.get("client_uri"),
+        logo_uri: row.get("logo_uri"),
+        policy_uri: row.get("policy_uri"),
+        tos_uri: row.get("tos_uri"),
+        contacts: row.get("contacts"),
+        application_type: row.get("application_type"),
+        response_types: row.get("response_types"),
+        default_max_age: row.get("default_max_age"),
+        default_acr_values: row.get("default_acr_values"),
+        initiate_login_uri: row.get("initiate_login_uri"),
+        registered_at: row.get("registered_at"),
         id_token_encryption: read_encryption(&row, "id_token_encryption"),
         userinfo_encryption: read_encryption(&row, "userinfo_encryption"),
         request_object_encryption: read_encryption(&row, "request_object_encryption"),

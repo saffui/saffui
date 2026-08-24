@@ -28,7 +28,8 @@ const COLUMNS: &str = "tenant, realm_id, client_id, name, display_name, descript
                        backchannel_logout_uri, backchannel_logout_session_required, \
                        frontchannel_logout_uri, frontchannel_logout_session_required, \
                        id_token_signed_response_alg, userinfo_signed_response_alg, \
-                       request_object_signing_alg, jwks, jwks_uri, \
+                       request_object_signing_alg, token_endpoint_auth_signing_alg, \
+                       jwks, jwks_uri, \
                        client_uri, logo_uri, policy_uri, tos_uri, contacts, \
                        application_type, response_types, default_max_age, \
                        default_acr_values, initiate_login_uri, registered_at, \
@@ -91,6 +92,9 @@ pub enum StoredSecret {
     /// A row an older binary wrote. Checked once more, then replaced, the way a
     /// password hash is upgraded on a login.
     Plain(ClientSecret),
+    /// Recoverable, because `client_secret_jwt` recomputes an HMAC over it and
+    /// a hash cannot give it back. Sealed under the realm's key.
+    Sealed(Vec<u8>),
 }
 
 /// What a client authenticates with.
@@ -109,17 +113,49 @@ pub async fn load_secret(
 ) -> StoreResult<Option<StoredSecret>> {
     Ok(transaction
         .query_opt(
-            "SELECT secret_hash, secret FROM clients WHERE client_id = $1",
+            "SELECT secret_hash, secret, sealed_secret FROM clients WHERE client_id = $1",
             &[&client_id],
         )
         .await
         .map_err(|_| StoreError::Backend)?
-        .and_then(|row| match row.get::<_, Option<String>>("secret_hash") {
-            Some(encoded) => Some(StoredSecret::Hashed(encoded)),
-            None => row
-                .get::<_, Option<String>>("secret")
-                .map(|plain| StoredSecret::Plain(ClientSecret::new(plain))),
+        .and_then(|row| match row.get::<_, Option<Vec<u8>>>("sealed_secret") {
+            Some(sealed) => Some(StoredSecret::Sealed(sealed)),
+            None => match row.get::<_, Option<String>>("secret_hash") {
+                Some(encoded) => Some(StoredSecret::Hashed(encoded)),
+                None => row
+                    .get::<_, Option<String>>("secret")
+                    .map(|plain| StoredSecret::Plain(ClientSecret::new(plain))),
+            },
         }))
+}
+
+/// Keep a secret this deployment must be able to read back, sealed.
+///
+/// The hash and the plaintext column are cleared: one storage form per client,
+/// and a leftover in either would keep authenticating what a rotation replaced.
+pub async fn seal_secret(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    sealed: &[u8],
+    version: i32,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> StoreResult<bool> {
+    let nothing: Option<String> = None;
+    let set = WriteSet::update(
+        vec![
+            col("sealed_secret", &sealed),
+            col("sealed_version", &version),
+            col("secret_hash", &nothing),
+            col("secret", &nothing),
+            col("secret_expires_at", &expires_at),
+        ],
+        vec![col("client_id", &client_id)],
+    );
+    let changed = transaction
+        .execute(statement::update("clients", &set).as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
 }
 
 /// What a registration access token is checked against, RFC 7592 §2.
@@ -204,10 +240,14 @@ pub async fn rotate_secret(
     // and left the old value behind would leave the credential it replaced
     // readable and, worse, still accepted by a binary that reads that column.
     let nothing: Option<String> = None;
+    let nothing_sealed: Option<Vec<u8>> = None;
+    let nothing_version: Option<i32> = None;
     let set = WriteSet::update(
         vec![
             col("secret_hash", &encoded),
             col("secret", &nothing),
+            col("sealed_secret", &nothing_sealed),
+            col("sealed_version", &nothing_version),
             col("secret_expires_at", &expires_at),
         ],
         vec![col("client_id", &client_id)],
@@ -279,6 +319,7 @@ pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
     let id_token_alg = alg_name(client.id_token_signed_response_alg);
     let userinfo_alg = alg_name(client.userinfo_signed_response_alg);
     let request_object_alg = alg_name(client.request_object_signing_alg);
+    let assertion_alg = alg_name(client.token_endpoint_auth_signing_alg);
     let (id_token_enc_alg, id_token_enc) = split_registration(client.id_token_encryption);
     let (userinfo_enc_alg, userinfo_enc) = split_registration(client.userinfo_encryption);
     let (request_object_enc_alg, request_object_enc) =
@@ -342,6 +383,7 @@ pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
             col("id_token_signed_response_alg", &id_token_alg),
             col("userinfo_signed_response_alg", &userinfo_alg),
             col("request_object_signing_alg", &request_object_alg),
+            col("token_endpoint_auth_signing_alg", &assertion_alg),
             col("jwks", &client.jwks),
             col("jwks_uri", &client.jwks_uri),
             col("client_uri", &client.client_uri),
@@ -404,6 +446,7 @@ fn read(row: Row) -> ClientModel {
         id_token_signed_response_alg: read_signing_alg(&row, "id_token_signed_response_alg"),
         userinfo_signed_response_alg: read_signing_alg(&row, "userinfo_signed_response_alg"),
         request_object_signing_alg: read_signing_alg(&row, "request_object_signing_alg"),
+        token_endpoint_auth_signing_alg: read_signing_alg(&row, "token_endpoint_auth_signing_alg"),
         jwks: row.get("jwks"),
         jwks_uri: row.get("jwks_uri"),
         client_uri: row.get("client_uri"),

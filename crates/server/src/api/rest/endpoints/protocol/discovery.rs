@@ -111,7 +111,19 @@ pub async fn published(
             "token_endpoint_auth_methods_supported": [
                 "client_secret_basic",
                 "client_secret_post",
+                "client_secret_jwt",
+                "private_key_jwt",
                 "none",
+            ],
+            // What an assertion may be signed with. The shared-secret method
+            // takes the HMAC family and the key method the rest, so the union
+            // is what a client may register.
+            "token_endpoint_auth_signing_alg_values_supported": [
+                "HS256", "HS384", "HS512",
+                "RS256", "RS384", "RS512",
+                "PS256", "PS384", "PS512",
+                "ES256", "ES384", "ES512",
+                "EdDSA",
             ],
             // Introspection turns a stolen token into its claims, so never for
             // a client that keeps no secret; a revocation is a client's own to

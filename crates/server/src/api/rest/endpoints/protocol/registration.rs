@@ -89,9 +89,20 @@ pub async fn create(
         return refused(&why);
     }
 
+    // Only opened where the registration asks for a method that keeps a
+    // readable secret; the rest of them store nothing this could open.
+    let ring = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    .ok();
     let registered = match registration::register(
         &transaction,
         sealing.provider.as_ref(),
+        ring.as_ref().map(|ring| (ring, sealing.envelope.as_ref())),
         &context.tenant,
         &context.realm_id,
         &body,

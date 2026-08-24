@@ -8,7 +8,6 @@ use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
-use secrecy::SecretBox;
 use services::client::{self, Unauthenticated};
 use services::grant::{self, Granted, Ungranted};
 use store::keyring;
@@ -16,7 +15,7 @@ use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
-use crate::api::rest::endpoints::protocol::basic;
+use crate::api::rest::endpoints::protocol::caller;
 use crate::api::rest::endpoints::protocol::dto::{Asked, Denied, uncached};
 
 /// Ask for a token. The realm is resolved before the body is read, since parsing
@@ -48,47 +47,30 @@ pub async fn ask(
         return Denied::InvalidRequest.answer("the body could not be read as a form");
     };
 
-    let presented = match client::read_presented(
-        basic::credentials(&request),
+    let (transaction, client) = match caller::establish(
+        &request,
         asked.client_id.as_deref(),
+        asked.client_secret.clone(),
         asked
-            .client_secret
-            .clone()
-            .map(|secret| SecretBox::new(Box::new(secret))),
-    ) {
-        Ok(presented) => presented,
-        Err(why) => return refused(why),
-    };
-
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
-        return Denied::InvalidRequest.answer("the realm could not be read");
-    };
-
-    let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
-        return Denied::InvalidRequest.answer("the realm could not be read");
-    };
-    // What the realm mints passwords at. A secret converted from the plaintext
-    // column is hashed at the cost this realm chose, not at one this endpoint
-    // picked.
-    let cost = realm
-        .password_policy
-        .as_ref()
-        .map(|policy| policy.hashing)
-        .unwrap_or_default();
-
-    // Before the grant is even read. A grant added later cannot be added
-    // without this, because there is nowhere below here to add it.
-    let client = match client::authenticate(
-        &transaction,
-        sealing.provider.as_ref(),
-        cost,
-        &presented,
+            .client_assertion_type
+            .as_deref()
+            .zip(asked.client_assertion.as_deref())
+            .map(|(kind, assertion)| client::Signed { kind, assertion }),
+        &mut connection,
+        &tenancy,
+        &sealing,
+        &origin,
+        &context,
         now,
     )
     .await
     {
-        Ok(client) => client,
-        Err(why) => return refused(why),
+        Ok(established) => established,
+        Err(response) => return response,
+    };
+
+    let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
+        return Denied::InvalidRequest.answer("the realm could not be read");
     };
 
     let Some(grant_type) = asked.grant_type.as_deref().filter(|it| !it.is_empty()) else {

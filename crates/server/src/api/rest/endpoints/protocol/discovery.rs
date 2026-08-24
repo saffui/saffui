@@ -81,6 +81,9 @@ pub async fn published(
             "jwks_uri": format!("{protocol}/certs"),
             "userinfo_endpoint": format!("{protocol}/userinfo"),
             "end_session_endpoint": format!("{protocol}/logout"),
+            // Session Management 1.0 §2.1: where a relying party loads the
+            // frame it asks about this login with.
+            "check_session_iframe": format!("{protocol}/check-session"),
             "introspection_endpoint": format!("{protocol}/introspect"),
             "revocation_endpoint": format!("{protocol}/revoke"),
             "frontchannel_logout_supported": true,

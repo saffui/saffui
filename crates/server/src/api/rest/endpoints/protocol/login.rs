@@ -214,6 +214,7 @@ pub async fn answer(
                 Step::Admitted {
                     landing,
                     session_id,
+                    browser_state,
                 } => {
                     tracing::info!(session = %session_id, "login admitted");
                     let mut response = HttpResponseBuilder::new(match spoken {
@@ -228,6 +229,11 @@ pub async fn answer(
                         &context.realm_id,
                         SSO_LIFESPAN,
                     );
+                    // §4.2: read by script in a frame the relying party loads,
+                    // so it is set on terms the others are not.
+                    if let Some(state) = &browser_state {
+                        binding::set_browser_state(&mut response, state, &context.realm_id);
+                    }
                     told_landing(&mut response, spoken, "admitted", &landing)
                 }
                 Step::Refused => {

@@ -47,6 +47,7 @@ async fn plant(transaction: &deadpool_postgres::Transaction<'_>) {
     sessions::open(
         transaction,
         &UserSessionModel {
+            browser_state: None,
             tenant: "acme".into(),
             session_id: SESSION.into(),
             realm_id: "main".into(),

@@ -542,6 +542,8 @@ async fn open_login(
     sessions::open(
         transaction,
         &UserSessionModel {
+            // No browser took part, so nothing in one is watching this login.
+            browser_state: None,
             tenant: tenant.tenant.clone(),
             session_id: session_id.to_owned(),
             realm_id: tenant.realm_id.clone(),

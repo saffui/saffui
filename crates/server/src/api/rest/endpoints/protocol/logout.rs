@@ -268,6 +268,8 @@ fn confirm_form(asked: &Asked) -> String {
 fn forget(response: &mut HttpResponseBuilder, realm_id: &str) {
     binding::clear(response, binding::SSO_SESSION, realm_id);
     binding::clear(response, binding::AUTH_SESSION, realm_id);
+    // What a relying party's iframe reads: gone is how it learns the login is.
+    binding::clear_browser_state(response, realm_id);
 }
 
 /// The same, on a response already built.

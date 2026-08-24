@@ -12,6 +12,8 @@ use config::serving::PublicOrigin;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 
 const PAGE: &str = include_str!("ui/login.html");
+const CHECK_SESSION: &str = include_str!("ui/check-session.html");
+const CHECK_SESSION_SCRIPT: &str = include_str!("ui/check-session.js");
 const SCRIPT: &str = include_str!("ui/login.js");
 const STYLE: &str = include_str!("ui/login.css");
 
@@ -122,12 +124,42 @@ pub async fn form_post_script() -> HttpResponse {
     )
 }
 
+/// Session Management 1.0 §4.1, the frame a relying party loads.
+///
+/// Framed on purpose, which is why this one page does not refuse framing as
+/// every other does. It holds nothing and does nothing: it reads a cookie,
+/// digests four strings and answers the frame that asked. Whoever loads it
+/// learns only what they already sent plus whether it matched.
+pub async fn check_session() -> HttpResponse {
+    framed("text/html; charset=utf-8", CHECK_SESSION)
+}
+
+pub async fn check_session_script() -> HttpResponse {
+    framed("text/javascript; charset=utf-8", CHECK_SESSION_SCRIPT)
+}
+
 pub async fn script() -> HttpResponse {
     serve("text/javascript; charset=utf-8", SCRIPT)
 }
 
 pub async fn style() -> HttpResponse {
     serve("text/css; charset=utf-8", STYLE)
+}
+
+/// The same, for the one page whose job is to be inside somebody else's.
+fn framed(content_type: &'static str, body: &'static str) -> HttpResponse {
+    HttpResponseBuilder::new(StatusCode::OK)
+        .insert_header(("Content-Type", content_type))
+        .insert_header((
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'self'; base-uri 'none'",
+        ))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("Referrer-Policy", "no-referrer"))
+        // Read on every navigation of a page that never changes, so it is
+        // allowed to be kept rather than fetched each time.
+        .insert_header(("Cache-Control", "public, max-age=300"))
+        .body(body)
 }
 
 fn serve(content_type: &'static str, body: &'static str) -> HttpResponse {

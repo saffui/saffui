@@ -232,14 +232,16 @@ services:
       - ./backchannel.json:/plans/backchannel.json:ro
       - ./frontchannel.json:/plans/frontchannel.json:ro
       - ./expected-skips.json:/plans/expected-skips.json:ro
+      - ./expected-failures.json:/plans/expected-failures.json:ro
       - ./results:/results
     working_dir: /suite/scripts
-    # Ten plans, one run: the Basic OP profile, the same modules against
-    # clients that registered themselves, the Dynamic OP profile, the same
-    # answered as a posted form, the implicit and hybrid profiles, the
-    # discovery-only sibling, and the three logout profiles. The same static
-    # client serves the static ones; each logout channel is registered on a
-    # client of its own.
+    # Thirteen plans, one run: the Basic OP profile, the same modules against
+    # clients that registered themselves, the implicit and hybrid profiles,
+    # each of the three also answered as a posted form, the discovery-only
+    # sibling, the three logout profiles, and the Dynamic OP profile last
+    # because its registration modules end in a review rather than a verdict.
+    # The same static client serves the static ones; each logout channel is
+    # registered on a client of its own.
     #
     # The skips it is told to expect are the two Basic OP modules that sign
     # their request object with `alg: none`. No client here may register that
@@ -252,6 +254,7 @@ services:
         pip install -q -r requirements.txt &&
         python3 run-test-plan.py --export-dir /results --verbose --no-parallel
         --expected-skips-file /plans/expected-skips.json
+        --expected-failures-file /plans/expected-failures.json
         "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json
         "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=dynamic_client]"
@@ -260,7 +263,11 @@ services:
         /plans/basic.json
         "oidcc-implicit-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json
+        "oidcc-formpost-implicit-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
+        /plans/basic.json
         "oidcc-hybrid-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
+        /plans/basic.json
+        "oidcc-formpost-hybrid-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json
         "oidcc-config-certification-test-plan"
         /plans/basic.json
@@ -271,6 +278,8 @@ services:
         "oidcc-frontchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]"
         /plans/frontchannel.json
         "oidcc-dynamic-certification-test-plan[response_type=code]"
+        /plans/basic.json
+        "oidcc-session-management-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json
     depends_on:
       - nginx

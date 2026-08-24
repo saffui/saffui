@@ -1425,6 +1425,7 @@ impl Plane {
         sessions::open(
             &transaction,
             &models::sessions::records::UserSessionModel {
+                browser_state: None,
                 tenant: TENANT.into(),
                 session_id: SESSION.into(),
                 realm_id: REALM.into(),

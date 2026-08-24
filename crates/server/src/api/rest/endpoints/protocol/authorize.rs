@@ -3,6 +3,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
+use config::serving::Egress;
 use config::serving::{LoginUi, PublicOrigin};
 use deadpool_postgres::Pool;
 use serde::Deserialize;
@@ -57,10 +58,11 @@ pub async fn begin(
     sealing: web::Data<Sealing>,
     login_ui: web::Data<LoginUi>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<Egress>,
 ) -> HttpResponse {
     let asked = asked.map(web::Query::into_inner);
     start(
-        request, &realm, asked, &pool, &tenancy, &sealing, &login_ui, &origin,
+        request, &realm, asked, &pool, &tenancy, &sealing, &login_ui, &origin, **egress,
     )
     .await
 }
@@ -80,10 +82,11 @@ pub async fn begin_posted(
     sealing: web::Data<Sealing>,
     login_ui: web::Data<LoginUi>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<Egress>,
 ) -> HttpResponse {
     let asked = asked.map(web::Form::into_inner);
     start(
-        request, &realm, asked, &pool, &tenancy, &sealing, &login_ui, &origin,
+        request, &realm, asked, &pool, &tenancy, &sealing, &login_ui, &origin, **egress,
     )
     .await
 }
@@ -101,6 +104,7 @@ async fn start(
     sealing: &Sealing,
     login_ui: &LoginUi,
     origin: &PublicOrigin,
+    egress: Egress,
 ) -> HttpResponse {
     let now = Utc::now();
     // What a refusal nobody can be sent to looks like: a page for a browser,
@@ -115,9 +119,34 @@ async fn start(
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
         return shown("server_error", "the realm could not be read");
     };
-    let Some(asked) = asked else {
+    let Some(mut asked) = asked else {
         return shown("invalid_request", "the request could not be read");
     };
+
+    // §6.2: a `request_uri` that is not a reference this server issued is one
+    // the client hosts. Fetched here rather than inside, because reaching the
+    // network is the transport's and the object then reads as an inline one.
+    if let Some(uri) = asked
+        .request_uri
+        .as_deref()
+        .filter(|named| !named.starts_with(services::pushed::HANDLE))
+        .map(str::to_owned)
+    {
+        if authorize::hosted_request_object(&transaction, asked.client_id.as_deref(), &uri)
+            .await
+            .is_err()
+        {
+            return shown("invalid_request_uri", "no login can start here");
+        }
+        let Some(fetched) = super::hosted::fetch(uri, egress).await else {
+            return shown(
+                "invalid_request_uri",
+                "the request object could not be read",
+            );
+        };
+        asked.request = Some(fetched);
+        asked.request_uri = None;
+    }
 
     // Loaded either way: what the request wants is read inside, and asking
     // first would be a second round trip on every login.

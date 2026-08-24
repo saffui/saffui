@@ -230,3 +230,31 @@ mod tests {
         assert_eq!(origin.realm_of("https://id.example/realms/"), None);
     }
 }
+
+const EGRESS: &str = "EGRESS";
+
+/// Where this deployment will dial when a client asks it to fetch something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Egress {
+    /// Only addresses outside the deployment. The default, because a request
+    /// naming an address inside it is how a server is made to fetch on
+    /// somebody else's behalf.
+    Outward,
+    /// Anywhere. For a deployment whose relying parties share its private
+    /// network, which is a real topology and not a mistake, and which the
+    /// default would refuse.
+    Anywhere,
+}
+
+impl Egress {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        match crate::optional(EGRESS).as_deref() {
+            None | Some("outward") => Ok(Egress::Outward),
+            Some("anywhere") => Ok(Egress::Anywhere),
+            Some(_) => Err(ConfigError::Invalid {
+                key: format!("{}{EGRESS}", crate::PREFIX),
+                expected: "outward or anywhere".to_owned(),
+            }),
+        }
+    }
+}

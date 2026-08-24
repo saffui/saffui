@@ -32,7 +32,8 @@ const COLUMNS: &str = "tenant, realm_id, client_id, name, display_name, descript
                        jwks, jwks_uri, \
                        client_uri, logo_uri, policy_uri, tos_uri, contacts, \
                        application_type, response_types, default_max_age, \
-                       default_acr_values, initiate_login_uri, registered_at, \
+                       default_acr_values, initiate_login_uri, request_uris, \
+                       registered_at, \
                        id_token_encryption_alg, id_token_encryption_enc, \
                        userinfo_encryption_alg, userinfo_encryption_enc, \
                        request_object_encryption_alg, request_object_encryption_enc, \
@@ -396,6 +397,7 @@ pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
             col("default_max_age", &client.default_max_age),
             col("default_acr_values", &client.default_acr_values),
             col("initiate_login_uri", &client.initiate_login_uri),
+            col("request_uris", &client.request_uris),
             col("id_token_encryption_alg", &id_token_enc_alg),
             col("id_token_encryption_enc", &id_token_enc),
             col("userinfo_encryption_alg", &userinfo_enc_alg),
@@ -459,6 +461,7 @@ fn read(row: Row) -> ClientModel {
         default_max_age: row.get("default_max_age"),
         default_acr_values: row.get("default_acr_values"),
         initiate_login_uri: row.get("initiate_login_uri"),
+        request_uris: row.get("request_uris"),
         registered_at: row.get("registered_at"),
         id_token_encryption: read_encryption(&row, "id_token_encryption"),
         userinfo_encryption: read_encryption(&row, "userinfo_encryption"),

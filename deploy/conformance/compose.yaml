@@ -116,6 +116,10 @@ services:
       SAFFUI_PUBLIC_ORIGIN: https://saffui.test
       # One proxy, the TLS terminator below, and it writes the header.
       SAFFUI_PROXY_HOPS: "1"
+      # The suite hosts its request objects on this machine, so the addresses
+      # this bench dials are its own. A deployment reaching real clients keeps
+      # the default and dials outward only.
+      SAFFUI_EGRESS: anywhere
     volumes:
       - ./certs/ca-bundle.crt:/etc/ssl/certs/ca-certificates.crt:ro
     depends_on:
@@ -252,8 +256,6 @@ services:
         /plans/basic.json
         "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=dynamic_client]"
         /plans/basic.json
-        "oidcc-dynamic-certification-test-plan[response_type=code]"
-        /plans/basic.json
         "oidcc-formpost-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json
         "oidcc-implicit-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
@@ -268,6 +270,8 @@ services:
         /plans/backchannel.json
         "oidcc-frontchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]"
         /plans/frontchannel.json
+        "oidcc-dynamic-certification-test-plan[response_type=code]"
+        /plans/basic.json
     depends_on:
       - nginx
 

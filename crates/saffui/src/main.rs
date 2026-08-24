@@ -557,6 +557,7 @@ fn plane() -> Result<Plane, String> {
         origin,
         login_ui,
         hops: config::proxying::Proxying::from_env().map_err(|e| e.to_string())?,
+        egress: config::serving::Egress::from_env().map_err(|e| e.to_string())?,
         sealing: Sealing {
             sender: match config::messaging::Sink::from_env().map_err(|e| e.to_string())? {
                 config::messaging::Sink::None => None,

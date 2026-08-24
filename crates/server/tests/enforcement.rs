@@ -31,6 +31,7 @@ async fn ask(plane: &Plane, bearer: &str, body: serde_json::Value) -> (StatusCod
         origin: support::origin(),
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
+        egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
     };
     let app = test::init_service(App::new().configure(register(&mounted))).await;
@@ -200,6 +201,7 @@ async fn the_enforcement_scope_is_guarded() {
         origin: support::origin(),
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
+        egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
     };
     let app = test::init_service(App::new().configure(register(&mounted))).await;

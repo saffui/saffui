@@ -59,17 +59,8 @@ pub async fn claims_for(
 
     // OIDC Core §5.3.2. A response whose `sub` differs from the token's is one a
     // client must reject, so it is the token's or there is no response.
-    let mut claims = Map::new();
+    let mut claims = claims_of_scope(&verified.scope, &held);
     claims.insert("sub".into(), json!(verified.subject));
-    for (scope, named) in SCOPE_CLAIMS {
-        if granted(&verified.scope, scope) {
-            for claim in named {
-                if let Some(value) = held.get(*claim) {
-                    claims.insert((*claim).to_owned(), value.clone());
-                }
-            }
-        }
-    }
 
     let asked = match (
         verified.claims.get("sid").and_then(Value::as_str),
@@ -98,6 +89,46 @@ pub async fn claims_for(
     }
 
     Ok(claims)
+}
+
+/// Of what the realm holds of a person, what these scopes name: §5.4.
+pub fn claims_of_scope(scope: &str, held: &Map<String, Value>) -> Map<String, Value> {
+    let mut claims = Map::new();
+    for (named, behind) in SCOPE_CLAIMS {
+        if !granted(scope, named) {
+            continue;
+        }
+        for claim in behind {
+            if let Some(value) = held.get(*claim) {
+                claims.insert((*claim).to_owned(), value.clone());
+            }
+        }
+    }
+    claims
+}
+
+/// What the request named for the identity token, §5.5, of what the realm
+/// holds of this person and of what the client is entitled to be told.
+pub async fn asked_id_token_claims(
+    transaction: &Transaction<'_>,
+    asked: Option<&Value>,
+    client_id: &str,
+    user_id: &str,
+) -> Result<Map<String, Value>, ()> {
+    let Some(asked) = asked.map(ClaimsRequest::from_value) else {
+        return Ok(Map::new());
+    };
+    if asked.id_token.is_empty() {
+        return Ok(Map::new());
+    }
+    let Some(person) = users::load(transaction, user_id).await.map_err(|_| ())? else {
+        return Ok(Map::new());
+    };
+    let entitled = entitled_scopes(transaction, client_id).await?;
+    Ok(within_entitlement(
+        claims_request::release(&asked.id_token, &held_claims(&person)),
+        &entitled,
+    ))
 }
 
 /// The standard scopes this client may have at all, attached as default or

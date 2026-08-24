@@ -12,6 +12,10 @@ pub enum ResponseMode {
     /// logs or truncates query strings asks for, and what keeps the response
     /// out of a URL bar, a history and a referrer.
     FormPost,
+    /// After the `#`, which the browser never sends anywhere. Where anything
+    /// minted at the authorization endpoint goes, because a query reaches
+    /// every log between here and the client and a fragment reaches none.
+    Fragment,
 }
 
 impl ResponseMode {
@@ -19,6 +23,7 @@ impl ResponseMode {
         match named {
             None | Some("query") => Some(ResponseMode::Query),
             Some("form_post") => Some(ResponseMode::FormPost),
+            Some("fragment") => Some(ResponseMode::Fragment),
             Some(_) => None,
         }
     }
@@ -27,6 +32,7 @@ impl ResponseMode {
         match self {
             ResponseMode::Query => "query",
             ResponseMode::FormPost => "form_post",
+            ResponseMode::Fragment => "fragment",
         }
     }
 }
@@ -65,13 +71,16 @@ impl Landing {
         }
     }
 
-    /// Everything on the redirect's query, which is where a `query` response
-    /// goes and where a `form_post` one never does.
-    pub fn as_query(&self) -> String {
-        let separator = if self.redirect_uri.contains('?') {
-            '&'
-        } else {
-            '?'
+    /// The redirect with the answer on it, in the part the mode names.
+    ///
+    /// A fragment is never sent to a server, which is why what is minted at
+    /// the authorization endpoint goes in one: a query reaches every proxy and
+    /// access log on the way, and what those would hold is a credential.
+    pub fn as_url(&self) -> String {
+        let separator = match self.mode {
+            ResponseMode::Fragment => '#',
+            _ if self.redirect_uri.contains('?') => '&',
+            _ => '?',
         };
         let mut built = self.redirect_uri.clone();
         for (at, (named, value)) in self.parameters.iter().enumerate() {
@@ -111,9 +120,9 @@ mod tests {
             Some(ResponseMode::FormPost)
         );
         // Named and unknown is a refusal, not a fall back to the default: a
-        // client that asked for a fragment and got a query has its response in
-        // a place it is not reading.
-        assert_eq!(ResponseMode::read(Some("fragment")), None);
+        // client that asked for one part of the URL and got another has its
+        // response in a place it is not reading.
+        assert_eq!(ResponseMode::read(Some("web_message")), None);
         assert_eq!(ResponseMode::read(Some("")), None);
     }
 
@@ -124,8 +133,21 @@ mod tests {
             .carrying_any("state", Some("a b"))
             .carrying_any("nonce", None);
         assert_eq!(
-            landing.as_query(),
+            landing.as_url(),
             "https://app.example/cb?kept=1&code=abc&state=a%20b"
+        );
+    }
+
+    /// A fragment is a `#`, and everything after it, whatever the redirect
+    /// already carried on its query.
+    #[test]
+    fn a_fragment_answer_goes_after_the_hash() {
+        let landing = Landing::new("https://app.example/cb?kept=1", ResponseMode::Fragment)
+            .carrying("id_token", "eyJ")
+            .carrying_any("state", Some("s"));
+        assert_eq!(
+            landing.as_url(),
+            "https://app.example/cb?kept=1#id_token=eyJ&state=s"
         );
     }
 
@@ -133,6 +155,6 @@ mod tests {
     fn a_redirect_with_no_query_gets_one() {
         let landing =
             Landing::new("https://app.example/cb", ResponseMode::Query).carrying("error", "denied");
-        assert_eq!(landing.as_query(), "https://app.example/cb?error=denied");
+        assert_eq!(landing.as_url(), "https://app.example/cb?error=denied");
     }
 }

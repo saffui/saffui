@@ -134,7 +134,7 @@ fn owner_config() -> Config {
         .expect("SAFFUI_TEST_PG is a connection string")
 }
 
-fn provider() -> OpenSslProvider {
+pub fn provider() -> OpenSslProvider {
     OpenSslProvider::new(&CryptoConfig {
         fips_required: false,
         pkcs11: None,
@@ -711,6 +711,25 @@ impl Plane {
             .expect("the clients table")
             .expect("a planted client");
         client.standard_flow_enabled = enabled;
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// Let this client receive what the authorization endpoint mints. Off
+    /// everywhere until a test says otherwise, as it is on a deployment.
+    #[allow(dead_code, reason = "only the hybrid suite asks for it")]
+    pub async fn allow_implicit(&self, client_id: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.implicit_flow_enabled = Some(true);
         clients::update(&transaction, &client)
             .await
             .expect("the clients table");

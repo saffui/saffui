@@ -36,6 +36,9 @@ services:
       - --client=conformance
       - --client=conformance-second
       - --client=conformance-post
+      # The implicit and hybrid profiles ask this endpoint to mint, which is a
+      # permission of its own.
+      - --implicit
       - --redirect=https://localhost.emobix.co.uk:8443/test/a/saffui/callback
       - --after-logout=https://localhost.emobix.co.uk:8443/test/a/saffui/post_logout_redirect
       - --user=ada
@@ -225,8 +228,9 @@ services:
       - ./expected-skips.json:/plans/expected-skips.json:ro
       - ./results:/results
     working_dir: /suite/scripts
-    # Six plans, one run: the Basic OP profile, the same modules answered as
-    # a posted form, the discovery-only sibling, and the three logout profiles. The same static client serves the first
+    # Eight plans, one run: the Basic OP profile, the same modules answered as
+    # a posted form, the implicit and hybrid profiles, the discovery-only
+    # sibling, and the three logout profiles. The same static client serves the first
     # three; each logout channel is registered on a client of its own.
     #
     # The skips it is told to expect are the two Basic OP modules that sign
@@ -243,6 +247,10 @@ services:
         "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json
         "oidcc-formpost-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
+        /plans/basic.json
+        "oidcc-implicit-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
+        /plans/basic.json
+        "oidcc-hybrid-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json
         "oidcc-config-certification-test-plan"
         /plans/basic.json

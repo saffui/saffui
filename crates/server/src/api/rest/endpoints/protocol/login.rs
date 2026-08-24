@@ -132,6 +132,12 @@ pub async fn answer(
     .await
     .ok();
 
+    let signing = ring.as_ref().map(|ring| services::grant::Signing {
+        provider: sealing.provider.as_ref(),
+        ring,
+        envelope: &sealing.envelope,
+    });
+
     let step = browser::answer_step(
         &transaction,
         sealing.provider.as_ref(),
@@ -153,6 +159,7 @@ pub async fn answer(
             ring,
             envelope: &sealing.envelope,
         }),
+        signing.as_ref(),
         now,
     )
     .await;
@@ -261,8 +268,8 @@ fn told_landing(
     landing: &Landing,
 ) -> HttpResponse {
     match (spoken, landing.mode) {
-        (Spoken::Json, ResponseMode::Query) => uncached(response)
-            .json(serde_json::json!({ "status": status, "redirect_to": landing.as_query() })),
+        (Spoken::Json, ResponseMode::Query | ResponseMode::Fragment) => uncached(response)
+            .json(serde_json::json!({ "status": status, "redirect_to": landing.as_url() })),
         (Spoken::Json, ResponseMode::FormPost) => uncached(response).json(serde_json::json!({
             "status": status,
             "response_mode": landing.mode.as_str(),

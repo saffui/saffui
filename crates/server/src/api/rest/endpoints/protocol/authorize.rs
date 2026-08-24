@@ -8,6 +8,7 @@ use deadpool_postgres::Pool;
 use serde::Deserialize;
 use services::authorize::{self, Begun, Refusal, Requested};
 use services::landing::{Landing, ResponseMode};
+use services::response_type::ResponseType;
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
@@ -118,6 +119,22 @@ async fn start(
         return shown("invalid_request", "the request could not be read");
     };
 
+    // Loaded either way: what the request wants is read inside, and asking
+    // first would be a second round trip on every login.
+    let ring = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    .ok();
+    let signing = ring.as_ref().map(|ring| services::grant::Signing {
+        provider: sealing.provider.as_ref(),
+        ring,
+        envelope: &sealing.envelope,
+    });
+
     let begun = authorize::begin(
         &transaction,
         sealing.provider.as_ref(),
@@ -141,6 +158,7 @@ async fn start(
             claims: asked.claims.as_deref(),
         },
         binding::read(&request, binding::SSO_SESSION).as_deref(),
+        signing.as_ref(),
         now,
     )
     .await;
@@ -193,13 +211,24 @@ async fn start(
             answering::answer(
                 &Landing::new(
                     asked.redirect_uri.as_deref().unwrap_or_default(),
-                    ResponseMode::read(asked.response_mode.as_deref()).unwrap_or_default(),
+                    refused_in(&asked),
                 )
                 .carrying("error", error)
                 .carrying_any("state", asked.state.as_deref()),
             )
         }
     }
+}
+
+/// How a refusal travels: the way the answer would have. A request whose
+/// response was going in a fragment is refused in one, or a client reading
+/// there never learns it was refused.
+fn refused_in(asked: &Asked) -> ResponseMode {
+    let named = asked.response_mode.as_deref().or_else(|| {
+        ResponseType::read(asked.response_type.as_deref().unwrap_or_default())
+            .map(ResponseType::default_mode)
+    });
+    ResponseMode::read(named).unwrap_or_default()
 }
 
 /// The refusal, on the record, with the client that asked and where the

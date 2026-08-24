@@ -1619,7 +1619,7 @@ async fn discovery_advertises_only_what_is_there() {
         ("require_pushed_authorization_requests", false),
         ("require_request_uri_registration", true),
         ("claims_parameter_supported", true),
-        ("authorization_response_iss_parameter_supported", false),
+        ("authorization_response_iss_parameter_supported", true),
     ] {
         assert_eq!(
             document[named].as_bool(),

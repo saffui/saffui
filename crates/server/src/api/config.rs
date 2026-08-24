@@ -118,6 +118,14 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             .service(
                 web::resource("/realms/{realm}/.well-known/openid-configuration")
                     .route(web::get().to(discovery::published)),
+            )
+            // The same document at the name RFC 8414 §3.1 gives it: the
+            // well-known segment goes after the host and the issuer's path
+            // after that, so a client that reads OAuth metadata and one that
+            // reads OpenID metadata both find this realm.
+            .service(
+                web::resource("/.well-known/oauth-authorization-server/realms/{realm}")
+                    .route(web::get().to(discovery::published)),
             );
     }
 }

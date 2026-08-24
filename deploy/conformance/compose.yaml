@@ -277,12 +277,13 @@ services:
         /plans/backchannel.json
         "oidcc-frontchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]"
         /plans/frontchannel.json
-        "oidcc-dynamic-certification-test-plan[response_type=code]"
-        /plans/basic.json
-        "oidcc-session-management-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
+        "oidcc-session-management-certification-test-plan[client_registration=static_client]"
         /plans/basic.json
         "oidcc-3rdparty-init-login-certification-test-plan"
         /plans/basic.json
+        "oidcc-dynamic-certification-test-plan[response_type=code]"
+        /plans/basic.json
+
     depends_on:
       - nginx
 

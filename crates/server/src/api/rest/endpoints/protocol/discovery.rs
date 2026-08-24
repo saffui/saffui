@@ -178,7 +178,7 @@ pub async fn published(
             "pushed_authorization_request_endpoint": format!("{protocol}/par"),
             "require_pushed_authorization_requests": false,
             "claims_parameter_supported": true,
-            "authorization_response_iss_parameter_supported": false,
+            "authorization_response_iss_parameter_supported": true,
     });
     // Named only where a realm answers it. A client sent to an endpoint that
     // is not there reports the realm as broken rather than as closed.

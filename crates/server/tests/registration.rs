@@ -297,6 +297,13 @@ async fn metadata_this_provider_cannot_honour_is_refused() {
             json!({"redirect_uris": ["https://app.example/cb"], "id_token_signed_response_alg": "none"}),
         ),
         (
+            "a login initiated over plain http",
+            json!({
+                "redirect_uris": ["https://app.example/cb"],
+                "initiate_login_uri": "http://app.example/start",
+            }),
+        ),
+        (
             "a subject type §8 does not name",
             json!({"redirect_uris": ["https://app.example/cb"], "subject_type": "shared"}),
         ),
@@ -395,4 +402,54 @@ async fn a_registered_set_is_the_only_set_this_client_may_ask_for() {
             "{asked}: {landing}"
         );
     }
+}
+
+/// OIDC Core §4: where a third party sends a person to have this client start
+/// a login is registered, given back, and given back again by the endpoint
+/// that manages the registration.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn where_a_third_party_starts_a_login_is_kept_and_given_back() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+    let starting = "https://app.example/start";
+
+    let mut asked = a_client();
+    asked["initiate_login_uri"] = json!(starting);
+    let (status, registered) = registering(&plane, &asked, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
+    assert_eq!(
+        registered["initiate_login_uri"].as_str(),
+        Some(starting),
+        "{registered}"
+    );
+
+    let token = registered["registration_access_token"].as_str().unwrap();
+    let client_id = registered["client_id"].as_str().unwrap();
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&path(&format!("/{client_id}")))
+            .insert_header(("authorization", format!("Bearer {token}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .map(|held| held.starts_with("application/json")),
+        Some(true)
+    );
+    let held: Value = test::read_body_json(response).await;
+    assert_eq!(
+        held["initiate_login_uri"].as_str(),
+        Some(starting),
+        "{held}"
+    );
 }

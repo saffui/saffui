@@ -235,7 +235,7 @@ services:
       - ./expected-failures.json:/plans/expected-failures.json:ro
       - ./results:/results
     working_dir: /suite/scripts
-    # Thirteen plans, one run: the Basic OP profile, the same modules against
+    # Fourteen plans, one run: the Basic OP profile, the same modules against
     # clients that registered themselves, the implicit and hybrid profiles,
     # each of the three also answered as a posted form, the discovery-only
     # sibling, the three logout profiles, and the Dynamic OP profile last
@@ -280,6 +280,8 @@ services:
         "oidcc-dynamic-certification-test-plan[response_type=code]"
         /plans/basic.json
         "oidcc-session-management-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
+        /plans/basic.json
+        "oidcc-3rdparty-init-login-certification-test-plan"
         /plans/basic.json
     depends_on:
       - nginx

@@ -406,14 +406,22 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
         Some("pairwise") => "pairwise",
         Some(_) => return Err(Refused::Invalid("a subject type §8 does not name")),
     };
-    // §5: the document is fetched and read, so it has to be somewhere this
-    // server can be asked to go.
-    if let Some(named) = metadata.sector_identifier_uri.as_deref()
-        && !named.starts_with("https://")
-    {
-        return Err(Refused::Invalid(
+    // §5 for the sector document, which is fetched and read; OIDC Core §4 for
+    // where a third party sends a person to have this client start a login.
+    // Both are named as https or not at all.
+    for (named, what) in [
+        (
+            metadata.sector_identifier_uri.as_deref(),
             "a sector identifier is fetched over https",
-        ));
+        ),
+        (
+            metadata.initiate_login_uri.as_deref(),
+            "a login is initiated over https",
+        ),
+    ] {
+        if named.is_some_and(|held| !held.starts_with("https://")) {
+            return Err(Refused::Invalid(what));
+        }
     }
     if metadata.jwks.is_some() && metadata.jwks_uri.is_some() {
         return Err(Refused::Invalid("keys are published one way, not two"));

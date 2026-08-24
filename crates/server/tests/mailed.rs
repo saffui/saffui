@@ -474,3 +474,71 @@ async fn writing_without_a_password_keeps_the_one_held() {
         "the password was blanked by an edit that did not name one"
     );
 }
+
+async fn receipts(plane: &Plane) -> Vec<models::messaging::Delivery> {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    store::providers::deliveries::of_user(&transaction, support::SUBJECT, 50)
+        .await
+        .expect("the deliveries table")
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_message_that_went_out_leaves_a_receipt() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane).await;
+    let postbox = Postbox::default();
+
+    let binding = open(&plane, &postbox).await;
+    answer(
+        &plane,
+        &postbox,
+        &binding,
+        serde_json::json!({ "username": support::SUBJECT }),
+    )
+    .await;
+
+    let held = receipts(&plane).await;
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert!(held[0].delivered, "{held:?}");
+    assert_eq!(held[0].purpose, "magic-link");
+    assert_eq!(held[0].recipient, support::SUBJECT_EMAIL);
+    assert_eq!(held[0].detail, None);
+    // The link is what the message carried and what a receipt must not.
+    assert!(
+        !format!("{held:?}").contains("http"),
+        "a receipt carried the link: {held:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_message_the_far_end_refused_leaves_one_saying_so() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane).await;
+    let postbox = Postbox::refusing();
+
+    let binding = open(&plane, &postbox).await;
+    answer(
+        &plane,
+        &postbox,
+        &binding,
+        serde_json::json!({ "username": support::SUBJECT }),
+    )
+    .await;
+
+    assert!(postbox.held().is_empty(), "a refused message was kept");
+    let held = receipts(&plane).await;
+    assert_eq!(held.len(), 1, "a refusal left no receipt: {held:?}");
+    assert!(!held[0].delivered, "{held:?}");
+    assert!(
+        held[0].detail.is_some(),
+        "a refusal said nothing about why: {held:?}"
+    );
+}

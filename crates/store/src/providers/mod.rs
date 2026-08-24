@@ -4,6 +4,7 @@ pub mod authz_surface;
 pub mod client_scopes;
 pub mod clients;
 pub mod credentials;
+pub mod deliveries;
 pub mod login;
 pub mod mail;
 pub mod oidc;

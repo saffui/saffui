@@ -3,6 +3,7 @@ pub mod broker;
 pub mod compliance;
 pub mod entities;
 pub mod export;
+pub mod messaging;
 pub mod paging;
 pub mod representation;
 pub mod search;

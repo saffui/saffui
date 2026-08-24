@@ -25,6 +25,16 @@ pub enum Undelivered {
 pub struct Outgoing {
     pub settings: MailSettings,
     pub message: Message,
+    /// Who it is for and what it is for, so the attempt can be recorded
+    /// against them. Never the body.
+    pub about: About,
+}
+
+/// What a receipt says, beyond whether it worked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct About {
+    pub user_id: String,
+    pub purpose: String,
 }
 
 impl std::fmt::Debug for Outgoing {

@@ -1,9 +1,3 @@
-//! Taking back a token at its client's request. RFC 7009.
-//!
-//! A token that cannot be read, was never issued or is already dead is not an
-//! error: the client's intent is met, and saying otherwise would say which
-//! tokens exist. A token that was issued to another client is an error, §2.1.
-
 use chrono::{DateTime, Duration, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;

@@ -1,12 +1,3 @@
-//! Single-use recovery codes, for when the authenticator is gone.
-//!
-//! Codes are returned in the clear exactly once, at enrolment, for the user to
-//! write down. They must be stored the way passwords are — through
-//! [`crate::provider::PasswordProvider`] — and marked used on redemption.
-//!
-//! The comparison helpers here exist for the moment a normalised plaintext
-//! match is genuinely needed, not as an invitation to keep the codes.
-
 use data_encoding::BASE32_NOPAD;
 use subtle::{Choice, ConditionallySelectable, ConstantTimeEq};
 use zeroize::Zeroizing;

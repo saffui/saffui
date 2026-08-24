@@ -1,6 +1,3 @@
-//! What a generic OIDC provider needs to run a login, with the parts that
-//! decide security already checked.
-
 use serde::{Deserialize, Serialize};
 use url::Url;
 

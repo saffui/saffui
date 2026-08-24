@@ -1,14 +1,3 @@
-//! The admin plane, from an HTTP request to a decision.
-//!
-//! The unit tests around `decide` hand it a `Presented` that was never a token.
-//! Everything between the two is what this covers: the bearer, the issuer that
-//! names a realm, the key identifier that picks one published key, the
-//! algorithm taken from that key rather than from the token, the roles read out
-//! of the database, and the route table that says what the path costs.
-//!
-//! Every refusal answers the same way on purpose, so these assert the status
-//! and then assert the cause by arranging exactly one thing wrong at a time.
-
 mod support;
 
 use std::time::{Duration, SystemTime};

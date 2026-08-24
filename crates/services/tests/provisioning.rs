@@ -1,10 +1,3 @@
-//! What a realm has to be given before it can be administered.
-//!
-//! The admin plane requires a scope on the token, and `/authorize` grants no
-//! scope nothing attached the client to. Between the two, the plane was
-//! reachable only by a token nobody could obtain through the protocol, which is
-//! what this closes and what these hold shut.
-
 mod support;
 
 use models::auditable::AuditableModel;

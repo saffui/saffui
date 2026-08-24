@@ -1,9 +1,3 @@
-//! What actually carries a message out.
-//!
-//! Three, chosen at startup. None is the default: a deployment that forgot to
-//! say how it sends refuses to send rather than printing sign-in links to its
-//! own log, and whatever needs a message fails closed.
-
 use std::time::Duration;
 
 use lettre::message::Mailbox;

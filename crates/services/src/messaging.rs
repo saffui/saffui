@@ -1,9 +1,3 @@
-//! Getting a message to a person.
-//!
-//! A port, because what carries a message is a deployment's choice and not this
-//! server's: a realm names an SMTP server, or a deployment points a webhook at
-//! whatever gateway it already runs.
-
 use models::entities::mail::MailSettings;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

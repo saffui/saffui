@@ -1,5 +1,3 @@
-//! Password storage over Argon2id, with bcrypt kept for reading.
-
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::{Algorithm, Argon2, Params, Version};
 use secrecy::{ExposeSecret, SecretBox};

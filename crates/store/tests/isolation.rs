@@ -1,15 +1,3 @@
-//! What the schema's isolation actually does, against a database.
-//!
-//! The rules are readable in the migration and provable only here. A policy that
-//! looks right and a policy that holds are different claims, and the gap between
-//! them is a table whose security was never enabled, a role that bypasses, or a
-//! comparison that matches everything instead of nothing.
-//!
-//! These connect as the application role rather than as whoever owns the
-//! database. A superuser bypasses row level security outright, and so does any
-//! role holding BYPASSRLS, so a suite that used the owning connection would
-//! watch every one of these pass while proving nothing.
-
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{CryptoConfig, CryptoProvider};
 use pgcore::migrations::MigrationRunner;

@@ -1,10 +1,3 @@
-//! The realms of a tenant, over the admin plane.
-//!
-//! One resource family, written first so the plane is proven end to end. The
-//! rest follow the same shape: the guard has already decided, the handler reads
-//! the paging parameters that every listing reads, and answers a brief or a full
-//! representation according to what was asked.
-
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;

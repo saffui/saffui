@@ -1,18 +1,3 @@
-//! Ready made upstream provider configurations.
-//!
-//! Each is a thin set of defaults over the generic broker rather than a separate
-//! implementation. The protocol is the same everywhere; what differs is a
-//! handful of endpoints and one provider's idea of a client secret.
-//!
-//! They exist because getting an issuer or a key set URL wrong produces a
-//! provider that configures cleanly and fails at the first login, and because a
-//! preset is the difference between an operator supplying two values and an
-//! operator supplying seven.
-//!
-//! A preset fills only what is fixed for that provider. The client identifier
-//! and its secret always come from the operator: those are per deployment
-//! registrations, and a default there would be a shared credential.
-
 use crate::broker::oidc_config::keys;
 use crate::str_enum::str_enum;
 

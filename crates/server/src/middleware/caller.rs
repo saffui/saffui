@@ -1,8 +1,3 @@
-//! The gate the point of application uses.
-//!
-//! It asks only that the token stood up. What may be done is the decision
-//! point's question, not the transport's.
-
 use std::future::{Ready, ready};
 use std::rc::Rc;
 

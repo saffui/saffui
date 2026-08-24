@@ -1,5 +1,3 @@
-//! What a minted token carries, and whether this realm takes it back.
-
 use chrono::{Duration, Utc};
 use crypto::jose::jws::ES256;
 use crypto::jose::jwt;

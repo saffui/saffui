@@ -1,9 +1,3 @@
-//! What one request established, before anything decides anything with it.
-//!
-//! Assembled once, so two decisions in one request cannot disagree about who is
-//! asking. Nothing here is taken on the token's word: the token says which realm
-//! and which organization, the store says whether any of it is so.
-
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::user::UserModel;

@@ -1,9 +1,3 @@
-//! The software key store: private keys held in process memory.
-//!
-//! This is the store a deployment gets when no hardware one is configured.
-//! Keys never leave the process, are addressed by an opaque id, and are used
-//! for signing through the same code path as caller-supplied keys.
-
 use std::collections::HashMap;
 use std::sync::Mutex;
 

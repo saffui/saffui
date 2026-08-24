@@ -1,9 +1,3 @@
-//! Reading a bearer, and turning it into a caller.
-//!
-//! What both planes do before they differ. Two paths that each verify a token
-//! and then establish who it is are two places for one to skip a step nobody
-//! notices missing.
-
 use actix_web::dev::ServiceRequest;
 use chrono::Utc;
 use data_encoding::BASE64URL_NOPAD;

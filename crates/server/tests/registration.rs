@@ -1,6 +1,3 @@
-//! A client registering itself: RFC 7591, RFC 7592 and OpenID Connect Dynamic
-//! Client Registration 1.0.
-
 mod support;
 
 use actix_web::http::StatusCode;

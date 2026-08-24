@@ -1,5 +1,3 @@
-//! Failed login attempts, and the lockout they earn.
-
 use serde::{Deserialize, Serialize};
 
 /// What a realm has counted against one user.

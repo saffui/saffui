@@ -1,5 +1,3 @@
-//! Users: who a realm knows, and what it still needs from them.
-
 use serde::{Deserialize, Serialize};
 
 use crate::auditable::AuditableModel;

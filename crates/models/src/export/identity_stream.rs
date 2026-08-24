@@ -1,10 +1,3 @@
-//! A realm's identity records, one per line.
-//!
-//! Everything in the configuration document is bounded by configuration: a realm
-//! has tens of clients and hundreds of roles however popular it becomes. Users
-//! are not, so they are streamed and never assembled, which keeps an exporter's
-//! memory flat on exactly the deployments where an export matters most.
-
 use serde::{Deserialize, Serialize};
 
 use crate::entities::credentials::CredentialModel;

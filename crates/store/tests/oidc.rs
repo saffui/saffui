@@ -1,5 +1,3 @@
-//! Authorization codes, revocations and assertion replay, against a database.
-
 mod support;
 
 use models::entities::oidc::AuthorizationCode;

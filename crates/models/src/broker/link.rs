@@ -1,17 +1,3 @@
-//! Deciding who an upstream user is locally, on their first brokered login.
-//!
-//! This is the step where a mistake becomes account takeover rather than a
-//! failed login, so the decision is a pure function with an explicit outcome
-//! rather than branches inside a handler. Every path a reviewer has to check is
-//! in one place, and the endpoint executes only what this returns.
-//!
-//! The attack it exists to refuse: someone registers the victim's address at an
-//! upstream provider that does not verify addresses, logs in through it, and, if
-//! the local server links accounts by matching the address alone, inherits the
-//! victim's account. Nothing in the exchange is wrong. The token is validly
-//! signed and its claims all check out. The failure is entirely in treating an
-//! unverified attribute as an identifier.
-
 use serde::{Deserialize, Serialize};
 
 /// What the upstream asserted, after the id token has been verified and its

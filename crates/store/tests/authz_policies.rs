@@ -1,5 +1,3 @@
-//! What a policy decides, and what the schema refuses to let it become.
-
 mod support;
 
 use models::auditable::AuditableModel;

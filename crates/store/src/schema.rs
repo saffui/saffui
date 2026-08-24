@@ -1,9 +1,3 @@
-//! The schema, and the migrations that build it.
-//!
-//! Forward only and consolidated by concern rather than by the date a fix was
-//! needed. A database this creates has no history to replay, so a migration here
-//! describes a part of the schema rather than a correction to an earlier one.
-
 use pgcore::migrations::{Migration, SqlMigration};
 
 /// Every migration this build carries, in order.
@@ -245,6 +239,18 @@ pub fn migrations() -> Vec<Migration> {
             version: 39,
             name: "brute_force",
             sql: include_str!("../migrations/V039__brute_force.sql"),
+            transactional: true,
+        }),
+        Migration::Sql(SqlMigration {
+            version: 40,
+            name: "offline_bounds",
+            sql: include_str!("../migrations/V040__offline_bounds.sql"),
+            transactional: true,
+        }),
+        Migration::Sql(SqlMigration {
+            version: 41,
+            name: "require_pushed_requests",
+            sql: include_str!("../migrations/V041__require_pushed_requests.sql"),
             transactional: true,
         }),
     ]

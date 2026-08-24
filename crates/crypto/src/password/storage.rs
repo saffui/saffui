@@ -1,14 +1,3 @@
-//! The stored form of a password credential.
-//!
-//! Two forms, and only two. Argon2id is what new passwords become: a
-//! self-contained PHC string carrying its own salt and cost. PBKDF2-HMAC is
-//! what arrives from systems that already had one, kept readable so an import
-//! does not lock anybody out.
-//!
-//! Anything added here has to be readable by the verifying side in the same
-//! change. A form this module can write and nothing can read is an account
-//! locked out permanently.
-
 use data_encoding::BASE64;
 use secrecy::{ExposeSecret, SecretBox};
 

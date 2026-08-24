@@ -1,5 +1,3 @@
-//! Reading a realm and what it publishes.
-
 use deadpool_postgres::Transaction;
 use models::entities::keys::{KeyUse, RealmSigningKeyView};
 use models::entities::realm::RealmModel;

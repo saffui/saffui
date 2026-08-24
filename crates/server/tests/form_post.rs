@@ -1,5 +1,3 @@
-//! Answering an authorization request as a form the browser sends on.
-
 mod support;
 
 use actix_web::http::StatusCode;

@@ -1,11 +1,3 @@
-//! What ties a browser to the login it is answering.
-//!
-//! A cookie and not a URL. A URL reaches the server logs of whatever it points
-//! at, the `Referer` of every asset that page loads, and the history of the
-//! machine it was typed on; an identifier that leaks there is one somebody else
-//! can answer with. The cookie is unreadable to script and is not attached to a
-//! cross-site request, so neither of those is a way to it.
-
 use actix_web::cookie::time::Duration;
 use actix_web::cookie::{Cookie, SameSite};
 use actix_web::{HttpRequest, HttpResponseBuilder};

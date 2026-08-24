@@ -1,9 +1,3 @@
-//! Answering one step of a login a browser started.
-//!
-//! The flow runner decides; this is what surrounds it. Which login is being
-//! answered, who the answer says the subject is, and, once the flow admits,
-//! the SSO session and the code the client comes back to spend.
-
 use chrono::{DateTime, Duration, Utc};
 use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;

@@ -1,8 +1,3 @@
-//! Rendering a catalogued error as an HTTP response.
-//!
-//! Behind a feature, because everything depends on `commons` and not everything
-//! serves requests.
-
 use actix_web::body::BoxBody;
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, ResponseError};

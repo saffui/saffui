@@ -6,8 +6,6 @@
 // crate as the `jose` module; module paths rewritten from `crate::` to
 // `crate::jose::`. See THIRD-PARTY.md at the repository root.
 
-//! JSON Web Token (JWT) support.
-
 pub mod alg;
 mod jwt_context;
 mod jwt_payload;

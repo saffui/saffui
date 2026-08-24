@@ -1,10 +1,3 @@
-//! What a request said about where it came from.
-//!
-//! Two observed facts, neither of them an identity: the address this deployment
-//! believes the caller has, and the `User-Agent` string verbatim. Nothing here
-//! derives a device from them, because a caller controls both and a derived
-//! device would be something this server acts on.
-
 /// How much of a `User-Agent` is kept. Long enough for every real browser and
 /// short enough that a caller cannot use the column as storage.
 pub const AGENT_LIMIT: usize = 512;

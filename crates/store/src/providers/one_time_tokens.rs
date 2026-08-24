@@ -1,10 +1,3 @@
-//! The single use, short lived things a login hands out: the code in a message,
-//! the link in a mail, a reset token.
-//!
-//! Only the digest is stored. The value travels in a message or a URL and lands
-//! in inboxes, browser history and proxy logs, so reading this table yields
-//! nothing that can be presented.
-
 use crypto::provider::{DigestProvider, HashAlg};
 use deadpool_postgres::Transaction;
 
@@ -45,6 +38,10 @@ pub async fn mint(
     // to nothing is spendable from any browser.
     bound_to: Option<&str>,
     expires_at: chrono::DateTime<chrono::Utc>,
+    // Stamped from the caller's clock, not the database's. The cooldown is
+    // read back and compared against the caller's, and a window measured
+    // across two clocks is one that means nothing when they disagree.
+    now: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<()> {
     let (tenant, realm_id, user_id, purpose) =
         (owner.tenant, owner.realm_id, owner.user_id, owner.purpose);
@@ -55,13 +52,14 @@ pub async fn mint(
     transaction
         .execute(
             "INSERT INTO one_time_tokens \
-                 (tenant, realm_id, user_id, purpose, token_hash, bound_to, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                 (tenant, realm_id, user_id, purpose, token_hash, bound_to, \
+                  expires_at, created_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
              ON CONFLICT (tenant, realm_id, user_id, purpose) DO UPDATE \
              SET token_hash = EXCLUDED.token_hash, \
                  bound_to = EXCLUDED.bound_to, \
                  expires_at = EXCLUDED.expires_at, \
-                 created_at = now()",
+                 created_at = EXCLUDED.created_at",
             &[
                 &tenant,
                 &realm_id,
@@ -70,6 +68,7 @@ pub async fn mint(
                 &hash,
                 &bound_to,
                 &expires_at,
+                &now,
             ],
         )
         .await

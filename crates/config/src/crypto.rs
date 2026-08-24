@@ -1,5 +1,3 @@
-//! Building a [`CryptoConfig`] from the environment.
-
 use crypto::provider::CryptoConfig;
 
 use crate::ConfigError;

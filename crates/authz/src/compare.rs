@@ -1,12 +1,3 @@
-//! One fact against another, under one of ten operators.
-//!
-//! Two rules govern everything here. A pair that cannot be compared under the
-//! operator asked of it answers nothing, never false: false is invertible into
-//! a grant and "these two are not comparable" is not a finding about the
-//! caller. And the operand a rule reads is named with its source rather than
-//! searched for, so a rule cannot answer differently depending on which login
-//! minted the token it is read from.
-
 use models::entities::attributes::AttributeValue;
 use models::entities::authz::Decision;
 use models::entities::authz::{Comparison, FactSource, Operand};

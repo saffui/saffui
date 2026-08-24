@@ -1,5 +1,3 @@
-//! How much of each row a collection endpoint returns.
-
 use serde::{Deserialize, Serialize};
 
 /// **Brief by default, which inverts Keycloak.**

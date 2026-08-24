@@ -1,18 +1,3 @@
-//! Establishing that a bearer is one this realm accepts, right now.
-//!
-//! Three questions, and they are separate because two of them have exceptions
-//! and one does not. A signature says the realm minted the token and can never
-//! be taken back. A window says when it stops on its own and is checked against
-//! an instant the caller states, so a decision and its later replay read the
-//! same clock. A revocation says somebody withdrew it early, which is the only
-//! one of the three an administrator can act on.
-//!
-//! Keeping them apart matters because one caller legitimately wants a token
-//! whose window has passed: an identity token presented as a hint is a record
-//! of a login that already happened, and refusing it for being over would
-//! refuse every logout that arrives late. Nothing else may reach for that door,
-//! which is why it is named rather than being a flag on one function.
-
 pub mod issuance;
 
 use std::time::{Duration, SystemTime};

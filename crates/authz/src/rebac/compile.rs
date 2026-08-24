@@ -1,16 +1,3 @@
-//! Turning a schema into the form a walk reads, and refusing the ones that
-//! would decide badly.
-//!
-//! Four things are refused here that the reference leaves to the walk or to
-//! nobody. A permission that computes from itself, directly or round a ring, is
-//! a schema defect that is decidable now and otherwise becomes a runtime cost
-//! paid on every request forever. An empty union or intersection cannot be
-//! built, because an empty intersection is the shape that grants to everybody.
-//! A relation's declared subject types are carried into the compiled form
-//! rather than checked and dropped, so the walk can refuse an edge naming a
-//! subject type the schema never allowed. And every error is collected, so an
-//! author with ten mistakes hears about ten.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Deserializer, Serialize};

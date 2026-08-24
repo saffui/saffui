@@ -1,5 +1,3 @@
-//! The authenticators a user enrolled.
-
 use deadpool_postgres::Transaction;
 use serde_json::Value;
 use tokio_postgres::Row;

@@ -1,12 +1,3 @@
-//! Everything a decision is asked about, stated rather than defaulted.
-//!
-//! The shape here is the crate's main defence, and it is a shape rather than a
-//! check: a fact that could not be established has an arm of its own, so the
-//! caller has to say which of the two it is. A bare `&BTreeSet` would let a
-//! caller who failed to load the subject's roles pass an empty one, and every
-//! role policy would then answer that the subject holds none of them, which
-//! negative logic turns into a grant for a subject nobody looked up.
-
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};

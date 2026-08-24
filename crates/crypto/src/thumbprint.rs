@@ -1,14 +1,3 @@
-//! JWK thumbprints (RFC 7638) and thumbprint URIs (RFC 9278).
-//!
-//! A thumbprint is a hash over a key's *required* members alone, so the public
-//! and private halves of one pair produce the same value and no optional member
-//! can change it. That is what makes it an identifier for the key rather than
-//! for the document describing it — which is what DPoP binds a token to, and
-//! what certificate binding and several OIDC flows compare.
-//!
-//! This is not part of the vendored JOSE tree. It borrows `Jwk` from it and
-//! nothing else, so the vendored files stay diffable against upstream.
-
 use crate::jose::Value;
 use crate::jose::jwk::Jwk;
 use crate::provider::{CryptoError, CryptoProvider, HashAlg, Result};

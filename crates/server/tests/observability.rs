@@ -1,10 +1,3 @@
-//! What a request leaves in the log, and what it must not.
-//!
-//! One line per request, with the id the caller can quote back, the route a
-//! dashboard groups by, the realm and the status. Never the query: a protocol
-//! request carries a state, a nonce, a code in it, and a log that held those
-//! would be the place to steal them from.
-
 mod support;
 
 use std::io::Write;

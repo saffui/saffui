@@ -1,15 +1,3 @@
-//! Apple's client secret, which is not a secret but a signed assertion.
-//!
-//! Every other provider hands an operator a string to paste. Apple hands them a
-//! private key and expects the server to mint a short lived assertion and
-//! present that at the token endpoint. It is valid for at most six months, so a
-//! deployment that mints one and stores it as a literal works until the day it
-//! silently stops, on a date nobody wrote down and no test covers.
-//!
-//! That failure is why this is minted on demand rather than configured. An
-//! assertion derived from the key each time cannot expire between logins, and
-//! the key itself has no expiry to miss.
-
 use serde_json::json;
 
 use crypto::jose::jws::{ES256, JwsHeader, serialize_compact};

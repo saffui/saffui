@@ -1,5 +1,3 @@
-//! Listing every realm, and taking away the logins that have run out.
-
 mod support;
 
 use store::providers::{realms, sessions};

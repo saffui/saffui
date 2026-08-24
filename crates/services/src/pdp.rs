@@ -1,16 +1,3 @@
-//! Where a question about a caller becomes an answer.
-//!
-//! One door. Every protected surface asks here, and what it asks about is a
-//! nature, matched exhaustively with no catch-all arm. A nature added without
-//! an engine does not compile, which is the difference between a surface nobody
-//! wired up and a surface that refuses everything in silence: the second reads
-//! as a working guard for as long as nobody tests it.
-//!
-//! The facts are gathered once, from the store and from what the request
-//! established, and handed to an engine that cannot reach either. What comes
-//! back is recorded before it is returned, on every path, because a decision
-//! nobody can find afterwards is a decision nobody can audit.
-
 use authz::{Caller, Declared, Evaluable, Membership, Presented, Request, Resolved, Through};
 use chrono::Utc;
 use deadpool_postgres::{Pool, Transaction};

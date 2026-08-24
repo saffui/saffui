@@ -1,10 +1,3 @@
-//! Turning a write set into the statement that carries it.
-//!
-//! A provider never writes placeholder text. The set already holds the columns
-//! and the values as one list, and rendering by hand in each provider puts the
-//! other half of the same mistake back: a placeholder count that has to agree
-//! with a list it is written next to, in as many places as there are writes.
-
 use crate::query::write_set::WriteSet;
 
 /// An insert of everything the set assigns.

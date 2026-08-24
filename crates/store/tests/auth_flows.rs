@@ -1,5 +1,3 @@
-//! Flows, their steps and the actions a realm asks for, against a database.
-
 mod support;
 
 use models::auditable::AuditableModel;

@@ -1,14 +1,3 @@
-//! Resolving a secret reference to the secret itself.
-//!
-//! A deployment secret written inline in the environment reaches `ps`, the logs
-//! and every crash dump. What goes there is a reference instead:
-//!
-//! - `file:/run/secrets/pg_password` — the file, trailing newline stripped.
-//! - `env:PG_PASSWORD` — the named variable.
-//! - anything else — the value itself, for local development.
-//!
-//! A `vault:` or KMS scheme is the extension this seam exists for.
-
 use std::fmt;
 
 use secrecy::SecretBox;

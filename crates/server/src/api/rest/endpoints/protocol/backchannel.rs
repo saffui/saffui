@@ -1,9 +1,3 @@
-//! Telling a client a login ended. OpenID Connect Back-Channel Logout 1.0 §2.5.
-//!
-//! Best effort, bounded, and off the request thread: a client that is slow
-//! or down must not hold the person's logout hostage, and one that refuses
-//! is on the record rather than retried.
-
 use std::time::Duration;
 
 use services::logout::Notice;

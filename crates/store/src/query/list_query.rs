@@ -1,10 +1,3 @@
-//! What a collection read asks for, and the fragment it becomes.
-//!
-//! The window comes from the request type rather than being recomputed here. It
-//! is already bounded there: a page has a default, an oversized one is cut down
-//! and an offset past the depth limit is refused. Deciding it twice would be two
-//! places to disagree about how much work one request may cost.
-
 use models::paging::Window;
 use postgres_types::ToSql;
 

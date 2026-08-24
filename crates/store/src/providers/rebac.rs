@@ -1,5 +1,3 @@
-//! The edges of a realm, and the schema that says which of them mean anything.
-
 use deadpool_postgres::Transaction;
 use tokio_postgres::Row;
 

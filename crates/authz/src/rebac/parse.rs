@@ -1,12 +1,3 @@
-//! Reading a schema, and saying where it stopped making sense.
-//!
-//! Hand written, because the language is nine productions and a parser
-//! generator would be a dependency carrying a grammar nobody reads. What it
-//! costs is that every bound has to be written down rather than inherited, and
-//! there are two: how long the source may be, and how deep a parenthesised
-//! group may nest. Both are here rather than at the caller, since a parser that
-//! recurses on input is the thing that has to refuse.
-
 use std::fmt;
 
 use super::ast::{

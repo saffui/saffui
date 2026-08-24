@@ -1,6 +1,3 @@
-//! OpenID Connect Session Management 1.0: what a relying party is told about
-//! the login it just joined, and what it reads to see whether it still holds.
-
 mod support;
 
 use actix_web::http::StatusCode;

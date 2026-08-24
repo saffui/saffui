@@ -1,9 +1,3 @@
-//! What a relying party verifies with.
-//!
-//! Unauthenticated, because a key set is public: it holds public halves and
-//! nothing else. Active and passive both, since a token signed just before a
-//! rotation must still verify against the key that signed it.
-
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use deadpool_postgres::Pool;

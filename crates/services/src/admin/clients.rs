@@ -1,5 +1,3 @@
-//! Registering, reshaping and retiring a client.
-
 use crypto::password::storage::StoredPassword;
 use crypto::provider::SignAlg;
 use crypto::provider::{Argon2Params, CryptoProvider};
@@ -55,6 +53,7 @@ pub struct Registered {
     pub request_uris: Option<Vec<String>>,
     pub subject_type: Option<String>,
     pub sector_identifier_uri: Option<String>,
+    pub require_pushed_authorization_requests: Option<bool>,
     /// How this client proves it is itself, as the column spells it.
     pub method: String,
     pub token_endpoint_auth_signing_alg: Option<SignAlg>,
@@ -82,6 +81,7 @@ impl Registered {
             default_max_age: client.default_max_age,
             default_acr_values: client.default_acr_values.clone(),
             initiate_login_uri: client.initiate_login_uri.clone(),
+            require_pushed_authorization_requests: client.require_pushed_authorization_requests,
             request_uris: client.request_uris.clone(),
             subject_type: client.subject_type.clone(),
             sector_identifier_uri: client.sector_identifier_uri.clone(),
@@ -325,6 +325,7 @@ fn apply(client: &mut ClientModel, spec: &Spec) {
     client.default_max_age = registered.default_max_age;
     client.default_acr_values = registered.default_acr_values.clone();
     client.initiate_login_uri = registered.initiate_login_uri.clone();
+    client.require_pushed_authorization_requests = registered.require_pushed_authorization_requests;
     client.request_uris = registered.request_uris.clone();
     client.subject_type = registered.subject_type.clone();
     client.sector_identifier_uri = registered.sector_identifier_uri.clone();

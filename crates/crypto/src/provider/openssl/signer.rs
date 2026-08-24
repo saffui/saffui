@@ -1,5 +1,3 @@
-//! Signatures over OpenSSL.
-
 use openssl::nid::Nid;
 use openssl::pkey::{HasParams, Id, PKey, Private, Public};
 use openssl::rsa::Padding;

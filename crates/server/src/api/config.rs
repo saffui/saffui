@@ -1,14 +1,3 @@
-//! Where every route is registered.
-//!
-//! Two functions, because there are two listeners: what a caller reaches and
-//! what an orchestrator asks. Both take a `ServiceConfig` rather than returning
-//! an `App`, so a binary and a test compose them the same way and neither can
-//! assemble a different server than the other.
-//!
-//! The admin plane is registered from the same table its guard reads. A handler
-//! registered outside that table would be reachable and charged for nothing,
-//! which is why registration walks it rather than being written twice.
-
 use actix_web::body::MessageBody;
 use actix_web::dev::{HttpServiceFactory, ServiceFactory, ServiceRequest, ServiceResponse};
 use actix_web::{App, Error, Route, web};
@@ -105,7 +94,7 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 plane.tenancy.clone(),
             )))
             .app_data(web::Data::new(plane.origin.clone()))
-            .app_data(web::Data::new(plane.hops))
+            .app_data(web::Data::new(plane.hops.clone()))
             .app_data(web::Data::new(plane.egress))
             .app_data(web::Data::new(plane.login_ui.clone()))
             .app_data(web::Data::new(plane.sealing.clone()))

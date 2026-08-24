@@ -1,11 +1,3 @@
-//! Answering a login a browser started.
-//!
-//! Two ways in, one flow behind them. JSON for the screens that are an
-//! application of their own, answered in JSON. A form for the page this server
-//! renders and for any browser that runs no script, answered the way a browser
-//! understands: sent on. Not an endpoint any RFC specifies, so the shape is this
-//! server's: the three outcomes a flow has, named.
-
 use actix_web::http::StatusCode;
 use actix_web::{Either, HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;

@@ -1,5 +1,3 @@
-//! Authorization requests pushed before the browser, against a database.
-
 mod support;
 
 use store::providers::pushed::{self, Pushed};

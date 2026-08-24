@@ -1,17 +1,3 @@
-//! A realm that can actually sign, and a token it actually signed.
-//!
-//! The guard verifies a bearer against the keys a realm has published, and
-//! until now nothing exercised that end to end: the unit tests hand `decide` a
-//! `Presented` that was never a token. What that leaves untested is everything
-//! between the header and the decision, which is where a plane is opened by
-//! accident: the issuer that names a realm, the key identifier that picks one
-//! key out of several, the algorithm taken from the key rather than the token.
-//!
-//! So this mounts a real realm with a real key pair and mints tokens by signing
-//! them. A test that wants a token nobody should accept asks for one signed by
-//! a key the realm never published, rather than for a string that merely fails
-//! to parse.
-
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 

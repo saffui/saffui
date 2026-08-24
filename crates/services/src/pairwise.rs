@@ -1,8 +1,3 @@
-//! A different subject identifier per sector, OIDC Core §8.
-//!
-//! Two clients that never share a sector see two identifiers for one account
-//! and cannot tell they are looking at the same person by comparing them.
-
 use crypto::provider::CryptoProvider;
 use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Transaction;

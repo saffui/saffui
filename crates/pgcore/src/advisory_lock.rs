@@ -1,14 +1,3 @@
-//! Electing one writer at a time, using the server's own advisory locks.
-//!
-//! A session-level advisory lock belongs to a *connection*, so this holds a
-//! dedicated one for the lock's whole life. A pooled connection would be
-//! returned to the pool while the lock is still believed held — and a
-//! transaction-mode proxy in front would drop it sooner — so the pool is not an
-//! option here.
-//!
-//! The lock ends when the session does. Releasing it explicitly is better, and
-//! dropping the guard closes the session as the backstop.
-
 use tokio::task::JoinHandle;
 use tokio_postgres::{Client, Config};
 

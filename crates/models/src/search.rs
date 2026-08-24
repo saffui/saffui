@@ -1,5 +1,3 @@
-//! The admin search vocabulary a collection endpoint accepts.
-
 use serde::Deserialize;
 
 /// `search` + `exact` (substring against equality over a per-resource column

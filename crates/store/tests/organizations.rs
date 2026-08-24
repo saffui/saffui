@@ -1,5 +1,3 @@
-//! Organizations, their domains and their members against a database.
-
 mod support;
 
 use models::auditable::AuditableModel;

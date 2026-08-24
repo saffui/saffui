@@ -1,5 +1,3 @@
-//! The audit chain, against a database.
-
 mod support;
 
 use crypto::provider::openssl::hashing::OpenSslDigest;

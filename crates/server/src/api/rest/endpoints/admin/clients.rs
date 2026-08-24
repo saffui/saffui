@@ -1,5 +1,3 @@
-//! The clients of a realm, over the admin plane.
-
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;

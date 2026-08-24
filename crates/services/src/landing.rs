@@ -1,5 +1,3 @@
-//! Where an authorization response goes, and how it travels.
-
 /// How the client asked to be answered, OAuth 2.0 Multiple Response Type
 /// Encoding Practices §2.1 and the Form Post Response Mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

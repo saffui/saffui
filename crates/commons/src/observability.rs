@@ -1,12 +1,3 @@
-//! Logging setup, and what has to happen to a value before it is logged.
-//!
-//! Installing a subscriber is something a process does once, so it sits behind
-//! a feature: a library only ever emits records, and nothing that does not
-//! serve a process should compile the stack that formats them.
-//!
-//! [`sanitize_for_log`] is not behind anything. It is a pure function and the
-//! one part of this that every layer needs.
-
 /// Strip the characters that end a log line.
 ///
 /// A value that reaches a log from outside — a realm name, a client id, a

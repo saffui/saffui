@@ -1,18 +1,3 @@
-//! Compiling a pattern an administrator wrote, under the bounds that make it
-//! safe to keep.
-//!
-//! A pattern reaches this crate from two places: the regular expression a
-//! policy matches a claim against, and the one a realm holds its passwords to.
-//! Both are written by an administrator and run against a value somebody else
-//! supplied, so both are compiled once, when they are written, and refused
-//! there if they will not compile.
-//!
-//! The engine backing this has no backtracking, so the peril is not a pattern
-//! that runs forever on a crafted input. It is a pattern whose compiled program
-//! or lazy automaton is large enough to matter, which is what the two limits
-//! below bound. The length bound is separate and comes first: it refuses the
-//! input before anything is built from it.
-
 use regex::{Regex, RegexBuilder};
 
 /// The longest pattern accepted, in bytes.

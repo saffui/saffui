@@ -1,10 +1,3 @@
-//! A WebAuthn authenticator in software.
-//!
-//! Written against the W3C algorithms rather than borrowed from the library
-//! under test: what this signs is an independent reading of the spec, checked
-//! by the verifier on every run. It also signs on request what no honest
-//! authenticator would, which is what the negative tests need.
-
 use crypto::jose::jwk::alg::ec::EcKeyPair;
 use crypto::jose::jwk::{KeyPair, P_256};
 use crypto::provider::openssl::OpenSslProvider;

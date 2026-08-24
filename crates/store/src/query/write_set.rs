@@ -1,27 +1,3 @@
-//! A column and the value going into it, kept together.
-//!
-//! # The mistake this makes unwritable
-//!
-//! A write names its columns in one place and binds its values in another. The
-//! driver's binds are positional and untyped, so nothing relates the two lists.
-//! Add a column and forget its value, or add it in the wrong position, and the
-//! code compiles clean and writes the wrong value into the wrong column.
-//!
-//! The database catches only the arity half of that, and only if something
-//! actually runs the write. A path with no caller is never checked at all, and
-//! adding one column to a table means hand-editing every bind list that touches
-//! it with the build staying green throughout.
-//!
-//! # The shape
-//!
-//! One expression yields both. A [`WriteSet`] is a list of pairs, and the column
-//! list handed to the builder and the values handed to the driver are both
-//! derived from it. There is no second list to drift.
-//!
-//! The filter is part of the same set, deliberately. Its values are bound
-//! positionally too, numbered after the assignments, so modelling only the
-//! assignments would leave half the statement open to the same mistake.
-
 use postgres_types::ToSql;
 
 /// One column and the value going into it.

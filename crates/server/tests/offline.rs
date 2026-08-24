@@ -1,5 +1,3 @@
-//! A grant that outlives the login it came from, OIDC Core §11.
-
 mod support;
 
 use actix_web::http::{Method, StatusCode};
@@ -612,4 +610,188 @@ async fn admin_status(plane: &Plane, bearer: &str, method: Method, path: &str) -
         .insert_header(("authorization", format!("Bearer {bearer}")))
         .to_request();
     test::call_service(&app, request).await.status()
+}
+
+async fn bound_offline(plane: &Plane, max_lifespan: i32, max_grants: i32) {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let mut realm = store::providers::realms::load(&transaction, support::REALM)
+        .await
+        .expect("the realms table")
+        .expect("a planted realm");
+    realm.offline_session_max_lifespan = max_lifespan;
+    realm.max_offline_grants = max_grants;
+    store::providers::realms::update(&transaction, &realm)
+        .await
+        .expect("the realms table");
+    transaction.commit().await.expect("the bounds kept");
+}
+
+async fn age_offline_start(plane: &Plane, by: i64) {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    transaction
+        .execute(
+            "UPDATE client_sessions SET started_at = started_at - $1 WHERE offline",
+            &[&by],
+        )
+        .await
+        .expect("an ageing");
+    transaction.commit().await.expect("the ageing kept");
+}
+
+async fn offline_grant_ids(plane: &Plane) -> Vec<String> {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    store::providers::sessions::offline_grants_of(
+        &transaction,
+        support::SUBJECT,
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .expect("the client sessions table")
+    .into_iter()
+    .map(|grant| grant.session_id)
+    .collect()
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_ceiling_ends_a_grant_that_keeps_checking_in() {
+    let plane = Plane::with_actions(&[]).await;
+    bound_offline(&plane, 3_600, 0).await;
+    let offline = granted(&plane, "openid offline_access").await;
+    let refresh = offline["refresh_token"]
+        .as_str()
+        .expect("a refresh token")
+        .to_owned();
+
+    assert_eq!(renews(&plane, &refresh).await, StatusCode::OK);
+    let now = chrono::Utc::now().timestamp();
+    let ends = offline_ends_at(&plane).await;
+    assert!(
+        ends <= now + 3_600 + 5,
+        "the sliding window outran the ceiling: {ends} against {now}"
+    );
+
+    age_offline_start(&plane, 3_601).await;
+    assert_eq!(
+        renews(&plane, &refresh).await,
+        StatusCode::BAD_REQUEST,
+        "a grant past its ceiling renewed"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_token_states_the_end_the_ceiling_imposes() {
+    let plane = Plane::with_actions(&[]).await;
+    bound_offline(&plane, 3_600, 0).await;
+    let offline = granted(&plane, "openid offline_access").await;
+    let refresh = offline["refresh_token"].as_str().expect("a refresh token");
+
+    age_offline_start(&plane, 3_000).await;
+    let (status, renewed) = at_token(
+        &plane,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh),
+            ("client_id", support::CONFIDENTIAL),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renewed}");
+
+    let successor = renewed["refresh_token"].as_str().expect("a successor");
+    let stated = plane.claims_of(successor).await["exp"]
+        .as_i64()
+        .expect("an expiry");
+    let ends = offline_ends_at(&plane).await;
+    assert_eq!(
+        stated, ends,
+        "the token stated an end the grant does not have"
+    );
+    let now = chrono::Utc::now().timestamp();
+    assert!(stated <= now + 601, "the ceiling was not applied: {stated}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_cap_ends_the_oldest_grant() {
+    let plane = Plane::with_actions(&[]).await;
+    bound_offline(&plane, 0, 1).await;
+    plant_older_grant(&plane, "an-older-grant", support::OTHER).await;
+    assert_eq!(offline_grant_ids(&plane).await.len(), 1);
+
+    granted(&plane, "openid offline_access").await;
+
+    let left = offline_grant_ids(&plane).await;
+    assert_eq!(left.len(), 1, "the cap did not hold: {left:?}");
+    assert_ne!(
+        left[0], "an-older-grant",
+        "the cap ended the new grant rather than the old one"
+    );
+}
+
+async fn plant_older_grant(plane: &Plane, session_id: &str, client_id: &str) {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let now = chrono::Utc::now().timestamp();
+    store::providers::sessions::open_client_session(
+        &transaction,
+        &models::sessions::records::ClientSessionModel {
+            tenant: support::TENANT.to_owned(),
+            realm_id: support::REALM.to_owned(),
+            session_id: session_id.to_owned(),
+            user_session_id: support::SESSION.to_owned(),
+            user_id: support::SUBJECT.to_owned(),
+            client_id: client_id.to_owned(),
+            auth_method: Some("authorization_code".to_owned()),
+            redirect_uri: None,
+            started_at: now - 86_400,
+            expiration: Some(now + 86_400),
+            notes: None,
+            current_refresh_token: None,
+            current_refresh_token_use_count: Some(0),
+            offline: Some(true),
+            requested_claims: None,
+        },
+    )
+    .await
+    .expect("a planted grant");
+    transaction.commit().await.expect("the grant kept");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_grant_that_is_over_is_not_counted_by_the_cap() {
+    let plane = Plane::with_actions(&[]).await;
+    granted(&plane, "openid offline_access").await;
+    assert_eq!(offline_grant_ids(&plane).await.len(), 1);
+
+    set_offline_end(&plane, chrono::Utc::now().timestamp() - 1).await;
+    assert!(
+        offline_grant_ids(&plane).await.is_empty(),
+        "a grant whose own end has passed was still counted"
+    );
 }

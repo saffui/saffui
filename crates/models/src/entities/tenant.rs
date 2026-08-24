@@ -1,8 +1,3 @@
-//! The tenant registry. A tenant is the top of the isolation hierarchy, and
-//! unlike every other entity it carries no parent tenant — it *is* the tenant,
-//! so it has flat audit columns rather than an
-//! [`AuditableModel`](crate::auditable::AuditableModel).
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

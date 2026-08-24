@@ -1,5 +1,3 @@
-//! What the point of application takes and gives back.
-
 use serde::{Deserialize, Serialize};
 
 /// What is being asked about. Tagged, so a body naming neither arm is refused

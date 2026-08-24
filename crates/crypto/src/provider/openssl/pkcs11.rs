@@ -1,13 +1,3 @@
-//! A key store inside a PKCS#11 token.
-//!
-//! What this buys over the software store is one property: the private key is
-//! created inside the device and never leaves it, so a memory dump of this
-//! process yields nothing that can sign.
-//!
-//! The `cryptoki` calls block. They run inline in the async trait methods, so a
-//! caller on an async runtime should reach this store through a blocking pool
-//! rather than from a reactor thread.
-
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::mechanism::rsa::{PkcsMgfType, PkcsPssParams};
 use cryptoki::mechanism::{Mechanism, MechanismType};

@@ -1,9 +1,3 @@
-//! What one step of a flow answered, and what a flow answers from its steps.
-//!
-//! Pure: no store, no clock, no credential. What runs a step is elsewhere; this
-//! says what a flow makes of the answers, and it is the part that decides
-//! whether somebody is let in.
-
 use models::entities::auth::AuthenticatorRequirement;
 
 /// What one step answered.

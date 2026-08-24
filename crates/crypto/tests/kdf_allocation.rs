@@ -1,18 +1,3 @@
-//! The KDF output buffers must never reallocate.
-//!
-//! Both derivations append whole digest blocks, and both wrap their output in
-//! `Zeroizing` so it is scrubbed when dropped. That guarantee lasts exactly as
-//! long as the buffer stays put: a reallocation copies the derived bytes into a
-//! new block and frees the old one untouched, leaving key material in memory
-//! that nothing will ever scrub. `Zeroizing` cannot see it happen and no
-//! assertion on the returned value can either — the output is correct either
-//! way.
-//!
-//! So the property is checked where it is observable, at the allocator. This
-//! lives in its own file because a `#[global_allocator]` is per-binary, and it
-//! holds a single test because the counter is process-wide: a second test
-//! running beside it would have its allocations counted here.
-
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 

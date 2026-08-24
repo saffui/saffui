@@ -1,21 +1,3 @@
-//! The server side state of an outbound brokered login.
-//!
-//! Three values are generated when a user is sent to an upstream provider, and
-//! all three have to be recognised on the way back. Each defends a different
-//! attack.
-//!
-//! - `state` binds the callback to a login this server started. Without it an
-//!   attacker delivers their own authorization code to the victim's browser and
-//!   the victim ends up logged in as the attacker.
-//! - `nonce` binds the upstream id token to this request, so a token minted for
-//!   another session is not replayable here.
-//! - the PKCE verifier binds redemption to the party that started the flow
-//!   (RFC 7636), so an intercepted code is not redeemable by whoever holds it.
-//!
-//! The raw `state` travels in a URL and ends up in browser history, proxy logs
-//! and `Referer` headers. Only its digest is stored, so reading the table yields
-//! nothing replayable against the callback.
-
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use serde::{Deserialize, Serialize};
 

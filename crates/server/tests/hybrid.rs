@@ -1,5 +1,3 @@
-//! What the authorization endpoint hands back itself, OIDC Core §3.2 and §3.3.
-
 mod support;
 
 use actix_web::http::StatusCode;

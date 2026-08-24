@@ -1,10 +1,3 @@
-//! Three questions an orchestrator asks, and they are not the same question.
-//!
-//! Confusing them is the classic fault. A database nobody can reach must take
-//! the pod out of service, not restart it: restarting does not bring the
-//! database back, and a rolling restart of every pod during an outage turns a
-//! degraded service into none.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;

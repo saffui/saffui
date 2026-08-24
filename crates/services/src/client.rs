@@ -1,8 +1,3 @@
-//! Establishing which client is asking.
-//!
-//! Ahead of every grant and separate from all of them, so a grant added later
-//! cannot be added without the check.
-
 use chrono::{DateTime, Utc};
 use crypto::constant_time;
 use crypto::envelope::Envelope;

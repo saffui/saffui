@@ -1,9 +1,3 @@
-//! The relationship language: what it accepts, and what it refuses to compile.
-//!
-//! Most of these are about the refusals. A schema that parses and compiles into
-//! something that decides badly is worse than one that does not compile, since
-//! the first is installed and the second is fixed.
-
 use authz::rebac::{Rule, compile, parse};
 
 /// The shape everything else is written against.

@@ -1,5 +1,3 @@
-//! Named grants, and the sets of users they are given to together.
-
 use deadpool_postgres::Transaction;
 use models::entities::authz::{AdminAction, GroupModel, RoleModel};
 use tokio_postgres::Row;

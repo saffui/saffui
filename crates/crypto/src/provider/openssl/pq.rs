@@ -1,10 +1,3 @@
-//! Post-quantum algorithms over OpenSSL 3.5 or newer.
-//!
-//! The safe `openssl` crate has no bindings for these yet, so the key
-//! generation goes through the raw FFI. Signing and verifying do not: OpenSSL
-//! exposes ML-DSA through the ordinary `EVP_PKEY` signing path, and the crate's
-//! digest-free variant of it is already safe.
-
 use std::ffi::CString;
 use std::ptr;
 

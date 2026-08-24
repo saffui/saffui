@@ -1,9 +1,3 @@
-//! What the database tests need before they can say anything.
-//!
-//! One database, so they take turns on it: each resets the schema, and two doing
-//! that at once is one test reading rows another planted. The turn is held by
-//! the fixture, so it lasts as long as the rows do.
-
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{CryptoConfig, CryptoProvider};
 use deadpool_postgres::{Manager, Object, Pool, Transaction};

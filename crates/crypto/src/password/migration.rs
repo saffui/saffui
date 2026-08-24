@@ -1,8 +1,3 @@
-//! Deciding what a login does about the password it just checked.
-//!
-//! Verifying is one question and replacing is another, and they are separate
-//! because only one of them has an answer when the password is wrong.
-
 use std::sync::RwLock;
 
 use data_encoding::HEXLOWER;

@@ -1,5 +1,3 @@
-//! The identifier that names one tab's login attempt.
-
 use data_encoding::BASE64URL_NOPAD;
 use serde::{Deserialize, Serialize};
 

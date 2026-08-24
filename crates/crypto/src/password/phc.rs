@@ -1,9 +1,3 @@
-//! Reading an Argon2 PHC string, and deciding whether it is still good enough.
-//!
-//! The string comes from a database, which means it comes from outside: a realm
-//! import, a migration from another system, a row somebody edited. So the
-//! parser never panics, never indexes a slice, and bounds its own work.
-
 use std::str::FromStr;
 
 use crate::provider::{Argon2Params, CryptoError, Result};

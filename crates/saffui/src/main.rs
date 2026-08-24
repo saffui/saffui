@@ -1,10 +1,3 @@
-//! One artifact, several subcommands.
-//!
-//! One rather than two because the pieces share their configuration, their
-//! schema window and their store, and two binaries would carry two copies of
-//! that agreement. Splitting later moves this file; splitting the crates before
-//! anything needed it would have been a shape chosen in advance.
-
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;

@@ -1,9 +1,3 @@
-//! What opening a scoped transaction actually does, against a database.
-//!
-//! The rules are proven elsewhere. This proves the thing that writes the
-//! settings they read: that it writes them, that they do not outlive their
-//! transaction, and that a pooled connection handed on carries nothing.
-
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{CryptoConfig, CryptoProvider};
 use deadpool_postgres::{Manager, Pool};

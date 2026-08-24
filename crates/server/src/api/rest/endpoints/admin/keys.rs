@@ -1,8 +1,3 @@
-//! The keys a user enrolled, over the admin plane.
-//!
-//! Listing and revocation, and deliberately nothing else: enrolment happens in
-//! the login, where the key's holder is the one holding the ceremony.
-
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;

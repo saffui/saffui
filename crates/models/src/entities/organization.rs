@@ -1,7 +1,3 @@
-//! Organizations: a *soft* tenant inside a realm. An organization shares the
-//! realm's issuer, keys, clients and user pool, but isolates who belongs, how
-//! they log in, what they see and who administers them.
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 

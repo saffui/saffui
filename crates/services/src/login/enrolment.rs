@@ -1,10 +1,3 @@
-//! Enrolling a credential the realm told this user to set up.
-//!
-//! Not an authenticator. A step proves who is answering; this adds something
-//! for a later login to prove against, and it runs only once a flow has
-//! admitted, so the credential is planted by its owner and never by whoever is
-//! still guessing at a password.
-
 use config::serving::PublicOrigin;
 use crypto::otp::totp::{TotpParams, totp_verify_step};
 use crypto::provider::{CryptoProvider, HashAlg};

@@ -1,17 +1,3 @@
-//! Following edges through a graph that may not be one.
-//!
-//! Written once, because every caller needs the same three things and each one
-//! is a way to hang: a visited set, so a cycle is walked once rather than
-//! forever; a depth ceiling, so a long chain cannot exhaust the stack; and a
-//! node ceiling, so a wide one cannot exhaust the heap.
-//!
-//! What matters as much as the bounds is what happens at them. Running out of
-//! budget is not an answer, and a walk that returned "no path" on exhaustion
-//! would be indistinguishable from one that searched the whole graph. Every
-//! ceiling here is [`Exhausted`], and the caller decides what an unanswered
-//! question means: at a write it is a refusal, at a decision it is a policy
-//! that could not be evaluated.
-
 use std::collections::{BTreeSet, VecDeque};
 
 /// How far a walk may go before it gives up.

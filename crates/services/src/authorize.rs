@@ -1,16 +1,10 @@
-//! Where a login starts, and what may be sent onward from it.
-//!
-//! The split that matters here is not success against failure but showable
-//! against sendable. RFC 6749 §4.1.2.1: a request whose client or redirect
-//! cannot be trusted is shown to the user and never redirected, because
-//! redirecting it is the open redirector.
-
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
 use models::entities::acr::{self, AchievedAuth, AcrRequirement, AuthContextRequest, AuthDecision};
 use models::entities::attributes::AttributeValue;
 use models::entities::client::ClientModel;
+use models::entities::realm::RealmModel;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::{Value, json};
 use store::providers::login::{self, AuthSession};
@@ -107,6 +101,14 @@ pub async fn hosted_request_object(
         .ok_or(Refusal::Unshowable("invalid_request_uri"))
 }
 
+/// Whether this client has to push its request before sending the browser.
+/// What the client says wins; absent, the realm decides for all of them.
+fn must_push(realm: &RealmModel, client: &ClientModel) -> bool {
+    client
+        .require_pushed_authorization_requests
+        .unwrap_or(realm.require_pushed_authorization_requests)
+}
+
 /// Start a login, or say how the refusal travels.
 #[allow(
     clippy::too_many_arguments,
@@ -123,8 +125,10 @@ pub async fn begin(
     signing: Option<&crate::grant::Signing<'_>>,
     now: DateTime<Utc>,
 ) -> Result<Begun, Refusal> {
-    // A reference this server issued stands for the whole request, so it is
-    // taken first and the browser's own query is not read at all.
+    // Read before it is spent. Inside here a `request_uri` is always a
+    // reference this server issued: one the client hosts was fetched by the
+    // transport and arrives as an inline object.
+    let pushed_first = asked.request_uri.is_some();
     let taken;
     let asked = match asked.request_uri {
         None => asked,
@@ -281,6 +285,13 @@ pub async fn begin(
         .map_err(|_| Refusal::Redirect("server_error"))?
         .ok_or(Refusal::Redirect("server_error"))?;
     let map = realm.acr_loa_map.clone().unwrap_or_default();
+
+    // RFC 9126 §5. A pushed request never reaches a browser's history, a
+    // proxy's log or a referrer header, which is what a client that must push
+    // is being kept away from.
+    if !pushed_first && must_push(&realm, &client) {
+        return Err(Refusal::Redirect("invalid_request"));
+    }
 
     // A session somebody else holds does not answer a request for this
     // subject, §3.1.2.2. It is not reused; whoever the client named has to

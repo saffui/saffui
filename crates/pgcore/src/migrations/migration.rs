@@ -1,6 +1,3 @@
-//! What a migration is, what the history records, and the planning that decides
-//! what is left to do.
-
 use std::collections::BTreeSet;
 use std::sync::Arc;
 

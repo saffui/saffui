@@ -1,5 +1,3 @@
-//! How often this node does the work no request asks for.
-
 use std::time::Duration;
 
 use crate::ConfigError;

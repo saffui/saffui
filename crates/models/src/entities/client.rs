@@ -1,5 +1,3 @@
-//! Clients: what may ask for a token, and how its tokens are protected.
-
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -159,6 +157,9 @@ pub struct ClientModel {
     pub sector_identifier_uri: Option<String>,
     /// When this client registered itself. `None` for one an administrator made.
     pub registered_at: Option<DateTime<Utc>>,
+    /// Whether this client must push its request first. Absent follows the
+    /// realm.
+    pub require_pushed_authorization_requests: Option<bool>,
 
     pub protocol: Option<Protocol>,
     pub public_client: Option<bool>,
@@ -243,6 +244,7 @@ impl ClientCreateModel {
             subject_type: None,
             sector_identifier_uri: None,
             registered_at: None,
+            require_pushed_authorization_requests: None,
             protocol: None,
             public_client: None,
             client_authenticator_type: None,

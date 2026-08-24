@@ -1,5 +1,3 @@
-//! A different subject identifier per sector, OIDC Core §8.
-
 mod support;
 
 use actix_web::http::StatusCode;

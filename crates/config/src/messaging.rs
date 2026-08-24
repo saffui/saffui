@@ -1,5 +1,3 @@
-//! What carries a message out of this deployment.
-
 use crate::ConfigError;
 
 const SINK: &str = "MESSAGE_SINK";

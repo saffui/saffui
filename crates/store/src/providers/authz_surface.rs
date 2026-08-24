@@ -1,14 +1,3 @@
-//! What a protected application exposes, and the verbs declared on it.
-//!
-//! The scopes here are not the ones a client asks for at login. Those say what
-//! a token may carry; these say what may be done to a resource, and an
-//! application declares them for itself.
-//!
-//! A resource never leaves this module with its scopes unloaded. The model
-//! keeps "declares none" apart from "not loaded" because a decision has to tell
-//! them apart, and a read that sometimes filled the field and sometimes did not
-//! would make which one it is a question about the call site.
-
 use std::collections::HashMap;
 
 use deadpool_postgres::Transaction;

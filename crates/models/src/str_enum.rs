@@ -1,10 +1,3 @@
-//! One table per string enum: the variants, their wire spelling, and the tests.
-//!
-//! Written once because the same enum otherwise gets spelled three times — the
-//! variants, a `match` for the text, a `match` back — and nothing keeps the
-//! three in step. A variant added to two of them and forgotten in the third
-//! parses to something the writer never named.
-
 /// A stored or submitted value that names no variant.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{found:?} is not a {expected}")]

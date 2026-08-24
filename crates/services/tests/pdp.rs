@@ -1,10 +1,3 @@
-//! What the decision point answers, and what it writes down.
-//!
-//! Every one of these goes through the real door: facts read from the store,
-//! an engine that cannot reach it, and a record written before the answer comes
-//! back. What is asserted is the answer and the record together, because an
-//! answer nobody can find afterwards is half a decision.
-
 mod support;
 
 use chrono::Utc;

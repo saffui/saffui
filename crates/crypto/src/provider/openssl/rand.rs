@@ -1,5 +1,3 @@
-//! Random bytes from OpenSSL's generator.
-
 use crate::provider::{CryptoError, RandProvider, Result};
 
 pub struct OpenSslRand;

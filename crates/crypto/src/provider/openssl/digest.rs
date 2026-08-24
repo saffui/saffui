@@ -1,8 +1,3 @@
-//! The one place a [`HashAlg`] becomes an OpenSSL digest.
-//!
-//! Three of the sub-providers need this mapping. Written once so the three
-//! cannot drift apart, and kept out of the seam so `HashAlg` stays a name.
-
 use openssl::hash::MessageDigest;
 
 use crate::provider::HashAlg;

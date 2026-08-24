@@ -1,9 +1,3 @@
-//! What the authorization endpoint hands back itself, OIDC Core §3.2 and §3.3.
-//!
-//! A code is redeemed in a request nobody else sees. What is minted here
-//! crosses a browser instead, so it is short lived and it carries a hash of
-//! whatever came back beside it.
-
 use chrono::{DateTime, Duration, Utc};
 use models::entities::client::ClientModel;
 use models::entities::realm::RealmModel;

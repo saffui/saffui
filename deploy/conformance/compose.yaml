@@ -116,6 +116,9 @@ services:
       SAFFUI_PUBLIC_ORIGIN: https://saffui.test
       # One proxy, the TLS terminator below, and it writes the header.
       SAFFUI_PROXY_HOPS: "1"
+      # And the header is read from it and from nobody else. The compose
+      # network hands out addresses in this block.
+      SAFFUI_PROXY_PEERS: "172.16.0.0/12"
       # The suite hosts its request objects on this machine, so the addresses
       # this bench dials are its own. A deployment reaching real clients keeps
       # the default and dials outward only.

@@ -1,21 +1,3 @@
-//! Authentication context: how strongly, and how recently.
-//!
-//! Four OIDC Core parameters that look separate and are one question. Is this
-//! authentication good enough for what the client is about to do?
-//!
-//! - `acr_values` asks for a level of assurance.
-//! - `max_age` asks for a recent one.
-//! - `prompt=login` asks for a fresh one regardless.
-//! - the `acr` claim reports what was actually achieved.
-//!
-//! # The failure this module exists to prevent
-//!
-//! Reporting an `acr` that was requested rather than reached. A relying party
-//! reads that claim to decide whether to release money, and a server echoing
-//! back whatever was asked for turns the whole mechanism into decoration.
-//! Requested and achieved are separate types here so the two cannot be confused
-//! by accident.
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

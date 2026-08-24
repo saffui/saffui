@@ -1,16 +1,3 @@
-//! The error catalogue.
-//!
-//! A code is the identity of a failure: a stable number, a greppable slug, an
-//! HTTP status and a message. The number is a public contract — it is never
-//! reused for another meaning, any more than an HTTP status would be.
-//!
-//! Bands by domain: generic (4000/5000), realm (100), user (200), client (300),
-//! auth (400), token (500), tenant (600), organization (700), credential (800),
-//! authz (900).
-//!
-//! Nothing here knows about a web framework. The status is a `u16` so this
-//! stays usable by layers that never serve a request.
-
 /// Declare the catalogue.
 ///
 /// One table, four projections. Written this way because the alternative is

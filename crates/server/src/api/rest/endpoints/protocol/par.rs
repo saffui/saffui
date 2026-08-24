@@ -1,6 +1,3 @@
-//! RFC 9126: a client pushes its authorization request here and sends the
-//! browser with a reference to it.
-
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;

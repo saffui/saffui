@@ -1,10 +1,3 @@
-//! What a client may ask for, and what turns into a claim.
-//!
-//! A scope is a named set; a mapper is a rule that produces a claim. Both can
-//! be attached to a client directly or reached through a scope the client
-//! holds, and the read that matters is the one that resolves both at once,
-//! since that is what assembling a token needs.
-
 use deadpool_postgres::Transaction;
 use models::entities::client::{ClientScopeModel, Protocol, ProtocolMapperModel};
 use tokio_postgres::Row;

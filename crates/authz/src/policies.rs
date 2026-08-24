@@ -1,11 +1,3 @@
-//! A server's policies, indexed and walked.
-//!
-//! The index and the compiled patterns come out of one call over one slice, so
-//! a cache prepared from a different load, or refreshed on a different cadence
-//! than the policies it belongs to, is not something a caller can express. Two
-//! parameters would make that mismatch look exactly like a pattern that would
-//! not compile, and the two faults have nothing to do with each other.
-
 use std::collections::{BTreeMap, BTreeSet};
 
 use commons::walk::{Budget, POLICY_AGGREGATION};

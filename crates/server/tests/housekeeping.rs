@@ -1,5 +1,3 @@
-//! The sweep that runs on a clock rather than on a request.
-
 mod support;
 
 use server::jobs::sweep_every_realm;

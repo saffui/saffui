@@ -1,5 +1,3 @@
-//! Password storage policy, over the provider's primitives.
-
 pub mod legacy;
 pub mod migration;
 pub mod phc;

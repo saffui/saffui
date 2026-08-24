@@ -1,5 +1,3 @@
-//! Hashing over OpenSSL.
-
 use openssl::hash::{Hasher, MessageDigest};
 
 use crate::provider::openssl::digest::message_digest;

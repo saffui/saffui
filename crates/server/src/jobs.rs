@@ -1,8 +1,3 @@
-//! Work this node does on a clock rather than on a request.
-//!
-//! A job is the second thing that opens a transaction, and it carries the same
-//! rule: opened here, handed to the services it calls.
-
 use std::time::Duration;
 
 use chrono::Utc;

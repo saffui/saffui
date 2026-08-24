@@ -1,5 +1,3 @@
-//! Applying what is pending, once, under the lock.
-
 use crypto::provider::DigestProvider;
 use tokio::task::JoinHandle;
 use tokio_postgres::{Client, Config};

@@ -1,5 +1,3 @@
-//! Scopes, mappers and what a client may ask for, against a database.
-
 mod support;
 
 use models::auditable::AuditableModel;

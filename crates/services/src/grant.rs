@@ -1,8 +1,3 @@
-//! Turning an authenticated client into tokens.
-//!
-//! The client is established before anything here runs, so nothing here asks
-//! who is calling.
-
 use chrono::{DateTime, Duration, Utc};
 use crypto::constant_time;
 use crypto::envelope::Envelope;
@@ -53,6 +48,51 @@ fn offline_or_refresh_lifespan(realm: &models::entities::realm::RealmModel, offl
             .map_or(DEFAULT_OFFLINE_LIFESPAN, i64::from)
     } else {
         DEFAULT_REFRESH_LIFESPAN
+    }
+}
+
+/// Oldest first: nobody is standing in front of the one that has not been
+/// renewed in months, and the newest is the one just asked for.
+async fn make_room_for_offline(
+    transaction: &Transaction<'_>,
+    realm: &models::entities::realm::RealmModel,
+    user_id: &str,
+    now: DateTime<Utc>,
+) -> Result<(), Ungranted> {
+    let cap = usize::try_from(realm.max_offline_grants).unwrap_or(0);
+    if cap == 0 {
+        return Ok(());
+    }
+    let held = sessions::offline_grants_of(transaction, user_id, now.timestamp())
+        .await
+        .map_err(|_| Ungranted::Unreadable)?;
+    for over in held.iter().take(held.len().saturating_sub(cap)) {
+        sessions::close_client_session(transaction, &over.session_id)
+            .await
+            .map_err(|_| Ungranted::Unreadable)?;
+    }
+    Ok(())
+}
+
+fn offline_ends_at(realm: &models::entities::realm::RealmModel, started_at: i64) -> Option<i64> {
+    (realm.offline_session_max_lifespan > 0)
+        .then(|| started_at + i64::from(realm.offline_session_max_lifespan))
+}
+
+/// The token's own expiry is this same instant. A client told it holds
+/// something with no end, then refused, has nothing to explain it.
+fn bounded_end(
+    realm: &models::entities::realm::RealmModel,
+    offline: bool,
+    started_at: i64,
+    sliding: i64,
+) -> i64 {
+    match offline
+        .then(|| offline_ends_at(realm, started_at))
+        .flatten()
+    {
+        Some(absolute) => sliding.min(absolute),
+        None => sliding,
     }
 }
 
@@ -418,6 +458,10 @@ pub async fn authorization_code(
     .await
     .map_err(|_| Ungranted::Unreadable)?;
 
+    if offline {
+        make_room_for_offline(transaction, within.realm, &code.user_id, now).await?;
+    }
+
     Ok(Granted {
         access_token: access.token,
         expires_in: lifespan.num_seconds(),
@@ -734,7 +778,22 @@ pub async fn refresh_token(
             .access_token_lifespan
             .map_or(DEFAULT_ACCESS_LIFESPAN, i64::from),
     );
-    let renewal = Duration::seconds(offline_or_refresh_lifespan(within.realm, offline));
+    // Held back by the absolute bound where the realm set one, so the token
+    // states the instant the grant actually ends rather than one past it.
+    let renewal = Duration::seconds(
+        bounded_end(
+            within.realm,
+            offline,
+            client_session.started_at,
+            (now + Duration::seconds(offline_or_refresh_lifespan(within.realm, offline)))
+                .timestamp(),
+        ) - now.timestamp(),
+    );
+    // A grant already past its ceiling renews nothing. Refused as a grant that
+    // is over, not as one nobody recognises.
+    if renewal <= Duration::zero() {
+        return Err(Ungranted::InvalidGrant);
+    }
     let scope = verified.scope.clone();
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
     let identity_key = identity_key_for(transaction, signing, client).await?;
@@ -833,8 +892,8 @@ pub async fn refresh_token(
     // never moved, so checking it would have ended every grant at the first
     // renewal past the first window.
     //
-    // An absolute bound is stated as absent rather than implied: nothing here
-    // caps a grant that keeps checking in.
+    // A realm may put a ceiling over the sliding window, and then the grant
+    // ends at the earlier of the two.
     sessions::extend_client_session(
         transaction,
         &client_session.session_id,

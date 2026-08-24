@@ -1,5 +1,3 @@
-//! The one door on this plane with no gate in front of it.
-
 mod support;
 
 use actix_web::http::StatusCode;

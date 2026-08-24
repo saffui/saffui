@@ -122,6 +122,10 @@ pub fn admits(
 }
 
 /// Register a client from what it said about itself.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one registration"
+)]
 pub async fn register(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
@@ -129,9 +133,12 @@ pub async fn register(
     tenant: &str,
     realm_id: &str,
     metadata: &Metadata,
+    // What the sector document listed, when one was named and fetched.
+    sector: Option<&[String]>,
     now: DateTime<Utc>,
 ) -> Result<Registration, Refused> {
     let spec = spec_of(metadata, now)?;
+    check_sector(metadata, sector)?;
     let client_id = draw(provider, IDENTIFIER_BYTES)?;
     let (client, secret) = admin_clients::register(
         transaction,
@@ -230,7 +237,7 @@ pub fn as_document(client: &ClientModel, issued_at: i64) -> Value {
         "grant_types": grant_types_of(client),
         "token_endpoint_auth_method": auth_method_of(client),
         "application_type": client.application_type.clone().unwrap_or_else(|| "web".to_owned()),
-        "subject_type": "public",
+        "subject_type": client.subject_type.clone().unwrap_or_else(|| "public".to_owned()),
         "id_token_signed_response_alg": alg_name(client.id_token_signed_response_alg).unwrap_or("RS256"),
     });
     let named = document.as_object_mut().expect("a json object");
@@ -362,6 +369,26 @@ fn read_method(named: Option<&str>) -> Result<&'static str, Refused> {
     })
 }
 
+/// §5: every redirect this client registered appears in the document its
+/// sector identifier names, or the client is claiming a sector it does not
+/// belong to and would be told another client's identifiers.
+fn check_sector(metadata: &Metadata, listed: Option<&[String]>) -> Result<(), Refused> {
+    if metadata.sector_identifier_uri.is_none() {
+        return Ok(());
+    }
+    let listed = listed.ok_or(Refused::Invalid(
+        "the sector identifier document could not be read",
+    ))?;
+    metadata
+        .redirect_uris
+        .iter()
+        .all(|held| listed.iter().any(|named| named == held))
+        .then_some(())
+        .ok_or(Refused::Invalid(
+            "a redirect is not in the sector identifier document",
+        ))
+}
+
 /// The wire spelling, for the registration response.
 fn method_named(held: &str) -> &'static str {
     match held {
@@ -374,13 +401,19 @@ fn method_named(held: &str) -> &'static str {
 
 /// §2 of the registration spec, mapped onto what this provider can honour.
 fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
-    if metadata.sector_identifier_uri.is_some()
-        || metadata
-            .subject_type
-            .as_deref()
-            .is_some_and(|named| named != "public")
+    let subject_type = match metadata.subject_type.as_deref() {
+        None | Some("public") => "public",
+        Some("pairwise") => "pairwise",
+        Some(_) => return Err(Refused::Invalid("a subject type §8 does not name")),
+    };
+    // §5: the document is fetched and read, so it has to be somewhere this
+    // server can be asked to go.
+    if let Some(named) = metadata.sector_identifier_uri.as_deref()
+        && !named.starts_with("https://")
     {
-        return Err(Refused::Invalid("only the public subject type is issued"));
+        return Err(Refused::Invalid(
+            "a sector identifier is fetched over https",
+        ));
     }
     if metadata.jwks.is_some() && metadata.jwks_uri.is_some() {
         return Err(Refused::Invalid("keys are published one way, not two"));
@@ -434,6 +467,8 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
             default_acr_values: metadata.default_acr_values.clone(),
             initiate_login_uri: metadata.initiate_login_uri.clone(),
             request_uris: metadata.request_uris.clone(),
+            subject_type: Some(subject_type.to_owned()),
+            sector_identifier_uri: metadata.sector_identifier_uri.clone(),
             method: method.to_owned(),
             token_endpoint_auth_signing_alg: read_alg(
                 metadata.token_endpoint_auth_signing_alg.as_ref(),

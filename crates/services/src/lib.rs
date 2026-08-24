@@ -31,6 +31,7 @@ pub mod landing;
 pub mod login;
 pub mod logout;
 pub mod messaging;
+pub mod pairwise;
 pub mod pdp;
 pub mod provenance;
 pub mod provisioning;

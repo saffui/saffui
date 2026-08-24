@@ -10,7 +10,7 @@ use models::entities::attributes;
 use models::entities::keys::RealmSigningKeyView;
 use models::entities::user::{UserModel, address, profile};
 use serde_json::{Map, Value, json};
-use store::providers::{client_scopes, sessions, users};
+use store::providers::{client_scopes, clients, sessions, users};
 
 use crate::claims_request::{self, ClaimsRequest};
 use crate::token;
@@ -50,7 +50,18 @@ pub async fn claims_for(
         return Err(Untold::InvalidToken);
     }
 
-    let subject = users::load(transaction, &verified.subject)
+    // §8: the identifier in the token is what this client is told, and it is
+    // the account's own only where the client asked for nothing else.
+    let party = match verified.claims.get("azp").and_then(Value::as_str) {
+        Some(client_id) => clients::load(transaction, client_id)
+            .await
+            .map_err(|_| Untold::Unreadable)?,
+        None => None,
+    };
+    let account = crate::pairwise::account_for(transaction, party.as_ref(), &verified.subject)
+        .await
+        .map_err(|_| Untold::InvalidToken)?;
+    let subject = users::load(transaction, &account)
         .await
         .map_err(|_| Untold::Unreadable)?
         .filter(|user| user.enabled)

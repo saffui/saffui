@@ -171,6 +171,18 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/lockout",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(users::lockout)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/users/{user}/lockout",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::delete().to(users::lift_lockout)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/users/{user}/keys",
             action: AdminAction::UserRead,
             handler: Some(|| web::get().to(keys::list)),

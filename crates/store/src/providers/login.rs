@@ -119,7 +119,11 @@ pub async fn drop_expired(transaction: &Transaction<'_>) -> StoreResult<u64> {
 ///
 /// One statement. Reading the row and writing it back is two, and two attempts
 /// failing at once then count as one: both read the same number and both write
-/// the same successor. The window is computed here for the same reason.
+/// the same successor.
+///
+/// A count older than `forget_after` restarts at one rather than carrying on.
+/// Without that, a person who mistypes twice a year is locked out on the tenth
+/// year, and the counter measures nothing anybody meant to measure.
 pub async fn record_failure(
     transaction: &Transaction<'_>,
     user_id: &str,
@@ -127,6 +131,7 @@ pub async fn record_failure(
     ip_address: Option<&str>,
     lock_after: i64,
     lock_for_secs: i64,
+    forget_after: i64,
 ) -> StoreResult<UserLoginFailure> {
     let row = transaction
         .query_one(
@@ -135,17 +140,28 @@ pub async fn record_failure(
              SELECT current_setting('saffui.current_tenant', true), \
                     current_setting('saffui.current_realm', true), $1, 1, $2, $3 \
              ON CONFLICT (tenant, realm_id, user_id) DO UPDATE SET \
-                 num_failures = user_login_failures.num_failures + 1, \
+                 num_failures = CASE \
+                     WHEN $2 - user_login_failures.last_failure >= $6 THEN 1 \
+                     ELSE user_login_failures.num_failures + 1 \
+                 END, \
                  last_failure = EXCLUDED.last_failure, \
                  last_ip_failure = EXCLUDED.last_ip_failure, \
                  failed_login_not_before = CASE \
+                     WHEN $2 - user_login_failures.last_failure >= $6 THEN 0 \
                      WHEN user_login_failures.num_failures + 1 >= $4 THEN $2 + $5 \
                      ELSE user_login_failures.failed_login_not_before \
                  END, \
                  updated_at = now() \
              RETURNING tenant, realm_id, user_id, num_failures, failed_login_not_before, \
                        last_failure, last_ip_failure",
-            &[&user_id, &at, &ip_address, &lock_after, &lock_for_secs],
+            &[
+                &user_id,
+                &at,
+                &ip_address,
+                &lock_after,
+                &lock_for_secs,
+                &forget_after,
+            ],
         )
         .await
         .map_err(|_| StoreError::Backend)?;

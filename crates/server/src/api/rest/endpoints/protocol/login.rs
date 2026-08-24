@@ -240,6 +240,19 @@ pub async fn answer(
                     tracing::warn!("login refused");
                     tell(StatusCode::UNAUTHORIZED, "refused")
                 }
+                // Nothing was tried, so the answer is not what is wrong. Said
+                // plainly rather than as a refusal: a person told their
+                // password is wrong will keep changing it.
+                Step::LockedOut { until } => {
+                    tracing::warn!(until, "login locked out");
+                    match spoken {
+                        Spoken::Json => {
+                            uncached(&mut HttpResponseBuilder::new(StatusCode::TOO_MANY_REQUESTS))
+                                .json(serde_json::json!({ "status": "locked-out", "until": until }))
+                        }
+                        Spoken::Form => shown(&page, "locked-out"),
+                    }
+                }
                 // Over, and not admitted: the client hears why at its
                 // redirect, and the browser carries it there. The login's
                 // cookie goes; no session replaces it.

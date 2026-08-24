@@ -16,6 +16,8 @@ use crate::query::write_set::{WriteSet, col};
 
 const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        registration_allowed, client_registration, registration_secret, \
+                       brute_force_protected, max_login_failures, lockout_seconds, \
+                       max_lockout_seconds, failure_reset_seconds, \
                        register_email_as_username, verify_email, \
                        login_with_email_allowed, duplicated_email_allowed, \
                        edit_user_name_allowed, reset_password_allowed, remember_me, \
@@ -133,6 +135,14 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("enabled", &realm.enabled),
             col("registration_allowed", &realm.registration_allowed),
             col("client_registration", &policy),
+            col("brute_force_protected", &realm.brute_force.protected),
+            col("max_login_failures", &realm.brute_force.max_failures),
+            col("lockout_seconds", &realm.brute_force.lockout_seconds),
+            col(
+                "max_lockout_seconds",
+                &realm.brute_force.max_lockout_seconds,
+            ),
+            col("failure_reset_seconds", &realm.brute_force.reset_seconds),
             col("registration_secret", &realm.registration_secret),
             col(
                 "register_email_as_username",
@@ -191,6 +201,13 @@ fn read(row: Row) -> RealmModel {
             .parse()
             .unwrap_or(ClientRegistration::Disabled),
         registration_secret: row.get("registration_secret"),
+        brute_force: models::entities::realm::BruteForce {
+            protected: row.get("brute_force_protected"),
+            max_failures: row.get("max_login_failures"),
+            lockout_seconds: row.get("lockout_seconds"),
+            max_lockout_seconds: row.get("max_lockout_seconds"),
+            reset_seconds: row.get("failure_reset_seconds"),
+        },
         register_email_as_username: row.get("register_email_as_username"),
         verify_email: row.get("verify_email"),
         login_with_email_allowed: row.get("login_with_email_allowed"),

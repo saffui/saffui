@@ -44,6 +44,10 @@ pub struct Sealing<'a> {
 /// Where a login stands after one answer.
 #[derive(Debug)]
 pub enum Step {
+    /// Too many failures stand against this person, so nothing was tried. The
+    /// instant logins resume, which the page shows rather than making somebody
+    /// guess whether their password is wrong.
+    LockedOut { until: i64 },
     /// A step is waiting. The caller answers again, naming the same login, and
     /// is shown what the step issued when it issued anything.
     Challenge {
@@ -155,6 +159,8 @@ pub async fn answer_step(
             can_send: sends,
             now,
         }),
+        seen.address.as_deref(),
+        now,
     )
     .await
     .map_err(|_| Unanswerable::Unrunnable)?;
@@ -186,6 +192,7 @@ pub async fn answer_step(
             })
         }
         Progress::Refused => Ok(Step::Refused),
+        Progress::LockedOut { until } => Ok(Step::LockedOut { until }),
         Progress::Admitted { by } => {
             let subject = subject.ok_or(Unanswerable::Unrunnable)?;
             // Admitted is not yet in: what the realm required of this user

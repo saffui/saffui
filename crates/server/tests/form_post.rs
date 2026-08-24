@@ -169,11 +169,19 @@ async fn a_request_naming_no_mode_is_answered_at_the_redirect() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_mode_this_build_does_not_know_is_refused() {
     let plane = Plane::with_actions(&[]).await;
-    let (status, location, _) = opened(&plane, Some("fragment")).await;
+    let (status, location, _) = opened(&plane, Some("web_message")).await;
     assert_eq!(status, StatusCode::FOUND);
     assert!(
         location.contains("error=unsupported_response_mode"),
         "{location}"
+    );
+
+    // A code may travel in a fragment if the client would rather. What is
+    // refused is a name this build has no answer for, not one it does.
+    let (_, _, cookies) = opened(&plane, Some("fragment")).await;
+    assert!(
+        cookie_value(&cookies, support::AUTH_SESSION_COOKIE).is_some(),
+        "a mode this build knows was refused"
     );
 }
 

@@ -22,6 +22,7 @@ use crate::landing::{Landing, ResponseMode};
 use crate::login::browser;
 use crate::pushed;
 use crate::request_object;
+use crate::response_type::ResponseType;
 
 /// How long a login may sit half finished.
 const LOGIN_LIFESPAN: i64 = 900;
@@ -81,6 +82,10 @@ pub enum Refusal {
 }
 
 /// Start a login, or say how the refusal travels.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
 pub async fn begin(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
@@ -88,6 +93,8 @@ pub async fn begin(
     issuer: &str,
     asked: &Requested<'_>,
     signed_in: Option<&str>,
+    // What it takes to sign. A code needs none of it.
+    signing: Option<&crate::grant::Signing<'_>>,
     now: DateTime<Utc>,
 ) -> Result<Begun, Refusal> {
     // A reference this server issued stands for the whole request, so it is
@@ -130,22 +137,38 @@ pub async fn begin(
     // From here the client and the redirect are established, so a refusal can
     // travel to the client rather than stopping at the user.
     //
-    // Absent means disabled. A flag nobody set is not permission, and reading it
-    // as one opens every client that was registered before the flag existed.
-    if client.standard_flow_enabled != Some(true) {
+    // `token` alone is OAuth's: nothing identifying the person comes back.
+    let Some(asked_for) = ResponseType::read(requested.response_type.unwrap_or_default())
+        .filter(|asked| !asked.as_str().is_empty())
+    else {
+        return Err(Refusal::Redirect("unsupported_response_type"));
+    };
+    // Two permissions. Exchanging a code is not being allowed a token through
+    // a browser, and a request wanting both needs both. Absent is disabled: a
+    // flag nobody set is not permission, and reading it as one opens every
+    // client registered before the flag existed.
+    if asked_for.code && client.standard_flow_enabled != Some(true) {
         return Err(Refusal::Redirect("unauthorized_client"));
     }
-    if requested.response_type != Some("code") {
-        return Err(Refusal::Redirect("unsupported_response_type"));
+    if asked_for.mints_here() && client.implicit_flow_enabled != Some(true) {
+        return Err(Refusal::Redirect("unauthorized_client"));
     }
-    // Read before anything is answered, since the refusal itself travels the
-    // way the request asked. A mode this build does not know is refused rather
-    // than answered as `query`: a response put where the client is not reading
-    // is one it never sees, and for anything but a code it is one that lands
-    // somewhere it should not.
-    let Some(mode) = ResponseMode::read(requested.response_mode) else {
+    // Refused rather than answered as the default: a response put where the
+    // client is not reading is one it never sees.
+    let named_mode = requested
+        .response_mode
+        .unwrap_or_else(|| asked_for.default_mode());
+    let Some(mode) = ResponseMode::read(Some(named_mode)) else {
         return Err(Refusal::Redirect("unsupported_response_mode"));
     };
+    // Every log between here and the client would hold it.
+    if asked_for.mints_here() && mode == ResponseMode::Query {
+        return Err(Refusal::Redirect("unsupported_response_mode"));
+    }
+    // §3.2.2.1 and §3.3.2.1.
+    if asked_for.needs_nonce() && requested.nonce.is_none_or(str::is_empty) {
+        return Err(Refusal::Redirect("invalid_request"));
+    }
     // This is an OpenID Provider, and `openid` is what says a request is one.
     // The cost is stated rather than hidden: a plain OAuth client that never
     // asks for it is refused here.
@@ -218,11 +241,11 @@ pub async fn begin(
         max_age: requested.max_age,
         prompt_login: prompt.login,
     };
-    let map = realms::load(transaction, &tenant.realm_id)
+    let realm = realms::load(transaction, &tenant.realm_id)
         .await
         .map_err(|_| Refusal::Redirect("server_error"))?
-        .and_then(|realm| realm.acr_loa_map)
-        .unwrap_or_default();
+        .ok_or(Refusal::Redirect("server_error"))?;
+    let map = realm.acr_loa_map.clone().unwrap_or_default();
 
     // A session somebody else holds does not answer a request for this
     // subject, §3.1.2.2. It is not reused; whoever the client named has to
@@ -260,6 +283,7 @@ pub async fn begin(
                 &client,
                 redirect_uri,
                 mode,
+                asked_for,
                 &granted,
                 requested,
                 stored_claims.as_ref(),
@@ -282,6 +306,10 @@ pub async fn begin(
                 scope: &granted,
                 state: requested.state,
                 mode,
+                asked_for,
+                signing,
+                realm: Some(&realm),
+                issuer,
                 nonce: requested.nonce,
                 code_challenge: requested.code_challenge,
                 code_challenge_method: requested.code_challenge_method,
@@ -313,6 +341,7 @@ pub async fn begin(
         &client,
         redirect_uri,
         mode,
+        asked_for,
         &granted,
         requested,
         stored_claims.as_ref(),
@@ -357,6 +386,7 @@ async fn start_login(
     client: &ClientModel,
     redirect_uri: &str,
     mode: ResponseMode,
+    asked_for: ResponseType,
     granted: &str,
     requested: &Requested<'_>,
     claims: Option<&Value>,
@@ -394,6 +424,8 @@ async fn start_login(
                 // How the answer travels. Kept because by the time the flow
                 // finishes, the request that named it is gone.
                 "response_mode": mode.as_str(),
+                // So the end of the login mints what the request asked for.
+                "response_type": asked_for.as_str(),
             }),
         },
     )

@@ -22,6 +22,7 @@ use crate::landing::{Landing, ResponseMode};
 use crate::login::authenticator::Answer;
 use crate::login::enrolment::{self, Enrolment};
 use crate::login::{Progress, run_flow};
+use crate::response_type::ResponseType;
 
 /// How long a code may sit before it is spent.
 ///
@@ -105,6 +106,8 @@ pub async fn answer_step(
     // What it takes to open this realm's sealed values. Absent where a caller
     // has no step that needs one, which is every flow but a mailed one.
     sealing: Option<Sealing<'_>>,
+    // What it takes to sign, when the request wants something minted here.
+    signing: Option<&crate::grant::Signing<'_>>,
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
     let login = login::resume(transaction, auth_session_id)
@@ -258,7 +261,9 @@ pub async fn answer_step(
                 &subject.user_id,
                 &subject.user_name,
                 reached,
-                realm.acr_loa_map.as_ref(),
+                &realm,
+                origin.issuer(&tenant.realm_id),
+                signing,
                 seen,
                 now,
             )
@@ -281,6 +286,12 @@ pub struct Authorized<'a> {
     pub state: Option<&'a str>,
     /// How the answer travels, as the request that opened this named it.
     pub mode: ResponseMode,
+    /// What comes back.
+    pub asked_for: ResponseType,
+    /// Both needed only when something is minted here.
+    pub signing: Option<&'a crate::grant::Signing<'a>>,
+    pub realm: Option<&'a models::entities::realm::RealmModel>,
+    pub issuer: &'a str,
     pub nonce: Option<&'a str>,
     pub code_challenge: Option<&'a str>,
     pub code_challenge_method: Option<&'a str>,
@@ -308,38 +319,87 @@ pub async fn mint_code(
     authorized: &Authorized<'_>,
     now: DateTime<Utc>,
 ) -> Result<Landing, Unanswerable> {
-    let raw = draw(provider)?;
-    oidc::mint_code(
-        transaction,
-        &AuthorizationCode {
-            code_hash: digest(provider, raw.as_bytes())?,
-            tenant: tenant.tenant.clone(),
-            realm_id: tenant.realm_id.clone(),
-            client_id: authorized.client_id.to_owned(),
-            user_id: authorized.user_id.to_owned(),
-            session_id: authorized.session_id.to_owned(),
-            redirect_uri: authorized.redirect_uri.to_owned(),
-            scope: authorized.scope.to_owned(),
-            nonce: authorized.nonce.map(str::to_owned),
-            code_challenge: authorized.code_challenge.map(str::to_owned),
-            code_challenge_method: authorized.code_challenge_method.map(str::to_owned),
-            auth_time: authorized.auth_time,
-            acr: authorized.acr.map(str::to_owned),
-            org_id: None,
-            org_name: None,
-            claims: authorized.claims.cloned(),
-        },
-        now + Duration::seconds(CODE_LIFESPAN),
-    )
-    .await
-    .map_err(|_| Unanswerable::Unreadable)?;
+    // An implicit request gets nothing to redeem, and a code minted anyway is
+    // a spendable credential nobody comes back for.
+    let raw = authorized
+        .asked_for
+        .code
+        .then(|| draw(provider))
+        .transpose()?;
+    if let Some(raw) = &raw {
+        oidc::mint_code(
+            transaction,
+            &AuthorizationCode {
+                code_hash: digest(provider, raw.as_bytes())?,
+                tenant: tenant.tenant.clone(),
+                realm_id: tenant.realm_id.clone(),
+                client_id: authorized.client_id.to_owned(),
+                user_id: authorized.user_id.to_owned(),
+                session_id: authorized.session_id.to_owned(),
+                redirect_uri: authorized.redirect_uri.to_owned(),
+                scope: authorized.scope.to_owned(),
+                nonce: authorized.nonce.map(str::to_owned),
+                code_challenge: authorized.code_challenge.map(str::to_owned),
+                code_challenge_method: authorized.code_challenge_method.map(str::to_owned),
+                auth_time: authorized.auth_time,
+                acr: authorized.acr.map(str::to_owned),
+                org_id: None,
+                org_name: None,
+                claims: authorized.claims.cloned(),
+            },
+            now + Duration::seconds(CODE_LIFESPAN),
+        )
+        .await
+        .map_err(|_| Unanswerable::Unreadable)?;
+    }
 
-    Ok(landing(
-        authorized.redirect_uri,
-        &raw,
-        authorized.state,
-        authorized.mode,
-    ))
+    let mut answer = Landing::new(authorized.redirect_uri, authorized.mode);
+    if let Some(raw) = &raw {
+        answer = answer.carrying("code", raw.as_str());
+    }
+    // After the code: the identity token carries its hash.
+    if authorized.asked_for.mints_here() {
+        let (Some(signing), Some(realm)) = (authorized.signing, authorized.realm) else {
+            return Err(Unanswerable::Unrunnable);
+        };
+        let handed = crate::implicit::issue(
+            transaction,
+            signing,
+            tenant,
+            authorized.asked_for,
+            &crate::implicit::Established {
+                client: &client_of(transaction, authorized.client_id).await?,
+                realm,
+                issuer: authorized.issuer,
+                user_id: authorized.user_id,
+                session_id: authorized.session_id,
+                scope: authorized.scope,
+                nonce: authorized.nonce,
+                auth_time: authorized.auth_time,
+                acr: authorized.acr,
+                code: raw.as_deref(),
+                claims: authorized.claims,
+            },
+            now,
+        )
+        .await
+        .map_err(|_| Unanswerable::Unrunnable)?;
+        for (named, value) in handed {
+            answer = answer.carrying(named, value);
+        }
+    }
+    Ok(answer.carrying_any("state", authorized.state))
+}
+
+/// The client this is being minted for.
+async fn client_of(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+) -> Result<models::entities::client::ClientModel, Unanswerable> {
+    store::providers::clients::load(transaction, client_id)
+        .await
+        .map_err(|_| Unanswerable::Unreadable)?
+        .ok_or(Unanswerable::Unrunnable)
 }
 
 /// Open the login, mint the code, and say where the browser goes.
@@ -355,7 +415,9 @@ async fn admit(
     user_id: &str,
     user_name: &str,
     reached: Option<i32>,
-    realm_map: Option<&models::entities::acr::AcrLoaMap>,
+    realm: &models::entities::realm::RealmModel,
+    issuer: String,
+    signing: Option<&crate::grant::Signing<'_>>,
     seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
 ) -> Result<Landing, Unanswerable> {
@@ -405,6 +467,10 @@ async fn admit(
             scope: noted(notes, "scope").unwrap_or_default(),
             state: noted(notes, "state"),
             mode: answering(notes),
+            asked_for: coming_back(notes),
+            signing,
+            realm: Some(realm),
+            issuer: &issuer,
             nonce: noted(notes, "nonce"),
             code_challenge: noted(notes, "code_challenge"),
             code_challenge_method: noted(notes, "code_challenge_method"),
@@ -414,7 +480,7 @@ async fn admit(
             // another tab, and a value resolved then would attest to a strength
             // this code was never issued under.
             acr: reached.and_then(|loa| {
-                realm_map.and_then(|map| {
+                realm.acr_loa_map.as_ref().and_then(|map| {
                     acr::acr_claim(
                         map,
                         AchievedAuth {
@@ -438,6 +504,18 @@ async fn admit(
     Ok(landing)
 }
 
+/// What this login hands back. A login opened before this build knew about
+/// anything else carries none.
+fn coming_back(notes: &Value) -> ResponseType {
+    noted(notes, "response_type")
+        .and_then(ResponseType::read)
+        .unwrap_or(ResponseType {
+            code: true,
+            id_token: false,
+            token: false,
+        })
+}
+
 /// How this login's answer travels. A login opened before this build knew
 /// about modes carries none, and the one a code gets is the answer.
 fn answering(notes: &Value) -> ResponseMode {
@@ -449,13 +527,6 @@ fn answering(notes: &Value) -> ResponseMode {
 fn sent_back(redirect_uri: &str, error: &str, state: Option<&str>, mode: ResponseMode) -> Landing {
     Landing::new(redirect_uri, mode)
         .carrying("error", error)
-        .carrying_any("state", state)
-}
-
-/// What the client will spend, where it goes.
-fn landing(redirect_uri: &str, code: &str, state: Option<&str>, mode: ResponseMode) -> Landing {
-    Landing::new(redirect_uri, mode)
-        .carrying("code", code)
         .carrying_any("state", state)
 }
 

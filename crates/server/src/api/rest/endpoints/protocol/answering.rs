@@ -21,8 +21,8 @@ pub fn answer(landing: &Landing) -> HttpResponse {
 /// A form is a `200` whatever asked for it: nothing is being redirected to.
 pub fn onto(response: &mut HttpResponseBuilder, landing: &Landing) -> HttpResponse {
     match landing.mode {
-        ResponseMode::Query => uncached(response)
-            .insert_header(("Location", landing.as_query()))
+        ResponseMode::Query | ResponseMode::Fragment => uncached(response)
+            .insert_header(("Location", landing.as_url()))
             .finish(),
         ResponseMode::FormPost => posted(response, landing),
     }

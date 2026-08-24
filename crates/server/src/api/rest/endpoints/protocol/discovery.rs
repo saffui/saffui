@@ -88,10 +88,18 @@ pub async fn published(
             // `introspection_endpoint` are absent because they are, and naming
             // one would send a client to a 404 it reports as this realm being
             // broken.
-            "response_types_supported": ["code"],
-            "response_modes_supported": ["query", "form_post"],
+            "response_types_supported": [
+                "code",
+                "id_token",
+                "id_token token",
+                "code id_token",
+                "code token",
+                "code id_token token",
+            ],
+            "response_modes_supported": ["query", "fragment", "form_post"],
             "grant_types_supported": [
                 "authorization_code",
+                "implicit",
                 "refresh_token",
                 "client_credentials",
             ],

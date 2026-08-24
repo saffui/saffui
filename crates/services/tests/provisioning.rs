@@ -313,6 +313,7 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         post_logout_redirect_uris: vec!["https://app.example/bye".into()],
         backchannel_logout_uri: Some("https://app.example/logout-token".into()),
         frontchannel_logout_uri: Some("https://app.example/logout-frame".into()),
+        implicit: false,
     };
     let person = Person {
         user_name: "ada",

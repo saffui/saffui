@@ -206,25 +206,9 @@ async fn claims_asked_of(
     client_id: &str,
     user_id: &str,
 ) -> Result<Map<String, Value>, Ungranted> {
-    let Some(asked) = asked.map(ClaimsRequest::from_value) else {
-        return Ok(Map::new());
-    };
-    if asked.id_token.is_empty() {
-        return Ok(Map::new());
-    }
-    let Some(person) = users::load(transaction, user_id)
+    userinfo::asked_id_token_claims(transaction, asked, client_id, user_id)
         .await
-        .map_err(|_| Ungranted::Unreadable)?
-    else {
-        return Ok(Map::new());
-    };
-    let entitled = userinfo::entitled_scopes(transaction, client_id)
-        .await
-        .map_err(|_| Ungranted::Unreadable)?;
-    Ok(userinfo::within_entitlement(
-        claims_request::release(&asked.id_token, &userinfo::held_claims(&person)),
-        &entitled,
-    ))
+        .map_err(|()| Ungranted::Unreadable)
 }
 
 /// What a client presents to spend a code.

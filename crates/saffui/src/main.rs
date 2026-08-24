@@ -109,6 +109,10 @@ enum Command {
         /// a login costs then includes whoever can read the mailbox.
         #[arg(long = "magic-link", default_value_t = false)]
         magic_link: bool,
+        /// Let the registered clients receive what the authorization endpoint
+        /// mints, rather than only a code to exchange.
+        #[arg(long = "implicit", default_value_t = false)]
+        implicit: bool,
     },
 }
 
@@ -147,6 +151,7 @@ fn main() -> ExitCode {
                         phone,
                         attributes,
                         magic_link,
+                        implicit,
                     } => {
                         provision(&Wanted {
                             tenant,
@@ -164,6 +169,7 @@ fn main() -> ExitCode {
                             phone,
                             attributes,
                             magic_link,
+                            implicit,
                         })
                         .await
                     }
@@ -306,6 +312,7 @@ struct Wanted {
     phone: Option<String>,
     attributes: Vec<String>,
     magic_link: bool,
+    implicit: bool,
 }
 
 /// Create what is missing, and say what was created.
@@ -414,6 +421,7 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
                 post_logout_redirect_uris: wanted.after_logout.clone(),
                 backchannel_logout_uri: wanted.backchannel_logout.clone(),
                 frontchannel_logout_uri: wanted.frontchannel_logout.clone(),
+                implicit: wanted.implicit,
             },
         )
         .await

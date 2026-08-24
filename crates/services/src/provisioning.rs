@@ -465,6 +465,10 @@ pub struct Registration<'a> {
     /// ends.
     pub backchannel_logout_uri: Option<String>,
     pub frontchannel_logout_uri: Option<String>,
+    /// Whether this client may receive what the authorization endpoint mints.
+    /// Never on by default: it is a second permission, not a shape of the
+    /// first.
+    pub implicit: bool,
 }
 
 /// Register a client, unless one by that id exists, and attach it to every
@@ -506,6 +510,13 @@ pub async fn provision_client(
     )
     .await
     .map_err(|_| StoreError::Backend)?;
+
+    if registration.implicit
+        && let Some(mut client) = clients::load(transaction, registration.client_id).await?
+    {
+        client.implicit_flow_enabled = Some(true);
+        clients::update(transaction, &client).await?;
+    }
     Ok(true)
 }
 

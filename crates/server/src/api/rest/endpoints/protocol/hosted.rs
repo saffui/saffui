@@ -128,6 +128,30 @@ pub async fn fetch(uri: String, egress: Egress) -> Option<String> {
     .flatten()
 }
 
+/// Read the key set a client publishes, and keep it, when it is due.
+///
+/// Before the check and not after it: a client that rotated its keys presents
+/// a signature this server cannot verify yet, and re-reading only once that
+/// has failed makes the first request after every rotation fail.
+pub async fn refresh_client_keys(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    client_id: &str,
+    egress: Egress,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let Some(uri) = services::client::keys_due(transaction, client_id, now).await else {
+        return;
+    };
+    let Some(document) = fetch(uri, egress).await else {
+        return;
+    };
+    // Left alone when it cannot be read. The set already kept is the last one
+    // that was readable, which verifies more than nothing does.
+    if let Ok(jwks) = serde_json::from_str::<serde_json::Value>(&document) {
+        services::client::keep_keys(transaction, client_id, &jwks, now).await;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -227,6 +227,30 @@ fn jws_algorithm_name(algorithm: SignAlg) -> &'static str {
     }
 }
 
+/// Sign a set of claims as they are, naming the key that signed them.
+///
+/// Nothing is added and nothing is bounded: the caller has already said what
+/// the claims are. For a userinfo response, §5.3.2, where the payload is the
+/// claims plus the issuer and the audience and no token lifetime at all.
+pub fn sign_claims(
+    key: &RealmSigningKey,
+    claims: &serde_json::Map<String, Value>,
+) -> Result<String, Unmintable> {
+    let mut header = JwsHeader::new();
+    header.set_algorithm(jws_algorithm_name(key.algorithm));
+    header.set_token_type("JWT");
+    header.set_key_id(&key.kid);
+
+    let mut payload = JwtPayload::new();
+    for (claim, value) in claims {
+        payload
+            .set_claim(claim, Some(value.clone()))
+            .map_err(|_| Unmintable::Unsignable)?;
+    }
+    let signer = signer_for(key).ok_or(Unmintable::Unsignable)?;
+    jwt::encode_with_signer(&payload, &header, &*signer).map_err(|_| Unmintable::Unsignable)
+}
+
 /// The signer the stored key names.
 ///
 /// Exhaustive over the catalogue, like the verifier it mirrors: an algorithm

@@ -9,6 +9,7 @@ mod support;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use chrono::Utc;
+use config::serving::Egress;
 use crypto::jose::jwk::Jwk;
 use crypto::jose::jws::{HS256, JwsHeader};
 use crypto::jose::jwt::{self, JwtPayload};
@@ -18,6 +19,10 @@ use server::api::config::{Plane as Mounted, register};
 use support::{Plane, SigningKey};
 
 fn mounted(plane: &Plane) -> Mounted {
+    mounted_dialling(plane, Egress::Outward)
+}
+
+fn mounted_dialling(plane: &Plane, egress: Egress) -> Mounted {
     Mounted {
         pool: plane.pool(),
         tenancy: plane.tenancy(),
@@ -29,7 +34,7 @@ fn mounted(plane: &Plane) -> Mounted {
         origin: support::origin(),
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
-        egress: config::serving::Egress::Outward,
+        egress,
         sealing: support::sealing(),
     }
 }
@@ -456,4 +461,130 @@ async fn both_methods_are_advertised() {
             "{named}: {published}"
         );
     }
+}
+
+/// A client that publishes its keys is read from where it published them, and
+/// read again once what was read has been kept long enough: a client rotates,
+/// and a set kept forever stops verifying the client it was read for.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn keys_published_elsewhere_are_read_and_read_again() {
+    use actix_web::{HttpResponse, HttpServer, web};
+    use std::sync::{Arc, Mutex};
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+
+    // What the client publishes, which it replaces partway through.
+    let first = SigningKey::generate("first-key");
+    let second = SigningKey::generate("second-key");
+    let published = Arc::new(Mutex::new(jwks_of(&first.public())));
+    let served = Arc::clone(&published);
+    let server = HttpServer::new(move || {
+        let served = Arc::clone(&served);
+        App::new().route(
+            "/jwks",
+            web::get().to(move || {
+                let served = Arc::clone(&served);
+                async move { HttpResponse::Ok().json(served.lock().unwrap().clone()) }
+            }),
+        )
+    })
+    .bind(("127.0.0.1", 0))
+    .expect("a port");
+    let port = server.addrs().first().expect("an address").port();
+    let running = server.run();
+    let handle = running.handle();
+    tokio::spawn(running);
+
+    let app = test::init_service(
+        App::new().configure(register(&mounted_dialling(&plane, Egress::Anywhere))),
+    )
+    .await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/register",
+                support::REALM
+            ))
+            .set_json(json!({
+                "redirect_uris": ["https://app.example/cb"],
+                "token_endpoint_auth_method": "private_key_jwt",
+                "jwks_uri": format!("http://127.0.0.1:{port}/jwks"),
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let held: Value = test::read_body_json(response).await;
+    let client_id = held["client_id"]
+        .as_str()
+        .expect("an identifier")
+        .to_owned();
+
+    let presenting_dialling = |assertion: String| {
+        let plane = &plane;
+        let client_id = client_id.clone();
+        async move {
+            let app = test::init_service(
+                App::new().configure(register(&mounted_dialling(plane, Egress::Anywhere))),
+            )
+            .await;
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(&format!(
+                        "/realms/{}/protocol/openid-connect/introspect",
+                        support::REALM
+                    ))
+                    .set_form(&[
+                        ("token".to_owned(), "not-a-token".to_owned()),
+                        (
+                            "client_assertion_type".to_owned(),
+                            "urn:ietf:params:oauth:client-assertion-type:jwt-bearer".to_owned(),
+                        ),
+                        ("client_assertion".to_owned(), assertion),
+                        ("client_id".to_owned(), client_id),
+                    ])
+                    .to_request(),
+            )
+            .await;
+            let status = response.status();
+            let body: Value = test::read_body_json(response).await;
+            (status, body)
+        }
+    };
+
+    let (status, told) =
+        presenting_dialling(first.sign(&claims(&client_id, "published-1"), &first.kid)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the published key set was not read: {told}"
+    );
+
+    // Rotated. What was read is kept for a while, so the new key is not yet
+    // known and the old one still is.
+    *published.lock().unwrap() = jwks_of(&second.public());
+    assert_eq!(
+        presenting_dialling(second.sign(&claims(&client_id, "rotated-too-soon"), &second.kid))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Once what was kept is stale, the set is read again and the new key works.
+    plane.age_client_keys(&client_id).await;
+    assert_eq!(
+        presenting_dialling(second.sign(&claims(&client_id, "rotated"), &second.kid))
+            .await
+            .0,
+        StatusCode::OK,
+        "a rotated key set was never read again"
+    );
+
+    handle.stop(true).await;
 }

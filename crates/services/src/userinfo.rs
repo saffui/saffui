@@ -33,12 +33,50 @@ pub enum Untold {
 /// Two ways a claim gets in, and they add up: the scopes the token carries
 /// name sets of claims (§5.4), and the `claims` the request named one by one
 /// (§5.5) are read off the client session the login opened for this client.
+/// What a client is told, and how it asked to be told it.
+pub struct Answer {
+    pub claims: Map<String, Value>,
+    /// Set when the client registered a signed response, §5.3.2.
+    pub signed_with: Option<crypto::provider::SignAlg>,
+    pub client_id: Option<String>,
+}
+
+/// The same claims, as the JWS §5.3.2 describes.
+///
+/// The issuer and the audience join them, because a signed response that named
+/// neither could be replayed at another client as its own.
+pub async fn signed_answer(
+    transaction: &Transaction<'_>,
+    signing: &crate::grant::Signing<'_>,
+    issuer: &str,
+    answer: &Answer,
+) -> Result<String, Untold> {
+    let algorithm = answer.signed_with.ok_or(Untold::Unreadable)?;
+    let key = store::providers::realm_keys::active(
+        transaction,
+        signing.ring,
+        signing.envelope,
+        models::entities::keys::KeyUse::Sig,
+        Some(algorithm),
+    )
+    .await
+    .map_err(|_| Untold::Unreadable)?
+    .ok_or(Untold::Unreadable)?;
+
+    let mut claims = answer.claims.clone();
+    claims.insert("iss".into(), json!(issuer));
+    if let Some(client_id) = &answer.client_id {
+        claims.insert("aud".into(), json!(client_id));
+    }
+    crate::token::issuance::sign_claims(&key, &claims).map_err(|_| Untold::Unreadable)
+}
+
 pub async fn claims_for(
     transaction: &Transaction<'_>,
     keys: &[RealmSigningKeyView],
     bearer: &str,
     now: DateTime<Utc>,
-) -> Result<Map<String, Value>, Untold> {
+) -> Result<Answer, Untold> {
     let verified = token::verify_presented(transaction, keys, bearer, now)
         .await
         .map_err(|_| Untold::InvalidToken)?;
@@ -99,7 +137,13 @@ pub async fn claims_for(
         ));
     }
 
-    Ok(claims)
+    Ok(Answer {
+        claims,
+        signed_with: party
+            .as_ref()
+            .and_then(|held| held.userinfo_signed_response_alg),
+        client_id: party.map(|held| held.client_id),
+    })
 }
 
 /// Of what the realm holds of a person, what these scopes name: §5.4.

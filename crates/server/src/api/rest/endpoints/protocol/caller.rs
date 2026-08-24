@@ -11,7 +11,7 @@ use secrecy::SecretBox;
 use services::client;
 use store::tenancy::{Tenancy, TenantContext};
 
-use config::serving::PublicOrigin;
+use config::serving::{Egress, PublicOrigin};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::basic;
@@ -32,6 +32,7 @@ pub async fn establish<'a>(
     tenancy: &Tenancy,
     sealing: &Sealing,
     origin: &PublicOrigin,
+    egress: Egress,
     context: &TenantContext,
     now: DateTime<Utc>,
 ) -> Result<(Transaction<'a>, ClientModel), HttpResponse> {
@@ -49,11 +50,13 @@ pub async fn establish<'a>(
     let client = if matches!(presented, client::Presented::Assertion { .. }) {
         let held = {
             let transaction = scoped(connection, tenancy, context).await?;
+            super::hosted::refresh_client_keys(&transaction, presented.client_id(), egress, now)
+                .await;
             let client = checked(&transaction, sealing, origin, context, &presented, now).await?;
-            transaction
-                .commit()
-                .await
-                .map_err(|_| Denied::InvalidRequest.answer("the realm could not be read"))?;
+            transaction.commit().await.map_err(|why| {
+                tracing::warn!(why = %why, "the assertion could not be spent");
+                Denied::InvalidRequest.answer("the assertion could not be spent")
+            })?;
             client
         };
         Some(held)

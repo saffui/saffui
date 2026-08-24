@@ -400,3 +400,148 @@ async fn an_identifier_nobody_wears_is_nobody() {
         "an identifier nobody wears was read as the account it names"
     );
 }
+
+/// §5.3.2: a client that registered a signed response is answered with a JWS
+/// carrying the issuer and itself, and never with plain JSON.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_that_asked_for_a_signature_is_answered_with_one() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+    let here = "https://one.example/cb";
+
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/register",
+                support::REALM
+            ))
+            .set_json(json!({
+                "redirect_uris": [here],
+                "response_types": ["code"],
+                "grant_types": ["authorization_code"],
+                "userinfo_signed_response_alg": "ES256",
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let held: Value = test::read_body_json(response).await;
+    assert_eq!(
+        held["userinfo_signed_response_alg"].as_str(),
+        Some("ES256"),
+        "{held}"
+    );
+    let client_id = held["client_id"].as_str().unwrap().to_owned();
+    let secret = held["client_secret"].as_str().unwrap().to_owned();
+    let (_, access) = granted_to(&plane, &client_id, &secret, here).await;
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/userinfo",
+                support::REALM
+            ))
+            .insert_header(("authorization", format!("Bearer {access}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("application/jwt")
+    );
+    let told = String::from_utf8_lossy(&test::read_body(response).await).into_owned();
+    // Verified against the key the realm published, and read without a token's
+    // own checks: §5.3.2 gives this response no lifetime, so it has no expiry.
+    let verifier = crypto::jose::jws::ES256
+        .verifier_from_jwk(&plane.key.public())
+        .expect("a verifier");
+    let (payload, header) =
+        crypto::jose::jwt::decode_with_verifier(&told, &verifier).expect("a signed response");
+    assert_eq!(header.claim("alg").and_then(Value::as_str), Some("ES256"));
+    let carried = Value::Object(payload.claims_set().clone());
+    assert_eq!(
+        carried["iss"].as_str(),
+        Some(support::origin().issuer(support::REALM).as_str()),
+        "{carried}"
+    );
+    assert_eq!(
+        carried["aud"].as_str(),
+        Some(client_id.as_str()),
+        "{carried}"
+    );
+    assert_eq!(
+        carried["preferred_username"].as_str(),
+        Some(support::SUBJECT),
+        "{carried}"
+    );
+
+    // Discovery names what a client may register to be answered with.
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/.well-known/openid-configuration",
+                support::REALM
+            ))
+            .to_request(),
+    )
+    .await;
+    let published: Value = test::read_body_json(response).await;
+    let named = published["userinfo_signing_alg_values_supported"]
+        .as_array()
+        .expect("the algorithms");
+    assert!(
+        named.iter().any(|held| held.as_str() == Some("ES256")),
+        "{published}"
+    );
+
+    // §5.3.2 again: an algorithm this realm holds no key for is not answered
+    // in the clear. A client about to read a signature would get none.
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/register",
+                support::REALM
+            ))
+            .set_json(json!({
+                "redirect_uris": [here],
+                "response_types": ["code"],
+                "grant_types": ["authorization_code"],
+                "userinfo_signed_response_alg": "PS512",
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let held: Value = test::read_body_json(response).await;
+    let unsignable = held["client_id"].as_str().unwrap().to_owned();
+    let secret = held["client_secret"].as_str().unwrap().to_owned();
+    let (_, access) = granted_to(&plane, &unsignable, &secret, here).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/userinfo",
+                support::REALM
+            ))
+            .insert_header(("authorization", format!("Bearer {access}")))
+            .to_request(),
+    )
+    .await;
+    assert_ne!(
+        response.status(),
+        StatusCode::OK,
+        "a registered signature was answered without one"
+    );
+}

@@ -160,6 +160,56 @@ pub async fn seal_secret(
     Ok(changed > 0)
 }
 
+/// Where this client publishes its keys and when they were last read, for a
+/// caller deciding whether to read them again.
+pub async fn published_keys_at(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+) -> StoreResult<Option<(Option<String>, Option<chrono::DateTime<chrono::Utc>>)>> {
+    Ok(transaction
+        .query_opt(
+            "SELECT jwks_uri, jwks_fetched_at FROM clients WHERE client_id = $1",
+            &[&client_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(|row| (row.get("jwks_uri"), row.get("jwks_fetched_at"))))
+}
+
+/// Keep the key set just read, and when it was read.
+///
+/// Behind a savepoint, because this happens inside a transaction opened for
+/// something else. A failed statement leaves a Postgres transaction unable to
+/// run any other, so a best-effort write that could not be made would take the
+/// request it was helping down with it.
+pub async fn keep_published_keys(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    jwks: &serde_json::Value,
+    at: chrono::DateTime<chrono::Utc>,
+) -> StoreResult<bool> {
+    let set = WriteSet::update(
+        vec![col("jwks", &jwks), col("jwks_fetched_at", &at)],
+        vec![col("client_id", &client_id)],
+    );
+    transaction
+        .execute("SAVEPOINT keeping_published_keys", &[])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let outcome = transaction
+        .execute(statement::update("clients", &set).as_str(), &set.params())
+        .await;
+    let undo = match outcome {
+        Ok(_) => "RELEASE SAVEPOINT keeping_published_keys",
+        Err(_) => "ROLLBACK TO SAVEPOINT keeping_published_keys",
+    };
+    transaction
+        .execute(undo, &[])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(outcome.map_err(|_| StoreError::Backend)? > 0)
+}
+
 /// What a registration access token is checked against, RFC 7592 §2.
 pub async fn load_registration_token(
     transaction: &Transaction<'_>,

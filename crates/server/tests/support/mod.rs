@@ -699,6 +699,25 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Make what was read of this client's published keys old enough to be
+    /// read again.
+    #[allow(dead_code, reason = "only the assertion suite rotates a client key")]
+    pub async fn age_client_keys(&self, client_id: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        transaction
+            .execute(
+                "UPDATE clients SET jwks_fetched_at = now() - interval '1 hour' \
+                 WHERE client_id = $1",
+                &[&client_id],
+            )
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
     /// Switch the subject off, the way an administrator shuts down an account.
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn disable_subject(&self) {

@@ -23,6 +23,45 @@ str_enum! {
     }
 }
 
+/// When a count of failures becomes a refusal, and for how long.
+///
+/// Off by default. A lockout is a way to deny a person their own account, so a
+/// deployment turns it on knowing that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BruteForce {
+    pub protected: bool,
+    pub max_failures: i32,
+    pub lockout_seconds: i32,
+    pub max_lockout_seconds: i32,
+    /// A quiet spell of this long forgets the count.
+    pub reset_seconds: i32,
+}
+
+impl Default for BruteForce {
+    fn default() -> Self {
+        BruteForce {
+            protected: false,
+            max_failures: 10,
+            lockout_seconds: 60,
+            max_lockout_seconds: 900,
+            reset_seconds: 900,
+        }
+    }
+}
+
+impl BruteForce {
+    /// How long a lockout lasts at this many failures.
+    ///
+    /// One more than the threshold earns the base window, and each further
+    /// failure adds another, up to the ceiling. A wrong password twice is a
+    /// person; a hundred times is not, and should not cost the same.
+    pub fn lockout_for(self, failures: i64) -> i64 {
+        let over = failures.saturating_sub(i64::from(self.max_failures)).max(0) + 1;
+        (i64::from(self.lockout_seconds).saturating_mul(over))
+            .min(i64::from(self.max_lockout_seconds))
+    }
+}
+
 str_enum! {
     /// Whether a realm lets a client register itself, RFC 7591 §3.
     pub enum ClientRegistration {
@@ -116,6 +155,8 @@ pub struct RealmModel {
     /// Whether a client may register itself here, and on what terms. Not the
     /// line above: that one is about people.
     pub client_registration: ClientRegistration,
+    /// What this realm does about a password being guessed at.
+    pub brute_force: BruteForce,
     /// Never serialised, like every other bearer credential. Hashed.
     #[serde(skip_serializing)]
     pub registration_secret: Option<String>,
@@ -178,6 +219,7 @@ impl RealmCreateModel {
             enabled: self.enabled,
             registration_allowed: None,
             client_registration: ClientRegistration::Disabled,
+            brute_force: BruteForce::default(),
             registration_secret: None,
             register_email_as_username: None,
             verify_email: None,
@@ -310,6 +352,25 @@ mod tests {
             "realm-1".into(),
             AuditableModel::from_creator("acme".into(), "root".into()),
         )
+    }
+
+    #[test]
+    fn a_lockout_grows_with_the_count_and_stops_at_the_ceiling() {
+        let policy = BruteForce {
+            max_failures: 3,
+            lockout_seconds: 60,
+            max_lockout_seconds: 300,
+            ..BruteForce::default()
+        };
+        // The failure that reaches the threshold earns the base window.
+        assert_eq!(policy.lockout_for(3), 60);
+        assert_eq!(policy.lockout_for(4), 120);
+        assert_eq!(policy.lockout_for(7), 300, "the ceiling did not hold");
+        assert_eq!(policy.lockout_for(700), 300);
+        // Under the threshold nothing is locked, but the arithmetic still has
+        // to hand back a window rather than a negative one.
+        assert_eq!(policy.lockout_for(1), 60);
+        assert_eq!(policy.lockout_for(0), 60);
     }
 
     #[test]

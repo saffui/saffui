@@ -208,6 +208,58 @@ async fn the_notes_are_a_map_and_have_a_ceiling() {
     }
 }
 
+/// A count nobody added to for a while stands for nothing. Without this, a
+/// person who mistypes twice a year is locked out on the tenth year, and the
+/// counter measures how long the account has existed rather than an attack.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_quiet_spell_forgets_what_was_counted() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    for (at, expected) in [(1_000, 1), (1_010, 2)] {
+        let counted = login::record_failure(&transaction, "ada", at, None, 5, 60, 900)
+            .await
+            .unwrap();
+        assert_eq!(counted.num_failures, expected);
+    }
+
+    // Inside the window it carries on.
+    let carried = login::record_failure(&transaction, "ada", 1_909, None, 5, 60, 900)
+        .await
+        .unwrap();
+    assert_eq!(carried.num_failures, 3, "the window ended early");
+
+    // Past it, it starts again.
+    let restarted = login::record_failure(&transaction, "ada", 2_809, None, 5, 60, 900)
+        .await
+        .unwrap();
+    assert_eq!(
+        restarted.num_failures, 1,
+        "a count nobody added to for the whole window was carried forward"
+    );
+
+    // And a lockout already earned is lifted by the same quiet spell, or a
+    // lock outlives the count that justified it.
+    let locked = login::record_failure(&transaction, "ada", 2_810, None, 2, 600, 900)
+        .await
+        .unwrap();
+    assert_eq!(locked.num_failures, 2);
+    assert_eq!(locked.failed_login_not_before, 3_410);
+
+    let forgotten = login::record_failure(&transaction, "ada", 3_711, None, 2, 600, 900)
+        .await
+        .unwrap();
+    assert_eq!(forgotten.num_failures, 1);
+    assert_eq!(
+        forgotten.failed_login_not_before, 0,
+        "the lock survived the count it was earned by"
+    );
+}
+
 /// Counting is one statement, so two failures at once are two.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
@@ -225,7 +277,7 @@ async fn failures_are_counted_and_earn_a_lockout() {
             .is_none()
     );
 
-    let first = login::record_failure(&transaction, "ada", 1_000, Some("10.0.0.1"), 3, 60)
+    let first = login::record_failure(&transaction, "ada", 1_000, Some("10.0.0.1"), 3, 60, 900)
         .await
         .unwrap();
     assert_eq!(first.num_failures, 1);
@@ -235,13 +287,13 @@ async fn failures_are_counted_and_earn_a_lockout() {
     );
     assert_eq!(first.last_ip_failure.as_deref(), Some("10.0.0.1"));
 
-    let second = login::record_failure(&transaction, "ada", 1_010, Some("10.0.0.2"), 3, 60)
+    let second = login::record_failure(&transaction, "ada", 1_010, Some("10.0.0.2"), 3, 60, 900)
         .await
         .unwrap();
     assert_eq!(second.num_failures, 2);
     assert_eq!(second.failed_login_not_before, 0);
 
-    let third = login::record_failure(&transaction, "ada", 1_020, None, 3, 60)
+    let third = login::record_failure(&transaction, "ada", 1_020, None, 3, 60, 900)
         .await
         .unwrap();
     assert_eq!(third.num_failures, 3);
@@ -494,7 +546,7 @@ async fn none_of_it_is_visible_from_another_realm() {
     login::start(&transaction, &session("login-1", 300))
         .await
         .unwrap();
-    login::record_failure(&transaction, "ada", 1_000, None, 3, 60)
+    login::record_failure(&transaction, "ada", 1_000, None, 3, 60, 900)
         .await
         .unwrap();
     webauthn::enrol(&transaction, &credential(b"key-1", "ada", "yubikey"))

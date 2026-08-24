@@ -222,3 +222,52 @@ fn refused(why: Uncreatable) -> ApiError {
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
 }
+
+/// What is counted against this person, and whether they are refused now.
+pub async fn lockout(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let held = people::lockout(&transaction, &user_id)
+        .await
+        .map_err(refused)?;
+    let now = chrono::Utc::now().timestamp();
+    Ok(HttpResponse::Ok().json(match held {
+        Some(record) => serde_json::json!({
+            "failures": record.num_failures,
+            "locked": record.is_locked_at(now),
+            "until": record.failed_login_not_before,
+            "last_failure": record.last_failure,
+            "last_address": record.last_ip_failure,
+        }),
+        None => serde_json::json!({ "failures": 0, "locked": false, "until": 0 }),
+    }))
+}
+
+/// Lift a lockout and forget the count.
+pub async fn lift_lockout(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    people::lift_lockout(&transaction, &user_id)
+        .await
+        .map_err(refused)?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}

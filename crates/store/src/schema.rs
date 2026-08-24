@@ -241,6 +241,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V038__browser_state.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 39,
+            name: "brute_force",
+            sql: include_str!("../migrations/V039__brute_force.sql"),
+            transactional: true,
+        }),
     ]
 }
 

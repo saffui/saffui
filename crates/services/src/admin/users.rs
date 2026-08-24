@@ -9,8 +9,9 @@ use models::entities::attributes::AttributeValue;
 use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
 use models::entities::user::{RequiredAction, UserCreateModel, UserModel, profile};
 use models::paging::Page;
+use models::sessions::login_failure::UserLoginFailure;
 use secrecy::SecretBox;
-use store::providers::{credentials, users};
+use store::providers::{credentials, login, users};
 use store::query::list_query::ListQuery;
 
 /// What a person is created or reshaped as. `None` leaves a field alone on
@@ -222,4 +223,28 @@ fn check_name(user_name: &str) -> Result<(), Uncreatable> {
     shaped.then_some(()).ok_or(Uncreatable::Invalid(
         "a user name has no spaces and no control characters",
     ))
+}
+
+/// What is counted against this person, and until when they are refused.
+pub async fn lockout(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> Result<Option<UserLoginFailure>, Uncreatable> {
+    login::failures(transaction, user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)
+}
+
+/// Lift a lockout and forget the count.
+///
+/// An administrator is the way out of a lock somebody else can cause: without
+/// this, a person whose account is being guessed at waits for a window they
+/// did not choose.
+pub async fn lift_lockout(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> Result<bool, Uncreatable> {
+    login::clear_failures(transaction, user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)
 }

@@ -281,6 +281,31 @@ pub async fn extend_client_session(
     Ok(moved > 0)
 }
 
+/// Oldest first, and only the live ones: a grant the sweeper has not reached
+/// yet is not one a cap should count.
+pub async fn offline_grants_of(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    now: i64,
+) -> StoreResult<Vec<ClientSessionModel>> {
+    Ok(transaction
+        .query(
+            "SELECT session_id, tenant, realm_id, user_session_id, user_id, client_id, \
+                    auth_method, redirect_uri, started_at, expiration, notes, \
+                    current_refresh_token, current_refresh_token_use_count, offline, \
+                    requested_claims \
+             FROM client_sessions \
+             WHERE user_id = $1 AND offline AND (expiration IS NULL OR expiration > $2) \
+             ORDER BY started_at, session_id",
+            &[&user_id, &now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_client_session)
+        .collect())
+}
+
 /// End what one client got out of a login, leaving the login and every other
 /// client alone.
 ///

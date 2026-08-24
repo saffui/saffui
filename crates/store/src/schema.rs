@@ -247,6 +247,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V039__brute_force.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 40,
+            name: "offline_bounds",
+            sql: include_str!("../migrations/V040__offline_bounds.sql"),
+            transactional: true,
+        }),
     ]
 }
 

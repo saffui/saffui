@@ -16,6 +16,7 @@ use crate::query::write_set::{WriteSet, col};
 
 const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        registration_allowed, client_registration, registration_secret, \
+                       offline_session_max_lifespan, max_offline_grants, \
                        brute_force_protected, max_login_failures, lockout_seconds, \
                        max_lockout_seconds, failure_reset_seconds, \
                        register_email_as_username, verify_email, \
@@ -135,6 +136,11 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("enabled", &realm.enabled),
             col("registration_allowed", &realm.registration_allowed),
             col("client_registration", &policy),
+            col(
+                "offline_session_max_lifespan",
+                &realm.offline_session_max_lifespan,
+            ),
+            col("max_offline_grants", &realm.max_offline_grants),
             col("brute_force_protected", &realm.brute_force.protected),
             col("max_login_failures", &realm.brute_force.max_failures),
             col("lockout_seconds", &realm.brute_force.lockout_seconds),
@@ -201,6 +207,8 @@ fn read(row: Row) -> RealmModel {
             .parse()
             .unwrap_or(ClientRegistration::Disabled),
         registration_secret: row.get("registration_secret"),
+        offline_session_max_lifespan: row.get("offline_session_max_lifespan"),
+        max_offline_grants: row.get("max_offline_grants"),
         brute_force: models::entities::realm::BruteForce {
             protected: row.get("brute_force_protected"),
             max_failures: row.get("max_login_failures"),

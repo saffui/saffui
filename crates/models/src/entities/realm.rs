@@ -182,6 +182,8 @@ pub struct RealmModel {
     pub offline_session_max_lifespan: i32,
     /// How many live offline grants one person may hold. Zero is no bound.
     pub max_offline_grants: i32,
+    /// Whether every client here must push its request first, RFC 9126 §5.
+    pub require_pushed_authorization_requests: bool,
     pub action_tokens_lifespan: Option<i32>,
     pub access_code_lifespan: Option<i32>,
     pub access_code_lifespan_user_action: Option<i32>,
@@ -225,6 +227,7 @@ impl RealmCreateModel {
             brute_force: BruteForce::default(),
             offline_session_max_lifespan: 0,
             max_offline_grants: 0,
+            require_pushed_authorization_requests: false,
             registration_secret: None,
             register_email_as_username: None,
             verify_email: None,

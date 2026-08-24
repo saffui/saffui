@@ -64,6 +64,7 @@ pub struct Metadata {
     pub default_max_age: Option<i64>,
     pub default_acr_values: Option<Vec<String>>,
     pub initiate_login_uri: Option<String>,
+    pub require_pushed_authorization_requests: Option<bool>,
     /// §6.2: where this client hosts request objects, and the only places this
     /// server will fetch one from.
     pub request_uris: Option<Vec<String>>,
@@ -292,6 +293,12 @@ pub fn as_document(client: &ClientModel, issued_at: i64) -> Value {
     if let Some(age) = client.default_max_age {
         named.insert("default_max_age".to_owned(), Value::from(age));
     }
+    if let Some(pushes) = client.require_pushed_authorization_requests {
+        named.insert(
+            "require_pushed_authorization_requests".to_owned(),
+            Value::from(pushes),
+        );
+    }
     // Always true, because `auth_time` is always there. Stated rather than
     // omitted: absent is read as false, which would be untrue.
     named.insert("require_auth_time".to_owned(), Value::from(true));
@@ -505,6 +512,7 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
                 .map(|age| i32::try_from(age).unwrap_or(i32::MAX)),
             default_acr_values: metadata.default_acr_values.clone(),
             initiate_login_uri: metadata.initiate_login_uri.clone(),
+            require_pushed_authorization_requests: metadata.require_pushed_authorization_requests,
             request_uris: metadata.request_uris.clone(),
             subject_type: Some(subject_type.to_owned()),
             sector_identifier_uri: metadata.sector_identifier_uri.clone(),

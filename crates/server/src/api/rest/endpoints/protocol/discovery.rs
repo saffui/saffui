@@ -63,6 +63,9 @@ pub async fn published(
     let registers = held
         .as_ref()
         .is_some_and(|realm| realm.client_registration != ClientRegistration::Disabled);
+    let pushes_first = held
+        .as_ref()
+        .is_some_and(|realm| realm.require_pushed_authorization_requests);
     let mapped = held
         .and_then(|realm| realm.acr_loa_map)
         .filter(|map| !map.is_empty());
@@ -175,7 +178,7 @@ pub async fn published(
                 .map(|algorithm| algorithm.name())
                 .collect::<Vec<_>>(),
             "pushed_authorization_request_endpoint": format!("{protocol}/par"),
-            "require_pushed_authorization_requests": false,
+            "require_pushed_authorization_requests": pushes_first,
             "claims_parameter_supported": true,
             "authorization_response_iss_parameter_supported": true,
     });

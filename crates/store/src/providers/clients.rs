@@ -32,7 +32,7 @@ const COLUMNS: &str = "tenant, realm_id, client_id, name, display_name, descript
                        application_type, response_types, default_max_age, \
                        default_acr_values, initiate_login_uri, request_uris, \
                        subject_type, sector_identifier_uri, \
-                       registered_at, \
+                       registered_at, require_pushed_authorization_requests, \
                        id_token_encryption_alg, id_token_encryption_enc, \
                        userinfo_encryption_alg, userinfo_encryption_enc, \
                        request_object_encryption_alg, request_object_encryption_enc, \
@@ -446,6 +446,10 @@ pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
             col("default_max_age", &client.default_max_age),
             col("default_acr_values", &client.default_acr_values),
             col("initiate_login_uri", &client.initiate_login_uri),
+            col(
+                "require_pushed_authorization_requests",
+                &client.require_pushed_authorization_requests,
+            ),
             col("request_uris", &client.request_uris),
             col("subject_type", &client.subject_type),
             col("sector_identifier_uri", &client.sector_identifier_uri),
@@ -516,6 +520,7 @@ fn read(row: Row) -> ClientModel {
         subject_type: row.get("subject_type"),
         sector_identifier_uri: row.get("sector_identifier_uri"),
         registered_at: row.get("registered_at"),
+        require_pushed_authorization_requests: row.get("require_pushed_authorization_requests"),
         id_token_encryption: read_encryption(&row, "id_token_encryption"),
         userinfo_encryption: read_encryption(&row, "userinfo_encryption"),
         request_object_encryption: read_encryption(&row, "request_object_encryption"),

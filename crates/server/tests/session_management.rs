@@ -336,3 +336,51 @@ async fn the_metadata_answers_to_both_of_its_names() {
         Some(support::origin().issuer(support::REALM).as_str())
     );
 }
+
+/// One sequence establishes the caller at every endpoint that has one, so what
+/// each of them advertises says the same thing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn every_endpoint_names_the_ways_it_actually_takes() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/.well-known/openid-configuration",
+                support::REALM
+            ))
+            .to_request(),
+    )
+    .await;
+    let published: Value = test::read_body_json(response).await;
+    let named = |key: &str| -> Vec<String> {
+        published[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key} in {published}"))
+            .iter()
+            .filter_map(|held| held.as_str().map(str::to_owned))
+            .collect()
+    };
+    let at_token = named("token_endpoint_auth_methods_supported");
+    for method in [
+        "client_secret_basic",
+        "client_secret_post",
+        "client_secret_jwt",
+        "private_key_jwt",
+        "none",
+    ] {
+        assert!(at_token.iter().any(|held| held == method), "{method}");
+    }
+    assert_eq!(
+        named("revocation_endpoint_auth_methods_supported"),
+        at_token
+    );
+
+    // Everything but `none`: this endpoint tells a caller about somebody
+    // else's token, so a caller that proved nothing is refused.
+    let at_introspection = named("introspection_endpoint_auth_methods_supported");
+    assert!(!at_introspection.iter().any(|held| held == "none"));
+    assert_eq!(at_introspection.len(), at_token.len() - 1);
+}

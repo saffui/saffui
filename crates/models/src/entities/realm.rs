@@ -23,6 +23,21 @@ str_enum! {
     }
 }
 
+str_enum! {
+    /// Whether a realm lets a client register itself, RFC 7591 §3.
+    pub enum ClientRegistration {
+        /// The endpoint is not there: it answers nothing and discovery does
+        /// not name it. The default, because creating clients for whoever asks
+        /// is not something a deployment should get by not deciding.
+        Disabled => "disabled",
+        /// Anyone may register. Valid per §1.2, and a deliberate choice.
+        Open => "open",
+        /// An initial access token is required, and the realm holds what it is
+        /// checked against.
+        Protected => "protected",
+    }
+}
+
 /// A realm's rules for what a password may be, and what it costs to store one.
 ///
 /// The cost is the hasher's own parameters rather than an algorithm named as
@@ -98,6 +113,12 @@ pub struct RealmModel {
     pub enabled: bool,
 
     pub registration_allowed: Option<bool>,
+    /// Whether a client may register itself here, and on what terms. Not the
+    /// line above: that one is about people.
+    pub client_registration: ClientRegistration,
+    /// Never serialised, like every other bearer credential. Hashed.
+    #[serde(skip_serializing)]
+    pub registration_secret: Option<String>,
     pub register_email_as_username: Option<bool>,
     pub verify_email: Option<bool>,
     pub login_with_email_allowed: Option<bool>,
@@ -156,6 +177,8 @@ impl RealmCreateModel {
             display_name: self.display_name,
             enabled: self.enabled,
             registration_allowed: None,
+            client_registration: ClientRegistration::Disabled,
+            registration_secret: None,
             register_email_as_username: None,
             verify_email: None,
             login_with_email_allowed: None,
@@ -287,6 +310,16 @@ mod tests {
             "realm-1".into(),
             AuditableModel::from_creator("acme".into(), "root".into()),
         )
+    }
+
+    #[test]
+    fn a_realm_registers_no_client_until_it_says_so() {
+        assert_eq!(realm().client_registration, ClientRegistration::Disabled);
+        assert_eq!(ClientRegistration::ALL.len(), 3);
+        assert_eq!(ClientRegistration::Disabled.as_str(), "disabled");
+        assert_eq!(ClientRegistration::Open.as_str(), "open");
+        assert_eq!(ClientRegistration::Protected.as_str(), "protected");
+        assert_round_trips(ClientRegistration::ALL);
     }
 
     #[test]

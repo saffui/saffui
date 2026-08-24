@@ -39,6 +39,8 @@ services:
       # The implicit and hybrid profiles ask this endpoint to mint, which is a
       # permission of its own.
       - --implicit
+      # The dynamic profile creates its own clients through the endpoint.
+      - --open-registration
       - --redirect=https://localhost.emobix.co.uk:8443/test/a/saffui/callback
       - --after-logout=https://localhost.emobix.co.uk:8443/test/a/saffui/post_logout_redirect
       - --user=ada
@@ -228,10 +230,11 @@ services:
       - ./expected-skips.json:/plans/expected-skips.json:ro
       - ./results:/results
     working_dir: /suite/scripts
-    # Eight plans, one run: the Basic OP profile, the same modules answered as
-    # a posted form, the implicit and hybrid profiles, the discovery-only
-    # sibling, and the three logout profiles. The same static client serves the first
-    # three; each logout channel is registered on a client of its own.
+    # Nine plans, one run: the Basic OP profile, the same modules against
+    # clients that registered themselves, the same answered as a posted form,
+    # the implicit and hybrid profiles, the discovery-only sibling, and the
+    # three logout profiles. The same static client serves the static ones;
+    # each logout channel is registered on a client of its own.
     #
     # The skips it is told to expect are the two Basic OP modules that sign
     # their request object with `alg: none`. No client here may register that
@@ -245,6 +248,8 @@ services:
         python3 run-test-plan.py --export-dir /results --verbose --no-parallel
         --expected-skips-file /plans/expected-skips.json
         "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
+        /plans/basic.json
+        "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=dynamic_client]"
         /plans/basic.json
         "oidcc-formpost-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json

@@ -26,7 +26,7 @@ use models::entities::auth::{
 };
 use models::entities::client::{ClientCreateModel, ClientScopeModel, Protocol};
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey};
-use models::entities::realm::{RealmCreateModel, RealmModel};
+use models::entities::realm::{ClientRegistration, RealmCreateModel, RealmModel};
 use models::entities::tenant::{TenantCreateModel, TenantModel};
 use secrecy::SecretBox;
 use store::error::{StoreError, StoreResult};
@@ -471,6 +471,21 @@ pub struct Registration<'a> {
     pub implicit: bool,
 }
 
+/// Let clients register themselves here. Says whether it changed anything.
+pub async fn open_client_registration(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+) -> StoreResult<bool> {
+    let Some(mut realm) = realms::load(transaction, realm_id).await? else {
+        return Ok(false);
+    };
+    if realm.client_registration == ClientRegistration::Open {
+        return Ok(false);
+    }
+    realm.client_registration = ClientRegistration::Open;
+    realms::update(transaction, &realm).await
+}
+
 /// Register a client, unless one by that id exists, and attach it to every
 /// scope a fresh realm grants by default.
 pub async fn provision_client(
@@ -493,6 +508,10 @@ pub async fn provision_client(
         post_logout_redirect_uris: registration.post_logout_redirect_uris.clone(),
         backchannel_logout_uri: registration.backchannel_logout_uri.clone(),
         frontchannel_logout_uri: registration.frontchannel_logout_uri.clone(),
+        registered: admin::clients::Registered {
+            implicit: registration.implicit,
+            ..Default::default()
+        },
     };
     let secret = match registration.secret {
         Some(given) => admin::clients::Secret::Given(given),
@@ -511,12 +530,6 @@ pub async fn provision_client(
     .await
     .map_err(|_| StoreError::Backend)?;
 
-    if registration.implicit
-        && let Some(mut client) = clients::load(transaction, registration.client_id).await?
-    {
-        client.implicit_flow_enabled = Some(true);
-        clients::update(transaction, &client).await?;
-    }
     Ok(true)
 }
 

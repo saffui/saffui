@@ -2296,6 +2296,7 @@ dependencies = [
  "models",
  "pgcore",
  "secrecy",
+ "serde",
  "serde_json",
  "store",
  "thiserror 2.0.19",

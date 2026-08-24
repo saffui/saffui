@@ -5,7 +5,7 @@
 //! scoped to a tenant rather than to one of them.
 
 use deadpool_postgres::Transaction;
-use models::entities::realm::{RealmModel, SslEnforcement};
+use models::entities::realm::{ClientRegistration, RealmModel, SslEnforcement};
 use models::paging::Page;
 use tokio_postgres::Row;
 
@@ -15,7 +15,8 @@ use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
 const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
-                       registration_allowed, register_email_as_username, verify_email, \
+                       registration_allowed, client_registration, registration_secret, \
+                       register_email_as_username, verify_email, \
                        login_with_email_allowed, duplicated_email_allowed, \
                        edit_user_name_allowed, reset_password_allowed, remember_me, \
                        ssl_enforcement, password_policy, \
@@ -124,12 +125,15 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
     let password_policy = as_document(realm.password_policy.as_ref().map(serde_json::to_value))?;
     let attributes = as_document(realm.attributes.as_ref().map(serde_json::to_value))?;
     let acr_loa_map = as_document(realm.acr_loa_map.as_ref().map(serde_json::to_value))?;
+    let policy = realm.client_registration.as_str();
 
     let set = WriteSet::update(
         vec![
             col("display_name", &realm.display_name),
             col("enabled", &realm.enabled),
             col("registration_allowed", &realm.registration_allowed),
+            col("client_registration", &policy),
+            col("registration_secret", &realm.registration_secret),
             col(
                 "register_email_as_username",
                 &realm.register_email_as_username,
@@ -182,6 +186,11 @@ fn read(row: Row) -> RealmModel {
         enabled: row.get("enabled"),
         ssl_enforcement: row.get::<_, Option<SslEnforcement>>("ssl_enforcement"),
         registration_allowed: row.get("registration_allowed"),
+        client_registration: row
+            .get::<_, String>("client_registration")
+            .parse()
+            .unwrap_or(ClientRegistration::Disabled),
+        registration_secret: row.get("registration_secret"),
         register_email_as_username: row.get("register_email_as_username"),
         verify_email: row.get("verify_email"),
         login_with_email_allowed: row.get("login_with_email_allowed"),

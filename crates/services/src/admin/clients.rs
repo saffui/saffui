@@ -1,6 +1,7 @@
 //! Registering, reshaping and retiring a client.
 
 use crypto::password::storage::StoredPassword;
+use crypto::provider::SignAlg;
 use crypto::provider::{Argon2Params, CryptoProvider};
 use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Transaction;
@@ -27,6 +28,57 @@ pub struct Spec {
     /// Where the browser loads a frame when a login this client took part in
     /// ends.
     pub frontchannel_logout_uri: Option<String>,
+    /// What the client registered about itself, OIDC Registration §2.
+    pub registered: Registered,
+}
+
+/// What a client says about itself when it registers. Empty for one an
+/// administrator makes, which registers nothing.
+#[derive(Debug, Clone, Default)]
+pub struct Registered {
+    pub response_types: Option<Vec<String>>,
+    pub implicit: bool,
+    pub jwks: Option<serde_json::Value>,
+    pub jwks_uri: Option<String>,
+    pub id_token_signed_response_alg: Option<SignAlg>,
+    pub userinfo_signed_response_alg: Option<SignAlg>,
+    pub request_object_signing_alg: Option<SignAlg>,
+    pub client_uri: Option<String>,
+    pub logo_uri: Option<String>,
+    pub policy_uri: Option<String>,
+    pub tos_uri: Option<String>,
+    pub contacts: Option<Vec<String>>,
+    pub application_type: Option<String>,
+    pub default_max_age: Option<i32>,
+    pub default_acr_values: Option<Vec<String>>,
+    pub initiate_login_uri: Option<String>,
+    pub at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl Registered {
+    /// What this client already registered, so a reshape that names none of it
+    /// keeps it rather than clearing it.
+    pub fn of(client: &ClientModel) -> Self {
+        Registered {
+            response_types: client.response_types.clone(),
+            implicit: client.implicit_flow_enabled == Some(true),
+            jwks: client.jwks.clone(),
+            jwks_uri: client.jwks_uri.clone(),
+            id_token_signed_response_alg: client.id_token_signed_response_alg,
+            userinfo_signed_response_alg: client.userinfo_signed_response_alg,
+            request_object_signing_alg: client.request_object_signing_alg,
+            client_uri: client.client_uri.clone(),
+            logo_uri: client.logo_uri.clone(),
+            policy_uri: client.policy_uri.clone(),
+            tos_uri: client.tos_uri.clone(),
+            contacts: client.contacts.clone(),
+            application_type: client.application_type.clone(),
+            default_max_age: client.default_max_age,
+            default_acr_values: client.default_acr_values.clone(),
+            initiate_login_uri: client.initiate_login_uri.clone(),
+            at: client.registered_at,
+        }
+    }
 }
 
 /// What a registered client is reshaped to. Nothing named is nothing changed.
@@ -99,7 +151,8 @@ pub async fn register(
     client.standard_flow_enabled = Some(true);
     client.service_account_enabled = Some(false);
     client.direct_access_grants_enabled = Some(false);
-    client.implicit_flow_enabled = Some(false);
+    client.implicit_flow_enabled = Some(spec.registered.implicit);
+    client.registered_at = spec.registered.at;
     apply(&mut client, spec);
     clients::create(transaction, &client)
         .await
@@ -162,8 +215,9 @@ pub async fn update(
     client_id: &str,
     reshape: &Reshape,
 ) -> Result<ClientModel, Unregistrable> {
-    let mut client = get(transaction, client_id).await?;
+    let client = get(transaction, client_id).await?;
     let spec = Spec {
+        registered: Registered::of(&client),
         name: reshape.name.clone(),
         confidential: client.public_client != Some(true),
         redirect_uris: reshape
@@ -185,12 +239,26 @@ pub async fn update(
             .clone()
             .unwrap_or_else(|| client.frontchannel_logout_uri.clone()),
     };
-    check(&spec)?;
+    reshape_registered(transaction, client_id, &spec).await
+}
+
+/// The same, from a whole spec rather than from what a reshape named. RFC 7592
+/// §2.2 replaces the registration, so a value the request left out is cleared
+/// and not kept.
+pub async fn reshape_registered(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    spec: &Spec,
+) -> Result<ClientModel, Unregistrable> {
+    let mut client = get(transaction, client_id).await?;
+    check(spec)?;
     if let Some(name) = &spec.name {
         client.name = name.clone();
         client.display_name = name.clone();
     }
-    apply(&mut client, &spec);
+    client.public_client = Some(!spec.confidential);
+    client.implicit_flow_enabled = Some(spec.registered.implicit);
+    apply(&mut client, spec);
     clients::update(transaction, &client)
         .await
         .map_err(|_| Unregistrable::Unwritable)?;
@@ -225,6 +293,22 @@ pub async fn remove(transaction: &Transaction<'_>, client_id: &str) -> Result<bo
 }
 
 fn apply(client: &mut ClientModel, spec: &Spec) {
+    let registered = &spec.registered;
+    client.response_types = registered.response_types.clone();
+    client.jwks = registered.jwks.clone();
+    client.jwks_uri = registered.jwks_uri.clone();
+    client.id_token_signed_response_alg = registered.id_token_signed_response_alg;
+    client.userinfo_signed_response_alg = registered.userinfo_signed_response_alg;
+    client.request_object_signing_alg = registered.request_object_signing_alg;
+    client.client_uri = registered.client_uri.clone();
+    client.logo_uri = registered.logo_uri.clone();
+    client.policy_uri = registered.policy_uri.clone();
+    client.tos_uri = registered.tos_uri.clone();
+    client.contacts = registered.contacts.clone();
+    client.application_type = registered.application_type.clone();
+    client.default_max_age = registered.default_max_age;
+    client.default_acr_values = registered.default_acr_values.clone();
+    client.initiate_login_uri = registered.initiate_login_uri.clone();
     client.redirect_uris = Some(spec.redirect_uris.clone());
     client.post_logout_redirect_uris = (!spec.post_logout_redirect_uris.is_empty())
         .then(|| spec.post_logout_redirect_uris.clone());

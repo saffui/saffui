@@ -153,6 +153,15 @@ pub async fn begin(
     if asked_for.mints_here() && client.implicit_flow_enabled != Some(true) {
         return Err(Refusal::Redirect("unauthorized_client"));
     }
+    // What a client registered bounds what it may ask for. Absent is no bound,
+    // which is what a client an administrator made has.
+    if let Some(registered) = &client.response_types
+        && !registered
+            .iter()
+            .any(|named| ResponseType::read(named) == Some(asked_for))
+    {
+        return Err(Refusal::Redirect("unauthorized_client"));
+    }
     // Refused rather than answered as the default: a response put where the
     // client is not reading is one it never sees.
     let named_mode = requested

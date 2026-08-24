@@ -94,7 +94,7 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 plane.tenancy.clone(),
             )))
             .app_data(web::Data::new(plane.origin.clone()))
-            .app_data(web::Data::new(plane.hops))
+            .app_data(web::Data::new(plane.hops.clone()))
             .app_data(web::Data::new(plane.egress))
             .app_data(web::Data::new(plane.login_ui.clone()))
             .app_data(web::Data::new(plane.sealing.clone()))

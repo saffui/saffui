@@ -11,11 +11,11 @@ use services::provenance::Provenance;
 pub fn read_provenance(request: &HttpRequest) -> Provenance {
     let proxying = request
         .app_data::<actix_web::web::Data<Proxying>>()
-        .map_or_else(Proxying::none, |held| ***held);
-    read_provenance_under(request, proxying)
+        .map_or_else(Proxying::none, |held| (***held).clone());
+    read_provenance_under(request, &proxying)
 }
 
-fn read_provenance_under(request: &HttpRequest, proxying: Proxying) -> Provenance {
+fn read_provenance_under(request: &HttpRequest, proxying: &Proxying) -> Provenance {
     let peer = request.peer_addr().map(|address| address.ip().to_string());
     let carried = proxying
         .header()
@@ -59,11 +59,11 @@ mod tests {
             .to_http_request();
 
         assert_eq!(
-            read_provenance_under(&request, Proxying::behind(1, ProxyHeader::Forwarded)).address,
+            read_provenance_under(&request, &Proxying::behind(1, ProxyHeader::Forwarded)).address,
             Some("203.0.113.7".to_owned())
         );
         assert_eq!(
-            read_provenance_under(&request, Proxying::behind(1, ProxyHeader::XForwardedFor))
+            read_provenance_under(&request, &Proxying::behind(1, ProxyHeader::XForwardedFor))
                 .address,
             Some("198.51.100.1".to_owned())
         );

@@ -56,6 +56,9 @@ pub struct Metadata {
     pub default_max_age: Option<i64>,
     pub default_acr_values: Option<Vec<String>>,
     pub initiate_login_uri: Option<String>,
+    /// §6.2: where this client hosts request objects, and the only places this
+    /// server will fetch one from.
+    pub request_uris: Option<Vec<String>>,
     #[serde(default)]
     pub post_logout_redirect_uris: Vec<String>,
     pub backchannel_logout_uri: Option<String>,
@@ -258,6 +261,7 @@ pub fn as_document(client: &ClientModel, issued_at: i64) -> Value {
     for (key, value) in [
         ("contacts", client.contacts.clone()),
         ("default_acr_values", client.default_acr_values.clone()),
+        ("request_uris", client.request_uris.clone()),
         (
             "post_logout_redirect_uris",
             client.post_logout_redirect_uris.clone(),
@@ -429,6 +433,7 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
                 .map(|age| i32::try_from(age).unwrap_or(i32::MAX)),
             default_acr_values: metadata.default_acr_values.clone(),
             initiate_login_uri: metadata.initiate_login_uri.clone(),
+            request_uris: metadata.request_uris.clone(),
             method: method.to_owned(),
             token_endpoint_auth_signing_alg: read_alg(
                 metadata.token_endpoint_auth_signing_alg.as_ref(),

@@ -20,6 +20,7 @@ fn mounted(plane: &Plane) -> Mounted {
         origin: support::origin(),
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
+        egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
     }
 }
@@ -1616,7 +1617,7 @@ async fn discovery_advertises_only_what_is_there() {
         ("request_parameter_supported", true),
         ("request_uri_parameter_supported", true),
         ("require_pushed_authorization_requests", false),
-        ("require_request_uri_registration", false),
+        ("require_request_uri_registration", true),
         ("claims_parameter_supported", true),
         ("authorization_response_iss_parameter_supported", false),
     ] {

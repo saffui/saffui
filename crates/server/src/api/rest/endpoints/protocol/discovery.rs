@@ -158,7 +158,10 @@ pub async fn published(
             // 9126 pushed here, never a URL.
             "request_parameter_supported": true,
             "request_uri_parameter_supported": true,
-            "require_request_uri_registration": false,
+            // §6.2 leaves this optional. Required here: an endpoint that
+            // fetches whatever a request names is a way to make this server
+            // issue requests on somebody else's behalf.
+            "require_request_uri_registration": true,
             "request_object_signing_alg_values_supported": SignAlg::ALL
                 .iter()
                 .map(|algorithm| algorithm.name())

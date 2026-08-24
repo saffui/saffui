@@ -52,6 +52,7 @@ pub struct Registered {
     pub default_max_age: Option<i32>,
     pub default_acr_values: Option<Vec<String>>,
     pub initiate_login_uri: Option<String>,
+    pub request_uris: Option<Vec<String>>,
     /// How this client proves it is itself, as the column spells it.
     pub method: String,
     pub token_endpoint_auth_signing_alg: Option<SignAlg>,
@@ -79,6 +80,7 @@ impl Registered {
             default_max_age: client.default_max_age,
             default_acr_values: client.default_acr_values.clone(),
             initiate_login_uri: client.initiate_login_uri.clone(),
+            request_uris: client.request_uris.clone(),
             method: client
                 .client_authenticator_type
                 .clone()
@@ -319,6 +321,7 @@ fn apply(client: &mut ClientModel, spec: &Spec) {
     client.default_max_age = registered.default_max_age;
     client.default_acr_values = registered.default_acr_values.clone();
     client.initiate_login_uri = registered.initiate_login_uri.clone();
+    client.request_uris = registered.request_uris.clone();
     client.token_endpoint_auth_signing_alg = registered.token_endpoint_auth_signing_alg;
     if !registered.method.is_empty() {
         client.client_authenticator_type = Some(registered.method.clone());

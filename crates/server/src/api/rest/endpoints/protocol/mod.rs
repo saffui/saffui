@@ -13,6 +13,7 @@ pub mod binding;
 pub mod caller;
 pub mod discovery;
 pub mod dto;
+pub mod hosted;
 pub mod introspect;
 pub mod keys;
 pub mod login;

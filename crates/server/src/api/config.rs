@@ -65,6 +65,8 @@ pub struct Plane {
     /// Where callers reach this deployment. Every issuer minted and every
     /// issuer accepted is built from it, so both planes hold the same one.
     pub origin: PublicOrigin,
+    /// Where this deployment will dial when a client asks it to fetch.
+    pub egress: config::serving::Egress,
     /// Where a browser is sent to authenticate. Not served here.
     pub login_ui: LoginUi,
     /// How many proxies stand in front, which is what makes a forwarded
@@ -104,6 +106,7 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             )))
             .app_data(web::Data::new(plane.origin.clone()))
             .app_data(web::Data::new(plane.hops))
+            .app_data(web::Data::new(plane.egress))
             .app_data(web::Data::new(plane.login_ui.clone()))
             .app_data(web::Data::new(plane.sealing.clone()))
             .service(admin_scope(plane))

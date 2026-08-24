@@ -81,6 +81,32 @@ pub enum Refusal {
     Redirect(&'static str),
 }
 
+/// Whether this client hosts a request object at this URI, §6.2.
+///
+/// Pre-registration is required rather than optional: an endpoint that fetches
+/// whatever a request names is a way to make this server issue requests on
+/// somebody else's behalf, and the list is what bounds where it will go.
+///
+/// Compared whole. A prefix match would let a registered
+/// `https://app.example/objects` stand for `https://app.example/objects/../..`
+/// and anything else under the host.
+pub async fn hosted_request_object(
+    transaction: &Transaction<'_>,
+    client_id: Option<&str>,
+    uri: &str,
+) -> Result<(), Refusal> {
+    let client = named_client(transaction, client_id).await?;
+    let registered = client
+        .request_uris
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .any(|held| held == uri);
+    registered
+        .then_some(())
+        .ok_or(Refusal::Unshowable("invalid_request_uri"))
+}
+
 /// Start a login, or say how the refusal travels.
 #[allow(
     clippy::too_many_arguments,

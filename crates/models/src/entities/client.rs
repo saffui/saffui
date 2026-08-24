@@ -151,6 +151,8 @@ pub struct ClientModel {
     pub default_acr_values: Option<Vec<String>>,
     /// Where a third party sends a person for this client to start a login.
     pub initiate_login_uri: Option<String>,
+    /// Where this client hosts request objects, §6.2. Only these are fetched.
+    pub request_uris: Option<Vec<String>>,
     /// When this client registered itself. `None` for one an administrator made.
     pub registered_at: Option<DateTime<Utc>>,
 
@@ -233,6 +235,7 @@ impl ClientCreateModel {
             default_max_age: None,
             default_acr_values: None,
             initiate_login_uri: None,
+            request_uris: None,
             registered_at: None,
             protocol: None,
             public_client: None,

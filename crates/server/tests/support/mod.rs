@@ -663,6 +663,24 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Where this client hosts request objects, §6.2.
+    #[allow(dead_code, reason = "only the hosted suite fetches one")]
+    pub async fn register_request_uris(&self, client_id: &str, uris: &[String]) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.request_uris = Some(uris.to_vec());
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
     /// Switch the subject off, the way an administrator shuts down an account.
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn disable_subject(&self) {
@@ -1490,6 +1508,7 @@ pub async fn granted_scope_of(plane: &Plane, asked: &[(&str, &str)]) -> String {
         origin: origin(),
         login_ui: login_ui(),
         hops: config::proxying::Proxying::none(),
+        egress: config::serving::Egress::Outward,
         sealing: sealing(),
     };
     let app = actix_web::test::init_service(

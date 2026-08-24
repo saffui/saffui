@@ -16,6 +16,7 @@
 
 pub mod admin;
 pub mod agent;
+pub mod assertion;
 pub mod authorization;
 pub mod authorize;
 pub mod claims_request;

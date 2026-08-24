@@ -211,6 +211,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V033__client_registration.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 34,
+            name: "client_secret_sealing",
+            sql: include_str!("../migrations/V034__client_secret_sealing.sql"),
+            transactional: true,
+        }),
     ]
 }
 

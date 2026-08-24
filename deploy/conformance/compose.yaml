@@ -230,11 +230,12 @@ services:
       - ./expected-skips.json:/plans/expected-skips.json:ro
       - ./results:/results
     working_dir: /suite/scripts
-    # Nine plans, one run: the Basic OP profile, the same modules against
-    # clients that registered themselves, the same answered as a posted form,
-    # the implicit and hybrid profiles, the discovery-only sibling, and the
-    # three logout profiles. The same static client serves the static ones;
-    # each logout channel is registered on a client of its own.
+    # Ten plans, one run: the Basic OP profile, the same modules against
+    # clients that registered themselves, the Dynamic OP profile, the same
+    # answered as a posted form, the implicit and hybrid profiles, the
+    # discovery-only sibling, and the three logout profiles. The same static
+    # client serves the static ones; each logout channel is registered on a
+    # client of its own.
     #
     # The skips it is told to expect are the two Basic OP modules that sign
     # their request object with `alg: none`. No client here may register that
@@ -250,6 +251,8 @@ services:
         "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json
         "oidcc-basic-certification-test-plan[server_metadata=discovery][client_registration=dynamic_client]"
+        /plans/basic.json
+        "oidcc-dynamic-certification-test-plan[response_type=code]"
         /plans/basic.json
         "oidcc-formpost-basic-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
         /plans/basic.json

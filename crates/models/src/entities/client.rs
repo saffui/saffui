@@ -113,6 +113,9 @@ pub struct ClientModel {
     pub userinfo_signed_response_alg: Option<SignAlg>,
     /// Request object signing. Registered under the same refusal rule.
     pub request_object_signing_alg: Option<SignAlg>,
+    /// What this client's assertions must be signed with, §9. Absent leaves
+    /// the choice to the assertion, bounded by the method it registered.
+    pub token_endpoint_auth_signing_alg: Option<SignAlg>,
     /// The keys this client signs with, as the JWKS it registered.
     pub jwks: Option<serde_json::Value>,
 
@@ -214,6 +217,7 @@ impl ClientCreateModel {
             id_token_signed_response_alg: None,
             userinfo_signed_response_alg: None,
             request_object_signing_alg: None,
+            token_endpoint_auth_signing_alg: None,
             jwks: None,
             id_token_encryption: None,
             userinfo_encryption: None,

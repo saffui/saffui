@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 /// parser.
 #[derive(Debug, Default, Deserialize)]
 pub struct Asked {
+    /// RFC 7521 §4.2, when this is how the client authenticates.
+    pub client_assertion: Option<String>,
+    pub client_assertion_type: Option<String>,
     pub grant_type: Option<String>,
     pub code: Option<String>,
     pub redirect_uri: Option<String>,

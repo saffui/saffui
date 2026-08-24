@@ -20,6 +20,7 @@ pub async fn keep(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
+    origin: web::Data<config::serving::PublicOrigin>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Some(body) = body else {
@@ -27,6 +28,7 @@ pub async fn keep(
     };
     let mut parameters = Map::new();
     let (mut client_id, mut client_secret) = (None, None);
+    let (mut assertion, mut assertion_type) = (None, None);
     for (named, value) in body.into_inner() {
         match named.as_str() {
             "client_id" => {
@@ -34,6 +36,8 @@ pub async fn keep(
                 parameters.insert(named, Value::String(value));
             }
             "client_secret" => client_secret = Some(value),
+            "client_assertion" => assertion = Some(value),
+            "client_assertion_type" => assertion_type = Some(value),
             _ => {
                 parameters.insert(named, Value::String(value));
             }
@@ -50,9 +54,14 @@ pub async fn keep(
         &request,
         client_id.as_deref(),
         client_secret,
+        assertion_type
+            .as_deref()
+            .zip(assertion.as_deref())
+            .map(|(kind, assertion)| services::client::Signed { kind, assertion }),
         &mut connection,
         &tenancy,
-        sealing.provider.as_ref(),
+        &sealing,
+        &origin,
         &context,
         now,
     )

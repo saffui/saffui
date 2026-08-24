@@ -5,13 +5,16 @@
 
 use chrono::{DateTime, Utc};
 use crypto::constant_time;
+use crypto::envelope::Envelope;
 use crypto::password::migration::verify_and_plan;
 use crypto::password::storage::StoredPassword;
 use crypto::provider::{Argon2Params, CryptoProvider};
 use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
 use secrecy::{ExposeSecret, SecretBox};
+use store::keyring::RealmKeyring;
 use store::providers::clients::{self, StoredSecret};
+use store::tenancy::TenantContext;
 
 /// How a client offered to prove who it is.
 #[derive(Debug)]
@@ -28,6 +31,12 @@ pub enum Presented {
     },
     /// A name and no proof. Only a public client gets anywhere with this.
     Bare { client_id: String },
+    /// RFC 7523 §2.2: a JWT the client signed, over the secret only the two of
+    /// them hold or with a key only it holds.
+    Assertion {
+        client_id: String,
+        assertion: String,
+    },
 }
 
 impl Presented {
@@ -35,14 +44,15 @@ impl Presented {
         match self {
             Presented::Basic { client_id, .. }
             | Presented::Post { client_id, .. }
-            | Presented::Bare { client_id } => client_id,
+            | Presented::Bare { client_id }
+            | Presented::Assertion { client_id, .. } => client_id,
         }
     }
 
     fn secret(&self) -> Option<&SecretBox<String>> {
         match self {
             Presented::Basic { secret, .. } | Presented::Post { secret, .. } => Some(secret),
-            Presented::Bare { .. } => None,
+            Presented::Bare { .. } | Presented::Assertion { .. } => None,
         }
     }
 }
@@ -69,14 +79,44 @@ pub enum Unauthenticated {
     Unreadable,
 }
 
+/// What the form carried of RFC 7521 §4.2.
+pub struct Signed<'a> {
+    pub kind: &'a str,
+    pub assertion: &'a str,
+}
+
 /// Read what the request offered, and refuse two offers at once. Separate
 /// arguments, because a merged value could not see there had been two.
 pub fn read_presented(
     header: Option<(String, SecretBox<String>)>,
     form_client_id: Option<&str>,
     form_secret: Option<SecretBox<String>>,
+    signed: Option<Signed<'_>>,
 ) -> Result<Presented, Unauthenticated> {
     let form_client_id = form_client_id.filter(|named| !named.is_empty());
+    if let Some(signed) = signed {
+        if header.is_some() || form_secret.is_some() {
+            return Err(Unauthenticated::Ambiguous);
+        }
+        if signed.kind != crate::assertion::JWT_BEARER {
+            return Err(Unauthenticated::Unperformable);
+        }
+        // §9 lets the assertion be the only thing naming the client, so the
+        // subject stands in. Read but never trusted: it selects whose keys the
+        // signature is checked against, and that check is what decides.
+        let named = crate::assertion::subject_of(signed.assertion);
+        let client_id = match (form_client_id, named.as_deref()) {
+            // Two names for one caller. Refused rather than called malformed:
+            // which client is asking is a fact about the credential.
+            (Some(form), Some(sub)) if form != sub => return Err(Unauthenticated::Refused),
+            (Some(named), _) | (None, Some(named)) => named.to_owned(),
+            (None, None) => return Err(Unauthenticated::Anonymous),
+        };
+        return Ok(Presented::Assertion {
+            client_id,
+            assertion: signed.assertion.to_owned(),
+        });
+    }
 
     match (header, form_client_id, form_secret) {
         (Some(_), _, Some(_)) => Err(Unauthenticated::Ambiguous),
@@ -95,14 +135,38 @@ pub fn read_presented(
     }
 }
 
+/// Everything the check needs beyond what was presented.
+pub struct Establishing<'a> {
+    pub provider: &'a dyn CryptoProvider,
+    pub cost: Argon2Params,
+    pub tenant: &'a TenantContext,
+    /// The names this server answers to, which an assertion's `aud` must hold.
+    pub audiences: &'a [String],
+    /// How a sealed secret is opened. Absent, a client that keeps one cannot
+    /// authenticate rather than authenticating without it.
+    pub sealing: Option<(&'a RealmKeyring, &'a Envelope)>,
+}
+
+/// Which methods this build performs, by the name the column holds.
+const PERFORMED: [&str; 4] = [
+    "client-secret",
+    "none",
+    "client-secret-jwt",
+    "private-key-jwt",
+];
+
+/// What a client secret is sealed for, so a blob lifted from another column
+/// opens as nothing.
+pub const SECRET_SCOPE: &str = "client-secret";
+
 /// Establish the client, or refuse without saying which part failed.
 pub async fn authenticate(
     transaction: &Transaction<'_>,
-    provider: &dyn CryptoProvider,
-    cost: Argon2Params,
+    within: &Establishing<'_>,
     presented: &Presented,
     now: DateTime<Utc>,
 ) -> Result<ClientModel, Unauthenticated> {
+    let (provider, cost) = (within.provider, within.cost);
     let loaded = clients::load(transaction, presented.client_id())
         .await
         .map_err(|_| Unauthenticated::Unreadable)?;
@@ -119,7 +183,7 @@ pub async fn authenticate(
     if client
         .client_authenticator_type
         .as_deref()
-        .is_some_and(|named| !matches!(named, "client-secret" | "none"))
+        .is_some_and(|named| !PERFORMED.contains(&named))
     {
         return Err(Unauthenticated::Unperformable);
     }
@@ -136,6 +200,21 @@ pub async fn authenticate(
             Presented::Bare { .. } => Ok(client),
             _ => Err(Unauthenticated::Refused),
         };
+    }
+
+    // The method is the client's registration, not the request's choice: a
+    // client registered for an assertion is not authenticated by a secret it
+    // still happens to hold, and the reverse would be a downgrade.
+    let registered = client
+        .client_authenticator_type
+        .as_deref()
+        .unwrap_or("client-secret");
+    let signs = matches!(registered, "client-secret-jwt" | "private-key-jwt");
+    if signs != matches!(presented, Presented::Assertion { .. }) {
+        return Err(Unauthenticated::Refused);
+    }
+    if let Presented::Assertion { assertion, .. } = presented {
+        return by_assertion(transaction, within, &client, registered, assertion, now).await;
     }
 
     let Some(offered) = presented.secret() else {
@@ -178,7 +257,62 @@ pub async fn authenticate(
             convert(transaction, provider, cost, presented.client_id(), offered).await;
             Ok(client)
         }
+        // Kept recoverable for a method that recomputes over it, so it is not
+        // what a shared-secret comparison reads.
+        StoredSecret::Sealed(_) => Err(Unauthenticated::Refused),
     }
+}
+
+/// RFC 7523 §2.2, for whichever of the two methods the client registered.
+async fn by_assertion(
+    transaction: &Transaction<'_>,
+    within: &Establishing<'_>,
+    client: &ClientModel,
+    registered: &str,
+    assertion: &str,
+    now: DateTime<Utc>,
+) -> Result<ClientModel, Unauthenticated> {
+    let secret = match registered {
+        "private-key-jwt" => None,
+        _ => Some(shared_secret(transaction, within, &client.client_id).await?),
+    };
+    crate::assertion::verify(
+        transaction,
+        within.provider,
+        client,
+        assertion,
+        within.audiences,
+        secret.as_ref(),
+        now,
+    )
+    .await
+    .map_err(|why| match why {
+        crate::assertion::Unverifiable::Unreadable => Unauthenticated::Unreadable,
+        _ => Unauthenticated::Refused,
+    })?;
+    Ok(client.clone())
+}
+
+/// The secret this deployment can read back, for the method that needs it.
+async fn shared_secret(
+    transaction: &Transaction<'_>,
+    within: &Establishing<'_>,
+    client_id: &str,
+) -> Result<SecretBox<String>, Unauthenticated> {
+    let Some(StoredSecret::Sealed(sealed)) = clients::load_secret(transaction, client_id)
+        .await
+        .map_err(|_| Unauthenticated::Unreadable)?
+    else {
+        return Err(Unauthenticated::Refused);
+    };
+    let (ring, envelope) = within.sealing.ok_or(Unauthenticated::Unperformable)?;
+    let opened = ring
+        .open(envelope, SECRET_SCOPE, client_id, &sealed)
+        .await
+        .map_err(|_| Unauthenticated::Refused)?;
+    let spelled =
+        String::from_utf8(opened.expose_secret().clone()).map_err(|_| Unauthenticated::Refused)?;
+    Ok(SecretBox::new(Box::new(spelled)))
 }
 
 /// Write the hash of a secret that just proved itself.

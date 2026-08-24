@@ -2,6 +2,7 @@
 //! Dynamic Client Registration 1.0.
 
 use chrono::{DateTime, Utc};
+use crypto::envelope::Envelope;
 use crypto::password::migration::verify_and_plan;
 use crypto::password::storage::StoredPassword;
 use crypto::provider::{Argon2Params, CryptoProvider, SignAlg};
@@ -12,6 +13,7 @@ use models::entities::realm::{ClientRegistration, RealmModel};
 use secrecy::SecretBox;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use store::keyring::RealmKeyring;
 use store::providers::clients;
 use url::Url;
 
@@ -47,6 +49,7 @@ pub struct Metadata {
     pub sector_identifier_uri: Option<String>,
     pub subject_type: Option<String>,
     pub token_endpoint_auth_method: Option<String>,
+    pub token_endpoint_auth_signing_alg: Option<String>,
     pub id_token_signed_response_alg: Option<String>,
     pub userinfo_signed_response_alg: Option<String>,
     pub request_object_signing_alg: Option<String>,
@@ -119,6 +122,7 @@ pub fn admits(
 pub async fn register(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
+    sealing: Option<(&RealmKeyring, &Envelope)>,
     tenant: &str,
     realm_id: &str,
     metadata: &Metadata,
@@ -137,6 +141,27 @@ pub async fn register(
         Secret::Drawn,
     )
     .await?;
+
+    // `client_secret_jwt` recomputes an HMAC over the secret, so this
+    // deployment has to be able to read it back. Sealed rather than hashed,
+    // and the hash the registration just wrote is cleared with it.
+    if spec.registered.method == "client-secret-jwt" {
+        let held = secret.as_deref().ok_or(Refused::Unwritable)?;
+        let (ring, envelope) = sealing.ok_or(Refused::Unwritable)?;
+        let sealed = ring
+            .seal(
+                envelope,
+                crate::client::SECRET_SCOPE,
+                &client_id,
+                held.as_bytes(),
+            )
+            .await
+            .map_err(|_| Refused::Unwritable)?;
+        let version = i32::try_from(ring.active_version()).map_err(|_| Refused::Unwritable)?;
+        clients::seal_secret(transaction, &client_id, &sealed, version, None)
+            .await
+            .map_err(|_| Refused::Unwritable)?;
+    }
 
     let access_token = draw(provider, CREDENTIAL_BYTES)?;
     keep_access_token(transaction, provider, &client_id, &access_token).await?;
@@ -278,11 +303,12 @@ fn grant_types_of(client: &ClientModel) -> Vec<&'static str> {
 }
 
 fn auth_method_of(client: &ClientModel) -> &'static str {
-    if client.public_client == Some(true) {
-        "none"
-    } else {
-        "client_secret_basic"
-    }
+    method_named(
+        client
+            .client_authenticator_type
+            .as_deref()
+            .unwrap_or("client-secret"),
+    )
 }
 
 fn alg_name(alg: Option<SignAlg>) -> Option<&'static str> {
@@ -316,6 +342,32 @@ fn read_alg(named: Option<&String>) -> Result<Option<SignAlg>, Refused> {
         ))
 }
 
+/// §9's names, as the column spells them. A method not named here is refused
+/// rather than answered with a secret, which would be a downgrade.
+fn read_method(named: Option<&str>) -> Result<&'static str, Refused> {
+    Ok(match named.unwrap_or("client_secret_basic") {
+        "client_secret_basic" | "client_secret_post" => "client-secret",
+        "none" => "none",
+        "client_secret_jwt" => "client-secret-jwt",
+        "private_key_jwt" => "private-key-jwt",
+        _ => {
+            return Err(Refused::Invalid(
+                "an authentication method this endpoint does not accept",
+            ));
+        }
+    })
+}
+
+/// The wire spelling, for the registration response.
+fn method_named(held: &str) -> &'static str {
+    match held {
+        "none" => "none",
+        "client-secret-jwt" => "client_secret_jwt",
+        "private-key-jwt" => "private_key_jwt",
+        _ => "client_secret_basic",
+    }
+}
+
 /// §2 of the registration spec, mapped onto what this provider can honour.
 fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
     if metadata.sector_identifier_uri.is_some()
@@ -329,17 +381,17 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
     if metadata.jwks.is_some() && metadata.jwks_uri.is_some() {
         return Err(Refused::Invalid("keys are published one way, not two"));
     }
-    match metadata.token_endpoint_auth_method.as_deref() {
-        None | Some("client_secret_basic" | "client_secret_post" | "none") => {}
-        Some(_) => {
-            return Err(Refused::Invalid(
-                "an authentication method this endpoint does not accept",
-            ));
-        }
+    let method = read_method(metadata.token_endpoint_auth_method.as_deref())?;
+    // §9: a client signing its own assertions has to publish the keys they are
+    // verified against, and one registering none could never authenticate.
+    if method == "private-key-jwt" && metadata.jwks.is_none() && metadata.jwks_uri.is_none() {
+        return Err(Refused::Invalid(
+            "signing assertions with a key needs the keys published",
+        ));
     }
 
     let asked = response_types_of(metadata)?;
-    let confidential = metadata.token_endpoint_auth_method.as_deref() != Some("none");
+    let confidential = method != "none";
     let application_type = match metadata.application_type.as_deref() {
         None | Some("web") => "web",
         Some("native") => "native",
@@ -377,6 +429,10 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
                 .map(|age| i32::try_from(age).unwrap_or(i32::MAX)),
             default_acr_values: metadata.default_acr_values.clone(),
             initiate_login_uri: metadata.initiate_login_uri.clone(),
+            method: method.to_owned(),
+            token_endpoint_auth_signing_alg: read_alg(
+                metadata.token_endpoint_auth_signing_alg.as_ref(),
+            )?,
             at: Some(now),
         },
     })

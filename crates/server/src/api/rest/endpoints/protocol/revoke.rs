@@ -15,10 +15,22 @@ use crate::api::rest::endpoints::protocol::dto::{Denied, uncached};
 #[derive(Debug, Deserialize)]
 pub struct Asked {
     pub token: Option<String>,
+    /// RFC 7521 §4.2, when this is how the client authenticates.
+    pub client_assertion: Option<String>,
+    pub client_assertion_type: Option<String>,
     /// §2.1: a hint the server may ignore, and this one does.
     pub token_type_hint: Option<String>,
     pub client_id: Option<String>,
     pub client_secret: Option<String>,
+}
+
+impl Asked {
+    fn signed(&self) -> Option<services::client::Signed<'_>> {
+        Some(services::client::Signed {
+            kind: self.client_assertion_type.as_deref()?,
+            assertion: self.client_assertion.as_deref()?,
+        })
+    }
 }
 
 pub async fn take_back(
@@ -28,6 +40,7 @@ pub async fn take_back(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
+    origin: web::Data<config::serving::PublicOrigin>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Ok(mut connection) = pool.get().await else {
@@ -43,9 +56,11 @@ pub async fn take_back(
         &request,
         asked.client_id.as_deref(),
         asked.client_secret.clone(),
+        asked.signed(),
         &mut connection,
         &tenancy,
-        sealing.provider.as_ref(),
+        &sealing,
+        &origin,
         &context,
         now,
     )

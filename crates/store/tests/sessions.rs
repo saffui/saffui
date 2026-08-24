@@ -161,6 +161,7 @@ async fn a_token_is_spent_once_and_only_by_its_own_value() {
         "the-raw-link",
         None,
         now + Duration::minutes(10),
+        chrono::Utc::now(),
     )
     .await
     .unwrap();
@@ -260,6 +261,7 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
         "first",
         None,
         now + Duration::minutes(10),
+        chrono::Utc::now(),
     )
     .await
     .unwrap();
@@ -270,6 +272,7 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
         "second",
         None,
         now + Duration::minutes(10),
+        chrono::Utc::now(),
     )
     .await
     .unwrap();
@@ -310,6 +313,7 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
         "the-raw-link",
         None,
         now + Duration::minutes(10),
+        chrono::Utc::now(),
     )
     .await
     .unwrap();
@@ -549,4 +553,70 @@ fn now() -> chrono::DateTime<chrono::Utc> {
 
 fn grace() -> chrono::DateTime<chrono::Utc> {
     now() - chrono::Duration::seconds(30)
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_stamp_is_the_caller_s_clock_and_not_the_database_s() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    let owner = Owner {
+        tenant: "acme",
+        realm_id: "main",
+        user_id: "ada",
+        purpose: "magic-link",
+    };
+    // An instant the database's own clock would never produce, so what comes
+    // back tells the two apart. A cooldown compares this stamp against the
+    // caller's clock, and a window measured across two clocks means nothing
+    // the day they disagree.
+    let stamped = Utc::now() - Duration::days(30);
+    one_time_tokens::mint(
+        &transaction,
+        provider().digest(),
+        owner,
+        "the-raw-link",
+        None,
+        Utc::now() + Duration::minutes(10),
+        stamped,
+    )
+    .await
+    .unwrap();
+
+    let read = one_time_tokens::minted_at(&transaction, "ada", "magic-link", Utc::now())
+        .await
+        .unwrap()
+        .expect("a stamp");
+    assert_eq!(
+        (read - stamped).num_seconds(),
+        0,
+        "the stamp came from the database's clock, not the caller's"
+    );
+
+    // And a second mint moves it, so a cooldown reads the latest and not the
+    // first one ever issued.
+    let again = Utc::now();
+    one_time_tokens::mint(
+        &transaction,
+        provider().digest(),
+        owner,
+        "another-raw-link",
+        None,
+        Utc::now() + Duration::minutes(10),
+        again,
+    )
+    .await
+    .unwrap();
+    let read = one_time_tokens::minted_at(&transaction, "ada", "magic-link", Utc::now())
+        .await
+        .unwrap()
+        .expect("a stamp");
+    assert!(
+        (read - again).num_seconds().abs() < 2,
+        "a second mint did not move the stamp"
+    );
 }

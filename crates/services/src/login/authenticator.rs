@@ -267,9 +267,16 @@ async fn magic_link(
 
     // One in flight is enough. Asking again inside the window is answered the
     // way the first was, so nothing is told apart by whether a mail went out.
-    let recent =
-        one_time_tokens::minted_at(transaction, &subject.user_id, MAGIC_LINK, posting.now).await;
-    if let Ok(Some(sent)) = recent
+    //
+    // A store that cannot answer holds the message. A guard that treats "I do
+    // not know" as "none was sent" is one a caller floods a mailbox through by
+    // making the read fail.
+    let Ok(recent) =
+        one_time_tokens::minted_at(transaction, &subject.user_id, MAGIC_LINK, posting.now).await
+    else {
+        return Answered::plain(Outcome::Failed);
+    };
+    if let Some(sent) = recent
         && posting.now - sent < chrono::Duration::seconds(LINK_COOLDOWN)
     {
         return Answered {
@@ -299,6 +306,7 @@ async fn magic_link(
         &token,
         Some(posting.auth_session_id),
         posting.now + chrono::Duration::seconds(LINK_LIFESPAN),
+        posting.now,
     )
     .await;
     if minted.is_err() {

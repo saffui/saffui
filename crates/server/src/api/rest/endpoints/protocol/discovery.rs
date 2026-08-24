@@ -15,6 +15,17 @@ use store::tenancy::{Tenancy, resolve};
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
 
+/// How a client may prove it is itself, §9. One list, because one sequence
+/// establishes the caller at every endpoint that has one, and three lists
+/// would be three chances to say something the server does not do.
+const AUTHENTICATED: [&str; 5] = [
+    "client_secret_basic",
+    "client_secret_post",
+    "client_secret_jwt",
+    "private_key_jwt",
+    "none",
+];
+
 /// The realm's metadata, OpenID Connect Discovery §3.
 pub async fn published(
     realm: web::Path<String>,
@@ -111,13 +122,7 @@ pub async fn published(
             ],
             "subject_types_supported": ["public", "pairwise"],
             "id_token_signing_alg_values_supported": algorithms,
-            "token_endpoint_auth_methods_supported": [
-                "client_secret_basic",
-                "client_secret_post",
-                "client_secret_jwt",
-                "private_key_jwt",
-                "none",
-            ],
+            "token_endpoint_auth_methods_supported": AUTHENTICATED,
             // What an assertion may be signed with. The shared-secret method
             // takes the HMAC family and the key method the rest, so the union
             // is what a client may register.
@@ -131,28 +136,28 @@ pub async fn published(
             // Introspection turns a stolen token into its claims, so never for
             // a client that keeps no secret; a revocation is a client's own to
             // ask, secret or not.
-            "introspection_endpoint_auth_methods_supported": [
-                "client_secret_basic",
-                "client_secret_post",
-            ],
-            "revocation_endpoint_auth_methods_supported": [
-                "client_secret_basic",
-                "client_secret_post",
-                "none",
-            ],
+            // Everything but `none`: §2.1 of RFC 7662 has this endpoint tell
+            // a caller about somebody else's token, so a caller that proved
+            // nothing is refused rather than answered.
+            "introspection_endpoint_auth_methods_supported": AUTHENTICATED
+                .iter()
+                .filter(|named| **named != "none")
+                .collect::<Vec<_>>(),
+            "revocation_endpoint_auth_methods_supported": AUTHENTICATED,
             // S256 and nothing else. `plain` compares the verifier against a
             // challenge that travelled in the authorize request, and the
             // endpoint refuses it, so advertising it would be a lie a client
             // acts on.
             "code_challenge_methods_supported": ["S256"],
-            "scopes_supported": [
-                "openid",
-                "profile",
-                "email",
-                "phone",
-                "address",
-                "offline_access",
-            ],
+            // From the set a realm is provisioned with, so a scope added
+            // there is advertised and one never added is not.
+            "scopes_supported": std::iter::once("openid")
+                .chain(
+                    services::provisioning::STANDARD_SCOPES
+                        .iter()
+                        .map(|(named, _, _)| *named),
+                )
+                .collect::<Vec<_>>(),
             "claims_supported": claims_named(!contexts.is_empty()),
             "acr_values_supported": contexts,
             // OIDC Core §6.1 is supported and §6.2 is not: an object a client
@@ -178,7 +183,7 @@ pub async fn published(
             "pushed_authorization_request_endpoint": format!("{protocol}/par"),
             "require_pushed_authorization_requests": false,
             "claims_parameter_supported": true,
-            "authorization_response_iss_parameter_supported": false,
+            "authorization_response_iss_parameter_supported": true,
     });
     // Named only where a realm answers it. A client sent to an endpoint that
     // is not there reports the realm as broken rather than as closed.

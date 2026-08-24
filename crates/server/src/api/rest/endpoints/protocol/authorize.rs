@@ -251,7 +251,10 @@ async fn start(
                     refused_in(&asked),
                 )
                 .carrying("error", error)
-                .carrying_any("state", asked.state.as_deref()),
+                .carrying_any("state", asked.state.as_deref())
+                // RFC 9207 again: a refusal is an answer, and a client must
+                // be able to tell whose it is.
+                .carrying("iss", origin.issuer(&context.realm_id)),
             )
         }
     }

@@ -243,10 +243,15 @@ services:
     # The same static client serves the static ones; each logout channel is
     # registered on a client of its own.
     #
-    # The skips it is told to expect are the two Basic OP modules that sign
-    # their request object with `alg: none`. No client here may register that
-    # algorithm, because reading an object at whatever `alg` its header names
-    # is how a swapped one replaces the redirect target.
+    # The skips it is told to expect are the modules that ask for `alg: none`,
+    # whether on a request object or on an identity token. No client here may
+    # register it: reading an object at whatever `alg` its header names is how
+    # a swapped one replaces the redirect target, and an identity token nobody
+    # signed is one anything can write. The suite accepts a provider that
+    # refuses, which is what these skips are.
+    #
+    # The one expected failure is a module that does not start by itself and
+    # whose own summary says an operator must rotate the provider's keys first.
     command:
       - sh
       - -c
@@ -277,12 +282,13 @@ services:
         /plans/backchannel.json
         "oidcc-frontchannel-rp-initiated-logout-certification-test-plan[client_registration=static_client][response_type=code]"
         /plans/frontchannel.json
+        "oidcc-session-management-certification-test-plan[client_registration=static_client][response_type=code]"
+        /plans/basic.json
+        "oidcc-3rdparty-init-login-certification-test-plan[response_type=code]"
+        /plans/basic.json
         "oidcc-dynamic-certification-test-plan[response_type=code]"
         /plans/basic.json
-        "oidcc-session-management-certification-test-plan[server_metadata=discovery][client_registration=static_client]"
-        /plans/basic.json
-        "oidcc-3rdparty-init-login-certification-test-plan"
-        /plans/basic.json
+
     depends_on:
       - nginx
 

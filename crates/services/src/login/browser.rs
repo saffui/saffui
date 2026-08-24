@@ -246,6 +246,7 @@ pub async fn answer_step(
                         "login_required",
                         noted(&login.notes, "state"),
                         answering(&login.notes),
+                        &origin.issuer(&tenant.realm_id),
                     ),
                 });
             }
@@ -405,9 +406,12 @@ pub async fn mint_code(
             held,
         )
     });
+    // RFC 9207: which server answered. A client talking to two providers can
+    // otherwise be made to take one's answer for the other's.
     Ok(answer
         .carrying_any("state", authorized.state)
-        .carrying_any("session_state", session_state.as_deref()))
+        .carrying_any("session_state", session_state.as_deref())
+        .carrying("iss", authorized.issuer))
 }
 
 /// The client this is being minted for.
@@ -547,10 +551,17 @@ fn answering(notes: &Value) -> ResponseMode {
 
 /// What the client is told no with, RFC 6749 §4.1.2.1: the error at the
 /// redirect, with the state the client asked to have echoed.
-fn sent_back(redirect_uri: &str, error: &str, state: Option<&str>, mode: ResponseMode) -> Landing {
+fn sent_back(
+    redirect_uri: &str,
+    error: &str,
+    state: Option<&str>,
+    mode: ResponseMode,
+    issuer: &str,
+) -> Landing {
     Landing::new(redirect_uri, mode)
         .carrying("error", error)
         .carrying_any("state", state)
+        .carrying("iss", issuer)
 }
 
 fn noted<'a>(notes: &'a Value, named: &str) -> Option<&'a str> {

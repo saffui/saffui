@@ -254,3 +254,133 @@ async fn logging_out_takes_the_state_away() {
         "the state the frame reads outlived the login: {cleared:?}"
     );
 }
+
+/// RFC 9207: every answer from the authorization endpoint names the server
+/// that gave it, so a client talking to two providers cannot be made to take
+/// one's answer for the other's.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn every_answer_names_the_server_that_gave_it() {
+    let plane = Plane::with_actions(&[]).await;
+    let issuer = support::origin().issuer(support::REALM);
+    let (landing, _) = signed_in(&plane).await;
+    assert_eq!(in_query(&landing, "iss"), Some(urlencode(&issuer).as_str()));
+
+    // A refusal is an answer too.
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/auth?client_id={}\
+                 &redirect_uri={}&scope=openid&state=s&response_type=code&prompt=none",
+                support::REALM,
+                support::CONFIDENTIAL,
+                urlencode(REDIRECT),
+            ))
+            .to_request(),
+    )
+    .await;
+    let refused = response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(refused.contains("error=login_required"), "{refused}");
+    assert_eq!(in_query(refused, "iss"), Some(urlencode(&issuer).as_str()));
+
+    // And discovery says so, since a client only looks for it when told to.
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/.well-known/openid-configuration",
+                support::REALM
+            ))
+            .to_request(),
+    )
+    .await;
+    let published: Value = test::read_body_json(response).await;
+    assert_eq!(
+        published["authorization_response_iss_parameter_supported"].as_bool(),
+        Some(true),
+        "{published}"
+    );
+}
+
+/// RFC 8414 §3.1: the same metadata under the name an OAuth client builds.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_metadata_answers_to_both_of_its_names() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let mut answered = Vec::new();
+    for path in [
+        format!(
+            "/realms/{}/.well-known/openid-configuration",
+            support::REALM
+        ),
+        format!(
+            "/.well-known/oauth-authorization-server/realms/{}",
+            support::REALM
+        ),
+    ] {
+        let response =
+            test::call_service(&app, test::TestRequest::get().uri(&path).to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        answered.push(test::read_body_json::<Value, _>(response).await);
+    }
+    assert_eq!(answered[0], answered[1], "two names, two documents");
+    assert_eq!(
+        answered[0]["issuer"].as_str(),
+        Some(support::origin().issuer(support::REALM).as_str())
+    );
+}
+
+/// One sequence establishes the caller at every endpoint that has one, so what
+/// each of them advertises says the same thing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn every_endpoint_names_the_ways_it_actually_takes() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/.well-known/openid-configuration",
+                support::REALM
+            ))
+            .to_request(),
+    )
+    .await;
+    let published: Value = test::read_body_json(response).await;
+    let named = |key: &str| -> Vec<String> {
+        published[key]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key} in {published}"))
+            .iter()
+            .filter_map(|held| held.as_str().map(str::to_owned))
+            .collect()
+    };
+    let at_token = named("token_endpoint_auth_methods_supported");
+    for method in [
+        "client_secret_basic",
+        "client_secret_post",
+        "client_secret_jwt",
+        "private_key_jwt",
+        "none",
+    ] {
+        assert!(at_token.iter().any(|held| held == method), "{method}");
+    }
+    assert_eq!(
+        named("revocation_endpoint_auth_methods_supported"),
+        at_token
+    );
+
+    // Everything but `none`: this endpoint tells a caller about somebody
+    // else's token, so a caller that proved nothing is refused.
+    let at_introspection = named("introspection_endpoint_auth_methods_supported");
+    assert!(!at_introspection.iter().any(|held| held == "none"));
+    assert_eq!(at_introspection.len(), at_token.len() - 1);
+}

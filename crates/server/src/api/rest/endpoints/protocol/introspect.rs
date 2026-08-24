@@ -34,6 +34,10 @@ impl Asked {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
 pub async fn tell(
     request: HttpRequest,
     realm: web::Path<String>,
@@ -42,6 +46,7 @@ pub async fn tell(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Ok(mut connection) = pool.get().await else {
@@ -62,6 +67,7 @@ pub async fn tell(
         &tenancy,
         &sealing,
         &origin,
+        **egress,
         &context,
         now,
     )

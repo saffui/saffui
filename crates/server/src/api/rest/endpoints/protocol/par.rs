@@ -13,6 +13,10 @@ use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::caller;
 use crate::api::rest::endpoints::protocol::dto::{Denied, uncached};
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
 pub async fn keep(
     request: HttpRequest,
     realm: web::Path<String>,
@@ -21,6 +25,7 @@ pub async fn keep(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Some(body) = body else {
@@ -62,6 +67,7 @@ pub async fn keep(
         &tenancy,
         &sealing,
         &origin,
+        **egress,
         &context,
         now,
     )

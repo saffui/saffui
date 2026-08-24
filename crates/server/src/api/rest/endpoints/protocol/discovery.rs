@@ -162,6 +162,12 @@ pub async fn published(
             // fetches whatever a request names is a way to make this server
             // issue requests on somebody else's behalf.
             "require_request_uri_registration": true,
+            // §5.3.2: what a client may register to be answered with, which
+            // is every algorithm this build signs at.
+            "userinfo_signing_alg_values_supported": SignAlg::ALL
+                .iter()
+                .map(|algorithm| algorithm.name())
+                .collect::<Vec<_>>(),
             "request_object_signing_alg_values_supported": SignAlg::ALL
                 .iter()
                 .map(|algorithm| algorithm.name())

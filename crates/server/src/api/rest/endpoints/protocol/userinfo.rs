@@ -16,12 +16,18 @@ use crate::api::rest::endpoints::protocol::dto::uncached;
 ///
 /// Both verbs, as OIDC Core §5.3.1 requires. A client that can only issue one of
 /// them is one this endpoint would be unreachable from.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
 pub async fn tell(
     request: HttpRequest,
     realm: web::Path<String>,
     body: Option<web::Form<Carried>>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
+    sealing: web::Data<crate::api::config::Sealing>,
+    origin: web::Data<config::serving::PublicOrigin>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Some(bearer) = presented(&request, body.as_deref()) else {
@@ -43,8 +49,42 @@ pub async fn tell(
     };
 
     match userinfo::claims_for(&transaction, &keys, &bearer, now).await {
-        Ok(claims) => {
-            uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(Value::Object(claims))
+        Ok(answer) if answer.signed_with.is_none() => {
+            uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+                .json(Value::Object(answer.claims))
+        }
+        // §5.3.2: a client that registered a signed response is answered with
+        // one or not at all. Falling back to JSON would answer a client that
+        // is going to read a signature with something that has none.
+        Ok(answer) => {
+            let Ok(ring) = store::keyring::load(
+                &transaction,
+                &sealing.envelope,
+                &context.tenant,
+                &context.realm_id,
+            )
+            .await
+            else {
+                return faulted();
+            };
+            let signing = services::grant::Signing {
+                provider: sealing.provider.as_ref(),
+                ring: &ring,
+                envelope: &sealing.envelope,
+            };
+            match userinfo::signed_answer(
+                &transaction,
+                &signing,
+                &origin.issuer(&context.realm_id),
+                &answer,
+            )
+            .await
+            {
+                Ok(told) => uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+                    .insert_header(("Content-Type", "application/jwt"))
+                    .body(told),
+                Err(_) => unsignable(),
+            }
         }
         Err(Untold::InvalidToken) => {
             tracing::warn!("userinfo refused");
@@ -88,6 +128,20 @@ fn challenged(description: &str) -> HttpResponse {
             "error": "invalid_token",
             "error_description": description,
         }))
+}
+
+/// A client registered a signature this realm holds no key for. Its own
+/// error, because "the realm could not be read" would send an operator
+/// looking at the database rather than at the key it never generated.
+fn unsignable() -> HttpResponse {
+    tracing::warn!("a registered userinfo signature could not be made");
+    uncached(&mut HttpResponseBuilder::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+    ))
+    .json(json!({
+        "error": "server_error",
+        "error_description": "this realm holds no key for the signature this client registered",
+    }))
 }
 
 fn faulted() -> HttpResponse {

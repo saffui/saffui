@@ -148,6 +148,14 @@ async fn start(
         asked.request_uri = None;
     }
 
+    // A request object is verified against the client's keys, and a client
+    // that publishes them elsewhere may have rotated since they were read.
+    if asked.request.is_some()
+        && let Some(client_id) = asked.client_id.as_deref()
+    {
+        super::hosted::refresh_client_keys(&transaction, client_id, egress, now).await;
+    }
+
     // Loaded either way: what the request wants is read inside, and asking
     // first would be a second round trip on every login.
     let ring = store::keyring::load(

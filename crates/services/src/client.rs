@@ -159,6 +159,44 @@ const PERFORMED: [&str; 4] = [
 /// opens as nothing.
 pub const SECRET_SCOPE: &str = "client-secret";
 
+/// How long a client's published key set is kept before it is read again.
+///
+/// Short, because a client that rotates its keys publishes the new ones and
+/// then uses them, and a set kept longer than that stops verifying the client
+/// it was read for. Not zero, because that is one fetch per request.
+pub const KEYS_KEPT: chrono::Duration = chrono::Duration::seconds(30);
+
+/// Where this client publishes its keys, when they are due to be read again.
+///
+/// Nothing when the client hands its keys over rather than publishing them,
+/// and nothing while what was read last is still fresh.
+pub async fn keys_due(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    now: DateTime<Utc>,
+) -> Option<String> {
+    let (uri, read_at) = clients::published_keys_at(transaction, client_id)
+        .await
+        .ok()??;
+    let uri = uri?;
+    match read_at {
+        Some(at) if now - at < KEYS_KEPT => None,
+        _ => Some(uri),
+    }
+}
+
+/// Keep the key set just read from where the client publishes it.
+pub async fn keep_keys(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    jwks: &serde_json::Value,
+    now: DateTime<Utc>,
+) -> bool {
+    clients::keep_published_keys(transaction, client_id, jwks, now)
+        .await
+        .unwrap_or(false)
+}
+
 /// Establish the client, or refuse without saying which part failed.
 pub async fn authenticate(
     transaction: &Transaction<'_>,

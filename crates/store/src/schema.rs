@@ -229,6 +229,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V036__pairwise_subjects.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 37,
+            name: "client_key_refresh",
+            sql: include_str!("../migrations/V037__client_key_refresh.sql"),
+            transactional: true,
+        }),
     ]
 }
 

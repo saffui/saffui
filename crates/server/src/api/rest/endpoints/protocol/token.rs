@@ -21,6 +21,10 @@ use crate::api::rest::endpoints::protocol::dto::{Asked, Denied, uncached};
 /// Ask for a token. The realm is resolved before the body is read, since parsing
 /// against a realm nobody has is work done for a request that cannot be
 /// answered.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
 pub async fn ask(
     request: HttpRequest,
     realm: web::Path<String>,
@@ -29,6 +33,7 @@ pub async fn ask(
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
     sealing: web::Data<Sealing>,
+    egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Ok(mut connection) = pool.get().await else {
@@ -60,6 +65,7 @@ pub async fn ask(
         &tenancy,
         &sealing,
         &origin,
+        **egress,
         &context,
         now,
     )

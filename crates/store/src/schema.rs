@@ -235,6 +235,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V037__client_key_refresh.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 38,
+            name: "browser_state",
+            sql: include_str!("../migrations/V038__browser_state.sql"),
+            transactional: true,
+        }),
     ]
 }
 

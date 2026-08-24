@@ -61,6 +61,9 @@ pub enum Step {
     Admitted {
         landing: Landing,
         session_id: String,
+        /// What the browser is told to hold, §4.2, so a relying party's iframe
+        /// can ask later whether this is still the same login.
+        browser_state: Option<String>,
     },
     /// Refused, and no further answer changes that.
     Refused,
@@ -268,9 +271,10 @@ pub async fn answer_step(
                 now,
             )
             .await
-            .map(|landing| Step::Admitted {
+            .map(|(landing, browser_state)| Step::Admitted {
                 landing,
                 session_id: login.session_id.clone(),
+                browser_state,
             })
         }
     }
@@ -284,6 +288,9 @@ pub struct Authorized<'a> {
     pub redirect_uri: &'a str,
     pub scope: &'a str,
     pub state: Option<&'a str>,
+    /// What this login is known by in the browser, §4.2. Absent where the
+    /// login was not made in one.
+    pub browser_state: Option<&'a str>,
     /// How the answer travels, as the request that opened this named it.
     pub mode: ResponseMode,
     /// What comes back.
@@ -388,7 +395,19 @@ pub async fn mint_code(
             answer = answer.carrying(named, value);
         }
     }
-    Ok(answer.carrying_any("state", authorized.state))
+    // §2: the client is told the state of the session it just joined, so its
+    // own iframe can ask later whether it is still that one.
+    let session_state = authorized.browser_state.and_then(|held| {
+        crate::session_state::state_for(
+            provider,
+            authorized.client_id,
+            authorized.redirect_uri,
+            held,
+        )
+    });
+    Ok(answer
+        .carrying_any("state", authorized.state)
+        .carrying_any("session_state", session_state.as_deref()))
 }
 
 /// The client this is being minted for.
@@ -420,10 +439,11 @@ async fn admit(
     signing: Option<&crate::grant::Signing<'_>>,
     seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
-) -> Result<Landing, Unanswerable> {
+) -> Result<(Landing, Option<String>), Unanswerable> {
     // The transient identifier becomes the durable one. The code names it as
     // `sid`, and one identifier means a login and the session it opened cannot
     // drift apart.
+    let browser_state = crate::session_state::draw_browser_state(provider);
     sessions::open(
         transaction,
         &UserSessionModel {
@@ -435,6 +455,8 @@ async fn admit(
             broker_session_id: None,
             broker_user_id: None,
             auth_method: Some("browser".to_owned()),
+            // §4.2: what a relying party's iframe compares this login against.
+            browser_state: browser_state.clone(),
             ip_address: seen.address.clone(),
             user_agent: seen.agent.clone(),
             started_at: now.timestamp(),
@@ -466,6 +488,7 @@ async fn admit(
             redirect_uri: &login.redirect_uri,
             scope: noted(notes, "scope").unwrap_or_default(),
             state: noted(notes, "state"),
+            browser_state: browser_state.as_deref(),
             mode: answering(notes),
             asked_for: coming_back(notes),
             signing,
@@ -501,7 +524,7 @@ async fn admit(
         .await
         .map_err(|_| Unanswerable::Unreadable)?;
 
-    Ok(landing)
+    Ok((landing, browser_state))
 }
 
 /// What this login hands back. A login opened before this build knew about

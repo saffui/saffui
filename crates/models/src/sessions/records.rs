@@ -47,6 +47,9 @@ pub struct UserSessionModel {
     pub loa: Option<i32>,
     pub expiration: Option<i64>,
     pub state: UserSessionState,
+    /// What a relying party's iframe compares this login against, §4.2. Drawn
+    /// per login, and never the session identifier: it reaches script.
+    pub browser_state: Option<String>,
     pub remember_me: Option<bool>,
     pub last_session_refresh: Option<i64>,
     pub is_offline: Option<bool>,

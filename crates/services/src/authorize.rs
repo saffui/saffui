@@ -340,6 +340,7 @@ pub async fn begin(
                 redirect_uri,
                 scope: &granted,
                 state: requested.state,
+                browser_state: login.browser_state.as_deref(),
                 mode,
                 asked_for,
                 signing,

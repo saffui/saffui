@@ -42,6 +42,7 @@ fn presented(subject: &str) -> Verified {
 /// A login, open, for the subject the tokens name.
 fn login(session_id: &str, user_id: &str) -> UserSessionModel {
     UserSessionModel {
+        browser_state: None,
         tenant: "acme".to_owned(),
         session_id: session_id.to_owned(),
         realm_id: "main".to_owned(),

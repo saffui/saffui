@@ -17,6 +17,38 @@ pub const AUTH_SESSION: &str = "saffui_auth_session";
 /// something other than a fresh sign-in.
 pub const SSO_SESSION: &str = "saffui_session";
 
+/// What a relying party's iframe reads to see whether this login changed.
+///
+/// Unlike the others: script must read it, and it must arrive inside a frame
+/// the relying party's page loaded, so it is neither http-only nor same-site.
+/// What that costs is bounded by what it is: an opaque value drawn per login,
+/// which names nothing and authorises nothing. Knowing it says a login exists
+/// here, which is what the mechanism is for.
+pub const BROWSER_STATE: &str = "saffui_op_state";
+
+/// Set the value the iframe reads, on the terms it has to be readable on.
+pub fn set_browser_state(response: &mut HttpResponseBuilder, value: &str, realm_id: &str) {
+    let cookie = Cookie::build(BROWSER_STATE, value.to_owned())
+        .path(format!("/realms/{realm_id}"))
+        .http_only(false)
+        .secure(true)
+        .same_site(SameSite::None)
+        .finish();
+    response.cookie(cookie);
+}
+
+/// Take it away, which is what a login ending looks like to an iframe.
+pub fn clear_browser_state(response: &mut HttpResponseBuilder, realm_id: &str) {
+    let cookie = Cookie::build(BROWSER_STATE, "")
+        .path(format!("/realms/{realm_id}"))
+        .http_only(false)
+        .secure(true)
+        .same_site(SameSite::None)
+        .max_age(Duration::seconds(0))
+        .finish();
+    response.cookie(cookie);
+}
+
 /// Set one, scoped to the realm it belongs to.
 ///
 /// `Lax` rather than `Strict`: the browser arrives here from the client's site,

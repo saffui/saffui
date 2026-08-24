@@ -33,7 +33,8 @@ pub enum Refreshed {
 
 const SESSION_COLUMNS: &str = "tenant, realm_id, session_id, user_id, login_username, \
                                broker_session_id, broker_user_id, auth_method, ip_address, user_agent, \
-                               started_at, auth_time, loa, expiration, state, remember_me, \
+                               started_at, auth_time, loa, expiration, state, browser_state, \
+                               remember_me, \
                                last_session_refresh, is_offline, notes";
 
 /// What a client got out of a login, without the token it refreshes with.
@@ -64,6 +65,7 @@ pub async fn open(transaction: &Transaction<'_>, session: &UserSessionModel) -> 
         col("loa", &session.loa),
         col("expiration", &session.expiration),
         col("state", &session.state),
+        col("browser_state", &session.browser_state),
         col("remember_me", &session.remember_me),
         col("last_session_refresh", &session.last_session_refresh),
         col("is_offline", &session.is_offline),
@@ -416,6 +418,7 @@ fn read_session(row: Row) -> UserSessionModel {
         loa: row.get("loa"),
         expiration: row.get("expiration"),
         state: row.get("state"),
+        browser_state: row.get("browser_state"),
         remember_me: row.get("remember_me"),
         last_session_refresh: row.get("last_session_refresh"),
         is_offline: row.get("is_offline"),

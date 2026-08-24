@@ -12,6 +12,7 @@ use support::{Fixture, provider};
 
 fn session(id: &str, started_at: i64) -> UserSessionModel {
     UserSessionModel {
+        browser_state: None,
         tenant: "acme".into(),
         realm_id: "main".into(),
         session_id: id.into(),

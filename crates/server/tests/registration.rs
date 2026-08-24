@@ -157,6 +157,8 @@ async fn registering_hands_back_an_identity_and_the_way_to_manage_it() {
     assert_eq!(registered["response_types"], json!(["code"]));
     assert_eq!(registered["application_type"].as_str(), Some("web"));
     assert_eq!(registered["subject_type"].as_str(), Some("public"));
+    // Always true here, and stated rather than omitted: absent reads as false.
+    assert_eq!(registered["require_auth_time"].as_bool(), Some(true));
 
     // A client that authenticates with nothing keeps nothing to authenticate
     // with. A secret handed to it would be one nobody ever checks.
@@ -295,6 +297,28 @@ async fn metadata_this_provider_cannot_honour_is_refused() {
         (
             "an unsigned identity token",
             json!({"redirect_uris": ["https://app.example/cb"], "id_token_signed_response_alg": "none"}),
+        ),
+        (
+            "an encrypted identity token",
+            json!({
+                "redirect_uris": ["https://app.example/cb"],
+                "id_token_encrypted_response_alg": "RSA-OAEP",
+                "id_token_encrypted_response_enc": "A256GCM",
+            }),
+        ),
+        (
+            "an encrypted userinfo response",
+            json!({
+                "redirect_uris": ["https://app.example/cb"],
+                "userinfo_encrypted_response_alg": "RSA-OAEP",
+            }),
+        ),
+        (
+            "an encrypted request object",
+            json!({
+                "redirect_uris": ["https://app.example/cb"],
+                "request_object_encryption_alg": "RSA-OAEP",
+            }),
         ),
         (
             "a login initiated over plain http",

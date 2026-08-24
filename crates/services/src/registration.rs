@@ -50,6 +50,17 @@ pub struct Metadata {
     pub subject_type: Option<String>,
     pub token_endpoint_auth_method: Option<String>,
     pub token_endpoint_auth_signing_alg: Option<String>,
+    /// §2 again, and every one of them refused: this provider signs what it
+    /// answers with and does not encrypt it.
+    pub id_token_encrypted_response_alg: Option<String>,
+    pub id_token_encrypted_response_enc: Option<String>,
+    pub userinfo_encrypted_response_alg: Option<String>,
+    pub userinfo_encrypted_response_enc: Option<String>,
+    pub request_object_encryption_alg: Option<String>,
+    pub request_object_encryption_enc: Option<String>,
+    /// §2: whether `auth_time` is required in the identity token. Always there,
+    /// so registering it changes nothing and refusing it would be untrue.
+    pub require_auth_time: Option<bool>,
     pub id_token_signed_response_alg: Option<String>,
     pub userinfo_signed_response_alg: Option<String>,
     pub request_object_signing_alg: Option<String>,
@@ -284,6 +295,9 @@ pub fn as_document(client: &ClientModel, issued_at: i64) -> Value {
     if let Some(age) = client.default_max_age {
         named.insert("default_max_age".to_owned(), Value::from(age));
     }
+    // Always true, because `auth_time` is always there. Stated rather than
+    // omitted: absent is read as false, which would be untrue.
+    named.insert("require_auth_time".to_owned(), Value::from(true));
     for (key, alg) in [
         (
             "userinfo_signed_response_alg",
@@ -401,6 +415,26 @@ fn method_named(held: &str) -> &'static str {
 
 /// §2 of the registration spec, mapped onto what this provider can honour.
 fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
+    // Named and refused rather than dropped in silence. A client that asked to
+    // be answered with something encrypted and was answered in the clear has
+    // been told nothing about it, and RFC 7591 §2 lets a field be ignored only
+    // where the server does not know it.
+    if [
+        &metadata.id_token_encrypted_response_alg,
+        &metadata.id_token_encrypted_response_enc,
+        &metadata.userinfo_encrypted_response_alg,
+        &metadata.userinfo_encrypted_response_enc,
+        &metadata.request_object_encryption_alg,
+        &metadata.request_object_encryption_enc,
+    ]
+    .iter()
+    .any(|held| held.is_some())
+    {
+        return Err(Refused::Invalid(
+            "this provider signs what it answers with and does not encrypt it",
+        ));
+    }
+
     let subject_type = match metadata.subject_type.as_deref() {
         None | Some("public") => "public",
         Some("pairwise") => "pairwise",

@@ -132,6 +132,40 @@
           ]
         }
       ]
+    },
+    {
+      "match": "https://localhost.emobix.co.uk:8443/test/a/saffui/session_verify*",
+      "tasks": [
+        {
+          "task": "Let the frames answer each other",
+          "match": "https://localhost.emobix.co.uk:8443/test/a/saffui/session_verify*",
+          "commands": [
+            [
+              "wait",
+              "contains",
+              "session_result",
+              20
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "match": "https://localhost.emobix.co.uk:8443/test/a/saffui/second_session_verify*",
+      "tasks": [
+        {
+          "task": "Let the frames answer each other",
+          "match": "https://localhost.emobix.co.uk:8443/test/a/saffui/second_session_verify*",
+          "commands": [
+            [
+              "wait",
+              "contains",
+              "session_result",
+              20
+            ]
+          ]
+        }
+      ]
     }
   ],
   "client_secret_post": {

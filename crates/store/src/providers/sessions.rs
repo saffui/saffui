@@ -176,6 +176,25 @@ pub async fn close(transaction: &Transaction<'_>, session_id: &str) -> StoreResu
 /// A login with no expiry stays: absent means opened without one, not ended at
 /// the epoch. So does one an offline grant still hangs off, since the client
 /// sessions cascade and taking the login would take the grant with it.
+/// End every login this person holds, and every grant hanging off them.
+///
+/// Offline grants go too. A reset because somebody else knows the password
+/// that leaves their offline grant alive leaves them signed in through the
+/// very reset meant to shut them out.
+pub async fn end_all_of_user(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<u64> {
+    transaction
+        .execute(
+            "DELETE FROM client_sessions WHERE user_id = $1",
+            &[&user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    transaction
+        .execute("DELETE FROM user_sessions WHERE user_id = $1", &[&user_id])
+        .await
+        .map_err(|_| StoreError::Backend)
+}
+
 pub async fn drop_expired_sessions(
     transaction: &Transaction<'_>,
     now: chrono::DateTime<chrono::Utc>,

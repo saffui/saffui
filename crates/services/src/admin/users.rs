@@ -140,8 +140,39 @@ pub async fn set_password(
     password: &SecretBox<String>,
 ) -> Result<(), Uncreatable> {
     get(transaction, user_id).await?;
+    keep_password(
+        transaction,
+        provider,
+        Argon2Params::default(),
+        tenant,
+        realm_id,
+        by,
+        user_id,
+        password,
+    )
+    .await
+}
+
+/// Write a password, replacing the one held or writing the first.
+///
+/// The cost is the caller's, because a realm that chose one means it to apply
+/// wherever a password is written and not only where an administrator writes.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one password"
+)]
+pub async fn keep_password(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    cost: Argon2Params,
+    tenant: &str,
+    realm_id: &str,
+    by: &str,
+    user_id: &str,
+    password: &SecretBox<String>,
+) -> Result<(), Uncreatable> {
     let StoredPassword::Argon2id { encoded } =
-        StoredPassword::hash_argon2id(provider, Argon2Params::default(), password)
+        StoredPassword::hash_argon2id(provider, cost, password)
             .map_err(|_| Uncreatable::Unwritable)?
     else {
         return Err(Uncreatable::Unwritable);

@@ -22,6 +22,7 @@ pub mod provisioning;
 pub mod pushed;
 pub mod realm;
 pub mod rebac;
+pub mod recovery;
 pub mod registration;
 pub mod request_object;
 pub mod response_type;

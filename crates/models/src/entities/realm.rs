@@ -103,6 +103,38 @@ pub struct PasswordPolicy {
     pub hashing: Argon2Params,
 }
 
+/// Who the password is for, of what the policy compares against.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct About<'a> {
+    pub username: Option<&'a str>,
+    pub email: Option<&'a str>,
+    pub birthdate: Option<&'a str>,
+}
+
+/// Why a password is refused. One reason, the first one found, because a list
+/// of everything wrong with a password is a list of what to avoid guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum PasswordRefused {
+    #[error("the password is too short")]
+    TooShort,
+    #[error("the password is too long")]
+    TooLong,
+    #[error("the password needs more digits")]
+    Digits,
+    #[error("the password needs more capitals")]
+    UpperCase,
+    #[error("the password needs more small letters")]
+    LowerCase,
+    #[error("the password needs more punctuation")]
+    SpecialChars,
+    #[error("the password is something about you")]
+    AboutYou,
+    #[error("the password is one this realm refuses")]
+    Blacklisted,
+    #[error("the password does not match the shape this realm requires")]
+    Shape,
+}
+
 /// A policy that cannot be satisfied by any password.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum PasswordPolicyConflict {
@@ -120,6 +152,89 @@ impl PasswordPolicy {
     /// registration succeeds and the message says only that the password is
     /// invalid. Reading it back is what lets that be caught when the policy is
     /// written.
+    /// Why this password is refused, or nothing when the policy admits it.
+    ///
+    /// Counted in characters and not in bytes: a password of eight accented
+    /// letters is eight characters to whoever typed it, and calling it
+    /// sixteen means the rule stated is not the rule applied.
+    pub fn refuses(&self, password: &str, about: About<'_>) -> Option<PasswordRefused> {
+        let length = i64::try_from(password.chars().count()).unwrap_or(i64::MAX);
+        if self.min_length.is_some_and(|least| length < least) {
+            return Some(PasswordRefused::TooShort);
+        }
+        if self.max_length.is_some_and(|most| length > most) {
+            return Some(PasswordRefused::TooLong);
+        }
+
+        let count = |kept: fn(char) -> bool| {
+            u32::try_from(password.chars().filter(|c| kept(*c)).count()).unwrap_or(u32::MAX)
+        };
+        for (least, held, why) in [
+            (
+                self.min_digits,
+                count(|c| c.is_ascii_digit()),
+                PasswordRefused::Digits,
+            ),
+            (
+                self.min_upper_case,
+                count(char::is_uppercase),
+                PasswordRefused::UpperCase,
+            ),
+            (
+                self.min_lower_case,
+                count(char::is_lowercase),
+                PasswordRefused::LowerCase,
+            ),
+            (
+                self.min_special_chars,
+                count(|c| !c.is_alphanumeric() && !c.is_whitespace()),
+                PasswordRefused::SpecialChars,
+            ),
+        ] {
+            if least.is_some_and(|least| held < least) {
+                return Some(why);
+            }
+        }
+
+        // Compared without case, because a password that is the username with
+        // one capital is the username.
+        let folded = password.to_lowercase();
+        for (asked, value) in [
+            (self.not_username, about.username),
+            (self.not_email, about.email),
+            (self.not_birthdate, about.birthdate),
+        ] {
+            if asked == Some(true)
+                && value.is_some_and(|held| !held.is_empty() && held.to_lowercase() == folded)
+            {
+                return Some(PasswordRefused::AboutYou);
+            }
+        }
+
+        if self
+            .blacklisted
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .any(|held| held.to_lowercase() == folded)
+        {
+            return Some(PasswordRefused::Blacklisted);
+        }
+
+        // A pattern that does not compile refuses everything rather than
+        // admitting everything: a realm that wrote one meant to bound what a
+        // password may be, and a typo must not quietly remove the bound.
+        if let Some(pattern) = self.regex_pattern.as_deref() {
+            let matches = regex::Regex::new(pattern)
+                .ok()
+                .map(|shape| shape.is_match(password));
+            if matches != Some(true) {
+                return Some(PasswordRefused::Shape);
+            }
+        }
+        None
+    }
+
     pub fn conflict(&self) -> Option<PasswordPolicyConflict> {
         if let (Some(min), Some(max)) = (self.min_length, self.max_length)
             && min > max
@@ -360,6 +475,109 @@ mod tests {
             "realm-1".into(),
             AuditableModel::from_creator("acme".into(), "root".into()),
         )
+    }
+
+    #[test]
+    fn a_policy_that_asks_for_nothing_admits_anything() {
+        assert_eq!(
+            PasswordPolicy::default().refuses("a", About::default()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_policy_refuses_for_the_first_reason_it_finds() {
+        let policy = PasswordPolicy {
+            min_length: Some(8),
+            max_length: Some(20),
+            min_digits: Some(1),
+            min_upper_case: Some(1),
+            min_special_chars: Some(1),
+            ..PasswordPolicy::default()
+        };
+        assert_eq!(
+            policy.refuses("Sh0rt!", About::default()),
+            Some(PasswordRefused::TooShort)
+        );
+        assert_eq!(
+            policy.refuses(&"A1!".repeat(9), About::default()),
+            Some(PasswordRefused::TooLong)
+        );
+        assert_eq!(
+            policy.refuses("nodigits!", About::default()),
+            Some(PasswordRefused::Digits)
+        );
+        assert_eq!(
+            policy.refuses("nocapital1!", About::default()),
+            Some(PasswordRefused::UpperCase)
+        );
+        assert_eq!(
+            policy.refuses("NoPunctuation1", About::default()),
+            Some(PasswordRefused::SpecialChars)
+        );
+        assert_eq!(policy.refuses("GoodEnough1!", About::default()), None);
+    }
+
+    #[test]
+    fn a_length_is_counted_in_characters_and_not_in_bytes() {
+        let policy = PasswordPolicy {
+            min_length: Some(8),
+            ..PasswordPolicy::default()
+        };
+        // Eight characters to whoever typed them, sixteen bytes.
+        assert_eq!(policy.refuses("ééééééét", About::default()), None);
+        assert_eq!(
+            policy.refuses("ééééé", About::default()),
+            Some(PasswordRefused::TooShort)
+        );
+    }
+
+    #[test]
+    fn what_is_about_you_is_compared_without_case() {
+        let policy = PasswordPolicy {
+            not_username: Some(true),
+            not_email: Some(true),
+            ..PasswordPolicy::default()
+        };
+        let about = About {
+            username: Some("ada"),
+            email: Some("ada@example.test"),
+            birthdate: None,
+        };
+        assert_eq!(
+            policy.refuses("AdA", about),
+            Some(PasswordRefused::AboutYou)
+        );
+        assert_eq!(
+            policy.refuses("ADA@EXAMPLE.TEST", about),
+            Some(PasswordRefused::AboutYou)
+        );
+        assert_eq!(policy.refuses("something-else", about), None);
+        // Asked for nothing, compared against nothing.
+        assert_eq!(PasswordPolicy::default().refuses("ada", about), None);
+    }
+
+    #[test]
+    fn a_pattern_that_does_not_compile_refuses_everything() {
+        let broken = PasswordPolicy {
+            regex_pattern: Some("([unclosed".to_owned()),
+            ..PasswordPolicy::default()
+        };
+        assert_eq!(
+            broken.refuses("anything", About::default()),
+            Some(PasswordRefused::Shape),
+            "a typo in the pattern quietly removed the bound"
+        );
+
+        let shaped = PasswordPolicy {
+            regex_pattern: Some("^[a-z]+$".to_owned()),
+            ..PasswordPolicy::default()
+        };
+        assert_eq!(shaped.refuses("lowercase", About::default()), None);
+        assert_eq!(
+            shaped.refuses("Has Capitals", About::default()),
+            Some(PasswordRefused::Shape)
+        );
     }
 
     #[test]

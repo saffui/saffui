@@ -9,6 +9,7 @@ pub mod consent;
 pub mod context;
 pub mod detached;
 pub mod grant;
+pub mod form_post;
 pub mod housekeeping;
 pub mod implicit;
 pub mod introspection;

@@ -271,6 +271,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V044__registration_bounds.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 45,
+            name: "form_post_landings",
+            sql: include_str!("../migrations/V045__form_post_landings.sql"),
+            transactional: true,
+        }),
     ]
 }
 

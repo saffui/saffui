@@ -9,6 +9,14 @@ pub const AUTH_SESSION: &str = "saffui_auth_session";
 /// something other than a fresh sign-in.
 pub const SSO_SESSION: &str = "saffui_session";
 
+/// The ticket that fetches a response waiting to be posted to a client.
+///
+/// A browser reading JSON is told where to go rather than handed the response,
+/// because the page it is on may only post to this server. The ticket rides in
+/// a cookie rather than the URL it names: it stands for an authorization code,
+/// and a URL is read by history, referrers and proxy logs.
+pub const LANDING: &str = "saffui_landing";
+
 /// What a relying party's iframe reads to see whether this login changed.
 ///
 /// Unlike the others: script must read it, and it must arrive inside a frame

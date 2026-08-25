@@ -1,8 +1,13 @@
 use actix_web::http::StatusCode;
-use actix_web::{HttpResponse, HttpResponseBuilder};
+use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
+use deadpool_postgres::Pool;
+use services::form_post;
 use services::landing::{Landing, ResponseMode};
+use store::tenancy::{Tenancy, resolve};
 
+use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
+use crate::api::rest::endpoints::protocol::{binding, page};
 
 /// The response, rendered the way the request named, to a request that was a
 /// `GET`.
@@ -22,15 +27,29 @@ pub fn onto(response: &mut HttpResponseBuilder, landing: &Landing) -> HttpRespon
         ResponseMode::Query | ResponseMode::Fragment => uncached(response)
             .insert_header(("Location", landing.as_url()))
             .finish(),
-        ResponseMode::FormPost => posted(response, landing),
+        ResponseMode::FormPost => posted_page(response, &landing.redirect_uri, &named(landing)),
     }
+}
+
+/// The parameters with their names owned, which is what they are once they have
+/// been through the store and back.
+fn named(landing: &Landing) -> Vec<(String, String)> {
+    landing
+        .parameters
+        .iter()
+        .map(|(named, value)| ((*named).to_owned(), value.clone()))
+        .collect()
 }
 
 /// A page whose only content is the response, as a form the browser sends on.
 ///
 /// The parameters never touch the URL, so nothing of the answer reaches a URL
 /// bar, a history, a referrer or a proxy log. That is what the mode is for.
-fn posted(response: &mut HttpResponseBuilder, landing: &Landing) -> HttpResponse {
+pub fn posted_page(
+    response: &mut HttpResponseBuilder,
+    redirect_uri: &str,
+    fields: &[(String, String)],
+) -> HttpResponse {
     uncached(response)
         .status(StatusCode::OK)
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
@@ -42,22 +61,20 @@ fn posted(response: &mut HttpResponseBuilder, landing: &Landing) -> HttpResponse
         .insert_header((
             "Content-Security-Policy",
             format!(
-                "default-src 'none'; script-src 'self'; form-action {}; \
-                 frame-ancestors 'none'; base-uri 'none'",
-                landing.redirect_uri
+                "default-src 'none'; script-src 'self'; form-action {redirect_uri}; \
+                 frame-ancestors 'none'; base-uri 'none'"
             ),
         ))
         .insert_header(("X-Content-Type-Options", "nosniff"))
         .insert_header(("X-Frame-Options", "DENY"))
         .insert_header(("Referrer-Policy", "no-referrer"))
-        .body(page(landing))
+        .body(page(redirect_uri, fields))
 }
 
 /// The page itself. Every value on it came from a caller or from a redirect a
 /// caller registered, so every one of them is escaped.
-fn page(landing: &Landing) -> String {
-    let fields: String = landing
-        .parameters
+fn page(redirect_uri: &str, fields: &[(String, String)]) -> String {
+    let written: String = fields
         .iter()
         .map(|(named, value)| {
             format!(
@@ -67,8 +84,8 @@ fn page(landing: &Landing) -> String {
             )
         })
         .collect();
-    PAGE.replace("{action}", &escaped(&landing.redirect_uri))
-        .replace("{fields}", &fields)
+    PAGE.replace("{action}", &escaped(redirect_uri))
+        .replace("{fields}", &written)
 }
 
 const PAGE: &str = r#"<!doctype html>
@@ -103,16 +120,63 @@ fn escaped(value: &str) -> String {
         .collect()
 }
 
+
+/// Post to the client the response a browser was handed a ticket for.
+///
+/// The sign-in page cannot do this itself: it may only post to this server,
+/// which is what its `form-action` says, and widening that would let anything
+/// injected there post a password to a client's address. The page served here
+/// is the server's own, under the narrow policy that mode needs.
+pub async fn deliver_response(
+    request: HttpRequest,
+    realm: web::Path<String>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+) -> HttpResponse {
+    let missing = || {
+        page::notice(
+            StatusCode::NOT_FOUND,
+            "Nothing to send",
+            "This sign-in has already been sent on, or it expired. Go back to \
+             the application and try again.",
+        )
+    };
+    let Some(ticket) = binding::read(&request, binding::LANDING) else {
+        return missing();
+    };
+    let Ok(mut connection) = pool.get().await else {
+        return missing();
+    };
+    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
+        return missing();
+    };
+    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+        return missing();
+    };
+    let taken = form_post::take(&transaction, sealing.provider.as_ref(), &ticket).await;
+    // Committed whatever came back: the row is spent by being read, and a
+    // rollback would leave it there for whoever presents the ticket next.
+    if transaction.commit().await.is_err() {
+        return missing();
+    }
+    let Ok(Some(posted)) = taken else {
+        return missing();
+    };
+    let mut response = HttpResponseBuilder::new(StatusCode::OK);
+    binding::clear(&mut response, binding::LANDING, &context.realm_id);
+    posted_page(&mut response, &posted.redirect_uri, &posted.fields)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn a_value_cannot_end_the_attribute_it_sits_in() {
-        let built = page(
-            &Landing::new("https://app.example/cb", ResponseMode::FormPost)
-                .carrying("state", r#""><script>alert(1)</script>"#),
-        );
+        let asked = Landing::new("https://app.example/cb", ResponseMode::FormPost)
+            .carrying("state", r#""><script>alert(1)</script>"#);
+        let built = page(&asked.redirect_uri, &named(&asked));
         assert!(
             !built.contains("<script>alert"),
             "a value opened a tag: {built}"
@@ -124,20 +188,20 @@ mod tests {
     /// the browser posts.
     #[test]
     fn a_redirect_cannot_end_its_own_attribute() {
-        let built = page(&Landing::new(
+        let asked = Landing::new(
             r#"https://app.example/cb" onload="evil()"#,
             ResponseMode::FormPost,
-        ));
+        );
+        let built = page(&asked.redirect_uri, &named(&asked));
         assert!(!built.contains("onload=\"evil"), "{built}");
     }
 
     #[test]
     fn every_parameter_becomes_a_field() {
-        let built = page(
-            &Landing::new("https://app.example/cb", ResponseMode::FormPost)
-                .carrying("code", "abc")
-                .carrying_any("state", Some("s")),
-        );
+        let asked = Landing::new("https://app.example/cb", ResponseMode::FormPost)
+            .carrying("code", "abc")
+            .carrying_any("state", Some("s"));
+        let built = page(&asked.redirect_uri, &named(&asked));
         assert!(
             built.contains(r#"<input type="hidden" name="code" value="abc">"#),
             "{built}"

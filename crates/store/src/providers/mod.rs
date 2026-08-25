@@ -6,6 +6,7 @@ pub mod clients;
 pub mod consents;
 pub mod credentials;
 pub mod deliveries;
+pub mod form_post;
 pub mod login;
 pub mod mail;
 pub mod oidc;

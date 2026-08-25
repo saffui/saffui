@@ -35,6 +35,8 @@ pub struct Answered {
     pub totp_register: Option<String>,
     /// What a mailed link carried, as the page it landed on posted it.
     pub magic_link: Option<String>,
+    /// The same, for a link confirming an address.
+    pub verify_email: Option<String>,
 }
 
 /// How the answer arrived, which is how the outcome is told.
@@ -144,6 +146,7 @@ pub async fn answer(
         services::login::enrolment::Answers {
             attestation: attestation.as_deref(),
             code: code.as_deref(),
+            verified_address: answered.verify_email.as_deref(),
         },
         &read_provenance(&request),
         sealing.sender.is_some(),

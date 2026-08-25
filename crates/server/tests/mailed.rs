@@ -542,3 +542,210 @@ async fn a_message_the_far_end_refused_leaves_one_saying_so() {
         "a refusal said nothing about why: {held:?}"
     );
 }
+
+async fn require_verify_email(plane: &Plane) {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let mut person = store::providers::users::load(&transaction, support::SUBJECT)
+        .await
+        .expect("the users table")
+        .expect("a planted person");
+    person.email_verified = Some(false);
+    person.required_actions = Some(vec![models::entities::user::RequiredAction::VerifyEmail]);
+    store::providers::users::update(&transaction, &person)
+        .await
+        .expect("the users table");
+    transaction.commit().await.expect("the instruction kept");
+}
+
+async fn address_is_verified(plane: &Plane) -> bool {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    store::providers::users::load(&transaction, support::SUBJECT)
+        .await
+        .expect("the users table")
+        .expect("a planted person")
+        .email_verified
+        == Some(true)
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_is_confirmed_by_a_link_and_the_instruction_comes_off() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane).await;
+    require_verify_email(&plane).await;
+    let postbox = Postbox::default();
+
+    // The password is right, so what holds the login is the instruction.
+    let binding = open(&plane, &postbox).await;
+    let (status, body) = answer(
+        &plane,
+        &postbox,
+        &binding,
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"].as_str(), Some("challenge"), "{body}");
+    assert!(!address_is_verified(&plane).await, "confirmed too early");
+
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert!(
+        held[0].body.contains("verify_email="),
+        "the mail did not carry a confirmation link: {}",
+        held[0].body
+    );
+    let token = held[0]
+        .body
+        .split("verify_email=")
+        .nth(1)
+        .expect("a token")
+        .split_whitespace()
+        .next()
+        .expect("a token")
+        .to_owned();
+
+    let (status, body) = answer(
+        &plane,
+        &postbox,
+        &binding,
+        // The credentials go with it: the flow runs every step against what
+        // it was given, and an enrolment answer alone leaves the password step
+        // waiting.
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "verify_email": token,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"].as_str(), Some("admitted"), "{body}");
+    assert!(
+        address_is_verified(&plane).await,
+        "the address is still unconfirmed"
+    );
+    // And the instruction comes off, or the next login asks again forever.
+    assert!(
+        plane.subject_owes().await.is_empty(),
+        "the instruction stood after it was satisfied: {:?}",
+        plane.subject_owes().await
+    );
+
+    let receipts = receipts(&plane).await;
+    assert_eq!(receipts.len(), 1, "{receipts:?}");
+    assert_eq!(receipts[0].purpose, "verify-email");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_confirmation_link_does_not_finish_another_login() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane).await;
+    require_verify_email(&plane).await;
+    let postbox = Postbox::default();
+
+    let first = open(&plane, &postbox).await;
+    answer(
+        &plane,
+        &postbox,
+        &first,
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+        }),
+    )
+    .await;
+    let token = postbox.held()[0]
+        .body
+        .split("verify_email=")
+        .nth(1)
+        .expect("a token")
+        .split_whitespace()
+        .next()
+        .expect("a token")
+        .to_owned();
+
+    // A second login, for the same person, holding somebody else's link.
+    let second = open(&plane, &postbox).await;
+    answer(
+        &plane,
+        &postbox,
+        &second,
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+        }),
+    )
+    .await;
+    let (status, body) = answer(
+        &plane,
+        &postbox,
+        &second,
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "verify_email": token,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert!(
+        !address_is_verified(&plane).await,
+        "a link finished a login it was not made for"
+    );
+    assert_eq!(
+        plane.subject_owes().await,
+        vec![models::entities::user::RequiredAction::VerifyEmail],
+        "the instruction came off without the link being spent"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_that_cannot_send_lets_the_login_through_and_keeps_the_debt() {
+    let plane = Plane::with_actions(&[]).await;
+    // No mail arranged for this realm, so the ceremony cannot run at all.
+    require_verify_email(&plane).await;
+    let postbox = Postbox::default();
+
+    let binding = open(&plane, &postbox).await;
+    let (status, body) = answer(
+        &plane,
+        &postbox,
+        &binding,
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["status"].as_str(),
+        Some("admitted"),
+        "a realm with no mail server locked its own people out: {body}"
+    );
+    assert!(postbox.held().is_empty());
+    assert_eq!(
+        plane.subject_owes().await,
+        vec![models::entities::user::RequiredAction::VerifyEmail],
+        "the debt was struck by a ceremony that never ran"
+    );
+    assert!(!address_is_verified(&plane).await);
+}

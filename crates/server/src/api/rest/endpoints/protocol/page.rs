@@ -176,11 +176,21 @@ fn serve(content_type: &'static str, body: &'static str) -> HttpResponse {
 /// this server serves, so nothing else on it can read it, and the page carries
 /// no script and no referrer.
 pub async fn magic_link(realm: web::Path<String>, asked: web::Query<Followed>) -> HttpResponse {
-    let Some(token) = asked
-        .into_inner()
+    let asked = asked.into_inner();
+    // Which link was followed decides which field the page posts back. A page
+    // that always posted the same one would spend a sign-in token where an
+    // address was being confirmed.
+    let followed = asked
         .magic_link
         .filter(|held| !held.is_empty())
-    else {
+        .map(|token| ("magic_link", token))
+        .or_else(|| {
+            asked
+                .verify_email
+                .filter(|held| !held.is_empty())
+                .map(|token| ("verify_email", token))
+        });
+    let Some((named, token)) = followed else {
         return serve("text/html; charset=utf-8", PAGE);
     };
     let body = LINK_PAGE
@@ -188,6 +198,7 @@ pub async fn magic_link(realm: web::Path<String>, asked: web::Query<Followed>) -
             "{action}",
             &escaped(&format!("/realms/{realm}/protocol/openid-connect/login")),
         )
+        .replace("{field}", &escaped(named))
         .replace("{token}", &escaped(&token));
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
@@ -201,6 +212,7 @@ pub async fn magic_link(realm: web::Path<String>, asked: web::Query<Followed>) -
 #[derive(serde::Deserialize)]
 pub struct Followed {
     pub magic_link: Option<String>,
+    pub verify_email: Option<String>,
 }
 
 const LINK_PAGE: &str = r#"<!doctype html>
@@ -212,7 +224,7 @@ const LINK_PAGE: &str = r#"<!doctype html>
 <body><main><h1>Sign in</h1>
 <p>Follow through to finish signing in on this browser.</p>
 <form method="post" action="{action}">
-<input type="hidden" name="magic_link" value="{token}">
+<input type="hidden" name="{field}" value="{token}">
 <button type="submit">Continue</button>
 </form></main></body></html>
 "#;

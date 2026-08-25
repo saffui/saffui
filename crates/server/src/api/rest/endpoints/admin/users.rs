@@ -288,3 +288,57 @@ pub async fn messages(
         .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({ "deliveries": held })))
 }
+
+/// What this person has agreed to give, and to whom.
+pub async fn consents(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let held = store::providers::consents::of_user(&transaction, &user_id)
+        .await
+        .map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "consents": held
+            .into_iter()
+            .map(|one| serde_json::json!({
+                "client_id": one.client_id,
+                "scopes": one.scopes,
+                "granted_at": one.granted_at,
+            }))
+            .collect::<Vec<_>>(),
+    })))
+}
+
+/// Take one back.
+///
+/// The sessions it authorised are left alone. Taking back a permission and
+/// ending what it permitted are two acts, and the second has its own route.
+pub async fn withdraw_consent(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, user_id, client_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    if !store::providers::consents::withdraw(&transaction, &user_id, &client_id)
+        .await
+        .map_err(|_| internal())?
+    {
+        return Err(ApiError::new(ErrorCode::UserNotFound));
+    }
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}

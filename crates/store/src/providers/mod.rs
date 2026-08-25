@@ -3,6 +3,7 @@ pub mod authz_policies;
 pub mod authz_surface;
 pub mod client_scopes;
 pub mod clients;
+pub mod consents;
 pub mod credentials;
 pub mod deliveries;
 pub mod login;

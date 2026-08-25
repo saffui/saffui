@@ -37,6 +37,8 @@ pub struct Answered {
     pub magic_link: Option<String>,
     /// The same, for a link confirming an address.
     pub verify_email: Option<String>,
+    /// What the consent screen answered: `granted` or `refused`.
+    pub consent: Option<String>,
 }
 
 /// How the answer arrived, which is how the outcome is told.
@@ -155,6 +157,13 @@ pub async fn answer(
             envelope: &sealing.envelope,
         }),
         signing.as_ref(),
+        // Anything other than the two words is no answer at all, so the
+        // screen is shown again rather than read as one of them.
+        match answered.consent.as_deref() {
+            Some("granted") => Some(true),
+            Some("refused") => Some(false),
+            _ => None,
+        },
         now,
     )
     .await;
@@ -238,6 +247,21 @@ pub async fn answer(
                 // Nothing was tried, so the answer is not what is wrong. Said
                 // plainly rather than as a refusal: a person told their
                 // password is wrong will keep changing it.
+                Step::Consent {
+                    client_id,
+                    client_name,
+                    scopes,
+                } => match spoken {
+                    Spoken::Json => uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(
+                        serde_json::json!({
+                            "status": "consent",
+                            "client_id": client_id,
+                            "client_name": client_name,
+                            "scopes": scopes,
+                        }),
+                    ),
+                    Spoken::Form => shown(&page, "consent"),
+                },
                 Step::LockedOut { until } => {
                     tracing::warn!(until, "login locked out");
                     match spoken {

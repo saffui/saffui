@@ -6,6 +6,7 @@
     "block": "*",
     "condition": "VerifyNewJwksHasNewSigningKey",
     "current-block": "*",
+    "expected-result": "failure",
     "comment": "The module is manual by design: it does not auto-start, and its own summary says to trigger a key rotation in the provider before pressing Start. Nothing the runner does can rotate this deployment's keys, so the second read of the key set is the same as the first. Rotation itself is built and has its own admin route."
   }
 ]

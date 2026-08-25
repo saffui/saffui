@@ -11,19 +11,27 @@ use models::entities::realm::RealmModel;
 use models::entities::user::{RequiredAction, UserModel};
 use secrecy::SecretBox;
 use serde_json::{Value, json};
-use store::providers::{credentials, users, webauthn};
+use store::providers::{credentials, one_time_tokens, users, webauthn};
 use store::tenancy::TenantContext;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
     CredentialID, PasskeyRegistration, RegisterPublicKeyCredential, Webauthn,
 };
 
-use crate::login::authenticator::{Challenge, relying_party};
+use crate::login::authenticator::{Challenge, redacted, relying_party};
 
 /// The names the ceremonies' state and answers travel under. Not an
 /// authenticator's name, so the flow's own steps can never collide with them.
 pub const CONFIGURE_WEBAUTHN: &str = "webauthn-register";
 pub const CONFIGURE_TOTP: &str = "totp-register";
+pub const VERIFY_EMAIL: &str = "verify-email";
+
+/// How long a mailed verification link lasts, and how soon another may be
+/// asked for. The same reasoning as the sign-in link: without a window a
+/// caller loops the login and this server floods a mailbox on somebody's
+/// behalf.
+const VERIFY_LIFESPAN: i64 = 900;
+const VERIFY_COOLDOWN: i64 = 60;
 
 /// What a fresh authenticator app is enrolled with: RFC 6238's defaults, which
 /// every app reads without being told.
@@ -37,6 +45,8 @@ const TOTP_WINDOW: u32 = 1;
 pub struct Answers<'a> {
     pub attestation: Option<&'a str>,
     pub code: Option<&'a str>,
+    /// What a mailed address-verification link carried back.
+    pub verified_address: Option<&'a str>,
 }
 
 /// Where an enrolment stands after one round.
@@ -49,6 +59,8 @@ pub enum Enrolment {
     Asked {
         named: &'static str,
         challenge: Challenge,
+        /// A message this round produced, sent once the caller has committed.
+        sending: Option<Box<crate::messaging::Outgoing>>,
     },
     /// The answer did not verify. The login fails with it: an admitted login
     /// that shrugged off its realm's instruction would admit the very state
@@ -76,6 +88,8 @@ pub async fn required(
     subject: &UserModel,
     answers: Answers<'_>,
     remembered: &Value,
+    // What a mailed ceremony needs. Absent where the realm requires none.
+    posting: Option<crate::login::authenticator::Posting<'_>>,
 ) -> Enrolment {
     let pending = |action: RequiredAction| {
         subject
@@ -108,6 +122,24 @@ pub async fn required(
             _ => start_totp(provider, realm, subject),
         };
     }
+    if pending(RequiredAction::VerifyEmail) {
+        return match answers.verified_address {
+            Some(followed) => {
+                let Some(posting) = posting else {
+                    return Enrolment::Refused;
+                };
+                finish_verify(
+                    transaction,
+                    provider,
+                    subject,
+                    posting.auth_session_id,
+                    followed,
+                )
+                .await
+            }
+            None => start_verify(transaction, provider, origin, subject, posting).await,
+        };
+    }
     Enrolment::Settled
 }
 
@@ -135,6 +167,7 @@ fn start_totp(provider: &dyn CryptoProvider, realm: &RealmModel, subject: &UserM
             shown: json!({ "secret": encoded, "otpauth": otpauth }),
             remembered: json!({ "secret": encoded }),
         },
+        sending: None,
     }
 }
 
@@ -248,6 +281,7 @@ async fn start(transaction: &Transaction<'_>, party: &Webauthn, subject: &UserMo
     Enrolment::Asked {
         named: CONFIGURE_WEBAUTHN,
         challenge: Challenge { shown, remembered },
+        sending: None,
     }
 }
 
@@ -304,5 +338,138 @@ async fn finish(
     {
         Ok(true) => Enrolment::Settled,
         _ => Enrolment::Refused,
+    }
+}
+
+/// Mail a link, or say a recent one is still good for it.
+async fn start_verify(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    origin: &PublicOrigin,
+    subject: &UserModel,
+    posting: Option<crate::login::authenticator::Posting<'_>>,
+) -> Enrolment {
+    // Nothing to send to, or nothing to send with, is a ceremony that cannot
+    // run. Left standing like any other this build cannot perform: the debt
+    // stays recorded, and refusing here would lock out every person in a realm
+    // whose administrator asked for this and configured no mail.
+    if subject.email.is_empty() {
+        return Enrolment::Settled;
+    }
+    let Some(posting) = posting else {
+        return Enrolment::Settled;
+    };
+    let Some(settings) = posting.mail.filter(|_| posting.can_send) else {
+        return Enrolment::Settled;
+    };
+
+    let shown = json!({ "sent_to": redacted(&subject.email) });
+    let Ok(recent) =
+        one_time_tokens::minted_at(transaction, &subject.user_id, VERIFY_EMAIL, posting.now).await
+    else {
+        return Enrolment::Refused;
+    };
+    if recent.is_some_and(|sent| posting.now - sent < chrono::Duration::seconds(VERIFY_COOLDOWN)) {
+        return Enrolment::Asked {
+            named: VERIFY_EMAIL,
+            challenge: Challenge {
+                shown,
+                remembered: Value::Null,
+            },
+            sending: None,
+        };
+    }
+
+    let mut drawn = [0u8; 32];
+    if provider.rand().fill(&mut drawn).is_err() {
+        return Enrolment::Refused;
+    }
+    let token = data_encoding::BASE64URL_NOPAD.encode(&drawn);
+    // Bound to this login, so a link mailed to a person cannot finish a login
+    // somebody else started.
+    if one_time_tokens::mint(
+        transaction,
+        provider.digest(),
+        one_time_tokens::Owner {
+            tenant: &subject.metadata.tenant,
+            realm_id: &subject.realm_id,
+            user_id: &subject.user_id,
+            purpose: VERIFY_EMAIL,
+        },
+        &token,
+        Some(posting.auth_session_id),
+        posting.now + chrono::Duration::seconds(VERIFY_LIFESPAN),
+        posting.now,
+    )
+    .await
+    .is_err()
+    {
+        return Enrolment::Refused;
+    }
+
+    let link = format!(
+        "{}/realms/{}/protocol/openid-connect/login?verify_email={token}",
+        origin.as_str(),
+        posting.realm_name,
+    );
+    Enrolment::Asked {
+        named: VERIFY_EMAIL,
+        challenge: Challenge {
+            shown,
+            remembered: Value::Null,
+        },
+        sending: Some(Box::new(crate::messaging::Outgoing {
+            settings: settings.duplicate(),
+            message: crate::messaging::Message {
+                to: subject.email.clone(),
+                subject: "Confirm your address".to_owned(),
+                body: format!(
+                    "Confirm this address to finish signing in. The link works once, and \
+                     only in the browser you started from.\n\n{link}\n"
+                ),
+            },
+            about: crate::messaging::About {
+                user_id: subject.user_id.clone(),
+                purpose: VERIFY_EMAIL.to_owned(),
+            },
+        })),
+    }
+}
+
+/// Spend what came back, and take the instruction off.
+async fn finish_verify(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    subject: &UserModel,
+    auth_session_id: &str,
+    followed: &str,
+) -> Enrolment {
+    // Bound to the login presenting it: a link mailed to a person does not
+    // finish a login somebody else started.
+    match one_time_tokens::spend(
+        transaction,
+        provider.digest(),
+        &subject.user_id,
+        VERIFY_EMAIL,
+        followed,
+        Some(auth_session_id),
+        chrono::Utc::now(),
+    )
+    .await
+    {
+        Ok(true) => {}
+        _ => return Enrolment::Refused,
+    }
+    if users::set_email_verified(transaction, &subject.user_id, true)
+        .await
+        .is_err()
+    {
+        return Enrolment::Refused;
+    }
+    match users::clear_required_action(transaction, &subject.user_id, RequiredAction::VerifyEmail)
+        .await
+    {
+        Ok(_) => Enrolment::Settled,
+        Err(_) => Enrolment::Refused,
     }
 }

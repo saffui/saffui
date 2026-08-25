@@ -346,7 +346,7 @@ async fn magic_link(
 
 /// Enough of an address for the person to recognise their own, and not enough
 /// for whoever else is looking at the screen to read it.
-fn redacted(email: &str) -> String {
+pub(crate) fn redacted(email: &str) -> String {
     match email.split_once('@') {
         Some((name, domain)) => {
             let kept: String = name.chars().take(2).collect();

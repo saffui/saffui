@@ -149,6 +149,22 @@ pub async fn update(transaction: &Transaction<'_>, user: &UserModel) -> StoreRes
 /// Remove a user, and say whether there was one to remove.
 /// Strike one required action, done or not: the caller says it no longer
 /// stands. Says whether the user was there, not whether the action was.
+/// Mark this person's address as checked, or unchecked.
+pub async fn set_email_verified(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    verified: bool,
+) -> StoreResult<bool> {
+    let changed = transaction
+        .execute(
+            "UPDATE users SET email_verified = $2 WHERE user_id = $1",
+            &[&user_id, &verified],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
 pub async fn clear_required_action(
     transaction: &Transaction<'_>,
     user_id: &str,

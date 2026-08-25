@@ -201,12 +201,23 @@ pub async fn answer_step(
                 &subject,
                 enrolling,
                 &login.notes,
+                Some(crate::login::authenticator::Posting {
+                    auth_session_id,
+                    realm_name: &realm.name,
+                    mail: mail.as_ref(),
+                    can_send: sends,
+                    now,
+                }),
             )
             .await
             {
                 Enrolment::Settled => {}
                 Enrolment::Refused => return Ok(Step::Refused),
-                Enrolment::Asked { named, challenge } => {
+                Enrolment::Asked {
+                    named,
+                    challenge,
+                    sending,
+                } => {
                     let mut remember = serde_json::Map::new();
                     remember.insert(named.to_owned(), challenge.remembered);
                     login::record_step(
@@ -221,7 +232,7 @@ pub async fn answer_step(
                     .await
                     .map_err(|_| Unanswerable::Unreadable)?;
                     return Ok(Step::Challenge {
-                        sending: None,
+                        sending,
                         execution_id: named.to_owned(),
                         asks: Some(challenge.shown),
                     });

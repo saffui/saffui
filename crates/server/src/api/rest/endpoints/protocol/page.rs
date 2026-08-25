@@ -176,11 +176,21 @@ fn serve(content_type: &'static str, body: &'static str) -> HttpResponse {
 /// this server serves, so nothing else on it can read it, and the page carries
 /// no script and no referrer.
 pub async fn magic_link(realm: web::Path<String>, asked: web::Query<Followed>) -> HttpResponse {
-    let Some(token) = asked
-        .into_inner()
+    let asked = asked.into_inner();
+    // Which link was followed decides which field the page posts back. A page
+    // that always posted the same one would spend a sign-in token where an
+    // address was being confirmed.
+    let followed = asked
         .magic_link
         .filter(|held| !held.is_empty())
-    else {
+        .map(|token| ("magic_link", token))
+        .or_else(|| {
+            asked
+                .verify_email
+                .filter(|held| !held.is_empty())
+                .map(|token| ("verify_email", token))
+        });
+    let Some((named, token)) = followed else {
         return serve("text/html; charset=utf-8", PAGE);
     };
     let body = LINK_PAGE
@@ -188,6 +198,7 @@ pub async fn magic_link(realm: web::Path<String>, asked: web::Query<Followed>) -
             "{action}",
             &escaped(&format!("/realms/{realm}/protocol/openid-connect/login")),
         )
+        .replace("{field}", &escaped(named))
         .replace("{token}", &escaped(&token));
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
@@ -201,6 +212,7 @@ pub async fn magic_link(realm: web::Path<String>, asked: web::Query<Followed>) -
 #[derive(serde::Deserialize)]
 pub struct Followed {
     pub magic_link: Option<String>,
+    pub verify_email: Option<String>,
 }
 
 const LINK_PAGE: &str = r#"<!doctype html>
@@ -212,7 +224,64 @@ const LINK_PAGE: &str = r#"<!doctype html>
 <body><main><h1>Sign in</h1>
 <p>Follow through to finish signing in on this browser.</p>
 <form method="post" action="{action}">
-<input type="hidden" name="magic_link" value="{token}">
+<input type="hidden" name="{field}" value="{token}">
 <button type="submit">Continue</button>
 </form></main></body></html>
+"#;
+
+#[derive(serde::Deserialize)]
+pub struct Resetting {
+    pub token: Option<String>,
+    pub user: Option<String>,
+}
+
+/// Where a mailed reset link lands: two fields and the token, and nothing that
+/// says whether the link is any good. Telling that here would answer it to
+/// whoever holds the link rather than to whoever can set a password.
+pub async fn reset_password(
+    realm: web::Path<String>,
+    asked: web::Query<Resetting>,
+) -> HttpResponse {
+    let asked = asked.into_inner();
+    let (Some(token), Some(user)) = (
+        asked.token.filter(|held| !held.is_empty()),
+        asked.user.filter(|held| !held.is_empty()),
+    ) else {
+        return serve("text/html; charset=utf-8", PAGE);
+    };
+    let body = RESET_PAGE
+        .replace(
+            "{action}",
+            &escaped(&format!(
+                "/realms/{realm}/protocol/openid-connect/reset-password"
+            )),
+        )
+        .replace("{token}", &escaped(&token))
+        .replace("{user}", &escaped(&user));
+    uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .insert_header(("Content-Type", "text/html; charset=utf-8"))
+        .insert_header(("Content-Security-Policy", POLICY))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("X-Frame-Options", "DENY"))
+        .insert_header(("Referrer-Policy", "no-referrer"))
+        .body(body)
+}
+
+const RESET_PAGE: &str = r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Set a new password</title>
+<link rel="stylesheet" href="login.css"></head>
+<body><main><h1>Set a new password</h1>
+<form method="post" action="{action}">
+<input type="hidden" name="token" value="{token}">
+<input type="hidden" name="user" value="{user}">
+<label for="password">New password</label>
+<input id="password" name="password" type="password" autocomplete="new-password" required>
+<button type="submit">Set password</button>
+</form>
+<p id="refused" class="flash" role="alert">That password was refused. Try another.</p>
+<p id="no-such-link" class="flash" role="alert">This link has been used, or has expired. Ask for another.</p>
+</main></body></html>
 "#;

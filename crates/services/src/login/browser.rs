@@ -42,6 +42,13 @@ pub enum Step {
     /// instant logins resume, which the page shows rather than making somebody
     /// guess whether their password is wrong.
     LockedOut { until: i64 },
+    /// The person is established and is being asked whether this client may
+    /// have what it asked for.
+    Consent {
+        client_id: String,
+        client_name: String,
+        scopes: Vec<String>,
+    },
     /// A step is waiting. The caller answers again, naming the same login, and
     /// is shown what the step issued when it issued anything.
     Challenge {
@@ -109,6 +116,8 @@ pub async fn answer_step(
     sealing: Option<Sealing<'_>>,
     // What it takes to sign, when the request wants something minted here.
     signing: Option<&crate::grant::Signing<'_>>,
+    // What the person answered to the consent screen, when they answered.
+    consented: Option<bool>,
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
     let login = login::resume(transaction, auth_session_id)
@@ -262,6 +271,64 @@ pub async fn answer_step(
                     ),
                 });
             }
+            // Asked after the person is established and before anything is
+            // minted: a screen shown earlier asks somebody who has not proved
+            // who they are, and one shown later asks about something already
+            // given away.
+            let asking_again = noted(&login.notes, "prompt")
+                .is_some_and(|named| named.split_whitespace().any(|held| held == "consent"));
+            let client = client_of(transaction, &login.client_id).await?;
+            let scope = noted(&login.notes, "scope").unwrap_or_default().to_owned();
+            if crate::consent::must_ask(
+                transaction,
+                &client,
+                &subject.user_id,
+                &scope,
+                asking_again,
+            )
+            .await
+            .map_err(|_| Unanswerable::Unreadable)?
+            {
+                match consented {
+                    // Not answered yet: show what is being asked for.
+                    None => {
+                        return Ok(Step::Consent {
+                            client_id: client.client_id.clone(),
+                            client_name: client.name.clone(),
+                            scopes: scope.split_whitespace().map(str::to_owned).collect(),
+                        });
+                    }
+                    Some(true) => {
+                        crate::consent::keep(
+                            transaction,
+                            &subject.user_id,
+                            &client.client_id,
+                            &scope,
+                            now,
+                        )
+                        .await
+                        .map_err(|_| Unanswerable::Unreadable)?;
+                    }
+                    // §3.1.2.6: the person is who they say they are and said
+                    // no to this client. That is the client's answer, not a
+                    // refused login.
+                    Some(false) => {
+                        login::finish(transaction, &login.session_id)
+                            .await
+                            .map_err(|_| Unanswerable::Unreadable)?;
+                        return Ok(Step::SentBack {
+                            landing: sent_back(
+                                &login.redirect_uri,
+                                "access_denied",
+                                noted(&login.notes, "state"),
+                                answering(&login.notes),
+                                &origin.issuer(&tenant.realm_id),
+                            ),
+                        });
+                    }
+                }
+            }
+
             // The highest of what actually ran. A flow that reached a second
             // factor is stronger than the password that opened it, and reading
             // only the first would report a level the login exceeded.

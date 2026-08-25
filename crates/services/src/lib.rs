@@ -5,6 +5,7 @@ pub mod authorization;
 pub mod authorize;
 pub mod claims_request;
 pub mod client;
+pub mod consent;
 pub mod context;
 pub mod detached;
 pub mod grant;

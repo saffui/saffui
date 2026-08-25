@@ -152,6 +152,18 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/consents",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(users::consents)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/users/{user}/consents/{client}",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::delete().to(users::withdraw_consent)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/users/{user}/messages",
             action: AdminAction::UserRead,
             handler: Some(|| web::get().to(users::messages)),

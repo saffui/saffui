@@ -259,6 +259,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V042__message_receipts.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 43,
+            name: "consents",
+            sql: include_str!("../migrations/V043__consents.sql"),
+            transactional: true,
+        }),
     ]
 }
 

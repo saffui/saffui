@@ -1,5 +1,7 @@
 use deadpool_postgres::Transaction;
-use models::entities::realm::{ClientRegistration, RealmModel, SslEnforcement};
+use models::entities::realm::{
+    ClientRegistration, RealmModel, RegistrationBounds, SslEnforcement,
+};
 use models::paging::Page;
 use tokio_postgres::Row;
 
@@ -10,6 +12,8 @@ use crate::query::write_set::{WriteSet, col};
 
 const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        registration_allowed, client_registration, registration_secret, \
+                       registration_max_clients, registration_requires_consent, \
+                       registration_trusted_hosts, \
                        offline_session_max_lifespan, max_offline_grants, \
                        require_pushed_authorization_requests, \
                        brute_force_protected, max_login_failures, lockout_seconds, \
@@ -150,6 +154,18 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("failure_reset_seconds", &realm.brute_force.reset_seconds),
             col("registration_secret", &realm.registration_secret),
             col(
+                "registration_max_clients",
+                &realm.registration_bounds.max_clients,
+            ),
+            col(
+                "registration_requires_consent",
+                &realm.registration_bounds.requires_consent,
+            ),
+            col(
+                "registration_trusted_hosts",
+                &realm.registration_bounds.trusted_hosts,
+            ),
+            col(
                 "register_email_as_username",
                 &realm.register_email_as_username,
             ),
@@ -206,6 +222,11 @@ fn read(row: Row) -> RealmModel {
             .parse()
             .unwrap_or(ClientRegistration::Disabled),
         registration_secret: row.get("registration_secret"),
+        registration_bounds: RegistrationBounds {
+            max_clients: row.get("registration_max_clients"),
+            requires_consent: row.get("registration_requires_consent"),
+            trusted_hosts: row.get("registration_trusted_hosts"),
+        },
         offline_session_max_lifespan: row.get("offline_session_max_lifespan"),
         max_offline_grants: row.get("max_offline_grants"),
         require_pushed_authorization_requests: row.get("require_pushed_authorization_requests"),

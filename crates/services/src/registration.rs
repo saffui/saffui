@@ -1,4 +1,7 @@
+use std::net::IpAddr;
+
 use chrono::{DateTime, Utc};
+use config::proxying::Peer;
 use crypto::envelope::Envelope;
 use crypto::password::migration::verify_and_plan;
 use crypto::password::storage::StoredPassword;
@@ -16,6 +19,11 @@ use url::Url;
 
 use crate::admin::clients::{self as admin_clients, Registered, Secret, Spec, Unregistrable};
 use crate::response_type::ResponseType;
+
+/// What a client this endpoint created is written down as having been created
+/// by. The ceiling is counted over these and over nothing else, so a realm
+/// filled from outside never stops an administrator writing clients down.
+pub const REGISTRAR: &str = "registration";
 
 /// How long a drawn identifier is, in bytes of randomness.
 const IDENTIFIER_BYTES: usize = 16;
@@ -87,6 +95,8 @@ pub struct Registration {
 pub enum Refused {
     #[error("this realm registers no clients")]
     Closed,
+    #[error("this realm registers no more clients")]
+    TooMany,
     #[error("the initial access token is missing or wrong")]
     Unauthorized,
     #[error("no such client")]
@@ -113,7 +123,15 @@ pub fn admits(
     realm: &RealmModel,
     provider: &dyn CryptoProvider,
     presented: Option<&str>,
+    // Where the request was dialled from, as the proxying settled it. Absent
+    // is a caller with no address, which no list of addresses holds.
+    caller: Option<IpAddr>,
 ) -> Result<(), Refused> {
+    if !trusts(&realm.registration_bounds.trusted_hosts, caller) {
+        // Answered as a realm that registers nothing, so a caller that is not
+        // on the list learns nothing about the one that is.
+        return Err(Refused::Closed);
+    }
     match realm.client_registration {
         ClientRegistration::Disabled => Err(Refused::Closed),
         ClientRegistration::Open => Ok(()),
@@ -130,6 +148,25 @@ pub fn admits(
     }
 }
 
+/// Whether a caller is one of the hosts this realm registers from.
+///
+/// An empty list is every caller: what opens the endpoint at all is the realm's
+/// policy, and a deployment that named no hosts asked for no host constraint.
+/// An entry that does not parse holds nobody, so a typo narrows the list rather
+/// than widening it.
+fn trusts(hosts: &[String], caller: Option<IpAddr>) -> bool {
+    if hosts.is_empty() {
+        return true;
+    }
+    let Some(caller) = caller else {
+        return false;
+    };
+    hosts
+        .iter()
+        .filter_map(|held| Peer::parse(held))
+        .any(|peer| peer.holds(caller))
+}
+
 /// Register a client from what it said about itself.
 #[allow(
     clippy::too_many_arguments,
@@ -140,21 +177,39 @@ pub async fn register(
     provider: &dyn CryptoProvider,
     sealing: Option<(&RealmKeyring, &Envelope)>,
     tenant: &str,
-    realm_id: &str,
+    realm: &RealmModel,
     metadata: &Metadata,
     // What the sector document listed, when one was named and fetched.
     sector: Option<&[String]>,
     now: DateTime<Utc>,
 ) -> Result<Registration, Refused> {
-    let spec = spec_of(metadata, now)?;
+    let mut spec = spec_of(metadata, now)?;
     check_sector(metadata, sector)?;
+    // Vetted by nobody, so the person it asks for is the one who decides.
+    if realm.registration_bounds.requires_consent {
+        spec.registered.consent_required = Some(true);
+    }
+    if let Some(ceiling) = realm.registration_bounds.max_clients {
+        // Held before the count, and released at commit: counting and then
+        // creating without it lets two registrations one below the ceiling
+        // both read a count that passes.
+        clients::hold_registrations(transaction, &realm.realm_id)
+            .await
+            .map_err(|_| Refused::Unwritable)?;
+        let held = clients::count_created_by(transaction, &realm.realm_id, REGISTRAR)
+            .await
+            .map_err(|_| Refused::Unwritable)?;
+        if held >= i64::from(ceiling) {
+            return Err(Refused::TooMany);
+        }
+    }
     let client_id = draw(provider, IDENTIFIER_BYTES)?;
     let (client, secret) = admin_clients::register(
         transaction,
         provider,
         tenant,
-        realm_id,
-        "registration",
+        &realm.realm_id,
+        REGISTRAR,
         &client_id,
         &spec,
         Secret::Drawn,
@@ -227,6 +282,8 @@ pub async fn amend(
 ) -> Result<ClientModel, Refused> {
     let mut spec = spec_of(metadata, client.registered_at.unwrap_or_else(Utc::now))?;
     spec.confidential = client.public_client != Some(true);
+    // What the realm imposed at registration is not the client's to edit away.
+    spec.registered.consent_required = client.consent_required;
     let amended = admin_clients::reshape_registered(transaction, &client.client_id, &spec).await?;
     Ok(amended)
 }
@@ -494,6 +551,7 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
         backchannel_logout_uri: metadata.backchannel_logout_uri.clone(),
         frontchannel_logout_uri: metadata.frontchannel_logout_uri.clone(),
         registered: Registered {
+            consent_required: None,
             response_types: Some(named_response_types(metadata)),
             implicit: asked.iter().any(|held| held.mints_here()),
             jwks: metadata.jwks.clone(),
@@ -632,4 +690,55 @@ fn matches(provider: &dyn CryptoProvider, held: &str, presented: &str) -> bool {
     };
     let offered = SecretBox::new(Box::new(presented.to_owned()));
     verify_and_plan(provider, &offered, &stored).is_ok_and(|plan| plan.valid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listed(hosts: &[&str]) -> Vec<String> {
+        hosts.iter().map(|held| (*held).to_owned()).collect()
+    }
+
+    fn at(address: &str) -> Option<IpAddr> {
+        Some(address.parse().expect("an address"))
+    }
+
+    #[test]
+    fn naming_no_host_admits_every_caller() {
+        assert!(trusts(&[], at("203.0.113.7")));
+        assert!(trusts(&[], None));
+    }
+
+    #[test]
+    fn a_caller_with_no_address_is_held_by_no_list() {
+        assert!(!trusts(&listed(&["0.0.0.0/0"]), None));
+    }
+
+    #[test]
+    fn a_prefix_holds_what_is_inside_it_and_nothing_else() {
+        let hosts = listed(&["10.0.0.0/8", "192.0.2.5"]);
+        assert!(trusts(&hosts, at("10.9.9.9")));
+        assert!(trusts(&hosts, at("192.0.2.5")));
+        assert!(!trusts(&hosts, at("192.0.2.6")));
+        assert!(!trusts(&hosts, at("11.0.0.1")));
+    }
+
+    /// A list of one family never holds the other, whatever the prefix says.
+    #[test]
+    fn a_prefix_of_one_family_holds_none_of_the_other() {
+        assert!(!trusts(&listed(&["0.0.0.0/0"]), at("::1")));
+        assert!(!trusts(&listed(&["::/0"]), at("203.0.113.7")));
+    }
+
+    /// A typo narrows the list. The alternative is an entry nobody reads
+    /// widening it to everybody.
+    #[test]
+    fn an_entry_that_does_not_parse_holds_nobody() {
+        assert!(!trusts(&listed(&["not-an-address"]), at("203.0.113.7")));
+        assert!(trusts(
+            &listed(&["not-an-address", "203.0.113.7"]),
+            at("203.0.113.7")
+        ));
+    }
 }

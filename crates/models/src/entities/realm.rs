@@ -257,6 +257,33 @@ impl PasswordPolicy {
 }
 
 /// A realm.
+/// What a realm allows a client that registered itself, as opposed to one an
+/// administrator wrote down. Nothing here is read when registration is closed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistrationBounds {
+    /// How many clients registration may have created here, counted over the
+    /// ones it created and not over the realm. An administrator keeps writing
+    /// clients down after the endpoint has stopped answering, and a realm
+    /// filled from outside never locks its owner out of it.
+    pub max_clients: Option<i32>,
+    /// Whether a client that registered itself has to be consented to. It was
+    /// vetted by nobody, so the person is the one who decides.
+    pub requires_consent: bool,
+    /// Who may reach the endpoint, as addresses and prefixes. Empty is every
+    /// caller: the policy above is what opened the endpoint at all.
+    pub trusted_hosts: Vec<String>,
+}
+
+impl Default for RegistrationBounds {
+    fn default() -> Self {
+        RegistrationBounds {
+            max_clients: None,
+            requires_consent: true,
+            trusted_hosts: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RealmModel {
     pub realm_id: String,
@@ -270,6 +297,9 @@ pub struct RealmModel {
     pub client_registration: ClientRegistration,
     /// What this realm does about a password being guessed at.
     pub brute_force: BruteForce,
+    /// What an open registration is bounded by, which a closed one never
+    /// reaches.
+    pub registration_bounds: RegistrationBounds,
     /// Never serialised, like every other bearer credential. Hashed.
     #[serde(skip_serializing)]
     pub registration_secret: Option<String>,
@@ -339,6 +369,7 @@ impl RealmCreateModel {
             enabled: self.enabled,
             registration_allowed: None,
             client_registration: ClientRegistration::Disabled,
+            registration_bounds: RegistrationBounds::default(),
             brute_force: BruteForce::default(),
             offline_session_max_lifespan: 0,
             max_offline_grants: 0,

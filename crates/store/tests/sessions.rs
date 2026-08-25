@@ -3,6 +3,7 @@ mod support;
 use chrono::{Duration, Utc};
 use crypto::provider::CryptoProvider;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
+use store::providers::one_time_tokens::Spent;
 use store::providers::one_time_tokens::{self, Owner};
 use store::providers::sessions::{self, Refreshed};
 use store::tenancy::TenantContext;
@@ -172,35 +173,38 @@ async fn a_token_is_spent_once_and_only_by_its_own_value() {
             .unwrap()
     );
     assert!(
-        !one_time_tokens::spend(
-            &transaction,
-            provider().digest(),
-            "ada",
-            "magic-link",
-            "guessed",
-            None,
-            now
-        )
-        .await
-        .unwrap(),
+        Spent::Yes
+            != one_time_tokens::spend(
+                &transaction,
+                provider().digest(),
+                "ada",
+                "magic-link",
+                "guessed",
+                None,
+                now
+            )
+            .await
+            .unwrap(),
         "a value that was not minted spent the token"
     );
     assert!(
-        !one_time_tokens::spend(
-            &transaction,
-            provider().digest(),
-            "ada",
-            "reset",
-            "the-raw-link",
-            None,
-            now
-        )
-        .await
-        .unwrap(),
+        Spent::Yes
+            != one_time_tokens::spend(
+                &transaction,
+                provider().digest(),
+                "ada",
+                "reset",
+                "the-raw-link",
+                None,
+                now
+            )
+            .await
+            .unwrap(),
         "a token for one purpose was spent against another"
     );
 
-    assert!(
+    assert_eq!(
+        Spent::Yes,
         one_time_tokens::spend(
             &transaction,
             provider().digest(),
@@ -214,17 +218,18 @@ async fn a_token_is_spent_once_and_only_by_its_own_value() {
         .unwrap()
     );
     assert!(
-        !one_time_tokens::spend(
-            &transaction,
-            provider().digest(),
-            "ada",
-            "magic-link",
-            "the-raw-link",
-            None,
-            now
-        )
-        .await
-        .unwrap(),
+        Spent::Yes
+            != one_time_tokens::spend(
+                &transaction,
+                provider().digest(),
+                "ada",
+                "magic-link",
+                "the-raw-link",
+                None,
+                now
+            )
+            .await
+            .unwrap(),
         "the same link was accepted twice"
     );
     assert!(
@@ -278,20 +283,22 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
     .unwrap();
 
     assert!(
-        !one_time_tokens::spend(
-            &transaction,
-            provider().digest(),
-            "ada",
-            "magic-link",
-            "first",
-            None,
-            now
-        )
-        .await
-        .unwrap(),
+        Spent::Yes
+            != one_time_tokens::spend(
+                &transaction,
+                provider().digest(),
+                "ada",
+                "magic-link",
+                "first",
+                None,
+                now
+            )
+            .await
+            .unwrap(),
         "asking for a second link left the first one working"
     );
-    assert!(
+    assert_eq!(
+        Spent::Yes,
         one_time_tokens::spend(
             &transaction,
             provider().digest(),
@@ -328,17 +335,18 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
     // Expired is refused, and swept.
     let later = now + Duration::hours(1);
     assert!(
-        !one_time_tokens::spend(
-            &transaction,
-            provider().digest(),
-            "ada",
-            "magic-link",
-            "the-raw-link",
-            None,
-            later
-        )
-        .await
-        .unwrap(),
+        Spent::Yes
+            != one_time_tokens::spend(
+                &transaction,
+                provider().digest(),
+                "ada",
+                "magic-link",
+                "the-raw-link",
+                None,
+                later
+            )
+            .await
+            .unwrap(),
         "an expired link was honoured"
     );
     assert_eq!(

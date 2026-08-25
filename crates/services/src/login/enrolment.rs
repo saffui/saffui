@@ -457,7 +457,20 @@ async fn finish_verify(
     )
     .await
     {
-        Ok(true) => {}
+        Ok(one_time_tokens::Spent::Yes) => {}
+        // Followed somewhere other than where the login began. The instruction
+        // stands and the login waits, so the person can go back and follow it
+        // in the browser that asked.
+        Ok(one_time_tokens::Spent::ElsewhereBound) => {
+            return Enrolment::Asked {
+                named: VERIFY_EMAIL,
+                challenge: Challenge {
+                    shown: json!({ "wrong_browser": true }),
+                    remembered: Value::Null,
+                },
+                sending: None,
+            };
+        }
         _ => return Enrolment::Refused,
     }
     if users::set_email_verified(transaction, &subject.user_id, true)

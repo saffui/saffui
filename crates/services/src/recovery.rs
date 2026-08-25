@@ -163,7 +163,7 @@ pub async fn set_from_link(
     )
     .await
     .map_err(|_| Unrecoverable::Unreadable)?;
-    if !spent {
+    if spent != one_time_tokens::Spent::Yes {
         return Err(Unrecoverable::NoSuchLink);
     }
 

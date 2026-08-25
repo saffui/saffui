@@ -301,6 +301,27 @@ mod tests {
         assert!(!rendered.contains("BEGIN"));
     }
 
+    /// Two bundles alive at once are two files, and neither takes the other's.
+    ///
+    /// A helper keyed on the process alone hands both the same path, so the
+    /// first to drop deletes the certificate the second still names.
+    #[test]
+    fn two_bundles_do_not_share_a_file() {
+        let first = temp_ca();
+        let second = temp_ca();
+
+        assert_ne!(first.0, second.0, "both bundles were written to one path");
+
+        drop(first);
+
+        let connector = PgConnector::build(&PgTlsMode::VerifyFull {
+            ca_file: second.0.clone(),
+        })
+        .expect("the second bundle did not outlive the first");
+
+        assert!(connector.is_encrypted());
+    }
+
     /// A throwaway self-signed certificate, removed when it drops.
     struct TempCa(PathBuf);
 
@@ -311,6 +332,8 @@ mod tests {
     }
 
     fn temp_ca() -> TempCa {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
         use openssl::asn1::Asn1Time;
         use openssl::hash::MessageDigest;
         use openssl::pkey::PKey;
@@ -335,7 +358,12 @@ mod tests {
             .unwrap();
         builder.sign(&key, MessageDigest::sha256()).unwrap();
 
-        let path = std::env::temp_dir().join(format!("saffui_ca_{}.pem", std::process::id()));
+        // Counted as well as named after the process: the id alone is one path
+        // for the whole binary, and these run at once.
+        static WRITTEN: AtomicUsize = AtomicUsize::new(0);
+        let nth = WRITTEN.fetch_add(1, Ordering::Relaxed);
+
+        let path = std::env::temp_dir().join(format!("saffui_ca_{}_{nth}.pem", std::process::id()));
         std::fs::write(&path, builder.build().to_pem().unwrap()).unwrap();
 
         TempCa(path)

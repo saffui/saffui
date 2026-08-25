@@ -346,13 +346,35 @@ mod tests {
          END IF; \
      END $$;";
 
-    /// Wipe what these tests create, so a failure does not decide the next run.
-    async fn clean(config: &Config, tls: &PgConnector) {
+    /// A schema this test alone uses, and the settings that put every
+    /// connection of its own in it.
+    ///
+    /// The history table and whatever a migration creates are named without a
+    /// schema, so `search_path` decides where they land. One schema per test is
+    /// what lets them run at once: none can read, or drop, what another is
+    /// working on, and none inherits what a different suite left in `public`.
+    async fn create_private_schema(name: &str) -> (Config, PgConnector) {
+        let (mut config, tls) = (config(), PgConnector::disabled());
+
+        let (client, driver) = connect(&config, &tls).await.unwrap();
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS {name} CASCADE; CREATE SCHEMA {name}"
+            ))
+            .await
+            .unwrap();
+        driver.abort();
+
+        config.options(format!("-c search_path={name}"));
+
+        (config, tls)
+    }
+
+    /// Wipe what this test created, so a failure does not decide the next run.
+    async fn drop_private_schema(name: &str, config: &Config, tls: &PgConnector) {
         let (client, driver) = connect(config, tls).await.unwrap();
         let _ = client
-            .batch_execute(
-                "DROP TABLE IF EXISTS schema_migrations; DROP TABLE IF EXISTS runner_probe;",
-            )
+            .batch_execute(&format!("DROP SCHEMA IF EXISTS {name} CASCADE"))
             .await;
         driver.abort();
     }
@@ -364,8 +386,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a database (SAFFUI_TEST_PG)"]
     async fn a_run_applies_once_and_then_stops() {
-        let (config, tls) = (config(), PgConnector::disabled());
-        clean(&config, &tls).await;
+        let schema = "runner_applies_once";
+        let (config, tls) = create_private_schema(schema).await;
 
         let set = vec![
             sql(1, "probe", "CREATE TABLE runner_probe (id int PRIMARY KEY)"),
@@ -392,15 +414,16 @@ mod tests {
         let (client, driver) = connect(&config, &tls).await.unwrap();
         let row = client
             .query_one(
-                "SELECT count(*) FROM information_schema.columns WHERE table_name = 'runner_probe'",
-                &[],
+                "SELECT count(*) FROM information_schema.columns \
+                 WHERE table_schema = $1 AND table_name = 'runner_probe'",
+                &[&schema],
             )
             .await
             .unwrap();
         assert_eq!(row.get::<_, i64>(0), 2, "both migrations reached the table");
         driver.abort();
 
-        clean(&config, &tls).await;
+        drop_private_schema(schema, &config, &tls).await;
     }
 
     /// A database nobody has migrated answers, and stays untouched.
@@ -411,8 +434,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a database (SAFFUI_TEST_PG)"]
     async fn a_fresh_database_has_everything_pending_and_is_left_alone() {
-        let (config, tls) = (config(), PgConnector::disabled());
-        clean(&config, &tls).await;
+        let schema = "runner_fresh_database";
+        let (config, tls) = create_private_schema(schema).await;
 
         let runner = MigrationRunner::new(vec![
             sql(1, "probe", "CREATE TABLE runner_probe (id int PRIMARY KEY)"),
@@ -451,15 +474,15 @@ mod tests {
         );
         driver.abort();
 
-        clean(&config, &tls).await;
+        drop_private_schema(schema, &config, &tls).await;
     }
 
     /// What status promises is what a run then does, and nothing is left over.
     #[tokio::test]
     #[ignore = "needs a database (SAFFUI_TEST_PG)"]
     async fn status_names_what_the_run_applies_and_then_says_so() {
-        let (config, tls) = (config(), PgConnector::disabled());
-        clean(&config, &tls).await;
+        let schema = "runner_status_matches_run";
+        let (config, tls) = create_private_schema(schema).await;
 
         let runner = MigrationRunner::new(vec![
             sql(1, "probe", "CREATE TABLE runner_probe (id int PRIMARY KEY)"),
@@ -494,15 +517,15 @@ mod tests {
             "the history answers with the names it recorded"
         );
 
-        clean(&config, &tls).await;
+        drop_private_schema(schema, &config, &tls).await;
     }
 
     /// Looking does not excuse a database whose history disagrees with the set.
     #[tokio::test]
     #[ignore = "needs a database (SAFFUI_TEST_PG)"]
     async fn status_refuses_a_history_that_drifted() {
-        let (config, tls) = (config(), PgConnector::disabled());
-        clean(&config, &tls).await;
+        let schema = "runner_status_drift";
+        let (config, tls) = create_private_schema(schema).await;
 
         MigrationRunner::new(vec![sql(
             1,
@@ -530,7 +553,7 @@ mod tests {
             }
         );
 
-        clean(&config, &tls).await;
+        drop_private_schema(schema, &config, &tls).await;
     }
 
     /// A history that cannot be read is not a history that is not there.
@@ -542,8 +565,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a database (SAFFUI_TEST_PG)"]
     async fn a_history_it_may_not_read_is_not_an_empty_one() {
-        let (config, tls) = (config(), PgConnector::disabled());
-        clean(&config, &tls).await;
+        let schema = "runner_unreadable_history";
+        let (config, tls) = create_private_schema(schema).await;
 
         let set = vec![sql(
             1,
@@ -558,18 +581,16 @@ mod tests {
             .batch_execute(&format!(
                 "{DROP_PROBE_ROLE} \
                  CREATE ROLE pgcore_probe LOGIN PASSWORD 'probe'; \
-                 GRANT USAGE ON SCHEMA public TO pgcore_probe; \
+                 GRANT USAGE ON SCHEMA {schema} TO pgcore_probe; \
                  REVOKE ALL ON schema_migrations FROM PUBLIC"
             ))
             .await
             .unwrap();
 
-        let barred: Config = std::env::var("SAFFUI_TEST_PG")
-            .unwrap()
-            .replace("user=postgres", "user=pgcore_probe")
-            .replace("password=saffui", "password=probe")
-            .parse()
-            .unwrap();
+        // Cloned rather than re-parsed, so the barred role arrives in the same
+        // schema as the history it is being refused.
+        let mut barred = config.clone();
+        barred.user("pgcore_probe").password("probe");
 
         let refused = runner
             .status(&barred, &tls, &OpenSslDigest)
@@ -580,15 +601,15 @@ mod tests {
         client.batch_execute(DROP_PROBE_ROLE).await.unwrap();
         driver.abort();
 
-        clean(&config, &tls).await;
+        drop_private_schema(schema, &config, &tls).await;
     }
 
     /// What the history records is what the plan compares against.
     #[tokio::test]
     #[ignore = "needs a database (SAFFUI_TEST_PG)"]
     async fn an_edit_after_the_fact_stops_the_next_run() {
-        let (config, tls) = (config(), PgConnector::disabled());
-        clean(&config, &tls).await;
+        let schema = "runner_edit_after_the_fact";
+        let (config, tls) = create_private_schema(schema).await;
 
         let original = vec![sql(
             1,
@@ -618,7 +639,7 @@ mod tests {
             }
         );
 
-        clean(&config, &tls).await;
+        drop_private_schema(schema, &config, &tls).await;
     }
 
     /// A migration that fails leaves nothing behind, and is still pending.
@@ -628,8 +649,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a database (SAFFUI_TEST_PG)"]
     async fn a_failed_migration_records_nothing() {
-        let (config, tls) = (config(), PgConnector::disabled());
-        clean(&config, &tls).await;
+        let schema = "runner_failed_migration";
+        let (config, tls) = create_private_schema(schema).await;
 
         let broken = vec![sql(
             1,
@@ -649,8 +670,9 @@ mod tests {
         let (client, driver) = connect(&config, &tls).await.unwrap();
         let tables: i64 = client
             .query_one(
-                "SELECT count(*) FROM information_schema.tables WHERE table_name = 'runner_probe'",
-                &[],
+                "SELECT count(*) FROM information_schema.tables \
+                 WHERE table_schema = $1 AND table_name = 'runner_probe'",
+                &[&schema],
             )
             .await
             .unwrap()
@@ -665,15 +687,15 @@ mod tests {
         assert_eq!(tables, 0, "a failed migration left its table behind");
         assert_eq!(recorded, 0, "a failed migration was recorded as applied");
 
-        clean(&config, &tls).await;
+        drop_private_schema(schema, &config, &tls).await;
     }
 
     /// An empty set is a valid run against a database with no history.
     #[tokio::test]
     #[ignore = "needs a database (SAFFUI_TEST_PG)"]
     async fn a_set_with_nothing_in_it_is_up_to_date() {
-        let (config, tls) = (config(), PgConnector::disabled());
-        clean(&config, &tls).await;
+        let schema = "runner_empty_set";
+        let (config, tls) = create_private_schema(schema).await;
 
         let report = MigrationRunner::new(Vec::new())
             .run(&config, &tls, &OpenSslDigest)
@@ -682,6 +704,6 @@ mod tests {
 
         assert!(report.is_up_to_date());
 
-        clean(&config, &tls).await;
+        drop_private_schema(schema, &config, &tls).await;
     }
 }

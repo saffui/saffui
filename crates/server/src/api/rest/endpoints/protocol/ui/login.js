@@ -15,7 +15,12 @@
   const key = document.getElementById("key");
   const app = document.getElementById("app");
   const notice = document.getElementById("notice");
-  const button = form.querySelector("button");
+  const asking = document.getElementById("asking");
+  const askingClient = document.getElementById("asking-client");
+  const askingScopes = document.getElementById("asking-scopes");
+  const button = document.getElementById("continue");
+  const allow = document.getElementById("allow");
+  const deny = document.getElementById("deny");
 
   // Everything told so far. Every round carries all of it, because the flow
   // runs each step against the whole answer: a second factor travels beside
@@ -32,6 +37,27 @@
     code.hidden = !codeOn;
     key.hidden = !keyOn;
     app.hidden = !appOn;
+    asking.hidden = true;
+    button.hidden = false;
+  }
+
+  // What the client asked for, listed by name. Written as text and never as
+  // markup: the names travel from a client's own registration.
+  function ask(told) {
+    askingClient.textContent = told.client_name || told.client_id || "";
+    askingScopes.replaceChildren();
+    (told.scopes || []).forEach(function (scope) {
+      const line = document.createElement("li");
+      line.textContent = scope;
+      askingScopes.appendChild(line);
+    });
+    credentials.hidden = true;
+    code.hidden = true;
+    key.hidden = true;
+    app.hidden = true;
+    asking.hidden = false;
+    // The two buttons are the answer, so the form's own has nothing to do.
+    button.hidden = true;
   }
 
   function forget() {
@@ -57,8 +83,15 @@
     return { status: response.status, told: told };
   }
 
+  // No button answers twice: a round in flight leaves them all shut.
+  function busy(yes) {
+    button.disabled = yes;
+    allow.disabled = yes;
+    deny.disabled = yes;
+  }
+
   async function round() {
-    button.disabled = true;
+    busy(true);
     say("");
     try {
       const { status, told } = await post();
@@ -76,6 +109,16 @@
         forget();
         show(true, false, false);
         say("Sign-in refused.");
+        return;
+      }
+      if (told.status === "consent") {
+        ask(told);
+        return;
+      }
+      if (told.status === "locked-out") {
+        forget();
+        show(true, false, false);
+        say("Too many failed attempts. Sign-in is paused for a while.");
         return;
       }
       if (told.status !== "challenge") {
@@ -101,7 +144,7 @@
     } catch (error) {
       say("Something went wrong. Try again.");
     } finally {
-      button.disabled = false;
+      busy(false);
     }
   }
 
@@ -134,6 +177,16 @@
     }
     await round();
   }
+
+  allow.addEventListener("click", function () {
+    answered.consent = "granted";
+    round();
+  });
+
+  deny.addEventListener("click", function () {
+    answered.consent = "refused";
+    round();
+  });
 
   form.addEventListener("submit", function (event) {
     event.preventDefault();

@@ -36,6 +36,8 @@ button {
   border-radius: .25rem;
 }
 button:disabled { opacity: .6; }
+#deny { margin-top: .5rem; color: #18181b; background: #fff; box-shadow: inset 0 0 0 1px #d4d4d8; }
+#asking-scopes { margin: .5rem 0 0; padding-left: 1.25rem; }
 #notice, .flash { margin: 1rem 0 0; color: #b91c1c; }
 .told { margin: 1rem 0 0; }
 [hidden], .flash { display: none; }

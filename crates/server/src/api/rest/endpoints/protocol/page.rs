@@ -285,3 +285,49 @@ const RESET_PAGE: &str = r#"<!doctype html>
 <p id="no-such-link" class="flash" role="alert">This link has been used, or has expired. Ask for another.</p>
 </main></body></html>
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{PAGE, SCRIPT};
+
+    /// The script reaches for the page by identifier, and a page that lost one
+    /// hands it `null`. Every name it asks for has to be on the page.
+    #[test]
+    fn every_element_the_script_reaches_for_is_on_the_page() {
+        let mut asked = Vec::new();
+        let mut rest = SCRIPT;
+        while let Some(at) = rest.find("getElementById(\"") {
+            rest = &rest[at + "getElementById(\"".len()..];
+            let end = rest.find('"').expect("an unterminated identifier");
+            asked.push(&rest[..end]);
+            rest = &rest[end..];
+        }
+        assert!(asked.len() >= 8, "the identifiers were not read: {asked:?}");
+        for named in asked {
+            assert!(
+                PAGE.contains(&format!("id=\"{named}\"")),
+                "the script asks for `{named}`, which the page does not carry"
+            );
+        }
+    }
+
+    /// A round the script cannot name lands on its own last branch, which says
+    /// only that something went wrong. Every outcome the endpoint speaks has to
+    /// be one the script answers.
+    #[test]
+    fn every_outcome_the_endpoint_speaks_is_one_the_script_answers() {
+        for named in [
+            "challenge",
+            "consent",
+            "locked-out",
+            "refused",
+            "admitted",
+            "sent_back",
+        ] {
+            assert!(
+                SCRIPT.contains(&format!("\"{named}\"")),
+                "the endpoint answers `{named}`, which the script never names"
+            );
+        }
+    }
+}

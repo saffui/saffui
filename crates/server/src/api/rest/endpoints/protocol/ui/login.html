@@ -32,7 +32,13 @@
         <input name="totp_register" inputmode="numeric" autocomplete="one-time-code">
       </label>
     </div>
-    <button type="submit">Continue</button>
+    <div id="asking" hidden>
+      <p><strong id="asking-client"></strong> is asking for access to your account.</p>
+      <ul id="asking-scopes"></ul>
+      <button type="button" id="allow">Allow</button>
+      <button type="button" id="deny">Deny</button>
+    </div>
+    <button type="submit" id="continue">Continue</button>
   </form>
   <p id="notice" role="alert" hidden></p>
   <!-- Without a script, the outcome arrives as a fragment and these show themselves. -->
@@ -40,7 +46,7 @@
   <p id="no-such-login" class="flash" role="alert">This sign-in has expired or was never started. Go back to the application and try again.</p>
   <p id="key-needs-script" class="flash" role="alert">A security key needs scripts enabled on this page.</p>
   <p id="wrong-browser" class="flash" role="alert">Open that link in the browser where you started signing in. It is still good.</p>
-  <p id="consent" class="flash" role="alert">This application is asking for access to your account. Enable scripts, or use an application that shows the request.</p>
+  <p id="consent" class="flash" role="alert">This application is asking for access to your account, and answering that needs scripts enabled on this page.</p>
   <p id="locked-out" class="flash" role="alert">Too many failed attempts. Sign-in is paused for a while; try again later, or ask an administrator to lift it.</p>
 </main>
 <script src="login.js"></script>

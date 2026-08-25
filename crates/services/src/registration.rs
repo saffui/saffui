@@ -282,8 +282,6 @@ pub async fn amend(
 ) -> Result<ClientModel, Refused> {
     let mut spec = spec_of(metadata, client.registered_at.unwrap_or_else(Utc::now))?;
     spec.confidential = client.public_client != Some(true);
-    // What the realm imposed at registration is not the client's to edit away.
-    spec.registered.consent_required = client.consent_required;
     let amended = admin_clients::reshape_registered(transaction, &client.client_id, &spec).await?;
     Ok(amended)
 }

@@ -10,10 +10,12 @@
   // all: the form would post with the page's script silently absent, which is
   // exactly what the certification browser did for as long as that keyword was
   // here.
-  if (typeof Promise !== "function") {
-    return;
-  }
-  if (typeof fetch !== "function" && typeof XMLHttpRequest !== "function") {
+  //
+  // `fetch` and nothing else on purpose. An engine without it is driven by
+  // something that follows navigations and does not wait for a request made in
+  // the background: reaching for `XMLHttpRequest` there wins the submit and
+  // then never finishes it, which is worse than not running at all.
+  if (typeof fetch !== "function" || typeof Promise !== "function") {
     return;
   }
 
@@ -81,49 +83,20 @@
 
   // The page is served at the URL it posts to, so the realm is never parsed.
   function post() {
-    const body = JSON.stringify(answered);
-    if (typeof fetch === "function") {
-      return fetch(location.pathname, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "content-type": "application/json" },
-        body: body,
-      }).then(function (response) {
-        return response
-          .json()
-          .catch(function () {
-            return {};
-          })
-          .then(function (told) {
-            return { status: response.status, told: told };
-          });
-      });
-    }
-    return sent(body);
-  }
-
-  // The same round for a browser that has no `fetch`. Cookies ride along on a
-  // same-origin request without asking, which is the one thing `fetch` needs
-  // told. A body that does not parse is no answer rather than an error, as
-  // above.
-  function sent(body) {
-    return new Promise(function (resolve, reject) {
-      const asking = new XMLHttpRequest();
-      asking.open("POST", location.pathname, true);
-      asking.setRequestHeader("content-type", "application/json");
-      asking.onload = function () {
-        let told;
-        try {
-          told = JSON.parse(asking.responseText);
-        } catch (error) {
-          told = {};
-        }
-        resolve({ status: asking.status, told: told });
-      };
-      asking.onerror = function () {
-        reject(new Error("the round did not reach the server"));
-      };
-      asking.send(body);
+    return fetch(location.pathname, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(answered),
+    }).then(function (response) {
+      return response
+        .json()
+        .catch(function () {
+          return {};
+        })
+        .then(function (told) {
+          return { status: response.status, told: told };
+        });
     });
   }
 

@@ -3,9 +3,17 @@
 (function () {
   "use strict";
 
-  // A browser without `fetch` keeps the form it has: the submission goes to
-  // the server as a form, and the server sends the browser on.
-  if (typeof fetch !== "function") {
+  // A browser without promises keeps the form it has: the submission goes to
+  // the server as a form, and the server sends the browser on. Nothing below is
+  // written as `async`, because an engine that cannot parse that keyword fails
+  // the whole file rather than this line, and then there is no fallback at
+  // all: the form would post with the page's script silently absent, which is
+  // exactly what the certification browser did for as long as that keyword was
+  // here.
+  if (typeof Promise !== "function") {
+    return;
+  }
+  if (typeof fetch !== "function" && typeof XMLHttpRequest !== "function") {
     return;
   }
 
@@ -72,15 +80,51 @@
   }
 
   // The page is served at the URL it posts to, so the realm is never parsed.
-  async function post() {
-    const response = await fetch(location.pathname, {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(answered),
+  function post() {
+    const body = JSON.stringify(answered);
+    if (typeof fetch === "function") {
+      return fetch(location.pathname, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: body,
+      }).then(function (response) {
+        return response
+          .json()
+          .catch(function () {
+            return {};
+          })
+          .then(function (told) {
+            return { status: response.status, told: told };
+          });
+      });
+    }
+    return sent(body);
+  }
+
+  // The same round for a browser that has no `fetch`. Cookies ride along on a
+  // same-origin request without asking, which is the one thing `fetch` needs
+  // told. A body that does not parse is no answer rather than an error, as
+  // above.
+  function sent(body) {
+    return new Promise(function (resolve, reject) {
+      const asking = new XMLHttpRequest();
+      asking.open("POST", location.pathname, true);
+      asking.setRequestHeader("content-type", "application/json");
+      asking.onload = function () {
+        let told;
+        try {
+          told = JSON.parse(asking.responseText);
+        } catch (error) {
+          told = {};
+        }
+        resolve({ status: asking.status, told: told });
+      };
+      asking.onerror = function () {
+        reject(new Error("the round did not reach the server"));
+      };
+      asking.send(body);
     });
-    const told = await response.json().catch(() => ({}));
-    return { status: response.status, told: told };
   }
 
   // No button answers twice: a round in flight leaves them all shut.
@@ -90,92 +134,105 @@
     deny.disabled = yes;
   }
 
-  async function round() {
+  function round() {
     busy(true);
     say("");
-    try {
-      const { status, told } = await post();
-      // Admitted, or refused for the client to hear: either way the
-      // browser goes where the server said.
-      if (told.status === "admitted" || told.status === "sent_back") {
-        location.assign(told.redirect_to);
-        return;
-      }
-      if (status === 404) {
-        say("This sign-in has expired or was never started. Go back to the application and try again.");
-        return;
-      }
-      if (told.status === "refused") {
-        forget();
-        show(true, false, false);
-        say("Sign-in refused.");
-        return;
-      }
-      if (told.status === "consent") {
-        ask(told);
-        return;
-      }
-      if (told.status === "locked-out") {
-        forget();
-        show(true, false, false);
-        say("Too many failed attempts. Sign-in is paused for a while.");
-        return;
-      }
-      if (told.status !== "challenge") {
+    return post()
+      .then(function (answer) {
+        return read(answer.status, answer.told);
+      })
+      .catch(function () {
         say("Something went wrong. Try again.");
-        return;
-      }
-      if (told.execution === "totp-register" && told.asks) {
-        document.getElementById("otpauth").href = told.asks.otpauth;
-        document.getElementById("secret").textContent = told.asks.secret;
-        show(false, false, false, true);
-        form.totp_register.focus();
-        return;
-      }
-      if (told.asks) {
-        await ceremony(told);
-        return;
-      }
-      // A step that issues nothing and still waits is a code from an app.
-      if (answered.password) {
-        show(false, true, false);
-        form.totp.focus();
-      }
-    } catch (error) {
+      })
+      .then(function () {
+        busy(false);
+      });
+  }
+
+  // What one round was told. Returns whatever the ceremony returns, so the
+  // round it starts is part of the same chain.
+  function read(status, told) {
+    // Admitted, or refused for the client to hear: either way the
+    // browser goes where the server said.
+    if (told.status === "admitted" || told.status === "sent_back") {
+      location.assign(told.redirect_to);
+      return;
+    }
+    if (status === 404) {
+      say("This sign-in has expired or was never started. Go back to the application and try again.");
+      return;
+    }
+    if (told.status === "refused") {
+      forget();
+      show(true, false, false);
+      say("Sign-in refused.");
+      return;
+    }
+    if (told.status === "consent") {
+      ask(told);
+      return;
+    }
+    if (told.status === "locked-out") {
+      forget();
+      show(true, false, false);
+      say("Too many failed attempts. Sign-in is paused for a while.");
+      return;
+    }
+    if (told.status !== "challenge") {
       say("Something went wrong. Try again.");
-    } finally {
-      busy(false);
+      return;
+    }
+    if (told.execution === "totp-register" && told.asks) {
+      document.getElementById("otpauth").href = told.asks.otpauth;
+      document.getElementById("secret").textContent = told.asks.secret;
+      show(false, false, false, true);
+      form.totp_register.focus();
+      return;
+    }
+    if (told.asks) {
+      return ceremony(told);
+    }
+    // A step that issues nothing and still waits is a code from an app.
+    if (answered.password) {
+      show(false, true, false);
+      form.totp.focus();
     }
   }
 
   // The options arrive in the W3C JSON form and go back the same way, which
   // is what the browser's own JSON methods speak.
-  async function ceremony(told) {
+  function ceremony(told) {
     if (!window.PublicKeyCredential || !PublicKeyCredential.parseRequestOptionsFromJSON) {
       say("This browser cannot use a security key here.");
-      return;
+      return Promise.resolve();
     }
     show(false, false, true);
     const options = told.asks.publicKey;
-    try {
-      if (told.execution === "webauthn-register") {
-        const created = await navigator.credentials.create({
+    let asked;
+    if (told.execution === "webauthn-register") {
+      asked = navigator.credentials
+        .create({
           publicKey: PublicKeyCredential.parseCreationOptionsFromJSON(options),
+        })
+        .then(function (created) {
+          answered.webauthn_register = JSON.stringify(created.toJSON());
         });
-        answered.webauthn_register = JSON.stringify(created.toJSON());
-      } else {
-        const got = await navigator.credentials.get({
+    } else {
+      asked = navigator.credentials
+        .get({
           publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(options),
           mediation: told.asks.mediation || undefined,
+        })
+        .then(function (got) {
+          answered.webauthn = JSON.stringify(got.toJSON());
         });
-        answered.webauthn = JSON.stringify(got.toJSON());
-      }
-    } catch (error) {
+    }
+    // The key's own refusal is answered here. A failure of the round it starts
+    // is not: that one belongs to the round, which says its own piece.
+    return asked.then(round, function () {
       show(true, false, false);
       say("The key did not answer.");
-      return;
-    }
-    await round();
+    });
   }
 
   allow.addEventListener("click", function () {

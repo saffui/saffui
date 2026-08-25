@@ -1,6 +1,10 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
-use store::providers::{login, oidc, one_time_tokens, pushed, sessions};
+use store::providers::{deliveries, login, oidc, one_time_tokens, pushed, sessions};
+
+/// How long a receipt is kept. One nobody looked at for a month is one nobody
+/// is going to, and it names an address.
+const RECEIPTS_KEPT_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the sweep could not run")]
@@ -14,6 +18,7 @@ pub struct Swept {
     pub assertions: u64,
     pub logins_in_progress: u64,
     pub one_time_tokens: u64,
+    pub delivery_receipts: u64,
     pub pushed_requests: u64,
     pub sessions: u64,
 }
@@ -25,6 +30,7 @@ impl Swept {
             + self.assertions
             + self.logins_in_progress
             + self.one_time_tokens
+            + self.delivery_receipts
             + self.pushed_requests
             + self.sessions
     }
@@ -35,6 +41,7 @@ impl Swept {
         self.assertions += other.assertions;
         self.logins_in_progress += other.logins_in_progress;
         self.one_time_tokens += other.one_time_tokens;
+        self.delivery_receipts += other.delivery_receipts;
         self.pushed_requests += other.pushed_requests;
         self.sessions += other.sessions;
     }
@@ -63,6 +70,14 @@ pub async fn drop_expired_rows(
         one_time_tokens: one_time_tokens::drop_expired(transaction, now)
             .await
             .map_err(failed)?,
+        // A receipt is a record of a send, and one nobody looked at for a
+        // month is one nobody is going to.
+        delivery_receipts: deliveries::drop_older_than(
+            transaction,
+            now - chrono::Duration::days(RECEIPTS_KEPT_DAYS),
+        )
+        .await
+        .map_err(failed)?,
         pushed_requests: pushed::drop_expired_requests(transaction)
             .await
             .map_err(failed)?,

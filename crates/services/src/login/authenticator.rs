@@ -336,6 +336,10 @@ async fn magic_link(
                      you started from.\n\n{link}\n"
                 ),
             },
+            about: crate::messaging::About {
+                user_id: subject.user_id.clone(),
+                purpose: MAGIC_LINK.to_owned(),
+            },
         }),
     }
 }

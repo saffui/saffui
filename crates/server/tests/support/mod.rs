@@ -150,12 +150,24 @@ pub fn sealing_sending(
 /// would have received.
 #[derive(Default, Clone)]
 #[allow(dead_code, reason = "only the mailed suite sends")]
-pub struct Postbox(Arc<std::sync::Mutex<Vec<services::messaging::Message>>>);
+pub struct Postbox {
+    held: Arc<std::sync::Mutex<Vec<services::messaging::Message>>>,
+    refuses: bool,
+}
 
 #[allow(dead_code, reason = "only the mailed suite sends")]
 impl Postbox {
     pub fn held(&self) -> Vec<services::messaging::Message> {
-        self.0.lock().expect("the postbox").clone()
+        self.held.lock().expect("the postbox").clone()
+    }
+
+    /// One that takes the message and refuses it, which is a server that
+    /// answers and says no.
+    pub fn refusing() -> Self {
+        Postbox {
+            held: Arc::default(),
+            refuses: true,
+        }
     }
 }
 
@@ -166,7 +178,10 @@ impl services::messaging::Deliver for Postbox {
         _settings: &models::entities::mail::MailSettings,
         message: &services::messaging::Message,
     ) -> Result<(), services::messaging::Undelivered> {
-        self.0.lock().expect("the postbox").push(message.clone());
+        if self.refuses {
+            return Err(services::messaging::Undelivered::Refused);
+        }
+        self.held.lock().expect("the postbox").push(message.clone());
         Ok(())
     }
 }

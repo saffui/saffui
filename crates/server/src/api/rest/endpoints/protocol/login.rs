@@ -171,7 +171,7 @@ pub async fn answer(
                     sending,
                 } => {
                     if let Some(outgoing) = sending {
-                        deliver(&sealing, *outgoing).await;
+                        deliver(&sealing, &pool, &tenancy, &context, *outgoing).await;
                     }
                     match spoken {
                         Spoken::Json => {

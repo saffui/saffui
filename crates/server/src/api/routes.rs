@@ -152,6 +152,12 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/messages",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(users::messages)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/users/{user}/lockout",
             action: AdminAction::UserRead,
             handler: Some(|| web::get().to(users::lockout)),

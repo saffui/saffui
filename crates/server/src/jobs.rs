@@ -46,6 +46,7 @@ pub fn sweep_expired_rows(
                     assertions = swept.assertions,
                     logins_in_progress = swept.logins_in_progress,
                     one_time_tokens = swept.one_time_tokens,
+                    delivery_receipts = swept.delivery_receipts,
                     pushed_requests = swept.pushed_requests,
                     sessions = swept.sessions,
                     "swept expired rows"

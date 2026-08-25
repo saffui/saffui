@@ -269,3 +269,22 @@ pub async fn lift_lockout(
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
+
+/// What this server tried to send this person, and how it went.
+pub async fn messages(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let held = store::providers::deliveries::of_user(&transaction, &user_id, 50)
+        .await
+        .map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "deliveries": held })))
+}

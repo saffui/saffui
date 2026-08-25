@@ -704,10 +704,21 @@ async fn a_confirmation_link_does_not_finish_another_login() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    // Told which browser to use rather than refused, and the login waits.
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["asks"]["wrong_browser"].as_bool(),
+        Some(true),
+        "{body}"
+    );
+    assert_ne!(
+        body["status"].as_str(),
+        Some("admitted"),
+        "a link finished a login it was not made for: {body}"
+    );
     assert!(
         !address_is_verified(&plane).await,
-        "a link finished a login it was not made for"
+        "a link confirmed an address through a login it was not made for"
     );
     assert_eq!(
         plane.subject_owes().await,
@@ -748,4 +759,103 @@ async fn a_realm_that_cannot_send_lets_the_login_through_and_keeps_the_debt() {
         "the debt was struck by a ceremony that never ran"
     );
     assert!(!address_is_verified(&plane).await);
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_link_opened_elsewhere_says_so_and_still_works_where_it_began() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane).await;
+    let postbox = Postbox::default();
+
+    let began = open(&plane, &postbox).await;
+    answer(
+        &plane,
+        &postbox,
+        &began,
+        serde_json::json!({ "username": support::SUBJECT }),
+    )
+    .await;
+    let token = token_in(&postbox.held()[0].body);
+
+    // Followed from another login, which is the mail opened on another device.
+    let elsewhere = open(&plane, &postbox).await;
+    answer(
+        &plane,
+        &postbox,
+        &elsewhere,
+        serde_json::json!({ "username": support::SUBJECT }),
+    )
+    .await;
+    let (status, told) = answer(
+        &plane,
+        &postbox,
+        &elsewhere,
+        serde_json::json!({ "username": support::SUBJECT, "magic_link": token }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a person who opened their mail elsewhere was refused: {told}"
+    );
+    assert_eq!(told["status"].as_str(), Some("challenge"), "{told}");
+    assert_eq!(
+        told["asks"]["wrong_browser"].as_bool(),
+        Some(true),
+        "the page was not told which browser to use: {told}"
+    );
+
+    // And the link is still good where it began, which is the whole point of
+    // saying so rather than refusing.
+    let (status, admitted) = answer(
+        &plane,
+        &postbox,
+        &began,
+        serde_json::json!({ "username": support::SUBJECT, "magic_link": token }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(
+        admitted["status"].as_str(),
+        Some("admitted"),
+        "opening the mail elsewhere spent the link: {admitted}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_link_nobody_issued_is_still_a_plain_refusal() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane).await;
+    let postbox = Postbox::default();
+
+    let binding = open(&plane, &postbox).await;
+    answer(
+        &plane,
+        &postbox,
+        &binding,
+        serde_json::json!({ "username": support::SUBJECT }),
+    )
+    .await;
+    let (status, told) = answer(
+        &plane,
+        &postbox,
+        &binding,
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "magic_link": "not-a-token-anybody-minted",
+        }),
+    )
+    .await;
+    // The flow offers a password as well, so an unknown link leaves the login
+    // waiting on that rather than ending it. What matters is that it admits
+    // nobody, and that it is not mistaken for a link opened elsewhere.
+    assert_ne!(told["status"].as_str(), Some("admitted"), "{told}");
+    assert_eq!(
+        told["asks"].get("wrong_browser"),
+        None,
+        "a link nobody issued was called one opened elsewhere: {told}"
+    );
+    assert_eq!(status, StatusCode::OK, "{told}");
 }

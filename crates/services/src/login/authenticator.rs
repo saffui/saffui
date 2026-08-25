@@ -245,11 +245,21 @@ async fn magic_link(
             posting.now,
         )
         .await;
-        return Answered::plain(match spent {
-            Ok(true) => Outcome::Passed,
-            Ok(false) => Outcome::Failed,
-            Err(_) => Outcome::Failed,
-        });
+        return match spent {
+            Ok(one_time_tokens::Spent::Yes) => Answered::plain(Outcome::Passed),
+            // Pending and not failed: the person can still go back to the
+            // browser they started in and follow it there, and a refusal here
+            // ends the very login they would go back to.
+            Ok(one_time_tokens::Spent::ElsewhereBound) => Answered {
+                outcome: Outcome::Pending,
+                asks: Some(Challenge {
+                    shown: serde_json::json!({ "wrong_browser": true }),
+                    remembered: serde_json::Value::Null,
+                }),
+                sending: None,
+            },
+            Ok(one_time_tokens::Spent::Unknown) | Err(_) => Answered::plain(Outcome::Failed),
+        };
     }
 
     // Both halves, and before anything is minted. A realm that names no server

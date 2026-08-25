@@ -95,7 +95,7 @@ pub async fn spend(
     // whoever holds it.
     bound_to: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
-) -> StoreResult<bool> {
+) -> StoreResult<Spent> {
     let hash = digest
         .hash(HashAlg::Sha256, presented.as_bytes())
         .map_err(|_| StoreError::Backend)?;
@@ -109,7 +109,38 @@ pub async fn spend(
         )
         .await
         .map_err(|_| StoreError::Backend)?;
-    Ok(spent > 0)
+    if spent > 0 {
+        return Ok(Spent::Yes);
+    }
+
+    // Only on the miss, so the common path is still one statement. The row is
+    // read and not removed: a link opened in the wrong browser must survive to
+    // be used in the right one.
+    let elsewhere = transaction
+        .query_opt(
+            "SELECT 1 FROM one_time_tokens \
+             WHERE user_id = $1 AND purpose = $2 AND token_hash = $3 AND expires_at > $4",
+            &[&user_id, &purpose, &hash, &now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(match elsewhere {
+        Some(_) => Spent::ElsewhereBound,
+        None => Spent::Unknown,
+    })
+}
+
+/// What came of presenting a token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Spent {
+    Yes,
+    /// Live and this person's, and made for another login. Told apart from an
+    /// unknown one because it is the ordinary way a mailed link is followed:
+    /// the mail was opened somewhere other than where the login began.
+    ElsewhereBound,
+    /// Unknown, already spent, or expired. One answer, because telling them
+    /// apart says which links once existed.
+    Unknown,
 }
 
 /// When the live token for this user and purpose was minted, if there is one.

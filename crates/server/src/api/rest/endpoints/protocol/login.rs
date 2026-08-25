@@ -200,13 +200,17 @@ pub async fn answer(
                             }
                             uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(body)
                         }
-                        // A key needs the script; a code needs only the field.
+                        // A key needs the script; a code needs only the
+                        // field; a link followed in the wrong browser needs
+                        // to be told so rather than shown either.
                         Spoken::Form => shown(
                             &page,
-                            if asks.is_some() {
-                                "key-needs-script"
-                            } else {
-                                "code"
+                            match &asks {
+                                Some(asks) if asks.get("wrong_browser").is_some() => {
+                                    "wrong-browser"
+                                }
+                                Some(_) => "key-needs-script",
+                                None => "code",
                             },
                         ),
                     }

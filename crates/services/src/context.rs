@@ -121,7 +121,7 @@ pub async fn admit_bearer(
         transaction,
         keys,
         bearer,
-        crate::token::Binding::Presented(None),
+        crate::token::Binding::Presented(crate::token::Proofs::none()),
         now,
     )
     .await?;

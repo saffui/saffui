@@ -5,7 +5,7 @@ use crypto::jose::jws::{
 use crypto::jose::jwt::{self, JwtPayload};
 use crypto::provider::{CryptoProvider, SignAlg};
 use models::entities::keys::RealmSigningKey;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 /// What a token is for.
 ///
@@ -77,6 +77,10 @@ pub struct Minting<'a> {
     /// stands between a stolen token and its use: a claim that decides that
     /// does not ride in the bag a mapper writes into.
     pub bound_to: Option<String>,
+    /// The certificate the caller presented, RFC 8705 §3.1, as its thumbprint.
+    /// Written beside the key rather than instead of it: a caller that proved
+    /// both gets a token naming both, and satisfying it means satisfying both.
+    pub certified_by: Option<String>,
 }
 
 /// A token, and the two things about it that have to be recorded.
@@ -178,9 +182,16 @@ pub fn mint_token(
 
     // After the mappers, and not among them: nothing a flow adds can put a
     // token on another key, or take it off the one it was bound to.
-    if let Some(thumbprint) = minting.bound_to {
+    let confirmation: Map<String, Value> = [
+        ("jkt", minting.bound_to),
+        ("x5t#S256", minting.certified_by),
+    ]
+    .into_iter()
+    .filter_map(|(method, held)| held.map(|held| (method.to_owned(), Value::from(held))))
+    .collect();
+    if !confirmation.is_empty() {
         payload
-            .set_claim("cnf", Some(json!({ "jkt": thumbprint })))
+            .set_claim("cnf", Some(Value::Object(confirmation)))
             .map_err(|_| Unmintable::Unsignable)?;
     }
 

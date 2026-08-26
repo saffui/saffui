@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use services::userinfo::{self, Untold};
 use store::tenancy::{Tenancy, resolve};
 
+use crate::api::provenance::read_client_certificate;
 use crate::api::rest::endpoints::protocol::basic;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 
@@ -46,6 +47,10 @@ pub async fn tell(
         return faulted();
     };
 
+    // RFC 8705 §3. Read only from a proxy this deployment named, so an
+    // ordinary caller cannot claim a certificate by writing a header.
+    let certificate = read_client_certificate(&request, sealing.provider.as_ref());
+
     // RFC 9449 §7.1. Proven here, where the token is presented, and carrying
     // `ath`: a proof that did not name this token would bind a request holding
     // another one.
@@ -78,7 +83,18 @@ pub async fn tell(
         }
     };
 
-    match userinfo::claims_for(&transaction, &keys, &bearer, proven.as_ref(), now).await {
+    match userinfo::claims_for(
+        &transaction,
+        &keys,
+        &bearer,
+        services::token::Proofs {
+            key: proven.as_ref(),
+            certificate: certificate.as_deref(),
+        },
+        now,
+    )
+    .await
+    {
         Ok(answer) if !answer.is_a_token() => {
             uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
                 .json(Value::Object(answer.claims))

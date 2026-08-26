@@ -1,4 +1,3 @@
-#![recursion_limit = "512"]
 pub mod api;
 pub mod error;
 pub mod jobs;

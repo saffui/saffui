@@ -50,6 +50,7 @@ fn signing_key() -> (RealmSigningKey, RealmSigningKeyView) {
 fn minting<'a>(kind: Kind, now: chrono::DateTime<Utc>) -> Minting<'a> {
     Minting {
         bound_to: None,
+        certified_by: None,
         kind,
         issuer: "main",
         subject: "ada",

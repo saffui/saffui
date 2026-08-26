@@ -126,16 +126,17 @@ pub async fn claims_for(
     transaction: &Transaction<'_>,
     keys: &[RealmSigningKeyView],
     bearer: &str,
-    // What the caller proved about the key, when it sent a proof at all. A
-    // token bound to a key is refused here without it.
-    proven: Option<&crate::dpop::Proven>,
+    // What the caller proved: a key it signed with, a certificate a trusted
+    // proxy said it presented, or neither. A token naming one is refused here
+    // without it.
+    proofs: token::Proofs<'_>,
     now: DateTime<Utc>,
 ) -> Result<Answer, Untold> {
     let verified = token::verify_presented(
         transaction,
         keys,
         bearer,
-        token::Binding::Presented(proven),
+        token::Binding::Presented(proofs),
         now,
     )
     .await

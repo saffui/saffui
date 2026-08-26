@@ -8,6 +8,7 @@ use store::keyring;
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
+use crate::api::provenance::read_client_certificate;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::caller;
 use crate::api::rest::endpoints::protocol::dto::{Asked, Denied, uncached};
@@ -77,6 +78,11 @@ pub async fn ask(
         return Denied::InvalidRequest.answer("grant_type is required");
     };
 
+    // RFC 8705 §3. Read only from a proxy this deployment named: a header is
+    // what an ordinary caller writes, and this one decides who a token belongs
+    // to.
+    let certified_by = read_client_certificate(&request, sealing.provider.as_ref());
+
     // RFC 9449 §5. A caller that proves a key gets tokens only that key may
     // present; one that proves none gets what it always got. Proven before the
     // grant runs, so a bad proof is refused rather than costing a code.
@@ -138,6 +144,7 @@ pub async fn ask(
                     realm: &realm,
                     issuer: &origin.issuer(&context.realm_id),
                     bound_to: bound_to.as_deref(),
+                    certified_by: certified_by.as_deref(),
                 },
                 &client,
                 &read_provenance(&request),
@@ -172,6 +179,7 @@ pub async fn ask(
                     realm: &realm,
                     issuer: &origin.issuer(&context.realm_id),
                     bound_to: bound_to.as_deref(),
+                    certified_by: certified_by.as_deref(),
                 },
                 &client,
                 &grant::Redeeming {
@@ -213,6 +221,7 @@ pub async fn ask(
                     realm: &realm,
                     issuer: &origin.issuer(&context.realm_id),
                     bound_to: bound_to.as_deref(),
+                    certified_by: certified_by.as_deref(),
                 },
                 &client,
                 &grant::Renewing {

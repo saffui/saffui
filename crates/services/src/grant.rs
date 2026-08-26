@@ -119,6 +119,10 @@ pub struct Within<'a> {
     /// then only be presented with it. Absent is a bearer token, which is what
     /// every caller that sends no proof still gets.
     pub bound_to: Option<&'a str>,
+    /// The certificate a named proxy said this caller presented, RFC 8705 §3,
+    /// as its thumbprint. Independent of the line above: a caller may prove
+    /// both, and what it is handed then names both.
+    pub certified_by: Option<&'a str>,
 }
 
 /// What a grant produced.
@@ -219,6 +223,7 @@ pub async fn client_credentials(
         &key,
         Minting {
             bound_to: within.bound_to.map(str::to_owned),
+            certified_by: within.certified_by.map(str::to_owned),
             kind: Kind::Access,
             issuer: within.issuer,
             subject: &account.user_id,
@@ -356,6 +361,7 @@ pub async fn authorization_code(
         .map_err(|_| Ungranted::Unreadable)?;
     let minting_for = |kind: Kind, life: Duration, audiences: Vec<String>| Minting {
         bound_to: within.bound_to.map(str::to_owned),
+        certified_by: within.certified_by.map(str::to_owned),
         kind,
         issuer: within.issuer,
         subject: &told,
@@ -691,7 +697,7 @@ pub async fn refresh_token(
         transaction,
         renewing.keys,
         renewing.refresh_token,
-        crate::token::Binding::Presented(None),
+        crate::token::Binding::Presented(crate::token::Proofs::none()),
         now,
     )
     .await
@@ -818,6 +824,7 @@ pub async fn refresh_token(
             .map_err(|_| Ungranted::Unreadable)?;
     let minting_for = |kind: Kind, life: Duration| Minting {
         bound_to: within.bound_to.map(str::to_owned),
+        certified_by: within.certified_by.map(str::to_owned),
         kind,
         issuer: within.issuer,
         subject: &told,

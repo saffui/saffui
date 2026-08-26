@@ -1,29 +1,17 @@
 use chrono::{DateTime, Duration, Utc};
 use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;
-use data_encoding::HEXLOWER;
 use deadpool_postgres::Transaction;
-use models::entities::acr::{self, AchievedAuth};
-use models::entities::oidc::AuthorizationCode;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::Value;
 use store::providers::login::AuthSession;
-use store::providers::{login, oidc, realms, sessions, users};
+use store::providers::{login, realms, sessions, users};
 use store::tenancy::TenantContext;
 
-use crate::claims_request::ClaimsRequest;
-use crate::landing::{Landing, ResponseMode};
 use crate::login::authenticator::Answer;
 use crate::login::enrolment::{self, Enrolment};
 use crate::login::{Progress, run_flow};
-use crate::response_type::ResponseType;
-
-/// How long a code may sit before it is spent.
-///
-/// One minute, which is OIDC Core §3.1.3.3's guidance. It travels through a
-/// browser redirect and is spent immediately after, so anything longer is a
-/// window nobody uses and an attacker might.
-const CODE_LIFESPAN: i64 = 60;
+use models::claims_request::ClaimsRequest;
 
 /// How long the login it opens lasts.
 const SSO_LIFESPAN: i64 = 36_000;
@@ -38,44 +26,52 @@ pub struct Sealing<'a> {
 /// Where a login stands after one answer.
 #[derive(Debug)]
 pub enum Step {
-    /// Too many failures stand against this person, so nothing was tried. The
-    /// instant logins resume, which the page shows rather than making somebody
-    /// guess whether their password is wrong.
-    LockedOut { until: i64 },
-    /// The person is established and is being asked whether this client may
-    /// have what it asked for.
+    /// The flow wants something more from the person.
+    Challenge {
+        execution_id: String,
+        asks: Option<serde_json::Value>,
+        sending: Option<Box<crate::messaging::Outgoing>>,
+    },
+    /// The client asks for what the person has not agreed to.
     Consent {
         client_id: String,
         client_name: String,
         scopes: Vec<String>,
     },
-    /// A step is waiting. The caller answers again, naming the same login, and
-    /// is shown what the step issued when it issued anything.
-    Challenge {
-        execution_id: String,
-        asks: Option<Value>,
-        /// A message this round produced, to be sent once the caller has
-        /// committed. Never sent inside the transaction that made it.
-        ///
-        /// Boxed: it carries a realm's whole mail settings, and every other
-        /// variant would otherwise be as large as the one that has them.
-        sending: Option<Box<crate::messaging::Outgoing>>,
+    /// The person is established, and the login is over. What is done with that
+    /// belongs to whatever asked for the login: a redirect URI and a response
+    /// mode are the protocol's, and holding them here would mean rewriting this
+    /// crate for the next protocol.
+    Admitted(Box<Admission>),
+    /// The login ended without establishing anybody, and the client is owed an
+    /// answer. Named rather than rendered, for the same reason.
+    SentBack {
+        error: &'static str,
+        /// The login as it stood, for the same reason an admission carries
+        /// one: the row is gone, and where the client hears this is written
+        /// in its notes.
+        login: Box<AuthSession>,
     },
-    /// Admitted. The browser goes here, and the client spends what it carries.
-    /// The session is named so the transport can bind the browser to it.
-    Admitted {
-        landing: Landing,
-        session_id: String,
-        /// What the browser is told to hold, §4.2, so a relying party's iframe
-        /// can ask later whether this is still the same login.
-        browser_state: Option<String>,
-    },
-    /// Refused, and no further answer changes that.
+    /// The credentials were wrong.
     Refused,
-    /// Authenticated, and still not what the client asked for: it named a
-    /// subject and somebody else logged in. The client hears, at its redirect,
-    /// and no session opens, since §3.1.2.2 forbids answering for another user.
-    SentBack { landing: Landing },
+    /// Too many wrong ones, until this instant.
+    LockedOut { until: i64 },
+}
+
+/// What a finished login established, for the protocol to act on.
+#[derive(Debug, Clone)]
+pub struct Admission {
+    /// The login as it stood, handed back because the row is now gone and what
+    /// the request asked for is written in its notes.
+    pub login: AuthSession,
+    pub session_id: String,
+    pub user_id: String,
+    /// What a relying party's iframe compares this login against, §4.2.
+    pub browser_state: Option<String>,
+    /// The level the flow reached, under this realm's map.
+    pub reached: Option<i32>,
+    /// When the person authenticated, which is not when a token is minted.
+    pub auth_time: i64,
 }
 
 /// Why the step could not be run.
@@ -115,7 +111,7 @@ pub async fn answer_step(
     // has no step that needs one, which is every flow but a mailed one.
     sealing: Option<Sealing<'_>>,
     // What it takes to sign, when the request wants something minted here.
-    signing: Option<&crate::grant::Signing<'_>>,
+    signing: Option<&store::keyring::Signing<'_>>,
     // What the person answered to the consent screen, when they answered.
     consented: Option<bool>,
     now: DateTime<Utc>,
@@ -262,13 +258,8 @@ pub async fn answer_step(
                     .await
                     .map_err(|_| Unanswerable::Unreadable)?;
                 return Ok(Step::SentBack {
-                    landing: sent_back(
-                        &login.redirect_uri,
-                        "login_required",
-                        noted(&login.notes, "state"),
-                        answering(&login.notes),
-                        &origin.issuer(&tenant.realm_id),
-                    ),
+                    error: "login_required",
+                    login: Box::new(login.clone()),
                 });
             }
             // Asked after the person is established and before anything is
@@ -317,13 +308,8 @@ pub async fn answer_step(
                             .await
                             .map_err(|_| Unanswerable::Unreadable)?;
                         return Ok(Step::SentBack {
-                            landing: sent_back(
-                                &login.redirect_uri,
-                                "access_denied",
-                                noted(&login.notes, "state"),
-                                answering(&login.notes),
-                                &origin.issuer(&tenant.realm_id),
-                            ),
+                            error: "access_denied",
+                            login: Box::new(login.clone()),
                         });
                     }
                 }
@@ -351,146 +337,9 @@ pub async fn answer_step(
                 now,
             )
             .await
-            .map(|(landing, browser_state)| Step::Admitted {
-                landing,
-                session_id: login.session_id.clone(),
-                browser_state,
-            })
+            .map(|admitted| Step::Admitted(Box::new(admitted)))
         }
     }
-}
-
-/// What a code is minted against, gathered so two callers state the same facts.
-pub struct Authorized<'a> {
-    pub client_id: &'a str,
-    pub user_id: &'a str,
-    pub session_id: &'a str,
-    pub redirect_uri: &'a str,
-    pub scope: &'a str,
-    pub state: Option<&'a str>,
-    /// What this login is known by in the browser, §4.2. Absent where the
-    /// login was not made in one.
-    pub browser_state: Option<&'a str>,
-    /// How the answer travels, as the request that opened this named it.
-    pub mode: ResponseMode,
-    /// What comes back.
-    pub asked_for: ResponseType,
-    /// Both needed only when something is minted here.
-    pub signing: Option<&'a crate::grant::Signing<'a>>,
-    pub realm: Option<&'a models::entities::realm::RealmModel>,
-    pub issuer: &'a str,
-    pub nonce: Option<&'a str>,
-    pub code_challenge: Option<&'a str>,
-    pub code_challenge_method: Option<&'a str>,
-    /// When the user authenticated, not when this code was minted. `max_age`
-    /// asks about the first, and a session begun at nine and re-authenticated
-    /// at noon is three hours old with an authentication minutes old.
-    pub auth_time: i64,
-    /// The level the login actually reached. Frozen here because by redemption
-    /// the session may have stepped up in another tab, and a value resolved
-    /// then would attest to a strength this code was never issued under.
-    pub acr: Option<&'a str>,
-    /// The `claims` the request named, as the store keeps them.
-    pub claims: Option<&'a Value>,
-}
-
-/// Mint a code and say where the browser goes with it.
-///
-/// Shared, because `/authorize` mints one when it finds a live login and this
-/// module mints one when a flow just finished. Two mintings would be two places
-/// for a field to be forgotten.
-pub async fn mint_code(
-    transaction: &Transaction<'_>,
-    provider: &dyn CryptoProvider,
-    tenant: &TenantContext,
-    authorized: &Authorized<'_>,
-    now: DateTime<Utc>,
-) -> Result<Landing, Unanswerable> {
-    // An implicit request gets nothing to redeem, and a code minted anyway is
-    // a spendable credential nobody comes back for.
-    let raw = authorized
-        .asked_for
-        .code
-        .then(|| draw(provider))
-        .transpose()?;
-    if let Some(raw) = &raw {
-        oidc::mint_code(
-            transaction,
-            &AuthorizationCode {
-                code_hash: digest(provider, raw.as_bytes())?,
-                tenant: tenant.tenant.clone(),
-                realm_id: tenant.realm_id.clone(),
-                client_id: authorized.client_id.to_owned(),
-                user_id: authorized.user_id.to_owned(),
-                session_id: authorized.session_id.to_owned(),
-                redirect_uri: authorized.redirect_uri.to_owned(),
-                scope: authorized.scope.to_owned(),
-                nonce: authorized.nonce.map(str::to_owned),
-                code_challenge: authorized.code_challenge.map(str::to_owned),
-                code_challenge_method: authorized.code_challenge_method.map(str::to_owned),
-                auth_time: authorized.auth_time,
-                acr: authorized.acr.map(str::to_owned),
-                org_id: None,
-                org_name: None,
-                claims: authorized.claims.cloned(),
-            },
-            now + Duration::seconds(CODE_LIFESPAN),
-        )
-        .await
-        .map_err(|_| Unanswerable::Unreadable)?;
-    }
-
-    let mut answer = Landing::new(authorized.redirect_uri, authorized.mode);
-    if let Some(raw) = &raw {
-        answer = answer.carrying("code", raw.as_str());
-    }
-    // After the code: the identity token carries its hash.
-    if authorized.asked_for.mints_here() {
-        let (Some(signing), Some(realm)) = (authorized.signing, authorized.realm) else {
-            return Err(Unanswerable::Unrunnable);
-        };
-        let handed = crate::implicit::issue(
-            transaction,
-            signing,
-            tenant,
-            authorized.asked_for,
-            &crate::implicit::Established {
-                client: &client_of(transaction, authorized.client_id).await?,
-                realm,
-                issuer: authorized.issuer,
-                user_id: authorized.user_id,
-                session_id: authorized.session_id,
-                scope: authorized.scope,
-                nonce: authorized.nonce,
-                auth_time: authorized.auth_time,
-                acr: authorized.acr,
-                code: raw.as_deref(),
-                claims: authorized.claims,
-            },
-            now,
-        )
-        .await
-        .map_err(|_| Unanswerable::Unrunnable)?;
-        for (named, value) in handed {
-            answer = answer.carrying(named, value);
-        }
-    }
-    // §2: the client is told the state of the session it just joined, so its
-    // own iframe can ask later whether it is still that one.
-    let session_state = authorized.browser_state.and_then(|held| {
-        crate::session_state::state_for(
-            provider,
-            authorized.client_id,
-            authorized.redirect_uri,
-            held,
-        )
-    });
-    // RFC 9207: which server answered. A client talking to two providers can
-    // otherwise be made to take one's answer for the other's.
-    Ok(answer
-        .carrying_any("state", authorized.state)
-        .carrying_any("session_state", session_state.as_deref())
-        .carrying("iss", authorized.issuer))
 }
 
 /// The client this is being minted for.
@@ -517,12 +366,12 @@ async fn admit(
     user_id: &str,
     user_name: &str,
     reached: Option<i32>,
-    realm: &models::entities::realm::RealmModel,
-    issuer: String,
-    signing: Option<&crate::grant::Signing<'_>>,
+    _realm: &models::entities::realm::RealmModel,
+    _issuer: String,
+    _signing: Option<&store::keyring::Signing<'_>>,
     seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
-) -> Result<(Landing, Option<String>), Unanswerable> {
+) -> Result<Admission, Unanswerable> {
     // The transient identifier becomes the durable one. The code names it as
     // `sid`, and one identifier means a login and the session it opened cannot
     // drift apart.
@@ -559,88 +408,23 @@ async fn admit(
     .await
     .map_err(|_| Unanswerable::Unreadable)?;
 
-    let notes = &login.notes;
-    let landing = mint_code(
-        transaction,
-        provider,
-        tenant,
-        &Authorized {
-            client_id: &login.client_id,
-            user_id,
-            session_id: &login.session_id,
-            redirect_uri: &login.redirect_uri,
-            scope: noted(notes, "scope").unwrap_or_default(),
-            state: noted(notes, "state"),
-            browser_state: browser_state.as_deref(),
-            mode: answering(notes),
-            asked_for: coming_back(notes),
-            signing,
-            realm: Some(realm),
-            issuer: &issuer,
-            nonce: noted(notes, "nonce"),
-            code_challenge: noted(notes, "code_challenge"),
-            code_challenge_method: noted(notes, "code_challenge_method"),
-            claims: notes.get("claims").filter(|asked| asked.is_object()),
-            auth_time: now.timestamp(),
-            // Frozen here. By redemption the session may have stepped up in
-            // another tab, and a value resolved then would attest to a strength
-            // this code was never issued under.
-            acr: reached.and_then(|loa| {
-                realm.acr_loa_map.as_ref().and_then(|map| {
-                    acr::acr_claim(
-                        map,
-                        AchievedAuth {
-                            loa,
-                            auth_time: now.timestamp(),
-                        },
-                    )
-                })
-            }),
-        },
-        now,
-    )
-    .await?;
-
-    // The login in progress is over. Leaving it would let the same answer mint
-    // a second code for one authorization.
+    // The login in progress is over, here and not in the caller. Leaving it
+    // would let the same answer mint a second code for one authorization, and
+    // a guarantee split across two crates is one somebody forgets to hold.
     login::finish(transaction, &login.session_id)
         .await
         .map_err(|_| Unanswerable::Unreadable)?;
 
-    Ok((landing, browser_state))
-}
-
-/// What this login hands back. A login opened before this build knew about
-/// anything else carries none.
-fn coming_back(notes: &Value) -> ResponseType {
-    noted(notes, "response_type")
-        .and_then(ResponseType::read)
-        .unwrap_or(ResponseType {
-            code: true,
-            id_token: false,
-            token: false,
-        })
-}
-
-/// How this login's answer travels. A login opened before this build knew
-/// about modes carries none, and the one a code gets is the answer.
-fn answering(notes: &Value) -> ResponseMode {
-    ResponseMode::read(noted(notes, "response_mode")).unwrap_or_default()
-}
-
-/// What the client is told no with, RFC 6749 §4.1.2.1: the error at the
-/// redirect, with the state the client asked to have echoed.
-fn sent_back(
-    redirect_uri: &str,
-    error: &str,
-    state: Option<&str>,
-    mode: ResponseMode,
-    issuer: &str,
-) -> Landing {
-    Landing::new(redirect_uri, mode)
-        .carrying("error", error)
-        .carrying_any("state", state)
-        .carrying("iss", issuer)
+    Ok(Admission {
+        // Handed back rather than left behind: the row is gone, and what the
+        // request asked for is written in its notes.
+        login: login.clone(),
+        session_id: login.session_id.clone(),
+        user_id: user_id.to_owned(),
+        browser_state,
+        reached,
+        auth_time: now.timestamp(),
+    })
 }
 
 fn noted<'a>(notes: &'a Value, named: &str) -> Option<&'a str> {
@@ -665,23 +449,4 @@ async fn named_subject(
             .await
             .map_err(|_| Unanswerable::Unreadable),
     }
-}
-
-fn draw(provider: &dyn CryptoProvider) -> Result<String, Unanswerable> {
-    let mut drawn = [0_u8; 32];
-    provider
-        .rand()
-        .fill(&mut drawn)
-        .map_err(|_| Unanswerable::Unreadable)?;
-    Ok(HEXLOWER.encode(&drawn))
-}
-
-/// The digest the row is keyed by. The raw code goes to the browser and is
-/// never stored, so a leaked table yields nothing spendable.
-fn digest(provider: &dyn CryptoProvider, raw: &[u8]) -> Result<String, Unanswerable> {
-    let hashed = provider
-        .digest()
-        .hash(crypto::provider::HashAlg::Sha256, raw)
-        .map_err(|_| Unanswerable::Unreadable)?;
-    Ok(HEXLOWER.encode(&hashed))
 }

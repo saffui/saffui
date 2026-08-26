@@ -318,6 +318,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "auth"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "commons",
+ "config",
+ "crypto",
+ "data-encoding",
+ "deadpool-postgres",
+ "models",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "store",
+ "thiserror 2.0.19",
+ "tracing",
+ "url",
+ "uuid",
+ "webauthn-rs",
+]
+
+[[package]]
 name = "authz"
 version = "0.1.0"
 dependencies = [
@@ -2258,6 +2281,7 @@ version = "0.1.0"
 dependencies = [
  "actix-web",
  "async-trait",
+ "auth",
  "chrono",
  "commons",
  "config",
@@ -2287,6 +2311,7 @@ name = "services"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "auth",
  "authz",
  "chrono",
  "commons",

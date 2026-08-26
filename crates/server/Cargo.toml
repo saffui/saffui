@@ -12,6 +12,7 @@ commons = { workspace = true, features = ["http", "request-span"] }
 tracing = { workspace = true }
 tracing-actix-web = { workspace = true }
 crypto = { workspace = true }
+auth = { workspace = true }
 models = { workspace = true }
 store = { workspace = true }
 services = { workspace = true }

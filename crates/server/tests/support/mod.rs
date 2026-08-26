@@ -136,7 +136,7 @@ pub fn sealing() -> server::api::config::Sealing {
 /// The same, with something to carry a message out.
 #[allow(dead_code, reason = "only the mailed suite sends")]
 pub fn sealing_sending(
-    sender: Option<Arc<dyn services::messaging::Deliver>>,
+    sender: Option<Arc<dyn auth::messaging::Deliver>>,
 ) -> server::api::config::Sealing {
     let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
     server::api::config::Sealing {
@@ -151,13 +151,13 @@ pub fn sealing_sending(
 #[derive(Default, Clone)]
 #[allow(dead_code, reason = "only the mailed suite sends")]
 pub struct Postbox {
-    held: Arc<std::sync::Mutex<Vec<services::messaging::Message>>>,
+    held: Arc<std::sync::Mutex<Vec<auth::messaging::Message>>>,
     refuses: bool,
 }
 
 #[allow(dead_code, reason = "only the mailed suite sends")]
 impl Postbox {
-    pub fn held(&self) -> Vec<services::messaging::Message> {
+    pub fn held(&self) -> Vec<auth::messaging::Message> {
         self.held.lock().expect("the postbox").clone()
     }
 
@@ -172,14 +172,14 @@ impl Postbox {
 }
 
 #[async_trait::async_trait]
-impl services::messaging::Deliver for Postbox {
+impl auth::messaging::Deliver for Postbox {
     async fn send(
         &self,
         _settings: &models::entities::mail::MailSettings,
-        message: &services::messaging::Message,
-    ) -> Result<(), services::messaging::Undelivered> {
+        message: &auth::messaging::Message,
+    ) -> Result<(), auth::messaging::Undelivered> {
         if self.refuses {
-            return Err(services::messaging::Undelivered::Refused);
+            return Err(auth::messaging::Undelivered::Refused);
         }
         self.held.lock().expect("the postbox").push(message.clone());
         Ok(())

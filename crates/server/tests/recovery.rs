@@ -10,7 +10,7 @@ use support::{Plane, Postbox};
 fn mounted(plane: &Plane, postbox: Option<&Postbox>) -> Mounted {
     let mut sealing = support::sealing();
     sealing.sender = postbox.map(|held| {
-        std::sync::Arc::new(held.clone()) as std::sync::Arc<dyn services::messaging::Deliver>
+        std::sync::Arc::new(held.clone()) as std::sync::Arc<dyn auth::messaging::Deliver>
     });
     Mounted {
         pool: plane.pool(),

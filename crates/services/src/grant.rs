@@ -1,6 +1,5 @@
 use chrono::{DateTime, Duration, Utc};
 use crypto::constant_time;
-use crypto::envelope::Envelope;
 use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use deadpool_postgres::Transaction;
@@ -10,15 +9,14 @@ use models::entities::oidc::AuthorizationCode;
 use models::entities::realm::RealmModel;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use serde_json::{Map, Value};
-use store::keyring::RealmKeyring;
 use store::providers::oidc::Redemption;
 use store::providers::sessions::Refreshed;
 use store::providers::{oidc, realm_keys, sessions, users};
 use store::tenancy::TenantContext;
 
-use crate::claims_request::{self, ClaimsRequest};
 use crate::token::issuance::{Kind, Minted, Minting, mint_token};
 use crate::userinfo;
+use models::claims_request::{self, ClaimsRequest};
 
 /// Short, because an unconfigured realm is not a reason to hand out a
 /// long-lived credential.
@@ -102,14 +100,9 @@ fn holds_offline_access(scope: &str) -> bool {
         .any(|held| held == crate::authorize::OFFLINE_ACCESS)
 }
 
-/// What it takes to sign. All three or none, so a new grant cannot forget one.
-pub struct Signing<'a> {
-    pub provider: &'a dyn CryptoProvider,
-    pub ring: &'a RealmKeyring,
-    pub envelope: &'a Envelope,
-}
-
 /// Where the grant is happening.
+pub use store::keyring::Signing;
+
 pub struct Within<'a> {
     pub tenant: &'a TenantContext,
     pub realm: &'a RealmModel,
@@ -172,7 +165,7 @@ pub async fn client_credentials(
     signing: &Signing<'_>,
     within: &Within<'_>,
     client: &ClientModel,
-    seen: &crate::provenance::Provenance,
+    seen: &auth::provenance::Provenance,
     now: DateTime<Utc>,
 ) -> Result<Granted, Ungranted> {
     // §4.4: authentication by credential alone, and a public client has none it
@@ -590,7 +583,7 @@ async fn open_login(
     user_name: &str,
     session_id: &str,
     client: &ClientModel,
-    seen: &crate::provenance::Provenance,
+    seen: &auth::provenance::Provenance,
     now: DateTime<Utc>,
     lifespan: Duration,
 ) -> Result<(), Ungranted> {

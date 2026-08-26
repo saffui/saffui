@@ -1,7 +1,7 @@
 use actix_web::HttpRequest;
 use actix_web::http::header::{self, HeaderName};
+use auth::provenance::Provenance;
 use config::proxying::Proxying;
-use services::provenance::Provenance;
 
 /// What this request said about where it came from.
 ///

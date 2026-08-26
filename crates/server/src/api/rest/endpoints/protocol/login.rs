@@ -1,5 +1,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{Either, HttpRequest, HttpResponse, HttpResponseBuilder, web};
+use auth::login::authenticator::Answer;
+use auth::login::browser::{self, Step, Unanswerable};
 use chrono::Utc;
 use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
@@ -7,8 +9,6 @@ use secrecy::SecretBox;
 use serde::Deserialize;
 use services::form_post;
 use services::landing::{Landing, ResponseMode};
-use services::login::authenticator::Answer;
-use services::login::browser::{self, Step, Unanswerable};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
@@ -150,7 +150,7 @@ pub async fn answer(
         // was given, so a login resumed with a second factor still has to
         // satisfy the first, and each step takes the kind it understands.
         &answers,
-        services::login::enrolment::Answers {
+        auth::login::enrolment::Answers {
             attestation: attestation.as_deref(),
             code: code.as_deref(),
             verified_address: answered.verify_email.as_deref(),
@@ -178,10 +178,43 @@ pub async fn answer(
         // admission they are what the code names. Answering before committing
         // hands out a code whose login the redemption cannot find.
         Ok(step) => {
+            // Where the browser goes, built inside the transaction the step ran
+            // in: minting a code is a write, and one minted after the commit is
+            // a code the redemption cannot find.
+            let landed = match &step {
+                Step::Admitted(admitted) => {
+                    let signing = ring.as_ref().map(|ring| store::keyring::Signing {
+                        provider: sealing.provider.as_ref(),
+                        ring,
+                        envelope: &sealing.envelope,
+                    });
+                    match services::minting::landed(
+                        &transaction,
+                        sealing.provider.as_ref(),
+                        &context,
+                        admitted,
+                        signing.as_ref(),
+                        &origin.issuer(&context.realm_id),
+                        now,
+                    )
+                    .await
+                    {
+                        Ok(landing) => Some(landing),
+                        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
+                    }
+                }
+                Step::SentBack { error, login } => Some(services::minting::refused(
+                    login,
+                    error,
+                    &origin.issuer(&context.realm_id),
+                )),
+                _ => None,
+            };
+
             // A browser reading JSON cannot post the answer to the client: the
             // page it is on may only post to this server. It is handed a ticket
             // instead, written here so it commits with the code it stands for.
-            let ticket = match landing_of(&step) {
+            let ticket = match landed.as_ref() {
                 Some(landing)
                     if spoken == Spoken::Json && landing.mode == ResponseMode::FormPost =>
                 {
@@ -240,11 +273,10 @@ pub async fn answer(
                 // saying this browser is signed in takes its place. That second
                 // cookie is what makes another client's `/authorize` something
                 // other than a fresh sign-in.
-                Step::Admitted {
-                    landing,
-                    session_id,
-                    browser_state,
-                } => {
+                Step::Admitted(admitted) => {
+                    let session_id = admitted.session_id.clone();
+                    let browser_state = admitted.browser_state.clone();
+                    let landing = landed.expect("an admission was landed above");
                     tracing::info!(session = %session_id, "login admitted");
                     let mut response = HttpResponseBuilder::new(match spoken {
                         Spoken::Json => StatusCode::OK,
@@ -301,8 +333,9 @@ pub async fn answer(
                 // Over, and not admitted: the client hears why at its
                 // redirect, and the browser carries it there. The login's
                 // cookie goes; no session replaces it.
-                Step::SentBack { landing } => {
-                    tracing::warn!(error = "login_required", "login sent back");
+                Step::SentBack { error, .. } => {
+                    tracing::warn!(error, "login sent back");
+                    let landing = landed.expect("a refusal was landed above");
                     let mut response = HttpResponseBuilder::new(match spoken {
                         Spoken::Json => StatusCode::OK,
                         Spoken::Form => StatusCode::SEE_OTHER,
@@ -363,14 +396,6 @@ fn told_landing(
                 .collect::<serde_json::Map<String, serde_json::Value>>(),
         })),
         (Spoken::Form, _) => answering::onto(response, landing),
-    }
-}
-
-/// The landing a step ends at, when it ends at one.
-fn landing_of(step: &Step) -> Option<&Landing> {
-    match step {
-        Step::Admitted { landing, .. } | Step::SentBack { landing } => Some(landing),
-        _ => None,
     }
 }
 

@@ -1,5 +1,7 @@
 mod support;
 
+use auth::login::authenticator::Answer;
+use auth::login::{Progress, Unrunnable, run_flow};
 use chrono::Utc;
 use models::auditable::AuditableModel;
 use models::entities::auth::{
@@ -8,8 +10,6 @@ use models::entities::auth::{
 };
 use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
 use secrecy::SecretBox;
-use services::login::authenticator::Answer;
-use services::login::{Progress, Unrunnable, run_flow};
 use store::providers::{auth_flows, credentials, realms};
 use store::tenancy::TenantContext;
 use support::{Fixture, provider};

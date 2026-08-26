@@ -1,9 +1,9 @@
+use auth::messaging::Outgoing;
 use chrono::Utc;
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
 use deadpool_postgres::Pool;
 use models::messaging::Delivery;
-use services::messaging::Outgoing;
 use store::providers::deliveries;
 use store::tenancy::{Tenancy, TenantContext};
 

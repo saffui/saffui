@@ -120,7 +120,7 @@ async fn a_client_is_told_the_state_of_the_session_it_joined() {
     let browser_state = cookie_value(&cookies, "saffui_op_state").expect("a value");
 
     // §4.2's own computation, from the four things it names.
-    let expected = services::session_state::computed(
+    let expected = auth::session_state::computed(
         &support::provider(),
         support::CONFIDENTIAL,
         "https://app.example",

@@ -116,7 +116,9 @@ pub async fn issue(
         let minted = mint_token(signing.provider, &key, minting(Kind::Identity, extra))
             .map_err(|_| Unmintable)?;
         anchor.get_or_insert(minted.token_id);
-        handed.push(("id_token", minted.token));
+        let delivered = crate::encryption::identity_for(established.client, minted.token)
+            .map_err(|_| Unmintable)?;
+        handed.push(("id_token", delivered));
     }
 
     if let Some(anchor) = anchor {

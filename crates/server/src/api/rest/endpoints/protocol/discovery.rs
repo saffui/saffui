@@ -3,6 +3,7 @@ use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;
 use crypto::provider::SignAlg;
 use deadpool_postgres::Pool;
+use models::entities::keys::{JweAlgorithm, JweEncryption};
 use models::entities::realm::ClientRegistration;
 use serde_json::{Value, json};
 use store::tenancy::{Tenancy, resolve};
@@ -173,6 +174,16 @@ pub async fn published(
                 .iter()
                 .map(|algorithm| algorithm.name())
                 .collect::<Vec<_>>(),
+            // §2 of the registration spec: what a client may register to be
+            // encrypted to. Asymmetric only, because the key is one the client
+            // published: a shared-secret family has no key here to use.
+            //
+            // The request object is not among them. That one travels the other
+            // way, and this provider publishes no key to encrypt one to.
+            "id_token_encryption_alg_values_supported": encryption_algorithms(),
+            "id_token_encryption_enc_values_supported": encryption_methods(),
+            "userinfo_encryption_alg_values_supported": encryption_algorithms(),
+            "userinfo_encryption_enc_values_supported": encryption_methods(),
             "request_object_signing_alg_values_supported": SignAlg::ALL
                 .iter()
                 .map(|algorithm| algorithm.name())
@@ -228,4 +239,18 @@ fn refused(status: StatusCode) -> HttpResponse {
         "error": "server_error",
         "error_description": "no metadata is published here",
     }))
+}
+
+fn encryption_algorithms() -> Vec<&'static str> {
+    JweAlgorithm::ALL
+        .iter()
+        .map(|algorithm| algorithm.as_str())
+        .collect()
+}
+
+fn encryption_methods() -> Vec<&'static str> {
+    JweEncryption::ALL
+        .iter()
+        .map(|method| method.as_str())
+        .collect()
 }

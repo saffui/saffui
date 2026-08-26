@@ -241,6 +241,36 @@ impl SigningKey {
         }
     }
 
+    /// An RSA pair for encryption, published for that use and no other.
+    ///
+    /// A key that names a use says which one, and a signing key is not a grant
+    /// to encrypt: the pair here says `enc` so the server may use it.
+    #[allow(dead_code, reason = "only the encryption suite encrypts")]
+    pub fn generate_encryption(kid: &str) -> Self {
+        let mut private = Jwk::generate_rsa_key(2048).expect("a key pair");
+        private.set_key_id(kid);
+        private.set_key_use("enc");
+        SigningKey {
+            kid: kid.to_owned(),
+            private,
+        }
+    }
+
+    /// The private half, which is what opens what was encrypted to it.
+    #[allow(dead_code, reason = "only the encryption suite decrypts")]
+    pub fn private(&self) -> &Jwk {
+        &self.private
+    }
+
+    /// The public half as an encryption key, named for that use.
+    #[allow(dead_code, reason = "only the encryption suite encrypts")]
+    pub fn public_for_encryption(&self) -> Jwk {
+        let mut public = self.private.to_public_key().expect("the public half");
+        public.set_key_id(&self.kid);
+        public.set_key_use("enc");
+        public
+    }
+
     #[allow(dead_code, reason = "only the protocol suite publishes a second key")]
     pub fn algorithm(&self) -> SignAlg {
         if self.private.key_type() == "RSA" {
@@ -658,6 +688,51 @@ impl Plane {
             .expect("a planted client");
         client.request_object_signing_alg = Some(alg);
         client.jwks = Some(serde_json::json!({ "keys": [key.public().as_ref()] }));
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// Register the encryption a client asks to be answered under, and the key
+    /// it published to be encrypted to.
+    #[allow(dead_code, reason = "only the encryption suite asks")]
+    pub async fn register_client_encryption(
+        &self,
+        client_id: &str,
+        jwks: serde_json::Value,
+        id_token: Option<models::entities::client::JweRegistration>,
+        userinfo: Option<models::entities::client::JweRegistration>,
+    ) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.jwks = Some(jwks);
+        client.id_token_encryption = id_token;
+        client.userinfo_encryption = userinfo;
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// The algorithm a client registered to have its userinfo answer signed at.
+    #[allow(dead_code, reason = "only the encryption suite asks")]
+    pub async fn register_userinfo_signature(&self, client_id: &str, alg: SignAlg) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.userinfo_signed_response_alg = Some(alg);
         clients::update(&transaction, &client)
             .await
             .expect("the clients table");

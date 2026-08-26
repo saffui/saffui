@@ -8,7 +8,8 @@ use crypto::password::storage::StoredPassword;
 use crypto::provider::{Argon2Params, CryptoProvider, SignAlg};
 use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Transaction;
-use models::entities::client::ClientModel;
+use models::entities::client::{ClientModel, JweRegistration};
+use models::entities::keys::{JweAlgorithm, JweEncryption};
 use models::entities::realm::{ClientRegistration, RealmModel};
 use secrecy::SecretBox;
 use serde::Deserialize;
@@ -305,6 +306,24 @@ pub fn as_document(client: &ClientModel, issued_at: i64) -> Value {
         "id_token_signed_response_alg": alg_name(client.id_token_signed_response_alg).unwrap_or("RS256"),
     });
     let named = document.as_object_mut().expect("a json object");
+    // §3.2: what was registered, given back as registered. A pair the client
+    // named half of comes back whole, because the default it took is now what
+    // this server will use.
+    for (field, registration) in [
+        ("id_token", client.id_token_encryption),
+        ("userinfo", client.userinfo_encryption),
+    ] {
+        if let Some(registration) = registration {
+            named.insert(
+                format!("{field}_encrypted_response_alg"),
+                Value::from(registration.alg.as_str()),
+            );
+            named.insert(
+                format!("{field}_encrypted_response_enc"),
+                Value::from(registration.enc.as_str()),
+            );
+        }
+    }
     for (key, value) in [
         ("client_name", client.name.clone()),
         ("client_uri", client.client_uri.clone().unwrap_or_default()),
@@ -410,6 +429,36 @@ fn alg_name(alg: Option<SignAlg>) -> Option<&'static str> {
     })
 }
 
+/// A registered encryption pair, OpenID Connect Registration §2.
+///
+/// An `alg` with no `enc` takes the specified default. An `enc` with no `alg`
+/// is refused: it names how to encrypt and not what to encrypt to, which is
+/// half of an instruction and would otherwise be read as none at all.
+fn read_encryption(
+    alg: Option<&str>,
+    enc: Option<&str>,
+) -> Result<Option<JweRegistration>, Refused> {
+    let Some(alg) = alg else {
+        return match enc {
+            None => Ok(None),
+            Some(_) => Err(Refused::Invalid(
+                "an encryption method with no algorithm names nothing to encrypt to",
+            )),
+        };
+    };
+    let alg = alg
+        .parse::<JweAlgorithm>()
+        .map_err(|_| Refused::Invalid("an encryption algorithm §2 does not name"))?;
+    let enc = enc
+        .map(|named| {
+            named
+                .parse::<JweEncryption>()
+                .map_err(|_| Refused::Invalid("an encryption method §2 does not name"))
+        })
+        .transpose()?;
+    Ok(Some(JweRegistration::new(alg, enc)))
+}
+
 fn read_alg(named: Option<&String>) -> Result<Option<SignAlg>, Refused> {
     let Some(named) = named else {
         return Ok(None);
@@ -474,25 +523,23 @@ fn method_named(held: &str) -> &'static str {
 
 /// §2 of the registration spec, mapped onto what this provider can honour.
 fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
-    // Named and refused rather than dropped in silence. A client that asked to
-    // be answered with something encrypted and was answered in the clear has
-    // been told nothing about it, and RFC 7591 §2 lets a field be ignored only
-    // where the server does not know it.
-    if [
-        &metadata.id_token_encrypted_response_alg,
-        &metadata.id_token_encrypted_response_enc,
-        &metadata.userinfo_encrypted_response_alg,
-        &metadata.userinfo_encrypted_response_enc,
-        &metadata.request_object_encryption_alg,
-        &metadata.request_object_encryption_enc,
-    ]
-    .iter()
-    .any(|held| held.is_some())
+    // The request object travels the other way: this server would be the one
+    // decrypting, which needs a key of its own published for the purpose.
+    if metadata.request_object_encryption_alg.is_some()
+        || metadata.request_object_encryption_enc.is_some()
     {
         return Err(Refused::Invalid(
-            "this provider signs what it answers with and does not encrypt it",
+            "this provider publishes no key to encrypt a request object to",
         ));
     }
+    let id_token_encryption = read_encryption(
+        metadata.id_token_encrypted_response_alg.as_deref(),
+        metadata.id_token_encrypted_response_enc.as_deref(),
+    )?;
+    let userinfo_encryption = read_encryption(
+        metadata.userinfo_encrypted_response_alg.as_deref(),
+        metadata.userinfo_encrypted_response_enc.as_deref(),
+    )?;
 
     let subject_type = match metadata.subject_type.as_deref() {
         None | Some("public") => "public",
@@ -550,6 +597,8 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
         frontchannel_logout_uri: metadata.frontchannel_logout_uri.clone(),
         registered: Registered {
             consent_required: None,
+            id_token_encryption,
+            userinfo_encryption,
             response_types: Some(named_response_types(metadata)),
             implicit: asked.iter().any(|held| held.mints_here()),
             jwks: metadata.jwks.clone(),

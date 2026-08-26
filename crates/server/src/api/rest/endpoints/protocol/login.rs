@@ -182,7 +182,9 @@ pub async fn answer(
             // page it is on may only post to this server. It is handed a ticket
             // instead, written here so it commits with the code it stands for.
             let ticket = match landing_of(&step) {
-                Some(landing) if spoken == Spoken::Json && landing.mode == ResponseMode::FormPost => {
+                Some(landing)
+                    if spoken == Spoken::Json && landing.mode == ResponseMode::FormPost =>
+                {
                     match form_post::keep(&transaction, sealing.provider.as_ref(), landing, now)
                         .await
                     {
@@ -307,7 +309,14 @@ pub async fn answer(
                     });
                     binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
                     hand_over(&mut response, &context.realm_id, ticket.as_deref());
-                    told_landing(&mut response, spoken, "sent_back", &landing, &origin, &realm)
+                    told_landing(
+                        &mut response,
+                        spoken,
+                        "sent_back",
+                        &landing,
+                        &origin,
+                        &realm,
+                    )
                 }
             }
         }
@@ -368,7 +377,13 @@ fn landing_of(step: &Step) -> Option<&Landing> {
 /// Give the browser the ticket that fetches the response, and nothing else.
 fn hand_over(response: &mut HttpResponseBuilder, realm_id: &str, ticket: Option<&str>) {
     if let Some(ticket) = ticket {
-        binding::set(response, binding::LANDING, ticket, realm_id, LANDING_SECONDS);
+        binding::set(
+            response,
+            binding::LANDING,
+            ticket,
+            realm_id,
+            LANDING_SECONDS,
+        );
     }
 }
 

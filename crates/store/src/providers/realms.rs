@@ -1,7 +1,5 @@
 use deadpool_postgres::Transaction;
-use models::entities::realm::{
-    ClientRegistration, RealmModel, RegistrationBounds, SslEnforcement,
-};
+use models::entities::realm::{ClientRegistration, RealmModel, RegistrationBounds, SslEnforcement};
 use models::paging::Page;
 use tokio_postgres::Row;
 

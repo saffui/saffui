@@ -1,8 +1,6 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
-use store::providers::{
-    deliveries, form_post, login, oidc, one_time_tokens, pushed, sessions,
-};
+use store::providers::{deliveries, form_post, login, oidc, one_time_tokens, pushed, sessions};
 
 /// How long a receipt is kept. One nobody looked at for a month is one nobody
 /// is going to, and it names an address.

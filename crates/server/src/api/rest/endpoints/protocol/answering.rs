@@ -120,7 +120,6 @@ fn escaped(value: &str) -> String {
         .collect()
 }
 
-
 /// Post to the client the response a browser was handed a ticket for.
 ///
 /// The sign-in page cannot do this itself: it may only post to this server,

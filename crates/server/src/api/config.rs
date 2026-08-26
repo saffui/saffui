@@ -236,9 +236,7 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
             web::resource("/check-session.js").route(web::get().to(page::check_session_script)),
         )
         .service(web::resource("/form-post.js").route(web::get().to(page::form_post_script)))
-        .service(
-            web::resource("/form-post").route(web::get().to(answering::deliver_response)),
-        )
+        .service(web::resource("/form-post").route(web::get().to(answering::deliver_response)))
         .service(web::resource("/login.css").route(web::get().to(page::style)))
         .service(web::resource("/token").route(web::post().to(token::ask)))
         .service(web::resource("/par").route(web::post().to(par::keep)))

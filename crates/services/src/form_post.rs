@@ -81,7 +81,9 @@ pub async fn take(
         .map(|held| {
             held.iter()
                 .filter_map(|(named, value)| {
-                    value.as_str().map(|value| (named.clone(), value.to_owned()))
+                    value
+                        .as_str()
+                        .map(|value| (named.clone(), value.to_owned()))
                 })
                 .collect()
         })

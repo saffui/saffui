@@ -614,10 +614,7 @@ const REGISTERING: i32 = 0x5246_4745_u32 as i32;
 /// Transaction scoped, so it is released at commit and never rides a pooled
 /// backend to the next caller. Counting and then creating without it lets two
 /// registrations one below the ceiling both read a count that passes.
-pub async fn hold_registrations(
-    transaction: &Transaction<'_>,
-    realm_id: &str,
-) -> StoreResult<()> {
+pub async fn hold_registrations(transaction: &Transaction<'_>, realm_id: &str) -> StoreResult<()> {
     transaction
         .execute(
             "SELECT pg_advisory_xact_lock($1, hashtext($2))",

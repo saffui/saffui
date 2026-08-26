@@ -322,6 +322,12 @@ impl SigningKey {
     }
 }
 
+/// The one encryption key every plane publishes.
+fn shared_encryption_key() -> &'static SigningKey {
+    static KEY: std::sync::OnceLock<SigningKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| SigningKey::generate_encryption("realm-encrypting"))
+}
+
 /// The claims a token carries, before anything is signed.
 ///
 /// Built complete and then edited, so a test that wants a token missing one
@@ -380,7 +386,12 @@ pub struct Plane {
     /// A second key the realm also published, whose private half names nothing.
     pub second: SigningKey,
     /// The key this realm publishes to be encrypted to.
-    pub encrypting: SigningKey,
+    ///
+    /// Shared by every plane rather than drawn per plane: it is RSA, which
+    /// costs a hundred times what the elliptic keys beside it cost, and a
+    /// suite that draws one per test spends its whole budget on key
+    /// generation. Twenty-five minutes of it, measured.
+    pub encrypting: &'static SigningKey,
 }
 
 impl Plane {
@@ -1118,7 +1129,7 @@ impl Plane {
             tenancy: Tenancy::unpinned(),
             key: SigningKey::generate(KID),
             second: SigningKey::anonymous(SECOND_KID),
-            encrypting: SigningKey::generate_encryption("realm-encrypting"),
+            encrypting: shared_encryption_key(),
         };
         plane.plant(held).await;
         plane

@@ -125,10 +125,16 @@
   // What one round was told. Returns whatever the ceremony returns, so the
   // round it starts is part of the same chain.
   function read(status, told) {
-    // Admitted, or refused for the client to hear: either way the
-    // browser goes where the server said.
+    // Admitted, or refused for the client to hear: either way the browser goes
+    // where the server said, and only if it said. Following a place nobody
+    // named is a dead end that says nothing, and whoever is waiting on this
+    // sign-in waits until something else gives up.
     if (told.status === "admitted" || told.status === "sent_back") {
-      location.assign(told.redirect_to);
+      if (typeof told.redirect_to === "string" && told.redirect_to) {
+        location.assign(told.redirect_to);
+      } else {
+        say("Something went wrong. Try again.");
+      }
       return;
     }
     if (status === 404) {

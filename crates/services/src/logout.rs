@@ -243,6 +243,8 @@ pub async fn notices_for(
             signing.provider,
             &key,
             token::issuance::Minting {
+                // Sent by this server to the client, never presented to it.
+                bound_to: None,
                 kind: token::issuance::Kind::Logout,
                 issuer,
                 subject: &session.user_id,

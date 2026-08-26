@@ -139,9 +139,15 @@ async fn establish(
     // same question, and a check left beside the verifier is one that caller
     // inherits by omission. The instant is stated rather than read in there, so
     // this decision and a replay of it read the same clock.
-    let verified = services::token::verify_presented(&transaction, &keys, &bearer, now)
-        .await
-        .map_err(|_| unauthenticated())?;
+    let verified = services::token::verify_presented(
+        &transaction,
+        &keys,
+        &bearer,
+        services::token::Binding::Presented(None),
+        now,
+    )
+    .await
+    .map_err(|_| unauthenticated())?;
 
     // What the realm says about the token, which the token cannot say about
     // itself: whether the subject is still one this realm holds, whether it has

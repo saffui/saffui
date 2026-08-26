@@ -313,6 +313,64 @@ impl SigningKey {
         dead_code,
         reason = "not every suite mints a token or mounts the plane"
     )]
+    /// A DPoP proof over this key, RFC 9449 §4.
+    ///
+    /// The key travels in the header, which is what lets the server take its
+    /// thumbprint and compare it with what the token names.
+    #[allow(dead_code, reason = "only the binding suite proves a key")]
+    pub fn proof(
+        &self,
+        method: &str,
+        url: &str,
+        access_token: Option<&str>,
+        jti: &str,
+        at: i64,
+    ) -> String {
+        let mut payload = JwtPayload::new();
+        for (named, value) in [("jti", jti), ("htm", method), ("htu", url)] {
+            payload
+                .set_claim(named, Some(serde_json::json!(value)))
+                .expect("a claim");
+        }
+        payload
+            .set_claim("iat", Some(serde_json::json!(at)))
+            .expect("a claim");
+        if let Some(token) = access_token {
+            let hashed = crypto::provider::DigestProvider::hash(
+                provider().digest(),
+                crypto::provider::HashAlg::Sha256,
+                token.as_bytes(),
+            )
+            .expect("a digest");
+            payload
+                .set_claim(
+                    "ath",
+                    Some(serde_json::json!(
+                        data_encoding::BASE64URL_NOPAD.encode(&hashed)
+                    )),
+                )
+                .expect("a claim");
+        }
+
+        let mut header = JwsHeader::new();
+        header.set_token_type("dpop+jwt");
+        header
+            .set_claim(
+                "jwk",
+                Some(serde_json::to_value(self.public().as_ref()).expect("a jwk")),
+            )
+            .expect("a header claim");
+        let signer = ES256.signer_from_jwk(&self.private).expect("a signer");
+        jwt::encode_with_signer(&payload, &header, &signer).expect("a proof")
+    }
+
+    /// The thumbprint of this key, which is what a bound token names.
+    #[allow(dead_code, reason = "only the binding suite compares one")]
+    pub fn thumbprint(&self) -> String {
+        crypto::thumbprint::jwk_sha256_thumbprint(&provider(), &self.public())
+            .expect("a thumbprint")
+    }
+
     pub fn sign(&self, payload: &JwtPayload, named: &str) -> String {
         let mut header = JwsHeader::new();
         header.set_token_type("JWT");

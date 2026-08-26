@@ -185,6 +185,9 @@ pub async fn published(
             "id_token_encryption_enc_values_supported": encryption_methods(),
             "userinfo_encryption_alg_values_supported": encryption_algorithms(),
             "userinfo_encryption_enc_values_supported": encryption_methods(),
+            // RFC 9449 §5.1: advertised so a client knows the mechanism is
+            // here at all, and at which algorithms a proof will be read.
+            "dpop_signing_alg_values_supported": services::dpop::SIGNING_ALGORITHMS,
             "request_object_encryption_alg_values_supported": encryption_algorithms(),
             "request_object_encryption_enc_values_supported": encryption_methods(),
             "request_object_signing_alg_values_supported": SignAlg::ALL

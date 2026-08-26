@@ -46,7 +46,39 @@ pub async fn tell(
         return faulted();
     };
 
-    match userinfo::claims_for(&transaction, &keys, &bearer, now).await {
+    // RFC 9449 §7.1. Proven here, where the token is presented, and carrying
+    // `ath`: a proof that did not name this token would bind a request holding
+    // another one.
+    let proven = match request.headers().get("dpop") {
+        None => None,
+        Some(proof) => {
+            let Ok(proof) = proof.to_str() else {
+                return challenged("the proof could not be read");
+            };
+            match services::dpop::proven(
+                &transaction,
+                sealing.provider.as_ref(),
+                proof,
+                services::dpop::Bound {
+                    method: request.method().as_str(),
+                    url: &format!(
+                        "{}/realms/{}/protocol/openid-connect/userinfo",
+                        origin.as_str(),
+                        context.realm_id
+                    ),
+                    access_token: Some(&bearer),
+                },
+                now,
+            )
+            .await
+            {
+                Ok(proven) => Some(proven),
+                Err(_) => return challenged("the proof does not bind this request"),
+            }
+        }
+    };
+
+    match userinfo::claims_for(&transaction, &keys, &bearer, proven.as_ref(), now).await {
         Ok(answer) if !answer.is_a_token() => {
             uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
                 .json(Value::Object(answer.claims))

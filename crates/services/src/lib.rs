@@ -8,6 +8,7 @@ pub mod client;
 pub mod consent;
 pub mod context;
 pub mod detached;
+pub mod dpop;
 pub mod encryption;
 pub mod form_post;
 pub mod grant;

@@ -39,7 +39,9 @@ pub async fn introspect(
     if caller.public_client == Some(true) {
         return Err(Untellable::PublicCaller);
     }
-    let Ok(verified) = token::verify_presented(transaction, keys, token, now).await else {
+    let Ok(verified) =
+        token::verify_presented(transaction, keys, token, token::Binding::Reported, now).await
+    else {
         return Ok(Told::Inactive);
     };
     let kind = verified.claims.get("typ").and_then(Value::as_str);

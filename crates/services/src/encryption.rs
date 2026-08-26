@@ -1,10 +1,16 @@
+use crypto::envelope::Envelope;
 use crypto::jose::jwe::{
-    ECDH_ES, ECDH_ES_A128KW, ECDH_ES_A192KW, ECDH_ES_A256KW, JweEncrypter, JweHeader, RSA_OAEP,
-    RSA_OAEP_256, RSA_OAEP_384, RSA_OAEP_512, serialize_compact,
+    ECDH_ES, ECDH_ES_A128KW, ECDH_ES_A192KW, ECDH_ES_A256KW, JweDecrypter, JweEncrypter, JweHeader,
+    RSA_OAEP, RSA_OAEP_256, RSA_OAEP_384, RSA_OAEP_512, deserialize_compact, serialize_compact,
 };
 use crypto::jose::jwk::{Jwk, JwkSet};
+use crypto::jose::jwt;
+use deadpool_postgres::Transaction;
 use models::entities::client::{ClientModel, JweRegistration};
 use models::entities::keys::JweAlgorithm;
+use serde_json::Value;
+use store::keyring::RealmKeyring;
+use store::providers::realm_keys;
 
 /// Why a client that registered encryption could not be encrypted to.
 ///
@@ -116,4 +122,85 @@ pub fn identity_for(client: &ClientModel, signed: String) -> Result<String, Unse
         None => Ok(signed),
         Some(registration) => sealed_for(client, registration, signed.as_bytes(), Some("JWT")),
     }
+}
+
+/// Why a request object this client sent could not be opened.
+#[derive(Debug, thiserror::Error)]
+pub enum Unopenable {
+    /// Which covers an object sent in the clear: a signature names no `enc`.
+    #[error("the object names something other than what this client registered")]
+    Misnamed,
+    #[error("this realm holds no key of the algorithm the object names")]
+    NoKey,
+    #[error("the object could not be opened")]
+    Unreadable,
+}
+
+/// The request object to verify, opened first where this client encrypts.
+///
+/// A client that registered encryption **must** encrypt: an object in the clear
+/// from such a client is refused rather than read, because reading it would
+/// accept from anybody what only that client can send.
+///
+/// The header is checked against what was registered before anything is
+/// decrypted. A client that registered one pair and sent another is refused on
+/// what it named, not on whether the key happened to work.
+pub async fn opened_request_object(
+    transaction: &Transaction<'_>,
+    ring: &RealmKeyring,
+    envelope: &Envelope,
+    client: &ClientModel,
+    token: &str,
+) -> Result<String, Unopenable> {
+    let Some(registration) = client.request_object_encryption else {
+        return Ok(token.to_owned());
+    };
+    let header = jwt::decode_header(token).map_err(|_| Unopenable::Misnamed)?;
+    // The object in the clear is refused here too, and by `enc` alone: a
+    // signature's header never carries one, so a client that registered
+    // encryption and signed instead has named something other than its pair.
+    if header.claim("alg").and_then(Value::as_str) != Some(registration.alg.as_str())
+        || header.claim("enc").and_then(Value::as_str) != Some(registration.enc.as_str())
+    {
+        return Err(Unopenable::Misnamed);
+    }
+
+    let key = realm_keys::active_encryption(transaction, ring, envelope, registration.alg)
+        .await
+        .map_err(|_| Unopenable::Unreadable)?
+        .ok_or(Unopenable::NoKey)?;
+    let decrypter = decrypter_for(registration.alg, &key.private_pem).ok_or(Unopenable::NoKey)?;
+    let (payload, _) =
+        deserialize_compact(token, &*decrypter).map_err(|_| Unopenable::Unreadable)?;
+    String::from_utf8(payload).map_err(|_| Unopenable::Unreadable)
+}
+
+fn decrypter_for(alg: JweAlgorithm, pem: &[u8]) -> Option<Box<dyn JweDecrypter>> {
+    let decrypter = match alg {
+        JweAlgorithm::RsaOaep => {
+            Box::new(RSA_OAEP.decrypter_from_pem(pem).ok()?) as Box<dyn JweDecrypter>
+        }
+        JweAlgorithm::RsaOaep256 => {
+            Box::new(RSA_OAEP_256.decrypter_from_pem(pem).ok()?) as Box<dyn JweDecrypter>
+        }
+        JweAlgorithm::RsaOaep384 => {
+            Box::new(RSA_OAEP_384.decrypter_from_pem(pem).ok()?) as Box<dyn JweDecrypter>
+        }
+        JweAlgorithm::RsaOaep512 => {
+            Box::new(RSA_OAEP_512.decrypter_from_pem(pem).ok()?) as Box<dyn JweDecrypter>
+        }
+        JweAlgorithm::EcdhEs => {
+            Box::new(ECDH_ES.decrypter_from_pem(pem).ok()?) as Box<dyn JweDecrypter>
+        }
+        JweAlgorithm::EcdhEsA128kw => {
+            Box::new(ECDH_ES_A128KW.decrypter_from_pem(pem).ok()?) as Box<dyn JweDecrypter>
+        }
+        JweAlgorithm::EcdhEsA192kw => {
+            Box::new(ECDH_ES_A192KW.decrypter_from_pem(pem).ok()?) as Box<dyn JweDecrypter>
+        }
+        JweAlgorithm::EcdhEsA256kw => {
+            Box::new(ECDH_ES_A256KW.decrypter_from_pem(pem).ok()?) as Box<dyn JweDecrypter>
+        }
+    };
+    Some(decrypter)
 }

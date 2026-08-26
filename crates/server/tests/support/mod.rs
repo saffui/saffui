@@ -322,6 +322,12 @@ impl SigningKey {
     }
 }
 
+/// The one encryption key every plane publishes.
+fn shared_encryption_key() -> &'static SigningKey {
+    static KEY: std::sync::OnceLock<SigningKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| SigningKey::generate_encryption("realm-encrypting"))
+}
+
 /// The claims a token carries, before anything is signed.
 ///
 /// Built complete and then edited, so a test that wants a token missing one
@@ -379,6 +385,13 @@ pub struct Plane {
     pub key: SigningKey,
     /// A second key the realm also published, whose private half names nothing.
     pub second: SigningKey,
+    /// The key this realm publishes to be encrypted to.
+    ///
+    /// Shared by every plane rather than drawn per plane: it is RSA, which
+    /// costs a hundred times what the elliptic keys beside it cost, and a
+    /// suite that draws one per test spends its whole budget on key
+    /// generation. Twenty-five minutes of it, measured.
+    pub encrypting: &'static SigningKey,
 }
 
 impl Plane {
@@ -739,6 +752,46 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// The encryption a client registered for the objects it sends, and the
+    /// algorithm it signs them at underneath.
+    #[allow(dead_code, reason = "only the encryption suite sends one")]
+    pub async fn register_request_object_encryption(
+        &self,
+        client_id: &str,
+        signing: SignAlg,
+        encryption: models::entities::client::JweRegistration,
+    ) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut client = clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.request_object_signing_alg = Some(signing);
+        client.request_object_encryption = Some(encryption);
+        clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// The key this realm publishes to be encrypted to, public half.
+    #[allow(dead_code, reason = "only the encryption suite encrypts to it")]
+    pub async fn realm_encryption_key(&self) -> models::entities::keys::RealmEncryptionKeyView {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::realm_keys::published_encryption(&transaction)
+            .await
+            .expect("the keys table")
+            .into_iter()
+            .next()
+            .expect("a realm published no key to encrypt to")
+    }
+
     /// Where this client hosts request objects, §6.2.
     #[allow(dead_code, reason = "only the hosted suite fetches one")]
     pub async fn register_request_uris(&self, client_id: &str, uris: &[String]) {
@@ -1076,6 +1129,7 @@ impl Plane {
             tenancy: Tenancy::unpinned(),
             key: SigningKey::generate(KID),
             second: SigningKey::anonymous(SECOND_KID),
+            encrypting: shared_encryption_key(),
         };
         plane.plant(held).await;
         plane
@@ -1242,6 +1296,24 @@ impl Plane {
             .await
             .unwrap();
         }
+
+        // One key to be encrypted to, as a provisioned realm holds. Published
+        // beside the signing keys and never instead of them: a relying party
+        // reads one set and needs both.
+        realm_keys::create_encryption(
+            &transaction,
+            &ring,
+            &envelope,
+            &models::entities::keys::RealmEncryptionKey {
+                kid: self.encrypting.kid.clone(),
+                algorithm: models::entities::keys::JweAlgorithm::RsaOaep256,
+                private_pem: self.encrypting.private_pem(),
+                public_jwk: serde_json::to_value(self.encrypting.public_for_encryption().as_ref())
+                    .expect("a public jwk"),
+            },
+        )
+        .await
+        .unwrap();
 
         for (client_id, secret, public, account_enabled) in [
             (CONFIDENTIAL, Some(CLIENT_SECRET), false, true),

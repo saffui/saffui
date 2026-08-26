@@ -12,7 +12,9 @@ use models::entities::auth::{
     AuthenticatorRequirement, ExecutionStep,
 };
 use models::entities::client::{ClientCreateModel, ClientScopeModel, Protocol};
-use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey};
+use models::entities::keys::{
+    JweAlgorithm, KeyStatus, KeyUse, RealmEncryptionKey, RealmSigningKey,
+};
 use models::entities::realm::{
     ClientRegistration, RealmCreateModel, RealmModel, RegistrationBounds,
 };
@@ -322,6 +324,40 @@ pub async fn provision_signing_key(
         .await?;
         made = true;
     }
+
+    // One key to be encrypted to, so a client may register an encrypted
+    // request object at all. RSA-OAEP-256: every relying party's library has
+    // it, and it needs no agreement about a curve.
+    if realm_keys::published_encryption(transaction)
+        .await?
+        .is_empty()
+    {
+        let pair = RsaKeyPair::generate(2048).map_err(|_| StoreError::Backend)?;
+        let (mut private, private_pem) = (pair.to_jwk_key_pair(), pair.to_pem_private_key());
+        let mut public = private.to_public_key().map_err(|_| StoreError::Backend)?;
+        let kid = jwk_sha256_thumbprint(provider, &public).map_err(|_| StoreError::Backend)?;
+        let named = JweAlgorithm::RsaOaep256;
+        private.set_key_id(&kid);
+        private.set_algorithm(named.as_str());
+        public.set_key_id(&kid);
+        public.set_algorithm(named.as_str());
+        public.set_key_use("enc");
+
+        realm_keys::create_encryption(
+            transaction,
+            &ring,
+            envelope,
+            &RealmEncryptionKey {
+                kid,
+                algorithm: named,
+                private_pem,
+                public_jwk: serde_json::to_value(public.as_ref())
+                    .map_err(|_| StoreError::Backend)?,
+            },
+        )
+        .await?;
+        made = true;
+    }
     Ok(made)
 }
 
@@ -506,6 +542,7 @@ pub async fn provision_client(
             consent_required: None,
             id_token_encryption: None,
             userinfo_encryption: None,
+            request_object_encryption: None,
             implicit: registration.implicit,
             ..Default::default()
         },

@@ -178,12 +178,15 @@ pub async fn published(
             // encrypted to. Asymmetric only, because the key is one the client
             // published: a shared-secret family has no key here to use.
             //
-            // The request object is not among them. That one travels the other
-            // way, and this provider publishes no key to encrypt one to.
+            // The request object is among them too: that one travels the other
+            // way, and the key to encrypt it to is in this realm's key set,
+            // published under `use: "enc"`.
             "id_token_encryption_alg_values_supported": encryption_algorithms(),
             "id_token_encryption_enc_values_supported": encryption_methods(),
             "userinfo_encryption_alg_values_supported": encryption_algorithms(),
             "userinfo_encryption_enc_values_supported": encryption_methods(),
+            "request_object_encryption_alg_values_supported": encryption_algorithms(),
+            "request_object_encryption_enc_values_supported": encryption_methods(),
             "request_object_signing_alg_values_supported": SignAlg::ALL
                 .iter()
                 .map(|algorithm| algorithm.name())

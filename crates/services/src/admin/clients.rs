@@ -41,6 +41,7 @@ pub struct Registered {
     /// answer, when it registered to receive them encrypted.
     pub id_token_encryption: Option<models::entities::client::JweRegistration>,
     pub userinfo_encryption: Option<models::entities::client::JweRegistration>,
+    pub request_object_encryption: Option<models::entities::client::JweRegistration>,
     pub response_types: Option<Vec<String>>,
     pub implicit: bool,
     pub jwks: Option<serde_json::Value>,
@@ -75,6 +76,7 @@ impl Registered {
             consent_required: client.consent_required,
             id_token_encryption: client.id_token_encryption,
             userinfo_encryption: client.userinfo_encryption,
+            request_object_encryption: client.request_object_encryption,
             response_types: client.response_types.clone(),
             implicit: client.implicit_flow_enabled == Some(true),
             jwks: client.jwks.clone(),
@@ -342,6 +344,7 @@ fn apply(client: &mut ClientModel, spec: &Spec) {
     client.token_endpoint_auth_signing_alg = registered.token_endpoint_auth_signing_alg;
     client.id_token_encryption = registered.id_token_encryption;
     client.userinfo_encryption = registered.userinfo_encryption;
+    client.request_object_encryption = registered.request_object_encryption;
     if let Some(required) = registered.consent_required {
         client.consent_required = Some(required);
     }

@@ -128,6 +128,39 @@ impl RealmSigningKey {
     }
 }
 
+/// A key a realm publishes to be encrypted to.
+///
+/// Held apart from the signing key rather than sharing a field that would have
+/// to be either kind: what a row means is read back through the catalogue that
+/// wrote it, and one field holding two catalogues is a field nothing can check.
+#[derive(Clone)]
+pub struct RealmEncryptionKey {
+    pub kid: String,
+    pub algorithm: JweAlgorithm,
+    pub private_pem: Vec<u8>,
+    pub public_jwk: Value,
+}
+
+impl std::fmt::Debug for RealmEncryptionKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RealmEncryptionKey")
+            .field("kid", &self.kid)
+            .field("algorithm", &self.algorithm)
+            .field("private_pem", &"<redacted>")
+            .field("public_jwk", &self.public_jwk)
+            .finish()
+    }
+}
+
+/// The same without the private half, for the key set this realm publishes.
+#[derive(Debug, Clone)]
+pub struct RealmEncryptionKeyView {
+    pub kid: String,
+    pub algorithm: JweAlgorithm,
+    pub status: KeyStatus,
+    pub public_jwk: Value,
+}
+
 /// The private-free projection of a [`RealmSigningKey`], for admin responses and
 /// JWKS assembly.
 #[derive(Debug, Clone, Serialize, Deserialize)]

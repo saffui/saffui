@@ -334,7 +334,10 @@ async fn metadata_this_provider_cannot_honour_is_refused() {
             }),
         ),
         (
-            "an encrypted request object",
+            // Encryption wraps a signature or it wraps nothing: an object this
+            // server decrypts and cannot verify is one anybody may send, since
+            // the key it was encrypted to is published for that.
+            "an encrypted request object with no signature under it",
             json!({
                 "redirect_uris": ["https://app.example/cb"],
                 "request_object_encryption_alg": "RSA-OAEP",
@@ -665,4 +668,22 @@ async fn a_registered_encryption_pair_is_given_back_whole() {
         registered["userinfo_encrypted_response_enc"], "A128CBC-HS256",
         "the default the pair took was never said out loud"
     );
+}
+
+/// The pair for a request object is registered like the others, and comes back
+/// whole, once a signature is registered under it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_encrypted_request_object_registers_over_a_signed_one() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+
+    let mut asked = a_client();
+    asked["request_object_signing_alg"] = json!("ES256");
+    asked["request_object_encryption_alg"] = json!("RSA-OAEP-256");
+
+    let (status, registered) = registering(&plane, &asked, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
 }

@@ -20,6 +20,16 @@ pub async fn published_keys(
         .map_err(|_| Unreadable)
 }
 
+/// The keys a caller may encrypt to, in the order the realm would rather they
+/// were used.
+pub async fn published_encryption_keys(
+    transaction: &Transaction<'_>,
+) -> Result<Vec<models::entities::keys::RealmEncryptionKeyView>, Unreadable> {
+    realm_keys::published_encryption(transaction)
+        .await
+        .map_err(|_| Unreadable)
+}
+
 /// One realm of this tenant, by identifier.
 pub async fn named(
     transaction: &Transaction<'_>,

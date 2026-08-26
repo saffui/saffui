@@ -142,13 +142,35 @@ pub fn verify_signature_and_window(
 /// forgetting the first.
 #[derive(Debug, Clone, Copy)]
 pub enum Binding<'a> {
-    /// This caller is the one presenting the token, and proved this key, or
-    /// proved none. A bound token presented without its key is refused.
-    Presented(Option<&'a crate::dpop::Proven>),
+    /// This caller is the one presenting the token, and proved what `Proofs`
+    /// says. A bound token presented without what it names is refused.
+    Presented(Proofs<'a>),
     /// This caller is asking about a token somebody else holds. Introspection
     /// reports the binding for the resource server to check; enforcing it here
     /// would call a live token dead.
     Reported,
+}
+
+/// What a caller proved about the keys a token may be bound to.
+///
+/// Both are read, and each answers for its own confirmation method: a token
+/// naming two is a token that has to satisfy two. Neither is a fallback for
+/// the other.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Proofs<'a> {
+    /// A proof over a key the caller signed with, RFC 9449.
+    pub key: Option<&'a crate::dpop::Proven>,
+    /// The certificate a trusted proxy said this caller presented, RFC 8705,
+    /// as its thumbprint.
+    pub certificate: Option<&'a str>,
+}
+
+impl<'a> Proofs<'a> {
+    /// Neither proved, which is every caller that sends no proof and reaches
+    /// this server without a client certificate.
+    pub fn none() -> Self {
+        Proofs::default()
+    }
 }
 
 pub async fn verify_presented(
@@ -163,16 +185,28 @@ pub async fn verify_presented(
     // RFC 9449 §7.1: a token that names a key is worth nothing without it. The
     // check sits here, beside the signature and the window, because a binding
     // verified somewhere else is a binding somebody forgets to verify.
-    if let Binding::Presented(proven) = binding
-        && let Some(bound_to) = verified
-            .claims
-            .get("cnf")
-            .and_then(|held| held.get("jkt"))
-            .and_then(Value::as_str)
-    {
-        let held = proven.map(|proven| proven.thumbprint.as_str());
-        if held != Some(bound_to) {
-            return Err(Refused::Unbound);
+    if let Binding::Presented(proofs) = binding {
+        let confirmation = verified.claims.get("cnf");
+        let named = |method: &str| {
+            confirmation
+                .and_then(|held| held.get(method))
+                .and_then(Value::as_str)
+        };
+        // Each method answers for itself, and a token naming two satisfies
+        // two: taking one as enough would let a caller holding half of what a
+        // token names present it as though it held all of it.
+        for (bound_to, held) in [
+            (
+                named("jkt"),
+                proofs.key.map(|proven| proven.thumbprint.as_str()),
+            ),
+            (named("x5t#S256"), proofs.certificate),
+        ] {
+            if let Some(bound_to) = bound_to
+                && held != Some(bound_to)
+            {
+                return Err(Refused::Unbound);
+            }
         }
     }
 

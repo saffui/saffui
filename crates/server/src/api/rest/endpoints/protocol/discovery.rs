@@ -83,6 +83,10 @@ pub async fn published(
     let issuer = origin.issuer(&context.realm_id);
     let protocol = format!("{issuer}/protocol/openid-connect");
 
+    // Two literals rather than one. `json!` expands once per field, and a
+    // single document of everything this provider states had reached what
+    // the compiler will expand; split, a field added later fits without
+    // anybody raising a limit to make room.
     let mut document = json!({
             "issuer": issuer,
             "authorization_endpoint": format!("{protocol}/auth"),
@@ -146,6 +150,8 @@ pub async fn published(
             // challenge that travelled in the authorize request, and the
             // endpoint refuses it, so advertising it would be a lie a client
             // acts on.
+    });
+    let rest = json!({
             "code_challenge_methods_supported": ["S256"],
             // From the set a realm is provisioned with, so a scope added
             // there is advertised and one never added is not.
@@ -199,6 +205,13 @@ pub async fn published(
             "claims_parameter_supported": true,
             "authorization_response_iss_parameter_supported": true,
     });
+    let named = document.as_object_mut().expect("a json object");
+    named.extend(
+        rest.as_object()
+            .expect("a json object")
+            .iter()
+            .map(|(field, value)| (field.clone(), value.clone())),
+    );
     // Named only where a realm answers it. A client sent to an endpoint that
     // is not there reports the realm as broken rather than as closed.
     if registers {

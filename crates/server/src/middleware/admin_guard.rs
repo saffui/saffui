@@ -143,7 +143,7 @@ async fn establish(
         &transaction,
         &keys,
         &bearer,
-        services::token::Binding::Presented(None),
+        services::token::Binding::Presented(services::token::Proofs::none()),
         now,
     )
     .await

@@ -31,6 +31,28 @@ fn read_provenance_under(request: &HttpRequest, proxying: &Proxying) -> Provenan
     )
 }
 
+/// The thumbprint of the certificate this caller presented, RFC 8705 §3.
+///
+/// Nothing unless a proxy this deployment named forwarded it. The guard is in
+/// `Proxying`, and it is stricter than the one for a forwarded address: an
+/// address believed from anybody falls back to the peer that dialled, which is
+/// harmless, while a certificate believed from anybody is a certificate
+/// anybody may claim.
+pub fn read_client_certificate(
+    request: &HttpRequest,
+    provider: &dyn crypto::provider::CryptoProvider,
+) -> Option<String> {
+    let proxying = request
+        .app_data::<actix_web::web::Data<Proxying>>()
+        .map_or_else(Proxying::none, |held| (***held).clone());
+    let named = HeaderName::from_bytes(proxying.certificate_header()?.as_bytes()).ok()?;
+    let carried = request.headers().get(named)?.to_str().ok()?;
+    let peer = request.peer_addr().map(|address| address.ip().to_string());
+
+    let carried = proxying.client_certificate(peer.as_deref(), Some(carried))?;
+    services::mtls::thumbprint(provider, carried).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

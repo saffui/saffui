@@ -5,6 +5,7 @@ use crate::ConfigError;
 const HOPS: &str = "PROXY_HOPS";
 const PEERS: &str = "PROXY_PEERS";
 const HEADER: &str = "PROXY_HEADER";
+const CERTIFICATE: &str = "PROXY_CLIENT_CERTIFICATE_HEADER";
 
 /// Which header the proxies in front write.
 ///
@@ -80,6 +81,10 @@ impl Peer {
 pub struct Proxying {
     hops: usize,
     header: ProxyHeader,
+    /// Which header the terminating proxy writes the client's certificate
+    /// into. Absent reads none, which is what a deployment that terminates its
+    /// own TLS, or does no mutual TLS, gets.
+    certificate: Option<String>,
     /// Where the proxies dial from. Empty believes the header from whoever
     /// dialled, which is what a deployment that names none of them gets.
     peers: Vec<Peer>,
@@ -118,6 +123,9 @@ impl Proxying {
         Ok(Proxying {
             hops: crate::parse_or(HOPS, 0)?,
             header,
+            certificate: crate::optional(CERTIFICATE)
+                .map(|named| named.trim().to_ascii_lowercase())
+                .filter(|named| !named.is_empty()),
             peers,
         })
     }
@@ -132,6 +140,7 @@ impl Proxying {
         Proxying {
             hops,
             header,
+            certificate: None,
             peers: Vec::new(),
         }
     }
@@ -141,8 +150,51 @@ impl Proxying {
         Proxying {
             hops,
             header,
+            certificate: None,
             peers,
         }
+    }
+
+    /// The same, reading a client's certificate from a named header.
+    pub fn behind_terminating_peers(
+        header: ProxyHeader,
+        certificate: &str,
+        peers: Vec<Peer>,
+    ) -> Self {
+        Proxying {
+            hops: 1,
+            header,
+            certificate: Some(certificate.to_ascii_lowercase()),
+            peers,
+        }
+    }
+
+    /// The client's certificate, as the proxy in front wrote it down.
+    ///
+    /// Read only from a peer this deployment named, and named peers are
+    /// required: unlike a forwarded address, whose fallback is the peer that
+    /// dialled and is therefore harmless, a certificate believed from anybody
+    /// is a certificate anybody may claim. A deployment that named no peers
+    /// gets no certificate rather than everyone's.
+    pub fn client_certificate<'a>(
+        &self,
+        peer: Option<&str>,
+        carried: Option<&'a str>,
+    ) -> Option<&'a str> {
+        self.certificate.as_ref()?;
+        // Named peers and nothing else. A list with nothing in it holds no
+        // address, so a deployment that named none reads no certificate: the
+        // opposite of what an empty list means for a forwarded address, whose
+        // fallback is the peer that dialled and is therefore harmless.
+        let dialled = peer
+            .and_then(|named| named.parse::<IpAddr>().ok())
+            .is_some_and(|address| self.peers.iter().any(|held| held.holds(address)));
+        dialled.then_some(carried).flatten()
+    }
+
+    /// Which header carries it, for the transport to look up.
+    pub fn certificate_header(&self) -> Option<&str> {
+        self.certificate.as_deref()
     }
 
     /// The header to read, or nothing when no proxy stands in front and none
@@ -439,5 +491,70 @@ mod tests {
         crate::tests::set(HOPS, "some");
         assert!(Proxying::from_env().is_err());
         crate::tests::clear(&[HOPS]);
+    }
+}
+
+#[cfg(test)]
+mod certificate_tests {
+    use super::*;
+
+    fn behind(peers: &[&str]) -> Proxying {
+        Proxying::behind_terminating_peers(
+            ProxyHeader::XForwardedFor,
+            "x-ssl-client-cert",
+            peers.iter().filter_map(|held| Peer::parse(held)).collect(),
+        )
+    }
+
+    /// The whole guard: a header is what any caller writes, and this one says
+    /// whose token it is.
+    #[test]
+    fn a_certificate_is_read_only_from_a_named_peer() {
+        let proxying = behind(&["10.0.0.0/8"]);
+        assert_eq!(
+            proxying.client_certificate(Some("10.1.2.3"), Some("a-certificate")),
+            Some("a-certificate")
+        );
+        assert_eq!(
+            proxying.client_certificate(Some("203.0.113.7"), Some("a-certificate")),
+            None,
+            "a certificate was believed from an address nobody named"
+        );
+    }
+
+    /// Naming no peer reads no certificate, which is the opposite of what an
+    /// empty list means for a forwarded address. An address believed from
+    /// anybody falls back to the peer that dialled and is harmless; a
+    /// certificate believed from anybody is one anybody may claim.
+    #[test]
+    fn naming_no_peer_reads_no_certificate() {
+        let proxying = behind(&[]);
+        assert_eq!(
+            proxying.client_certificate(Some("10.1.2.3"), Some("a-certificate")),
+            None
+        );
+    }
+
+    /// A deployment that named no header terminates its own TLS, or does no
+    /// mutual TLS at all.
+    #[test]
+    fn naming_no_header_reads_no_certificate() {
+        let proxying = Proxying::behind_peers(
+            1,
+            ProxyHeader::XForwardedFor,
+            vec![Peer::parse("10.0.0.0/8").expect("a peer")],
+        );
+        assert_eq!(
+            proxying.client_certificate(Some("10.1.2.3"), Some("a-certificate")),
+            None
+        );
+    }
+
+    #[test]
+    fn a_caller_with_no_address_is_no_named_peer() {
+        assert_eq!(
+            behind(&["10.0.0.0/8"]).client_certificate(None, Some("a-certificate")),
+            None
+        );
     }
 }

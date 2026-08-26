@@ -275,3 +275,160 @@ async fn a_proof_that_names_another_token_binds_nothing() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+/// A plane that stands behind a proxy which terminates TLS and forwards what
+/// the client presented.
+fn behind_a_terminating_proxy(plane: &Plane) -> Mounted {
+    Mounted {
+        hops: config::proxying::Proxying::behind_terminating_peers(
+            config::proxying::ProxyHeader::XForwardedFor,
+            CERT_HEADER,
+            vec![config::proxying::Peer::parse("10.0.0.0/8").expect("a peer")],
+        ),
+        ..mounted(plane)
+    }
+}
+
+const CERT_HEADER: &str = "x-ssl-client-cert";
+const A_CERTIFICATE: &str = "MIIBCgIBATANBgkqhkiG9w0BAQsFADAA";
+
+/// Exchange a code from behind the proxy, saying what the caller presented and
+/// which address the proxy dialled from.
+async fn exchanged_behind(
+    plane: &Plane,
+    code: &str,
+    certificate: Option<&str>,
+    from: &str,
+) -> (StatusCode, Value) {
+    let app =
+        test::init_service(App::new().configure(register(&behind_a_terminating_proxy(plane))))
+            .await;
+    let mut asked = test::TestRequest::post()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/token",
+            support::REALM
+        ))
+        .peer_addr(format!("{from}:5000").parse().expect("an address"))
+        .set_form([
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT),
+            ("client_id", support::CONFIDENTIAL),
+            ("client_secret", support::CLIENT_SECRET),
+        ]);
+    if let Some(certificate) = certificate {
+        asked = asked.insert_header((CERT_HEADER, certificate.to_owned()));
+    }
+    let response = test::call_service(&app, asked.to_request()).await;
+    let status = response.status();
+    (status, test::read_body_json(response).await)
+}
+
+async fn userinfo_behind(
+    plane: &Plane,
+    access: &str,
+    certificate: Option<&str>,
+    from: &str,
+) -> StatusCode {
+    let app =
+        test::init_service(App::new().configure(register(&behind_a_terminating_proxy(plane))))
+            .await;
+    let mut asked = test::TestRequest::get()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/userinfo",
+            support::REALM
+        ))
+        .peer_addr(format!("{from}:5000").parse().expect("an address"))
+        .insert_header(("authorization", format!("Bearer {access}")));
+    if let Some(certificate) = certificate {
+        asked = asked.insert_header((CERT_HEADER, certificate.to_owned()));
+    }
+    test::call_service(&app, asked.to_request()).await.status()
+}
+
+/// A certificate a named proxy forwarded is what the token is bound to.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_forwarded_certificate_is_named_by_the_token_it_earns() {
+    let plane = Plane::with_actions(&[]).await;
+    let (status, granted) = exchanged_behind(
+        &plane,
+        &code_for(&plane).await,
+        Some(A_CERTIFICATE),
+        "10.1.2.3",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+
+    let access = granted["access_token"].as_str().expect("an access token");
+    let claims = plane.claims_of(access).await;
+    assert!(
+        claims["cnf"]["x5t#S256"].as_str().is_some(),
+        "the token names no certificate: {claims}"
+    );
+}
+
+/// The guard, seen from the protocol: a caller that writes the header itself
+/// binds nothing, because it did not reach here through a named proxy.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_certificate_claimed_by_an_unnamed_caller_binds_nothing() {
+    let plane = Plane::with_actions(&[]).await;
+    let (status, granted) = exchanged_behind(
+        &plane,
+        &code_for(&plane).await,
+        Some(A_CERTIFICATE),
+        // Not inside 10.0.0.0/8, so this is the client writing its own header.
+        "203.0.113.7",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{granted}");
+
+    let access = granted["access_token"].as_str().expect("an access token");
+    assert_eq!(
+        plane.claims_of(access).await["cnf"],
+        Value::Null,
+        "a header written by the caller bound the token"
+    );
+}
+
+/// A token bound to a certificate is worth nothing to whoever takes it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_certificate_bound_token_is_refused_to_another_certificate() {
+    let plane = Plane::with_actions(&[]).await;
+    let (_, granted) = exchanged_behind(
+        &plane,
+        &code_for(&plane).await,
+        Some(A_CERTIFICATE),
+        "10.1.2.3",
+    )
+    .await;
+    let access = granted["access_token"].as_str().expect("an access token");
+
+    // The holder, through the proxy.
+    assert_eq!(
+        userinfo_behind(&plane, access, Some(A_CERTIFICATE), "10.1.2.3").await,
+        StatusCode::OK
+    );
+
+    // Somebody else's certificate.
+    assert_eq!(
+        userinfo_behind(
+            &plane,
+            access,
+            Some("MIIBCgIBAjANBgkqhkiG9w0BAQsFADAA"),
+            "10.1.2.3"
+        )
+        .await,
+        StatusCode::UNAUTHORIZED,
+        "a token was accepted on a certificate it is not bound to"
+    );
+
+    // And none at all, which is what a thief presents.
+    assert_eq!(
+        userinfo_behind(&plane, access, None, "10.1.2.3").await,
+        StatusCode::UNAUTHORIZED,
+        "a bound token was read as a bearer token"
+    );
+}

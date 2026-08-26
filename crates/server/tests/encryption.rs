@@ -380,3 +380,246 @@ async fn userinfo_signed_and_encrypted_is_a_signature_inside_a_wrapper() {
         "what was inside was not signed"
     );
 }
+
+/// Encrypt a signed object to the realm's own published key.
+fn sealed_to_realm(
+    realm_key: &models::entities::keys::RealmEncryptionKeyView,
+    registration: JweRegistration,
+    signed: &str,
+) -> String {
+    let jwk = crypto::jose::jwk::Jwk::from_map(
+        realm_key
+            .public_jwk
+            .as_object()
+            .cloned()
+            .expect("a published key"),
+    )
+    .expect("a key");
+    let encrypter = RSA_OAEP_256.encrypter_from_jwk(&jwk).expect("an encrypter");
+    let mut header = JweHeader::new();
+    header.set_algorithm(registration.alg.as_str());
+    header.set_content_encryption(registration.enc.as_str());
+    header.set_content_type("JWT");
+    crypto::jose::jwe::serialize_compact(signed.as_bytes(), &header, &encrypter)
+        .expect("an encrypted object")
+}
+
+/// A signed request object, as a client would make one.
+fn signed_object(key: &SigningKey) -> String {
+    let mut payload = crypto::jose::jwt::JwtPayload::new();
+    for (named, value) in [
+        ("iss", support::CONFIDENTIAL),
+        ("aud", &support::origin().issuer(support::REALM)),
+        ("client_id", support::CONFIDENTIAL),
+        ("response_type", "code"),
+        ("redirect_uri", REDIRECT),
+        ("scope", "openid"),
+        ("state", "from-inside"),
+        ("nonce", "n-0S6"),
+    ] {
+        payload
+            .set_claim(named, Some(serde_json::json!(value)))
+            .expect("a claim");
+    }
+    key.sign(&payload, "client-key")
+}
+
+/// Ask, carrying whatever object was given, and hand back where it landed
+/// along with whatever it opened.
+async fn asked_with_object(plane: &Plane, object: &str) -> (StatusCode, String, Vec<String>) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/auth?client_id={}&response_type=code\
+                 &scope=openid&request={}",
+                support::REALM,
+                support::CONFIDENTIAL,
+                urlencode(object),
+            ))
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    // Where it went, or what it said instead: a refusal shown to the person
+    // has no `location`, and a test that read only the header would report an
+    // empty landing and say nothing about why.
+    let cookies: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    let landing = match response.headers().get("location") {
+        Some(value) => value.to_str().unwrap_or_default().to_owned(),
+        None => String::from_utf8_lossy(&test::read_body(response).await).into_owned(),
+    };
+    (status, landing, cookies)
+}
+
+/// Answer the login this object opened, and hand back where the browser went.
+async fn finished(plane: &Plane, cookies: &[String]) -> String {
+    let binding = cookie_value(cookies, support::AUTH_SESSION_COOKIE).expect("a login");
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/login",
+                support::REALM
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+            ))
+            .set_form([
+                ("username", support::SUBJECT),
+                ("password", support::PASSWORD),
+            ])
+            .to_request(),
+    )
+    .await;
+    response
+        .headers()
+        .get("location")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// A realm publishes a key to be encrypted to, named for that use.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realm_publishes_a_key_to_be_encrypted_to() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/certs",
+                support::REALM
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let published: Value = test::read_body_json(response).await;
+    let keys = published["keys"].as_array().expect("a key set");
+
+    let encrypting: Vec<&Value> = keys.iter().filter(|key| key["use"] == "enc").collect();
+    assert_eq!(encrypting.len(), 1, "{published}");
+    assert_eq!(encrypting[0]["alg"], "RSA-OAEP-256");
+    assert!(encrypting[0]["kid"].as_str().is_some(), "{published}");
+    // A key set that published a private half would publish the realm.
+    assert_eq!(encrypting[0]["d"], Value::Null, "{published}");
+
+    // The signing keys are still there, and still say what they are for.
+    assert!(
+        keys.iter().any(|key| key["use"] == "sig"),
+        "publishing one use dropped the other: {published}"
+    );
+}
+
+/// An object encrypted to the realm is opened, and what it says governs the
+/// request.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_encrypted_request_object_is_opened_and_obeyed() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("client-key");
+    plane
+        .register_client_keys(
+            support::CONFIDENTIAL,
+            &key,
+            crypto::provider::SignAlg::Es256,
+        )
+        .await;
+    plane
+        .register_request_object_encryption(
+            support::CONFIDENTIAL,
+            crypto::provider::SignAlg::Es256,
+            asking(),
+        )
+        .await;
+
+    let realm_key = plane.realm_encryption_key().await;
+    let object = sealed_to_realm(&realm_key, asking(), &signed_object(&key));
+
+    let (status, landing, opened) = asked_with_object(&plane, &object).await;
+    assert_eq!(status, StatusCode::FOUND, "{landing}");
+
+    // Opened is not enough: what it said has to be what the request became.
+    // The query carried no state and no redirect; the object carried both.
+    let landed = finished(&plane, &opened).await;
+    assert!(
+        landed.starts_with(REDIRECT) && landed.contains("state=from-inside"),
+        "the object was opened and then not obeyed: {landed}"
+    );
+}
+
+/// A client that registered encryption may not send an object in the clear.
+///
+/// Reading one would accept from anybody what only that client can send: the
+/// key it encrypts to is published, so encryption is what says the object came
+/// from a client holding a signing key this realm registered.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_that_encrypts_may_not_send_an_object_in_the_clear() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("client-key");
+    plane
+        .register_client_keys(
+            support::CONFIDENTIAL,
+            &key,
+            crypto::provider::SignAlg::Es256,
+        )
+        .await;
+    plane
+        .register_request_object_encryption(
+            support::CONFIDENTIAL,
+            crypto::provider::SignAlg::Es256,
+            asking(),
+        )
+        .await;
+
+    let (_, landing, _) = asked_with_object(&plane, &signed_object(&key)).await;
+    assert!(
+        landing.contains("invalid_request_object"),
+        "a signed object was read where an encrypted one was registered: {landing}"
+    );
+}
+
+/// The header is held to what was registered, before anything is decrypted.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_object_naming_another_pair_is_refused_on_what_it_named() {
+    let plane = Plane::with_actions(&[]).await;
+    let key = SigningKey::generate("client-key");
+    plane
+        .register_client_keys(
+            support::CONFIDENTIAL,
+            &key,
+            crypto::provider::SignAlg::Es256,
+        )
+        .await;
+    plane
+        .register_request_object_encryption(
+            support::CONFIDENTIAL,
+            crypto::provider::SignAlg::Es256,
+            asking(),
+        )
+        .await;
+
+    // Encrypted to the right key, under a method other than the registered one.
+    let realm_key = plane.realm_encryption_key().await;
+    let other = JweRegistration::new(JweAlgorithm::RsaOaep256, Some(JweEncryption::A128CbcHs256));
+    let object = sealed_to_realm(&realm_key, other, &signed_object(&key));
+
+    let (_, landing, _) = asked_with_object(&plane, &object).await;
+    assert!(
+        landing.contains("invalid_request_object"),
+        "an object naming another method was opened anyway: {landing}"
+    );
+}

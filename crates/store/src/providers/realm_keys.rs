@@ -1,7 +1,10 @@
 use crypto::envelope::Envelope;
 use crypto::provider::SignAlg;
 use deadpool_postgres::Transaction;
-use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey, RealmSigningKeyView};
+use models::entities::keys::{
+    JweAlgorithm, KeyStatus, KeyUse, RealmEncryptionKey, RealmEncryptionKeyView, RealmSigningKey,
+    RealmSigningKeyView,
+};
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
@@ -198,5 +201,105 @@ fn view(row: Row) -> StoreResult<RealmSigningKeyView> {
 /// with.
 fn algorithm(row: &Row) -> StoreResult<crypto::provider::SignAlg> {
     serde_json::from_value(serde_json::Value::String(row.get("algorithm")))
+        .map_err(|_| StoreError::Backend)
+}
+
+/// Write a key this realm publishes to be encrypted to.
+pub async fn create_encryption(
+    transaction: &Transaction<'_>,
+    ring: &RealmKeyring,
+    envelope: &Envelope,
+    key: &RealmEncryptionKey,
+) -> StoreResult<()> {
+    let sealed = ring
+        .seal(envelope, PURPOSE, &key.kid, &key.private_pem)
+        .await?;
+    transaction
+        .execute(
+            "INSERT INTO realm_signing_keys \
+                 (tenant, realm_id, kid, algorithm, key_use, status, priority, \
+                  private_pem, public_jwk, created_at) \
+             SELECT current_setting('saffui.current_tenant', true), \
+                    current_setting('saffui.current_realm', true), \
+                    $1, $2, 'enc', 'active', 0, $3, $4, $5",
+            &[
+                &key.kid,
+                &key.algorithm.as_str(),
+                &sealed,
+                &key.public_jwk,
+                &chrono::Utc::now().timestamp(),
+            ],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// The key a client encrypted to, private half opened.
+///
+/// By algorithm, because the header names one and a key of another cannot open
+/// what that one closed.
+pub async fn active_encryption(
+    transaction: &Transaction<'_>,
+    ring: &RealmKeyring,
+    envelope: &Envelope,
+    algorithm: JweAlgorithm,
+) -> StoreResult<Option<RealmEncryptionKey>> {
+    let Some(row) = transaction
+        .query_opt(
+            "SELECT kid, algorithm, private_pem, public_jwk FROM realm_signing_keys \
+             WHERE key_use = 'enc' AND status = 'active' AND algorithm = $1 \
+             ORDER BY priority DESC, kid ASC LIMIT 1",
+            &[&algorithm.as_str()],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+    else {
+        return Ok(None);
+    };
+
+    let kid: String = row.get("kid");
+    let sealed: Vec<u8> = row.get("private_pem");
+    let private_pem = ring.open(envelope, PURPOSE, &kid, &sealed).await?;
+    Ok(Some(RealmEncryptionKey {
+        algorithm: read_encryption_algorithm(&row)?,
+        kid,
+        private_pem: crypto::secrecy::ExposeSecret::expose_secret(&private_pem).clone(),
+        public_jwk: row.get("public_jwk"),
+    }))
+}
+
+/// The keys this realm publishes to be encrypted to.
+pub async fn published_encryption(
+    transaction: &Transaction<'_>,
+) -> StoreResult<Vec<RealmEncryptionKeyView>> {
+    let rows = transaction
+        .query(
+            "SELECT kid, algorithm, status, public_jwk FROM realm_signing_keys \
+             WHERE key_use = 'enc' AND status <> 'disabled' \
+             ORDER BY priority DESC, kid ASC",
+            &[],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(RealmEncryptionKeyView {
+                kid: row.get("kid"),
+                algorithm: read_encryption_algorithm(&row)?,
+                status: row.get::<_, KeyStatus>("status"),
+                public_jwk: row.get("public_jwk"),
+            })
+        })
+        .collect()
+}
+
+/// Read back through the catalogue that wrote it, like the signing side: a
+/// value this build does not know is refused here rather than carried as a
+/// string nothing can decrypt with.
+fn read_encryption_algorithm(row: &Row) -> StoreResult<JweAlgorithm> {
+    row.get::<_, String>("algorithm")
+        .parse()
         .map_err(|_| StoreError::Backend)
 }

@@ -26,6 +26,11 @@ pub async fn published(
     let Ok(keys) = services::realm::published_keys(&transaction).await else {
         return refused(StatusCode::INTERNAL_SERVER_ERROR);
     };
+    // Published beside them rather than instead: a relying party reads one set
+    // and needs both, the keys that verify and the key it encrypts to.
+    let Ok(encrypting) = services::realm::published_encryption_keys(&transaction).await else {
+        return refused(StatusCode::INTERNAL_SERVER_ERROR);
+    };
 
     // Cacheable, unlike everything else on this plane. A key set is read on
     // every verification a relying party performs, and the rotation that
@@ -33,7 +38,13 @@ pub async fn published(
     // than failing.
     HttpResponseBuilder::new(StatusCode::OK)
         .insert_header(("Cache-Control", "public, max-age=300"))
-        .json(json!({ "keys": keys.iter().map(advertised).collect::<Vec<_>>() }))
+        .json(json!({
+            "keys": keys
+                .iter()
+                .map(advertised)
+                .chain(encrypting.iter().map(advertised_encryption))
+                .collect::<Vec<_>>()
+        }))
 }
 
 /// One key, as RFC 7517 §4 spells it.
@@ -55,4 +66,18 @@ fn advertised(key: &models::entities::keys::RealmSigningKeyView) -> Value {
 
 fn refused(status: StatusCode) -> HttpResponse {
     uncached(&mut HttpResponseBuilder::new(status)).json(json!({ "keys": [] }))
+}
+
+/// One key a caller may encrypt to, named for that use and no other.
+fn advertised_encryption(key: &models::entities::keys::RealmEncryptionKeyView) -> Value {
+    let mut jwk = key.public_jwk.clone();
+    if let Some(named) = jwk.as_object_mut() {
+        named.insert("kid".into(), Value::String(key.kid.clone()));
+        named.insert("use".into(), Value::String("enc".into()));
+        named.insert(
+            "alg".into(),
+            Value::String(key.algorithm.as_str().to_owned()),
+        );
+    }
+    jwk
 }

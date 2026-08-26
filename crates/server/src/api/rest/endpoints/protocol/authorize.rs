@@ -146,6 +146,44 @@ async fn start(
         asked.request_uri = None;
     }
 
+    // Opened before the object is read, because a client that registered
+    // encryption sends nothing this server can read until it is. Refused
+    // rather than passed on: an object in the clear from such a client is one
+    // anybody could have written.
+    if let Some(raw) = asked.request.clone()
+        && let Some(client_id) = asked.client_id.as_deref()
+        && let Ok(Some(client)) = store::providers::clients::load(&transaction, client_id).await
+        && client.request_object_encryption.is_some()
+    {
+        let Ok(ring) = store::keyring::load(
+            &transaction,
+            &sealing.envelope,
+            &context.tenant,
+            &context.realm_id,
+        )
+        .await
+        else {
+            return shown("invalid_request_object", "no login can start here");
+        };
+        match services::encryption::opened_request_object(
+            &transaction,
+            &ring,
+            &sealing.envelope,
+            &client,
+            &raw,
+        )
+        .await
+        {
+            Ok(opened) => asked.request = Some(opened),
+            Err(_) => {
+                return shown(
+                    "invalid_request_object",
+                    "the request object could not be read",
+                );
+            }
+        }
+    }
+
     // A request object is verified against the client's keys, and a client
     // that publishes them elsewhere may have rotated since they were read.
     if asked.request.is_some()

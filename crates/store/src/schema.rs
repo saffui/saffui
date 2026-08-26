@@ -277,6 +277,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V045__form_post_landings.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 46,
+            name: "realm_encryption_keys",
+            sql: include_str!("../migrations/V046__realm_encryption_keys.sql"),
+            transactional: true,
+        }),
     ]
 }
 

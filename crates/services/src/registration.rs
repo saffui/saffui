@@ -523,13 +523,18 @@ fn method_named(held: &str) -> &'static str {
 
 /// §2 of the registration spec, mapped onto what this provider can honour.
 fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
-    // The request object travels the other way: this server would be the one
-    // decrypting, which needs a key of its own published for the purpose.
-    if metadata.request_object_encryption_alg.is_some()
-        || metadata.request_object_encryption_enc.is_some()
-    {
+    // The request object travels the other way: this server decrypts it, with
+    // a key it published for the purpose.
+    let request_object_encryption = read_encryption(
+        metadata.request_object_encryption_alg.as_deref(),
+        metadata.request_object_encryption_enc.as_deref(),
+    )?;
+    // Encryption wraps a signature or it wraps nothing. An object this server
+    // decrypts and cannot then verify is one anybody could have sent, since
+    // the key it was encrypted to is published for that.
+    if request_object_encryption.is_some() && metadata.request_object_signing_alg.is_none() {
         return Err(Refused::Invalid(
-            "this provider publishes no key to encrypt a request object to",
+            "an encrypted request object with no signature is one anybody may send",
         ));
     }
     let id_token_encryption = read_encryption(
@@ -599,6 +604,7 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
             consent_required: None,
             id_token_encryption,
             userinfo_encryption,
+            request_object_encryption,
             response_types: Some(named_response_types(metadata)),
             implicit: asked.iter().any(|held| held.mints_here()),
             jwks: metadata.jwks.clone(),

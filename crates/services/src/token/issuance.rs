@@ -5,7 +5,7 @@ use crypto::jose::jws::{
 use crypto::jose::jwt::{self, JwtPayload};
 use crypto::provider::{CryptoProvider, SignAlg};
 use models::entities::keys::RealmSigningKey;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 /// What a token is for.
 ///
@@ -72,6 +72,11 @@ pub struct Minting<'a> {
     /// Everything the flow adds: `nonce`, `auth_time`, `acr`, `org_id`. Written
     /// under the named claims, so none of them can be quietly displaced.
     pub extra: Map<String, Value>,
+    /// The thumbprint of the key this token may only be presented with, RFC
+    /// 9449 §6. Named here rather than left to `extra` because it is what
+    /// stands between a stolen token and its use: a claim that decides that
+    /// does not ride in the bag a mapper writes into.
+    pub bound_to: Option<String>,
 }
 
 /// A token, and the two things about it that have to be recorded.
@@ -169,6 +174,14 @@ pub fn mint_token(
                 .set_claim(&claim, Some(value))
                 .map_err(|_| Unmintable::Unsignable)?;
         }
+    }
+
+    // After the mappers, and not among them: nothing a flow adds can put a
+    // token on another key, or take it off the one it was bound to.
+    if let Some(thumbprint) = minting.bound_to {
+        payload
+            .set_claim("cnf", Some(json!({ "jkt": thumbprint })))
+            .map_err(|_| Unmintable::Unsignable)?;
     }
 
     let signer = signer_for(key).ok_or(Unmintable::UnusableKey)?;

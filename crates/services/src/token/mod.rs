@@ -51,6 +51,10 @@ pub enum Refused {
     NoExpiry,
     #[error("the token is expired or not yet valid")]
     OutsideWindow,
+    /// It names a key, and the caller did not prove holding that key. A token
+    /// stolen off the wire is refused here and nowhere else.
+    #[error("the token is bound to a key this caller did not prove")]
+    Unbound,
     /// Withdrawn before its expiry.
     #[error("the token has been withdrawn")]
     Revoked,
@@ -130,13 +134,47 @@ pub fn verify_signature_and_window(
 /// The whole gate: signature, window, and whether it was withdrawn.
 ///
 /// What every caller presenting a bearer should ask for.
+/// What the caller can say about the key a token is bound to.
+///
+/// Named at every call rather than passed as an option, because the two cases
+/// are decisions and not the presence of a value: one enforces the binding,
+/// the other reports it. An option would let a caller mean the second by
+/// forgetting the first.
+#[derive(Debug, Clone, Copy)]
+pub enum Binding<'a> {
+    /// This caller is the one presenting the token, and proved this key, or
+    /// proved none. A bound token presented without its key is refused.
+    Presented(Option<&'a crate::dpop::Proven>),
+    /// This caller is asking about a token somebody else holds. Introspection
+    /// reports the binding for the resource server to check; enforcing it here
+    /// would call a live token dead.
+    Reported,
+}
+
 pub async fn verify_presented(
     transaction: &Transaction<'_>,
     keys: &[RealmSigningKeyView],
     token: &str,
+    binding: Binding<'_>,
     now: DateTime<Utc>,
 ) -> Result<Verified, Refused> {
     let verified = verify_signature_and_window(keys, token, now)?;
+
+    // RFC 9449 §7.1: a token that names a key is worth nothing without it. The
+    // check sits here, beside the signature and the window, because a binding
+    // verified somewhere else is a binding somebody forgets to verify.
+    if let Binding::Presented(proven) = binding
+        && let Some(bound_to) = verified
+            .claims
+            .get("cnf")
+            .and_then(|held| held.get("jkt"))
+            .and_then(Value::as_str)
+    {
+        let held = proven.map(|proven| proven.thumbprint.as_str());
+        if held != Some(bound_to) {
+            return Err(Refused::Unbound);
+        }
+    }
 
     // A token carrying no identifier names nothing a withdrawal could have been
     // written against, and is left to its window.

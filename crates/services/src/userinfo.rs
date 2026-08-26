@@ -126,11 +126,20 @@ pub async fn claims_for(
     transaction: &Transaction<'_>,
     keys: &[RealmSigningKeyView],
     bearer: &str,
+    // What the caller proved about the key, when it sent a proof at all. A
+    // token bound to a key is refused here without it.
+    proven: Option<&crate::dpop::Proven>,
     now: DateTime<Utc>,
 ) -> Result<Answer, Untold> {
-    let verified = token::verify_presented(transaction, keys, bearer, now)
-        .await
-        .map_err(|_| Untold::InvalidToken)?;
+    let verified = token::verify_presented(
+        transaction,
+        keys,
+        bearer,
+        token::Binding::Presented(proven),
+        now,
+    )
+    .await
+    .map_err(|_| Untold::InvalidToken)?;
 
     // An id token is a record of a login, not a credential, and it names the
     // client as its audience. Accepting one here would let anything that saw a

@@ -117,7 +117,14 @@ pub async fn admit_bearer(
     bearer: &str,
     now: DateTime<Utc>,
 ) -> Result<Established, NotEstablished> {
-    let verified = crate::token::verify_presented(transaction, keys, bearer, now).await?;
+    let verified = crate::token::verify_presented(
+        transaction,
+        keys,
+        bearer,
+        crate::token::Binding::Presented(None),
+        now,
+    )
+    .await?;
     let context = establish(transaction, tenant, &verified, now).await?;
     Ok(Established { context, verified })
 }

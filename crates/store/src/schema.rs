@@ -283,6 +283,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V046__realm_encryption_keys.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 47,
+            name: "dpop_proofs",
+            sql: include_str!("../migrations/V047__dpop_proofs.sql"),
+            transactional: true,
+        }),
     ]
 }
 

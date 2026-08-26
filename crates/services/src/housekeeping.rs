@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
-use store::providers::{deliveries, form_post, login, oidc, one_time_tokens, pushed, sessions};
+use store::providers::{
+    deliveries, dpop, form_post, login, oidc, one_time_tokens, pushed, sessions,
+};
 
 /// How long a receipt is kept. One nobody looked at for a month is one nobody
 /// is going to, and it names an address.
@@ -21,6 +23,7 @@ pub struct Swept {
     pub delivery_receipts: u64,
     pub pushed_requests: u64,
     pub form_post_landings: u64,
+    pub dpop_proofs: u64,
     pub sessions: u64,
 }
 
@@ -34,6 +37,7 @@ impl Swept {
             + self.delivery_receipts
             + self.pushed_requests
             + self.form_post_landings
+            + self.dpop_proofs
             + self.sessions
     }
 
@@ -46,6 +50,7 @@ impl Swept {
         self.delivery_receipts += other.delivery_receipts;
         self.pushed_requests += other.pushed_requests;
         self.form_post_landings += other.form_post_landings;
+        self.dpop_proofs += other.dpop_proofs;
         self.sessions += other.sessions;
     }
 }
@@ -81,6 +86,9 @@ pub async fn drop_expired_rows(
         )
         .await
         .map_err(failed)?,
+        dpop_proofs: dpop::drop_expired_proofs(transaction)
+            .await
+            .map_err(failed)?,
         form_post_landings: form_post::drop_expired_landings(transaction)
             .await
             .map_err(failed)?,

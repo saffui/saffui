@@ -115,6 +115,10 @@ pub struct Within<'a> {
     pub realm: &'a RealmModel,
     /// Built from the deployment's origin, so a grant cannot invent one.
     pub issuer: &'a str,
+    /// The key the caller proved holding, RFC 9449. What is minted here may
+    /// then only be presented with it. Absent is a bearer token, which is what
+    /// every caller that sends no proof still gets.
+    pub bound_to: Option<&'a str>,
 }
 
 /// What a grant produced.
@@ -214,6 +218,7 @@ pub async fn client_credentials(
         signing.provider,
         &key,
         Minting {
+            bound_to: within.bound_to.map(str::to_owned),
             kind: Kind::Access,
             issuer: within.issuer,
             subject: &account.user_id,
@@ -350,6 +355,7 @@ pub async fn authorization_code(
         .await
         .map_err(|_| Ungranted::Unreadable)?;
     let minting_for = |kind: Kind, life: Duration, audiences: Vec<String>| Minting {
+        bound_to: within.bound_to.map(str::to_owned),
         kind,
         issuer: within.issuer,
         subject: &told,
@@ -681,10 +687,15 @@ pub async fn refresh_token(
     renewing: &Renewing<'_>,
     now: DateTime<Utc>,
 ) -> Result<Granted, Ungranted> {
-    let verified =
-        crate::token::verify_presented(transaction, renewing.keys, renewing.refresh_token, now)
-            .await
-            .map_err(|_| Ungranted::InvalidGrant)?;
+    let verified = crate::token::verify_presented(
+        transaction,
+        renewing.keys,
+        renewing.refresh_token,
+        crate::token::Binding::Presented(None),
+        now,
+    )
+    .await
+    .map_err(|_| Ungranted::InvalidGrant)?;
 
     // An access token must not renew anything. Without this the longest-lived
     // credential a client holds is whichever of its tokens lives longest.
@@ -806,6 +817,7 @@ pub async fn refresh_token(
             .await
             .map_err(|_| Ungranted::Unreadable)?;
     let minting_for = |kind: Kind, life: Duration| Minting {
+        bound_to: within.bound_to.map(str::to_owned),
         kind,
         issuer: within.issuer,
         subject: &told,

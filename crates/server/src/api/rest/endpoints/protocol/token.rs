@@ -77,6 +77,42 @@ pub async fn ask(
         return Denied::InvalidRequest.answer("grant_type is required");
     };
 
+    // RFC 9449 §5. A caller that proves a key gets tokens only that key may
+    // present; one that proves none gets what it always got. Proven before the
+    // grant runs, so a bad proof is refused rather than costing a code.
+    let bound_to = match request.headers().get("dpop") {
+        None => None,
+        Some(proof) => {
+            let Ok(proof) = proof.to_str() else {
+                return Denied::InvalidDpopProof.answer("the proof could not be read");
+            };
+            match services::dpop::proven(
+                &transaction,
+                sealing.provider.as_ref(),
+                proof,
+                services::dpop::Bound {
+                    method: "POST",
+                    url: &format!(
+                        "{}/realms/{}/protocol/openid-connect/token",
+                        origin.as_str(),
+                        context.realm_id
+                    ),
+                    // None here on purpose: this is where a token is handed
+                    // out, so there is not one yet for a proof to name.
+                    access_token: None,
+                },
+                now,
+            )
+            .await
+            {
+                Ok(proven) => Some(proven.thumbprint),
+                Err(_) => {
+                    return Denied::InvalidDpopProof.answer("the proof does not bind this request");
+                }
+            }
+        }
+    };
+
     let granted = match grant_type {
         "client_credentials" => {
             let Ok(ring) = keyring::load(
@@ -101,6 +137,7 @@ pub async fn ask(
                     tenant: &context,
                     realm: &realm,
                     issuer: &origin.issuer(&context.realm_id),
+                    bound_to: bound_to.as_deref(),
                 },
                 &client,
                 &read_provenance(&request),
@@ -134,6 +171,7 @@ pub async fn ask(
                     tenant: &context,
                     realm: &realm,
                     issuer: &origin.issuer(&context.realm_id),
+                    bound_to: bound_to.as_deref(),
                 },
                 &client,
                 &grant::Redeeming {
@@ -174,6 +212,7 @@ pub async fn ask(
                     tenant: &context,
                     realm: &realm,
                     issuer: &origin.issuer(&context.realm_id),
+                    bound_to: bound_to.as_deref(),
                 },
                 &client,
                 &grant::Renewing {

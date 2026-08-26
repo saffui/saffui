@@ -206,7 +206,11 @@ jobs:
   # nothing without one that negotiates TLS. Both are here rather than skipped.
   postgres:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    # The suites here run one binary after another against a real server, and
+    # `protocol` alone is eight minutes of it. Raised when the sign-in script,
+    # the encryption and the token binding suites landed and the job began
+    # dying mid-run with everything it had reached passing.
+    timeout-minutes: 45
     env:
       SAFFUI_TEST_PG: "host=localhost port=5432 user=postgres password=saffui dbname=saffui_test"
       SAFFUI_TEST_PG_TLS: "host=localhost port=5433 user=postgres password=saffui dbname=saffui_test"

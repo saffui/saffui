@@ -47,6 +47,10 @@ pub enum Denied {
     UnauthorizedClient,
     UnsupportedGrantType,
     InvalidScope,
+    /// RFC 9449 §5.2, and named by that RFC rather than folded into
+    /// `invalid_request`: a client that sends a proof and gets told only that
+    /// its request was invalid cannot tell the proof was the part refused.
+    InvalidDpopProof,
 }
 
 impl Denied {
@@ -58,6 +62,7 @@ impl Denied {
             Denied::UnauthorizedClient => "unauthorized_client",
             Denied::UnsupportedGrantType => "unsupported_grant_type",
             Denied::InvalidScope => "invalid_scope",
+            Denied::InvalidDpopProof => "invalid_dpop_proof",
         }
     }
 

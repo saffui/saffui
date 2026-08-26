@@ -70,6 +70,7 @@ pub async fn issue(
     .await
     .map_err(|_| Unmintable)?;
     let minting = |kind: Kind, extra: Map<String, Value>| Minting {
+        bound_to: None,
         kind,
         issuer: established.issuer,
         subject: &told,

@@ -265,10 +265,13 @@ jobs:
       # checked rather than the exit status: a green job that reached no server
       # reads as coverage of the lock and the schema, which is the last place to
       # be wrong about.
+      #
+      # These run at once, unlike the suites below: each runner test owns a
+      # schema, each lock test owns a key, and the TLS tests write nothing.
       - name: test against both servers
         run: |
           set -o pipefail
-          cargo test -p pgcore -- --ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/pg.log"
+          cargo test -p pgcore -- --ignored 2>&1 | tee "$RUNNER_TEMP/pg.log"
           if ! grep -qE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/pg.log"; then
             echo "no database test ran; the job proved nothing." >&2
             exit 1

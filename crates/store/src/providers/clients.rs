@@ -604,3 +604,40 @@ fn as_document(
 ) -> StoreResult<Option<serde_json::Value>> {
     value.transpose().map_err(|_| StoreError::Backend)
 }
+
+/// Which lock the registration ceiling is counted under. The other half says
+/// which realm, so two realms registering at once never wait on each other.
+const REGISTERING: i32 = 0x5246_4745_u32 as i32;
+
+/// Wait for whoever else is registering a client in this realm.
+///
+/// Transaction scoped, so it is released at commit and never rides a pooled
+/// backend to the next caller. Counting and then creating without it lets two
+/// registrations one below the ceiling both read a count that passes.
+pub async fn hold_registrations(transaction: &Transaction<'_>, realm_id: &str) -> StoreResult<()> {
+    transaction
+        .execute(
+            "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+            &[&REGISTERING, &realm_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// How many clients registration itself created here, which is not how many
+/// clients the realm has.
+pub async fn count_created_by(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+    by: &str,
+) -> StoreResult<i64> {
+    transaction
+        .query_one(
+            "SELECT count(*) FROM clients WHERE realm_id = $1 AND created_by = $2",
+            &[&realm_id, &by],
+        )
+        .await
+        .map(|row| row.get::<_, i64>(0))
+        .map_err(|_| StoreError::Backend)
+}

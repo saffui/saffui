@@ -34,6 +34,9 @@ pub struct Spec {
 /// administrator makes, which registers nothing.
 #[derive(Debug, Clone, Default)]
 pub struct Registered {
+    /// Whether the person has to agree before this client is given anything.
+    /// Absent leaves the client as the store made it.
+    pub consent_required: Option<bool>,
     pub response_types: Option<Vec<String>>,
     pub implicit: bool,
     pub jwks: Option<serde_json::Value>,
@@ -65,6 +68,7 @@ impl Registered {
     /// keeps it rather than clearing it.
     pub fn of(client: &ClientModel) -> Self {
         Registered {
+            consent_required: client.consent_required,
             response_types: client.response_types.clone(),
             implicit: client.implicit_flow_enabled == Some(true),
             jwks: client.jwks.clone(),
@@ -330,6 +334,9 @@ fn apply(client: &mut ClientModel, spec: &Spec) {
     client.subject_type = registered.subject_type.clone();
     client.sector_identifier_uri = registered.sector_identifier_uri.clone();
     client.token_endpoint_auth_signing_alg = registered.token_endpoint_auth_signing_alg;
+    if let Some(required) = registered.consent_required {
+        client.consent_required = Some(required);
+    }
     if !registered.method.is_empty() {
         client.client_authenticator_type = Some(registered.method.clone());
     }

@@ -13,7 +13,9 @@ use models::entities::auth::{
 };
 use models::entities::client::{ClientCreateModel, ClientScopeModel, Protocol};
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey};
-use models::entities::realm::{ClientRegistration, RealmCreateModel, RealmModel};
+use models::entities::realm::{
+    ClientRegistration, RealmCreateModel, RealmModel, RegistrationBounds,
+};
 use models::entities::tenant::{TenantCreateModel, TenantModel};
 use secrecy::SecretBox;
 use store::error::{StoreError, StoreResult};
@@ -462,14 +464,19 @@ pub struct Registration<'a> {
 pub async fn open_client_registration(
     transaction: &Transaction<'_>,
     realm_id: &str,
+    bounds: &RegistrationBounds,
 ) -> StoreResult<bool> {
     let Some(mut realm) = realms::load(transaction, realm_id).await? else {
         return Ok(false);
     };
-    if realm.client_registration == ClientRegistration::Open {
+    let bounded = realm.registration_bounds.max_clients == bounds.max_clients
+        && realm.registration_bounds.requires_consent == bounds.requires_consent
+        && realm.registration_bounds.trusted_hosts == bounds.trusted_hosts;
+    if realm.client_registration == ClientRegistration::Open && bounded {
         return Ok(false);
     }
     realm.client_registration = ClientRegistration::Open;
+    realm.registration_bounds = bounds.clone();
     realms::update(transaction, &realm).await
 }
 
@@ -496,6 +503,7 @@ pub async fn provision_client(
         backchannel_logout_uri: registration.backchannel_logout_uri.clone(),
         frontchannel_logout_uri: registration.frontchannel_logout_uri.clone(),
         registered: admin::clients::Registered {
+            consent_required: None,
             implicit: registration.implicit,
             ..Default::default()
         },

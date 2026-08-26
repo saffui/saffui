@@ -5,6 +5,7 @@ use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
 use secrecy::SecretBox;
 use serde::Deserialize;
+use services::form_post;
 use services::landing::{Landing, ResponseMode};
 use services::login::authenticator::Answer;
 use services::login::browser::{self, Step, Unanswerable};
@@ -42,7 +43,7 @@ pub struct Answered {
 }
 
 /// How the answer arrived, which is how the outcome is told.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum Spoken {
     Json,
     /// A form: every outcome is a place to go. The page shows what the
@@ -53,6 +54,10 @@ enum Spoken {
 
 /// How long the login this opens lasts, matching what the flow writes.
 const SSO_LIFESPAN: i64 = 36_000;
+
+/// How long the ticket that fetches a waiting response lasts. One navigation
+/// and no longer: it stands for an authorization code.
+const LANDING_SECONDS: i64 = 120;
 
 /// Run one step.
 pub async fn answer(
@@ -173,6 +178,22 @@ pub async fn answer(
         // admission they are what the code names. Answering before committing
         // hands out a code whose login the redemption cannot find.
         Ok(step) => {
+            // A browser reading JSON cannot post the answer to the client: the
+            // page it is on may only post to this server. It is handed a ticket
+            // instead, written here so it commits with the code it stands for.
+            let ticket = match landing_of(&step) {
+                Some(landing)
+                    if spoken == Spoken::Json && landing.mode == ResponseMode::FormPost =>
+                {
+                    match form_post::keep(&transaction, sealing.provider.as_ref(), landing, now)
+                        .await
+                    {
+                        Ok(ticket) => Some(ticket),
+                        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
+                    }
+                }
+                _ => None,
+            };
             if transaction.commit().await.is_err() {
                 return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
             }
@@ -242,7 +263,8 @@ pub async fn answer(
                     if let Some(state) = &browser_state {
                         binding::set_browser_state(&mut response, state, &context.realm_id);
                     }
-                    told_landing(&mut response, spoken, "admitted", &landing)
+                    hand_over(&mut response, &context.realm_id, ticket.as_deref());
+                    told_landing(&mut response, spoken, "admitted", &landing, &origin, &realm)
                 }
                 Step::Refused => {
                     tracing::warn!("login refused");
@@ -286,7 +308,15 @@ pub async fn answer(
                         Spoken::Form => StatusCode::SEE_OTHER,
                     });
                     binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
-                    told_landing(&mut response, spoken, "sent_back", &landing)
+                    hand_over(&mut response, &context.realm_id, ticket.as_deref());
+                    told_landing(
+                        &mut response,
+                        spoken,
+                        "sent_back",
+                        &landing,
+                        &origin,
+                        &realm,
+                    )
                 }
             }
         }
@@ -308,13 +338,23 @@ fn told_landing(
     spoken: Spoken,
     status: &str,
     landing: &Landing,
+    origin: &PublicOrigin,
+    realm: &str,
 ) -> HttpResponse {
     match (spoken, landing.mode) {
         (Spoken::Json, ResponseMode::Query | ResponseMode::Fragment) => uncached(response)
             .json(serde_json::json!({ "status": status, "redirect_to": landing.as_url() })),
+        // `redirect_to` is this server, not the client: the response goes to
+        // the client as a post, and the page that posts it is served there. A
+        // caller that is not a browser still gets what it needs to post the
+        // response itself.
         (Spoken::Json, ResponseMode::FormPost) => uncached(response).json(serde_json::json!({
             "status": status,
             "response_mode": landing.mode.as_str(),
+            "redirect_to": format!(
+                "{}/realms/{realm}/protocol/openid-connect/form-post",
+                origin.as_str()
+            ),
             "post_to": landing.redirect_uri,
             "parameters": landing
                 .parameters
@@ -323,6 +363,27 @@ fn told_landing(
                 .collect::<serde_json::Map<String, serde_json::Value>>(),
         })),
         (Spoken::Form, _) => answering::onto(response, landing),
+    }
+}
+
+/// The landing a step ends at, when it ends at one.
+fn landing_of(step: &Step) -> Option<&Landing> {
+    match step {
+        Step::Admitted { landing, .. } | Step::SentBack { landing } => Some(landing),
+        _ => None,
+    }
+}
+
+/// Give the browser the ticket that fetches the response, and nothing else.
+fn hand_over(response: &mut HttpResponseBuilder, realm_id: &str, ticket: Option<&str>) {
+    if let Some(ticket) = ticket {
+        binding::set(
+            response,
+            binding::LANDING,
+            ticket,
+            realm_id,
+            LANDING_SECONDS,
+        );
     }
 }
 

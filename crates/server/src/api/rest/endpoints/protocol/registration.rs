@@ -9,6 +9,7 @@ use store::providers::realms;
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
+use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::api::rest::endpoints::protocol::hosted;
 use config::serving::PublicOrigin;
@@ -29,6 +30,7 @@ fn bearer(request: &HttpRequest) -> Option<String> {
 fn refused(why: &Refused) -> HttpResponse {
     let (status, error) = match why {
         Refused::Closed => (StatusCode::NOT_FOUND, "invalid_request"),
+        Refused::TooMany => (StatusCode::FORBIDDEN, "access_denied"),
         Refused::Unknown => (StatusCode::NOT_FOUND, "invalid_client_metadata"),
         Refused::Unauthorized => (StatusCode::UNAUTHORIZED, "invalid_token"),
         Refused::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_client_metadata"),
@@ -88,6 +90,9 @@ pub async fn create(
         &held,
         sealing.provider.as_ref(),
         bearer(&request).as_deref(),
+        read_provenance(&request)
+            .address
+            .and_then(|seen| seen.parse().ok()),
     ) {
         return refused(&why);
     }
@@ -116,7 +121,7 @@ pub async fn create(
         sealing.provider.as_ref(),
         ring.as_ref().map(|ring| (ring, sealing.envelope.as_ref())),
         &context.tenant,
-        &context.realm_id,
+        &held,
         &body,
         sector.as_deref(),
         now,

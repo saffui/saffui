@@ -8,6 +8,7 @@ pub mod client;
 pub mod consent;
 pub mod context;
 pub mod detached;
+pub mod form_post;
 pub mod grant;
 pub mod housekeeping;
 pub mod implicit;

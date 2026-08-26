@@ -41,6 +41,11 @@ services:
       - --implicit
       # The dynamic profile creates its own clients through the endpoint.
       - --open-registration
+      # Off here alone. A client that registered itself is consented to by
+      # default, and the browser that drives these plans cannot answer a
+      # consent screen: it does not run this server's sign-in script, so the
+      # screen it would reach has no button on it.
+      - --registration-consent=false
       - --redirect=https://localhost.emobix.co.uk:8443/test/a/saffui/callback
       - --after-logout=https://localhost.emobix.co.uk:8443/test/a/saffui/post_logout_redirect
       - --user=ada

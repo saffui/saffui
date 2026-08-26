@@ -789,8 +789,46 @@ impl Plane {
             .expect("the realms table")
             .expect("a planted realm");
         realm.client_registration = policy;
+        // Nothing here unless a test says so, so the ones about the endpoint
+        // itself are not also about what bounds it.
+        realm.registration_bounds = models::entities::realm::RegistrationBounds {
+            requires_consent: false,
+            ..models::entities::realm::RegistrationBounds::default()
+        };
         realm.registration_secret = secret
             .map(|held| services::registration::hashed(&provider(), held).expect("a hashed token"));
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// Whether this client is one the person has to agree to.
+    #[allow(dead_code, reason = "only the registration suite asks")]
+    pub async fn consent_required(&self, client_id: &str) -> Option<bool> {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        clients::load(&transaction, client_id)
+            .await
+            .expect("the clients table")
+            .expect("a planted client")
+            .consent_required
+    }
+
+    /// What bounds an open registration here.
+    #[allow(dead_code, reason = "only the registration suite asks")]
+    pub async fn bound_registration(&self, bounds: models::entities::realm::RegistrationBounds) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.registration_bounds = bounds;
         store::providers::realms::update(&transaction, &realm)
             .await
             .expect("the realms table");

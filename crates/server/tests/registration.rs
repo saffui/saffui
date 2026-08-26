@@ -2,7 +2,7 @@ mod support;
 
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
-use models::entities::realm::ClientRegistration;
+use models::entities::realm::{ClientRegistration, RegistrationBounds};
 use serde_json::{Value, json};
 use server::api::config::{Plane as Mounted, register};
 use support::Plane;
@@ -39,6 +39,22 @@ async fn registering(plane: &Plane, body: &Value, token: Option<&str>) -> (Statu
         asked = asked.insert_header(("authorization", format!("Bearer {token}")));
     }
     let response = test::call_service(&app, asked.to_request()).await;
+    let status = response.status();
+    (status, test::read_body_json(response).await)
+}
+
+/// The same, dialled from an address, which is what a trusted-host list reads.
+async fn registering_from(plane: &Plane, body: &Value, peer: &str) -> (StatusCode, Value) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&path(""))
+            .peer_addr(format!("{peer}:5000").parse().expect("an address"))
+            .set_json(body)
+            .to_request(),
+    )
+    .await;
     let status = response.status();
     (status, test::read_body_json(response).await)
 }
@@ -473,4 +489,142 @@ async fn where_a_third_party_starts_a_login_is_kept_and_given_back() {
         Some(starting),
         "{held}"
     );
+}
+
+/// A realm that names the hosts it registers from answers nobody else, and
+/// answers them the way a realm that registers nothing does: a caller that is
+/// not on the list learns nothing about the one that is.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_caller_outside_the_named_hosts_finds_no_endpoint() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+    plane
+        .bound_registration(RegistrationBounds {
+            trusted_hosts: vec!["10.0.0.0/8".to_owned()],
+            requires_consent: false,
+            max_clients: None,
+        })
+        .await;
+
+    let (status, body) = registering_from(&plane, &a_client(), "203.0.113.7").await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(body["error"], "invalid_request", "{body}");
+
+    let (status, body) = registering_from(&plane, &a_client(), "10.1.2.3").await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// The ceiling counts the clients registration created, and refuses the one
+/// past it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_ceiling_refuses_the_registration_past_it() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+    plane
+        .bound_registration(RegistrationBounds {
+            max_clients: Some(1),
+            requires_consent: false,
+            trusted_hosts: Vec::new(),
+        })
+        .await;
+
+    let (status, body) = registering(&plane, &a_client(), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let (status, body) = registering(&plane, &a_client(), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "access_denied", "{body}");
+}
+
+/// The clients an administrator wrote down are not counted, so a realm filled
+/// from outside never stops its owner writing one more.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_ceiling_counts_none_of_the_clients_an_administrator_wrote_down() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+    plane
+        .bound_registration(RegistrationBounds {
+            max_clients: Some(1),
+            requires_consent: false,
+            trusted_hosts: Vec::new(),
+        })
+        .await;
+
+    // The plane plants its own clients before any of this runs, and they are
+    // an administrator's. One registration is still allowed.
+    let (status, body) = registering(&plane, &a_client(), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+/// A client that registered itself was vetted by nobody, so the person it asks
+/// for is the one who decides, and editing the registration does not undo it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_that_registered_itself_is_consented_to() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+    plane
+        .bound_registration(RegistrationBounds {
+            requires_consent: true,
+            max_clients: None,
+            trusted_hosts: Vec::new(),
+        })
+        .await;
+
+    let (status, registered) = registering(&plane, &a_client(), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
+    let client_id = registered["client_id"].as_str().expect("a client_id");
+    assert_eq!(plane.consent_required(client_id).await, Some(true));
+
+    let token = registered["registration_access_token"]
+        .as_str()
+        .expect("a registration access token");
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::put()
+            .uri(&path(&format!("/{client_id}")))
+            .insert_header(("authorization", format!("Bearer {token}")))
+            .set_json(json!({
+                "client_id": client_id,
+                "client_name": "the same application, renamed",
+                "redirect_uris": ["https://app.example/callback"],
+                "grant_types": ["authorization_code"],
+                "response_types": ["code"],
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        plane.consent_required(client_id).await,
+        Some(true),
+        "the client edited its way out of the realm's terms"
+    );
+}
+
+/// A realm that asks for none is left as the store made it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_that_imposes_no_consent_imposes_none() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+
+    let (status, registered) = registering(&plane, &a_client(), None).await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
+    let client_id = registered["client_id"].as_str().expect("a client_id");
+    assert_ne!(plane.consent_required(client_id).await, Some(true));
 }

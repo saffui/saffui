@@ -235,3 +235,108 @@ async fn the_page_runs_a_script_this_server_serves() {
     let body = String::from_utf8(test::read_body(response).await.to_vec()).expect("a body");
     assert!(body.contains("submit()"), "{body}");
 }
+
+/// A browser running the sign-in script reads the answer as JSON, and what it
+/// is told has to be somewhere it can go: it may not post the response itself,
+/// because the page it is on may only post to this server.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_scripted_browser_is_told_where_to_go_and_is_sent_on() {
+    let plane = Plane::with_actions(&[]).await;
+    let (status, _, cookies) = opened(&plane, Some("form_post")).await;
+    assert_eq!(status, StatusCode::FOUND, "a login did not open");
+    let binding = cookie_value(&cookies, support::AUTH_SESSION_COOKIE).expect("a login");
+
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/login",
+                support::REALM
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+            ))
+            .set_json(serde_json::json!({
+                "username": support::SUBJECT,
+                "password": support::PASSWORD,
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let handed: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    let told: serde_json::Value = test::read_body_json(response).await;
+
+    assert_eq!(told["status"], "admitted", "{told}");
+    assert_eq!(told["response_mode"], "form_post", "{told}");
+    let going = told["redirect_to"]
+        .as_str()
+        .expect("a browser was told nowhere to go");
+    assert!(
+        going.ends_with("/protocol/openid-connect/form-post"),
+        "a browser was sent to the client, which it may not post to: {going}"
+    );
+    assert!(
+        !going.starts_with(REDIRECT),
+        "the response was put in a URL: {going}"
+    );
+
+    let ticket = cookie_value(&handed, "saffui_landing").expect("a ticket");
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/form-post",
+                support::REALM
+            ))
+            .insert_header(("cookie", format!("saffui_landing={ticket}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let policy = response
+        .headers()
+        .get("content-security-policy")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let body = String::from_utf8(test::read_body(response).await.to_vec()).expect("a body");
+    assert!(
+        body.contains(&format!(r#"<form method="post" action="{REDIRECT}""#)),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"name="code""#) && body.contains(r#"name="state" value="a b""#),
+        "the answer did not carry what the client asked for: {body}"
+    );
+    assert!(
+        policy.contains(&format!("form-action {REDIRECT}")),
+        "the page could post somewhere else: {policy}"
+    );
+
+    // Spent by being read: the ticket stands for an authorization code.
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/form-post",
+                support::REALM
+            ))
+            .insert_header(("cookie", format!("saffui_landing={ticket}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "a ticket was answered twice"
+    );
+}

@@ -8,6 +8,7 @@ use crypto::envelope::Envelope;
 use crypto::provider::CryptoProvider;
 use crypto::provider::openssl::OpenSslProvider;
 use deadpool_postgres::{Manager, Pool};
+use models::entities::realm::RegistrationBounds;
 use secrecy::ExposeSecret;
 use server::api::config::{Plane, Sealing, observed, register, register_ops};
 use server::api::rest::endpoints::ops::health::Vitals;
@@ -110,6 +111,23 @@ enum Command {
         /// anyone who can reach the endpoint may create a client.
         #[arg(long = "open-registration", default_value_t = false)]
         open_registration: bool,
+        /// How many clients open registration may create here. Absent is no
+        /// ceiling, and the count is over what registration created rather
+        /// than over the realm.
+        #[arg(long = "registration-max-clients")]
+        registration_max_clients: Option<i32>,
+        /// Whether a client that registered itself has to be consented to.
+        /// On unless a deployment says otherwise: it was vetted by nobody.
+        #[arg(
+            long = "registration-consent",
+            default_value_t = true,
+            action = clap::ArgAction::Set
+        )]
+        registration_consent: bool,
+        /// Who may reach the registration endpoint, as addresses or prefixes
+        /// such as `10.0.0.0/8`. Repeatable. None is every caller.
+        #[arg(long = "registration-host")]
+        registration_hosts: Vec<String>,
     },
 }
 
@@ -150,6 +168,9 @@ fn main() -> ExitCode {
                         magic_link,
                         implicit,
                         open_registration,
+                        registration_max_clients,
+                        registration_consent,
+                        registration_hosts,
                     } => {
                         provision(&Wanted {
                             tenant,
@@ -169,6 +190,9 @@ fn main() -> ExitCode {
                             magic_link,
                             implicit,
                             open_registration,
+                            registration_max_clients,
+                            registration_consent,
+                            registration_hosts,
                         })
                         .await
                     }
@@ -313,6 +337,9 @@ struct Wanted {
     magic_link: bool,
     implicit: bool,
     open_registration: bool,
+    registration_max_clients: Option<i32>,
+    registration_consent: bool,
+    registration_hosts: Vec<String>,
 }
 
 /// Create what is missing, and say what was created.
@@ -409,9 +436,17 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
         println!("levels mapped");
     }
     if wanted.open_registration
-        && provisioning::open_client_registration(&transaction, realm)
-            .await
-            .map_err(unreadable)?
+        && provisioning::open_client_registration(
+            &transaction,
+            realm,
+            &RegistrationBounds {
+                max_clients: wanted.registration_max_clients,
+                requires_consent: wanted.registration_consent,
+                trusted_hosts: wanted.registration_hosts.clone(),
+            },
+        )
+        .await
+        .map_err(unreadable)?
     {
         println!("client registration opened");
     }

@@ -466,7 +466,10 @@ pub async fn authorization_code(
         access_token: access.token,
         expires_in: lifespan.num_seconds(),
         scope: code.scope.clone(),
-        id_token: id_token.map(|minted| minted.token),
+        id_token: id_token
+            .map(|minted| crate::encryption::identity_for(client, minted.token))
+            .transpose()
+            .map_err(|_| Ungranted::Unmintable)?,
         refresh_token: Some(refresh.token),
     })
 }
@@ -926,7 +929,10 @@ pub async fn refresh_token(
         access_token: access.token,
         expires_in: lifespan.num_seconds(),
         scope,
-        id_token: id_token.map(|minted| minted.token),
+        id_token: id_token
+            .map(|minted| crate::encryption::identity_for(client, minted.token))
+            .transpose()
+            .map_err(|_| Ungranted::Unmintable)?,
         // Absent when the realm does not rotate, which RFC 6749 5.1 reads as
         // "keep the one you have".
         refresh_token: successor.map(|minted| minted.token),

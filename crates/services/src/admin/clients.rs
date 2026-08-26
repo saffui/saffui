@@ -37,6 +37,10 @@ pub struct Registered {
     /// Whether the person has to agree before this client is given anything.
     /// Absent leaves the client as the store made it.
     pub consent_required: Option<bool>,
+    /// How this client registered to receive an identity token and a userinfo
+    /// answer, when it registered to receive them encrypted.
+    pub id_token_encryption: Option<models::entities::client::JweRegistration>,
+    pub userinfo_encryption: Option<models::entities::client::JweRegistration>,
     pub response_types: Option<Vec<String>>,
     pub implicit: bool,
     pub jwks: Option<serde_json::Value>,
@@ -69,6 +73,8 @@ impl Registered {
     pub fn of(client: &ClientModel) -> Self {
         Registered {
             consent_required: client.consent_required,
+            id_token_encryption: client.id_token_encryption,
+            userinfo_encryption: client.userinfo_encryption,
             response_types: client.response_types.clone(),
             implicit: client.implicit_flow_enabled == Some(true),
             jwks: client.jwks.clone(),
@@ -334,6 +340,8 @@ fn apply(client: &mut ClientModel, spec: &Spec) {
     client.subject_type = registered.subject_type.clone();
     client.sector_identifier_uri = registered.sector_identifier_uri.clone();
     client.token_endpoint_auth_signing_alg = registered.token_endpoint_auth_signing_alg;
+    client.id_token_encryption = registered.id_token_encryption;
+    client.userinfo_encryption = registered.userinfo_encryption;
     if let Some(required) = registered.consent_required {
         client.consent_required = Some(required);
     }

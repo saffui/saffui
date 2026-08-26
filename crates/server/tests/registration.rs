@@ -312,18 +312,25 @@ async fn metadata_this_provider_cannot_honour_is_refused() {
             json!({"redirect_uris": ["https://app.example/cb"], "id_token_signed_response_alg": "none"}),
         ),
         (
-            "an encrypted identity token",
+            "an encryption method naming nothing to encrypt to",
             json!({
                 "redirect_uris": ["https://app.example/cb"],
-                "id_token_encrypted_response_alg": "RSA-OAEP",
                 "id_token_encrypted_response_enc": "A256GCM",
             }),
         ),
         (
-            "an encrypted userinfo response",
+            "an encryption algorithm this build does not know",
+            json!({
+                "redirect_uris": ["https://app.example/cb"],
+                "userinfo_encrypted_response_alg": "RSA1_5",
+            }),
+        ),
+        (
+            "an encryption method this build does not know",
             json!({
                 "redirect_uris": ["https://app.example/cb"],
                 "userinfo_encrypted_response_alg": "RSA-OAEP",
+                "userinfo_encrypted_response_enc": "A128CBC",
             }),
         ),
         (
@@ -627,4 +634,35 @@ async fn a_realm_that_imposes_no_consent_imposes_none() {
     assert_eq!(status, StatusCode::CREATED, "{registered}");
     let client_id = registered["client_id"].as_str().expect("a client_id");
     assert_ne!(plane.consent_required(client_id).await, Some(true));
+}
+
+/// §2: a registered encryption pair comes back as registered, and a pair the
+/// client named half of comes back whole. The default it took is what this
+/// server will use, so a client that never sees it cannot know what it has.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_registered_encryption_pair_is_given_back_whole() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+
+    let mut asked = a_client();
+    asked["id_token_encrypted_response_alg"] = json!("RSA-OAEP-256");
+    asked["id_token_encrypted_response_enc"] = json!("A256GCM");
+    // Named without a method, so §2's default applies.
+    asked["userinfo_encrypted_response_alg"] = json!("ECDH-ES");
+
+    let (status, registered) = registering(&plane, &asked, None).await;
+    assert_eq!(status, StatusCode::CREATED, "{registered}");
+    assert_eq!(
+        registered["id_token_encrypted_response_alg"],
+        "RSA-OAEP-256"
+    );
+    assert_eq!(registered["id_token_encrypted_response_enc"], "A256GCM");
+    assert_eq!(registered["userinfo_encrypted_response_alg"], "ECDH-ES");
+    assert_eq!(
+        registered["userinfo_encrypted_response_enc"], "A128CBC-HS256",
+        "the default the pair took was never said out loud"
+    );
 }

@@ -32,7 +32,64 @@ pub struct Answer {
     pub claims: Map<String, Value>,
     /// Set when the client registered a signed response, §5.3.2.
     pub signed_with: Option<crypto::provider::SignAlg>,
+    /// The client itself, when one was named: encrypting is to a key it
+    /// published, so the registration alone is not enough to do it.
+    pub party: Option<Box<models::entities::client::ClientModel>>,
     pub client_id: Option<String>,
+}
+
+impl Answer {
+    /// Whether this answer travels as a JWT rather than as claims.
+    pub fn is_a_token(&self) -> bool {
+        self.signed_with.is_some()
+            || self
+                .party
+                .as_ref()
+                .is_some_and(|held| held.userinfo_encryption.is_some())
+    }
+}
+
+/// The answer as this client registered to receive it, §5.3.2.
+///
+/// Signed, encrypted, or signed and then encrypted. Signed first when both are
+/// registered, which is a nested JWT: the header says `cty: "JWT"` so the
+/// recipient verifies what it decrypts rather than reading it as claims.
+///
+/// A client that registered encryption and cannot be encrypted to is an error,
+/// never a reply in the clear: answering it with readable claims tells it
+/// nothing about what it asked for.
+pub async fn told_answer(
+    transaction: &Transaction<'_>,
+    signing: &crate::grant::Signing<'_>,
+    issuer: &str,
+    answer: &Answer,
+) -> Result<String, Untold> {
+    let encryption = answer
+        .party
+        .as_ref()
+        .and_then(|held| held.userinfo_encryption);
+
+    let body = match answer.signed_with {
+        Some(_) => signed_answer(transaction, signing, issuer, answer).await?,
+        // Encrypted and not signed: the claims themselves are what travels,
+        // with the same two the signed form carries for the same reason.
+        None => {
+            let mut claims = answer.claims.clone();
+            claims.insert("iss".into(), json!(issuer));
+            if let Some(client_id) = &answer.client_id {
+                claims.insert("aud".into(), json!(client_id));
+            }
+            serde_json::to_string(&claims).map_err(|_| Untold::Unreadable)?
+        }
+    };
+
+    let Some(registration) = encryption else {
+        return Ok(body);
+    };
+    let party = answer.party.as_ref().ok_or(Untold::Unreadable)?;
+    let wrapped = answer.signed_with.is_some().then_some("JWT");
+    crate::encryption::sealed_for(party, registration, body.as_bytes(), wrapped)
+        .map_err(|_| Untold::Unreadable)
 }
 
 /// The same claims, as the JWS §5.3.2 describes.
@@ -136,7 +193,8 @@ pub async fn claims_for(
         signed_with: party
             .as_ref()
             .and_then(|held| held.userinfo_signed_response_alg),
-        client_id: party.map(|held| held.client_id),
+        client_id: party.as_ref().map(|held| held.client_id.clone()),
+        party: party.map(Box::new),
     })
 }
 

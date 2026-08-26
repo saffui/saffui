@@ -47,13 +47,14 @@ pub async fn tell(
     };
 
     match userinfo::claims_for(&transaction, &keys, &bearer, now).await {
-        Ok(answer) if answer.signed_with.is_none() => {
+        Ok(answer) if !answer.is_a_token() => {
             uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
                 .json(Value::Object(answer.claims))
         }
-        // §5.3.2: a client that registered a signed response is answered with
-        // one or not at all. Falling back to JSON would answer a client that
-        // is going to read a signature with something that has none.
+        // §5.3.2: a client that registered a signed or encrypted response is
+        // answered with one or not at all. Falling back to JSON would answer a
+        // client that is going to verify a signature with something that has
+        // none, and one that is going to decrypt with something readable.
         Ok(answer) => {
             let Ok(ring) = store::keyring::load(
                 &transaction,
@@ -70,7 +71,7 @@ pub async fn tell(
                 ring: &ring,
                 envelope: &sealing.envelope,
             };
-            match userinfo::signed_answer(
+            match userinfo::told_answer(
                 &transaction,
                 &signing,
                 &origin.issuer(&context.realm_id),

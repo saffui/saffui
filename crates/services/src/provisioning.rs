@@ -504,6 +504,8 @@ pub async fn provision_client(
         frontchannel_logout_uri: registration.frontchannel_logout_uri.clone(),
         registered: admin::clients::Registered {
             consent_required: None,
+            id_token_encryption: None,
+            userinfo_encryption: None,
             implicit: registration.implicit,
             ..Default::default()
         },

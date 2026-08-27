@@ -168,7 +168,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 46);
+        assert_eq!(ErrorCode::ALL.len(), 48);
     }
 
     /// A message never restates the slug, and never carries a value.

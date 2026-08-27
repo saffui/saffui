@@ -3,7 +3,7 @@ use actix_web::http::Method;
 use actix_web::web;
 use models::entities::authz::AdminAction;
 
-use crate::api::rest::endpoints::admin::{clients, keys, mail, realms, sessions, users};
+use crate::api::rest::endpoints::admin::{clients, directory, keys, mail, realms, sessions, users};
 
 /// One route: the verb, the path, what it costs, and what answers it.
 ///
@@ -113,6 +113,96 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/clients/{client}/secret",
             action: AdminAction::ClientWrite,
             handler: Some(|| web::post().to(clients::rotate_secret)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/roles",
+            action: AdminAction::RoleRead,
+            handler: Some(|| web::get().to(directory::list_roles)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/roles",
+            action: AdminAction::RoleWrite,
+            handler: Some(|| web::post().to(directory::create_role)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/roles/{role}",
+            action: AdminAction::RoleRead,
+            handler: Some(|| web::get().to(directory::get_role)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/roles/{role}",
+            action: AdminAction::RoleWrite,
+            handler: Some(|| web::put().to(directory::update_role)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/roles/{role}",
+            action: AdminAction::RoleWrite,
+            handler: Some(|| web::delete().to(directory::delete_role)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/groups",
+            action: AdminAction::GroupRead,
+            handler: Some(|| web::get().to(directory::list_groups)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/groups",
+            action: AdminAction::GroupWrite,
+            handler: Some(|| web::post().to(directory::create_group)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/groups/{group}",
+            action: AdminAction::GroupRead,
+            handler: Some(|| web::get().to(directory::get_group)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/groups/{group}",
+            action: AdminAction::GroupWrite,
+            handler: Some(|| web::put().to(directory::update_group)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/groups/{group}",
+            action: AdminAction::GroupWrite,
+            handler: Some(|| web::delete().to(directory::delete_group)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/organizations",
+            action: AdminAction::OrgRead,
+            handler: Some(|| web::get().to(directory::list_organizations)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/organizations",
+            action: AdminAction::OrgWrite,
+            handler: Some(|| web::post().to(directory::create_organization)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/organizations/{organization}",
+            action: AdminAction::OrgRead,
+            handler: Some(|| web::get().to(directory::get_organization)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/organizations/{organization}",
+            action: AdminAction::OrgWrite,
+            handler: Some(|| web::put().to(directory::update_organization)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/organizations/{organization}",
+            action: AdminAction::OrgWrite,
+            handler: Some(|| web::delete().to(directory::delete_organization)),
         },
         AdminRoute {
             method: Method::GET,

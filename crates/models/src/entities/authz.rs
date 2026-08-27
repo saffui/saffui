@@ -122,9 +122,15 @@ impl RoleModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleMutationModel {
     pub name: String,
+    /// Everything but the name may be left off the wire: only the name is an
+    /// identity, and an admin naming just that has said enough to create.
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub display_name: String,
+    #[serde(default)]
     pub client_id: Option<String>,
+    #[serde(default)]
     pub admin_actions: Option<Vec<AdminAction>>,
 }
 
@@ -168,8 +174,11 @@ pub struct GroupModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GroupMutationModel {
     pub name: String,
+    #[serde(default)]
     pub display_name: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub is_default: bool,
 }
 

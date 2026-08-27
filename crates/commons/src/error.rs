@@ -74,12 +74,14 @@ catalogue! {
     AuthConfigAlreadyExists = 441, 409, "auth.config.already_exists", "an authenticator config with this alias already exists";
     RequiredActionNotFound = 450, 404, "auth.required_action.not_found", "required action not found";
     RequiredActionAlreadyExists = 451, 409, "auth.required_action.already_exists", "a required action with this alias already exists";
+    OrganizationNotFound = 700, 404, "organization.not_found", "organization not found";
     OrganizationAlreadyExists = 701, 409, "organization.already_exists", "an organization with this name already exists";
     CredentialNotFound = 800, 404, "credential.not_found", "credential not found";
     RoleNotFound = 900, 404, "role.not_found", "role not found";
     RoleAlreadyExists = 901, 409, "role.already_exists", "a role with this name already exists";
     GroupNotFound = 910, 404, "group.not_found", "group not found";
     GroupAlreadyExists = 911, 409, "group.already_exists", "a group with this name already exists";
+    StillGranted = 912, 409, "directory.still_granted", "still granted, so not deleted";
     IdentityProviderNotFound = 920, 404, "identity_provider.not_found", "identity provider not found";
     IdentityProviderAlreadyExists = 921, 409, "identity_provider.already_exists", "an identity provider with this alias already exists";
     ResourceServerNotFound = 930, 404, "resource_server.not_found", "resource server not found";

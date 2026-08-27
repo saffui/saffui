@@ -59,11 +59,22 @@ pub struct OrganizationMemberModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrganizationMutationModel {
     pub name: String,
+    #[serde(default)]
     pub display_name: String,
+    #[serde(default)]
     pub description: String,
+    /// On unless said otherwise: an organization created over the plane is
+    /// created to be used.
+    #[serde(default = "enabled_unless_said")]
     pub enabled: bool,
+    #[serde(default)]
     pub redirect_url: Option<String>,
+    #[serde(default)]
     pub attributes: Option<AttributesMap>,
+}
+
+fn enabled_unless_said() -> bool {
+    true
 }
 
 impl OrganizationMutationModel {

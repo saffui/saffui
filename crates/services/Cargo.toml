@@ -24,6 +24,7 @@ store = { workspace = true }
 # own origin, never from anything a request carried.
 config = { workspace = true }
 authz = { workspace = true }
+auth = { workspace = true }
 
 chrono = { workspace = true }
 serde = { workspace = true }

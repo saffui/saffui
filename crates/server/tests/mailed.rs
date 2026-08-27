@@ -26,7 +26,7 @@ fn mounted(plane: &Plane, postbox: Option<&Postbox>) -> Mounted {
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Outward,
         sealing: support::sealing_sending(
-            postbox.map(|held| Arc::new(held.clone()) as Arc<dyn services::messaging::Deliver>),
+            postbox.map(|held| Arc::new(held.clone()) as Arc<dyn auth::messaging::Deliver>),
         ),
     }
 }

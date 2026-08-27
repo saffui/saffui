@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use auth::messaging::{Deliver, Message, Undelivered};
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
@@ -7,7 +8,6 @@ use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Message as Letter, SmtpTransport, Transport};
 use models::entities::mail::MailSettings;
 use secrecy::ExposeSecret;
-use services::messaging::{Deliver, Message, Undelivered};
 
 /// How long a server gets to take a message.
 const PATIENCE: Duration = Duration::from_secs(10);

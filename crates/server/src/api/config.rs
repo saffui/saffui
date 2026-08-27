@@ -78,7 +78,7 @@ pub struct Plane {
 pub struct Sealing {
     /// What carries a message out, when this deployment has said how. Absent
     /// refuses to send rather than choosing a way nobody asked for.
-    pub sender: Option<std::sync::Arc<dyn services::messaging::Deliver>>,
+    pub sender: Option<std::sync::Arc<dyn auth::messaging::Deliver>>,
     pub provider: Arc<dyn CryptoProvider>,
     pub envelope: Arc<Envelope>,
 }

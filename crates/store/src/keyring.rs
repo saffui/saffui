@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crypto::envelope::{Envelope, RealmDek, SecretScope};
+use crypto::provider::CryptoProvider;
 use crypto::secrecy::SecretBox;
 use deadpool_postgres::Transaction;
 
@@ -287,4 +288,11 @@ pub async fn rewrap(
     }
 
     Ok(rewrapped)
+}
+
+/// What it takes to sign. All three or none, so a new grant cannot forget one.
+pub struct Signing<'a> {
+    pub provider: &'a dyn CryptoProvider,
+    pub ring: &'a RealmKeyring,
+    pub envelope: &'a Envelope,
 }

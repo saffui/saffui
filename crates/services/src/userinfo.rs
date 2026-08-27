@@ -6,9 +6,9 @@ use models::entities::user::{UserModel, address, profile};
 use serde_json::{Map, Value, json};
 use store::providers::{client_scopes, clients, sessions, users};
 
-use crate::claims_request::{self, ClaimsRequest};
 use crate::token;
 use crate::token::issuance::Kind;
+use models::claims_request::{self, ClaimsRequest};
 
 /// Why nothing was told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

@@ -1,5 +1,6 @@
 pub mod auditable;
 pub mod broker;
+pub mod claims_request;
 pub mod compliance;
 pub mod entities;
 pub mod export;

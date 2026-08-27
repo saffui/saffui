@@ -9,7 +9,7 @@ use models::entities::user::{RequiredAction, UserModel};
 use secrecy::SecretBox;
 use store::providers::{one_time_tokens, sessions, users};
 
-use crate::messaging::{Message, Outgoing};
+use auth::messaging::{Message, Outgoing};
 
 pub const RESET_PASSWORD: &str = "reset-password";
 
@@ -108,7 +108,7 @@ pub async fn offer_link(
                  you, nothing has changed and you can ignore this.\n\n{link}\n"
             ),
         },
-        about: crate::messaging::About {
+        about: auth::messaging::About {
             user_id: subject.user_id.clone(),
             purpose: RESET_PASSWORD.to_owned(),
         },

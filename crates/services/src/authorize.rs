@@ -11,12 +11,11 @@ use store::providers::login::{self, AuthSession};
 use store::providers::{auth_flows, client_scopes, clients, realms, sessions};
 use store::tenancy::TenantContext;
 
-use crate::claims_request::ClaimsRequest;
 use crate::landing::{Landing, ResponseMode};
-use crate::login::browser;
 use crate::pushed;
 use crate::request_object;
 use crate::response_type::ResponseType;
+use models::claims_request::ClaimsRequest;
 
 /// How long a login may sit half finished.
 const LOGIN_LIFESPAN: i64 = 900;
@@ -340,11 +339,11 @@ pub async fn begin(
     }
 
     if let Some(login) = held {
-        let landing = browser::mint_code(
+        let landing = crate::minting::mint_code(
             transaction,
             provider,
             tenant,
-            &browser::Authorized {
+            &crate::minting::Authorized {
                 client_id: &client.client_id,
                 user_id: &login.user_id,
                 session_id: &login.session_id,

@@ -2,9 +2,11 @@ use deadpool_postgres::Transaction;
 use models::entities::organization::{
     OrgMembershipType, OrganizationDomain, OrganizationMemberModel, OrganizationModel,
 };
+use models::paging::Page;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
+use crate::query::list_query::ListQuery;
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
@@ -49,6 +51,85 @@ pub async fn create(transaction: &Transaction<'_>, org: &OrganizationModel) -> S
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(())
+}
+
+/// One organization by the name a caller spelled, which the realm holds
+/// unique.
+pub async fn load_by_name(
+    transaction: &Transaction<'_>,
+    name: &str,
+) -> StoreResult<Option<OrganizationModel>> {
+    let statement = format!("SELECT {ORG_COLUMNS} FROM organizations WHERE name = $1");
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&name])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_org))
+}
+
+/// One page of this realm's organizations, without their domains.
+pub async fn list(
+    transaction: &Transaction<'_>,
+    query: &ListQuery<'_>,
+    with_total: bool,
+) -> StoreResult<Page<OrganizationModel>> {
+    let rows = transaction
+        .query(
+            query.select(ORG_COLUMNS, "organizations").as_str(),
+            &query.params(),
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let total = if with_total {
+        Some(
+            transaction
+                .query_one(query.count("organizations").as_str(), &query.params())
+                .await
+                .map_err(|_| StoreError::Backend)?
+                .get::<_, i64>(0),
+        )
+    } else {
+        None
+    };
+    Ok(Page::new(
+        rows.into_iter().map(read_org).collect(),
+        query.window(),
+        total,
+    ))
+}
+
+/// Rewrite what an organization says about itself. The identity stays, and so
+/// do its members and domains.
+pub async fn update(transaction: &Transaction<'_>, org: &OrganizationModel) -> StoreResult<bool> {
+    let attributes = org
+        .attributes
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| StoreError::Backend)?;
+    let set = WriteSet::update(
+        vec![
+            col("name", &org.name),
+            col("display_name", &org.display_name),
+            col("description", &org.description),
+            col("enabled", &org.enabled),
+            col("redirect_url", &org.redirect_url),
+            col("attributes", &attributes),
+            col("updated_by", &org.metadata.updated_by),
+        ],
+        vec![col("org_id", &org.org_id)],
+    );
+
+    // The stamp and the version are the statement's, not the caller's.
+    let statement = statement::update("organizations", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    let changed = transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
 }
 
 /// One organization of this realm, without its domains.

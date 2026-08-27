@@ -1,8 +1,10 @@
 use deadpool_postgres::Transaction;
 use models::entities::authz::{AdminAction, GroupModel, RoleModel};
+use models::paging::Page;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
+use crate::query::list_query::ListQuery;
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
@@ -12,6 +14,187 @@ pub(crate) const ROLE_COLUMNS: &str = "tenant, realm_id, role_id, name, display_
 
 const GROUP_COLUMNS: &str = "tenant, realm_id, group_id, name, display_name, description, \
                              is_default, created_by, created_at, updated_by, updated_at, version";
+
+/// One role by the name a caller spelled, which the realm holds unique.
+pub async fn load_by_name(
+    transaction: &Transaction<'_>,
+    name: &str,
+) -> StoreResult<Option<RoleModel>> {
+    let statement = format!("SELECT {ROLE_COLUMNS} FROM roles WHERE name = $1");
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&name])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_role))
+}
+
+/// The same for a group.
+pub async fn load_group_by_name(
+    transaction: &Transaction<'_>,
+    name: &str,
+) -> StoreResult<Option<GroupModel>> {
+    let statement = format!("SELECT {GROUP_COLUMNS} FROM groups WHERE name = $1");
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&name])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_group))
+}
+
+/// One page of this realm's roles.
+pub async fn list(
+    transaction: &Transaction<'_>,
+    query: &ListQuery<'_>,
+    with_total: bool,
+) -> StoreResult<Page<RoleModel>> {
+    let rows = transaction
+        .query(
+            query.select(ROLE_COLUMNS, "roles").as_str(),
+            &query.params(),
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let total = if with_total {
+        Some(
+            transaction
+                .query_one(query.count("roles").as_str(), &query.params())
+                .await
+                .map_err(|_| StoreError::Backend)?
+                .get::<_, i64>(0),
+        )
+    } else {
+        None
+    };
+    Ok(Page::new(
+        rows.into_iter().map(read_role).collect(),
+        query.window(),
+        total,
+    ))
+}
+
+/// One page of this realm's groups.
+pub async fn list_groups(
+    transaction: &Transaction<'_>,
+    query: &ListQuery<'_>,
+    with_total: bool,
+) -> StoreResult<Page<GroupModel>> {
+    let rows = transaction
+        .query(
+            query.select(GROUP_COLUMNS, "groups").as_str(),
+            &query.params(),
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let total = if with_total {
+        Some(
+            transaction
+                .query_one(query.count("groups").as_str(), &query.params())
+                .await
+                .map_err(|_| StoreError::Backend)?
+                .get::<_, i64>(0),
+        )
+    } else {
+        None
+    };
+    Ok(Page::new(
+        rows.into_iter().map(read_group).collect(),
+        query.window(),
+        total,
+    ))
+}
+
+/// Rewrite what a role says about itself. The identity stays; a rename is not
+/// a new role, and everything granted keeps meaning what it meant.
+pub async fn update(transaction: &Transaction<'_>, role: &RoleModel) -> StoreResult<bool> {
+    let permissions = role
+        .admin_actions
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| StoreError::Backend)?;
+    let set = WriteSet::update(
+        vec![
+            col("name", &role.name),
+            col("display_name", &role.display_name),
+            col("description", &role.description),
+            col("admin_actions", &permissions),
+            col("updated_by", &role.metadata.updated_by),
+        ],
+        vec![col("role_id", &role.role_id)],
+    );
+
+    // The stamp and the version are the statement's, not the caller's.
+    let statement = statement::update("roles", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    let changed = transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
+/// The same for a group.
+pub async fn update_group(transaction: &Transaction<'_>, group: &GroupModel) -> StoreResult<bool> {
+    let set = WriteSet::update(
+        vec![
+            col("name", &group.name),
+            col("display_name", &group.display_name),
+            col("description", &group.description),
+            col("is_default", &group.is_default),
+            col("updated_by", &group.metadata.updated_by),
+        ],
+        vec![col("group_id", &group.group_id)],
+    );
+    let statement = statement::update("groups", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    let changed = transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
+/// Whether anything still holds this role: a user, a group, or a policy.
+///
+/// Asked before a deletion, because the joins cascade: the rows naming the
+/// role would go with it, and every holder would silently lose an entitlement
+/// rather than the deletion being told no.
+pub async fn role_still_held(transaction: &Transaction<'_>, role_id: &str) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM users_roles WHERE role_id = $1)                  OR EXISTS(SELECT 1 FROM groups_roles WHERE role_id = $1)                  OR EXISTS(SELECT 1 FROM policies_roles WHERE role_id = $1)",
+            &[&role_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get::<_, bool>(0))
+}
+
+/// Whether anybody is still in this group.
+pub async fn group_still_held(transaction: &Transaction<'_>, group_id: &str) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM users_groups WHERE group_id = $1)                  OR EXISTS(SELECT 1 FROM groups_roles WHERE group_id = $1) \
+                 OR EXISTS(SELECT 1 FROM policies_groups WHERE group_id = $1)",
+            &[&group_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get::<_, bool>(0))
+}
+
+/// Take a group away.
+pub async fn delete_group(transaction: &Transaction<'_>, group_id: &str) -> StoreResult<bool> {
+    let removed = transaction
+        .execute("DELETE FROM groups WHERE group_id = $1", &[&group_id])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
 
 /// Record a role.
 pub async fn create(transaction: &Transaction<'_>, role: &RoleModel) -> StoreResult<()> {

@@ -1003,6 +1003,56 @@ impl Plane {
             .consent_required
     }
 
+    /// Grant a role to a subject, the way the store grants one.
+    #[allow(dead_code, reason = "only the directory suite grants by id")]
+    pub async fn grant_role_to_subject(&self, role_id: &str, user_id: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        roles::grant_to_user(&transaction, user_id, role_id)
+            .await
+            .expect("the join table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// Take it back.
+    #[allow(dead_code, reason = "only the directory suite revokes by id")]
+    pub async fn revoke_role_from_subject(&self, role_id: &str, user_id: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        roles::revoke_from_user(&transaction, user_id, role_id)
+            .await
+            .expect("the join table");
+        transaction.commit().await.unwrap();
+    }
+
+    /// Put a person in an organization.
+    #[allow(dead_code, reason = "only the directory suite adds a member")]
+    pub async fn add_org_member(&self, org_id: &str, user_id: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::organizations::add_member(
+            &transaction,
+            &models::entities::organization::OrganizationMemberModel {
+                realm_id: REALM.to_owned(),
+                org_id: org_id.to_owned(),
+                user_id: user_id.to_owned(),
+                membership_type: models::entities::organization::OrgMembershipType::Unmanaged,
+                roles: Vec::new(),
+                joined_at: None,
+                metadata: AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned()),
+            },
+        )
+        .await
+        .expect("the membership table");
+        transaction.commit().await.unwrap();
+    }
+
     /// What bounds an open registration here.
     #[allow(dead_code, reason = "only the registration suite asks")]
     pub async fn bound_registration(&self, bounds: models::entities::realm::RegistrationBounds) {

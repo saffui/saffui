@@ -1,3 +1,4 @@
+pub mod authorization;
 pub mod clients;
 pub mod directory;
 pub mod keys;

@@ -128,21 +128,52 @@ pub async fn published(
     rows.into_iter().map(view).collect()
 }
 
+/// Every key of this use the realm holds, disabled ones included.
+///
+/// The plane's view, not the public one: publication hides a disabled key on
+/// purpose, and an administrator auditing what was disabled needs to see it.
+pub async fn held(
+    transaction: &Transaction<'_>,
+    key_use: KeyUse,
+) -> StoreResult<Vec<RealmSigningKeyView>> {
+    let rows = transaction
+        .query(
+            "SELECT kid, realm_id, algorithm, key_use, status, priority, public_jwk, created_at \
+             FROM realm_signing_keys \
+             WHERE key_use = $1 \
+             ORDER BY priority DESC, kid ASC",
+            &[&key_use],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+
+    rows.into_iter().map(view).collect()
+}
+
 /// Retire the key that signs and put another in its place.
 ///
 /// The old key goes passive rather than away, because tokens it signed are
 /// still being presented. Nothing re-signs.
+///
+/// Only the same algorithm's key steps down. A realm keeps one signer per
+/// algorithm, and a client that registered one is answered from that
+/// algorithm's active key alone: a successor of another algorithm would not
+/// succeed it, it would silence it.
 pub async fn rotate(
     transaction: &Transaction<'_>,
     ring: &RealmKeyring,
     envelope: &Envelope,
     next: &RealmSigningKey,
 ) -> StoreResult<()> {
+    let algorithm = serde_json::to_value(next.algorithm)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .ok_or(StoreError::Backend)?;
     transaction
         .execute(
             "UPDATE realm_signing_keys SET status = 'passive' \
-             WHERE key_use = $1 AND status = 'active'",
-            &[&next.key_use],
+             WHERE key_use = $1 AND algorithm = $2 AND status = 'active'",
+            &[&next.key_use, &algorithm],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
@@ -277,6 +308,33 @@ pub async fn published_encryption(
         .query(
             "SELECT kid, algorithm, status, public_jwk FROM realm_signing_keys \
              WHERE key_use = 'enc' AND status <> 'disabled' \
+             ORDER BY priority DESC, kid ASC",
+            &[],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+
+    rows.into_iter()
+        .map(|row| {
+            Ok(RealmEncryptionKeyView {
+                kid: row.get("kid"),
+                algorithm: read_encryption_algorithm(&row)?,
+                status: row.get::<_, KeyStatus>("status"),
+                public_jwk: row.get("public_jwk"),
+            })
+        })
+        .collect()
+}
+
+/// Every encryption key the realm holds, disabled ones included, for the
+/// same audit [`held`] serves on the signing side.
+pub async fn held_encryption(
+    transaction: &Transaction<'_>,
+) -> StoreResult<Vec<RealmEncryptionKeyView>> {
+    let rows = transaction
+        .query(
+            "SELECT kid, algorithm, status, public_jwk FROM realm_signing_keys \
+             WHERE key_use = 'enc' \
              ORDER BY priority DESC, kid ASC",
             &[],
         )

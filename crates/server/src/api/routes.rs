@@ -4,7 +4,7 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, clients, directory, keys, mail, realms, sessions, users,
+    authorization, clients, directory, keys, mail, realm_keys, realms, sessions, users,
 };
 
 /// One route: the verb, the path, what it costs, and what answers it.
@@ -79,6 +79,24 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/mail",
             action: AdminAction::RealmWrite,
             handler: Some(|| web::delete().to(mail::forget)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/keys",
+            action: AdminAction::RealmKeysRead,
+            handler: Some(|| web::get().to(realm_keys::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/keys",
+            action: AdminAction::RealmKeysWrite,
+            handler: Some(|| web::post().to(realm_keys::rotate)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/keys/{kid}",
+            action: AdminAction::RealmKeysWrite,
+            handler: Some(|| web::delete().to(realm_keys::disable)),
         },
         AdminRoute {
             method: Method::GET,

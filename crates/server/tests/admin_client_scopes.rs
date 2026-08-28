@@ -325,3 +325,175 @@ async fn the_scope_capabilities_split_where_they_should() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// What the catalogue calls a default reaches every client registered after
+/// it, attached as required; the rest of the standard set stays optional, and
+/// a custom scope nobody marked default reaches nobody by itself.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_new_client_carries_the_catalogue_defaults() {
+    use actix_web::{App, test};
+    use server::api::config::register;
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    plane
+        .allow_registration(models::entities::realm::ClientRegistration::Open, None)
+        .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/client-scopes");
+
+    for (name, default) in [("employment", true), ("clearance", false)] {
+        let (status, told) = asked(
+            &plane,
+            Method::POST,
+            &base,
+            &bearer,
+            Some(json!({ "name": name, "default_scope": default })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{told}");
+    }
+
+    let registered = |body: Value| {
+        let plane = &plane;
+        async move {
+            let app =
+                test::init_service(App::new().configure(register(&server::api::config::Plane {
+                    pool: plane.pool(),
+                    tenancy: plane.tenancy(),
+                    policy: server::middleware::admin_policy::AdminPolicy {
+                        audiences: vec![support::AUDIENCE.to_owned()],
+                        parties: vec![support::PARTY.to_owned()],
+                        scope: support::SCOPE.to_owned(),
+                    },
+                    origin: support::origin(),
+                    login_ui: support::login_ui(),
+                    hops: config::proxying::Proxying::none(),
+                    egress: config::serving::Egress::Outward,
+                    sealing: support::sealing(),
+                })))
+                .await;
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(&format!("/realms/{REALM}/protocol/openid-connect/register"))
+                    .set_json(body)
+                    .to_request(),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::CREATED);
+            let told: Value = test::read_body_json(response).await;
+            told["client_id"].as_str().expect("an identity").to_owned()
+        }
+    };
+
+    let newcomer = registered(json!({
+        "client_name": "a fresh application",
+        "redirect_uris": ["https://fresh.example/callback"],
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+    }))
+    .await;
+
+    let (status, held) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/clients/{newcomer}/scopes"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    let manner = |name: &str| {
+        held.as_array()
+            .expect("attachments")
+            .iter()
+            .find(|scope| scope["name"] == name)
+            .map(|scope| scope["optional"].as_bool().expect("a manner"))
+    };
+    for offered in [
+        "profile",
+        "email",
+        "employment",
+        "phone",
+        "address",
+        "offline_access",
+    ] {
+        assert_eq!(manner(offered), Some(true), "{offered} waits to be asked");
+    }
+    assert_eq!(
+        manner("clearance"),
+        None,
+        "an unmarked scope reached a client"
+    );
+
+    // Offered is not granted: a request naming less gets exactly what it
+    // named, and one naming the admin's default gets it like any other.
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, REALM),
+        )
+        .await;
+    assert_eq!(
+        services::authorize::granted_scope(&transaction, &newcomer, "openid email")
+            .await
+            .unwrap(),
+        "openid email",
+        "a scope merely offered was granted unasked"
+    );
+    assert_eq!(
+        services::authorize::granted_scope(&transaction, &newcomer, "openid employment")
+            .await
+            .unwrap(),
+        "openid employment"
+    );
+    drop(transaction);
+    drop(connection);
+
+    // The flag is read live: unmade after, a default stops reaching the next
+    // client, and the one already registered keeps what it was given.
+    let employment_id = {
+        let (_, listed) = asked(&plane, Method::GET, &base, &bearer, None).await;
+        listed
+            .as_array()
+            .expect("a listing")
+            .iter()
+            .find(|scope| scope["name"] == "employment")
+            .and_then(|scope| scope["client_scope_id"].as_str())
+            .expect("the employment scope")
+            .to_owned()
+    };
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{employment_id}"),
+        &bearer,
+        Some(json!({ "name": "employment", "default_scope": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let second = registered(json!({
+        "client_name": "a later application",
+        "redirect_uris": ["https://later.example/callback"],
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+    }))
+    .await;
+    let (_, held) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/clients/{second}/scopes"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert!(
+        held.as_array()
+            .expect("attachments")
+            .iter()
+            .all(|scope| scope["name"] != "employment"),
+        "an unmade default still reached the next client: {held}"
+    );
+}

@@ -187,13 +187,27 @@ pub async fn register(
         .await
         .map_err(|_| Unregistrable::Unwritable)?;
 
-    // Every standard scope, and every one optional: granted when asked for
-    // and not otherwise.
+    // Every standard scope, optional: granted when asked for.
     provision_standard_scopes(transaction, tenant, realm_id)
         .await
         .map_err(|_| Unregistrable::Unwritable)?;
     for (scope, _, _) in STANDARD_SCOPES {
         client_scopes::attach_scope(transaction, client_id, scope, true)
+            .await
+            .map_err(|_| Unregistrable::Unwritable)?;
+    }
+    // What the catalogue calls a default joins the offer, optional like the
+    // rest: grantable when asked for. The flag answers which scopes a new
+    // client is offered, and only that; carrying one unasked stays the
+    // plane's per-client act, because `granted_scope` reads the attachment's
+    // manner and making a realm-wide flag grant realm-wide was refused
+    // there. Read live rather than from the constant above, so a default an
+    // administrator made, or unmade, reaches the next client either way.
+    for scope in client_scopes::default_scopes(transaction, Protocol::OpenId)
+        .await
+        .map_err(|_| Unregistrable::Unwritable)?
+    {
+        client_scopes::attach_scope(transaction, client_id, &scope.client_scope_id, true)
             .await
             .map_err(|_| Unregistrable::Unwritable)?;
     }

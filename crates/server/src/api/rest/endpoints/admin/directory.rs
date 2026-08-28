@@ -193,6 +193,7 @@ fn refused(why: Unwritable, exists: ErrorCode, missing: ErrorCode) -> ApiError {
     match why {
         Unwritable::AlreadyExists => ApiError::new(exists),
         Unwritable::NotFound => ApiError::new(missing),
+        Unwritable::NoSuchUser => ApiError::new(ErrorCode::UserNotFound),
         Unwritable::StillHeld => ApiError::new(ErrorCode::StillGranted),
         Unwritable::Invalid(what) => ApiError::with_detail(ErrorCode::ValidationError, what),
         Unwritable::Backend => internal(),
@@ -201,4 +202,194 @@ fn refused(why: Unwritable, exists: ErrorCode, missing: ErrorCode) -> ApiError {
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
+}
+
+/// The attach and detach handlers share one shape: two ids off the path, one
+/// manager call, an empty answer. `PUT` because the store swallows a repeat,
+/// so attaching twice is attaching once.
+macro_rules! joining {
+    ($attach:ident, $detach:ident, $attach_call:ident, $detach_call:ident,
+     $exists:ident, $missing:ident) => {
+        pub async fn $attach(
+            admin: web::ReqData<Admin>,
+            pool: web::Data<Pool>,
+            tenancy: web::Data<Tenancy>,
+            path: web::Path<(String, String, String)>,
+        ) -> Result<HttpResponse, ApiError> {
+            let (realm_id, owner, other) = path.into_inner();
+            let mut connection = pool.get().await.map_err(|_| internal())?;
+            let transaction = tenancy
+                .transaction(&mut connection, &within(&admin, &realm_id))
+                .await
+                .map_err(|_| internal())?;
+            directory::$attach_call(&transaction, &owner, &other)
+                .await
+                .map_err(|why| refused(why, ErrorCode::$exists, ErrorCode::$missing))?;
+            transaction.commit().await.map_err(|_| internal())?;
+            Ok(HttpResponse::NoContent().finish())
+        }
+
+        pub async fn $detach(
+            admin: web::ReqData<Admin>,
+            pool: web::Data<Pool>,
+            tenancy: web::Data<Tenancy>,
+            path: web::Path<(String, String, String)>,
+        ) -> Result<HttpResponse, ApiError> {
+            let (realm_id, owner, other) = path.into_inner();
+            let mut connection = pool.get().await.map_err(|_| internal())?;
+            let transaction = tenancy
+                .transaction(&mut connection, &within(&admin, &realm_id))
+                .await
+                .map_err(|_| internal())?;
+            directory::$detach_call(&transaction, &owner, &other)
+                .await
+                .map_err(|why| refused(why, ErrorCode::$exists, ErrorCode::$missing))?;
+            transaction.commit().await.map_err(|_| internal())?;
+            Ok(HttpResponse::NoContent().finish())
+        }
+    };
+}
+
+joining!(
+    grant_role_to_user,
+    revoke_role_from_user,
+    grant_role_to_user,
+    revoke_role_from_user,
+    RoleAlreadyExists,
+    RoleNotFound
+);
+joining!(
+    add_user_to_group,
+    remove_user_from_group,
+    add_user_to_group,
+    remove_user_from_group,
+    GroupAlreadyExists,
+    GroupNotFound
+);
+joining!(
+    grant_role_to_group,
+    revoke_role_from_group,
+    grant_role_to_group,
+    revoke_role_from_group,
+    GroupAlreadyExists,
+    GroupNotFound
+);
+
+/// Who holds this role, directly and through which groups. What the refusal
+/// `directory.still_granted` points an administrator at.
+pub async fn role_holders(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, role_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let (users, groups) = directory::role_holders(&transaction, &role_id)
+        .await
+        .map_err(|why| refused(why, ErrorCode::RoleAlreadyExists, ErrorCode::RoleNotFound))?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "users": users, "groups": groups })))
+}
+
+/// Who is in this group, and which roles it grants them.
+pub async fn group_membership(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, group_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let (users, roles) = directory::group_membership(&transaction, &group_id)
+        .await
+        .map_err(|why| refused(why, ErrorCode::GroupAlreadyExists, ErrorCode::GroupNotFound))?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "users": users, "roles": roles })))
+}
+
+pub async fn add_organization_member(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, org_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    directory::add_organization_member(
+        &transaction,
+        &admin.context.tenant.tenant,
+        &realm_id,
+        &org_id,
+        &user_id,
+    )
+    .await
+    .map_err(|why| {
+        refused(
+            why,
+            ErrorCode::OrganizationAlreadyExists,
+            ErrorCode::OrganizationNotFound,
+        )
+    })?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
+pub async fn remove_organization_member(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, org_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    directory::remove_organization_member(&transaction, &org_id, &user_id)
+        .await
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::OrganizationAlreadyExists,
+                ErrorCode::OrganizationNotFound,
+            )
+        })?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
+pub async fn organization_members(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, org_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let members = directory::organization_members(&transaction, &org_id)
+        .await
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::OrganizationAlreadyExists,
+                ErrorCode::OrganizationNotFound,
+            )
+        })?;
+    Ok(HttpResponse::Ok().json(members))
 }

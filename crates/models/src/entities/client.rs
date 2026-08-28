@@ -284,14 +284,23 @@ pub struct ClientScopeModel {
     pub metadata: AuditableModel,
 }
 
-/// The create and update payload for a scope.
+/// The create and update payload for a scope. Everything but the name has a
+/// resting value, so a caller says only what it means to set.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientScopeMutationModel {
     pub name: String,
+    #[serde(default)]
     pub description: String,
+    #[serde(default = "openid_unless_said")]
     pub protocol: Protocol,
+    #[serde(default)]
     pub default_scope: Option<bool>,
+    #[serde(default)]
     pub configs: Option<AttributesMap>,
+}
+
+fn openid_unless_said() -> Protocol {
+    Protocol::OpenId
 }
 
 impl ClientScopeMutationModel {

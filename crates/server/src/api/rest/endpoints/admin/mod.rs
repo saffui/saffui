@@ -5,6 +5,7 @@ pub mod directory;
 pub mod dto;
 pub mod keys;
 pub mod mail;
+pub mod protocol_mappers;
 pub mod realm_keys;
 pub mod realms;
 pub mod sessions;

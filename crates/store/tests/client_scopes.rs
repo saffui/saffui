@@ -237,22 +237,37 @@ async fn a_mapper_reached_by_two_routes_is_one_rule() {
     client_scopes::attach_mapper_to_scope(&transaction, "scope-2", "mapper-2")
         .await
         .unwrap();
-    for scope_id in ["scope-1", "scope-2"] {
-        client_scopes::attach_scope(&transaction, "app", scope_id, false)
-            .await
-            .unwrap();
-    }
-
-    let applying: Vec<String> = client_scopes::mappers_for_client(&transaction, "app")
+    // One scope required, one optional: the optional one's mapper applies only
+    // to a grant that names the scope.
+    client_scopes::attach_scope(&transaction, "app", "scope-1", false)
         .await
-        .unwrap()
-        .into_iter()
-        .map(|m| m.name)
-        .collect();
+        .unwrap();
+    client_scopes::attach_scope(&transaction, "app", "scope-2", true)
+        .await
+        .unwrap();
+
+    let names = |granted: &[String]| {
+        let granted = granted.to_vec();
+        let transaction = &transaction;
+        async move {
+            client_scopes::mappers_for_grant(transaction, "app", &granted)
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|m| m.name)
+                .collect::<Vec<String>>()
+        }
+    };
+
     assert_eq!(
-        applying,
+        names(&["email".to_owned()]).await,
         vec!["alpha".to_owned(), "zulu".to_owned()],
         "a mapper reached three ways appeared more than once, or the order is not stated"
+    );
+    assert_eq!(
+        names(&[]).await,
+        vec!["zulu".to_owned()],
+        "an optional scope nobody asked for still contributed its mapper"
     );
 }
 

@@ -69,6 +69,14 @@ pub async fn issue(
     )
     .await
     .map_err(|_| Unmintable)?;
+    let overlay = crate::mappers::overlay_for(
+        transaction,
+        &established.client.client_id,
+        established.user_id,
+        established.scope,
+    )
+    .await
+    .map_err(|_| Unmintable)?;
     let minting = |kind: Kind, extra: Map<String, Value>| Minting {
         bound_to: None,
         certified_by: None,
@@ -87,7 +95,12 @@ pub async fn issue(
     let mut handed = Vec::new();
     let access = asked
         .token
-        .then(|| mint_token(signing.provider, &key, minting(Kind::Access, Map::new())))
+        .then(|| {
+            let mut minting = minting(Kind::Access, Map::new());
+            crate::mappers::widen(&mut minting.audiences, &overlay.access_audiences);
+            crate::mappers::fill(&mut minting.extra, overlay.access.clone());
+            mint_token(signing.provider, &key, minting)
+        })
         .transpose()
         .map_err(|_| Unmintable)?;
     let mut anchor = access.as_ref().map(|minted| minted.token_id.clone());
@@ -115,8 +128,10 @@ pub async fn issue(
             let hashed = half_hash(signing.provider, key.algorithm, code).ok_or(Unmintable)?;
             extra.insert("c_hash".into(), Value::from(hashed));
         }
-        let minted = mint_token(signing.provider, &key, minting(Kind::Identity, extra))
-            .map_err(|_| Unmintable)?;
+        let mut minting = minting(Kind::Identity, extra);
+        crate::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
+        crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
+        let minted = mint_token(signing.provider, &key, minting).map_err(|_| Unmintable)?;
         anchor.get_or_insert(minted.token_id);
         let delivered = crate::encryption::identity_for(established.client, minted.token)
             .map_err(|_| Unmintable)?;

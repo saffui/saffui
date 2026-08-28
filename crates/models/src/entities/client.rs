@@ -338,8 +338,10 @@ pub struct ProtocolMapperModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolMapperMutationModel {
     pub name: String,
+    #[serde(default = "openid_unless_said")]
     pub protocol: Protocol,
     pub mapper_type: String,
+    #[serde(default)]
     pub configs: Option<AttributesMap>,
 }
 

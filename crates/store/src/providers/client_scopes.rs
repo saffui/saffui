@@ -200,6 +200,203 @@ pub async fn create_mapper(
     Ok(())
 }
 
+/// Every mapper of this realm.
+pub async fn list_mappers(transaction: &Transaction<'_>) -> StoreResult<Vec<ProtocolMapperModel>> {
+    let statement = format!("SELECT {MAPPER_COLUMNS} FROM protocol_mappers ORDER BY name ASC");
+    Ok(transaction
+        .query(statement.as_str(), &[])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_mapper)
+        .collect())
+}
+
+/// One mapper of this realm.
+pub async fn load_mapper(
+    transaction: &Transaction<'_>,
+    mapper_id: &str,
+) -> StoreResult<Option<ProtocolMapperModel>> {
+    let statement = format!("SELECT {MAPPER_COLUMNS} FROM protocol_mappers WHERE mapper_id = $1");
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&mapper_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_mapper))
+}
+
+/// Rewrite a mapper, and say whether it was there to rewrite.
+pub async fn update_mapper(
+    transaction: &Transaction<'_>,
+    mapper: &ProtocolMapperModel,
+) -> StoreResult<bool> {
+    let configs = json(&mapper.configs)?;
+    let set = WriteSet::update(
+        vec![
+            col("name", &mapper.name),
+            col("protocol", &mapper.protocol),
+            col("mapper_type", &mapper.mapper_type),
+            col("configs", &configs),
+            col("updated_by", &mapper.metadata.updated_by),
+        ],
+        vec![col("mapper_id", &mapper.mapper_id)],
+    );
+    let statement = statement::update("protocol_mappers", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    let changed = transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
+/// Remove a mapper, and say whether it was there to remove.
+pub async fn delete_mapper(transaction: &Transaction<'_>, mapper_id: &str) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM protocol_mappers WHERE mapper_id = $1",
+            &[&mapper_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+/// Whether anything still applies this mapper: a client holding it directly,
+/// or a scope carrying it. Both joins cascade, so an unchecked deletion would
+/// strip the rule from every token silently instead of being told no.
+pub async fn mapper_still_attached(
+    transaction: &Transaction<'_>,
+    mapper_id: &str,
+) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM clients_protocol_mappers WHERE mapper_id = $1 \
+                 UNION ALL \
+                 SELECT 1 FROM client_scopes_protocol_mappers WHERE mapper_id = $1 \
+             ) AS held",
+            &[&mapper_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get("held"))
+}
+
+/// Take a mapper off a scope, and say whether it was there.
+pub async fn detach_mapper_from_scope(
+    transaction: &Transaction<'_>,
+    client_scope_id: &str,
+    mapper_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM client_scopes_protocol_mappers \
+             WHERE client_scope_id = $1 AND mapper_id = $2",
+            &[&client_scope_id, &mapper_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+/// Take a mapper off a client, and say whether it was there.
+pub async fn detach_mapper_from_client(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    mapper_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM clients_protocol_mappers WHERE client_id = $1 AND mapper_id = $2",
+            &[&client_id, &mapper_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+/// The mappers a scope carries.
+pub async fn mappers_of_scope(
+    transaction: &Transaction<'_>,
+    client_scope_id: &str,
+) -> StoreResult<Vec<ProtocolMapperModel>> {
+    let columns = mapper_columns_of("m");
+    let statement = format!(
+        "SELECT {columns} FROM protocol_mappers m \
+         JOIN client_scopes_protocol_mappers a USING (tenant, realm_id, mapper_id) \
+         WHERE a.client_scope_id = $1 ORDER BY m.name ASC"
+    );
+    Ok(transaction
+        .query(statement.as_str(), &[&client_scope_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_mapper)
+        .collect())
+}
+
+/// The mappers attached to a client itself, scopes aside.
+pub async fn mappers_of_client(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+) -> StoreResult<Vec<ProtocolMapperModel>> {
+    let columns = mapper_columns_of("m");
+    let statement = format!(
+        "SELECT {columns} FROM protocol_mappers m \
+         JOIN clients_protocol_mappers a USING (tenant, realm_id, mapper_id) \
+         WHERE a.client_id = $1 ORDER BY m.name ASC"
+    );
+    Ok(transaction
+        .query(statement.as_str(), &[&client_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_mapper)
+        .collect())
+}
+
+/// Every mapper a grant is under: the client's own, plus those of each
+/// attached scope the grant reaches, which is a required scope always and an
+/// optional one when the grant names it.
+///
+/// One membership test rather than a union deduplicated after: a mapper
+/// reached through the client and a scope at once is one rule.
+pub async fn mappers_for_grant(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    granted: &[String],
+) -> StoreResult<Vec<ProtocolMapperModel>> {
+    let statement = format!(
+        "SELECT {MAPPER_COLUMNS} FROM protocol_mappers \
+         WHERE mapper_id IN ( \
+             SELECT mapper_id FROM clients_protocol_mappers WHERE client_id = $1 \
+             UNION ALL \
+             SELECT sm.mapper_id FROM client_scopes_protocol_mappers sm \
+             JOIN clients_client_scopes a USING (tenant, realm_id, client_scope_id) \
+             JOIN client_scopes s USING (tenant, realm_id, client_scope_id) \
+             WHERE a.client_id = $1 AND (NOT a.optional OR s.name = ANY($2)) \
+         ) ORDER BY name ASC"
+    );
+    Ok(transaction
+        .query(statement.as_str(), &[&client_id, &granted])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_mapper)
+        .collect())
+}
+
+fn mapper_columns_of(alias: &str) -> String {
+    MAPPER_COLUMNS
+        .split(", ")
+        .map(|column| format!("{alias}.{column}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Give a client a scope, or leave the attachment as it stands.
 pub async fn attach_scope(
     transaction: &Transaction<'_>,
@@ -318,42 +515,6 @@ pub async fn scopes_of_client(
             let optional: bool = row.get("optional");
             (read_scope(row), optional)
         })
-        .collect())
-}
-
-/// Every mapper that applies to a client: attached to it, or reached through a
-/// scope it holds.
-///
-/// One query rather than one per scope. A mapper reached through two scopes is
-/// one rule, and the membership test is what makes it one: adding a DISTINCT on
-/// top would be a second mechanism for the same property, and a test could then
-/// only ever exercise whichever ran first.
-pub async fn mappers_for_client(
-    transaction: &Transaction<'_>,
-    client_id: &str,
-) -> StoreResult<Vec<ProtocolMapperModel>> {
-    let columns = MAPPER_COLUMNS
-        .split(", ")
-        .map(|column| format!("m.{column}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let statement = format!(
-        "SELECT {columns} FROM protocol_mappers m \
-         WHERE m.mapper_id IN ( \
-             SELECT mapper_id FROM clients_protocol_mappers WHERE client_id = $1 \
-             UNION ALL \
-             SELECT sm.mapper_id FROM client_scopes_protocol_mappers sm \
-             JOIN clients_client_scopes a USING (tenant, realm_id, client_scope_id) \
-             WHERE a.client_id = $1 \
-         ) ORDER BY m.name ASC"
-    );
-
-    Ok(transaction
-        .query(statement.as_str(), &[&client_id])
-        .await
-        .map_err(|_| StoreError::Backend)?
-        .into_iter()
-        .map(read_mapper)
         .collect())
 }
 

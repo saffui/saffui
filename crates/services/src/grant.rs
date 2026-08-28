@@ -347,6 +347,13 @@ pub async fn authorization_code(
     )
     .await?;
 
+    // What the client's registered mappers add, resolved once for both
+    // tokens this exchange mints.
+    let overlay =
+        crate::mappers::overlay_for(transaction, &client.client_id, &code.user_id, &code.scope)
+            .await
+            .map_err(|_| Ungranted::Unreadable)?;
+
     // §8: what this client calls the account, which is its own identifier
     // unless the client asked to be told a different one from every sector.
     let told = crate::pairwise::subject_for(transaction, signing.provider, client, &code.user_id)
@@ -372,12 +379,11 @@ pub async fn authorization_code(
     // unless it said; the others with the realm's own preference.
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
     let identity_key = identity_key_for(transaction, signing, client).await?;
-    let access = mint_token(
-        signing.provider,
-        &key,
-        minting_for(Kind::Access, lifespan, vec![client.client_id.clone()]),
-    )
-    .map_err(|_| Ungranted::Unmintable)?;
+    let mut minting_access = minting_for(Kind::Access, lifespan, vec![client.client_id.clone()]);
+    crate::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
+    crate::mappers::fill(&mut minting_access.extra, overlay.access.clone());
+    let access =
+        mint_token(signing.provider, &key, minting_access).map_err(|_| Ungranted::Unmintable)?;
 
     // The claims a renewal reissues from. Carried on the refresh token because a
     // renewal must not resolve them again: a step up in another tab would raise
@@ -402,6 +408,7 @@ pub async fn authorization_code(
         .any(|scope| scope == "openid")
         .then(|| {
             let mut minting = minting_for(Kind::Identity, lifespan, vec![client.client_id.clone()]);
+            crate::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
             // `auth_time` is the login's instant, not this one: the question is
             // how recently the user authenticated.
             minting
@@ -423,6 +430,7 @@ pub async fn authorization_code(
                     .insert("org_id".into(), Value::from(org.as_str()));
             }
             minting.extra.extend(asked_of_person.clone());
+            crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
             mint_token(signing.provider, &identity_key, minting)
         })
         .transpose()
@@ -810,6 +818,10 @@ pub async fn refresh_token(
     let scope = verified.scope.clone();
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
     let identity_key = identity_key_for(transaction, signing, client).await?;
+    let overlay =
+        crate::mappers::overlay_for(transaction, &client.client_id, &subject.user_id, &scope)
+            .await
+            .map_err(|_| Ungranted::Unreadable)?;
 
     let told =
         crate::pairwise::subject_for(transaction, signing.provider, client, &subject.user_id)
@@ -917,12 +929,16 @@ pub async fn refresh_token(
     .await
     .map_err(|_| Ungranted::Unreadable)?;
 
-    let access = mint_token(signing.provider, &key, minting_for(Kind::Access, lifespan))
-        .map_err(|_| Ungranted::Unmintable)?;
+    let mut minting_access = minting_for(Kind::Access, lifespan);
+    crate::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
+    crate::mappers::fill(&mut minting_access.extra, overlay.access.clone());
+    let access =
+        mint_token(signing.provider, &key, minting_access).map_err(|_| Ungranted::Unmintable)?;
 
     let id_token = wants_openid(&scope)
         .then(|| {
             let mut minting = minting_for(Kind::Identity, lifespan);
+            crate::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
             // Carried, not resolved again. A nonce belongs to the authentication
             // that asked for it and means nothing on a renewal, so it is the one
             // claim deliberately dropped.
@@ -932,6 +948,7 @@ pub async fn refresh_token(
                 }
             }
             minting.extra.extend(asked_of_person.clone());
+            crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
             mint_token(signing.provider, &identity_key, minting)
         })
         .transpose()

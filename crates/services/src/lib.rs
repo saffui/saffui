@@ -15,6 +15,7 @@ pub mod implicit;
 pub mod introspection;
 pub mod landing;
 pub mod logout;
+pub mod mappers;
 pub mod minting;
 pub mod mtls;
 pub mod pairwise;

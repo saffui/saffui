@@ -105,10 +105,17 @@ async fn a_role_lives_and_dies_over_the_plane() {
     assert_eq!(status, StatusCode::OK, "{renamed}");
     assert_eq!(renamed["role_id"], role_id.as_str(), "{renamed}");
 
-    // Granted, deletion is told no rather than the holder losing it silently.
-    plane
-        .grant_role_to_subject(&role_id, support::SUBJECT)
-        .await;
+    // Granted over the plane, deletion is told no rather than the holder
+    // losing it silently.
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{role_id}/holders/{}", support::SUBJECT),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, told) = asked(
         &plane,
         Method::DELETE,
@@ -123,9 +130,27 @@ async fn a_role_lives_and_dies_over_the_plane() {
         "a held role was deleted: {told}"
     );
 
-    plane
-        .revoke_role_from_subject(&role_id, support::SUBJECT)
-        .await;
+    // The refusal points here: who holds it, and through what.
+    let (status, held) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}/{role_id}/holders"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(held["users"][0], support::SUBJECT, "{held}");
+
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{base}/{role_id}/holders/{}", support::SUBJECT),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = asked(
         &plane,
         Method::DELETE,
@@ -257,4 +282,179 @@ async fn an_organization_lives_and_dies_over_the_plane() {
         StatusCode::NO_CONTENT,
         "membership blocked the deletion"
     );
+}
+
+/// Granting is charged by what is granted: holding the group is not holding
+/// its roles, or group curators could hand themselves anything.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn granting_a_role_to_a_group_costs_the_role_capability() {
+    let plane = Plane::with_actions(&[
+        AdminAction::GroupRead,
+        AdminAction::GroupWrite,
+        AdminAction::RoleRead,
+        AdminAction::RoleWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+
+    let (_, group) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/groups"),
+        &bearer,
+        Some(serde_json::json!({ "name": "curators" })),
+    )
+    .await;
+    let group_id = group["group_id"].as_str().expect("an identity").to_owned();
+    let (_, role) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(serde_json::json!({ "name": "curation" })),
+    )
+    .await;
+    let role_id = role["role_id"].as_str().expect("an identity").to_owned();
+
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/groups/{group_id}/roles/{role_id}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The grant shows up in the group's membership, and holds the deletion.
+    let (_, membership) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/groups/{group_id}/membership"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(membership["roles"][0], role_id.as_str(), "{membership}");
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("/admin/realms/{REALM}/roles/{role_id}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a group-held role was deleted"
+    );
+}
+
+/// Each missing end of a grant is named for what it is.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_grant_names_which_end_is_missing() {
+    let plane = Plane::with_actions(&[AdminAction::RoleRead, AdminAction::RoleWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let (_, role) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(serde_json::json!({ "name": "orphaned" })),
+    )
+    .await;
+    let role_id = role["role_id"].as_str().expect("an identity").to_owned();
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/roles/{role_id}/holders/nobody-here"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(told["error_code"], "user.not_found", "{told}");
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!(
+            "/admin/realms/{REALM}/roles/role-that-is-not/holders/{}",
+            support::SUBJECT
+        ),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(told["error_code"], "role.not_found", "{told}");
+}
+
+/// An organization's membership over the plane, end to end.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn organization_membership_lives_over_the_plane() {
+    let plane = Plane::with_actions(&[AdminAction::OrgRead, AdminAction::OrgWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let (_, org) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/organizations"),
+        &bearer,
+        Some(serde_json::json!({ "name": "guild" })),
+    )
+    .await;
+    let org_id = org["org_id"].as_str().expect("an identity").to_owned();
+    let base = format!("/admin/realms/{REALM}/organizations/{org_id}/members");
+
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{}", support::SUBJECT),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, members) = asked(&plane, Method::GET, &base, &bearer, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(members[0]["user_id"], support::SUBJECT, "{members}");
+
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{base}/{}", support::SUBJECT),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (_, members) = asked(&plane, Method::GET, &base, &bearer, None).await;
+    assert_eq!(members.as_array().map(Vec::len), Some(0), "{members}");
+}
+
+/// The narrow half of the charge, on its own plane: two planted worlds in one
+/// process wait on each other's pool forever, so the wide and the narrow
+/// caller each get a test. The guard charges before the handler runs, so the
+/// ids need not exist for the refusal to be the capability's.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn holding_the_group_is_not_holding_its_roles() {
+    let plane = Plane::with_actions(&[AdminAction::GroupRead, AdminAction::GroupWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/groups/any/roles/any"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }

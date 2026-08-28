@@ -15,6 +15,10 @@ pub enum Unwritable {
     AlreadyExists,
     #[error("no such one")]
     NotFound,
+    /// The other end of a grant: named apart so granting a real role to a
+    /// missing person is not reported as the role missing.
+    #[error("no such user")]
+    NoSuchUser,
     /// Deletion refused while something still holds it. The joins cascade, so
     /// deleting anyway would strip an entitlement from every holder silently
     /// rather than the deletion being told no.
@@ -323,4 +327,157 @@ pub async fn delete_organization(
         .map_err(|_| Unwritable::Backend)?
         .then_some(())
         .ok_or(Unwritable::NotFound)
+}
+
+/// The two ends of a grant have to exist before the join is written: the
+/// insert swallows conflicts and the foreign key would turn an unknown end
+/// into a backend error, so each end is refused in its own vocabulary first.
+async fn user_exists(transaction: &Transaction<'_>, user_id: &str) -> Result<(), Unwritable> {
+    store::providers::users::load(transaction, user_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .map(|_| ())
+        .ok_or(Unwritable::NoSuchUser)
+}
+
+pub async fn grant_role_to_user(
+    transaction: &Transaction<'_>,
+    role_id: &str,
+    user_id: &str,
+) -> Result<(), Unwritable> {
+    get_role(transaction, role_id).await?;
+    user_exists(transaction, user_id).await?;
+    roles::grant_to_user(transaction, user_id, role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+pub async fn revoke_role_from_user(
+    transaction: &Transaction<'_>,
+    role_id: &str,
+    user_id: &str,
+) -> Result<(), Unwritable> {
+    roles::revoke_from_user(transaction, user_id, role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .then_some(())
+        .ok_or(Unwritable::NotFound)
+}
+
+/// Who holds this role. The refusal a deletion answers with points here.
+pub async fn role_holders(
+    transaction: &Transaction<'_>,
+    role_id: &str,
+) -> Result<(Vec<String>, Vec<String>), Unwritable> {
+    get_role(transaction, role_id).await?;
+    roles::holders_of(transaction, role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+pub async fn add_user_to_group(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+    user_id: &str,
+) -> Result<(), Unwritable> {
+    get_group(transaction, group_id).await?;
+    user_exists(transaction, user_id).await?;
+    roles::add_to_group(transaction, user_id, group_id)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+pub async fn remove_user_from_group(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+    user_id: &str,
+) -> Result<(), Unwritable> {
+    roles::remove_from_group(transaction, user_id, group_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .then_some(())
+        .ok_or(Unwritable::NotFound)
+}
+
+/// Grant a role through a group: everyone in it holds the role at once, and a
+/// later revocation at the group takes it from all of them at once.
+pub async fn grant_role_to_group(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+    role_id: &str,
+) -> Result<(), Unwritable> {
+    get_group(transaction, group_id).await?;
+    get_role(transaction, role_id).await?;
+    roles::grant_to_group(transaction, group_id, role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+pub async fn revoke_role_from_group(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+    role_id: &str,
+) -> Result<(), Unwritable> {
+    roles::revoke_from_group(transaction, group_id, role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .then_some(())
+        .ok_or(Unwritable::NotFound)
+}
+
+pub async fn group_membership(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+) -> Result<(Vec<String>, Vec<String>), Unwritable> {
+    get_group(transaction, group_id).await?;
+    roles::group_membership(transaction, group_id)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+pub async fn add_organization_member(
+    transaction: &Transaction<'_>,
+    tenant: &str,
+    realm_id: &str,
+    org_id: &str,
+    user_id: &str,
+) -> Result<(), Unwritable> {
+    get_organization(transaction, org_id).await?;
+    user_exists(transaction, user_id).await?;
+    organizations::add_member(
+        transaction,
+        &models::entities::organization::OrganizationMemberModel {
+            realm_id: realm_id.to_owned(),
+            org_id: org_id.to_owned(),
+            user_id: user_id.to_owned(),
+            membership_type: models::entities::organization::OrgMembershipType::Unmanaged,
+            roles: Vec::new(),
+            joined_at: None,
+            metadata: AuditableModel::from_creator(tenant.to_owned(), "admin".to_owned()),
+        },
+    )
+    .await
+    .map_err(|_| Unwritable::Backend)
+}
+
+pub async fn remove_organization_member(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    user_id: &str,
+) -> Result<(), Unwritable> {
+    organizations::remove_member(transaction, org_id, user_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .then_some(())
+        .ok_or(Unwritable::NotFound)
+}
+
+pub async fn organization_members(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+) -> Result<Vec<models::entities::organization::OrganizationMemberModel>, Unwritable> {
+    get_organization(transaction, org_id).await?;
+    organizations::members(transaction, org_id)
+        .await
+        .map_err(|_| Unwritable::Backend)
 }

@@ -352,6 +352,99 @@ pub async fn add_to_group(
     Ok(())
 }
 
+/// Take a person out of a group.
+pub async fn remove_from_group(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    group_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM users_groups WHERE user_id = $1 AND group_id = $2",
+            &[&user_id, &group_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+/// Take a role back from a group. Everyone in the group stops holding it at
+/// once, which is what granting through a group means.
+pub async fn revoke_from_group(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+    role_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM groups_roles WHERE group_id = $1 AND role_id = $2",
+            &[&group_id, &role_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+/// Who holds this role directly, and through which groups.
+///
+/// Both lists, because an administrator refused a deletion with "still
+/// granted" needs to see whom to revoke from, and a holder through a group is
+/// revoked at the group, not at the person.
+pub async fn holders_of(
+    transaction: &Transaction<'_>,
+    role_id: &str,
+) -> StoreResult<(Vec<String>, Vec<String>)> {
+    let direct = transaction
+        .query(
+            "SELECT user_id FROM users_roles WHERE role_id = $1 ORDER BY user_id ASC",
+            &[&role_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("user_id"))
+        .collect();
+    let through_groups = transaction
+        .query(
+            "SELECT group_id FROM groups_roles WHERE role_id = $1 ORDER BY group_id ASC",
+            &[&role_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("group_id"))
+        .collect();
+    Ok((direct, through_groups))
+}
+
+/// Who is in this group, and which roles it grants them.
+pub async fn group_membership(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+) -> StoreResult<(Vec<String>, Vec<String>)> {
+    let people = transaction
+        .query(
+            "SELECT user_id FROM users_groups WHERE group_id = $1 ORDER BY user_id ASC",
+            &[&group_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("user_id"))
+        .collect();
+    let roles = transaction
+        .query(
+            "SELECT role_id FROM groups_roles WHERE group_id = $1 ORDER BY role_id ASC",
+            &[&group_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("role_id"))
+        .collect();
+    Ok((people, roles))
+}
+
 /// Grant a role to a group.
 pub async fn grant_to_group(
     transaction: &Transaction<'_>,

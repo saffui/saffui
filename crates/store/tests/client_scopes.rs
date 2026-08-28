@@ -107,6 +107,102 @@ async fn a_client_holds_the_scopes_it_was_given() {
     );
 }
 
+/// The write half the plane leans on: listing, finding by the name a request
+/// would spell, rewriting, and removal that answers whether anything was there.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_scope_is_rewritten_and_removed_over_the_store() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    client_scopes::create_scope(&transaction, &scope("scope-1", "profile", true))
+        .await
+        .unwrap();
+    client_scopes::create_scope(&transaction, &scope("scope-2", "address", false))
+        .await
+        .unwrap();
+
+    let listed = client_scopes::list_scopes(&transaction).await.unwrap();
+    assert_eq!(
+        listed.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        vec!["address", "profile"]
+    );
+
+    // The name means something within its protocol, and nothing outside it.
+    assert!(
+        client_scopes::load_scope_by_name(&transaction, Protocol::OpenId, "profile")
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        client_scopes::load_scope_by_name(&transaction, Protocol::Docker, "profile")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let mut rewritten = scope("scope-1", "person", false);
+    rewritten.description = "what a person shows".to_owned();
+    assert!(
+        client_scopes::update_scope(&transaction, &rewritten)
+            .await
+            .unwrap()
+    );
+    let read_back = client_scopes::load_scope(&transaction, "scope-1")
+        .await
+        .unwrap()
+        .expect("the rewritten scope");
+    assert_eq!(read_back.name, "person");
+    assert_eq!(read_back.default_scope, Some(false));
+    assert!(read_back.metadata.version > 1, "the rewrite left no trace");
+
+    let ghost = scope("scope-9", "nothing", false);
+    assert!(
+        !client_scopes::update_scope(&transaction, &ghost)
+            .await
+            .unwrap()
+    );
+
+    // Held by a client, the scope reads as attached; released, it does not.
+    client_scopes::attach_scope(&transaction, "app", "scope-1", false)
+        .await
+        .unwrap();
+    assert!(
+        client_scopes::scope_still_attached(&transaction, "scope-1")
+            .await
+            .unwrap()
+    );
+    client_scopes::detach_scope(&transaction, "app", "scope-1")
+        .await
+        .unwrap();
+    assert!(
+        !client_scopes::scope_still_attached(&transaction, "scope-1")
+            .await
+            .unwrap()
+    );
+
+    assert!(
+        client_scopes::delete_scope(&transaction, "scope-1")
+            .await
+            .unwrap()
+    );
+    assert!(
+        client_scopes::load_scope(&transaction, "scope-1")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !client_scopes::delete_scope(&transaction, "scope-1")
+            .await
+            .unwrap()
+    );
+}
+
 /// A mapper reached twice is one rule.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]

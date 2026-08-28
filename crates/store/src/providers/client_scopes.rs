@@ -55,6 +55,100 @@ pub async fn load_scope(
         .map(read_scope))
 }
 
+/// Every scope of this realm.
+pub async fn list_scopes(transaction: &Transaction<'_>) -> StoreResult<Vec<ClientScopeModel>> {
+    let statement = format!("SELECT {SCOPE_COLUMNS} FROM client_scopes ORDER BY name ASC");
+    Ok(transaction
+        .query(statement.as_str(), &[])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_scope)
+        .collect())
+}
+
+/// One scope by the name a request would spell, within the protocol that
+/// gives the name its meaning: the same word names different scopes to
+/// different protocols, and the unique index is drawn the same way.
+pub async fn load_scope_by_name(
+    transaction: &Transaction<'_>,
+    protocol: Protocol,
+    name: &str,
+) -> StoreResult<Option<ClientScopeModel>> {
+    let statement =
+        format!("SELECT {SCOPE_COLUMNS} FROM client_scopes WHERE protocol = $1 AND name = $2");
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&protocol, &name])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_scope))
+}
+
+/// Rewrite a scope, and say whether it was there to rewrite.
+pub async fn update_scope(
+    transaction: &Transaction<'_>,
+    scope: &ClientScopeModel,
+) -> StoreResult<bool> {
+    let configs = json(&scope.configs)?;
+    let default_scope = scope.default_scope.unwrap_or(false);
+    let set = WriteSet::update(
+        vec![
+            col("name", &scope.name),
+            col("description", &scope.description),
+            col("protocol", &scope.protocol),
+            col("default_scope", &default_scope),
+            col("configs", &configs),
+            col("updated_by", &scope.metadata.updated_by),
+        ],
+        vec![col("client_scope_id", &scope.client_scope_id)],
+    );
+    let statement = statement::update("client_scopes", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    let changed = transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
+/// Remove a scope, and say whether it was there to remove.
+pub async fn delete_scope(
+    transaction: &Transaction<'_>,
+    client_scope_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM client_scopes WHERE client_scope_id = $1",
+            &[&client_scope_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+/// Whether anything still reads this scope: a client holding it, or a policy
+/// conditioned on it. Both joins cascade, so an unchecked deletion would strip
+/// the scope from every holder silently instead of being told no.
+pub async fn scope_still_attached(
+    transaction: &Transaction<'_>,
+    client_scope_id: &str,
+) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM clients_client_scopes WHERE client_scope_id = $1 \
+                 UNION ALL \
+                 SELECT 1 FROM policies_client_scopes WHERE client_scope_id = $1 \
+             ) AS held",
+            &[&client_scope_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get("held"))
+}
+
 /// The scopes a new client of this realm is given without anyone attaching
 /// them.
 ///

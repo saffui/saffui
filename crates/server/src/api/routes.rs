@@ -4,7 +4,8 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, clients, directory, keys, mail, realm_keys, realms, sessions, users,
+    authorization, client_scopes, clients, directory, keys, mail, realm_keys, realms, sessions,
+    users,
 };
 
 /// One route: the verb, the path, what it costs, and what answers it.
@@ -133,6 +134,54 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/clients/{client}/secret",
             action: AdminAction::ClientWrite,
             handler: Some(|| web::post().to(clients::rotate_secret)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/client-scopes",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(client_scopes::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/client-scopes",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::post().to(client_scopes::create)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/client-scopes/{scope}",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(client_scopes::get)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/client-scopes/{scope}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::put().to(client_scopes::update)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/client-scopes/{scope}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::delete().to(client_scopes::delete)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/clients/{client}/scopes",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(client_scopes::of_client)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/clients/{client}/scopes/{scope}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::put().to(client_scopes::attach)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/clients/{client}/scopes/{scope}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::delete().to(client_scopes::detach)),
         },
         AdminRoute {
             method: Method::POST,

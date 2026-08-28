@@ -4,8 +4,8 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, client_scopes, clients, directory, keys, mail, realm_keys, realms, sessions,
-    users,
+    authorization, client_scopes, clients, directory, keys, mail, protocol_mappers, realm_keys,
+    realms, sessions, users,
 };
 
 /// One route: the verb, the path, what it costs, and what answers it.
@@ -182,6 +182,72 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/clients/{client}/scopes/{scope}",
             action: AdminAction::ClientWrite,
             handler: Some(|| web::delete().to(client_scopes::detach)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/protocol-mappers",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(protocol_mappers::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/protocol-mappers",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::post().to(protocol_mappers::create)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/protocol-mappers/{mapper}",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(protocol_mappers::get)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/protocol-mappers/{mapper}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::put().to(protocol_mappers::update)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/protocol-mappers/{mapper}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::delete().to(protocol_mappers::delete)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/client-scopes/{scope}/mappers",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(protocol_mappers::of_scope)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/client-scopes/{scope}/mappers/{mapper}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::put().to(protocol_mappers::attach_to_scope)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/client-scopes/{scope}/mappers/{mapper}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::delete().to(protocol_mappers::detach_from_scope)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/clients/{client}/mappers",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(protocol_mappers::of_client)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/clients/{client}/mappers/{mapper}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::put().to(protocol_mappers::attach_to_client)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/clients/{client}/mappers/{mapper}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::delete().to(protocol_mappers::detach_from_client)),
         },
         AdminRoute {
             method: Method::POST,

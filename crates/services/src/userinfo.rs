@@ -198,6 +198,23 @@ pub async fn claims_for(
         ));
     }
 
+    // The mapper claims this grant is under, on the person already in hand.
+    // Filled where the flow said nothing: `sub` is set above, so no rule from
+    // a registration can rename the account. An `aud` a mapper asked for is
+    // dropped here, since a UserInfo answer carries no audience to widen.
+    if let Some(client) = party.as_ref() {
+        let resolved =
+            crate::mappers::resolve(transaction, &client.client_id, &account, &verified.scope)
+                .await
+                .map_err(|_| Untold::Unreadable)?;
+        if !resolved.is_empty() {
+            let mut overlay =
+                crate::mappers::evaluate(crate::mappers::Target::UserInfo, &resolved, &subject);
+            overlay.remove("aud");
+            crate::mappers::fill(&mut claims, overlay);
+        }
+    }
+
     Ok(Answer {
         claims,
         signed_with: party

@@ -195,6 +195,17 @@ async fn a_rotated_key_still_verifies_and_stops_signing() {
     )
     .await
     .unwrap();
+    // A bystander of another algorithm. A realm keeps one signer per
+    // algorithm, and rotating one must not silence the others: a client that
+    // registered RS256 is answered from RS256's active key alone.
+    realm_keys::create(
+        &transaction,
+        &ring,
+        &envelope,
+        &key("kid-rsa", SignAlg::Rs256, KeyStatus::Active, 7),
+    )
+    .await
+    .unwrap();
     // Deliberately lower than the key it replaces: the published order follows
     // priority, and an index that sorts by status first would otherwise put
     // these two in the same order for a different reason.
@@ -207,10 +218,16 @@ async fn a_rotated_key_still_verifies_and_stops_signing() {
     .await
     .unwrap();
 
-    let signing = realm_keys::active(&transaction, &ring, &envelope, KeyUse::Sig, None)
-        .await
-        .unwrap()
-        .expect("nothing signs after a rotation");
+    let signing = realm_keys::active(
+        &transaction,
+        &ring,
+        &envelope,
+        KeyUse::Sig,
+        Some(SignAlg::Es256),
+    )
+    .await
+    .unwrap()
+    .expect("nothing signs after a rotation");
     assert_eq!(signing.kid, "kid-2");
 
     // The old key is still published, or every token signed before the
@@ -223,7 +240,7 @@ async fn a_rotated_key_still_verifies_and_stops_signing() {
         .collect();
     assert_eq!(
         published,
-        vec!["kid-1".to_owned(), "kid-2".to_owned()],
+        vec!["kid-1".to_owned(), "kid-rsa".to_owned(), "kid-2".to_owned()],
         "the published set is ordered by priority, not by which key signs"
     );
 
@@ -232,6 +249,19 @@ async fn a_rotated_key_still_verifies_and_stops_signing() {
         .unwrap()
         .expect("the rotated key is gone");
     assert_eq!(old.status, KeyStatus::Passive);
+
+    let bystander = realm_keys::active(
+        &transaction,
+        &ring,
+        &envelope,
+        KeyUse::Sig,
+        Some(SignAlg::Rs256),
+    )
+    .await
+    .unwrap()
+    .expect("rotating ES256 silenced RS256");
+    assert_eq!(bystander.kid, "kid-rsa");
+    assert_eq!(bystander.status, KeyStatus::Active);
 }
 
 /// A disabled key neither signs nor verifies, and is not published.
@@ -293,6 +323,15 @@ async fn a_disabled_key_is_not_published() {
             .await
             .unwrap()
     );
+
+    // The plane still sees what publication hides: an administrator auditing
+    // what was disabled has nowhere else to look.
+    let held = realm_keys::held(&transaction, KeyUse::Sig).await.unwrap();
+    assert_eq!(
+        held.iter().map(|k| k.kid.clone()).collect::<Vec<_>>(),
+        vec!["kid-1".to_owned(), "kid-old".to_owned()]
+    );
+    assert_eq!(held[1].status, KeyStatus::Disabled);
 }
 
 /// The catalogue is the schema's, and it depends on what the key is for.

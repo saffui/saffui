@@ -3,7 +3,9 @@ use actix_web::http::Method;
 use actix_web::web;
 use models::entities::authz::AdminAction;
 
-use crate::api::rest::endpoints::admin::{clients, directory, keys, mail, realms, sessions, users};
+use crate::api::rest::endpoints::admin::{
+    authorization, clients, directory, keys, mail, realms, sessions, users,
+};
 
 /// One route: the verb, the path, what it costs, and what answers it.
 ///
@@ -113,6 +115,102 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/clients/{client}/secret",
             action: AdminAction::ClientWrite,
             handler: Some(|| web::post().to(clients::rotate_secret)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::post().to(authorization::protect)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}",
+            action: AdminAction::UmaRead,
+            handler: Some(|| web::get().to(authorization::server)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::put().to(authorization::set_mode)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::delete().to(authorization::unprotect)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/resources",
+            action: AdminAction::UmaRead,
+            handler: Some(|| web::get().to(authorization::resources)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/resources",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::post().to(authorization::add_resource)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/resources/{resource}",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::delete().to(authorization::remove_resource)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/scopes",
+            action: AdminAction::UmaRead,
+            handler: Some(|| web::get().to(authorization::scopes)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/scopes",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::post().to(authorization::add_scope)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/scopes/{scope}",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::delete().to(authorization::remove_scope)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/policies",
+            action: AdminAction::UmaRead,
+            handler: Some(|| web::get().to(authorization::policies)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/policies",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::post().to(authorization::add_policy)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/policies/{policy}",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::put().to(authorization::rework_policy)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/policies/{policy}",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::delete().to(authorization::remove_policy)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/authz/decisions",
+            action: AdminAction::AuthzDecisionRead,
+            handler: Some(|| web::get().to(authorization::decisions)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/authz/decisions/disagreements",
+            action: AdminAction::AuthzDecisionRead,
+            handler: Some(|| web::get().to(authorization::disagreements)),
         },
         AdminRoute {
             method: Method::GET,

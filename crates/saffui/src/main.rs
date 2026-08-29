@@ -129,10 +129,24 @@ enum Command {
         #[arg(long = "registration-host")]
         registration_hosts: Vec<String>,
     },
+    /// Operate the plane from here: one command, one call, one answer.
+    Admin {
+        #[command(flatten)]
+        plane: saffui::cli::PlaneArgs,
+        #[command(subcommand)]
+        command: saffui::cli::AdminCmd,
+    },
 }
 
 fn main() -> ExitCode {
     let command = Cli::parse().command;
+
+    // The operator commands are one blocking call each and speak over HTTP;
+    // they neither need the runtime the server does nor its logging setup,
+    // and starting either would be noise on somebody's terminal.
+    if let Command::Admin { plane, command } = &command {
+        return saffui::cli::run(plane, command, &mut std::io::stdout());
+    }
 
     // Before anything that could have something to say. What is logged and
     // how are the operator's, from the environment; absent, every record at
@@ -196,6 +210,9 @@ fn main() -> ExitCode {
                         })
                         .await
                     }
+                    // Answered before the runtime was built; unreachable here,
+                    // and spelled so the match stays exhaustive by name.
+                    Command::Admin { .. } => Ok(()),
                 }
             })
         });

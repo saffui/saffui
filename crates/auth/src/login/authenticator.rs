@@ -170,11 +170,13 @@ pub async fn verify_answer(
     // Where a mailed link points back to, and how this realm sends. Absent
     // where no step needs them.
     posting: Option<Posting<'_>>,
+    // The directory this realm federates from. Only the password step asks.
+    federation: Option<&dyn crate::login::directory::Directory>,
 ) -> Answered {
     match authenticator {
-        Authenticator::Password => {
-            Answered::plain(password(transaction, provider, realm, subject, answers).await)
-        }
+        Authenticator::Password => Answered::plain(
+            password(transaction, provider, realm, subject, answers, federation).await,
+        ),
         Authenticator::Totp => Answered::plain(totp(transaction, provider, subject, answers).await),
         Authenticator::Webauthn => {
             webauthn(transaction, origin, subject, answers, remembered).await
@@ -382,6 +384,7 @@ async fn password(
     realm: &RealmModel,
     subject: Option<&UserModel>,
     answers: &[Answer],
+    federation: Option<&dyn crate::login::directory::Directory>,
 ) -> Outcome {
     let Some(Answer::Password(offered)) =
         of_kind(answers, |answer| matches!(answer, Answer::Password(_)))
@@ -392,6 +395,24 @@ async fn password(
     };
 
     let cost = realm.password_policy.as_ref().map(|policy| policy.hashing);
+
+    // A person the directory owns is verified by the directory: the bind is
+    // the check, and no local hash exists to check against. The directory
+    // being unreachable is a failure of this attempt, never an admission.
+    if let Some(subject) = subject
+        && subject.user_storage == Some(models::entities::user::UserStorage::Ldap)
+    {
+        return match federation {
+            Some(directory) => match directory.verify(&subject.user_name, offered).await {
+                crate::login::directory::Bound::Accepted => Outcome::Passed,
+                crate::login::directory::Bound::Refused
+                | crate::login::directory::Bound::Unreachable => Outcome::Failed,
+            },
+            // The realm stopped federating and the shadow row remains: there
+            // is nothing left that could vouch for the password.
+            None => Outcome::Failed,
+        };
+    }
 
     let Some(subject) = subject else {
         // No such user. The same work is done anyway, because a login that

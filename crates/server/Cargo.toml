@@ -35,6 +35,9 @@ tokio = { workspace = true, features = ["time"] }
 # Reaching out: a logout token is posted to every client that registered
 # where to be told. Blocking and small, run off the request thread.
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
+# The LDAP client lives here and nowhere else: the flow engine sees a port,
+# and no other crate links a directory protocol.
+ldap3 = { version = "0.11", default-features = false, features = ["tls-native"] }
 lettre = { workspace = true }
 async-trait = { workspace = true }
 

@@ -2,6 +2,7 @@ pub mod authorization;
 pub mod client_scopes;
 pub mod clients;
 pub mod directory;
+pub mod federation;
 pub mod flows;
 pub mod idps;
 pub mod keys;

@@ -4,8 +4,8 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, client_scopes, clients, directory, flows, idps, keys, mail, portability,
-    protocol_mappers, realm_keys, realms, sessions, users,
+    authorization, client_scopes, clients, directory, federation, flows, idps, keys, mail,
+    portability, protocol_mappers, realm_keys, realms, sessions, users,
 };
 
 /// One route: the verb, the path, what it costs, and what answers it.
@@ -410,6 +410,24 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/users/{user}/federated-identities",
             action: AdminAction::UserRead,
             handler: Some(|| web::get().to(idps::identities_of_user)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/federation",
+            action: AdminAction::IdpRead,
+            handler: Some(|| web::get().to(federation::get)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/federation",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::put().to(federation::put)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/federation",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::delete().to(federation::delete)),
         },
         AdminRoute {
             method: Method::POST,

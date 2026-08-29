@@ -1,6 +1,7 @@
 pub mod auth_flows;
 pub mod authz_policies;
 pub mod authz_surface;
+pub mod brokering;
 pub mod client_scopes;
 pub mod clients;
 pub mod consents;

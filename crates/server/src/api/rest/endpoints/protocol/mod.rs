@@ -3,6 +3,7 @@ pub mod authorize;
 pub mod backchannel;
 pub mod basic;
 pub mod binding;
+pub mod broker;
 pub mod caller;
 pub mod discovery;
 pub mod dto;

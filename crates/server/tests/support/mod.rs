@@ -467,6 +467,19 @@ impl Plane {
         scope: &str,
         challenge: Option<(&str, &str)>,
     ) -> String {
+        self.mint_code_with_nonce(client_id, redirect_uri, scope, challenge, "n-once")
+            .await
+    }
+
+    /// The same, for a caller that has to answer somebody else's nonce.
+    pub async fn mint_code_with_nonce(
+        &self,
+        client_id: &str,
+        redirect_uri: &str,
+        scope: &str,
+        challenge: Option<(&str, &str)>,
+        nonce: &str,
+    ) -> String {
         let provider = OpenSslProvider::new(&CryptoConfig {
             fips_required: false,
             pkcs11: None,
@@ -498,7 +511,7 @@ impl Plane {
                 session_id: SESSION.into(),
                 redirect_uri: redirect_uri.to_owned(),
                 scope: scope.to_owned(),
-                nonce: Some("n-once".into()),
+                nonce: Some(nonce.to_owned()),
                 code_challenge: challenge.map(|(value, _)| value.to_owned()),
                 code_challenge_method: challenge.map(|(_, method)| method.to_owned()),
                 auth_time: 1_700_000_000,

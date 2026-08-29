@@ -95,6 +95,27 @@ fn algorithm_of(token: &str, shared: bool) -> Result<SignAlg, Unverifiable> {
     Ok(wanted)
 }
 
+/// Read a token against a published key set: the algorithm bounded by the
+/// allow list rather than by the header alone, the key picked from the set,
+/// the claims handed back for the caller to judge. No spend and no client:
+/// this is the reading half alone, for tokens that are not assertions.
+pub fn read_against(
+    keys: &Value,
+    token: &str,
+    allowed: &[SignAlg],
+) -> Result<serde_json::Map<String, Value>, Unverifiable> {
+    let algorithm = algorithm_of(token, false)?;
+    if !allowed.contains(&algorithm) {
+        return Err(Unverifiable::BadSignature);
+    }
+    let jwk = published_key(keys, token, algorithm)?;
+    let verifier = verifier_for(algorithm, &jwk).ok_or(Unverifiable::Unregistered)?;
+    let payload = jwt::decode_with_verifier(token, &*verifier)
+        .map_err(|_| Unverifiable::BadSignature)?
+        .0;
+    Ok(payload.claims_set().clone())
+}
+
 /// The client's key the header names, or its only one of that algorithm.
 fn published_key(keys: &Value, token: &str, algorithm: SignAlg) -> Result<Jwk, Unverifiable> {
     let set = JwkSet::from_map(

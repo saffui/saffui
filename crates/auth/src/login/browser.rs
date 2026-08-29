@@ -335,11 +335,66 @@ pub async fn answer_step(
                 signing,
                 seen,
                 now,
+                Way::Browser,
             )
             .await
             .map(|admitted| Step::Admitted(Box::new(admitted)))
         }
     }
+}
+
+/// Admit a login somebody proved at an upstream provider this realm accepts.
+///
+/// The flow's own steps never ran, so nothing local is recorded as reached:
+/// the realm's level map speaks about its own factors, and a level guessed
+/// for somebody else's would be a false attestation. Consent is not asked
+/// either, which is a named limit of brokered logins for now rather than a
+/// decision that they need none.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one login"
+)]
+pub async fn admit_federated(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &TenantContext,
+    auth_session_id: &str,
+    user_id: &str,
+    user_name: &str,
+    provider_alias: &str,
+    external_user_id: &str,
+    seen: &crate::provenance::Provenance,
+    now: DateTime<Utc>,
+) -> Result<Step, Unanswerable> {
+    let login = login::resume(transaction, auth_session_id)
+        .await
+        .map_err(|_| Unanswerable::Unreadable)?
+        .ok_or(Unanswerable::NoSuchLogin)?;
+    let realm = realms::load(transaction, &tenant.realm_id)
+        .await
+        .map_err(|_| Unanswerable::Unreadable)?
+        .ok_or(Unanswerable::Unreadable)?;
+
+    admit(
+        transaction,
+        provider,
+        tenant,
+        &login,
+        user_id,
+        user_name,
+        None,
+        &realm,
+        String::new(),
+        None,
+        seen,
+        now,
+        Way::Brokered {
+            provider_alias: provider_alias.to_owned(),
+            external_user_id: external_user_id.to_owned(),
+        },
+    )
+    .await
+    .map(|admitted| Step::Admitted(Box::new(admitted)))
 }
 
 /// The client this is being minted for.
@@ -351,6 +406,16 @@ async fn client_of(
         .await
         .map_err(|_| Unanswerable::Unreadable)?
         .ok_or(Unanswerable::Unrunnable)
+}
+
+/// How the person proved themselves: at this realm's own steps, or at an
+/// upstream provider this realm accepts.
+pub enum Way {
+    Browser,
+    Brokered {
+        provider_alias: String,
+        external_user_id: String,
+    },
 }
 
 /// Open the login, mint the code, and say where the browser goes.
@@ -371,7 +436,19 @@ async fn admit(
     _signing: Option<&store::keyring::Signing<'_>>,
     seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
+    way: Way,
 ) -> Result<Admission, Unanswerable> {
+    let (auth_method, broker_alias, broker_subject) = match way {
+        Way::Browser => ("browser".to_owned(), None, None),
+        Way::Brokered {
+            provider_alias,
+            external_user_id,
+        } => (
+            "broker".to_owned(),
+            Some(provider_alias),
+            Some(external_user_id),
+        ),
+    };
     // The transient identifier becomes the durable one. The code names it as
     // `sid`, and one identifier means a login and the session it opened cannot
     // drift apart.
@@ -384,9 +461,9 @@ async fn admit(
             realm_id: tenant.realm_id.clone(),
             user_id: user_id.to_owned(),
             login_username: user_name.to_owned(),
-            broker_session_id: None,
-            broker_user_id: None,
-            auth_method: Some("browser".to_owned()),
+            broker_session_id: broker_alias,
+            broker_user_id: broker_subject,
+            auth_method: Some(auth_method),
             // §4.2: what a relying party's iframe compares this login against.
             browser_state: browser_state.clone(),
             ip_address: seen.address.clone(),

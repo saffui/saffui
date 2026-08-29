@@ -4,8 +4,8 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, client_scopes, clients, directory, keys, mail, protocol_mappers, realm_keys,
-    realms, sessions, users,
+    authorization, client_scopes, clients, directory, flows, keys, mail, protocol_mappers,
+    realm_keys, realms, sessions, users,
 };
 
 /// One route: the verb, the path, what it costs, and what answers it.
@@ -248,6 +248,90 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/clients/{client}/mappers/{mapper}",
             action: AdminAction::ClientWrite,
             handler: Some(|| web::delete().to(protocol_mappers::detach_from_client)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/auth/flows",
+            action: AdminAction::AuthFlowRead,
+            handler: Some(|| web::get().to(flows::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/auth/flows",
+            action: AdminAction::AuthFlowWrite,
+            handler: Some(|| web::post().to(flows::create)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/auth/flows/{flow}",
+            action: AdminAction::AuthFlowRead,
+            handler: Some(|| web::get().to(flows::get)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/auth/flows/{flow}",
+            action: AdminAction::AuthFlowWrite,
+            handler: Some(|| web::delete().to(flows::delete)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/auth/flows/{flow}/executions",
+            action: AdminAction::AuthFlowWrite,
+            handler: Some(|| web::post().to(flows::add_execution)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/auth/flows/{flow}/order",
+            action: AdminAction::AuthFlowWrite,
+            handler: Some(|| web::put().to(flows::reorder)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/auth/executions/{execution}/requirement",
+            action: AdminAction::AuthFlowWrite,
+            handler: Some(|| web::put().to(flows::set_requirement)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/auth/executions/{execution}",
+            action: AdminAction::AuthFlowWrite,
+            handler: Some(|| web::delete().to(flows::remove_execution)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/auth/required-actions",
+            action: AdminAction::RequiredActionRead,
+            handler: Some(|| web::get().to(flows::list_actions)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/auth/required-actions",
+            action: AdminAction::RequiredActionWrite,
+            handler: Some(|| web::post().to(flows::register_action)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/auth/required-actions/{action}",
+            action: AdminAction::RequiredActionWrite,
+            handler: Some(|| web::put().to(flows::rework_action)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/auth/required-actions/{action}",
+            action: AdminAction::RequiredActionWrite,
+            handler: Some(|| web::delete().to(flows::unregister_action)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/users/{user}/required-actions/{action}",
+            action: AdminAction::RequiredActionWrite,
+            handler: Some(|| web::put().to(flows::require_of_user)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/users/{user}/required-actions/{action}",
+            action: AdminAction::RequiredActionWrite,
+            handler: Some(|| web::delete().to(flows::release_user)),
         },
         AdminRoute {
             method: Method::POST,

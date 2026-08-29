@@ -18,6 +18,11 @@ pub struct Asked {
     pub refresh_token: Option<String>,
     pub scope: Option<String>,
     pub code_verifier: Option<String>,
+    /// RFC 8693 §2.1, when the grant is an exchange.
+    pub subject_token: Option<String>,
+    pub subject_token_type: Option<String>,
+    pub requested_token_type: Option<String>,
+    pub audience: Option<String>,
 }
 
 /// A token, and what a client needs to use it.
@@ -34,6 +39,9 @@ pub struct Granted {
     pub id_token: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// RFC 8693 §2.2.1, present only on an exchange.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issued_token_type: Option<&'static str>,
 }
 
 /// Why nothing was granted. The codes are §5.2's, spelled exactly: one outside

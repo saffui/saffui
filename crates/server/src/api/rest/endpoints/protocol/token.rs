@@ -232,6 +232,65 @@ pub async fn ask(
             )
             .await
         }
+        "urn:ietf:params:oauth:grant-type:token-exchange" => {
+            let (Ok(ring), Ok(keys)) = (
+                keyring::load(
+                    &transaction,
+                    &sealing.envelope,
+                    &context.tenant,
+                    &context.realm_id,
+                )
+                .await,
+                services::realm::published_keys(&transaction).await,
+            ) else {
+                return Denied::InvalidRequest.answer("the realm could not be read");
+            };
+            let Some(subject_token) = asked.subject_token.as_deref().filter(|it| !it.is_empty())
+            else {
+                return Denied::InvalidRequest.answer("subject_token is required");
+            };
+            // The one kind this build exchanges, said rather than guessed: a
+            // caller naming another kind is told now, not by a verification
+            // that was never going to hold.
+            if asked.subject_token_type.as_deref() != Some(grant::ACCESS_TOKEN_TYPE) {
+                return Denied::InvalidRequest
+                    .answer("subject_token_type names the access-token type");
+            }
+            if let Some(requested) = asked
+                .requested_token_type
+                .as_deref()
+                .filter(|it| !it.is_empty())
+                && requested != grant::ACCESS_TOKEN_TYPE
+            {
+                return Denied::InvalidRequest
+                    .answer("requested_token_type names the access-token type");
+            }
+
+            grant::token_exchange(
+                &transaction,
+                &grant::Signing {
+                    provider: sealing.provider.as_ref(),
+                    ring: &ring,
+                    envelope: &sealing.envelope,
+                },
+                &grant::Within {
+                    tenant: &context,
+                    realm: &realm,
+                    issuer: &origin.issuer(&context.realm_id),
+                    bound_to: bound_to.as_deref(),
+                    certified_by: certified_by.as_deref(),
+                },
+                &client,
+                &grant::Exchanging {
+                    subject_token,
+                    scope: asked.scope.as_deref(),
+                    audience: asked.audience.as_deref(),
+                    keys: &keys,
+                },
+                now,
+            )
+            .await
+        }
         _ => return Denied::UnsupportedGrantType.answer("no such grant"),
     };
 
@@ -269,6 +328,7 @@ fn answer(granted: Granted) -> HttpResponse {
         refresh_token: granted.refresh_token,
         id_token: granted.id_token,
         scope: (!granted.scope.is_empty()).then_some(granted.scope),
+        issued_token_type: granted.issued_token_type,
     })
 }
 

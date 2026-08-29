@@ -124,6 +124,9 @@ pub struct Granted {
     pub access_token: String,
     pub expires_in: i64,
     pub scope: String,
+    /// RFC 8693 §2.2.1, present only on an exchange: what kind of token was
+    /// issued, which is not implied there the way §5.1 implies it elsewhere.
+    pub issued_token_type: Option<&'static str>,
     /// Present when the scope asked for `openid`. A record of a login and never
     /// a credential.
     pub id_token: Option<String>,
@@ -232,6 +235,7 @@ pub async fn client_credentials(
     .map_err(|_| Ungranted::Unmintable)?;
 
     Ok(Granted {
+        issued_token_type: None,
         access_token: minted.token,
         expires_in: lifespan.num_seconds(),
         scope,
@@ -476,6 +480,7 @@ pub async fn authorization_code(
     }
 
     Ok(Granted {
+        issued_token_type: None,
         access_token: access.token,
         expires_in: lifespan.num_seconds(),
         scope: code.scope.clone(),
@@ -955,6 +960,7 @@ pub async fn refresh_token(
         .map_err(|_| Ungranted::Unmintable)?;
 
     Ok(Granted {
+        issued_token_type: None,
         access_token: access.token,
         expires_in: lifespan.num_seconds(),
         scope,
@@ -970,6 +976,155 @@ pub async fn refresh_token(
 
 fn claim<'a>(verified: &'a crate::token::Verified, named: &str) -> Option<&'a str> {
     verified.claims.get(named).and_then(Value::as_str)
+}
+
+/// RFC 8693: the token types this build exchanges, which is the one kind it
+/// mints here.
+pub const ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
+/// The flag on a client's bag that opts it into exchanging. Default-deny:
+/// acting for somebody is a power an operator grants by name.
+pub const EXCHANGE_FLAG: &str = "token.exchange.enabled";
+
+/// What a client presents to exchange, RFC 8693 §2.1.
+#[derive(Debug)]
+pub struct Exchanging<'a> {
+    pub subject_token: &'a str,
+    pub scope: Option<&'a str>,
+    pub audience: Option<&'a str>,
+    pub keys: &'a [models::entities::keys::RealmSigningKeyView],
+}
+
+/// Exchange a user's token for one that acts on their behalf, RFC 8693.
+///
+/// Delegation, never impersonation: the minted token keeps the subject's
+/// `sub` and names the actor in `act`, so a resource server sees both the
+/// person and who is acting for them. Scope only ever narrows, the audience
+/// is what was asked or the actor itself, and nothing renewable is minted:
+/// acting for somebody is bounded by the token they showed, not extended by
+/// it.
+pub async fn token_exchange(
+    transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
+    within: &Within<'_>,
+    client: &ClientModel,
+    exchanging: &Exchanging<'_>,
+    now: DateTime<Utc>,
+) -> Result<Granted, Ungranted> {
+    // A public client cannot exchange, and a confidential one may only when
+    // the operator said so by name. Both answer the same: which powers a
+    // client lacks is not something a caller gets to enumerate apart.
+    if client.public_client == Some(true) || !allows_exchange(client) {
+        return Err(Ungranted::Unauthorized);
+    }
+
+    let verified = crate::token::verify_presented(
+        transaction,
+        exchanging.keys,
+        exchanging.subject_token,
+        crate::token::Binding::Reported,
+        now,
+    )
+    .await
+    .map_err(|_| Ungranted::InvalidGrant)?;
+
+    // Only an access token of this realm is a subject here: a refresh token
+    // is a credential for renewing, an identity token a record of a login,
+    // and neither says what the person may do.
+    if verified.claims.get("typ").and_then(Value::as_str) != Some(Kind::Access.claimed()) {
+        return Err(Ungranted::InvalidGrant);
+    }
+    // A bound token acts only through its binding. The actor cannot prove
+    // the subject's key, so exchanging one would strip the very property the
+    // binding exists to hold; refused rather than quietly unbound.
+    if verified.claims.get("cnf").is_some() {
+        return Err(Ungranted::InvalidGrant);
+    }
+    // A machine token names no person to act for.
+    if verified.subject.is_empty() {
+        return Err(Ungranted::InvalidGrant);
+    }
+
+    // Narrowed, never widened: what was asked intersected with what the
+    // subject's token held, in the asked order; nothing asked reuses the
+    // subject's own scope whole.
+    let held: Vec<&str> = verified.scope.split_whitespace().collect();
+    let scope = match exchanging.scope {
+        None => verified.scope.clone(),
+        Some(asked) => asked
+            .split_whitespace()
+            .filter(|wanted| held.contains(wanted))
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+
+    let audience = exchanging
+        .audience
+        .filter(|named| !named.is_empty())
+        .unwrap_or(&client.client_id)
+        .to_owned();
+    let session_id = verified
+        .claims
+        .get("sid")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    let lifespan = Duration::seconds(
+        within
+            .realm
+            .access_token_lifespan
+            .map_or(DEFAULT_ACCESS_LIFESPAN, i64::from),
+    );
+    let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
+
+    let mut extra = serde_json::Map::new();
+    // §4.1: who is acting. The whole point of the exchanged token.
+    extra.insert(
+        "act".to_owned(),
+        serde_json::json!({ "sub": client.client_id }),
+    );
+    let minted = mint_token(
+        signing.provider,
+        &key,
+        Minting {
+            bound_to: within.bound_to.map(str::to_owned),
+            certified_by: within.certified_by.map(str::to_owned),
+            kind: Kind::Access,
+            issuer: within.issuer,
+            subject: &verified.subject,
+            audiences: vec![audience],
+            party: &client.client_id,
+            session_id: &session_id,
+            scope: &scope,
+            lifespan,
+            now,
+            extra,
+        },
+    )
+    .map_err(|_| Ungranted::Unmintable)?;
+
+    Ok(Granted {
+        issued_token_type: Some(ACCESS_TOKEN_TYPE),
+        access_token: minted.token,
+        expires_in: lifespan.num_seconds(),
+        scope,
+        id_token: None,
+        refresh_token: None,
+    })
+}
+
+/// Whether the operator opted this client into exchanging, on its bag, as a
+/// flag or as the word.
+fn allows_exchange(client: &ClientModel) -> bool {
+    match client
+        .configs
+        .as_ref()
+        .and_then(|bag| bag.get(EXCHANGE_FLAG))
+    {
+        Some(models::entities::attributes::AttributeValue::Bool(held)) => *held,
+        Some(models::entities::attributes::AttributeValue::Str(held)) => held == "true",
+        _ => false,
+    }
 }
 
 fn wants_openid(scope: &str) -> bool {

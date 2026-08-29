@@ -4,8 +4,8 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, client_scopes, clients, directory, flows, keys, mail, protocol_mappers,
-    realm_keys, realms, sessions, users,
+    authorization, client_scopes, clients, directory, flows, keys, mail, portability,
+    protocol_mappers, realm_keys, realms, sessions, users,
 };
 
 /// One route: the verb, the path, what it costs, and what answers it.
@@ -50,6 +50,18 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms",
             action: AdminAction::RealmCreate,
             handler: None,
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/import",
+            action: AdminAction::RealmImport,
+            handler: Some(|| web::post().to(portability::import)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/export",
+            action: AdminAction::RealmExport,
+            handler: Some(|| web::get().to(portability::export)),
         },
         AdminRoute {
             method: Method::GET,

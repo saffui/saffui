@@ -5,6 +5,7 @@ pub mod authz;
 pub mod client;
 pub mod consent;
 pub mod credentials;
+pub mod export;
 pub mod keys;
 pub mod mail;
 pub mod oidc;

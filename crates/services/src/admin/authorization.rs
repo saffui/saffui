@@ -309,3 +309,15 @@ pub async fn remove_policy(
         .then_some(())
         .ok_or(Unwritable::NotFound)
 }
+
+/// Let go of decisions older than an instant. The log is the realm's memory
+/// of what the engine answered; nothing else prunes it, so retention is the
+/// operator's deliberate act, bounded by the instant they name.
+pub async fn prune_decisions(
+    transaction: &Transaction<'_>,
+    before: chrono::DateTime<chrono::Utc>,
+) -> Result<u64, Unwritable> {
+    store::providers::authz_policies::prune_decisions(transaction, before)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}

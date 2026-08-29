@@ -101,6 +101,12 @@ registry! {
         "Structured logging through a tracing subscriber.";
 }
 
+/// Whether the capabilities this crate itself carries were linked. Only
+/// this crate sees its own cfg; the rest answer through their own crates.
+pub fn locally_compiled(feature: Feature) -> bool {
+    matches!(feature, Feature::TracingJson) && cfg!(feature = "tracing-json")
+}
+
 impl Feature {
     pub const fn slug(self) -> &'static str {
         self.spec().slug

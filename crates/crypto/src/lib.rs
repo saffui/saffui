@@ -23,3 +23,19 @@ pub mod password;
 pub mod provider;
 pub mod secret;
 pub mod thumbprint;
+
+/// The optional capabilities this build of the crypto crate carries, by the
+/// registry slugs. Spelled here because only this crate sees its own cfg.
+pub fn compiled_features() -> &'static [&'static str] {
+    const CARRIED: &[&str] = &[
+        #[cfg(feature = "chacha20")]
+        "chacha20",
+        #[cfg(feature = "pq-hybrid")]
+        "pq-hybrid",
+        #[cfg(feature = "fips-strict")]
+        "fips-strict",
+        #[cfg(feature = "pkcs11")]
+        "pkcs11",
+    ];
+    CARRIED
+}

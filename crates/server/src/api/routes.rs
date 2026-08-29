@@ -4,8 +4,8 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, client_scopes, clients, directory, federation, flows, idps, keys, mail,
-    portability, protocol_mappers, realm_keys, realms, sessions, users,
+    authorization, client_scopes, clients, directory, features, federation, flows, idps, keys,
+    mail, portability, protocol_mappers, realm_keys, realms, rebac, sessions, users,
 };
 
 /// One route: the verb, the path, what it costs, and what answers it.
@@ -56,6 +56,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/import",
             action: AdminAction::RealmImport,
             handler: Some(|| web::post().to(portability::import)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/features",
+            action: AdminAction::FeatureRead,
+            handler: Some(|| web::get().to(features::list)),
         },
         AdminRoute {
             method: Method::GET,
@@ -524,6 +530,42 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/authz/decisions/disagreements",
             action: AdminAction::AuthzDecisionRead,
             handler: Some(|| web::get().to(authorization::disagreements)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/authz/decisions",
+            action: AdminAction::AuthzDecisionWrite,
+            handler: Some(|| web::delete().to(authorization::prune_decisions)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/rebac/schema",
+            action: AdminAction::RebacRead,
+            handler: Some(|| web::get().to(rebac::schema)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/rebac/schema",
+            action: AdminAction::RebacWrite,
+            handler: Some(|| web::put().to(rebac::publish)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/rebac/relations",
+            action: AdminAction::RebacRead,
+            handler: Some(|| web::get().to(rebac::subjects)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/rebac/relations",
+            action: AdminAction::RebacWrite,
+            handler: Some(|| web::post().to(rebac::relate)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/rebac/relations",
+            action: AdminAction::RebacWrite,
+            handler: Some(|| web::delete().to(rebac::unrelate)),
         },
         AdminRoute {
             method: Method::GET,

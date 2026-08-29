@@ -44,7 +44,7 @@ pub struct Answered {
 
 /// How the answer arrived, which is how the outcome is told.
 #[derive(Clone, Copy, Eq, PartialEq)]
-enum Spoken {
+pub(crate) enum Spoken {
     Json,
     /// A form: every outcome is a place to go. The page shows what the
     /// fragment names, without a script and without this server rendering
@@ -53,7 +53,7 @@ enum Spoken {
 }
 
 /// How long the login this opens lasts, matching what the flow writes.
-const SSO_LIFESPAN: i64 = 36_000;
+pub(crate) const SSO_LIFESPAN: i64 = 36_000;
 
 /// How long the ticket that fetches a waiting response lasts. One navigation
 /// and no longer: it stands for an authorization code.
@@ -366,7 +366,7 @@ pub async fn answer(
 /// A caller reading JSON is told where to post rather than where to go when the
 /// mode is `form_post`: handing it a URL with the answer in the query is the
 /// one thing that mode exists to prevent.
-fn told_landing(
+pub(crate) fn told_landing(
     response: &mut HttpResponseBuilder,
     spoken: Spoken,
     status: &str,
@@ -400,7 +400,7 @@ fn told_landing(
 }
 
 /// Give the browser the ticket that fetches the response, and nothing else.
-fn hand_over(response: &mut HttpResponseBuilder, realm_id: &str, ticket: Option<&str>) {
+pub(crate) fn hand_over(response: &mut HttpResponseBuilder, realm_id: &str, ticket: Option<&str>) {
     if let Some(ticket) = ticket {
         binding::set(
             response,
@@ -414,7 +414,7 @@ fn hand_over(response: &mut HttpResponseBuilder, realm_id: &str, ticket: Option<
 
 /// One shape for every outcome. Never cached: a challenge and an admission both
 /// name a login in progress, and a cache would answer the next caller with it.
-fn told(status: StatusCode, status_name: &str) -> HttpResponse {
+pub(crate) fn told(status: StatusCode, status_name: &str) -> HttpResponse {
     uncached(&mut HttpResponseBuilder::new(status))
         .json(serde_json::json!({ "status": status_name }))
 }

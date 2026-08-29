@@ -6,7 +6,7 @@ use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver
 use ureq::unversioned::transport::NextTimeout;
 
 /// How long the whole fetch gets. A browser is waiting on it.
-const PATIENCE: Duration = Duration::from_secs(5);
+pub(crate) const PATIENCE: Duration = Duration::from_secs(5);
 
 /// The most that will be read. A request object is a handful of claims; past
 /// this it is something else.
@@ -17,7 +17,7 @@ const CEILING: u64 = 64 * 1024;
 /// The check belongs here and not before the request: checked earlier, the
 /// name would be resolved twice and the second answer is the one dialled.
 #[derive(Debug)]
-struct Outward(DefaultResolver, Egress);
+pub(crate) struct Outward(pub(crate) DefaultResolver, pub(crate) Egress);
 
 impl Resolver for Outward {
     fn resolve(

@@ -4,6 +4,7 @@ pub mod clients;
 pub mod directory;
 pub mod dto;
 pub mod flows;
+pub mod idps;
 pub mod keys;
 pub mod mail;
 pub mod portability;

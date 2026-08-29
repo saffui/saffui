@@ -4,7 +4,7 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, client_scopes, clients, directory, flows, keys, mail, portability,
+    authorization, client_scopes, clients, directory, flows, idps, keys, mail, portability,
     protocol_mappers, realm_keys, realms, sessions, users,
 };
 
@@ -344,6 +344,42 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/users/{user}/required-actions/{action}",
             action: AdminAction::RequiredActionWrite,
             handler: Some(|| web::delete().to(flows::release_user)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/identity-providers",
+            action: AdminAction::IdpRead,
+            handler: Some(|| web::get().to(idps::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/identity-providers",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::post().to(idps::create)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/identity-providers/{alias}",
+            action: AdminAction::IdpRead,
+            handler: Some(|| web::get().to(idps::get)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/identity-providers/{alias}",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::put().to(idps::update)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/identity-providers/{alias}",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::delete().to(idps::delete)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/federated-identities",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(idps::identities_of_user)),
         },
         AdminRoute {
             method: Method::POST,

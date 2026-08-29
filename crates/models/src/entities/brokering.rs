@@ -65,3 +65,21 @@ impl IdpMapperMutationModel {
         }
     }
 }
+
+/// The directory a realm federates its users from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserFederationModel {
+    pub realm_id: String,
+    pub enabled: Option<bool>,
+    pub configs: Option<crate::entities::attributes::AttributesMap>,
+    pub metadata: crate::auditable::AuditableModel,
+}
+
+/// The write payload for the one directory a realm holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserFederationMutationModel {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub configs: Option<crate::entities::attributes::AttributesMap>,
+}

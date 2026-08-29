@@ -139,6 +139,27 @@ pub async fn answer(
         envelope: &sealing.envelope,
     });
 
+    // The realm's directory, when it federates one and the row still reads
+    // as a directory. A row that stopped reading is skipped with a line for
+    // the operator: the plane refuses to write one, so a broken row is a
+    // migration of trouble, and bricking every login over it helps nobody.
+    let federated = match store::providers::brokering::federation(&transaction).await {
+        Ok(Some(held)) if held.enabled != Some(false) => {
+            match services::federation::LdapSettings::parse(&held) {
+                Ok(settings) => Some(
+                    server_federation_directory(&transaction, &sealing, &context, &held, settings)
+                        .await,
+                ),
+                Err(why) => {
+                    tracing::warn!(%why, "the realm's directory row no longer reads");
+                    None
+                }
+            }
+        }
+        Ok(_) => None,
+        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
+    };
+
     let step = browser::answer_step(
         &transaction,
         sealing.provider.as_ref(),
@@ -169,6 +190,9 @@ pub async fn answer(
             Some("refused") => Some(false),
             _ => None,
         },
+        federated
+            .as_ref()
+            .map(|directory| directory as &dyn auth::login::directory::Directory),
         now,
     )
     .await;
@@ -426,4 +450,55 @@ fn shown(page: &str, named: &str) -> HttpResponse {
     uncached(&mut HttpResponseBuilder::new(StatusCode::SEE_OTHER))
         .insert_header(("Location", format!("{page}#{named}")))
         .finish()
+}
+
+/// The directory as the login will speak to it, its bind secret opened from
+/// the realm's seal for this attempt and dropped with it.
+async fn server_federation_directory(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &Sealing,
+    context: &store::tenancy::TenantContext,
+    held: &models::entities::brokering::UserFederationModel,
+    settings: services::federation::LdapSettings,
+) -> crate::federation::LdapDirectory {
+    let bind_password = opened_bind(transaction, sealing, context, held).await;
+    crate::federation::LdapDirectory {
+        settings,
+        bind_password,
+    }
+}
+
+async fn opened_bind(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &Sealing,
+    context: &store::tenancy::TenantContext,
+    held: &models::entities::brokering::UserFederationModel,
+) -> Option<crypto::secrecy::SecretBox<String>> {
+    use data_encoding::BASE64;
+    let sealed = held
+        .configs
+        .as_ref()?
+        .get(services::federation::SEALED_BIND)?
+        .as_str()?;
+    let sealed = BASE64.decode(sealed.as_bytes()).ok()?;
+    let ring = store::keyring::load(
+        transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    .ok()?;
+    let opened = ring
+        .open(
+            &sealing.envelope,
+            services::federation::PURPOSE,
+            services::federation::SINGLETON,
+            &sealed,
+        )
+        .await
+        .ok()?;
+    let clear =
+        String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()?;
+    Some(crypto::secrecy::SecretBox::new(Box::new(clear)))
 }

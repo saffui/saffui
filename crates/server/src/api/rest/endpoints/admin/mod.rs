@@ -3,6 +3,7 @@ pub mod client_scopes;
 pub mod clients;
 pub mod directory;
 pub mod dto;
+pub mod federation;
 pub mod flows;
 pub mod idps;
 pub mod keys;

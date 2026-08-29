@@ -213,6 +213,7 @@ jobs:
     timeout-minutes: 45
     env:
       SAFFUI_TEST_PG: "host=localhost port=5432 user=postgres password=saffui dbname=saffui_test"
+      SAFFUI_TEST_LDAP: "ldap://localhost:1389"
       SAFFUI_TEST_PG_TLS: "host=localhost port=5433 user=postgres password=saffui dbname=saffui_test"
       SAFFUI_TEST_PG_TLS_CERTS: /tmp/pgtls
     services:
@@ -225,6 +226,17 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+      # The directory the federation journey signs in against.
+      openldap:
+        image: bitnamilegacy/openldap:latest
+        env:
+          LDAP_ROOT: dc=example,dc=org
+          LDAP_ADMIN_USERNAME: admin
+          LDAP_ADMIN_PASSWORD: adminpw
+          LDAP_USERS: fedora
+          LDAP_PASSWORDS: wilderness
+        ports:
+          - 1389:1389
     steps:
       - uses: actions/checkout@v5.0.1
       - uses: Swatinem/rust-cache@v2

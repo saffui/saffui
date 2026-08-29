@@ -301,6 +301,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V049__idp_mappers.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 50,
+            name: "user_federation",
+            sql: include_str!("../migrations/V050__user_federation.sql"),
+            transactional: true,
+        }),
     ]
 }
 

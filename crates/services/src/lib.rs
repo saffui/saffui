@@ -9,6 +9,7 @@ pub mod context;
 pub mod detached;
 pub mod dpop;
 pub mod encryption;
+pub mod federation;
 pub mod form_post;
 pub mod grant;
 pub mod housekeeping;

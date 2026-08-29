@@ -114,6 +114,8 @@ pub async fn answer_step(
     signing: Option<&store::keyring::Signing<'_>>,
     // What the person answered to the consent screen, when they answered.
     consented: Option<bool>,
+    // The directory this realm federates from. Absent where it holds none.
+    federation: Option<&dyn crate::login::directory::Directory>,
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
     let login = login::resume(transaction, auth_session_id)
@@ -129,7 +131,7 @@ pub async fn answer_step(
     // Resolved here rather than inside the flow: an authenticator says whether
     // an answer is right, not who is answering. A name nobody holds is passed
     // through as absent, and the flow spends the same time on it.
-    let subject = named_subject(transaction, &login, username).await?;
+    let subject = named_subject(transaction, tenant, &login, username, federation, now).await?;
 
     // Read before the flow rather than inside a step: a step that reached for
     // the realm's keyring would be one every other step pays for.
@@ -158,6 +160,7 @@ pub async fn answer_step(
             can_send: sends,
             now,
         }),
+        federation,
         seen.address.as_deref(),
         now,
     )
@@ -510,20 +513,91 @@ fn noted<'a>(notes: &'a Value, named: &str) -> Option<&'a str> {
 
 /// Who the login is for: the one it already resolved, or the one this answer
 /// names.
+///
+/// A name nobody local holds is asked of the realm's directory, when it
+/// federates one, and a person it answers with is written as a shadow row
+/// marked as the directory's: the row is a mirror for the flow to run
+/// against, and the directory stays the authority on the password.
 async fn named_subject(
     transaction: &Transaction<'_>,
+    tenant: &TenantContext,
     login: &AuthSession,
     username: Option<&str>,
+    federation: Option<&dyn crate::login::directory::Directory>,
+    now: DateTime<Utc>,
 ) -> Result<Option<models::entities::user::UserModel>, Unanswerable> {
     if let Some(user_id) = login.user_id.as_deref() {
         return users::load(transaction, user_id)
             .await
             .map_err(|_| Unanswerable::Unreadable);
     }
-    match username.filter(|named| !named.is_empty()) {
-        None => Ok(None),
-        Some(named) => users::load_by_name(transaction, named)
-            .await
-            .map_err(|_| Unanswerable::Unreadable),
+    let Some(named) = username.filter(|named| !named.is_empty()) else {
+        return Ok(None);
+    };
+    if let Some(standing) = users::load_by_name(transaction, named)
+        .await
+        .map_err(|_| Unanswerable::Unreadable)?
+    {
+        return Ok(Some(standing));
+    }
+    let Some(directory) = federation else {
+        return Ok(None);
+    };
+    // The directory being unreachable answers like an unknown name: the flow
+    // spends the same time either way, and which names exist stays unsaid.
+    let Ok(found) = directory.find(named).await else {
+        return Ok(None);
+    };
+    let Some(person) = found else {
+        return Ok(None);
+    };
+    let shadow = shadow_row(tenant, &person, now);
+    users::create(transaction, &shadow)
+        .await
+        .map_err(|_| Unanswerable::Unreadable)?;
+    Ok(Some(shadow))
+}
+
+/// The local mirror of a person the directory owns.
+fn shadow_row(
+    tenant: &TenantContext,
+    person: &crate::login::directory::DirectoryPerson,
+    now: DateTime<Utc>,
+) -> models::entities::user::UserModel {
+    use models::entities::attributes::AttributeValue;
+    use models::entities::user::profile;
+
+    let mut attributes = models::entities::attributes::AttributesMap::new();
+    for (key, held) in [
+        (profile::FIRST_NAME, &person.first_name),
+        (profile::LAST_NAME, &person.last_name),
+    ] {
+        if let Some(value) = held {
+            attributes.insert(key.to_owned(), AttributeValue::Str(value.clone()));
+        }
+    }
+    let mut metadata = models::auditable::AuditableModel::from_creator(
+        tenant.tenant.clone(),
+        "federation".to_owned(),
+    );
+    metadata.created_at = Some(now);
+    models::entities::user::UserModel {
+        user_id: person.username.clone(),
+        realm_id: tenant.realm_id.clone(),
+        user_name: person.username.clone(),
+        enabled: true,
+        email: person.email.clone().unwrap_or_default(),
+        // The directory asserted it; nobody here checked it. Verification is
+        // this realm's own act.
+        email_verified: Some(false),
+        phone_number: None,
+        phone_number_verified: None,
+        required_actions: None,
+        not_before: None,
+        user_storage: Some(models::entities::user::UserStorage::Ldap),
+        attributes: (!attributes.is_empty()).then_some(attributes),
+        is_service_account: None,
+        service_account_client_link: None,
+        metadata,
     }
 }

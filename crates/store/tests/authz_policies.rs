@@ -753,6 +753,63 @@ async fn what_is_refused_is_refused_before_anything_is_written() {
         Err(StoreError::UnconditionalPermission)
     );
 
+    // A member nothing answers to is named at the door. Left to the join's
+    // foreign key, the violation would abort the transaction and the typo
+    // would answer as a backend fault.
+    let phantom_role = stored(
+        "by-role",
+        terms(
+            "by-role",
+            PolicyRule::Role {
+                roles: vec!["editor".to_owned(), "nobody".to_owned()],
+            },
+        ),
+    );
+    assert_eq!(
+        authz_policies::create(&transaction, &phantom_role).await,
+        Err(StoreError::UnboundMember {
+            kind: "role",
+            named: "nobody".to_owned(),
+        })
+    );
+
+    // The application's own surface is keyed by the server as well: a scope
+    // of this realm is not enough, it has to be this server's.
+    let gate = stored(
+        "gate",
+        terms(
+            "gate",
+            PolicyRule::Role {
+                roles: vec!["editor".to_owned()],
+            },
+        ),
+    );
+    authz_policies::create(&transaction, &gate).await.unwrap();
+    let phantom_scope = stored(
+        "granting",
+        PolicyTerms {
+            resources: vec!["doc".to_owned()],
+            scopes: vec!["phantom".to_owned()],
+            policies: vec!["gate".to_owned()],
+            ..terms(
+                "granting",
+                PolicyRule::ScopePermission {
+                    resource_type: "urn:doc".to_owned(),
+                },
+            )
+        },
+    );
+    assert_eq!(
+        authz_policies::create(&transaction, &phantom_scope).await,
+        Err(StoreError::UnboundMember {
+            kind: "scope",
+            named: "phantom".to_owned(),
+        })
+    );
+    // The condition served its purpose; the tail of this test holds that no
+    // refused write left anything behind, and the gate was not refused.
+    assert!(authz_policies::delete(&transaction, "gate").await.unwrap());
+
     let broken = stored(
         "by-mail",
         terms(

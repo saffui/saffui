@@ -222,6 +222,33 @@ async fn what_the_store_refuses_reaches_the_caller_in_its_own_words() {
         "the store's sentence was restated or dropped: {told}"
     );
 
+    // A policy naming a role nobody made is a caller's mistake, told in the
+    // store's words. It used to die on the join's foreign key as an internal
+    // error, which this probe would catch coming back.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/policies"),
+        &bearer,
+        Some(json!({
+            "name": "haunted",
+            "description": "",
+            "decision": "unanimous",
+            "logic": "positive",
+            "policy_owner": "app",
+            "policies": [], "resources": [], "scopes": [],
+            "policy_type": "role", "roles": [editor_id, "nobody"],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|held| held.contains("no role answers to nobody")),
+        "the missing member is not named: {told}"
+    );
+
     // A condition another policy reads cannot be deleted from under it.
     let mint = |name: &str, roles: Value, conditions: Value| {
         json!({

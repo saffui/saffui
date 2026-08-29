@@ -121,6 +121,7 @@ pub async fn published(
                 "implicit",
                 "refresh_token",
                 "client_credentials",
+                "urn:ietf:params:oauth:grant-type:token-exchange",
             ],
             "subject_types_supported": ["public", "pairwise"],
             "id_token_signing_alg_values_supported": algorithms,

@@ -3,6 +3,7 @@ use commons::error::ErrorCode;
 use commons::http::ApiError;
 use deadpool_postgres::Pool;
 use models::entities::authz::IdentityProviderMutationModel;
+use models::entities::brokering::IdpMapperMutationModel;
 use services::admin::idps::{self, Unwritable};
 use store::tenancy::{Tenancy, TenantContext};
 
@@ -191,6 +192,7 @@ fn refused(why: Unwritable) -> ApiError {
     match why {
         Unwritable::AlreadyExists => ApiError::new(ErrorCode::IdentityProviderAlreadyExists),
         Unwritable::NotFound => ApiError::new(ErrorCode::IdentityProviderNotFound),
+        Unwritable::NoSuchMapper => ApiError::new(ErrorCode::IdpMapperNotFound),
         Unwritable::StillLinked => ApiError::new(ErrorCode::StillGranted),
         Unwritable::Invalid(what) => ApiError::with_detail(ErrorCode::ValidationError, what),
         Unwritable::Backend => internal(),
@@ -199,4 +201,114 @@ fn refused(why: Unwritable) -> ApiError {
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
+}
+
+pub async fn list_mappers(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, alias) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let listed = idps::mappers_of(&transaction, &alias)
+        .await
+        .map_err(refused)?;
+    Ok(HttpResponse::Ok().json(listed))
+}
+
+pub async fn add_mapper(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    path: web::Path<(String, String)>,
+    body: web::Json<IdpMapperMutationModel>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, alias) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let made = idps::add_mapper(
+        &transaction,
+        sealing.provider.as_ref(),
+        &admin.context.tenant.tenant,
+        &realm_id,
+        admin.context.principal.id(),
+        &alias,
+        body.into_inner(),
+    )
+    .await
+    .map_err(refused)?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Created().json(made))
+}
+
+pub async fn get_mapper(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, alias, mapper_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let found = idps::get_mapper(&transaction, &alias, &mapper_id)
+        .await
+        .map_err(refused)?;
+    Ok(HttpResponse::Ok().json(found))
+}
+
+pub async fn rework_mapper(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+    body: web::Json<IdpMapperMutationModel>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, alias, mapper_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let rewritten = idps::rework_mapper(
+        &transaction,
+        &alias,
+        &mapper_id,
+        admin.context.principal.id(),
+        body.into_inner(),
+    )
+    .await
+    .map_err(refused)?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(rewritten))
+}
+
+pub async fn remove_mapper(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, alias, mapper_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    idps::remove_mapper(&transaction, &alias, &mapper_id)
+        .await
+        .map_err(refused)?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
 }

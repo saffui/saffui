@@ -24,3 +24,44 @@ pub struct BrokerLoginState {
     pub nonce: String,
     pub expires_at: DateTime<Utc>,
 }
+
+/// A rule turning what an upstream provider asserted into something local.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdpMapperModel {
+    pub mapper_id: String,
+    pub realm_id: String,
+    pub provider_alias: String,
+    pub name: String,
+    pub mapper_type: String,
+    pub configs: Option<crate::entities::attributes::AttributesMap>,
+    pub metadata: crate::auditable::AuditableModel,
+}
+
+/// The create and update payload for one rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdpMapperMutationModel {
+    pub name: String,
+    pub mapper_type: String,
+    #[serde(default)]
+    pub configs: Option<crate::entities::attributes::AttributesMap>,
+}
+
+impl IdpMapperMutationModel {
+    pub fn into_model(
+        self,
+        mapper_id: String,
+        realm_id: String,
+        provider_alias: String,
+        metadata: crate::auditable::AuditableModel,
+    ) -> IdpMapperModel {
+        IdpMapperModel {
+            mapper_id,
+            realm_id,
+            provider_alias,
+            name: self.name,
+            mapper_type: self.mapper_type,
+            configs: self.configs,
+            metadata,
+        }
+    }
+}

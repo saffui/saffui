@@ -187,7 +187,7 @@ pub async fn conclude(
 
     // Who that is here, decided by policy; then the login they left open is
     // admitted the same way an answered one is.
-    let Ok(user_id) = brokering::decide_link(
+    let Ok((user_id, first_login)) = brokering::decide_link(
         &transaction,
         &context.tenant,
         &context.realm_id,
@@ -200,6 +200,16 @@ pub async fn conclude(
         tracing::warn!(alias, "no local account could be decided for the arrival");
         return refused();
     };
+    // The provider's rules run on every arrival; each rule says whether it
+    // writes once or every time. After the link, so a rule reads who the
+    // person is here; before the admission, so what it wrote is what the
+    // tokens are minted from.
+    if brokering::apply_mappers(&transaction, &provider, &user_id, &arrival, first_login)
+        .await
+        .is_err()
+    {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    }
     let Ok(Some(person)) = store::providers::users::load(&transaction, &user_id).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };

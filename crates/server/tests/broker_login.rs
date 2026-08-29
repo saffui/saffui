@@ -111,7 +111,12 @@ async fn opened_login(plane: &Plane) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
-    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let plane = Plane::with_actions(&[
+        AdminAction::IdpRead,
+        AdminAction::IdpWrite,
+        AdminAction::RoleWrite,
+    ])
+    .await;
     let bearer = plane.token(&support::claims());
 
     // The upstream: this very world, answering on a real socket.
@@ -152,6 +157,49 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{told}");
+
+    // What the provider's rules will write on arrival: a role to hold and
+    // an upstream claim carried onto the person.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(json!({ "name": "arrival" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let role_id = told["role_id"].as_str().expect("an identity").to_owned();
+    let rules = format!("/admin/realms/{REALM}/identity-providers/{ALIAS}/mappers");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &rules,
+        &bearer,
+        Some(
+            json!({ "name": "hold-arrival", "mapper_type": "oidc-hardcoded-role-idp-mapper",
+                     "configs": { "role": { "Str": role_id } } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let (status, carried) = asked(
+        &plane,
+        Method::POST,
+        &rules,
+        &bearer,
+        Some(
+            json!({ "name": "carry-acr", "mapper_type": "oidc-user-attribute-idp-mapper",
+                     "configs": { "claim": { "Str": "acr" },
+                                  "user.attribute": { "Str": "upstream.acr" } } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{carried}");
+    let carried_id = carried["mapper_id"]
+        .as_str()
+        .expect("an identity")
+        .to_owned();
 
     let crossing = |cookie: String| {
         let plane = &plane;
@@ -257,6 +305,50 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         (linked, person.user_name)
     };
     assert_eq!(named, format!("{ALIAS}-{}", support::SUBJECT));
+    {
+        use models::entities::attributes::AttributeValue;
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let person = store::providers::users::load(&transaction, &linked)
+            .await
+            .unwrap()
+            .expect("the person");
+        assert_eq!(
+            person
+                .attributes
+                .as_ref()
+                .and_then(|held| held.get("upstream.acr")),
+            Some(&AttributeValue::Str("password".into())),
+            "the attribute rule did not write on first arrival"
+        );
+        assert!(
+            store::providers::roles::effective_roles(&transaction, &linked)
+                .await
+                .unwrap()
+                .iter()
+                .any(|role| role.role_id == role_id),
+            "the role rule did not grant on first arrival"
+        );
+        // Scrub the carried attribute, so the next crossings show whether a
+        // rule writes again.
+        let mut person = person;
+        person
+            .attributes
+            .get_or_insert_with(Default::default)
+            .insert(
+                "upstream.acr".into(),
+                AttributeValue::Str("scrubbed".into()),
+            );
+        assert!(
+            store::providers::users::update(&transaction, &person)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+    }
 
     // A replayed state finds nothing: it was spent on the way through.
     let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
@@ -288,4 +380,50 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
             .expect("the link still stands")
     };
     assert_eq!(again, linked, "a second arrival made a second person");
+    let read_back = || async {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::users::load(&transaction, &linked)
+            .await
+            .unwrap()
+            .expect("the person")
+            .attributes
+            .as_ref()
+            .and_then(|held| held.get("upstream.acr"))
+            .and_then(models::entities::attributes::AttributeValue::as_str)
+            .map(str::to_owned)
+    };
+    assert_eq!(
+        read_back().await.as_deref(),
+        Some("scrubbed"),
+        "an import rule wrote again for somebody already known"
+    );
+
+    // Told to force, the same rule takes the upstream as authoritative on
+    // the very next arrival.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{rules}/{carried_id}"),
+        &bearer,
+        Some(
+            json!({ "name": "carry-acr", "mapper_type": "oidc-user-attribute-idp-mapper",
+                     "configs": { "claim": { "Str": "acr" },
+                                  "user.attribute": { "Str": "upstream.acr" },
+                                  "syncMode": { "Str": "force" } } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let cookie = opened_login(&plane).await;
+    let (status, _, _, _) = crossing(cookie).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        read_back().await.as_deref(),
+        Some("password"),
+        "a forced rule did not take the upstream as authoritative"
+    );
 }

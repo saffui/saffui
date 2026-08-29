@@ -377,6 +377,36 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/identity-providers/{alias}/mappers",
+            action: AdminAction::IdpRead,
+            handler: Some(|| web::get().to(idps::list_mappers)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/identity-providers/{alias}/mappers",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::post().to(idps::add_mapper)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/identity-providers/{alias}/mappers/{mapper}",
+            action: AdminAction::IdpRead,
+            handler: Some(|| web::get().to(idps::get_mapper)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/identity-providers/{alias}/mappers/{mapper}",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::put().to(idps::rework_mapper)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/identity-providers/{alias}/mappers/{mapper}",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::delete().to(idps::remove_mapper)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/users/{user}/federated-identities",
             action: AdminAction::UserRead,
             handler: Some(|| web::get().to(idps::identities_of_user)),

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::authz::IdentityProviderModel;
-use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel};
+use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel, IdpMapperModel};
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
@@ -306,5 +306,134 @@ fn read_state(row: Row) -> BrokerLoginState {
         code_verifier: row.get("code_verifier"),
         nonce: row.get("nonce"),
         expires_at: row.get("expires_at"),
+    }
+}
+
+const MAPPER_COLUMNS: &str = "tenant, realm_id, mapper_id, provider_alias, name, mapper_type, \
+                              configs, created_by, created_at, updated_by, updated_at, version";
+
+/// Record a rule.
+pub async fn create_mapper(
+    transaction: &Transaction<'_>,
+    mapper: &IdpMapperModel,
+) -> StoreResult<()> {
+    let configs = mapper
+        .configs
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| StoreError::Backend)?;
+    let set = WriteSet::insert(vec![
+        col("tenant", &mapper.metadata.tenant),
+        col("realm_id", &mapper.realm_id),
+        col("mapper_id", &mapper.mapper_id),
+        col("provider_alias", &mapper.provider_alias),
+        col("name", &mapper.name),
+        col("mapper_type", &mapper.mapper_type),
+        col("configs", &configs),
+        col("created_by", &mapper.metadata.created_by),
+    ]);
+    transaction
+        .execute(
+            statement::insert("idp_mappers", &set).as_str(),
+            &set.params(),
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// The rules of one provider, in the order they were named.
+pub async fn mappers_of(
+    transaction: &Transaction<'_>,
+    provider_alias: &str,
+) -> StoreResult<Vec<IdpMapperModel>> {
+    let statement = format!(
+        "SELECT {MAPPER_COLUMNS} FROM idp_mappers \
+         WHERE provider_alias = $1 ORDER BY name ASC"
+    );
+    Ok(transaction
+        .query(statement.as_str(), &[&provider_alias])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_mapper)
+        .collect())
+}
+
+/// One rule, wherever it hangs.
+pub async fn load_mapper(
+    transaction: &Transaction<'_>,
+    mapper_id: &str,
+) -> StoreResult<Option<IdpMapperModel>> {
+    let statement = format!("SELECT {MAPPER_COLUMNS} FROM idp_mappers WHERE mapper_id = $1");
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&mapper_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_mapper))
+}
+
+/// Rewrite a rule, and say whether it was there to rewrite.
+pub async fn update_mapper(
+    transaction: &Transaction<'_>,
+    mapper: &IdpMapperModel,
+) -> StoreResult<bool> {
+    let configs = mapper
+        .configs
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| StoreError::Backend)?;
+    let set = WriteSet::update(
+        vec![
+            col("name", &mapper.name),
+            col("mapper_type", &mapper.mapper_type),
+            col("configs", &configs),
+            col("updated_by", &mapper.metadata.updated_by),
+        ],
+        vec![col("mapper_id", &mapper.mapper_id)],
+    );
+    let statement = statement::update("idp_mappers", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    let changed = transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
+/// Remove a rule, and say whether it was there to remove.
+pub async fn delete_mapper(transaction: &Transaction<'_>, mapper_id: &str) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM idp_mappers WHERE mapper_id = $1",
+            &[&mapper_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+fn read_mapper(row: Row) -> IdpMapperModel {
+    IdpMapperModel {
+        mapper_id: row.get("mapper_id"),
+        realm_id: row.get("realm_id"),
+        provider_alias: row.get("provider_alias"),
+        name: row.get("name"),
+        mapper_type: row.get("mapper_type"),
+        configs: row
+            .get::<_, Option<serde_json::Value>>("configs")
+            .and_then(|value| serde_json::from_value(value).ok()),
+        metadata: models::auditable::AuditableModel {
+            tenant: row.get("tenant"),
+            created_by: row.get("created_by"),
+            created_at: row.get("created_at"),
+            updated_by: row.get("updated_by"),
+            updated_at: row.get("updated_at"),
+            version: row.get("version"),
+        },
     }
 }

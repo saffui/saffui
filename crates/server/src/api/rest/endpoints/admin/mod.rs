@@ -6,6 +6,7 @@ pub mod dto;
 pub mod flows;
 pub mod keys;
 pub mod mail;
+pub mod portability;
 pub mod protocol_mappers;
 pub mod realm_keys;
 pub mod realms;

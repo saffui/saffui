@@ -102,6 +102,20 @@ pub async fn top_level_flows(
 }
 
 /// Remove a flow, and say whether there was one to remove.
+/// Every flow of this realm, nested ones included.
+pub async fn list_flows(
+    transaction: &Transaction<'_>,
+) -> StoreResult<Vec<AuthenticationFlowModel>> {
+    let statement = format!("SELECT {FLOW_COLUMNS} FROM authentication_flows ORDER BY alias ASC");
+    Ok(transaction
+        .query(statement.as_str(), &[])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_flow)
+        .collect())
+}
+
 pub async fn delete_flow(transaction: &Transaction<'_>, flow_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(

@@ -122,6 +122,18 @@ pub async fn delete_server(transaction: &Transaction<'_>, server_id: &str) -> St
 /// Its scopes are not written here. They are declared through their own
 /// operation, so creating a resource cannot quietly widen what is meaningful on
 /// it.
+/// Every protected application of this realm.
+pub async fn list_servers(transaction: &Transaction<'_>) -> StoreResult<Vec<ResourceServerModel>> {
+    let statement = format!("SELECT {SERVER_COLUMNS} FROM resource_servers ORDER BY server_id ASC");
+    Ok(transaction
+        .query(statement.as_str(), &[])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_server)
+        .collect())
+}
+
 pub async fn create_resource(
     transaction: &Transaction<'_>,
     resource: &ResourceModel,

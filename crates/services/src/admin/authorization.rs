@@ -38,7 +38,8 @@ fn carried(why: StoreError) -> Unwritable {
     match why {
         StoreError::NotFound { .. } => Unwritable::NotFound,
         StoreError::PolicyIsACondition { .. } => Unwritable::StillRead(why.to_string()),
-        StoreError::EmptyPolicy { .. }
+        StoreError::UnboundMember { .. }
+        | StoreError::EmptyPolicy { .. }
         | StoreError::UnconditionalPermission
         | StoreError::UnappliedPermission
         | StoreError::UnreadBinding { .. }

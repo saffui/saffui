@@ -60,6 +60,13 @@ pub enum StoreError {
     #[error("a {kind} policy that names none decides nothing")]
     EmptyPolicy { kind: &'static str },
 
+    /// A policy naming a member the realm does not hold. Read at the door,
+    /// where the answer can still say which name is at fault: after the
+    /// join's foreign key refuses, the transaction is aborted and can no
+    /// longer be asked anything.
+    #[error("no {kind} answers to {named}")]
+    UnboundMember { kind: &'static str, named: String },
+
     /// A permission with no condition.
     #[error("a permission with no condition can only refuse")]
     UnconditionalPermission,

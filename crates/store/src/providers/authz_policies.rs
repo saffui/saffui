@@ -98,6 +98,7 @@ pub async fn create(transaction: &Transaction<'_>, policy: &PolicyModel) -> Stor
     validate(&policy.terms)?;
     let conditions = resolve_conditions(transaction, policy).await?;
     refuse_cycles(transaction, policy).await?;
+    verify_members(transaction, policy).await?;
 
     // The document as the model writes it, members and all. The binding rows
     // beside it are what the database keeps in step with the rest of the realm;
@@ -187,6 +188,7 @@ pub async fn update(transaction: &Transaction<'_>, policy: &PolicyModel) -> Stor
     }
     let conditions = resolve_conditions(transaction, policy).await?;
     refuse_cycles(transaction, policy).await?;
+    verify_members(transaction, policy).await?;
 
     let rule = serde_json::to_value(&policy.terms.rule).map_err(|_| StoreError::Backend)?;
     let set = WriteSet::update(
@@ -416,6 +418,113 @@ fn permission_applies(terms: &PolicyTerms, resource_type: &str) -> StoreResult<(
 /// Every arm named, with no catch-all. A twelfth kind does not compile until it
 /// has said here where its members go, which is the difference between adding a
 /// kind and adding one whose bindings quietly go nowhere.
+/// Every member the rule names, verified to exist before anything is
+/// written. The match mirrors [`bind_members`]: what that one writes, this
+/// one has vouched for. Left to the joins' foreign keys, a caller's typo
+/// aborts the whole transaction and answers as a backend fault, after the
+/// policy row has already landed.
+async fn verify_members(transaction: &Transaction<'_>, policy: &PolicyModel) -> StoreResult<()> {
+    let terms = &policy.terms;
+    match &terms.rule {
+        PolicyRule::Role { roles } => {
+            verify(transaction, policy, "roles", "role_id", "role", roles).await
+        }
+        PolicyRule::Group { groups, .. } => {
+            verify(transaction, policy, "groups", "group_id", "group", groups).await
+        }
+        PolicyRule::User { users } => {
+            verify(transaction, policy, "users", "user_id", "user", users).await
+        }
+        PolicyRule::Client { clients } => {
+            verify(
+                transaction,
+                policy,
+                "clients",
+                "client_id",
+                "client",
+                clients,
+            )
+            .await
+        }
+        PolicyRule::ClientScope { client_scopes } => {
+            verify(
+                transaction,
+                policy,
+                "client_scopes",
+                "client_scope_id",
+                "client scope",
+                client_scopes,
+            )
+            .await
+        }
+        PolicyRule::Time(_)
+        | PolicyRule::Regex { .. }
+        | PolicyRule::Attribute { .. }
+        | PolicyRule::Aggregated => Ok(()),
+        PolicyRule::ScopePermission { .. } | PolicyRule::ResourcePermission { .. } => {
+            verify(
+                transaction,
+                policy,
+                "resources",
+                "resource_id",
+                "resource",
+                &terms.resources,
+            )
+            .await?;
+            verify(
+                transaction,
+                policy,
+                "scopes",
+                "scope_id",
+                "scope",
+                &terms.scopes,
+            )
+            .await
+        }
+    }
+}
+
+/// Name the first member of one kind that nothing answers to.
+///
+/// The application's own surface is keyed by the server as well as the realm,
+/// so a resource or scope has to be this server's; everything else the row
+/// level security scopes to the realm on its own.
+async fn verify(
+    transaction: &Transaction<'_>,
+    policy: &PolicyModel,
+    held_in: &'static str,
+    held_as: &'static str,
+    spoken_as: &'static str,
+    members: &[String],
+) -> StoreResult<()> {
+    if members.is_empty() {
+        return Ok(());
+    }
+    let per_server = matches!(held_in, "resources" | "scopes");
+    let server = if per_server { "AND server_id = $2" } else { "" };
+    let asking = format!(
+        "SELECT member FROM unnest($1::text[]) AS member \
+         WHERE NOT EXISTS \
+             (SELECT 1 FROM {held_in} WHERE {held_as} = member {server}) \
+         LIMIT 1"
+    );
+    let missing = if per_server {
+        transaction
+            .query_opt(asking.as_str(), &[&members, &policy.server_id])
+            .await
+    } else {
+        transaction.query_opt(asking.as_str(), &[&members]).await
+    }
+    .map_err(|_| StoreError::Backend)?;
+    match missing {
+        Some(row) => Err(StoreError::UnboundMember {
+            kind: spoken_as,
+            named: row.get("member"),
+        }),
+        None => Ok(()),
+    }
+}
+
 async fn bind_members(
     transaction: &Transaction<'_>,
     policy: &PolicyModel,

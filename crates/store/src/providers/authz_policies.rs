@@ -362,6 +362,23 @@ pub async fn recent(
 ///
 /// The two an auditor is looking for, in one read: a denial the caller never
 /// saw, and an evaluation that reached no answer.
+/// Let go of decisions older than an instant, and say how many went.
+///
+/// The log is the realm's memory of what the engine answered; nothing else
+/// prunes it, so retention is an operator's deliberate act over the plane.
+pub async fn prune_decisions(
+    transaction: &Transaction<'_>,
+    before: chrono::DateTime<chrono::Utc>,
+) -> StoreResult<u64> {
+    transaction
+        .execute(
+            "DELETE FROM authz_decisions WHERE occurred_at < $1",
+            &[&before],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)
+}
+
 pub async fn disagreements(
     transaction: &Transaction<'_>,
     limit: i64,

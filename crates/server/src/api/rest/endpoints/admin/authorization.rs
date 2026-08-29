@@ -384,3 +384,33 @@ pub async fn disagreements(
             .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(found))
 }
+
+/// Where the retention cut lands: strictly before this instant.
+#[derive(serde::Deserialize)]
+pub struct Retention {
+    pub before: chrono::DateTime<chrono::Utc>,
+}
+
+/// Let go of decisions older than the named instant. Nothing else prunes
+/// the log, so how long the realm remembers is the operator's deliberate
+/// act, and the bound is required rather than defaulted: forgetting
+/// everything must be asked for in so many words.
+pub async fn prune_decisions(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+    asked: web::Query<Retention>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let removed = services::admin::authorization::prune_decisions(&transaction, asked.before)
+        .await
+        .map_err(|_| internal())?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "removed": removed })))
+}

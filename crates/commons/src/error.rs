@@ -86,6 +86,7 @@ catalogue! {
     StillGranted = 912, 409, "directory.still_granted", "still granted, so not deleted";
     IdentityProviderNotFound = 920, 404, "identity_provider.not_found", "identity provider not found";
     IdentityProviderAlreadyExists = 921, 409, "identity_provider.already_exists", "an identity provider with this alias already exists";
+    IdpMapperNotFound = 922, 404, "identity_provider.mapper.not_found", "identity provider mapper not found";
     ResourceServerNotFound = 930, 404, "resource_server.not_found", "resource server not found";
     ResourceServerAlreadyExists = 931, 409, "resource_server.already_exists", "a resource server with this identifier already exists";
     ResourceNotFound = 940, 404, "resource.not_found", "resource not found";
@@ -170,7 +171,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 50);
+        assert_eq!(ErrorCode::ALL.len(), 51);
     }
 
     /// A message never restates the slug, and never carries a value.

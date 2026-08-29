@@ -65,6 +65,127 @@ fn upstream(alias: &str) -> Value {
     })
 }
 
+/// A rule is kept within the build's catalogue and within its provider:
+/// what the arrival engine would not run is refused at the door, and one
+/// provider's rule is not readable through another's path.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_rule_is_kept_within_its_catalogue_and_its_provider() {
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    for alias in ["acme", "other"] {
+        let (status, told) = asked(
+            &plane,
+            Method::POST,
+            &format!("/admin/realms/{REALM}/identity-providers"),
+            &bearer,
+            Some(upstream(alias)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{told}");
+    }
+    let base = format!("/admin/realms/{REALM}/identity-providers/acme/mappers");
+
+    // A rule this build does not run on arrival, one missing what its type
+    // reads, a sync mode that is neither word, and a role nobody made: each
+    // refused with its reason.
+    for (body, holds) in [
+        (
+            json!({ "name": "x", "mapper_type": "saml-avatar-mapper" }),
+            "one of:",
+        ),
+        (
+            json!({ "name": "x", "mapper_type": "oidc-user-attribute-idp-mapper" }),
+            "names a claim",
+        ),
+        (
+            json!({ "name": "x", "mapper_type": "oidc-user-attribute-idp-mapper",
+                    "configs": { "claim": { "Str": "acr" }, "user.attribute": { "Str": "a" },
+                                 "syncMode": { "Str": "sometimes" } } }),
+            "import or force",
+        ),
+        (
+            json!({ "name": "x", "mapper_type": "oidc-hardcoded-role-idp-mapper",
+                    "configs": { "role": { "Str": "nobody" } } }),
+            "no role answers to nobody",
+        ),
+    ] {
+        let (status, told) = asked(&plane, Method::POST, &base, &bearer, Some(body)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+        assert!(
+            told["message"]
+                .as_str()
+                .is_some_and(|why| why.contains(holds)),
+            "the refusal does not say {holds}: {told}"
+        );
+    }
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(
+            json!({ "name": "carry-acr", "mapper_type": "oidc-user-attribute-idp-mapper",
+                     "configs": { "claim": { "Str": "acr" },
+                                  "user.attribute": { "Str": "upstream.acr" } } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let mapper_id = born["mapper_id"].as_str().expect("an identity").to_owned();
+
+    let (status, told) = asked(&plane, Method::GET, &base, &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told.as_array().expect("rules").len(), 1);
+
+    // Another provider's path does not read this rule.
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/identity-providers/other/mappers/{mapper_id}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{mapper_id}"),
+        &bearer,
+        Some(
+            json!({ "name": "carry-acr", "mapper_type": "oidc-user-attribute-idp-mapper",
+                     "configs": { "claim": { "Str": "acr" },
+                                  "user.attribute": { "Str": "upstream.acr" },
+                                  "syncMode": { "Str": "force" } } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(told["metadata"]["version"].as_i64().unwrap_or(1) > 1);
+
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{base}/{mapper_id}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}/{mapper_id}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 /// A provider is registered with its configuration read at the door, its
 /// secret sealed on the way in and never read back, and refused deletion
 /// while accounts are linked through it.

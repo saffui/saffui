@@ -295,6 +295,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V048__identity_brokering.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 49,
+            name: "idp_mappers",
+            sql: include_str!("../migrations/V049__idp_mappers.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -4,8 +4,8 @@ use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use deadpool_postgres::Transaction;
 use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::authz::IdentityProviderModel;
-use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel};
-use serde_json::Value;
+use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel, IdpMapperModel};
+use serde_json::{Map, Value};
 use store::providers::{brokering, users};
 
 /// How long what left for the upstream is honoured on the way back.
@@ -167,6 +167,9 @@ pub struct Arrival {
     pub username: Option<String>,
     pub email: Option<String>,
     pub email_verified: bool,
+    /// Every verified claim, whole: what the named fields above read from,
+    /// and what the provider's mappers read beside them.
+    pub claims: Map<String, Value>,
 }
 
 /// Read the upstream's identity token against its published keys, bounded
@@ -212,6 +215,7 @@ pub fn arrived(
             .get("email_verified")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        claims,
     })
 }
 
@@ -231,7 +235,7 @@ pub async fn decide_link(
     provider: &IdentityProviderModel,
     arrival: &Arrival,
     now: DateTime<Utc>,
-) -> Result<String, Unbrokered> {
+) -> Result<(String, bool), Unbrokered> {
     if let Some(user_id) = brokering::linked_user(
         transaction,
         &provider.provider_id,
@@ -240,7 +244,7 @@ pub async fn decide_link(
     .await
     .map_err(|_| Unbrokered::Backend)?
     {
-        return Ok(user_id);
+        return Ok((user_id, false));
     }
 
     let trusted = provider.trust_email.unwrap_or(false) && arrival.email_verified;
@@ -251,7 +255,7 @@ pub async fn decide_link(
             .map_err(|_| Unbrokered::Backend)?
     {
         remember(transaction, provider, arrival, &standing.user_id, now).await?;
-        return Ok(standing.user_id);
+        return Ok((standing.user_id, true));
     }
 
     let named = arrival
@@ -280,7 +284,131 @@ pub async fn decide_link(
     .await
     .map_err(|_| Unbrokered::Refused)?;
     remember(transaction, provider, arrival, &made.user_id, now).await?;
-    Ok(made.user_id)
+    Ok((made.user_id, true))
+}
+
+/// Write an upstream claim onto the arriving user as an attribute.
+pub const ATTRIBUTE_IDP_MAPPER: &str = "oidc-user-attribute-idp-mapper";
+/// Grant the arriving user a named local role.
+pub const ROLE_IDP_MAPPER: &str = "oidc-hardcoded-role-idp-mapper";
+
+/// Every rule this build applies on arrival. The plane refuses names
+/// outside it rather than recording rules nothing runs.
+pub const KNOWN_IDP_MAPPERS: [&str; 2] = [ATTRIBUTE_IDP_MAPPER, ROLE_IDP_MAPPER];
+
+/// What a rule reads from its bag.
+pub const CLAIM: &str = "claim";
+pub const USER_ATTRIBUTE: &str = "user.attribute";
+pub const ROLE: &str = "role";
+pub const SYNC_MODE: &str = "syncMode";
+
+fn config_str<'a>(
+    configs: &'a Option<models::entities::attributes::AttributesMap>,
+    key: &str,
+) -> Option<&'a str> {
+    configs
+        .as_ref()
+        .and_then(|bag| bag.get(key))
+        .and_then(models::entities::attributes::AttributeValue::as_str)
+}
+
+/// Whether a rule runs again for somebody already known: `import`, the
+/// resting mode, writes once at the first arrival; `force` writes on every
+/// one, taking the upstream as authoritative.
+fn forced(mapper: &IdpMapperModel) -> bool {
+    config_str(&mapper.configs, SYNC_MODE) == Some("force")
+}
+
+/// Run the provider's rules on who arrived.
+///
+/// A rule that no longer resolves is skipped with a line for the operator
+/// rather than failing the login: the person at the door proved who they
+/// are, and a stale rule is the operator's to mend, not theirs to be
+/// locked out over.
+pub async fn apply_mappers(
+    transaction: &Transaction<'_>,
+    provider: &IdentityProviderModel,
+    user_id: &str,
+    arrival: &Arrival,
+    first_login: bool,
+) -> Result<(), Unbrokered> {
+    let rules = brokering::mappers_of(transaction, &provider.provider_id)
+        .await
+        .map_err(|_| Unbrokered::Backend)?;
+    if rules.is_empty() {
+        return Ok(());
+    }
+
+    let mut person: Option<models::entities::user::UserModel> = None;
+    let mut rewritten = false;
+    for rule in &rules {
+        if !first_login && !forced(rule) {
+            continue;
+        }
+        match rule.mapper_type.as_str() {
+            ATTRIBUTE_IDP_MAPPER => {
+                let (Some(claim), Some(attribute)) = (
+                    config_str(&rule.configs, CLAIM),
+                    config_str(&rule.configs, USER_ATTRIBUTE),
+                ) else {
+                    continue;
+                };
+                let value = match arrival.claims.get(claim) {
+                    Some(Value::String(text)) => {
+                        models::entities::attributes::AttributeValue::Str(text.clone())
+                    }
+                    Some(Value::Bool(flag)) => {
+                        models::entities::attributes::AttributeValue::Bool(*flag)
+                    }
+                    Some(Value::Number(number)) if number.as_i64().is_some() => {
+                        models::entities::attributes::AttributeValue::Int(
+                            number.as_i64().unwrap_or_default(),
+                        )
+                    }
+                    // Absent, or a shape no attribute holds: nothing to write.
+                    _ => continue,
+                };
+                if person.is_none() {
+                    person = users::load(transaction, user_id)
+                        .await
+                        .map_err(|_| Unbrokered::Backend)?;
+                }
+                let Some(held) = person.as_mut() else {
+                    continue;
+                };
+                held.attributes
+                    .get_or_insert_with(Default::default)
+                    .insert(attribute.to_owned(), value);
+                rewritten = true;
+            }
+            ROLE_IDP_MAPPER => {
+                let Some(role_id) = config_str(&rule.configs, ROLE) else {
+                    continue;
+                };
+                // The plane checked the role when the rule was written; one
+                // deleted since is the operator's to mend, not a reason to
+                // lock the person out.
+                if store::providers::roles::load(transaction, role_id)
+                    .await
+                    .map_err(|_| Unbrokered::Backend)?
+                    .is_none()
+                {
+                    tracing::warn!(rule = %rule.name, role_id, "an idp mapper names a role nobody holds anymore");
+                    continue;
+                }
+                store::providers::roles::grant_to_user(transaction, user_id, role_id)
+                    .await
+                    .map_err(|_| Unbrokered::Backend)?;
+            }
+            _ => {}
+        }
+    }
+    if rewritten && let Some(held) = person.as_ref() {
+        users::update(transaction, held)
+            .await
+            .map_err(|_| Unbrokered::Backend)?;
+    }
+    Ok(())
 }
 
 async fn remember(

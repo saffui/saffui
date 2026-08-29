@@ -5,8 +5,9 @@ use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::attributes::AttributeValue;
 use models::entities::authz::{IdentityProviderModel, IdentityProviderMutationModel};
+use models::entities::brokering::{IdpMapperModel, IdpMapperMutationModel};
 use store::keyring::RealmKeyring;
-use store::providers::brokering;
+use store::providers::{brokering, roles};
 
 use crate::brokering::Upstream;
 
@@ -22,6 +23,8 @@ pub enum Unwritable {
     AlreadyExists,
     #[error("no such provider")]
     NotFound,
+    #[error("no such mapper")]
+    NoSuchMapper,
     /// Deletion refused while local accounts are linked through the alias:
     /// the links carry no key to the provider row, so deleting it would
     /// leave them naming a door that no longer exists.
@@ -216,10 +219,172 @@ pub async fn delete_provider(transaction: &Transaction<'_>, alias: &str) -> Resu
 }
 
 fn drawn(crypto: &dyn CryptoProvider) -> Result<String, Unwritable> {
+    draw(crypto, "idp")
+}
+
+fn draw(crypto: &dyn CryptoProvider, prefix: &str) -> Result<String, Unwritable> {
     let mut bytes = [0_u8; 16];
     crypto
         .rand()
         .fill(&mut bytes)
         .map_err(|_| Unwritable::Backend)?;
-    Ok(format!("idp-{}", BASE64URL_NOPAD.encode(&bytes)))
+    Ok(format!("{prefix}-{}", BASE64URL_NOPAD.encode(&bytes)))
+}
+
+/// The rules of one provider.
+pub async fn mappers_of(
+    transaction: &Transaction<'_>,
+    alias: &str,
+) -> Result<Vec<IdpMapperModel>, Unwritable> {
+    provider_exists(transaction, alias).await?;
+    brokering::mappers_of(transaction, alias)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+async fn provider_exists(transaction: &Transaction<'_>, alias: &str) -> Result<(), Unwritable> {
+    brokering::provider_by_alias(transaction, alias)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .map(|_| ())
+        .ok_or(Unwritable::NotFound)
+}
+
+/// Refuse what the arrival engine would not run: a type outside the
+/// catalogue, a rule missing what its type reads, a sync mode neither word,
+/// and a role nobody made. Checked here, at the plane, so a broken rule is
+/// the writer's problem and never the person's at the door.
+async fn check_rule(
+    transaction: &Transaction<'_>,
+    asked: &IdpMapperMutationModel,
+) -> Result<(), Unwritable> {
+    if !crate::brokering::KNOWN_IDP_MAPPERS.contains(&asked.mapper_type.as_str()) {
+        return Err(Unwritable::Invalid(format!(
+            "no rule of this name runs on arrival; one of: {}",
+            crate::brokering::KNOWN_IDP_MAPPERS.join(", ")
+        )));
+    }
+    let named = |key: &str| {
+        asked
+            .configs
+            .as_ref()
+            .and_then(|bag| bag.get(key))
+            .and_then(models::entities::attributes::AttributeValue::as_str)
+    };
+    if let Some(mode) = named(crate::brokering::SYNC_MODE)
+        && !matches!(mode, "import" | "force")
+    {
+        return Err(Unwritable::Invalid(
+            "syncMode is import or force".to_owned(),
+        ));
+    }
+    match asked.mapper_type.as_str() {
+        crate::brokering::ATTRIBUTE_IDP_MAPPER => {
+            if named(crate::brokering::CLAIM).is_none()
+                || named(crate::brokering::USER_ATTRIBUTE).is_none()
+            {
+                return Err(Unwritable::Invalid(
+                    "an attribute rule names a claim and a user.attribute".to_owned(),
+                ));
+            }
+        }
+        crate::brokering::ROLE_IDP_MAPPER => {
+            let Some(role_id) = named(crate::brokering::ROLE) else {
+                return Err(Unwritable::Invalid("a role rule names a role".to_owned()));
+            };
+            if roles::load(transaction, role_id)
+                .await
+                .map_err(|_| Unwritable::Backend)?
+                .is_none()
+            {
+                return Err(Unwritable::Invalid(format!("no role answers to {role_id}")));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub async fn add_mapper(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &str,
+    realm_id: &str,
+    by: &str,
+    alias: &str,
+    asked: IdpMapperMutationModel,
+) -> Result<IdpMapperModel, Unwritable> {
+    provider_exists(transaction, alias).await?;
+    check_rule(transaction, &asked).await?;
+    let mapper = asked.into_model(
+        draw(provider, "idpm")?,
+        realm_id.to_owned(),
+        alias.to_owned(),
+        AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
+    );
+    brokering::create_mapper(transaction, &mapper)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    Ok(mapper)
+}
+
+/// One rule of one provider: a mapper of another alias is not found here,
+/// so a path cannot read across providers.
+async fn mapper_of(
+    transaction: &Transaction<'_>,
+    alias: &str,
+    mapper_id: &str,
+) -> Result<IdpMapperModel, Unwritable> {
+    provider_exists(transaction, alias).await?;
+    brokering::load_mapper(transaction, mapper_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .filter(|mapper| mapper.provider_alias == alias)
+        .ok_or(Unwritable::NoSuchMapper)
+}
+
+pub async fn get_mapper(
+    transaction: &Transaction<'_>,
+    alias: &str,
+    mapper_id: &str,
+) -> Result<IdpMapperModel, Unwritable> {
+    mapper_of(transaction, alias, mapper_id).await
+}
+
+pub async fn rework_mapper(
+    transaction: &Transaction<'_>,
+    alias: &str,
+    mapper_id: &str,
+    by: &str,
+    asked: IdpMapperMutationModel,
+) -> Result<IdpMapperModel, Unwritable> {
+    let standing = mapper_of(transaction, alias, mapper_id).await?;
+    check_rule(transaction, &asked).await?;
+    let mut mapper = asked.into_model(
+        mapper_id.to_owned(),
+        standing.realm_id.clone(),
+        alias.to_owned(),
+        standing.metadata.clone(),
+    );
+    mapper.metadata.updated_by = Some(by.to_owned());
+    if !brokering::update_mapper(transaction, &mapper)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+    {
+        return Err(Unwritable::NoSuchMapper);
+    }
+    mapper_of(transaction, alias, mapper_id).await
+}
+
+pub async fn remove_mapper(
+    transaction: &Transaction<'_>,
+    alias: &str,
+    mapper_id: &str,
+) -> Result<(), Unwritable> {
+    mapper_of(transaction, alias, mapper_id).await?;
+    brokering::delete_mapper(transaction, mapper_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .then_some(())
+        .ok_or(Unwritable::NoSuchMapper)
 }

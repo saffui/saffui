@@ -8,7 +8,7 @@ use models::entities::user::{RequiredAction, UserCreateModel, UserModel, profile
 use models::paging::Page;
 use models::sessions::login_failure::UserLoginFailure;
 use secrecy::SecretBox;
-use store::providers::{credentials, login, users};
+use store::providers::{auth_flows, credentials, login, users};
 use store::query::list_query::ListQuery;
 
 /// What a person is created or reshaped as. `None` leaves a field alone on
@@ -75,6 +75,20 @@ pub async fn create(
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );
     apply_attributes(&mut user, spec);
+    // A caller that said nothing gets what the realm registered as default,
+    // read live so an administrator's registration reaches the next person.
+    // A caller that said an empty list said none, and keeps none.
+    if user.required_actions.is_none() {
+        let defaults: Vec<_> = auth_flows::default_actions(transaction)
+            .await
+            .map_err(|_| Uncreatable::Unwritable)?
+            .into_iter()
+            .map(|registered| registered.action)
+            .collect();
+        if !defaults.is_empty() {
+            user.required_actions = Some(defaults);
+        }
+    }
     users::create(transaction, &user)
         .await
         .map_err(|_| Uncreatable::Unwritable)?;

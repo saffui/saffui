@@ -213,6 +213,54 @@ pub async fn reorder(transaction: &Transaction<'_>, moves: &[(&str, i32)]) -> St
 }
 
 /// Record a configuration.
+/// One execution, wherever it hangs.
+pub async fn load_execution(
+    transaction: &Transaction<'_>,
+    execution_id: &str,
+) -> StoreResult<Option<AuthenticationExecutionModel>> {
+    let statement = format!(
+        "SELECT {EXECUTION_COLUMNS} FROM authentication_executions WHERE execution_id = $1"
+    );
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&execution_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_execution))
+}
+
+/// Remove a step, and say whether it was there to remove.
+pub async fn delete_execution(
+    transaction: &Transaction<'_>,
+    execution_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM authentication_executions WHERE execution_id = $1",
+            &[&execution_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+/// Whether any client's login is bound to this alias by name.
+pub async fn alias_bound_to_a_client(
+    transaction: &Transaction<'_>,
+    alias: &str,
+) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM clients \
+                 WHERE auth_flow_binding_overrides ->> 'browser' = $1 \
+             ) AS bound",
+            &[&alias],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get("bound"))
+}
+
 pub async fn create_config(
     transaction: &Transaction<'_>,
     config: &AuthenticatorConfigModel,
@@ -308,6 +356,81 @@ pub async fn default_actions(
         .into_iter()
         .map(read_action)
         .collect())
+}
+
+/// Every action this realm registered, in the order they are asked.
+pub async fn list_actions(transaction: &Transaction<'_>) -> StoreResult<Vec<RequiredActionModel>> {
+    let statement =
+        format!("SELECT {ACTION_COLUMNS} FROM required_actions ORDER BY priority ASC, action ASC");
+    Ok(transaction
+        .query(statement.as_str(), &[])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_action)
+        .collect())
+}
+
+/// The registration of one action, by the action itself.
+pub async fn load_action(
+    transaction: &Transaction<'_>,
+    action: RequiredAction,
+) -> StoreResult<Option<RequiredActionModel>> {
+    let statement = format!(
+        "SELECT {ACTION_COLUMNS} FROM required_actions \
+         WHERE action = $1 ORDER BY action_id ASC LIMIT 1"
+    );
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&action])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_action))
+}
+
+/// Rewrite a registration, and say whether it was there to rewrite.
+pub async fn update_action(
+    transaction: &Transaction<'_>,
+    action: &RequiredActionModel,
+) -> StoreResult<bool> {
+    let enabled = action.enabled.unwrap_or(true);
+    let default_action = action.default_action.unwrap_or(false);
+    let on_time_action = action.on_time_action.unwrap_or(false);
+    let priority = action.priority.unwrap_or(0);
+    let set = WriteSet::update(
+        vec![
+            col("provider_id", &action.provider_id),
+            col("name", &action.name),
+            col("display_name", &action.display_name),
+            col("description", &action.description),
+            col("enabled", &enabled),
+            col("default_action", &default_action),
+            col("on_time_action", &on_time_action),
+            col("priority", &priority),
+            col("updated_by", &action.metadata.updated_by),
+        ],
+        vec![col("action_id", &action.action_id)],
+    );
+    let statement = statement::update("required_actions", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    let changed = transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
+/// Remove a registration, and say whether it was there to remove.
+pub async fn delete_action(transaction: &Transaction<'_>, action_id: &str) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM required_actions WHERE action_id = $1",
+            &[&action_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
 }
 
 fn read_flow(row: Row) -> AuthenticationFlowModel {

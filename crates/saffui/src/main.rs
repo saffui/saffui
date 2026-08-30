@@ -146,6 +146,12 @@ enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Write the manual pages into a directory, one per command.
+    Manpages {
+        /// Where the pages land, created if absent.
+        #[arg(long, default_value = ".")]
+        out: std::path::PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -170,6 +176,20 @@ fn main() -> ExitCode {
                 &mut std::io::stdout(),
             );
             return ExitCode::SUCCESS;
+        }
+        Command::Manpages { out } => {
+            use clap::CommandFactory;
+            if let Err(reason) = std::fs::create_dir_all(out) {
+                eprintln!("cannot create {}: {reason}", out.display());
+                return ExitCode::FAILURE;
+            }
+            return match clap_mangen::generate_to(Cli::command(), out) {
+                Ok(_) => ExitCode::SUCCESS,
+                Err(reason) => {
+                    eprintln!("cannot write into {}: {reason}", out.display());
+                    ExitCode::FAILURE
+                }
+            };
         }
         _ => {}
     }
@@ -238,9 +258,10 @@ fn main() -> ExitCode {
                     }
                     // Answered before the runtime was built; unreachable here,
                     // and spelled so the match stays exhaustive by name.
-                    Command::Admin { .. } | Command::Ctx { .. } | Command::Completion { .. } => {
-                        Ok(())
-                    }
+                    Command::Admin { .. }
+                    | Command::Ctx { .. }
+                    | Command::Completion { .. }
+                    | Command::Manpages { .. } => Ok(()),
                 }
             })
         });

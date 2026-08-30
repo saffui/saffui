@@ -138,3 +138,168 @@ impl Directory for LdapDirectory {
         Box::pin(async move { Ok(self.look_up(username).await?.map(|(_, person)| person)) })
     }
 }
+
+/// The directory as the login will speak to it, its bind secret opened from
+/// the realm's seal for this attempt and dropped with it.
+pub async fn directory_for(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &crate::api::config::Sealing,
+    context: &store::tenancy::TenantContext,
+    held: &models::entities::brokering::UserFederationModel,
+    settings: services::federation::LdapSettings,
+) -> LdapDirectory {
+    let bind_password = opened_bind(transaction, sealing, context, held).await;
+    LdapDirectory {
+        settings,
+        bind_password,
+    }
+}
+
+pub async fn opened_bind(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &crate::api::config::Sealing,
+    context: &store::tenancy::TenantContext,
+    held: &models::entities::brokering::UserFederationModel,
+) -> Option<crypto::secrecy::SecretBox<String>> {
+    use data_encoding::BASE64;
+    let sealed = held
+        .configs
+        .as_ref()?
+        .get(services::federation::SEALED_BIND)?
+        .as_str()?;
+    let sealed = BASE64.decode(sealed.as_bytes()).ok()?;
+    let ring = store::keyring::load(
+        transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    .ok()?;
+    let opened = ring
+        .open(
+            &sealing.envelope,
+            services::federation::PURPOSE,
+            services::federation::SINGLETON,
+            &sealed,
+        )
+        .await
+        .ok()?;
+    let clear =
+        String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()?;
+    Some(crypto::secrecy::SecretBox::new(Box::new(clear)))
+}
+
+/// What a marker on the shadow says: this suspension is the sync's own,
+/// so only the sync may lift it. An operator's disabling carries no
+/// marker, and no reappearance re-enables it.
+pub const SUSPENDED_BY_SYNC: &str = "federation.suspended";
+
+/// What one realm's sync pass did.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Synced {
+    pub refreshed: u64,
+    pub suspended: u64,
+    pub restored: u64,
+}
+
+impl Synced {
+    pub fn total(&self) -> u64 {
+        self.refreshed + self.suspended + self.restored
+    }
+    pub fn add(&mut self, other: Synced) {
+        self.refreshed += other.refreshed;
+        self.suspended += other.suspended;
+        self.restored += other.restored;
+    }
+}
+
+/// Walk one realm's shadows against its directory, off the request path.
+///
+/// A mirror found upstream is refreshed where the directory's answer
+/// differs; one the directory no longer holds is suspended, under the
+/// sync's own marker, so a person removed from the directory stops
+/// signing in here without their history going anywhere; and one that
+/// reappears under the marker is restored. The directory being
+/// unreachable ends the pass with nothing written: an outage is not a
+/// departure, and suspending a realm's people over a cable would be the
+/// outage deciding who may log in.
+pub async fn sync_shadows(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    directory: &LdapDirectory,
+) -> Result<Synced, ()> {
+    use auth::login::directory::Directory;
+    use models::entities::attributes::AttributeValue;
+    use models::entities::user::profile;
+
+    let mut outcome = Synced::default();
+    let shadows = store::providers::users::shadows(transaction)
+        .await
+        .map_err(|_| ())?;
+    for mut shadow in shadows {
+        let found = directory.find(&shadow.user_name).await?;
+        match found {
+            Some(person) => {
+                let mut changed = false;
+                let attributes = shadow.attributes.get_or_insert_with(Default::default);
+                for (key, held) in [
+                    (profile::FIRST_NAME, &person.first_name),
+                    (profile::LAST_NAME, &person.last_name),
+                ] {
+                    if let Some(value) = held {
+                        let fresh = AttributeValue::Str(value.clone());
+                        if attributes.get(key) != Some(&fresh) {
+                            attributes.insert(key.to_owned(), fresh);
+                            changed = true;
+                        }
+                    }
+                }
+                if let Some(email) = &person.email
+                    && &shadow.email != email
+                {
+                    shadow.email = email.clone();
+                    // The address moved, so whatever was verified was the
+                    // old one.
+                    shadow.email_verified = Some(false);
+                    changed = true;
+                }
+                let suspended = shadow
+                    .attributes
+                    .as_ref()
+                    .and_then(|held| held.get(SUSPENDED_BY_SYNC))
+                    .is_some();
+                if suspended {
+                    shadow
+                        .attributes
+                        .get_or_insert_with(Default::default)
+                        .remove(SUSPENDED_BY_SYNC);
+                    shadow.enabled = true;
+                    outcome.restored += 1;
+                    changed = true;
+                } else if changed {
+                    outcome.refreshed += 1;
+                }
+                if changed {
+                    store::providers::users::update(transaction, &shadow)
+                        .await
+                        .map_err(|_| ())?;
+                }
+            }
+            None => {
+                if !shadow.enabled {
+                    continue;
+                }
+                shadow.enabled = false;
+                shadow
+                    .attributes
+                    .get_or_insert_with(Default::default)
+                    .insert(SUSPENDED_BY_SYNC.to_owned(), AttributeValue::Bool(true));
+                store::providers::users::update(transaction, &shadow)
+                    .await
+                    .map_err(|_| ())?;
+                outcome.suspended += 1;
+            }
+        }
+    }
+    Ok(outcome)
+}

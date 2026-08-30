@@ -96,3 +96,106 @@ pub async fn sweep_every_realm(pool: &Pool, tenancy: &Tenancy) -> Option<Swept> 
     }
     Some(total)
 }
+
+/// Which job the federation advisory lock is for.
+const FEDERATE: i32 = 0x4C44_4150_u32 as i32;
+
+/// Walk every realm's federated shadows against their directory, for as
+/// long as this node runs. Off by default: a sync dials out, and a
+/// deployment says so before this server does.
+pub fn sync_federated_shadows(
+    pool: Pool,
+    tenancy: Tenancy,
+    sealing: std::sync::Arc<crate::api::config::Sealing>,
+    every: Option<Duration>,
+) -> Option<JoinHandle<()>> {
+    let Some(every) = every else {
+        tracing::info!("federated shadows are never synced");
+        return None;
+    };
+    tracing::info!(seconds = every.as_secs(), "syncing federated shadows");
+    Some(tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(every);
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            match sync_every_realm(&pool, &tenancy, &sealing).await {
+                Some(synced) if synced.total() > 0 => tracing::info!(
+                    refreshed = synced.refreshed,
+                    suspended = synced.suspended,
+                    restored = synced.restored,
+                    "synced federated shadows"
+                ),
+                Some(_) => {}
+                None => tracing::warn!("the sync could not list this deployment's realms"),
+            }
+        }
+    }))
+}
+
+/// One visit to every federating realm, or nothing when they could not be
+/// listed. A realm whose directory is unreachable is left exactly as it
+/// stands: an outage is not a departure.
+pub async fn sync_every_realm(
+    pool: &Pool,
+    tenancy: &Tenancy,
+    sealing: &crate::api::config::Sealing,
+) -> Option<crate::federation::Synced> {
+    let connection = pool.get().await.ok()?;
+    let realms = resolve::every_realm(&connection).await.ok()?;
+    drop(connection);
+
+    let mut total = crate::federation::Synced::default();
+    for realm in realms {
+        let Ok(mut connection) = pool.get().await else {
+            continue;
+        };
+        let Ok(transaction) = tenancy.transaction(&mut connection, &realm).await else {
+            continue;
+        };
+        let held = transaction
+            .query_one(
+                "SELECT pg_try_advisory_xact_lock($1, hashtext($2))",
+                &[&FEDERATE, &format!("{}:{}", realm.tenant, realm.realm_id)],
+            )
+            .await
+            .map(|row| row.get::<_, bool>(0));
+        if !matches!(held, Ok(true)) {
+            continue;
+        }
+
+        let Ok(Some(federation)) = store::providers::brokering::federation(&transaction).await
+        else {
+            continue;
+        };
+        if federation.enabled == Some(false) {
+            continue;
+        }
+        let Ok(settings) = services::federation::LdapSettings::parse(&federation) else {
+            tracing::warn!(
+                tenant = realm.tenant,
+                realm = realm.realm_id,
+                "the realm's directory row no longer reads; its shadows were not walked"
+            );
+            continue;
+        };
+        let directory =
+            crate::federation::directory_for(&transaction, sealing, &realm, &federation, settings)
+                .await;
+        match crate::federation::sync_shadows(&transaction, &directory).await {
+            Ok(synced) if transaction.commit().await.is_ok() => total.add(synced),
+            Ok(_) => tracing::warn!(
+                tenant = realm.tenant,
+                realm = realm.realm_id,
+                "a sync pass did not land"
+            ),
+            // Unreachable, mid-realm: nothing committed, nobody suspended.
+            Err(()) => tracing::warn!(
+                tenant = realm.tenant,
+                realm = realm.realm_id,
+                "the directory could not be asked; its shadows were left as they stand"
+            ),
+        }
+    }
+    Some(total)
+}

@@ -121,6 +121,7 @@ async fn a_directory_person_signs_in_and_leaves_a_shadow() {
         Some(json!({
             "configs": {
                 "url": { "Str": url },
+                "danger_plaintext": { "Str": "true" },
                 "bind_dn": { "Str": "cn=admin,dc=example,dc=org" },
                 "bind_password": { "Str": "adminpw" },
                 "users_dn": { "Str": "ou=users,dc=example,dc=org" },
@@ -243,10 +244,17 @@ async fn a_directory_row_is_read_at_the_door() {
         ),
         (
             json!({ "configs": { "url": { "Str": "ldap://x" },
+                                 "danger_plaintext": { "Str": "true" },
                                  "bind_dn": { "Str": "cn=admin" },
                                  "users_dn": { "Str": "ou=users" },
                                  "user_filter": { "Str": "(uid=bob)" } } }),
             "{username}",
+        ),
+        (
+            json!({ "configs": { "url": { "Str": "ldap://x" },
+                                 "bind_dn": { "Str": "cn=admin" },
+                                 "users_dn": { "Str": "ou=users" } } }),
+            "danger_plaintext",
         ),
         (
             json!({ "configs": { "url": { "Str": "ldap://x" },
@@ -276,6 +284,7 @@ async fn a_directory_row_is_read_at_the_door() {
         &bearer,
         Some(json!({ "configs": {
             "url": { "Str": "ldap://directory.example:1389" },
+            "danger_plaintext": { "Str": "true" },
             "bind_dn": { "Str": "cn=admin,dc=example,dc=org" },
             "bind_password": { "Str": "adminpw" },
             "users_dn": { "Str": "ou=users,dc=example,dc=org" },
@@ -294,6 +303,7 @@ async fn a_directory_row_is_read_at_the_door() {
         &bearer,
         Some(json!({ "enabled": false, "configs": {
             "url": { "Str": "ldap://directory.example:1389" },
+            "danger_plaintext": { "Str": "true" },
             "bind_dn": { "Str": "cn=admin,dc=example,dc=org" },
             "users_dn": { "Str": "ou=users,dc=example,dc=org" },
         } })),
@@ -307,4 +317,150 @@ async fn a_directory_row_is_read_at_the_door() {
     assert_eq!(status, StatusCode::NO_CONTENT);
     let (status, _) = asked(&plane, Method::DELETE, &base, &bearer, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// A federation configuration whose filter is what the test says.
+fn dialled(url: &str, filter: &str) -> Value {
+    json!({ "configs": {
+        "url": { "Str": url },
+        "danger_plaintext": { "Str": "true" },
+        "bind_dn": { "Str": "cn=admin,dc=example,dc=org" },
+        "bind_password": { "Str": "adminpw" },
+        "users_dn": { "Str": "ou=users,dc=example,dc=org" },
+        "user_filter": { "Str": filter },
+    } })
+}
+
+/// The sync pass walks the shadows off the request path: a mirror still in
+/// the directory stands, one the directory dropped is suspended under the
+/// sync's own marker and refused at the very next login, one that comes
+/// back is restored, and an unreachable directory changes nobody at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG) and a directory (SAFFUI_TEST_LDAP)"]
+async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
+    let Some(url) = directory_url() else {
+        eprintln!("SAFFUI_TEST_LDAP unset; the journey has no directory to cross");
+        return;
+    };
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/federation");
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &base,
+        &bearer,
+        Some(dialled(&url, "(uid={username})")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    // The shadow exists because the person signed in once.
+    let cookie = opened_login(&plane).await;
+    assert_eq!(
+        answered(&plane, &cookie, "fedora", "wilderness").await,
+        StatusCode::OK
+    );
+
+    let synced = |plane: &Plane| {
+        let pool = plane.pool();
+        let tenancy = plane.tenancy();
+        async move {
+            server::jobs::sync_every_realm(&pool, &tenancy, &support::sealing())
+                .await
+                .expect("the realms are listable")
+        }
+    };
+
+    // Still in the directory: the pass finds nothing to change.
+    let quiet = synced(&plane).await;
+    assert_eq!(quiet.total(), 0, "{quiet:?}");
+
+    // The directory stops answering for the name: suspended, marked, and
+    // refused at the very next login with the same face as a wrong password.
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &base,
+        &bearer,
+        Some(dialled(&url, "(uid=gone-{username})")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let swept = synced(&plane).await;
+    assert_eq!(swept.suspended, 1, "{swept:?}");
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let shadow = store::providers::users::load(&transaction, "fedora")
+            .await
+            .unwrap()
+            .expect("the shadow stands");
+        assert!(!shadow.enabled);
+        assert!(
+            shadow
+                .attributes
+                .as_ref()
+                .is_some_and(|held| held.contains_key(server::federation::SUSPENDED_BY_SYNC)),
+            "the suspension carries no marker: {:?}",
+            shadow.attributes
+        );
+    }
+    let cookie = opened_login(&plane).await;
+    assert_eq!(
+        answered(&plane, &cookie, "fedora", "wilderness").await,
+        StatusCode::UNAUTHORIZED,
+        "a suspended shadow was admitted"
+    );
+
+    // Back in the directory: restored, unmarked, signing in again.
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &base,
+        &bearer,
+        Some(dialled(&url, "(uid={username})")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let back = synced(&plane).await;
+    assert_eq!(back.restored, 1, "{back:?}");
+    let cookie = opened_login(&plane).await;
+    assert_eq!(
+        answered(&plane, &cookie, "fedora", "wilderness").await,
+        StatusCode::OK,
+        "a restored shadow was still refused"
+    );
+
+    // The directory unreachable: the pass walks away and nobody is touched.
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &base,
+        &bearer,
+        Some(dialled("ldap://127.0.0.1:1", "(uid={username})")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let outage = synced(&plane).await;
+    assert_eq!(outage.total(), 0, "{outage:?}");
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let shadow = store::providers::users::load(&transaction, "fedora")
+            .await
+            .unwrap()
+            .expect("the shadow stands");
+        assert!(
+            shadow.enabled,
+            "an outage suspended somebody: the outage decided who may log in"
+        );
+    }
 }

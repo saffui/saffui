@@ -55,6 +55,14 @@ impl LdapSettings {
         if !url.starts_with("ldap://") && !url.starts_with("ldaps://") {
             return Err(Unusable::Malformed("url is ldap:// or ldaps://"));
         }
+        // The bind password crosses this wire. Plaintext is refused unless
+        // the operator says the danger out loud, by its name, in the config
+        // they will read back later.
+        if url.starts_with("ldap://") && text("danger_plaintext") != Some("true") {
+            return Err(Unusable::Malformed(
+                "ldap:// sends the bind password in the clear; say danger_plaintext \"true\" to accept that, or use ldaps://",
+            ));
+        }
         let bind_dn = text("bind_dn")
             .ok_or(Unusable::Missing("bind_dn names who searches"))?
             .to_owned();
@@ -116,7 +124,7 @@ pub fn presentable(mut federation: UserFederationModel) -> UserFederationModel {
 /// Keep only what a bag may hold, spelled: an unknown key is a typo the
 /// operator finds now, not at somebody's sign-in.
 pub fn check_bag(bag: &AttributesMap) -> Result<(), Unusable> {
-    const KNOWN: [&str; 10] = [
+    const KNOWN: [&str; 11] = [
         "url",
         "bind_dn",
         CLEAR_BIND,
@@ -127,6 +135,7 @@ pub fn check_bag(bag: &AttributesMap) -> Result<(), Unusable> {
         "email_attribute",
         "first_name_attribute",
         "last_name_attribute",
+        "danger_plaintext",
     ];
     for key in bag.keys() {
         if !KNOWN.contains(&key.as_str()) {
@@ -150,6 +159,10 @@ mod tests {
             enabled: Some(true),
             configs: Some(AttributesMap::from([
                 ("url".to_owned(), AttributeValue::Str("ldap://x".into())),
+                (
+                    "danger_plaintext".to_owned(),
+                    AttributeValue::Str("true".into()),
+                ),
                 ("bind_dn".to_owned(), AttributeValue::Str("cn=admin".into())),
                 (
                     "users_dn".to_owned(),
@@ -164,6 +177,22 @@ mod tests {
             settings.filter_for("*)(uid=admin"),
             "(uid=\\2a\\29\\28uid=admin)"
         );
+
+        // Plaintext is refused unless the danger is said by name; the
+        // secured spelling needs no such word.
+        let mut quiet = federation.clone();
+        quiet
+            .configs
+            .as_mut()
+            .expect("the bag")
+            .remove("danger_plaintext");
+        assert!(LdapSettings::parse(&quiet).is_err());
+        quiet
+            .configs
+            .as_mut()
+            .expect("the bag")
+            .insert("url".to_owned(), AttributeValue::Str("ldaps://x".into()));
+        assert!(LdapSettings::parse(&quiet).is_ok());
 
         // A filter without the mark is refused at the door.
         federation.configs.as_mut().expect("the bag").insert(

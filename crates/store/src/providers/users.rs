@@ -88,6 +88,20 @@ pub async fn load_by_phone(
 /// Keyed on the link rather than on a name built from the client id. A name is
 /// a thing an administrator can edit, and an account reached by rebuilding its
 /// name would silently become somebody else's the moment one was.
+/// Every person of this realm the directory owns: the mirrors a sync pass
+/// walks.
+pub async fn shadows(transaction: &Transaction<'_>) -> StoreResult<Vec<UserModel>> {
+    let statement =
+        format!("SELECT {COLUMNS} FROM users WHERE user_storage = 'ldap' ORDER BY user_id ASC");
+    Ok(transaction
+        .query(statement.as_str(), &[])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read)
+        .collect())
+}
+
 pub async fn load_service_account(
     transaction: &Transaction<'_>,
     client_id: &str,

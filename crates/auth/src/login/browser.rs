@@ -526,10 +526,16 @@ async fn named_subject(
     federation: Option<&dyn crate::login::directory::Directory>,
     now: DateTime<Utc>,
 ) -> Result<Option<models::entities::user::UserModel>, Unanswerable> {
+    // A person switched off answers as nobody, on both paths: the flow
+    // spends the same time either way, so which accounts exist, or which
+    // were shut, stays unsaid. Checked here and not in a step, because a
+    // login resumed mid-flow must also stop advancing the moment an
+    // operator, or a sync against the directory, turns the account off.
     if let Some(user_id) = login.user_id.as_deref() {
-        return users::load(transaction, user_id)
+        return Ok(users::load(transaction, user_id)
             .await
-            .map_err(|_| Unanswerable::Unreadable);
+            .map_err(|_| Unanswerable::Unreadable)?
+            .filter(|held| held.enabled));
     }
     let Some(named) = username.filter(|named| !named.is_empty()) else {
         return Ok(None);
@@ -538,7 +544,7 @@ async fn named_subject(
         .await
         .map_err(|_| Unanswerable::Unreadable)?
     {
-        return Ok(Some(standing));
+        return Ok(Some(standing).filter(|held| held.enabled));
     }
     let Some(directory) = federation else {
         return Ok(None);

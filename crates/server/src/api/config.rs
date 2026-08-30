@@ -233,6 +233,10 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/login.js").route(web::get().to(page::script)))
         .service(web::resource("/broker/{alias}/login").route(web::get().to(broker::begin)))
         .service(web::resource("/broker/{alias}/endpoint").route(web::get().to(broker::conclude)))
+        .service(
+            web::resource("/broker/{alias}/backchannel-logout")
+                .route(web::post().to(broker::dismiss)),
+        )
         .service(web::resource("/check-session").route(web::get().to(page::check_session)))
         .service(
             web::resource("/check-session.js").route(web::get().to(page::check_session_script)),

@@ -515,6 +515,76 @@ async fn remember(
     .map_err(|_| Unbrokered::Backend)
 }
 
+/// Who an upstream logout dismisses.
+#[derive(Debug)]
+pub struct Dismissal {
+    pub external_user_id: String,
+}
+
+/// Read an upstream's logout token against its published keys, Back-Channel
+/// Logout 1.0 §2.6, with this realm standing where a relying party stands.
+///
+/// The algorithm is bounded by configuration, the issuer and audience by
+/// what the provider registered, the events member by the one this token
+/// exists to carry, and a nonce by its absence: a logout token carrying one
+/// is an identity token trying to be replayed as a logout. The subject is
+/// required outright; a token naming only a session says which login ended
+/// at the upstream, and this realm never learned upstream session names, so
+/// it is refused with that reason rather than quietly closing nothing.
+pub fn dismissed(
+    upstream: &Upstream,
+    keys: &Value,
+    logout_token: &str,
+    now: DateTime<Utc>,
+) -> Result<Dismissal, Unbrokered> {
+    let claims = crate::assertion::read_against(keys, logout_token, &upstream.allowed_algs)
+        .map_err(|_| Unbrokered::Refused)?;
+
+    let text = |name: &str| claims.get(name).and_then(Value::as_str);
+    if text("iss") != Some(upstream.issuer.as_str()) {
+        return Err(Unbrokered::Refused);
+    }
+    let audience_holds = match claims.get("aud") {
+        Some(Value::String(one)) => one == &upstream.client_id,
+        Some(Value::Array(many)) => many
+            .iter()
+            .any(|one| one.as_str() == Some(upstream.client_id.as_str())),
+        _ => false,
+    };
+    if !audience_holds {
+        return Err(Unbrokered::Refused);
+    }
+    if claims.get("iat").and_then(Value::as_i64).is_none() {
+        return Err(Unbrokered::Refused);
+    }
+    if let Some(expires) = claims.get("exp").and_then(Value::as_i64)
+        && expires <= now.timestamp()
+    {
+        return Err(Unbrokered::Refused);
+    }
+    let carries_event = claims
+        .get("events")
+        .and_then(Value::as_object)
+        .is_some_and(|events| {
+            events.contains_key("http://schemas.openid.net/event/backchannel-logout")
+        });
+    if !carries_event {
+        return Err(Unbrokered::Refused);
+    }
+    if claims.get("nonce").is_some() {
+        return Err(Unbrokered::Refused);
+    }
+    let Some(subject) = text("sub").filter(|held| !held.is_empty()) else {
+        tracing::warn!(
+            "an upstream logout token names only a session, which this realm never learned"
+        );
+        return Err(Unbrokered::Refused);
+    };
+    Ok(Dismissal {
+        external_user_id: subject.to_owned(),
+    })
+}
+
 /// Percent-encode one query value: RFC 3986 unreserved stays, all else goes
 /// as bytes.
 fn encoded(value: &str) -> String {

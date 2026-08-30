@@ -397,3 +397,120 @@ async fn post_form(
     .ok()
     .flatten()
 }
+
+/// What the upstream posts when somebody it vouched for logs out there.
+#[derive(serde::Deserialize)]
+pub struct Dismissed {
+    pub logout_token: Option<String>,
+}
+
+/// Back-Channel Logout 1.0, with this realm standing where a relying party
+/// stands: the upstream says a person it vouched for is gone, and every
+/// login they stand behind through this provider ends here, with this
+/// realm's own downstream clients told in turn. Every failure answers the
+/// same 400, with the reason kept for the operator log.
+pub async fn dismiss(
+    path: web::Path<(String, String)>,
+    posted: web::Form<Dismissed>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
+    egress: web::Data<Egress>,
+) -> HttpResponse {
+    let (realm, alias) = path.into_inner();
+    let now = Utc::now();
+    let refused = || told(StatusCode::BAD_REQUEST, "refused");
+
+    let Some(logout_token) = posted
+        .into_inner()
+        .logout_token
+        .filter(|held| !held.is_empty())
+    else {
+        tracing::warn!(alias, "an upstream logout arrived without a token");
+        return refused();
+    };
+    let Ok(mut connection) = pool.get().await else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
+        return refused();
+    };
+    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let Ok(Some(provider)) =
+        store::providers::brokering::provider_by_alias(&transaction, &alias).await
+    else {
+        tracing::warn!(alias, "an upstream logout named a provider nobody holds");
+        return refused();
+    };
+    if provider.enabled == Some(false) {
+        tracing::warn!(alias, "an upstream logout named a provider switched off");
+        return refused();
+    }
+    let Ok(upstream) = Upstream::parse(&provider) else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let Some(keys) = fetch(upstream.jwks_uri.clone(), **egress).await else {
+        tracing::warn!(alias, "the upstream's keys could not be read");
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let Ok(keys) = serde_json::from_str::<Value>(&keys) else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let Ok(dismissal) = brokering::dismissed(&upstream, &keys, &logout_token, now) else {
+        tracing::warn!(alias, "an upstream logout token did not hold");
+        return refused();
+    };
+
+    let Ok(standing) =
+        store::providers::sessions::brokered(&transaction, &alias, &dismissal.external_user_id)
+            .await
+    else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+
+    // Minted while each login's record is still readable, delivered once
+    // the endings are written, exactly as this realm's own logout does it.
+    let mut notices = Vec::new();
+    let ring = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    .ok();
+    for session_id in &standing {
+        if let Some(ring) = ring.as_ref() {
+            let signing = services::grant::Signing {
+                provider: sealing.provider.as_ref(),
+                ring,
+                envelope: &sealing.envelope,
+            };
+            notices.extend(
+                services::logout::notices_for(
+                    &transaction,
+                    &signing,
+                    &origin.issuer(&context.realm_id),
+                    session_id,
+                    now,
+                )
+                .await,
+            );
+        }
+        let _ = store::providers::sessions::set_state(
+            &transaction,
+            session_id,
+            models::sessions::records::UserSessionState::LoggedOut,
+        )
+        .await;
+    }
+    if transaction.commit().await.is_err() {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    }
+    tracing::info!(alias, closed = standing.len(), "an upstream logout landed");
+    crate::api::rest::endpoints::protocol::backchannel::deliver(notices).await;
+    told(StatusCode::OK, "dismissed")
+}

@@ -37,11 +37,20 @@ tokio = { workspace = true, features = ["time"] }
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
 # The LDAP client lives here and nowhere else: the flow engine sees a port,
 # and no other crate links a directory protocol.
+cross-krb5 = { version = "0.4", default-features = false, optional = true }
 ldap3 = { version = "0.11", default-features = false, features = ["tls-native"] }
 lettre = { workspace = true }
 async-trait = { workspace = true }
 
+[features]
+# The desktop-ticket door. Compile-gated: the GSSAPI binding links the
+# system Kerberos libraries, and a deployment that does not negotiate
+# should not carry them.
+kerberos = ["dep:cross-krb5"]
+
 [dev-dependencies]
+# The client half of a SPNEGO exchange, so the bench can hold a real ticket.
+cross-krb5 = { version = "0.4", default-features = false }
 # The binary's operator commands, driven in tests against this very server.
 saffui = { path = "../saffui" }
 # The LDAP front, spawned on a loopback port and driven with the same ldap3

@@ -5,7 +5,8 @@ use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
     authorization, claim_sources, client_scopes, clients, directory, features, federation, flows,
-    idps, keys, mail, portability, protocol_mappers, realm_keys, realms, rebac, sessions, users,
+    idps, keys, mail, negotiation, portability, protocol_mappers, realm_keys, realms, rebac,
+    sessions, users,
 };
 
 /// One route: the verb, the path, what it costs, and what answers it.
@@ -452,6 +453,24 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/federation",
             action: AdminAction::IdpWrite,
             handler: Some(|| web::delete().to(federation::delete)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/spnego",
+            action: AdminAction::IdpRead,
+            handler: Some(|| web::get().to(negotiation::get)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/spnego",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::put().to(negotiation::put)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/spnego",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::delete().to(negotiation::delete)),
         },
         AdminRoute {
             method: Method::POST,

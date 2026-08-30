@@ -8,6 +8,7 @@ pub mod flows;
 pub mod idps;
 pub mod keys;
 pub mod mail;
+pub mod negotiation;
 pub mod portability;
 pub mod protocol_mappers;
 pub mod realm_keys;

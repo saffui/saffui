@@ -4,3 +4,4 @@ pub mod federation;
 pub mod jobs;
 pub mod messaging;
 pub mod middleware;
+pub mod negotiate;

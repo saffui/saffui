@@ -24,6 +24,10 @@ jobs:
       # rustup auto-installs the toolchain pinned in rust-toolchain.toml
       # (components included) on the first cargo invocation - no setup step.
       - uses: Swatinem/rust-cache@v2
+      # The SPNEGO bench holds the client half of a real exchange, so building
+      # the workspace's tests links the system GSSAPI.
+      - name: gssapi headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libkrb5-dev
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
@@ -51,6 +55,7 @@ jobs:
           cargo clippy --workspace --all-targets --features commons/http -- -D warnings
           cargo clippy --workspace --all-targets --features commons/request-span -- -D warnings
           cargo clippy --workspace --all-targets --features crypto/fips-strict -- -D warnings
+          cargo clippy --workspace --all-targets --features server/kerberos -- -D warnings
       # The exclusion is a compile_error!, so nothing observes it unless someone
       # builds the pair it forbids - and a guard nobody fires is a guard nobody
       # notices losing. The failure has to carry the guard's own message: a build
@@ -85,6 +90,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5.0.1
       - uses: Swatinem/rust-cache@v2
+      - name: gssapi headers
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libkrb5-dev
 
       - name: cache the built library
         id: cache
@@ -216,6 +223,8 @@ jobs:
       SAFFUI_TEST_LDAP: "ldap://localhost:1389"
       SAFFUI_TEST_PG_TLS: "host=localhost port=5433 user=postgres password=saffui dbname=saffui_test"
       SAFFUI_TEST_PG_TLS_CERTS: /tmp/pgtls
+      SAFFUI_TEST_KRB5: SAFFUI.TEST
+      KRB5_KTNAME: /tmp/http.keytab
     services:
       postgres:
         image: postgres:17-alpine
@@ -240,6 +249,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5.0.1
       - uses: Swatinem/rust-cache@v2
+      - name: gssapi headers and a KDC
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libkrb5-dev krb5-kdc krb5-admin-server krb5-user
+          sudo cp deploy/krb5/krb5.conf /etc/krb5.conf
+          sudo kdb5_util create -s -r SAFFUI.TEST -P master-key
+          sudo kadmin.local -q "addprinc -pw wilderness ada@SAFFUI.TEST"
+          sudo kadmin.local -q "addprinc -randkey HTTP/localhost@SAFFUI.TEST"
+          sudo kadmin.local -q "ktadd -k /tmp/http.keytab HTTP/localhost@SAFFUI.TEST"
+          sudo chmod 644 /tmp/http.keytab
+          sudo krb5kdc
+          echo wilderness | kinit ada@SAFFUI.TEST
+          klist
 
       # A second server, with TLS. It cannot be a service: the certificate has
       # to exist before the container starts, and a service has no step to make
@@ -329,7 +352,7 @@ jobs:
       - name: test both planes end to end
         run: |
           set -o pipefail
-          cargo test -p server -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/server.log"
+          cargo test -p server --features kerberos -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/server.log"
           if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/server.log")" -lt 5 ]; then
             echo "the end to end plane tests did not run; the job proved nothing." >&2
             exit 1

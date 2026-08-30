@@ -86,6 +86,29 @@ pub struct UserFederationMutationModel {
     pub configs: Option<crate::entities::attributes::AttributesMap>,
 }
 
+/// The desktop-ticket door a realm answers, when it answers one.
+///
+/// One row, like the directory above it: the service principal names what the
+/// deployment's keytab must speak for, and everything else about the exchange
+/// is the protocol's. The keytab is not here, by construction: it lives with
+/// the deployment's files, like a TLS key.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RealmSpnegoModel {
+    pub realm_id: String,
+    pub enabled: Option<bool>,
+    pub configs: Option<crate::entities::attributes::AttributesMap>,
+    pub metadata: crate::auditable::AuditableModel,
+}
+
+/// The write payload for the one ticket door a realm holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RealmSpnegoMutationModel {
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub configs: Option<crate::entities::attributes::AttributesMap>,
+}
+
 /// What another provider asserts about a person: a signed document from its
 /// issuer, or where a relying party fetches one (OIDC Core §5.6.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]

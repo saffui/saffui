@@ -78,6 +78,9 @@ pub enum Authenticator {
     Webauthn,
     /// A link mailed to the address the realm holds, followed back here.
     MagicLink,
+    /// A Kerberos ticket carried by SPNEGO, accepted at the door and reduced
+    /// to a principal before this crate sees it.
+    Kerberos,
 }
 
 /// A name no build knows. Refused where a flow is read, so a realm cannot be
@@ -95,6 +98,7 @@ impl FromStr for Authenticator {
             "totp" => Ok(Self::Totp),
             "webauthn" => Ok(Self::Webauthn),
             "magic-link" => Ok(Self::MagicLink),
+            "kerberos" => Ok(Self::Kerberos),
             other => Err(Unknown(other.to_owned())),
         }
     }
@@ -107,6 +111,7 @@ impl Authenticator {
             Self::Totp => "totp",
             Self::Webauthn => "webauthn",
             Self::MagicLink => "magic-link",
+            Self::Kerberos => "kerberos",
         }
     }
 
@@ -127,6 +132,8 @@ impl Authenticator {
             // One factor, like a password. What the class names is how many
             // things were proved, not which of them was.
             Self::MagicLink => "password",
+            // A ticket proves one thing: the desktop session. One factor.
+            Self::Kerberos => "password",
         }
     }
 }
@@ -145,6 +152,10 @@ pub enum Answer {
     Webauthn(String),
     /// The value carried by a link that was followed back here.
     MagicLink(SecretBox<String>),
+    /// The principal a SPNEGO exchange established, already accepted at the
+    /// door. A principal and not a token: the GSS machinery lives with the
+    /// listener, and what crosses into this crate is who it said.
+    Negotiate(String),
 }
 
 /// Say whether an answer satisfies one authenticator.
@@ -184,6 +195,41 @@ pub async fn verify_answer(
         Authenticator::MagicLink => {
             magic_link(transaction, provider, origin, subject, answers, posting).await
         }
+        Authenticator::Kerberos => negotiate(subject, answers),
+    }
+}
+
+/// Say whether an accepted SPNEGO principal names the resolved subject.
+///
+/// The exchange itself happened at the door: the ticket was validated against
+/// the realm's service keytab and reduced to a principal before the flow ran,
+/// and the same principal's local part is what resolved the subject. What this
+/// step establishes is the tie between the two, so a flow that also carries a
+/// typed username cannot ride one person's ticket into another's account. No
+/// ticket offered is not a failure: the step waits, and the door's challenge
+/// tells the browser how to answer, while an alternative step stays open for
+/// whoever is off the domain.
+fn negotiate(subject: Option<&UserModel>, answers: &[Answer]) -> Answered {
+    let offered = answers.iter().find_map(|answer| match answer {
+        Answer::Negotiate(principal) => Some(principal.as_str()),
+        _ => None,
+    });
+    let Some(principal) = offered else {
+        return Answered {
+            outcome: Outcome::Pending,
+            asks: Some(Challenge {
+                shown: serde_json::json!({ "mechanism": "negotiate" }),
+                remembered: serde_json::Value::Null,
+            }),
+            sending: None,
+        };
+    };
+    let named = principal.split('@').next().unwrap_or_default();
+    match subject {
+        Some(person) if !named.is_empty() && person.user_name == named => {
+            Answered::plain(Outcome::Passed)
+        }
+        _ => Answered::plain(Outcome::Failed),
     }
 }
 

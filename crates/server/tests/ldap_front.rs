@@ -41,6 +41,7 @@ fn subject_dn() -> String {
 }
 
 #[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_legacy_client_binds_searches_and_asks_who_it_is() {
     let plane = Plane::with_actions(&[]).await;
     let url = fronted(&plane).await;
@@ -114,6 +115,7 @@ async fn a_legacy_client_binds_searches_and_asks_who_it_is() {
 }
 
 #[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_door_stays_shut_to_who_it_must() {
     let plane = Plane::with_actions(&[]).await;
     let url = fronted(&plane).await;
@@ -186,6 +188,7 @@ async fn the_door_stays_shut_to_who_it_must() {
 }
 
 #[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_mirrored_person_is_sent_to_their_own_directory() {
     let plane = Plane::with_actions(&[]).await;
     plane.plant_shadow("fedora", "wilderness").await;

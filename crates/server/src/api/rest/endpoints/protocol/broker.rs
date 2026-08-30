@@ -210,6 +210,15 @@ pub async fn conclude(
     {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     }
+    // The upstream's own signed assertion, kept as this person's aggregated
+    // claim source: what it says travels as its word, never restated as
+    // this realm's.
+    if brokering::keep_assertions(&transaction, &provider, &user_id, id_token, &arrival)
+        .await
+        .is_err()
+    {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    }
     let Ok(Some(person)) = store::providers::users::load(&transaction, &user_id).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };

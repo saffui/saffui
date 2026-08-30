@@ -411,6 +411,88 @@ pub async fn apply_mappers(
     Ok(())
 }
 
+/// The names an upstream's document answers for: what it asserts about the
+/// person, the protocol's own plumbing left out. `sub` stays out too: it
+/// names the person at the upstream, and locally that is the link's job.
+const SPOKEN_FOR_NOBODY: [&str; 17] = [
+    "iss",
+    "sub",
+    "aud",
+    "exp",
+    "iat",
+    "nbf",
+    "nonce",
+    "auth_time",
+    "acr",
+    "amr",
+    "azp",
+    "sid",
+    "at_hash",
+    "c_hash",
+    "jti",
+    "typ",
+    "scope",
+];
+
+/// Keep the upstream's own signed assertion as this person's aggregated
+/// claim source, OIDC Core 5.6.2: carried, never restated.
+///
+/// One source per provider per person, replaced on every arrival, because
+/// the document expires with the login that brought it. Names another
+/// source of the person already answers for stay with that source; and an
+/// arrival asserting nothing person-shaped takes the stale source away
+/// rather than leaving a document with nothing to say.
+pub async fn keep_assertions(
+    transaction: &Transaction<'_>,
+    provider: &IdentityProviderModel,
+    user_id: &str,
+    id_token: &str,
+    arrival: &Arrival,
+) -> Result<(), Unbrokered> {
+    let source_id = format!("idp-{}-{user_id}", provider.provider_id);
+    let standing = brokering::claim_sources_of(transaction, user_id)
+        .await
+        .map_err(|_| Unbrokered::Backend)?;
+    let taken_elsewhere = |name: &str| {
+        standing.iter().any(|source| {
+            source.source_id != source_id && source.claims.iter().any(|held| held == name)
+        })
+    };
+    let spoken: Vec<String> = arrival
+        .claims
+        .keys()
+        .filter(|name| !SPOKEN_FOR_NOBODY.contains(&name.as_str()))
+        .filter(|name| !taken_elsewhere(name))
+        .cloned()
+        .collect();
+
+    brokering::delete_claim_source(transaction, user_id, &source_id)
+        .await
+        .map_err(|_| Unbrokered::Backend)?;
+    if spoken.is_empty() {
+        return Ok(());
+    }
+    brokering::create_claim_source(
+        transaction,
+        &models::entities::brokering::UserClaimSourceModel {
+            source_id,
+            realm_id: provider.realm_id.clone(),
+            user_id: user_id.to_owned(),
+            claims: spoken,
+            kind: models::entities::brokering::ClaimSourceKind::Jwt,
+            jwt: Some(id_token.to_owned()),
+            endpoint: None,
+            endpoint_token: None,
+            metadata: models::auditable::AuditableModel::from_creator(
+                provider.metadata.tenant.clone(),
+                format!("broker:{}", provider.provider_id),
+            ),
+        },
+    )
+    .await
+    .map_err(|_| Unbrokered::Backend)
+}
+
 async fn remember(
     transaction: &Transaction<'_>,
     provider: &IdentityProviderModel,

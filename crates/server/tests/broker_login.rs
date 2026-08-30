@@ -426,4 +426,80 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         Some("password"),
         "a forced rule did not take the upstream as authoritative"
     );
+
+    // An upstream token that does assert something person-shaped is kept
+    // whole as this person's aggregated claim source, replaced on each
+    // arrival: carried as the upstream's word, never restated.
+    let cookie = opened_login(&plane).await;
+    {
+        let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!(
+                    "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/login"
+                ))
+                .insert_header((
+                    "cookie",
+                    format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+                ))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response
+            .headers()
+            .get("location")
+            .and_then(|held| held.to_str().ok())
+            .expect("a departure")
+            .to_owned();
+        let state = param(&location, "state").expect("a state");
+        let nonce = param(&location, "nonce").expect("a nonce");
+        let challenge = param(&location, "code_challenge").expect("a challenge");
+        let code = plane
+            .mint_code_claimed(
+                support::CONFIDENTIAL,
+                &format!(
+                    "{}/protocol/openid-connect/broker/{ALIAS}/endpoint",
+                    support::origin().issuer(REALM)
+                ),
+                "openid profile",
+                Some((&challenge, "S256")),
+                &nonce,
+                Some(json!({ "id_token": { "given_name": null } })),
+            )
+            .await;
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!(
+                    "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/endpoint?code={}&state={}",
+                    support::urlencode(&code),
+                    support::urlencode(&state),
+                ))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    }
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let sources = store::providers::brokering::claim_sources_of(&transaction, &linked)
+            .await
+            .unwrap();
+        assert_eq!(sources.len(), 1, "one source per provider per person");
+        let kept = &sources[0];
+        assert_eq!(kept.source_id, format!("idp-{ALIAS}-{linked}"));
+        assert_eq!(kept.claims, vec!["given_name".to_owned()]);
+        assert!(
+            kept.jwt
+                .as_deref()
+                .is_some_and(|jwt| jwt.split('.').count() == 3),
+            "the upstream's own compact document is what is kept"
+        );
+    }
 }

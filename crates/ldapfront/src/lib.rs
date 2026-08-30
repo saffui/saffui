@@ -1,5 +1,8 @@
+use auth::login::lockout;
+use chrono::Utc;
+use crypto::password::migration::burn_verification_time;
 use crypto::password::{StoredPassword, verify_and_plan};
-use crypto::provider::CryptoProvider;
+use crypto::provider::{Argon2Params, CryptoProvider};
 use crypto::secrecy::SecretBox;
 use deadpool_postgres::Pool;
 use futures_util::{SinkExt, StreamExt};
@@ -10,7 +13,7 @@ use ldap3_proto::simple::{
 };
 use models::entities::credentials::CredentialType;
 use models::entities::user::{UserModel, profile};
-use store::providers::{credentials, users};
+use store::providers::{credentials, realms, users};
 use store::tenancy::{Tenancy, resolve};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
@@ -57,13 +60,19 @@ impl Front {
 /// comes from the same store the HTTP door reads, and nothing here writes.
 pub async fn serve(
     listener: tokio::net::TcpListener,
+    tls: Option<openssl::ssl::SslContext>,
     pool: Pool,
     tenancy: Tenancy,
     provider: std::sync::Arc<dyn CryptoProvider>,
     front: Front,
 ) {
     if let Ok(bind) = listener.local_addr() {
-        tracing::info!(%bind, base = front.base_dn, "the ldap front answers");
+        tracing::info!(
+            %bind,
+            base = front.base_dn,
+            sealed = tls.is_some(),
+            "the ldap front answers"
+        );
     }
     loop {
         let Ok((socket, peer)) = listener.accept().await else {
@@ -73,23 +82,50 @@ pub async fn serve(
         let tenancy = tenancy.clone();
         let provider = provider.clone();
         let front = front.clone();
+        let tls = tls.clone();
         tokio::spawn(async move {
-            if let Err(why) = attended(socket, pool, tenancy, provider, front).await {
+            let outcome = match tls {
+                Some(context) => match sealed(&context, socket).await {
+                    Ok(stream) => attended(stream, peer, pool, tenancy, provider, front).await,
+                    Err(why) => Err(why),
+                },
+                None => attended(socket, peer, pool, tenancy, provider, front).await,
+            };
+            if let Err(why) = outcome {
                 tracing::debug!(%peer, why, "an ldap conversation ended early");
             }
         });
     }
 }
 
-/// One conversation: anonymous until a bind holds, read-only throughout.
-async fn attended(
+/// The server side of one TLS handshake.
+async fn sealed(
+    context: &openssl::ssl::SslContext,
     socket: tokio::net::TcpStream,
+) -> Result<tokio_openssl::SslStream<tokio::net::TcpStream>, &'static str> {
+    let ssl = openssl::ssl::Ssl::new(context).map_err(|_| "the tls context is unusable")?;
+    let mut stream =
+        tokio_openssl::SslStream::new(ssl, socket).map_err(|_| "the tls context is unusable")?;
+    std::pin::Pin::new(&mut stream)
+        .accept()
+        .await
+        .map_err(|_| "the handshake did not complete")?;
+    Ok(stream)
+}
+
+/// One conversation: anonymous until a bind holds, read-only throughout.
+async fn attended<S>(
+    socket: S,
+    peer: std::net::SocketAddr,
     pool: Pool,
     tenancy: Tenancy,
     provider: std::sync::Arc<dyn CryptoProvider>,
     front: Front,
-) -> Result<(), &'static str> {
-    let (read_half, write_half) = socket.into_split();
+) -> Result<(), &'static str>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send,
+{
+    let (read_half, write_half) = tokio::io::split(socket);
     let mut requests = FramedRead::new(read_half, LdapCodec::default());
     let mut answers = FramedWrite::new(write_half, LdapCodec::default());
     let mut bound: Option<String> = None;
@@ -103,7 +139,7 @@ async fn attended(
         };
         match op {
             ServerOps::SimpleBind(asked) => {
-                let answer = bind(&pool, &tenancy, provider.as_ref(), &front, &asked).await;
+                let answer = bind(&pool, &tenancy, provider.as_ref(), &front, &asked, peer).await;
                 match answer {
                     Ok(name) => {
                         bound = Some(name);
@@ -197,22 +233,31 @@ async fn opened<'c>(
     tenancy.transaction(connection, &named).await.ok()
 }
 
-/// A simple bind, against the same credential the HTTP door checks.
+/// A simple bind, against the same credential the HTTP door checks, behind
+/// the same count.
 ///
 /// Anonymous binds are refused: a directory that answers strangers says
 /// which names exist. People the realm only mirrors are refused too, with
 /// the operator told why: their password lives in the upstream directory,
 /// and this front proxying binds upstream would be a second copy of that
 /// dance. Every caller-facing refusal is the same invalid-credentials,
-/// because who exists is exactly what a bind must not leak.
+/// because who exists is exactly what a bind must not leak, and every
+/// refusal that never reached a verification burns the time one would have
+/// taken, so the clock does not answer what the code will not.
 async fn bind(
     pool: &Pool,
     tenancy: &Tenancy,
     provider: &dyn CryptoProvider,
     front: &Front,
     asked: &SimpleBindRequest,
+    peer: std::net::SocketAddr,
 ) -> Result<String, (LdapResultCode, &'static str)> {
     let refused = || (LdapResultCode::InvalidCredentials, "the bind did not hold");
+    let offered = SecretBox::new(Box::new(asked.pw.clone()));
+    let burned = |kept: (LdapResultCode, &'static str)| {
+        burn_verification_time(provider, &offered, Argon2Params::default());
+        kept
+    };
     if asked.dn.is_empty() || asked.pw.is_empty() {
         return Err((
             LdapResultCode::UnwillingToPerform,
@@ -220,11 +265,14 @@ async fn bind(
         ));
     }
     let Some(user_name) = front.named_by(&asked.dn) else {
-        return Err(refused());
+        return Err(burned(refused()));
     };
 
     let mut connection = pool.get().await.map_err(|_| refused())?;
     let Some(transaction) = opened(&mut connection, tenancy, front).await else {
+        return Err(refused());
+    };
+    let Ok(Some(realm)) = realms::load(&transaction, &front.realm_id).await else {
         return Err(refused());
     };
 
@@ -233,14 +281,24 @@ async fn bind(
         .map_err(|_| refused())?
         .filter(|held| held.enabled)
     else {
-        return Err(refused());
+        return Err(burned(refused()));
     };
     if person.user_storage == Some(models::entities::user::UserStorage::Ldap) {
         tracing::warn!(
             user = %user_name,
             "a mirrored person tried the ldap front; their password lives upstream"
         );
-        return Err(refused());
+        return Err(burned(refused()));
+    }
+
+    // Before anything is verified, and without counting: an answer that is
+    // never looked at cannot be wrong, and counting here would let anybody
+    // hold somebody else's account shut indefinitely.
+    let now = Utc::now();
+    match lockout::until(&transaction, &realm, &person.user_id, now).await {
+        Ok(None) => {}
+        Ok(Some(_)) => return Err(burned(refused())),
+        Err(_) => return Err(refused()),
     }
 
     let held =
@@ -248,18 +306,37 @@ async fn bind(
             .await
             .map_err(|_| refused())?;
     let Some(credential) = held.into_iter().next() else {
-        return Err(refused());
+        return Err(burned(refused()));
     };
     let Ok(stored) = (StoredPassword::Argon2id {
         encoded: credential.secret.expose().to_owned(),
     })
     .to_legacy_hash() else {
-        return Err(refused());
+        return Err(burned(refused()));
     };
-    let offered = SecretBox::new(Box::new(asked.pw.clone()));
+    let from = peer.ip().to_string();
     match verify_and_plan(provider, &offered, &stored) {
-        Ok(plan) if plan.valid => Ok(person.user_name),
-        _ => Err(refused()),
+        Ok(plan) if plan.valid => {
+            // What was counted against them was noise, and the forgetting has
+            // to outlive this conversation, so the transaction commits.
+            if lockout::clear(&transaction, &person.user_id).await.is_err()
+                || transaction.commit().await.is_err()
+            {
+                return Err(refused());
+            }
+            Ok(person.user_name)
+        }
+        _ => {
+            // A wrong password on this door counts exactly as it counts on
+            // the HTTP door, and a refusal must not roll its own count back.
+            if lockout::count(&transaction, &realm, &person.user_id, Some(&from), now)
+                .await
+                .is_ok()
+            {
+                let _ = transaction.commit().await;
+            }
+            Err(refused())
+        }
     }
 }
 

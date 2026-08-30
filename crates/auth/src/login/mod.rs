@@ -2,6 +2,7 @@ pub mod authenticator;
 pub mod browser;
 pub mod directory;
 pub mod enrolment;
+pub mod lockout;
 pub mod step;
 
 use chrono::{DateTime, Utc};
@@ -12,7 +13,6 @@ use models::entities::auth::ExecutionStep;
 use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
 use store::providers::auth_flows;
-use store::providers::login as login_store;
 
 use crate::login::authenticator::{Answer, Authenticator, Posting};
 use crate::login::step::{Decided, Outcome, Step};
@@ -100,7 +100,11 @@ pub async fn run_flow(
     // Before anything is verified, and without counting: an answer that is
     // never looked at cannot be wrong, and extending the lock on every attempt
     // would let anybody hold somebody else's account shut indefinitely.
-    if let Some(until) = locked_until(transaction, realm, subject, now).await? {
+    if let Some(subject) = subject
+        && let Some(until) = lockout::until(transaction, realm, &subject.user_id, now)
+            .await
+            .map_err(|_| Unrunnable::Unreadable)?
+    {
         return Ok((Progress::LockedOut { until }, None));
     }
 
@@ -171,12 +175,14 @@ pub async fn run_flow(
             // Counted once per pass, not once per step: a flow of three
             // alternatives is one wrong answer, not three.
             Decided::Refused => {
-                count_failure(transaction, realm, &subject.user_id, from, now).await?;
+                lockout::count(transaction, realm, &subject.user_id, from, now)
+                    .await
+                    .map_err(|_| Unrunnable::Unreadable)?;
             }
             // A login that succeeded says the person is the person, so what was
             // counted against them was noise.
             Decided::Admitted => {
-                login_store::clear_failures(transaction, &subject.user_id)
+                lockout::clear(transaction, &subject.user_id)
                     .await
                     .map_err(|_| Unrunnable::Unreadable)?;
             }
@@ -199,54 +205,4 @@ pub async fn run_flow(
         },
     };
     Ok((progress, sending))
-}
-
-/// When this person's lockout ends, or nothing when they are not locked.
-async fn locked_until(
-    transaction: &Transaction<'_>,
-    realm: &RealmModel,
-    subject: Option<&UserModel>,
-    now: DateTime<Utc>,
-) -> Result<Option<i64>, Unrunnable> {
-    if !realm.brute_force.protected {
-        return Ok(None);
-    }
-    let Some(subject) = subject else {
-        return Ok(None);
-    };
-    let held = login_store::failures(transaction, &subject.user_id)
-        .await
-        .map_err(|_| Unrunnable::Unreadable)?;
-    Ok(held
-        .filter(|record| record.is_locked_at(now.timestamp()))
-        .map(|record| record.failed_login_not_before))
-}
-
-/// Count one failure, and lock when the count says to.
-async fn count_failure(
-    transaction: &Transaction<'_>,
-    realm: &RealmModel,
-    user_id: &str,
-    from: Option<&str>,
-    now: DateTime<Utc>,
-) -> Result<(), Unrunnable> {
-    let policy = realm.brute_force;
-    // The window is worked out from the count this failure will make, which is
-    // what the row already holds plus one.
-    let standing = login_store::failures(transaction, user_id)
-        .await
-        .map_err(|_| Unrunnable::Unreadable)?
-        .map_or(0, |record| record.num_failures);
-    login_store::record_failure(
-        transaction,
-        user_id,
-        now.timestamp(),
-        from,
-        i64::from(policy.max_failures),
-        policy.lockout_for(standing + 1),
-        i64::from(policy.reset_seconds),
-    )
-    .await
-    .map_err(|_| Unrunnable::Unreadable)?;
-    Ok(())
 }

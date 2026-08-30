@@ -2,7 +2,6 @@ mod support;
 
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
-use models::entities::realm::BruteForce;
 use serde_json::Value;
 use server::api::config::{Plane as Mounted, register};
 use store::tenancy::TenantContext;
@@ -78,32 +77,6 @@ async fn answered(plane: &Plane, password: &str) -> (StatusCode, Value) {
     (status, test::read_body_json(response).await)
 }
 
-/// A realm that counts, with a threshold a test can reach.
-async fn counting(plane: &Plane, max_failures: i32) {
-    let mut connection = plane.connection().await;
-    let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
-        .await;
-    let mut realm = store::providers::realms::load(&transaction, support::REALM)
-        .await
-        .expect("the realms table")
-        .expect("a planted realm");
-    realm.brute_force = BruteForce {
-        protected: true,
-        max_failures,
-        lockout_seconds: 60,
-        max_lockout_seconds: 900,
-        reset_seconds: 900,
-    };
-    store::providers::realms::update(&transaction, &realm)
-        .await
-        .expect("the realms table");
-    transaction.commit().await.unwrap();
-}
-
 /// A realm that counts nothing lets a wrong password be wrong forever, which
 /// is what every realm did before this.
 #[tokio::test]
@@ -126,7 +99,7 @@ async fn a_realm_that_does_not_count_never_locks() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn too_many_failures_stop_the_answer_being_read() {
     let plane = Plane::with_actions(&[]).await;
-    counting(&plane, 3).await;
+    plane.count_logins(3).await;
 
     for attempt in 1..=2 {
         let (status, body) = answered(&plane, "not-the-password").await;
@@ -160,7 +133,7 @@ async fn too_many_failures_stop_the_answer_being_read() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn getting_in_forgets_what_was_counted() {
     let plane = Plane::with_actions(&[]).await;
-    counting(&plane, 5).await;
+    plane.count_logins(5).await;
 
     for _ in 0..3 {
         answered(&plane, "not-the-password").await;
@@ -185,7 +158,7 @@ async fn an_administrator_lifts_the_lock() {
         models::entities::authz::AdminAction::UserWrite,
     ])
     .await;
-    counting(&plane, 2).await;
+    plane.count_logins(2).await;
     for _ in 0..3 {
         answered(&plane, "not-the-password").await;
     }

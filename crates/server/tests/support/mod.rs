@@ -744,6 +744,30 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// A realm that counts, with a threshold a test can reach.
+    #[allow(dead_code, reason = "only the suites that hammer a password arm it")]
+    pub async fn count_logins(&self, max_failures: i32) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.brute_force = models::entities::realm::BruteForce {
+            protected: true,
+            max_failures,
+            lockout_seconds: 60,
+            max_lockout_seconds: 900,
+            reset_seconds: 900,
+        };
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.unwrap();
+    }
+
     /// What still stands against the subject.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn subject_owes(&self) -> Vec<models::entities::user::RequiredAction> {

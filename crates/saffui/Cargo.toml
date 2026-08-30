@@ -13,6 +13,7 @@ path = "src/main.rs"
 commons = { workspace = true, features = ["http", "request-span"] }
 config = { workspace = true }
 ldapfront = { path = "../ldapfront" }
+openssl = { workspace = true }
 # The deployment wrapping key is opened here, at startup, so a missing one stops
 # the process instead of every mint it was asked for later.
 crypto = { workspace = true }

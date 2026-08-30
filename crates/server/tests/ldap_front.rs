@@ -12,13 +12,14 @@ use support::Plane;
 const BASE: &str = "dc=id,dc=example";
 const PEOPLE: &str = "ou=people,dc=id,dc=example";
 
-/// Spawn the front for one plane on a loopback port, and hand back a URL a
-/// directory client can dial.
-async fn fronted(plane: &Plane) -> String {
+/// Spawn the front for one plane on a loopback port, sealed when an
+/// acceptor is handed in, and hand back the port.
+async fn fronted(plane: &Plane, tls: Option<openssl::ssl::SslContext>) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(ldapfront::serve(
         listener,
+        tls,
         plane.pool(),
         plane.tenancy(),
         std::sync::Arc::new(support::provider()),
@@ -27,13 +28,51 @@ async fn fronted(plane: &Plane) -> String {
             base_dn: BASE.into(),
         },
     ));
-    format!("ldap://127.0.0.1:{port}")
+    port
 }
 
 async fn dialled(url: &str) -> Ldap {
     let (connection, ldap) = LdapConnAsync::new(url).await.expect("the front answers");
     ldap3::drive!(connection);
     ldap
+}
+
+/// An ephemeral self-signed pair, minted for one test's listener.
+fn minted_acceptor() -> openssl::ssl::SslContext {
+    use openssl::asn1::Asn1Time;
+    use openssl::ec::{EcGroup, EcKey};
+    use openssl::hash::MessageDigest;
+    use openssl::nid::Nid;
+    use openssl::pkey::PKey;
+    use openssl::x509::X509Builder;
+    use openssl::x509::X509NameBuilder;
+
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+    let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+    let mut name = X509NameBuilder::new().unwrap();
+    name.append_entry_by_text("CN", "localhost").unwrap();
+    let name = name.build();
+    let mut certificate = X509Builder::new().unwrap();
+    certificate.set_version(2).unwrap();
+    certificate.set_subject_name(&name).unwrap();
+    certificate.set_issuer_name(&name).unwrap();
+    certificate.set_pubkey(&key).unwrap();
+    certificate
+        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    certificate
+        .set_not_after(&Asn1Time::days_from_now(1).unwrap())
+        .unwrap();
+    certificate.sign(&key, MessageDigest::sha256()).unwrap();
+    let certificate = certificate.build();
+
+    let mut acceptor =
+        openssl::ssl::SslAcceptor::mozilla_intermediate_v5(openssl::ssl::SslMethod::tls_server())
+            .unwrap();
+    acceptor.set_certificate(&certificate).unwrap();
+    acceptor.set_private_key(&key).unwrap();
+    acceptor.check_private_key().unwrap();
+    acceptor.build().into_context()
 }
 
 fn subject_dn() -> String {
@@ -44,8 +83,8 @@ fn subject_dn() -> String {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_legacy_client_binds_searches_and_asks_who_it_is() {
     let plane = Plane::with_actions(&[]).await;
-    let url = fronted(&plane).await;
-    let mut ldap = dialled(&url).await;
+    let port = fronted(&plane, None).await;
+    let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
 
     let bound = ldap
         .simple_bind(&subject_dn(), support::PASSWORD)
@@ -118,7 +157,8 @@ async fn a_legacy_client_binds_searches_and_asks_who_it_is() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_door_stays_shut_to_who_it_must() {
     let plane = Plane::with_actions(&[]).await;
-    let url = fronted(&plane).await;
+    let port = fronted(&plane, None).await;
+    let url = format!("ldap://127.0.0.1:{port}");
 
     // Reading before binding: which people exist is not an anonymous question.
     let mut fresh = dialled(&url).await;
@@ -192,8 +232,8 @@ async fn the_door_stays_shut_to_who_it_must() {
 async fn a_mirrored_person_is_sent_to_their_own_directory() {
     let plane = Plane::with_actions(&[]).await;
     plane.plant_shadow("fedora", "wilderness").await;
-    let url = fronted(&plane).await;
-    let mut ldap = dialled(&url).await;
+    let port = fronted(&plane, None).await;
+    let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
 
     // Even holding a local credential that would verify, a mirrored person
     // is refused: their password lives in the upstream directory, and this
@@ -203,4 +243,112 @@ async fn a_mirrored_person_is_sent_to_their_own_directory() {
         .await
         .expect("an answer");
     assert_eq!(mirrored.rc, 49, "{mirrored:?}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_hammered_password_locks_this_door_too() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.count_logins(2).await;
+    let port = fronted(&plane, None).await;
+    let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
+
+    for _ in 0..3 {
+        let wrong = ldap
+            .simple_bind(&subject_dn(), "not-the-password")
+            .await
+            .expect("an answer");
+        assert_eq!(wrong.rc, 49, "{wrong:?}");
+    }
+
+    // The right password no longer helps, and wears the same refusal: a
+    // locked account is not announced to whoever locked it.
+    let locked = ldap
+        .simple_bind(&subject_dn(), support::PASSWORD)
+        .await
+        .expect("an answer");
+    assert_eq!(locked.rc, 49, "the lockout did not hold: {locked:?}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_that_does_not_count_forgives_this_door_forever() {
+    let plane = Plane::with_actions(&[]).await;
+    let port = fronted(&plane, None).await;
+    let mut ldap = dialled(&format!("ldap://127.0.0.1:{port}")).await;
+
+    for _ in 0..6 {
+        let wrong = ldap
+            .simple_bind(&subject_dn(), "not-the-password")
+            .await
+            .expect("an answer");
+        assert_eq!(wrong.rc, 49, "{wrong:?}");
+    }
+    let bound = ldap
+        .simple_bind(&subject_dn(), support::PASSWORD)
+        .await
+        .expect("an answer");
+    assert_eq!(bound.rc, 0, "an unarmed realm locked anyway: {bound:?}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_sealed_listener_answers_a_real_handshake() {
+    let plane = Plane::with_actions(&[]).await;
+    let port = fronted(&plane, Some(minted_acceptor())).await;
+
+    // The handshake is made with this test's own TLS client, wide open on
+    // verification since the pair is self-signed and one minute old, and the
+    // directory client then talks through the tunnel. The platform TLS the
+    // ldap3 client would bring dawdles half a minute on unknown issuers.
+    let tunnel = tunneled(port).await;
+    let mut ldap = dialled(&format!("ldap://127.0.0.1:{tunnel}")).await;
+
+    let bound = ldap
+        .simple_bind(&subject_dn(), support::PASSWORD)
+        .await
+        .expect("an answer");
+    assert_eq!(bound.rc, 0, "{bound:?}");
+    let (entries, _) = ldap
+        .search(
+            PEOPLE,
+            Scope::Subtree,
+            &format!("(uid={})", support::SUBJECT),
+            vec!["uid"],
+        )
+        .await
+        .expect("an answer")
+        .success()
+        .expect("the search succeeds");
+    assert_eq!(entries.len(), 1, "the sealed door serves the same people");
+    ldap.unbind().await.expect("a clean goodbye");
+}
+
+/// A local plaintext port whose far side is a real TLS handshake with the
+/// sealed listener.
+async fn tunneled(sealed_port: u16) -> u16 {
+    let doorstep = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = doorstep.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let (mut plain, _) = doorstep.accept().await.unwrap();
+        let mut connector =
+            openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls_client()).unwrap();
+        connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+        let ssl = connector
+            .build()
+            .configure()
+            .unwrap()
+            .into_ssl("localhost")
+            .unwrap();
+        let raw = tokio::net::TcpStream::connect(("127.0.0.1", sealed_port))
+            .await
+            .unwrap();
+        let mut sealed = tokio_openssl::SslStream::new(ssl, raw).unwrap();
+        std::pin::Pin::new(&mut sealed)
+            .connect()
+            .await
+            .expect("the handshake completes");
+        let _ = tokio::io::copy_bidirectional(&mut plain, &mut sealed).await;
+    });
+    port
 }

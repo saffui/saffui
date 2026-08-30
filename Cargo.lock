@@ -1530,14 +1530,18 @@ dependencies = [
 name = "ldapfront"
 version = "0.1.0"
 dependencies = [
+ "auth",
+ "chrono",
  "commons",
  "crypto",
  "deadpool-postgres",
  "futures-util",
  "ldap3_proto",
  "models",
+ "openssl",
  "store",
  "tokio",
+ "tokio-openssl",
  "tokio-util",
  "tracing",
 ]
@@ -2353,6 +2357,7 @@ dependencies = [
  "deadpool-postgres",
  "ldapfront",
  "models",
+ "openssl",
  "pgcore",
  "secrecy",
  "serde",
@@ -2501,6 +2506,7 @@ dependencies = [
  "ldapfront",
  "lettre",
  "models",
+ "openssl",
  "pgcore",
  "saffui",
  "secrecy",
@@ -2510,6 +2516,7 @@ dependencies = [
  "services",
  "store",
  "tokio",
+ "tokio-openssl",
  "tokio-postgres",
  "tracing",
  "tracing-actix-web",

@@ -9,6 +9,8 @@ license.workspace = true
 # else in the workspace.
 
 [dependencies]
+auth = { path = "../auth" }
+chrono = { workspace = true }
 commons = { path = "../commons" }
 crypto = { path = "../crypto" }
 models = { path = "../models" }
@@ -17,5 +19,7 @@ deadpool-postgres = { workspace = true }
 futures-util = "0.3"
 ldap3_proto = { version = "0.8", default-features = false }
 tokio = { workspace = true, features = ["net", "rt", "macros"] }
+openssl = { workspace = true }
+tokio-openssl = { workspace = true }
 tokio-util = { version = "0.7", features = ["codec"] }
 tracing = { workspace = true }

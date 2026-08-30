@@ -278,15 +278,21 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     );
 
     // Bound with the other ports: a front asked for and not listenable fails
-    // the deployment now, not on the first directory client.
+    // the deployment now, not on the first directory client. So does a key
+    // pair that cannot be read, for the same reason.
     let fronting = match config::ldap::LdapFront::from_env().map_err(|reason| reason.to_string())? {
         None => None,
         Some(door) => {
+            let tls = match &door.tls {
+                None => None,
+                Some(paths) => Some(ldap_acceptor(paths)?),
+            };
             let listener = tokio::net::TcpListener::bind(door.bind)
                 .await
                 .map_err(|reason| format!("cannot listen on {}: {reason}", door.bind))?;
             Some(tokio::spawn(ldapfront::serve(
                 listener,
+                tls,
                 front_pool,
                 front_tenancy,
                 front_provider,
@@ -358,6 +364,26 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         sweeping.abort();
     }
     served.map_err(|reason| reason.to_string())
+}
+
+/// The acceptor the LDAP front seals with, from the PEM pair the operator
+/// named. Read once at startup: a listener that cannot seal refuses to
+/// start, rather than refusing every handshake, hours later, to whoever
+/// dials.
+fn ldap_acceptor(paths: &config::ldap::TlsPaths) -> Result<openssl::ssl::SslContext, String> {
+    let mut acceptor =
+        openssl::ssl::SslAcceptor::mozilla_intermediate_v5(openssl::ssl::SslMethod::tls_server())
+            .map_err(|reason| format!("cannot build the ldap acceptor: {reason}"))?;
+    acceptor
+        .set_certificate_chain_file(&paths.certificate)
+        .map_err(|reason| format!("cannot read {}: {reason}", paths.certificate.display()))?;
+    acceptor
+        .set_private_key_file(&paths.key, openssl::ssl::SslFiletype::PEM)
+        .map_err(|reason| format!("cannot read {}: {reason}", paths.key.display()))?;
+    acceptor
+        .check_private_key()
+        .map_err(|reason| format!("the ldap certificate and key do not pair: {reason}"))?;
+    Ok(acceptor.build().into_context())
 }
 
 /// Apply the schema, and give the application role its login when asked.

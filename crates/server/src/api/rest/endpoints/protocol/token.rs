@@ -148,6 +148,7 @@ pub async fn ask(
                 },
                 &client,
                 &read_provenance(&request),
+                asked.scope.as_deref(),
                 now,
             )
             .await

@@ -169,6 +169,7 @@ pub async fn client_credentials(
     within: &Within<'_>,
     client: &ClientModel,
     seen: &auth::provenance::Provenance,
+    requested: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Granted, Ungranted> {
     // §4.4: authentication by credential alone, and a public client has none it
@@ -212,8 +213,14 @@ pub async fn client_credentials(
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
 
     // Its own audience, so no downstream check has to decide what an absent one
-    // means.
-    let scope = String::new();
+    // means. The scope is what the client is attached to: the non-optional
+    // attachments ride every grant, which is the recorded meaning of holding
+    // one, and an asked optional scope rides when asked. A machine had no
+    // login to ask at, so its registration is the whole request.
+    let scope =
+        crate::authorize::granted_scope(transaction, &client.client_id, requested.unwrap_or(""))
+            .await
+            .map_err(|_| Ungranted::Unreadable)?;
     let minted: Minted = mint_token(
         signing.provider,
         &key,

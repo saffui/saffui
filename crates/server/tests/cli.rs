@@ -4,7 +4,7 @@ use std::process::ExitCode;
 
 use actix_web::{App, HttpServer, test};
 use models::entities::authz::AdminAction;
-use saffui::cli::{AdminCmd, PlaneArgs, run};
+use saffui::cli::{AdminCmd, PlaneArgs, Shown, run};
 use serde_json::Value;
 use server::api::config::{Plane as Mounted, register};
 use support::Plane;
@@ -37,10 +37,14 @@ fn mounted(plane: &Plane) -> Mounted {
 /// Run one CLI command against the live plane and hand back what it printed.
 fn commanded(server: &str, command: &AdminCmd) -> (ExitCode, Value) {
     let plane = PlaneArgs {
-        server: server.to_owned(),
-        realm: REALM.to_owned(),
-        client: support::CONFIDENTIAL.to_owned(),
+        server: Some(server.to_owned()),
+        realm: Some(REALM.to_owned()),
+        client: Some(support::CONFIDENTIAL.to_owned()),
         secret: Some(support::CLIENT_SECRET.to_owned()),
+        context: None,
+        // Spelled, so the answer does not depend on where the test's stdout
+        // happens to land.
+        format: Some(Shown::Json),
     };
     let mut printed = Vec::new();
     let code = run(&plane, command, &mut printed);
@@ -197,6 +201,30 @@ async fn the_plane_is_operated_from_a_terminal() {
     assert_eq!(code, ExitCode::SUCCESS);
     assert_eq!(told.as_array().expect("a registry").len(), 5);
 
+    // The same answer as a table: a header a person scans, one line per
+    // capability, and nothing a JSON parser would want.
+    let table_plane = PlaneArgs {
+        server: Some(base.clone()),
+        realm: Some(REALM.to_owned()),
+        client: Some(support::CONFIDENTIAL.to_owned()),
+        secret: Some(support::CLIENT_SECRET.to_owned()),
+        context: None,
+        format: Some(Shown::Table),
+    };
+    let drawn = tokio::task::spawn_blocking(move || {
+        let mut printed = Vec::new();
+        let code = run(&table_plane, &AdminCmd::Features, &mut printed);
+        (code, String::from_utf8(printed).expect("printable"))
+    })
+    .await
+    .unwrap();
+    assert_eq!(drawn.0, ExitCode::SUCCESS);
+    assert!(
+        drawn.1.starts_with("SLUG") && drawn.1.lines().count() == 6,
+        "not a five-row table under its header: {}",
+        drawn.1
+    );
+
     // Refusals are told apart in the exit code: what the role does not
     // grant, and what does not exist.
     let (code, _) = answered(AdminCmd::Users).await.unwrap();
@@ -210,10 +238,12 @@ async fn the_plane_is_operated_from_a_terminal() {
 
     // The wrong secret is an authentication trouble, not a generic one.
     let wrong = PlaneArgs {
-        server: base.clone(),
-        realm: REALM.to_owned(),
-        client: support::CONFIDENTIAL.to_owned(),
+        server: Some(base.clone()),
+        realm: Some(REALM.to_owned()),
+        client: Some(support::CONFIDENTIAL.to_owned()),
         secret: Some("not-it".to_owned()),
+        context: None,
+        format: Some(Shown::Json),
     };
     let code = tokio::task::spawn_blocking(move || {
         let mut sink = Vec::new();

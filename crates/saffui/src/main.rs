@@ -136,6 +136,16 @@ enum Command {
         #[command(subcommand)]
         command: saffui::cli::AdminCmd,
     },
+    /// Name, keep and switch the places this terminal speaks to.
+    Ctx {
+        #[command(subcommand)]
+        command: saffui::cli::CtxCmd,
+    },
+    /// Write the completion script for a shell to stdout.
+    Completion {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 fn main() -> ExitCode {
@@ -144,8 +154,24 @@ fn main() -> ExitCode {
     // The operator commands are one blocking call each and speak over HTTP;
     // they neither need the runtime the server does nor its logging setup,
     // and starting either would be noise on somebody's terminal.
-    if let Command::Admin { plane, command } = &command {
-        return saffui::cli::run(plane, command, &mut std::io::stdout());
+    match &command {
+        Command::Admin { plane, command } => {
+            return saffui::cli::run(plane, command, &mut std::io::stdout());
+        }
+        Command::Ctx { command } => {
+            return saffui::cli::run_ctx(command, &mut std::io::stdout());
+        }
+        Command::Completion { shell } => {
+            use clap::CommandFactory;
+            clap_complete::generate(
+                *shell,
+                &mut Cli::command(),
+                "saffui",
+                &mut std::io::stdout(),
+            );
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
     }
 
     // Before anything that could have something to say. What is logged and
@@ -212,7 +238,9 @@ fn main() -> ExitCode {
                     }
                     // Answered before the runtime was built; unreachable here,
                     // and spelled so the match stays exhaustive by name.
-                    Command::Admin { .. } => Ok(()),
+                    Command::Admin { .. } | Command::Ctx { .. } | Command::Completion { .. } => {
+                        Ok(())
+                    }
                 }
             })
         });

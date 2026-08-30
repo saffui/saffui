@@ -2,26 +2,115 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
 use serde_json::Value;
+
+pub mod context;
+pub mod table;
+
+use table::Format;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Shown {
+    Json,
+    Table,
+}
 
 /// Where the plane answers, and who this command is.
 ///
 /// The secret rides an environment variable and never a flag: a flag lands
 /// in shell history and in the process list, which is everybody's to read.
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct PlaneArgs {
-    /// The server's origin, e.g. https://id.example.
+    /// The server's origin, e.g. https://id.example. Falls back to the
+    /// chosen context.
     #[arg(long, env = "SAFFUI_SERVER")]
-    pub server: String,
-    /// The realm the command speaks to.
+    pub server: Option<String>,
+    /// The realm the command speaks to. Falls back to the chosen context.
     #[arg(long, env = "SAFFUI_REALM")]
-    pub realm: String,
-    /// The confidential client this command authenticates as.
+    pub realm: Option<String>,
+    /// The confidential client this command authenticates as. Falls back to
+    /// the chosen context.
     #[arg(long, env = "SAFFUI_CLIENT")]
-    pub client: String,
+    pub client: Option<String>,
     #[arg(env = "SAFFUI_CLIENT_SECRET", hide = true, long = "secret-from-env")]
     pub secret: Option<String>,
+    /// Which context fills what the flags left unsaid; the current one
+    /// unless named.
+    #[arg(long, env = "SAFFUI_CONTEXT")]
+    pub context: Option<String>,
+    /// How the answer is shown: a table on a terminal, JSON on a pipe,
+    /// unless said.
+    #[arg(long, value_enum)]
+    pub format: Option<Shown>,
+}
+
+/// The plane a command actually speaks to, after the flags, the
+/// environment and the chosen context have each had their say, in that
+/// order: what was said closest to the invocation wins.
+struct Resolved {
+    server: String,
+    realm: String,
+    client: String,
+    secret: Option<String>,
+    format: Format,
+}
+
+fn resolved(plane: &PlaneArgs) -> Result<Resolved, Trouble> {
+    let kept;
+    let context = match (&plane.server, &plane.realm, &plane.client, &plane.secret) {
+        // Everything said outright: the file is not even read, so a broken
+        // one cannot refuse a fully-spelled command.
+        (Some(_), Some(_), Some(_), Some(_)) => None,
+        _ => {
+            let place = context::resting_place();
+            kept = match place {
+                None => context::Contexts::default(),
+                Some(place) => context::read(&place).map_err(|why| trouble(2, why))?,
+            };
+            match context::chosen(&kept, plane.context.as_deref()) {
+                Ok((_, held)) => Some(held.clone()),
+                // No context is only trouble if something is missing.
+                Err(_) => None,
+            }
+        }
+    };
+
+    let from = |said: &Option<String>, held: Option<&String>, named: &str| {
+        said.clone()
+            .or_else(|| held.cloned())
+            .ok_or_else(|| trouble(2, format!("{named} is not set, by flag, env or context")))
+    };
+    let secret = plane.secret.clone().or_else(|| {
+        let variable = context
+            .as_ref()
+            .and_then(|held| held.secret_env.as_deref())
+            .unwrap_or("SAFFUI_CLIENT_SECRET");
+        std::env::var(variable).ok().filter(|held| !held.is_empty())
+    });
+    Ok(Resolved {
+        server: from(
+            &plane.server,
+            context.as_ref().map(|held| &held.server),
+            "--server",
+        )?,
+        realm: from(
+            &plane.realm,
+            context.as_ref().map(|held| &held.realm),
+            "--realm",
+        )?,
+        client: from(
+            &plane.client,
+            context.as_ref().map(|held| &held.client),
+            "--client",
+        )?,
+        secret,
+        format: match plane.format {
+            Some(Shown::Json) => Format::Json,
+            Some(Shown::Table) => Format::Table,
+            None => Format::resting(),
+        },
+    })
 }
 
 /// One operator command against the plane.
@@ -66,7 +155,14 @@ pub enum AdminCmd {
 /// Run one command and say how it went, in the exit code and nothing else:
 /// stdout carries the answer, stderr the trouble.
 pub fn run(plane: &PlaneArgs, command: &AdminCmd, out: &mut dyn Write) -> ExitCode {
-    match answer(plane, command, out) {
+    let plane = match resolved(plane) {
+        Ok(held) => held,
+        Err(why) => {
+            eprintln!("saffui: {}", why.said);
+            return ExitCode::from(why.code);
+        }
+    };
+    match answer(&plane, command, out) {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {
             eprintln!("saffui: {}", why.said);
@@ -101,7 +197,7 @@ fn agent() -> ureq::Agent {
 }
 
 /// A bearer for this one invocation, as the client itself.
-fn bearer(agent: &ureq::Agent, plane: &PlaneArgs) -> Result<String, Trouble> {
+fn bearer(agent: &ureq::Agent, plane: &Resolved) -> Result<String, Trouble> {
     let Some(secret) = plane.secret.as_deref().filter(|held| !held.is_empty()) else {
         return Err(trouble(3, "SAFFUI_CLIENT_SECRET is not set"));
     };
@@ -147,7 +243,7 @@ enum Call<'a> {
 
 fn asked(
     agent: &ureq::Agent,
-    plane: &PlaneArgs,
+    plane: &Resolved,
     token: &str,
     call: Call<'_>,
 ) -> Result<Value, Trouble> {
@@ -218,14 +314,33 @@ fn shown(out: &mut dyn Write, body: &Value) -> Result<(), Trouble> {
     writeln!(out, "{pretty}").map_err(|_| trouble(1, "stdout is closed"))
 }
 
-fn answer(plane: &PlaneArgs, command: &AdminCmd, out: &mut dyn Write) -> Result<(), Trouble> {
+fn drawn(out: &mut dyn Write, text: &str) -> Result<(), Trouble> {
+    write!(out, "{text}").map_err(|_| trouble(1, "stdout is closed"))
+}
+
+/// How each listing lays out on a terminal.
+fn columns(command: &AdminCmd) -> Option<&'static [&'static str]> {
+    match command {
+        AdminCmd::Realms => Some(&["realm_id", "name", "enabled"]),
+        AdminCmd::Features => Some(&["slug", "lifecycle", "compiled", "enabled"]),
+        AdminCmd::Clients => Some(&["client_id", "name", "enabled"]),
+        AdminCmd::Users => Some(&["user_id", "user_name", "email", "enabled"]),
+        _ => None,
+    }
+}
+
+fn answer(plane: &Resolved, command: &AdminCmd, out: &mut dyn Write) -> Result<(), Trouble> {
     let agent = agent();
     let token = bearer(&agent, plane)?;
     let realm = &plane.realm;
+    let listing = |out: &mut dyn Write, body: &Value| match (plane.format, columns(command)) {
+        (Format::Table, Some(named)) => drawn(out, &table::grid(body, named)),
+        _ => shown(out, body),
+    };
     match command {
         AdminCmd::Realms => {
             let body = asked(&agent, plane, &token, Call::Get("/admin/realms".into()))?;
-            shown(out, &body)
+            listing(out, &body)
         }
         AdminCmd::Export {
             realm: named,
@@ -267,7 +382,19 @@ fn answer(plane: &PlaneArgs, command: &AdminCmd, out: &mut dyn Write) -> Result<
                 &token,
                 Call::Get(format!("/admin/realms/{realm}/keys")),
             )?;
-            shown(out, &body)
+            match plane.format {
+                Format::Json => shown(out, &body),
+                Format::Table => {
+                    let held = &["kid", "algorithm", "status", "priority"];
+                    drawn(out, "SIGNING\n")?;
+                    drawn(out, &table::grid(&body["signing"], held))?;
+                    drawn(out, "\nENCRYPTION\n")?;
+                    drawn(
+                        out,
+                        &table::grid(&body["encryption"], &["kid", "algorithm", "status"]),
+                    )
+                }
+            }
         }
         AdminCmd::Rotate { algorithm } => {
             let body = asked(
@@ -279,7 +406,13 @@ fn answer(plane: &PlaneArgs, command: &AdminCmd, out: &mut dyn Write) -> Result<
                     serde_json::json!({ "algorithm": algorithm }),
                 ),
             )?;
-            shown(out, &body)
+            match plane.format {
+                Format::Json => shown(out, &body),
+                Format::Table => drawn(
+                    out,
+                    &table::card(&body, &["kid", "algorithm", "status", "priority"]),
+                ),
+            }
         }
         AdminCmd::Disable { kid } => {
             asked(
@@ -292,7 +425,7 @@ fn answer(plane: &PlaneArgs, command: &AdminCmd, out: &mut dyn Write) -> Result<
         }
         AdminCmd::Features => {
             let body = asked(&agent, plane, &token, Call::Get("/admin/features".into()))?;
-            shown(out, &body)
+            listing(out, &body)
         }
         AdminCmd::Clients => {
             let body = asked(
@@ -301,7 +434,7 @@ fn answer(plane: &PlaneArgs, command: &AdminCmd, out: &mut dyn Write) -> Result<
                 &token,
                 Call::Get(format!("/admin/realms/{realm}/clients")),
             )?;
-            shown(out, &body)
+            listing(out, &body)
         }
         AdminCmd::Users => {
             let body = asked(
@@ -310,7 +443,108 @@ fn answer(plane: &PlaneArgs, command: &AdminCmd, out: &mut dyn Write) -> Result<
                 &token,
                 Call::Get(format!("/admin/realms/{realm}/users")),
             )?;
-            shown(out, &body)
+            listing(out, &body)
+        }
+    }
+}
+
+/// Name, keep and switch the places this terminal speaks to.
+#[derive(Subcommand, Debug)]
+pub enum CtxCmd {
+    /// Every context this terminal knows, the current one marked.
+    List,
+    /// Make one current.
+    Use { name: String },
+    /// Keep one, whole: what a command needs, never a secret.
+    Set {
+        name: String,
+        #[arg(long)]
+        server: String,
+        #[arg(long)]
+        realm: String,
+        #[arg(long)]
+        client: String,
+        /// Which variable carries the secret; SAFFUI_CLIENT_SECRET unless said.
+        #[arg(long)]
+        secret_env: Option<String>,
+    },
+    /// The current one, spelled.
+    Current,
+    /// Forget one.
+    Delete { name: String },
+}
+
+/// Run one context command against the resting file.
+pub fn run_ctx(command: &CtxCmd, out: &mut dyn Write) -> ExitCode {
+    let Some(place) = context::resting_place() else {
+        eprintln!("saffui: no home to keep contexts under");
+        return ExitCode::from(2);
+    };
+    let outcome = (|| -> Result<(), String> {
+        let mut held = context::read(&place)?;
+        match command {
+            CtxCmd::List => {
+                for (name, context) in &held.contexts {
+                    let mark = if held.current.as_deref() == Some(name) {
+                        "*"
+                    } else {
+                        " "
+                    };
+                    writeln!(out, "{mark} {name}  {}  {}", context.server, context.realm)
+                        .map_err(|_| "stdout is closed".to_owned())?;
+                }
+                Ok(())
+            }
+            CtxCmd::Use { name } => {
+                if !held.contexts.contains_key(name) {
+                    return Err(format!("no context answers to {name}"));
+                }
+                held.current = Some(name.clone());
+                context::write(&place, &held)
+            }
+            CtxCmd::Set {
+                name,
+                server,
+                realm,
+                client,
+                secret_env,
+            } => {
+                held.contexts.insert(
+                    name.clone(),
+                    context::Context {
+                        server: server.clone(),
+                        realm: realm.clone(),
+                        client: client.clone(),
+                        secret_env: secret_env.clone(),
+                    },
+                );
+                // The first one kept becomes current: a terminal with one
+                // place to speak to should not need a second command to say
+                // so.
+                held.current.get_or_insert_with(|| name.clone());
+                context::write(&place, &held)
+            }
+            CtxCmd::Current => {
+                let (name, context) = context::chosen(&held, None)?;
+                writeln!(out, "{name}  {}  {}", context.server, context.realm)
+                    .map_err(|_| "stdout is closed".to_owned())
+            }
+            CtxCmd::Delete { name } => {
+                if held.contexts.remove(name).is_none() {
+                    return Err(format!("no context answers to {name}"));
+                }
+                if held.current.as_deref() == Some(name) {
+                    held.current = None;
+                }
+                context::write(&place, &held)
+            }
+        }
+    })();
+    match outcome {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(said) => {
+            eprintln!("saffui: {said}");
+            ExitCode::from(2)
         }
     }
 }

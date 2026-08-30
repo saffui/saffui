@@ -14,6 +14,16 @@ pub fn sweep_every() -> Result<Option<Duration>, ConfigError> {
     Ok((seconds > 0).then(|| Duration::from_secs(seconds)))
 }
 
+/// How often federated shadows are walked against their directory. Zero
+/// means never, and the resting value is never: a sync dials out, and a
+/// deployment should say so before this server does.
+const FEDERATION_SYNC: &str = "SAFFUI_FEDERATION_SYNC_SECONDS";
+
+pub fn federation_sync_every() -> Result<Option<Duration>, ConfigError> {
+    let seconds = crate::parse_or(FEDERATION_SYNC, 0)?;
+    Ok((seconds > 0).then(|| Duration::from_secs(seconds)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

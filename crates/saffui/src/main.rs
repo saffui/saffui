@@ -266,6 +266,11 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         .unwrap_or(0);
     let vitals = Vitals::new(plane.pool.clone(), schema);
     let (swept_pool, swept_tenancy) = (plane.pool.clone(), plane.tenancy.clone());
+    let (synced_pool, synced_tenancy, synced_sealing) = (
+        plane.pool.clone(),
+        plane.tenancy.clone(),
+        std::sync::Arc::new(plane.sealing.clone()),
+    );
 
     // Bound before anything is announced, and before the probes say started.
     let probes = {
@@ -293,6 +298,12 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         swept_tenancy,
         config::jobs::sweep_every().map_err(|reason| reason.to_string())?,
     );
+    let syncing = server::jobs::sync_federated_shadows(
+        synced_pool,
+        synced_tenancy,
+        synced_sealing,
+        config::jobs::federation_sync_every().map_err(|reason| reason.to_string())?,
+    );
 
     let draining = vitals.clone();
     let plane_handle = plane.handle();
@@ -311,6 +322,9 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     });
 
     let (served, _) = tokio::join!(plane, probes);
+    if let Some(syncing) = syncing {
+        syncing.abort();
+    }
     if let Some(sweeping) = sweeping {
         sweeping.abort();
     }

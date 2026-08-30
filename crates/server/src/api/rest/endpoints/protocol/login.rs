@@ -121,6 +121,52 @@ pub async fn answer(
     let attestation = filled(&answered.webauthn_register);
     let code = filled(&answered.totp_register);
 
+    // The desktop ticket, when the realm answers that door and the browser
+    // carried one. Reduced to a principal here, at the listener, so the flow
+    // only ever sees who the exchange proved. A ticket that does not hold
+    // becomes an answer that fails the step, rather than silence that would
+    // re-challenge the same doomed exchange forever.
+    let mut negotiated: Option<String> = None;
+    if let Ok(Some(door)) = store::providers::brokering::spnego(&transaction).await
+        && door.enabled != Some(false)
+    {
+        match services::negotiation::SpnegoSettings::parse(&door) {
+            Err(why) => {
+                tracing::warn!(%why, "the realm's ticket door no longer reads");
+            }
+            Ok(settings) => {
+                if let Some(token) = negotiate_token(&request) {
+                    let spn = settings.service_principal.clone();
+                    let principal = web::block(move || crate::negotiate::accepted(&spn, &token))
+                        .await
+                        .map_err(|_| ())
+                        .and_then(|held| {
+                            held.map_err(|why| {
+                                tracing::debug!(%why, "a ticket was refused at the door");
+                            })
+                        });
+                    match principal {
+                        Ok(named)
+                            if named.rsplit('@').next() == Some(settings.kerberos_realm()) =>
+                        {
+                            let local = named.split('@').next().unwrap_or_default().to_owned();
+                            negotiated = Some(local.clone());
+                            answers.push(Answer::Negotiate(named));
+                        }
+                        Ok(named) => {
+                            // A principal from another realm: nobody here.
+                            tracing::debug!(principal = %named, "a foreign-realm ticket");
+                            answers.push(Answer::Negotiate(String::new()));
+                        }
+                        Err(()) => {
+                            answers.push(Answer::Negotiate(String::new()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // A mailed step needs the realm's own key to open how it sends. Absent
     // where the realm holds no keyring, which is a realm nothing has mailed
     // from either.
@@ -172,7 +218,11 @@ pub async fn answer(
         &context,
         &origin,
         &auth_session,
-        filled(&answered.username).as_deref(),
+        // The ticket's name wins over a typed one: the exchange proved it,
+        // and the step ties the two together anyway.
+        negotiated
+            .as_deref()
+            .or(filled(&answered.username).as_deref()),
         // Everything the body carried. The flow runs every step against what it
         // was given, so a login resumed with a second factor still has to
         // satisfy the first, and each step takes the kind it understands.
@@ -279,10 +329,29 @@ pub async fn answer(
                             // caller's own and carries no server state, so a body
                             // claiming a challenge that is not there would have
                             // the caller wait for a device that was never asked.
+                            // A negotiate step is asked for the way the
+                            // protocol asks for it: a 401 naming the scheme,
+                            // which is what makes a domain-joined browser
+                            // attach its ticket to the retry. The body still
+                            // says everything a scripted caller needs.
+                            let status = match &asks {
+                                Some(asks)
+                                    if asks.get("mechanism").and_then(|held| held.as_str())
+                                        == Some("negotiate") =>
+                                {
+                                    StatusCode::UNAUTHORIZED
+                                }
+                                _ => StatusCode::OK,
+                            };
                             if let (Some(asks), Some(map)) = (asks, body.as_object_mut()) {
                                 map.insert("asks".to_owned(), asks);
                             }
-                            uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(body)
+                            let mut builder = HttpResponseBuilder::new(status);
+                            let answer = uncached(&mut builder);
+                            if status == StatusCode::UNAUTHORIZED {
+                                answer.insert_header(("WWW-Authenticate", "Negotiate"));
+                            }
+                            answer.json(body)
                         }
                         // A key needs the script; a code needs only the
                         // field; a link followed in the wrong browser needs
@@ -456,4 +525,15 @@ fn shown(page: &str, named: &str) -> HttpResponse {
     uncached(&mut HttpResponseBuilder::new(StatusCode::SEE_OTHER))
         .insert_header(("Location", format!("{page}#{named}")))
         .finish()
+}
+
+/// The SPNEGO token the browser attached, when it attached one.
+fn negotiate_token(request: &HttpRequest) -> Option<Vec<u8>> {
+    let header = request
+        .headers()
+        .get(actix_web::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?;
+    let blob = header.strip_prefix("Negotiate ")?;
+    data_encoding::BASE64.decode(blob.trim().as_bytes()).ok()
 }

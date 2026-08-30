@@ -2,8 +2,8 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::authz::IdentityProviderModel;
 use models::entities::brokering::{
-    BrokerLoginState, FederatedIdentityModel, IdpMapperModel, UserClaimSourceModel,
-    UserFederationModel,
+    BrokerLoginState, FederatedIdentityModel, IdpMapperModel, RealmSpnegoModel,
+    UserClaimSourceModel, UserFederationModel,
 };
 use tokio_postgres::Row;
 
@@ -492,6 +492,74 @@ pub async fn drop_federation(transaction: &Transaction<'_>) -> StoreResult<bool>
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(removed > 0)
+}
+
+/// The one ticket door this realm answers, when it holds one.
+pub async fn spnego(transaction: &Transaction<'_>) -> StoreResult<Option<RealmSpnegoModel>> {
+    let statement = format!("SELECT {FEDERATION_COLUMNS} FROM realm_spnego");
+    Ok(transaction
+        .query_opt(statement.as_str(), &[])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_spnego))
+}
+
+/// Write the realm's ticket door, whole: the row is a singleton, so writing
+/// is replacing.
+pub async fn keep_spnego(
+    transaction: &Transaction<'_>,
+    spnego: &RealmSpnegoModel,
+) -> StoreResult<()> {
+    let enabled = spnego.enabled.unwrap_or(true);
+    let configs = spnego
+        .configs
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| StoreError::Backend)?;
+    transaction
+        .execute(
+            "INSERT INTO realm_spnego (tenant, realm_id, enabled, configs, created_by) \
+             SELECT current_setting('saffui.current_tenant', true), \
+                    current_setting('saffui.current_realm', true), $1, $2, $3 \
+             ON CONFLICT (tenant, realm_id) DO UPDATE \
+                 SET enabled = EXCLUDED.enabled, \
+                     configs = EXCLUDED.configs, \
+                     updated_by = EXCLUDED.created_by, \
+                     updated_at = now(), \
+                     version = realm_spnego.version + 1",
+            &[&enabled, &configs, &spnego.metadata.created_by],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// Take the ticket door away, and say whether there was one.
+pub async fn drop_spnego(transaction: &Transaction<'_>) -> StoreResult<bool> {
+    let removed = transaction
+        .execute("DELETE FROM realm_spnego", &[])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+fn read_spnego(row: Row) -> RealmSpnegoModel {
+    RealmSpnegoModel {
+        realm_id: row.get("realm_id"),
+        enabled: Some(row.get("enabled")),
+        configs: row
+            .get::<_, Option<serde_json::Value>>("configs")
+            .and_then(|value| serde_json::from_value(value).ok()),
+        metadata: models::auditable::AuditableModel {
+            tenant: row.get("tenant"),
+            created_by: row.get("created_by"),
+            created_at: row.get("created_at"),
+            updated_by: row.get("updated_by"),
+            updated_at: row.get("updated_at"),
+            version: row.get("version"),
+        },
+    }
 }
 
 fn read_federation(row: Row) -> UserFederationModel {

@@ -159,7 +159,7 @@ pub async fn add_execution(
         ExecutionStep::Authenticator { authenticator, .. } => {
             if Authenticator::from_str(authenticator).is_err() {
                 return Err(Unwritable::Invalid(format!(
-                    "no authenticator answers to {authenticator}; one of: password, totp, webauthn, magic-link"
+                    "no authenticator answers to {authenticator}; one of: password, totp, webauthn, magic-link, kerberos"
                 )));
             }
         }

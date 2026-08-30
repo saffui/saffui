@@ -313,6 +313,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V051__user_claim_sources.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 52,
+            name: "realm_spnego",
+            sql: include_str!("../migrations/V052__realm_spnego.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -329,6 +329,25 @@ pub async fn offline_grants_of(
 /// What reuse detection reaches for. The row is the anchor for the whole token
 /// family, so removing it strands the successor and every access token minted
 /// from the chain, and touches nothing another client holds.
+/// Every open login this upstream subject stands behind, through this
+/// provider: what an upstream logout closes.
+pub async fn brokered(
+    transaction: &Transaction<'_>,
+    provider_alias: &str,
+    external_user_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "SELECT session_id FROM user_sessions              WHERE broker_session_id = $1 AND broker_user_id = $2                AND state = 'logged-in' ORDER BY session_id ASC",
+            &[&provider_alias, &external_user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("session_id"))
+        .collect())
+}
+
 pub async fn close_client_session(
     transaction: &Transaction<'_>,
     session_id: &str,

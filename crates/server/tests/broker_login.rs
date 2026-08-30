@@ -503,3 +503,220 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         );
     }
 }
+
+/// An upstream logout reaches down: the provider posts its logout token at
+/// the broker's own back channel, and every local login the dismissed
+/// subject stood behind through that provider ends, this realm's own
+/// downstream clients told in turn.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_upstream_logout_reaches_down() {
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+
+    let served = mounted(&plane);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().expect("an address").port();
+    let upstream = actix_web::HttpServer::new(move || App::new().configure(register(&served)))
+        .listen(listener)
+        .expect("a listener")
+        .workers(1)
+        .disable_signals()
+        .run();
+    tokio::spawn(upstream);
+    let base = format!("http://127.0.0.1:{port}/realms/{REALM}/protocol/openid-connect");
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": ALIAS,
+            "name": ALIAS,
+            "display_name": "This realm, from outside",
+            "description": "",
+            "trust_email": false,
+            "configs": {
+                "issuer": { "Str": support::origin().issuer(REALM) },
+                "authorization_endpoint": { "Str": format!("{base}/auth") },
+                "token_endpoint": { "Str": format!("{base}/token") },
+                "jwks_uri": { "Str": format!("{base}/certs") },
+                "client_id": { "Str": support::CONFIDENTIAL },
+                "client_secret": { "Str": support::CLIENT_SECRET },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+
+    // The upstream client is registered to be told of logouts, which is
+    // what makes the upstream's own machinery mint a token to carry over.
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        client.backchannel_logout_uri = Some("https://nowhere.example/bye".to_owned());
+        assert!(
+            store::providers::clients::update(&transaction, &client)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+    }
+
+    // One brokered login, so somebody local stands behind the upstream.
+    let cookie = opened_login(&plane).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/login"
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a departure")
+        .to_owned();
+    let state = param(&location, "state").expect("a state");
+    let nonce = param(&location, "nonce").expect("a nonce");
+    let challenge = param(&location, "code_challenge").expect("a challenge");
+    let code = plane
+        .mint_code_with_nonce(
+            support::CONFIDENTIAL,
+            &format!(
+                "{}/protocol/openid-connect/broker/{ALIAS}/endpoint",
+                support::origin().issuer(REALM)
+            ),
+            "openid",
+            Some((&challenge, "S256")),
+            &nonce,
+        )
+        .await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/endpoint?code={}&state={}",
+                support::urlencode(&code),
+                support::urlencode(&state),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+    async fn standing(plane: &Plane) -> Vec<String> {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::sessions::brokered(&transaction, ALIAS, support::SUBJECT)
+            .await
+            .unwrap()
+    }
+    assert_eq!(standing(&plane).await.len(), 1, "one login stands behind");
+
+    // The logout token, minted by the upstream's own logout machinery for
+    // the client the broker is: real issuer, real key, real audience.
+    let logout_token = {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let sealing = support::sealing();
+        let ring = store::keyring::load(&transaction, &sealing.envelope, support::TENANT, REALM)
+            .await
+            .expect("the realm's ring");
+        let signing = services::grant::Signing {
+            provider: sealing.provider.as_ref(),
+            ring: &ring,
+            envelope: &sealing.envelope,
+        };
+        let notices = services::logout::notices_for(
+            &transaction,
+            &signing,
+            &support::origin().issuer(REALM),
+            support::SESSION,
+            chrono::Utc::now(),
+        )
+        .await;
+        transaction.commit().await.unwrap();
+        notices
+            .into_iter()
+            .find(|notice| notice.client_id == support::CONFIDENTIAL)
+            .expect("the upstream minted a notice for the broker client")
+            .logout_token
+    };
+
+    // Garbage is refused the same flat way; the real token lands.
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/backchannel-logout"
+            ))
+            .set_form([("logout_token", "not.a.token")])
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/nowhere/backchannel-logout"
+            ))
+            .set_form([("logout_token", logout_token.as_str())])
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/backchannel-logout"
+            ))
+            .set_form([("logout_token", logout_token.as_str())])
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        standing(&plane).await.is_empty(),
+        "the dismissed subject still stands behind the upstream"
+    );
+
+    // Told twice, the second telling closes nobody and is still not an
+    // error: the state it asks for is the state that holds.
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/backchannel-logout"
+            ))
+            .set_form([("logout_token", logout_token.as_str())])
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}

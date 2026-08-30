@@ -271,6 +271,32 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         plane.tenancy.clone(),
         std::sync::Arc::new(plane.sealing.clone()),
     );
+    let (front_pool, front_tenancy, front_provider) = (
+        plane.pool.clone(),
+        plane.tenancy.clone(),
+        plane.sealing.provider.clone(),
+    );
+
+    // Bound with the other ports: a front asked for and not listenable fails
+    // the deployment now, not on the first directory client.
+    let fronting = match config::ldap::LdapFront::from_env().map_err(|reason| reason.to_string())? {
+        None => None,
+        Some(door) => {
+            let listener = tokio::net::TcpListener::bind(door.bind)
+                .await
+                .map_err(|reason| format!("cannot listen on {}: {reason}", door.bind))?;
+            Some(tokio::spawn(ldapfront::serve(
+                listener,
+                front_pool,
+                front_tenancy,
+                front_provider,
+                ldapfront::Front {
+                    realm_id: door.realm_id,
+                    base_dn: door.base_dn,
+                },
+            )))
+        }
+    };
 
     // Bound before anything is announced, and before the probes say started.
     let probes = {
@@ -322,6 +348,9 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     });
 
     let (served, _) = tokio::join!(plane, probes);
+    if let Some(fronting) = fronting {
+        fronting.abort();
+    }
     if let Some(syncing) = syncing {
         syncing.abort();
     }

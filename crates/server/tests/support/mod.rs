@@ -687,6 +687,63 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Plant a person the realm only mirrors, local password and all.
+    ///
+    /// The credential would verify if anything tried it, which is the point:
+    /// a front refusing this bind is refusing the storage, not missing the
+    /// password.
+    #[allow(dead_code, reason = "only the ldap front suite plants one")]
+    pub async fn plant_shadow(&self, user_name: &str, password: &str) {
+        let metadata = || AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned());
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let user = models::entities::user::UserCreateModel {
+            user_name: user_name.into(),
+            enabled: true,
+            email: format!("{user_name}@example.test"),
+            email_verified: Some(false),
+            phone_number: None,
+            phone_number_verified: None,
+            required_actions: None,
+            not_before: None,
+            user_storage: Some(models::entities::user::UserStorage::Ldap),
+            attributes: None,
+            is_service_account: None,
+            service_account_client_link: None,
+        }
+        .into_model(user_name.into(), REALM.into(), metadata());
+        store::providers::users::create(&transaction, &user)
+            .await
+            .unwrap();
+        let StoredPassword::Argon2id { encoded } = StoredPassword::hash_argon2id(
+            &provider(),
+            Argon2Params::default(),
+            &SecretBox::new(Box::new(password.to_owned())),
+        )
+        .expect("a hashed password") else {
+            unreachable!("hash_argon2id returns the argon2id shape")
+        };
+        store::providers::credentials::create(
+            &transaction,
+            &models::entities::credentials::CredentialModel {
+                credential_id: format!("cred-{user_name}"),
+                realm_id: REALM.into(),
+                user_id: user_name.into(),
+                credential_type: models::entities::credentials::CredentialType::Password,
+                secret: models::entities::credentials::CredentialSecret::new(encoded),
+                user_label: None,
+                otp: None,
+                priority: 0,
+                metadata: metadata(),
+            },
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
     /// What still stands against the subject.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn subject_owes(&self) -> Vec<models::entities::user::RequiredAction> {

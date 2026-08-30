@@ -1,0 +1,21 @@
+[package]
+name = "ldapfront"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# The LDAP protocol front: a second door to the same people, for the
+# applications that speak nothing else. The codec lives here and nowhere
+# else in the workspace.
+
+[dependencies]
+commons = { path = "../commons" }
+crypto = { path = "../crypto" }
+models = { path = "../models" }
+store = { path = "../store" }
+deadpool-postgres = { workspace = true }
+futures-util = "0.3"
+ldap3_proto = { version = "0.8", default-features = false }
+tokio = { workspace = true, features = ["net", "rt", "macros"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = { workspace = true }

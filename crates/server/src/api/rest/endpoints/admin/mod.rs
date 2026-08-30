@@ -1,4 +1,5 @@
 pub mod authorization;
+pub mod claim_sources;
 pub mod client_scopes;
 pub mod clients;
 pub mod directory;

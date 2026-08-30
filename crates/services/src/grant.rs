@@ -996,6 +996,10 @@ pub const EXCHANGE_FLAG: &str = "token.exchange.enabled";
 #[derive(Debug)]
 pub struct Exchanging<'a> {
     pub subject_token: &'a str,
+    /// A token for who is acting, when the actor is somebody other than the
+    /// client making the call. Verified like the subject; its subject
+    /// becomes `act.sub`.
+    pub actor_token: Option<&'a str>,
     pub scope: Option<&'a str>,
     pub audience: Option<&'a str>,
     pub keys: &'a [models::entities::keys::RealmSigningKeyView],
@@ -1051,6 +1055,72 @@ pub async fn token_exchange(
         return Err(Ungranted::InvalidGrant);
     }
 
+    // The subject's account, resolved through the presenting client's own
+    // subject policy: a pairwise identifier is undone here and re-spoken
+    // below for whoever will consume the minted token, so one audience's
+    // identifier never travels to another. Resolving the account is also
+    // where a switched-off person stops exchanging, the same way they stop
+    // renewing: honouring the flag at login only would leave every standing
+    // access token exchangeable for as long as it lives.
+    let presenting = match verified.claims.get("azp").and_then(Value::as_str) {
+        Some(azp) => store::providers::clients::load(transaction, azp)
+            .await
+            .map_err(|_| Ungranted::Unreadable)?,
+        None => None,
+    };
+    let account = crate::pairwise::account_for(transaction, presenting.as_ref(), &verified.subject)
+        .await
+        .map_err(|_| Ungranted::InvalidGrant)?;
+    users::load(transaction, &account)
+        .await
+        .map_err(|_| Ungranted::Unreadable)?
+        .filter(|person| person.enabled)
+        .ok_or(Ungranted::InvalidGrant)?;
+
+    // Who is acting: the caller, unless an actor token names somebody more
+    // precise, §2.1. The actor's token is held to the subject's own bar,
+    // and one that names nobody falls back to the party it was minted for.
+    let mut acting = serde_json::json!({ "sub": client.client_id });
+    if let Some(presented) = exchanging.actor_token {
+        let actor = crate::token::verify_presented(
+            transaction,
+            exchanging.keys,
+            presented,
+            crate::token::Binding::Reported,
+            now,
+        )
+        .await
+        .map_err(|_| Ungranted::InvalidGrant)?;
+        if actor.claims.get("typ").and_then(Value::as_str) != Some(Kind::Access.claimed())
+            || actor.claims.get("cnf").is_some()
+        {
+            return Err(Ungranted::InvalidGrant);
+        }
+        let named = if actor.subject.is_empty() {
+            actor
+                .claims
+                .get("azp")
+                .and_then(Value::as_str)
+                .unwrap_or(&client.client_id)
+        } else {
+            &actor.subject
+        };
+        acting = serde_json::json!({ "sub": named });
+        // §4.1: an actor acting through an actor keeps the whole chain.
+        if let Some(inner) = actor.claims.get("act") {
+            acting["act"] = inner.clone();
+        }
+    }
+
+    // §4.4: a subject token that names who may act for it is the narrowest
+    // authority in the room, and it is honoured before anything is minted.
+    if let Some(may) = verified.claims.get("may_act") {
+        let allowed = may.get("sub").and_then(Value::as_str);
+        if allowed != acting.get("sub").and_then(Value::as_str) {
+            return Err(Ungranted::Unauthorized);
+        }
+    }
+
     // Narrowed, never widened: what was asked intersected with what the
     // subject's token held, in the asked order; nothing asked reuses the
     // subject's own scope whole.
@@ -1084,12 +1154,25 @@ pub async fn token_exchange(
     );
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
 
+    // The subject as the minted token's consumer will know them: the
+    // audience's own subject policy when the audience is a client of this
+    // realm, the actor's otherwise, re-spoken from the account rather than
+    // copied off the presented token.
+    let consumer = store::providers::clients::load(transaction, &audience)
+        .await
+        .map_err(|_| Ungranted::Unreadable)?;
+    let spoken = crate::pairwise::subject_for(
+        transaction,
+        signing.provider,
+        consumer.as_ref().unwrap_or(client),
+        &account,
+    )
+    .await
+    .map_err(|_| Ungranted::Unmintable)?;
+
     let mut extra = serde_json::Map::new();
     // §4.1: who is acting. The whole point of the exchanged token.
-    extra.insert(
-        "act".to_owned(),
-        serde_json::json!({ "sub": client.client_id }),
-    );
+    extra.insert("act".to_owned(), acting);
     let minted = mint_token(
         signing.provider,
         &key,
@@ -1098,7 +1181,7 @@ pub async fn token_exchange(
             certified_by: within.certified_by.map(str::to_owned),
             kind: Kind::Access,
             issuer: within.issuer,
-            subject: &verified.subject,
+            subject: &spoken,
             audiences: vec![audience],
             party: &client.client_id,
             session_id: &session_id,

@@ -266,6 +266,19 @@ pub async fn ask(
                 return Denied::InvalidRequest
                     .answer("requested_token_type names the access-token type");
             }
+            // §2.1: the two travel together, and the one kind holds for the
+            // actor the way it holds for the subject.
+            let actor_token = asked.actor_token.as_deref().filter(|it| !it.is_empty());
+            match (actor_token, asked.actor_token_type.as_deref()) {
+                (None, Some(_)) => {
+                    return Denied::InvalidRequest.answer("actor_token_type rides an actor_token");
+                }
+                (Some(_), kind) if kind != Some(grant::ACCESS_TOKEN_TYPE) => {
+                    return Denied::InvalidRequest
+                        .answer("actor_token_type names the access-token type");
+                }
+                _ => {}
+            }
 
             grant::token_exchange(
                 &transaction,
@@ -284,6 +297,7 @@ pub async fn ask(
                 &client,
                 &grant::Exchanging {
                     subject_token,
+                    actor_token,
                     scope: asked.scope.as_deref(),
                     audience: asked.audience.as_deref(),
                     keys: &keys,

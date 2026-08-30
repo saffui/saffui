@@ -1,6 +1,8 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::str_enum::str_enum;
+
 /// Who a local user is at an upstream provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FederatedIdentityModel {
@@ -82,4 +84,46 @@ pub struct UserFederationMutationModel {
     pub enabled: Option<bool>,
     #[serde(default)]
     pub configs: Option<crate::entities::attributes::AttributesMap>,
+}
+
+/// What another provider asserts about a person: a signed document from its
+/// issuer, or where a relying party fetches one (OIDC Core §5.6.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserClaimSourceModel {
+    pub source_id: String,
+    pub realm_id: String,
+    pub user_id: String,
+    /// The claim names the source answers for.
+    pub claims: Vec<String>,
+    pub kind: ClaimSourceKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_token: Option<String>,
+    pub metadata: crate::auditable::AuditableModel,
+}
+
+str_enum! {
+    #[postgres(name = "claim_source_kind")]
+    pub enum ClaimSourceKind {
+        /// The signed document rides the answer itself.
+        Jwt => "jwt",
+        /// The answer says where, and with what, to fetch it.
+        Endpoint => "endpoint",
+    }
+}
+
+/// The write payload for one source.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserClaimSourceMutationModel {
+    pub claims: Vec<String>,
+    pub kind: ClaimSourceKind,
+    #[serde(default)]
+    pub jwt: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub endpoint_token: Option<String>,
 }

@@ -4,8 +4,8 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, client_scopes, clients, directory, features, federation, flows, idps, keys,
-    mail, portability, protocol_mappers, realm_keys, realms, rebac, sessions, users,
+    authorization, claim_sources, client_scopes, clients, directory, features, federation, flows,
+    idps, keys, mail, portability, protocol_mappers, realm_keys, realms, rebac, sessions, users,
 };
 
 /// One route: the verb, the path, what it costs, and what answers it.
@@ -350,6 +350,24 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/users/{user}/required-actions/{action}",
             action: AdminAction::RequiredActionWrite,
             handler: Some(|| web::delete().to(flows::release_user)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/claim-sources",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(claim_sources::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/users/{user}/claim-sources",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::post().to(claim_sources::add)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/users/{user}/claim-sources/{source}",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::delete().to(claim_sources::remove)),
         },
         AdminRoute {
             method: Method::GET,

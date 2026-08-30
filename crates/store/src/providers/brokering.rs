@@ -2,7 +2,8 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::authz::IdentityProviderModel;
 use models::entities::brokering::{
-    BrokerLoginState, FederatedIdentityModel, IdpMapperModel, UserFederationModel,
+    BrokerLoginState, FederatedIdentityModel, IdpMapperModel, UserClaimSourceModel,
+    UserFederationModel,
 };
 use tokio_postgres::Row;
 
@@ -500,6 +501,93 @@ fn read_federation(row: Row) -> UserFederationModel {
         configs: row
             .get::<_, Option<serde_json::Value>>("configs")
             .and_then(|value| serde_json::from_value(value).ok()),
+        metadata: models::auditable::AuditableModel {
+            tenant: row.get("tenant"),
+            created_by: row.get("created_by"),
+            created_at: row.get("created_at"),
+            updated_by: row.get("updated_by"),
+            updated_at: row.get("updated_at"),
+            version: row.get("version"),
+        },
+    }
+}
+
+const SOURCE_COLUMNS: &str = "tenant, realm_id, source_id, user_id, claims, kind, jwt, endpoint, \
+                              endpoint_token, created_by, created_at, updated_by, updated_at, \
+                              version";
+
+/// Record what another provider answers for about this person.
+pub async fn create_claim_source(
+    transaction: &Transaction<'_>,
+    source: &UserClaimSourceModel,
+) -> StoreResult<()> {
+    let set = WriteSet::insert(vec![
+        col("tenant", &source.metadata.tenant),
+        col("realm_id", &source.realm_id),
+        col("source_id", &source.source_id),
+        col("user_id", &source.user_id),
+        col("claims", &source.claims),
+        col("kind", &source.kind),
+        col("jwt", &source.jwt),
+        col("endpoint", &source.endpoint),
+        col("endpoint_token", &source.endpoint_token),
+        col("created_by", &source.metadata.created_by),
+    ]);
+    transaction
+        .execute(
+            statement::insert("user_claim_sources", &set).as_str(),
+            &set.params(),
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// Every source answering for this person, oldest first, so which source a
+/// claim points at does not move between reads.
+pub async fn claim_sources_of(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> StoreResult<Vec<UserClaimSourceModel>> {
+    let statement = format!(
+        "SELECT {SOURCE_COLUMNS} FROM user_claim_sources \
+         WHERE user_id = $1 ORDER BY created_at ASC, source_id ASC"
+    );
+    Ok(transaction
+        .query(statement.as_str(), &[&user_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_claim_source)
+        .collect())
+}
+
+/// Remove one source, and say whether it was there and this person's.
+pub async fn delete_claim_source(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    source_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM user_claim_sources WHERE user_id = $1 AND source_id = $2",
+            &[&user_id, &source_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+fn read_claim_source(row: Row) -> UserClaimSourceModel {
+    UserClaimSourceModel {
+        source_id: row.get("source_id"),
+        realm_id: row.get("realm_id"),
+        user_id: row.get("user_id"),
+        claims: row.get("claims"),
+        kind: row.get("kind"),
+        jwt: row.get("jwt"),
+        endpoint: row.get("endpoint"),
+        endpoint_token: row.get("endpoint_token"),
         metadata: models::auditable::AuditableModel {
             tenant: row.get("tenant"),
             created_by: row.get("created_by"),

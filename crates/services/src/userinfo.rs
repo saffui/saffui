@@ -181,7 +181,11 @@ pub async fn claims_for(
             .map_err(|_| Untold::Unreadable)?,
         _ => None,
     };
-    if let Some(asked) = asked {
+    let asked_names = asked
+        .as_ref()
+        .map(|asked| ClaimsRequest::from_value(asked).userinfo)
+        .unwrap_or_default();
+    if !asked_names.is_empty() {
         let entitled = entitled_scopes(
             transaction,
             verified
@@ -193,9 +197,27 @@ pub async fn claims_for(
         .await
         .map_err(|_| Untold::Unreadable)?;
         claims.extend(within_entitlement(
-            claims_request::release(&ClaimsRequest::from_value(&asked).userinfo, &held),
+            claims_request::release(&asked_names, &held),
             &entitled,
         ));
+    }
+
+    // §5.6.2: what other providers answer for about this person, spoken as
+    // theirs. Read after the realm's own claims, so a source only ever
+    // speaks where the realm is silent, and bounded by what the token's
+    // scopes stand for plus what was asked by name.
+    let sources = store::providers::brokering::claim_sources_of(transaction, &account)
+        .await
+        .map_err(|_| Untold::Unreadable)?;
+    if !sources.is_empty()
+        && let Some((names, carried)) = sourced_claims(
+            &sources,
+            &claims,
+            &entitled_claim_names(&verified.scope, asked_names.keys()),
+        )
+    {
+        claims.insert("_claim_names".into(), Value::Object(names));
+        claims.insert("_claim_sources".into(), Value::Object(carried));
     }
 
     // The mapper claims this grant is under, on the person already in hand.
@@ -425,5 +447,142 @@ mod tests {
             !granted("profile_extended", "profile"),
             "a longer name that starts the same is not the same scope"
         );
+    }
+}
+
+/// What other providers answer for, said the way OIDC Core §5.6.2 says it:
+/// `_claim_names` points each claim at a source, `_claim_sources` carries
+/// the source itself, a signed document or where to fetch one.
+///
+/// A source only speaks where this realm is silent and the client is
+/// entitled to hear: a claim already released locally is never re-pointed,
+/// because the local answer is the realm's own and a supplement is not a
+/// mask. Sources are walked oldest first, so which source a claim points
+/// at does not move between reads.
+pub fn sourced_claims(
+    sources: &[models::entities::brokering::UserClaimSourceModel],
+    released: &Map<String, Value>,
+    entitled: &[&str],
+) -> Option<(Map<String, Value>, Map<String, Value>)> {
+    use models::entities::brokering::ClaimSourceKind;
+
+    let mut names = Map::new();
+    let mut carried = Map::new();
+    for source in sources {
+        let speaks: Vec<&str> = source
+            .claims
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !released.contains_key(*name))
+            .filter(|name| entitled.contains(name))
+            .filter(|name| !names.contains_key(*name))
+            .collect();
+        if speaks.is_empty() {
+            continue;
+        }
+        let document = match source.kind {
+            ClaimSourceKind::Jwt => match &source.jwt {
+                Some(jwt) => json!({ "JWT": jwt }),
+                None => continue,
+            },
+            ClaimSourceKind::Endpoint => match &source.endpoint {
+                Some(endpoint) => {
+                    let mut told = Map::new();
+                    told.insert("endpoint".into(), json!(endpoint));
+                    if let Some(token) = &source.endpoint_token {
+                        told.insert("access_token".into(), json!(token));
+                    }
+                    Value::Object(told)
+                }
+                None => continue,
+            },
+        };
+        for name in speaks {
+            names.insert(name.to_owned(), json!(source.source_id));
+        }
+        carried.insert(source.source_id.clone(), document);
+    }
+    (!names.is_empty()).then_some((names, carried))
+}
+
+/// Every standard claim name these scopes stand for, plus what the claims
+/// request asked by name: the ceiling on what a source may be pointed at.
+pub fn entitled_claim_names<'a>(
+    scope: &str,
+    asked: impl IntoIterator<Item = &'a String>,
+) -> Vec<&'a str> {
+    let mut names: Vec<&str> = Vec::new();
+    for granted in scope.split_whitespace() {
+        if let Some((_, held)) = SCOPE_CLAIMS.iter().find(|(name, _)| *name == granted) {
+            names.extend(held.iter().copied());
+        }
+    }
+    for name in asked {
+        if !names.contains(&name.as_str()) {
+            names.push(name.as_str());
+        }
+    }
+    names
+}
+
+#[cfg(test)]
+mod sourced_tests {
+    use super::*;
+    use models::auditable::AuditableModel;
+    use models::entities::brokering::{ClaimSourceKind, UserClaimSourceModel};
+
+    fn source(id: &str, claims: &[&str], kind: ClaimSourceKind) -> UserClaimSourceModel {
+        UserClaimSourceModel {
+            source_id: id.to_owned(),
+            realm_id: "main".into(),
+            user_id: "ada".into(),
+            claims: claims.iter().map(|held| (*held).to_owned()).collect(),
+            kind,
+            jwt: matches!(kind, ClaimSourceKind::Jwt).then(|| "eyJ.a.b".to_owned()),
+            endpoint: matches!(kind, ClaimSourceKind::Endpoint)
+                .then(|| "https://claims.example/ada".to_owned()),
+            endpoint_token: Some("carry-me".to_owned()),
+            metadata: AuditableModel::unassigned(),
+        }
+    }
+
+    /// The §5.6.2.1 shape, with the local answer winning, the entitlement
+    /// bounding, and the first source keeping a contested name.
+    #[test]
+    fn sources_speak_only_where_the_realm_is_silent() {
+        let sources = [
+            source("src1", &["address", "email"], ClaimSourceKind::Jwt),
+            source("src2", &["address", "birthdate"], ClaimSourceKind::Endpoint),
+        ];
+        let mut released = Map::new();
+        released.insert("email".into(), json!("ada@here.example"));
+
+        let (names, carried) =
+            sourced_claims(&sources, &released, &["address", "email", "birthdate"])
+                .expect("something is sourced");
+        assert_eq!(names["address"], json!("src1"), "the first source keeps it");
+        assert!(
+            names.get("email").is_none(),
+            "the local answer was re-pointed"
+        );
+        assert_eq!(names["birthdate"], json!("src2"));
+        assert_eq!(carried["src1"], json!({ "JWT": "eyJ.a.b" }));
+        assert_eq!(
+            carried["src2"],
+            json!({ "endpoint": "https://claims.example/ada", "access_token": "carry-me" })
+        );
+
+        // Nothing entitled, nothing said: the block is absent, not empty.
+        assert!(sourced_claims(&sources, &released, &["phone_number"]).is_none());
+    }
+
+    /// The ceiling: what the scopes stand for, plus what was asked by name.
+    #[test]
+    fn the_entitlement_is_scopes_plus_the_asked() {
+        let asked = ["employment".to_owned()];
+        let names = entitled_claim_names("openid email", asked.iter());
+        assert!(names.contains(&"email") && names.contains(&"email_verified"));
+        assert!(names.contains(&"employment"));
+        assert!(!names.contains(&"address"));
     }
 }

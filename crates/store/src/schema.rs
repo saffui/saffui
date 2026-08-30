@@ -307,6 +307,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V050__user_federation.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 51,
+            name: "user_claim_sources",
+            sql: include_str!("../migrations/V051__user_claim_sources.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -89,6 +89,7 @@ catalogue! {
     IdpMapperNotFound = 922, 404, "identity_provider.mapper.not_found", "identity provider mapper not found";
     RebacSchemaNotFound = 970, 404, "rebac.schema.not_found", "the realm has no relationship schema";
     RebacEdgeNotFound = 971, 404, "rebac.edge.not_found", "no such relationship stands";
+    ClaimSourceNotFound = 972, 404, "claims.source.not_found", "no such claim source";
     ResourceServerNotFound = 930, 404, "resource_server.not_found", "resource server not found";
     ResourceServerAlreadyExists = 931, 409, "resource_server.already_exists", "a resource server with this identifier already exists";
     ResourceNotFound = 940, 404, "resource.not_found", "resource not found";
@@ -173,7 +174,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 53);
+        assert_eq!(ErrorCode::ALL.len(), 54);
     }
 
     /// A message never restates the slug, and never carries a value.

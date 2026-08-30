@@ -281,10 +281,36 @@ pub async fn asked_id_token_claims(
         return Ok(Map::new());
     };
     let entitled = entitled_scopes(transaction, client_id).await?;
-    Ok(within_entitlement(
+    let mut released = within_entitlement(
         claims_request::release(&asked.id_token, &held_claims(&person)),
         &entitled,
-    ))
+    );
+
+    // 5.6.2 over the identity token too: what was asked by name and another
+    // provider answers for is pointed at that provider, where this realm is
+    // silent. The same ceiling as the release above; the mint writes these
+    // last-if-absent, so no registered claim can be displaced.
+    let sources = store::providers::brokering::claim_sources_of(transaction, user_id)
+        .await
+        .map_err(|_| ())?;
+    if !sources.is_empty() {
+        let askable: Vec<String> = asked.id_token.keys().cloned().collect();
+        let names = entitled_claim_names("", askable.iter())
+            .into_iter()
+            .filter(|name| {
+                within_entitlement(
+                    Map::from_iter([((*name).to_owned(), Value::Null)]),
+                    &entitled,
+                )
+                .contains_key(*name)
+            })
+            .collect::<Vec<_>>();
+        if let Some((pointed, carried)) = sourced_claims(&sources, &released, &names) {
+            released.insert("_claim_names".into(), Value::Object(pointed));
+            released.insert("_claim_sources".into(), Value::Object(carried));
+        }
+    }
+    Ok(released)
 }
 
 /// The standard scopes this client may have at all, attached as default or

@@ -268,3 +268,74 @@ async fn the_source_capabilities_split_where_they_should() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// The identity token's claims request gets the same 5.6.2 release: what
+/// was asked by name and another provider answers for is pointed at that
+/// provider, and what the realm holds itself is released as its own.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_identity_token_points_at_sources_too() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead, AdminAction::UserWrite]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &format!(
+            "/admin/realms/{REALM}/users/{}/claim-sources",
+            support::SUBJECT
+        ),
+        &bearer,
+        Some(json!({ "claims": ["address"], "kind": "jwt", "jwt": CARRIED_JWT })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let source_id = born["source_id"].as_str().expect("an identity").to_owned();
+
+    let code = plane
+        .mint_code_claimed(
+            support::CONFIDENTIAL,
+            REDIRECT,
+            "openid",
+            None,
+            "n-once",
+            Some(json!({ "id_token": { "address": null, "given_name": null } })),
+        )
+        .await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let encoded =
+        BASE64.encode(format!("{}:{}", support::CONFIDENTIAL, support::CLIENT_SECRET).as_bytes());
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/token"))
+            .set_form([
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+            ])
+            .insert_header(("authorization", format!("Basic {encoded}")))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let minted: Value = test::read_body_json(response).await;
+    let identity = plane
+        .claims_of(minted["id_token"].as_str().expect("an id token"))
+        .await;
+
+    assert_eq!(identity["_claim_names"]["address"], source_id, "{identity}");
+    assert_eq!(
+        identity["_claim_sources"][&source_id],
+        json!({ "JWT": CARRIED_JWT }),
+        "{identity}"
+    );
+    assert!(
+        identity["given_name"].is_string(),
+        "the asked claim the realm holds itself is its own: {identity}"
+    );
+    assert!(
+        identity["_claim_names"].get("given_name").is_none(),
+        "a source re-pointed what the realm answers itself: {identity}"
+    );
+}

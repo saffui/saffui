@@ -480,6 +480,22 @@ impl Plane {
         challenge: Option<(&str, &str)>,
         nonce: &str,
     ) -> String {
+        self.mint_code_claimed(client_id, redirect_uri, scope, challenge, nonce, None)
+            .await
+    }
+
+    /// The same, carrying the request's claims parameter, for a test about
+    /// what a claims request releases.
+    #[allow(dead_code, reason = "only the suites about claims ask")]
+    pub async fn mint_code_claimed(
+        &self,
+        client_id: &str,
+        redirect_uri: &str,
+        scope: &str,
+        challenge: Option<(&str, &str)>,
+        nonce: &str,
+        claims: Option<serde_json::Value>,
+    ) -> String {
         let provider = OpenSslProvider::new(&CryptoConfig {
             fips_required: false,
             pkcs11: None,
@@ -518,7 +534,7 @@ impl Plane {
                 acr: Some("password".into()),
                 org_id: None,
                 org_name: None,
-                claims: None,
+                claims,
             },
             chrono::Utc::now() + chrono::Duration::minutes(1),
         )

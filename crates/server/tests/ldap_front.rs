@@ -141,6 +141,32 @@ async fn a_legacy_client_binds_searches_and_asks_who_it_is() {
         .expect("the search succeeds");
     assert!(!everyone.is_empty(), "presence lists the realm's people");
 
+    // The shapes an address book types while somebody is still typing.
+    for (typed, hits) in [
+        ("(uid=ad*)", 1),
+        ("(mail=ada@*)", 1),
+        ("(uid=*race*)", 0),
+        ("(&(objectClass=person)(uid=a*a))", 1),
+    ] {
+        let (found, _) = ldap
+            .search(PEOPLE, Scope::Subtree, typed, vec!["uid"])
+            .await
+            .expect("an answer")
+            .success()
+            .expect("the search succeeds");
+        assert_eq!(found.len(), hits, "{typed} answered wrong");
+    }
+    let (housed, _) = ldap
+        .search(PEOPLE, Scope::Subtree, "(mail=*@example.test)", vec!["uid"])
+        .await
+        .expect("an answer")
+        .success()
+        .expect("the search succeeds");
+    assert!(
+        !housed.is_empty(),
+        "a domain-wide substring found nobody at home"
+    );
+
     let (exop, _) = ldap
         .extended(WhoAmI)
         .await
@@ -198,10 +224,13 @@ async fn the_door_stays_shut_to_who_it_must() {
         .expect("an answer");
     assert_eq!(bound.rc, 0);
     let vague = fresh
-        .search(PEOPLE, Scope::Subtree, "(uid=ad*)", vec!["uid"])
+        .search(PEOPLE, Scope::Subtree, "(sn=ad*)", vec!["uid"])
         .await
         .expect("an answer");
-    assert_eq!(vague.1.rc, 53, "substrings are refused: {vague:?}");
+    assert_eq!(
+        vague.1.rc, 53,
+        "a substring on an attribute the store cannot sift was answered: {vague:?}"
+    );
 
     // A disabled account stops binding, with the same face as a bad password.
     plane.disable_subject().await;
@@ -351,4 +380,154 @@ async fn tunneled(sealed_port: u16) -> u16 {
         let _ = tokio::io::copy_bidirectional(&mut plain, &mut sealed).await;
     });
     port
+}
+
+/// Mint a certificate signed by the given issuer, or self-signed when none.
+fn minted_cert(
+    name: &str,
+    issuer: Option<(
+        &openssl::x509::X509,
+        &openssl::pkey::PKey<openssl::pkey::Private>,
+    )>,
+) -> (
+    openssl::x509::X509,
+    openssl::pkey::PKey<openssl::pkey::Private>,
+) {
+    use openssl::asn1::Asn1Time;
+    use openssl::hash::MessageDigest;
+    use openssl::pkey::PKey;
+    use openssl::x509::extension::BasicConstraints;
+    use openssl::x509::{X509Builder, X509NameBuilder};
+
+    let group = openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
+    let key = PKey::from_ec_key(openssl::ec::EcKey::generate(&group).unwrap()).unwrap();
+    let mut subject = X509NameBuilder::new().unwrap();
+    subject.append_entry_by_text("CN", name).unwrap();
+    let subject = subject.build();
+    let mut certificate = X509Builder::new().unwrap();
+    certificate.set_version(2).unwrap();
+    certificate.set_subject_name(&subject).unwrap();
+    certificate.set_pubkey(&key).unwrap();
+    certificate
+        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    certificate
+        .set_not_after(&Asn1Time::days_from_now(1).unwrap())
+        .unwrap();
+    match issuer {
+        Some((authority, signing)) => {
+            certificate
+                .set_issuer_name(authority.subject_name())
+                .unwrap();
+            certificate.sign(signing, MessageDigest::sha256()).unwrap();
+        }
+        None => {
+            // The issuerless one is the authority, and chain verification
+            // refuses an issuer that does not say it is one.
+            certificate
+                .append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+                .unwrap();
+            certificate.set_issuer_name(&subject).unwrap();
+            certificate.sign(&key, MessageDigest::sha256()).unwrap();
+        }
+    }
+    (certificate.build(), key)
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_sealed_listener_can_demand_a_client_certificate() {
+    let plane = Plane::with_actions(&[]).await;
+
+    let (authority, authority_key) = minted_cert("bench-ca", None);
+    let (server_cert, server_key) = minted_cert("localhost", Some((&authority, &authority_key)));
+    let (client_cert, client_key) = minted_cert("legacy-app", Some((&authority, &authority_key)));
+
+    let mut acceptor =
+        openssl::ssl::SslAcceptor::mozilla_intermediate_v5(openssl::ssl::SslMethod::tls_server())
+            .unwrap();
+    acceptor.set_certificate(&server_cert).unwrap();
+    acceptor.set_private_key(&server_key).unwrap();
+    acceptor.check_private_key().unwrap();
+    acceptor
+        .cert_store_mut()
+        .add_cert(authority.clone())
+        .unwrap();
+    acceptor.set_verify(
+        openssl::ssl::SslVerifyMode::PEER | openssl::ssl::SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+    );
+    let port = fronted(&plane, Some(acceptor.build().into_context())).await;
+
+    // With the signed certificate, the tunnel opens and the bind holds.
+    let with_cert = {
+        let doorstep = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = doorstep.local_addr().unwrap().port();
+        let (client_cert, client_key) = (client_cert.clone(), client_key.clone());
+        tokio::spawn(async move {
+            let (mut plain, _) = doorstep.accept().await.unwrap();
+            let mut connector =
+                openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls_client()).unwrap();
+            connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+            connector.set_certificate(&client_cert).unwrap();
+            connector.set_private_key(&client_key).unwrap();
+            let ssl = connector
+                .build()
+                .configure()
+                .unwrap()
+                .into_ssl("localhost")
+                .unwrap();
+            let raw = tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .unwrap();
+            let mut sealed = tokio_openssl::SslStream::new(ssl, raw).unwrap();
+            std::pin::Pin::new(&mut sealed)
+                .connect()
+                .await
+                .expect("the certified handshake completes");
+            let _ = tokio::io::copy_bidirectional(&mut plain, &mut sealed).await;
+        });
+        local
+    };
+    let mut ldap = dialled(&format!("ldap://127.0.0.1:{with_cert}")).await;
+    let bound = ldap
+        .simple_bind(&subject_dn(), support::PASSWORD)
+        .await
+        .expect("an answer");
+    assert_eq!(bound.rc, 0, "{bound:?}");
+
+    // Without one, the handshake itself is refused: no certificate, no
+    // conversation, before any bind is even spoken.
+    let mut connector =
+        openssl::ssl::SslConnector::builder(openssl::ssl::SslMethod::tls_client()).unwrap();
+    connector.set_verify(openssl::ssl::SslVerifyMode::NONE);
+    let ssl = connector
+        .build()
+        .configure()
+        .unwrap()
+        .into_ssl("localhost")
+        .unwrap();
+    let raw = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    let mut bare = tokio_openssl::SslStream::new(ssl, raw).unwrap();
+    // Under TLS 1.3 the server's refusal arrives after the client believes
+    // the handshake done, so the proof is the first exchange: nothing is
+    // readable but the alert, before any LDAP is spoken.
+    let refused = match std::pin::Pin::new(&mut bare).connect().await {
+        Err(_) => true,
+        Ok(()) => {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let _ = bare.write_all(b"0").await;
+            let _ = bare.flush().await;
+            let mut answer = [0u8; 8];
+            match tokio::time::timeout(std::time::Duration::from_secs(5), bare.read(&mut answer))
+                .await
+            {
+                Ok(Ok(0)) | Ok(Err(_)) => true,
+                Ok(Ok(_)) => false,
+                Err(_) => false,
+            }
+        }
+    };
+    assert!(refused, "a strangers conversation was answered");
 }

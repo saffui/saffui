@@ -26,6 +26,8 @@ chrono = { workspace = true }
 
 actix-web = { workspace = true }
 clap = { workspace = true }
+clap_complete = "4"
+serde = { workspace = true }
 serde_json = { workspace = true }
 # The CLI half of this binary talks to the plane it also serves; blocking on
 # purpose, since a command is one call and an answer.

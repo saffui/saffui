@@ -17,7 +17,7 @@ pub fn sweep_every() -> Result<Option<Duration>, ConfigError> {
 /// How often federated shadows are walked against their directory. Zero
 /// means never, and the resting value is never: a sync dials out, and a
 /// deployment should say so before this server does.
-const FEDERATION_SYNC: &str = "SAFFUI_FEDERATION_SYNC_SECONDS";
+const FEDERATION_SYNC: &str = "FEDERATION_SYNC_SECONDS";
 
 pub fn federation_sync_every() -> Result<Option<Duration>, ConfigError> {
     let seconds = crate::parse_or(FEDERATION_SYNC, 0)?;
@@ -47,5 +47,17 @@ mod tests {
         assert!(sweep_every().is_err());
 
         clear(&[SWEEP]);
+
+        // The sync knob answers to its documented name. The constant once
+        // carried the prefix a second time, so the variable an operator set
+        // was never the one this read.
+        clear(&[FEDERATION_SYNC]);
+        assert_eq!(federation_sync_every().unwrap(), None);
+        set(FEDERATION_SYNC, "900");
+        assert_eq!(
+            federation_sync_every().unwrap(),
+            Some(Duration::from_secs(900))
+        );
+        clear(&[FEDERATION_SYNC]);
     }
 }

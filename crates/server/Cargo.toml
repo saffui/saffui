@@ -44,6 +44,9 @@ async-trait = { workspace = true }
 [dev-dependencies]
 # The binary's operator commands, driven in tests against this very server.
 saffui = { path = "../saffui" }
+# The LDAP front, spawned on a loopback port and driven with the same ldap3
+# client the federation side already carries.
+ldapfront = { path = "../ldapfront" }
 services = { workspace = true }
 # The public origin: every issuer minted and every issuer accepted is built from
 # it, so the gates read the same value the binary was started with.

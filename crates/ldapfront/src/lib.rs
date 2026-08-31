@@ -345,24 +345,87 @@ enum Wanted {
     Everyone,
     Named(String),
     Mailed(String),
-    /// Everyone, kept only where a substring shape matches. Answered from
+    /// Everyone, kept only where at least one probe matches. Answered from
     /// the same capped listing as everyone: past the cap the directory is
     /// an export, not a door, whatever the filter says.
-    Sifted(Sieve),
+    Sifted(Vec<Probe>),
     Nothing,
 }
 
-/// Which attribute a substring reads, and the pieces it must find.
+/// An attribute this front can read back off a person. The same set the
+/// entries are written from, so what can be shown can be searched.
+#[derive(Clone, Copy, PartialEq)]
+enum Read {
+    Uid,
+    Mail,
+    GivenName,
+    Sn,
+}
+
+impl Read {
+    fn parsed(attr: &str) -> Option<Self> {
+        if attr.eq_ignore_ascii_case("uid") || attr.eq_ignore_ascii_case("cn") {
+            Some(Self::Uid)
+        } else if attr.eq_ignore_ascii_case("mail") {
+            Some(Self::Mail)
+        } else if attr.eq_ignore_ascii_case("givenname") {
+            Some(Self::GivenName)
+        } else if attr.eq_ignore_ascii_case("sn") {
+            Some(Self::Sn)
+        } else {
+            None
+        }
+    }
+
+    fn of<'p>(self, person: &'p UserModel) -> Option<std::borrow::Cow<'p, str>> {
+        let held = |named: &str| {
+            person
+                .attributes
+                .as_ref()
+                .and_then(|bag| bag.get(named))
+                .and_then(models::entities::attributes::AttributeValue::as_str)
+                .map(std::borrow::Cow::Borrowed)
+        };
+        match self {
+            Self::Uid => Some(std::borrow::Cow::Borrowed(person.user_name.as_str())),
+            Self::Mail => Some(std::borrow::Cow::Borrowed(person.email.as_str())),
+            Self::GivenName => held(profile::FIRST_NAME),
+            Self::Sn => held(profile::LAST_NAME),
+        }
+    }
+}
+
+/// One attribute test: the whole value, or a substring shape.
+struct Probe {
+    attr: Read,
+    test: Test,
+}
+
+enum Test {
+    Is(String),
+    Shaped(Sieve),
+}
+
+impl Probe {
+    fn person_matches(&self, person: &UserModel) -> bool {
+        let Some(value) = self.attr.of(person) else {
+            return false;
+        };
+        match &self.test {
+            Test::Is(wanted) => value.eq_ignore_ascii_case(wanted),
+            Test::Shaped(sieve) => sieve.admits(&value),
+        }
+    }
+}
+
+/// The pieces a substring must find, in order, ends anchored when named.
 struct Sieve {
-    on_mail: bool,
     initial: Option<String>,
     any: Vec<String>,
     tail: Option<String>,
 }
 
 impl Sieve {
-    /// Whether one value satisfies the shape, the way directories match:
-    /// case-insensitively, pieces in order, ends anchored when named.
     fn admits(&self, value: &str) -> bool {
         let lowered = value.to_ascii_lowercase();
         let mut rest = lowered.as_str();
@@ -383,14 +446,6 @@ impl Sieve {
             None => true,
         }
     }
-
-    fn person_matches(&self, person: &UserModel) -> bool {
-        if self.on_mail {
-            self.admits(&person.email)
-        } else {
-            self.admits(&person.user_name)
-        }
-    }
 }
 
 /// Fold a filter to what the store can be asked. The shapes served are the
@@ -407,27 +462,36 @@ fn wanted(filter: &LdapFilter) -> Option<Wanted> {
         LdapFilter::Equality(attr, value) if attr.eq_ignore_ascii_case("mail") => {
             Some(Wanted::Mailed(value.clone()))
         }
-        LdapFilter::Substring(attr, shape)
-            if (attr.eq_ignore_ascii_case("uid") || attr.eq_ignore_ascii_case("mail"))
-                && (shape.initial.is_some() || !shape.any.is_empty() || shape.final_.is_some()) =>
-        {
-            // A shape with no pieces is not a substring anybody sent: the
-            // wire spells everyone as presence, so an empty shape here is a
-            // malformed filter, refused rather than read as everyone.
-            let piece = |held: &String| held.to_ascii_lowercase();
-            Some(Wanted::Sifted(Sieve {
-                on_mail: attr.eq_ignore_ascii_case("mail"),
-                initial: shape.initial.as_ref().map(piece),
-                any: shape.any.iter().map(piece).collect(),
-                tail: shape.final_.as_ref().map(piece),
-            }))
-        }
         LdapFilter::Equality(attr, value) if attr.eq_ignore_ascii_case("objectclass") => {
             if value.eq_ignore_ascii_case("inetorgperson") || value.eq_ignore_ascii_case("person") {
                 Some(Wanted::Everyone)
             } else {
                 Some(Wanted::Nothing)
             }
+        }
+        LdapFilter::Equality(attr, value) => Read::parsed(attr).map(|attr| {
+            Wanted::Sifted(vec![Probe {
+                attr,
+                test: Test::Is(value.clone()),
+            }])
+        }),
+        LdapFilter::Substring(attr, shape)
+            if shape.initial.is_some() || !shape.any.is_empty() || shape.final_.is_some() =>
+        {
+            // A shape with no pieces is not a substring anybody sent: the
+            // wire spells everyone as presence, so an empty shape here is a
+            // malformed filter, refused rather than read as everyone.
+            let piece = |held: &String| held.to_ascii_lowercase();
+            Read::parsed(attr).map(|attr| {
+                Wanted::Sifted(vec![Probe {
+                    attr,
+                    test: Test::Shaped(Sieve {
+                        initial: shape.initial.as_ref().map(piece),
+                        any: shape.any.iter().map(piece).collect(),
+                        tail: shape.final_.as_ref().map(piece),
+                    }),
+                }])
+            })
         }
         LdapFilter::And(parts) => {
             let mut folded = Wanted::Everyone;
@@ -446,6 +510,33 @@ fn wanted(filter: &LdapFilter) -> Option<Wanted> {
                 }
             }
             Some(folded)
+        }
+        // A disjunction folds as the union of its probes, which is what an
+        // address book types across four attributes at once. Every branch
+        // must fold: a branch this front cannot read would silently narrow
+        // the answer, and a narrowed answer is an approximation.
+        LdapFilter::Or(parts) => {
+            let mut probes = Vec::new();
+            for part in parts {
+                match wanted(part)? {
+                    Wanted::Everyone => return Some(Wanted::Everyone),
+                    Wanted::Nothing => {}
+                    Wanted::Named(name) => probes.push(Probe {
+                        attr: Read::Uid,
+                        test: Test::Is(name),
+                    }),
+                    Wanted::Mailed(address) => probes.push(Probe {
+                        attr: Read::Mail,
+                        test: Test::Is(address),
+                    }),
+                    Wanted::Sifted(more) => probes.extend(more),
+                }
+            }
+            Some(if probes.is_empty() {
+                Wanted::Nothing
+            } else {
+                Wanted::Sifted(probes)
+            })
         }
         _ => None,
     }
@@ -497,11 +588,11 @@ async fn search(
             .into_iter()
             .collect(),
         Wanted::Everyone => listed(&transaction).await.map_err(|_| unavailable())?,
-        Wanted::Sifted(sieve) => listed(&transaction)
+        Wanted::Sifted(probes) => listed(&transaction)
             .await
             .map_err(|_| unavailable())?
             .into_iter()
-            .filter(|person| sieve.person_matches(person))
+            .filter(|person| probes.iter().any(|probe| probe.person_matches(person)))
             .collect(),
     };
 
@@ -611,7 +702,6 @@ mod tests {
     #[test]
     fn a_sieve_admits_what_its_shape_says() {
         let prefix = Sieve {
-            on_mail: false,
             initial: Some("ad".into()),
             any: vec![],
             tail: None,
@@ -620,7 +710,6 @@ mod tests {
         assert!(!prefix.admits("grace"));
 
         let shaped = Sieve {
-            on_mail: false,
             initial: Some("a".into()),
             any: vec!["d".into()],
             tail: Some("a".into()),
@@ -629,13 +718,43 @@ mod tests {
         assert!(!shaped.admits("ad"), "overlapping pieces double-counted");
 
         let ends = Sieve {
-            on_mail: true,
             initial: None,
             any: vec![],
             tail: Some("@example.test".into()),
         };
         assert!(ends.admits("ada@Example.Test"));
         assert!(!ends.admits("ada@example.org"));
+    }
+
+    /// A disjunction is the union of its probes; a branch this front cannot
+    /// read refuses the whole filter rather than narrowing the answer.
+    #[test]
+    fn a_disjunction_folds_whole_or_not_at_all() {
+        let book = LdapFilter::Or(vec![
+            LdapFilter::Substring("mail".into(), "ad*".into()),
+            LdapFilter::Substring("cn".into(), "ad*".into()),
+            LdapFilter::Substring("givenName".into(), "ad*".into()),
+            LdapFilter::Substring("sn".into(), "ad*".into()),
+        ]);
+        assert!(matches!(
+            wanted(&book),
+            Some(Wanted::Sifted(probes)) if probes.len() == 4
+        ));
+
+        let stray = LdapFilter::Or(vec![
+            LdapFilter::Substring("mail".into(), "ad*".into()),
+            LdapFilter::Substring("title".into(), "boss*".into()),
+        ]);
+        assert!(
+            wanted(&stray).is_none(),
+            "a stray branch narrowed the answer"
+        );
+
+        let widened = LdapFilter::Or(vec![
+            LdapFilter::Equality("uid".into(), "ada".into()),
+            LdapFilter::Present("objectClass".into()),
+        ]);
+        assert!(matches!(wanted(&widened), Some(Wanted::Everyone)));
     }
 
     /// Filters fold to store questions, or are refused whole.

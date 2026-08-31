@@ -383,6 +383,14 @@ fn ldap_acceptor(paths: &config::ldap::TlsPaths) -> Result<openssl::ssl::SslCont
     acceptor
         .check_private_key()
         .map_err(|reason| format!("the ldap certificate and key do not pair: {reason}"))?;
+    if let Some(authority) = &paths.client_ca {
+        acceptor
+            .set_ca_file(authority)
+            .map_err(|reason| format!("cannot read {}: {reason}", authority.display()))?;
+        acceptor.set_verify(
+            openssl::ssl::SslVerifyMode::PEER | openssl::ssl::SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+        );
+    }
     Ok(acceptor.build().into_context())
 }
 

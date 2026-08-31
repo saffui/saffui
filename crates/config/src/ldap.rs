@@ -9,6 +9,7 @@ const BASE_DN: &str = "LDAP_BASE_DN";
 const TLS_CERT: &str = "LDAP_TLS_CERT";
 const TLS_KEY: &str = "LDAP_TLS_KEY";
 const DANGER_PLAINTEXT: &str = "LDAP_DANGER_PLAINTEXT";
+const CLIENT_CA: &str = "LDAP_TLS_CLIENT_CA";
 
 /// The LDAP front: a second, read-only door to one realm's people, for
 /// software that speaks directory and nothing newer.
@@ -22,11 +23,15 @@ pub struct LdapFront {
     pub tls: Option<TlsPaths>,
 }
 
-/// Where the listener's certificate and private key live, PEM both.
+/// Where the listener's certificate and private key live, PEM both, and
+/// the authority client certificates must answer to, when one is named.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TlsPaths {
     pub certificate: PathBuf,
     pub key: PathBuf,
+    /// Present means required: every connection shows a certificate this
+    /// authority signed, or the handshake does not complete.
+    pub client_ca: Option<PathBuf>,
 }
 
 impl LdapFront {
@@ -50,8 +55,15 @@ impl LdapFront {
             (Some(certificate), Some(key)) => Some(TlsPaths {
                 certificate: certificate.into(),
                 key: key.into(),
+                client_ca: crate::optional(CLIENT_CA).map(Into::into),
             }),
             (None, None) => {
+                if crate::optional(CLIENT_CA).is_some() {
+                    return Err(ConfigError::Invalid {
+                        key: format!("{}{CLIENT_CA}", crate::PREFIX),
+                        expected: "a sealed listener to require client certificates on".to_owned(),
+                    });
+                }
                 if crate::optional(DANGER_PLAINTEXT).as_deref() != Some("true") {
                     return Err(ConfigError::Invalid {
                         key: format!("{}{TLS_CERT}", crate::PREFIX),
@@ -92,7 +104,15 @@ mod tests {
     use super::*;
     use crate::tests::{clear, env_guard, set};
 
-    const EVERY: &[&str] = &[BIND, REALM, BASE_DN, TLS_CERT, TLS_KEY, DANGER_PLAINTEXT];
+    const EVERY: &[&str] = &[
+        BIND,
+        REALM,
+        BASE_DN,
+        TLS_CERT,
+        TLS_KEY,
+        DANGER_PLAINTEXT,
+        CLIENT_CA,
+    ];
 
     #[test]
     fn absent_means_off_and_present_means_the_whole_story() {
@@ -154,8 +174,31 @@ mod tests {
             Some(TlsPaths {
                 certificate: "/etc/saffui/ldap.crt".into(),
                 key: "/etc/saffui/ldap.key".into(),
+                client_ca: None,
             })
         );
+
+        // Naming the client authority rides the pair; alone it is a mistake
+        // said out loud, since there is no handshake to require it on.
+        set(CLIENT_CA, "/etc/saffui/clients.crt");
+        assert_eq!(
+            LdapFront::from_env()
+                .unwrap()
+                .unwrap()
+                .tls
+                .unwrap()
+                .client_ca,
+            Some("/etc/saffui/clients.crt".into())
+        );
+        clear(&[TLS_CERT, TLS_KEY]);
+        set(DANGER_PLAINTEXT, "true");
+        assert!(
+            LdapFront::from_env().is_err(),
+            "a client authority with no listener to seal held"
+        );
+        clear(&[CLIENT_CA, DANGER_PLAINTEXT]);
+        set(TLS_CERT, "/etc/saffui/ldap.crt");
+        set(TLS_KEY, "/etc/saffui/ldap.key");
 
         // Half a pair is a mistake said out loud, not a fallback to plaintext.
         clear(&[TLS_KEY]);

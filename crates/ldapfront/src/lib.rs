@@ -345,7 +345,52 @@ enum Wanted {
     Everyone,
     Named(String),
     Mailed(String),
+    /// Everyone, kept only where a substring shape matches. Answered from
+    /// the same capped listing as everyone: past the cap the directory is
+    /// an export, not a door, whatever the filter says.
+    Sifted(Sieve),
     Nothing,
+}
+
+/// Which attribute a substring reads, and the pieces it must find.
+struct Sieve {
+    on_mail: bool,
+    initial: Option<String>,
+    any: Vec<String>,
+    tail: Option<String>,
+}
+
+impl Sieve {
+    /// Whether one value satisfies the shape, the way directories match:
+    /// case-insensitively, pieces in order, ends anchored when named.
+    fn admits(&self, value: &str) -> bool {
+        let lowered = value.to_ascii_lowercase();
+        let mut rest = lowered.as_str();
+        if let Some(head) = &self.initial {
+            let Some(after) = rest.strip_prefix(head.as_str()) else {
+                return false;
+            };
+            rest = after;
+        }
+        for piece in &self.any {
+            let Some(found) = rest.find(piece.as_str()) else {
+                return false;
+            };
+            rest = &rest[found + piece.len()..];
+        }
+        match &self.tail {
+            Some(tail) => rest.ends_with(tail.as_str()),
+            None => true,
+        }
+    }
+
+    fn person_matches(&self, person: &UserModel) -> bool {
+        if self.on_mail {
+            self.admits(&person.email)
+        } else {
+            self.admits(&person.user_name)
+        }
+    }
 }
 
 /// Fold a filter to what the store can be asked. The shapes served are the
@@ -362,6 +407,21 @@ fn wanted(filter: &LdapFilter) -> Option<Wanted> {
         LdapFilter::Equality(attr, value) if attr.eq_ignore_ascii_case("mail") => {
             Some(Wanted::Mailed(value.clone()))
         }
+        LdapFilter::Substring(attr, shape)
+            if (attr.eq_ignore_ascii_case("uid") || attr.eq_ignore_ascii_case("mail"))
+                && (shape.initial.is_some() || !shape.any.is_empty() || shape.final_.is_some()) =>
+        {
+            // A shape with no pieces is not a substring anybody sent: the
+            // wire spells everyone as presence, so an empty shape here is a
+            // malformed filter, refused rather than read as everyone.
+            let piece = |held: &String| held.to_ascii_lowercase();
+            Some(Wanted::Sifted(Sieve {
+                on_mail: attr.eq_ignore_ascii_case("mail"),
+                initial: shape.initial.as_ref().map(piece),
+                any: shape.any.iter().map(piece).collect(),
+                tail: shape.final_.as_ref().map(piece),
+            }))
+        }
         LdapFilter::Equality(attr, value) if attr.eq_ignore_ascii_case("objectclass") => {
             if value.eq_ignore_ascii_case("inetorgperson") || value.eq_ignore_ascii_case("person") {
                 Some(Wanted::Everyone)
@@ -375,12 +435,14 @@ fn wanted(filter: &LdapFilter) -> Option<Wanted> {
                 match wanted(part)? {
                     Wanted::Everyone => {}
                     Wanted::Nothing => return Some(Wanted::Nothing),
-                    narrower @ (Wanted::Named(_) | Wanted::Mailed(_)) => match folded {
-                        Wanted::Everyone => folded = narrower,
-                        // Two names in one conjunction: satisfiable only if
-                        // equal, and not worth more machinery than that.
-                        _ => return Some(Wanted::Nothing),
-                    },
+                    narrower @ (Wanted::Named(_) | Wanted::Mailed(_) | Wanted::Sifted(_)) => {
+                        match folded {
+                            Wanted::Everyone => folded = narrower,
+                            // Two narrowings in one conjunction: satisfiable
+                            // only in corners not worth more machinery.
+                            _ => return Some(Wanted::Nothing),
+                        }
+                    }
                 }
             }
             Some(folded)
@@ -434,17 +496,13 @@ async fn search(
             .map_err(|_| unavailable())?
             .into_iter()
             .collect(),
-        Wanted::Everyone => {
-            let query = store::query::list_query::ListQuery::new(models::paging::Window {
-                first: 0,
-                max: CEILING,
-                clamped: false,
-            });
-            users::list(&transaction, &query, false)
-                .await
-                .map_err(|_| unavailable())?
-                .items
-        }
+        Wanted::Everyone => listed(&transaction).await.map_err(|_| unavailable())?,
+        Wanted::Sifted(sieve) => listed(&transaction)
+            .await
+            .map_err(|_| unavailable())?
+            .into_iter()
+            .filter(|person| sieve.person_matches(person))
+            .collect(),
     };
 
     Ok(people
@@ -452,6 +510,18 @@ async fn search(
         .filter(|person| person.enabled)
         .map(|person| entry_of(front, &person))
         .collect())
+}
+
+/// The capped listing every broad answer reads from.
+async fn listed(
+    transaction: &deadpool_postgres::Transaction<'_>,
+) -> Result<Vec<UserModel>, store::error::StoreError> {
+    let query = store::query::list_query::ListQuery::new(models::paging::Window {
+        first: 0,
+        max: CEILING,
+        clamped: false,
+    });
+    Ok(users::list(transaction, &query, false).await?.items)
 }
 
 /// One person as a directory entry: the same claims the HTTP door releases
@@ -536,6 +606,38 @@ mod tests {
         assert_eq!(front.named_by("cn=admin,dc=id,dc=example"), None);
     }
 
+    /// A sieve matches the way directories match: folded case, pieces in
+    /// order, anchored ends.
+    #[test]
+    fn a_sieve_admits_what_its_shape_says() {
+        let prefix = Sieve {
+            on_mail: false,
+            initial: Some("ad".into()),
+            any: vec![],
+            tail: None,
+        };
+        assert!(prefix.admits("Ada"));
+        assert!(!prefix.admits("grace"));
+
+        let shaped = Sieve {
+            on_mail: false,
+            initial: Some("a".into()),
+            any: vec!["d".into()],
+            tail: Some("a".into()),
+        };
+        assert!(shaped.admits("ada"));
+        assert!(!shaped.admits("ad"), "overlapping pieces double-counted");
+
+        let ends = Sieve {
+            on_mail: true,
+            initial: None,
+            any: vec![],
+            tail: Some("@example.test".into()),
+        };
+        assert!(ends.admits("ada@Example.Test"));
+        assert!(!ends.admits("ada@example.org"));
+    }
+
     /// Filters fold to store questions, or are refused whole.
     #[test]
     fn a_filter_folds_or_is_refused() {
@@ -559,7 +661,8 @@ mod tests {
                 "uid".into(),
                 ldap3_proto::proto::LdapSubstringFilter::default()
             ))
-            .is_none()
+            .is_none(),
+            "an empty substring shape was read as everyone"
         );
     }
 }

@@ -60,6 +60,8 @@ str_enum! {
         FeatureRead => "feature:read",
         ScimRead => "scim:read",
         ScimWrite => "scim:write",
+        IgaRead => "iga:read",
+        IgaWrite => "iga:write",
     }
 }
 
@@ -944,7 +946,7 @@ mod tests {
 
     #[test]
     fn the_vocabulary_agrees_with_its_own_spelling() {
-        assert_eq!(AdminAction::ALL.len(), 37);
+        assert_eq!(AdminAction::ALL.len(), 39);
         assert_round_trips(AdminAction::ALL);
     }
 

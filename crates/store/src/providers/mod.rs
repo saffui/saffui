@@ -2,6 +2,7 @@ pub mod auth_flows;
 pub mod authz_policies;
 pub mod authz_surface;
 pub mod backchannel;
+pub mod birthright;
 pub mod brokering;
 pub mod client_scopes;
 pub mod clients;

@@ -521,6 +521,16 @@ pub async fn deliver_outbox(
         .await
         .map_err(|_| ())?;
     for event in due {
+        // The lifecycle converges before anything leaves the house: the
+        // provisioned apps should see the person as the rules already made
+        // them.
+        if crate::lifecycle::converge_event(transaction, &event)
+            .await
+            .is_err()
+        {
+            told.failed += 1;
+            continue;
+        }
         if connectors.is_empty() {
             // Nobody to tell is a telling done, not one to retry forever.
             store::providers::outbox::delivered(transaction, event.event_id)

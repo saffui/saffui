@@ -32,5 +32,6 @@ pub mod registration;
 pub mod request_object;
 pub mod response_type;
 pub mod revocation;
+pub mod scim;
 pub mod token;
 pub mod userinfo;

@@ -17,6 +17,7 @@ pub mod housekeeping;
 pub mod implicit;
 pub mod introspection;
 pub mod landing;
+pub mod lifecycle;
 pub mod logout;
 pub mod mappers;
 pub mod minting;

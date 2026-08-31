@@ -8,6 +8,7 @@ pub mod features;
 pub mod federation;
 pub mod flows;
 pub mod idps;
+pub mod iga;
 pub mod keys;
 pub mod mail;
 pub mod negotiation;

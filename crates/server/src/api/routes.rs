@@ -5,7 +5,7 @@ use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
     authorization, claim_sources, client_scopes, clients, directory, features, federation, flows,
-    idps, keys, mail, negotiation, portability, protocol_mappers, realm_keys, realms, rebac,
+    idps, iga, keys, mail, negotiation, portability, protocol_mappers, realm_keys, realms, rebac,
     sessions, users,
 };
 use crate::api::rest::endpoints::scim;
@@ -466,6 +466,30 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/federations/{alias}/import",
             action: AdminAction::IdpWrite,
             handler: Some(|| web::post().to(federation::import)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/iga/rules",
+            action: AdminAction::IgaRead,
+            handler: Some(|| web::get().to(iga::rules)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/iga/rules/{rule}",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::put().to(iga::put_rule)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/iga/rules/{rule}",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::delete().to(iga::delete_rule)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/iga/converge",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::post().to(iga::converge)),
         },
         AdminRoute {
             method: Method::GET,

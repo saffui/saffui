@@ -349,6 +349,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V057__event_outbox.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 58,
+            name: "birthright",
+            sql: include_str!("../migrations/V058__birthright.sql"),
+            transactional: true,
+        }),
     ]
 }
 

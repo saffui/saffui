@@ -480,3 +480,196 @@ async fn refresh_shadow(
     }
     Ok(changed)
 }
+
+pub struct Told {
+    pub delivered: u64,
+    pub failed: u64,
+    pub dead: u64,
+}
+
+const DELIVERY_CEILING: i64 = 50;
+const DEAD_AFTER: i32 = 8;
+
+/// One realm's outbox pass: each due telling goes to every connector, and a
+/// telling only counts delivered when every connector took it.
+pub async fn deliver_outbox(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &crate::api::config::Sealing,
+    context: &store::tenancy::TenantContext,
+    backoff_seconds: i64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Told, ()> {
+    let mut told = Told {
+        delivered: 0,
+        failed: 0,
+        dead: 0,
+    };
+    let rows = store::providers::brokering::list_providers(transaction)
+        .await
+        .map_err(|_| ())?;
+    let connectors: Vec<_> = rows
+        .iter()
+        .filter(|row| services::outbound::is_outbound(row) && row.enabled != Some(false))
+        .filter_map(|row| {
+            services::outbound::Connector::parse(row)
+                .ok()
+                .map(|connector| (row, connector))
+        })
+        .collect();
+
+    let due = store::providers::outbox::due(transaction, DELIVERY_CEILING, backoff_seconds, now)
+        .await
+        .map_err(|_| ())?;
+    for event in due {
+        if connectors.is_empty() {
+            // Nobody to tell is a telling done, not one to retry forever.
+            store::providers::outbox::delivered(transaction, event.event_id)
+                .await
+                .map_err(|_| ())?;
+            continue;
+        }
+        let mut landed = true;
+        for (row, connector) in &connectors {
+            let bearer = opened_bearer(transaction, sealing, context, row).await;
+            if !push_one(connector, bearer.as_deref(), &event).await {
+                landed = false;
+            }
+        }
+        if landed {
+            store::providers::outbox::delivered(transaction, event.event_id)
+                .await
+                .map_err(|_| ())?;
+            told.delivered += 1;
+        } else if event.attempts >= DEAD_AFTER {
+            store::providers::outbox::dead(transaction, event.event_id)
+                .await
+                .map_err(|_| ())?;
+            told.dead += 1;
+            tracing::warn!(
+                event = event.event_id,
+                kind = event.kind,
+                "a telling was given up on; it stays visible as dead"
+            );
+        } else {
+            told.failed += 1;
+        }
+    }
+    Ok(told)
+}
+
+async fn opened_bearer(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &crate::api::config::Sealing,
+    context: &store::tenancy::TenantContext,
+    provider: &models::entities::authz::IdentityProviderModel,
+) -> Option<String> {
+    use data_encoding::BASE64;
+    let sealed = provider
+        .configs
+        .as_ref()?
+        .get(services::outbound::SEALED_BEARER)?
+        .as_str()?;
+    let sealed = BASE64.decode(sealed.as_bytes()).ok()?;
+    let ring = store::keyring::load(
+        transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    .ok()?;
+    let opened = ring
+        .open(
+            &sealing.envelope,
+            "identity-provider-secret",
+            &provider.internal_id,
+            &sealed,
+        )
+        .await
+        .ok()?;
+    String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()
+}
+
+/// Reconcile-then-write, the way the cloud provisioners do it: find the
+/// person at the far side by our identifier, then create, correct, or
+/// delete. Every path is idempotent, which is what at-least-once needs.
+async fn push_one(
+    connector: &services::outbound::Connector,
+    bearer: Option<&str>,
+    event: &store::providers::outbox::OutboxEvent,
+) -> bool {
+    let base = connector.base_url.clone();
+    let bearer = bearer.unwrap_or_default().to_owned();
+    let event = event.clone();
+    tokio::task::spawn_blocking(move || {
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .max_redirects(0)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .provider(ureq::tls::TlsProvider::NativeTls)
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build()
+            .new_agent();
+        let authorization = format!("Bearer {bearer}");
+        let found: Option<String> = agent
+            .get(&format!(
+                "{base}/Users?filter=externalId%20eq%20%22{}%22",
+                event.user_id
+            ))
+            .header("authorization", &authorization)
+            .call()
+            .ok()
+            .and_then(|mut response| {
+                response
+                    .body_mut()
+                    .read_to_string()
+                    .ok()
+                    .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+                    .and_then(|body| body["Resources"][0]["id"].as_str().map(str::to_owned))
+            });
+
+        match (event.kind.as_str(), found) {
+            (store::providers::outbox::USER_DELETED, Some(id)) => agent
+                .delete(&format!("{base}/Users/{id}"))
+                .header("authorization", &authorization)
+                .call()
+                .is_ok(),
+            (store::providers::outbox::USER_DELETED, None) => true,
+            (_, Some(id)) => {
+                let patch = serde_json::json!({
+                    "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                    "Operations": [{ "op": "replace", "value": {
+                        "active": event.payload["enabled"],
+                        "emails": [{ "value": event.payload["email"], "primary": true }],
+                    }}],
+                });
+                agent
+                    .patch(&format!("{base}/Users/{id}"))
+                    .header("authorization", &authorization)
+                    .header("content-type", "application/scim+json")
+                    .send(patch.to_string())
+                    .is_ok()
+            }
+            (_, None) => {
+                let created = serde_json::json!({
+                    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+                    "userName": event.payload["user_name"],
+                    "externalId": event.user_id,
+                    "active": event.payload["enabled"],
+                    "emails": [{ "value": event.payload["email"], "primary": true }],
+                });
+                agent
+                    .post(&format!("{base}/Users"))
+                    .header("authorization", &authorization)
+                    .header("content-type", "application/scim+json")
+                    .send(created.to_string())
+                    .is_ok()
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
+}

@@ -297,6 +297,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         plane.tenancy.clone(),
         plane.sealing.provider.clone(),
     );
+    let (plane_pool_for_outbox, tenancy_for_outbox) = (plane.pool.clone(), plane.tenancy.clone());
 
     // Bound with the other ports: a front asked for and not listenable fails
     // the deployment now, not on the first directory client. So does a key
@@ -354,8 +355,14 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     let syncing = server::jobs::sync_federated_shadows(
         synced_pool,
         synced_tenancy,
-        synced_sealing,
+        synced_sealing.clone(),
         config::jobs::federation_sync_every().map_err(|reason| reason.to_string())?,
+    );
+    let delivering = server::jobs::deliver_outbox_events(
+        plane_pool_for_outbox,
+        tenancy_for_outbox,
+        synced_sealing,
+        config::jobs::outbox_every().map_err(|reason| reason.to_string())?,
     );
 
     let draining = vitals.clone();
@@ -377,6 +384,9 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     let (served, _) = tokio::join!(plane, probes);
     if let Some(fronting) = fronting {
         fronting.abort();
+    }
+    if let Some(delivering) = delivering {
+        delivering.abort();
     }
     if let Some(syncing) = syncing {
         syncing.abort();

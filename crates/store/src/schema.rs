@@ -343,6 +343,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V056__backchannel_delivery.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 57,
+            name: "event_outbox",
+            sql: include_str!("../migrations/V057__event_outbox.sql"),
+            transactional: true,
+        }),
     ]
 }
 

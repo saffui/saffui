@@ -464,6 +464,25 @@ pub async fn dismiss(
         return refused();
     };
 
+    // Each token acts once. A replay inside its window is refused with the
+    // same face as a bad token, and the memory ages out with the sweep.
+    let remembered = store::providers::replay::remember_once(
+        &transaction,
+        sealing.provider.digest(),
+        "broker-logout-jti",
+        &format!("{alias}:{}", dismissal.jti),
+        now + chrono::Duration::seconds(600),
+    )
+    .await;
+    match remembered {
+        Ok(true) => {}
+        Ok(false) => {
+            tracing::warn!(alias, "an upstream logout token was replayed");
+            return refused();
+        }
+        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
+    }
+
     let Ok(standing) =
         store::providers::sessions::brokered(&transaction, &alias, &dismissal.external_user_id)
             .await

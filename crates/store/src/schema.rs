@@ -325,6 +325,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V053__user_federations.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 54,
+            name: "replay_guard",
+            sql: include_str!("../migrations/V054__replay_guard.sql"),
+            transactional: true,
+        }),
     ]
 }
 

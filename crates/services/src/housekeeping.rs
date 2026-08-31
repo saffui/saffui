@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use store::providers::{
-    deliveries, dpop, form_post, login, oidc, one_time_tokens, pushed, sessions,
+    deliveries, dpop, form_post, login, oidc, one_time_tokens, pushed, replay, sessions,
 };
 
 /// How long a receipt is kept. One nobody looked at for a month is one nobody
@@ -20,6 +20,7 @@ pub struct Swept {
     pub assertions: u64,
     pub logins_in_progress: u64,
     pub one_time_tokens: u64,
+    pub replayed: u64,
     pub delivery_receipts: u64,
     pub pushed_requests: u64,
     pub form_post_landings: u64,
@@ -34,6 +35,7 @@ impl Swept {
             + self.assertions
             + self.logins_in_progress
             + self.one_time_tokens
+            + self.replayed
             + self.delivery_receipts
             + self.pushed_requests
             + self.form_post_landings
@@ -47,6 +49,7 @@ impl Swept {
         self.assertions += other.assertions;
         self.logins_in_progress += other.logins_in_progress;
         self.one_time_tokens += other.one_time_tokens;
+        self.replayed += other.replayed;
         self.delivery_receipts += other.delivery_receipts;
         self.pushed_requests += other.pushed_requests;
         self.form_post_landings += other.form_post_landings;
@@ -75,6 +78,9 @@ pub async fn drop_expired_rows(
             .await
             .map_err(failed)?,
         logins_in_progress: login::drop_expired(transaction).await.map_err(failed)?,
+        replayed: replay::drop_expired(transaction, now)
+            .await
+            .map_err(|_| Unswept)?,
         one_time_tokens: one_time_tokens::drop_expired(transaction, now)
             .await
             .map_err(failed)?,

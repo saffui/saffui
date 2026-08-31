@@ -19,6 +19,7 @@ pub mod pushed;
 pub mod realm_keys;
 pub mod realms;
 pub mod rebac;
+pub mod replay;
 pub mod roles;
 pub mod sessions;
 pub mod tenants;

@@ -114,8 +114,8 @@ pub async fn answer_step(
     signing: Option<&store::keyring::Signing<'_>>,
     // What the person answered to the consent screen, when they answered.
     consented: Option<bool>,
-    // The directory this realm federates from. Absent where it holds none.
-    federation: Option<&dyn crate::login::directory::Directory>,
+    // The directories this realm federates from, first-asked first.
+    federations: &[crate::login::directory::Named<'_>],
     now: DateTime<Utc>,
 ) -> Result<Step, Unanswerable> {
     let login = login::resume(transaction, auth_session_id)
@@ -131,7 +131,7 @@ pub async fn answer_step(
     // Resolved here rather than inside the flow: an authenticator says whether
     // an answer is right, not who is answering. A name nobody holds is passed
     // through as absent, and the flow spends the same time on it.
-    let subject = named_subject(transaction, tenant, &login, username, federation, now).await?;
+    let subject = named_subject(transaction, tenant, &login, username, federations, now).await?;
 
     // Read before the flow rather than inside a step: a step that reached for
     // the realm's keyring would be one every other step pays for.
@@ -160,7 +160,7 @@ pub async fn answer_step(
             can_send: sends,
             now,
         }),
-        federation,
+        federations,
         seen.address.as_deref(),
         now,
     )
@@ -523,7 +523,7 @@ async fn named_subject(
     tenant: &TenantContext,
     login: &AuthSession,
     username: Option<&str>,
-    federation: Option<&dyn crate::login::directory::Directory>,
+    federations: &[crate::login::directory::Named<'_>],
     now: DateTime<Utc>,
 ) -> Result<Option<models::entities::user::UserModel>, Unanswerable> {
     // A person switched off answers as nobody, on both paths: the flow
@@ -546,27 +546,29 @@ async fn named_subject(
     {
         return Ok(Some(standing).filter(|held| held.enabled));
     }
-    let Some(directory) = federation else {
-        return Ok(None);
-    };
-    // The directory being unreachable answers like an unknown name: the flow
-    // spends the same time either way, and which names exist stays unsaid.
-    let Ok(found) = directory.find(named).await else {
-        return Ok(None);
-    };
-    let Some(person) = found else {
-        return Ok(None);
-    };
-    let shadow = shadow_row(tenant, &person, now);
-    users::create(transaction, &shadow)
-        .await
-        .map_err(|_| Unanswerable::Unreadable)?;
-    Ok(Some(shadow))
+    // Each directory in turn; one unreachable answers like an unknown name
+    // there and the walk moves on, so which names exist stays unsaid and
+    // one dead cable does not shut the doors behind it.
+    for held in federations {
+        let Ok(found) = held.directory.find(named).await else {
+            continue;
+        };
+        let Some(person) = found else {
+            continue;
+        };
+        let shadow = shadow_row(tenant, held.alias, &person, now);
+        users::create(transaction, &shadow)
+            .await
+            .map_err(|_| Unanswerable::Unreadable)?;
+        return Ok(Some(shadow));
+    }
+    Ok(None)
 }
 
 /// The local mirror of a person the directory owns.
-fn shadow_row(
+pub fn shadow_row(
     tenant: &TenantContext,
+    origin: &str,
     person: &crate::login::directory::DirectoryPerson,
     now: DateTime<Utc>,
 ) -> models::entities::user::UserModel {
@@ -582,6 +584,10 @@ fn shadow_row(
             attributes.insert(key.to_owned(), AttributeValue::Str(value.clone()));
         }
     }
+    attributes.insert(
+        crate::login::directory::ORIGIN_ATTRIBUTE.to_owned(),
+        AttributeValue::Str(origin.to_owned()),
+    );
     let mut metadata = models::auditable::AuditableModel::from_creator(
         tenant.tenant.clone(),
         "federation".to_owned(),

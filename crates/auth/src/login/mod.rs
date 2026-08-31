@@ -85,7 +85,7 @@ pub async fn run_flow(
     // What a mailed step needs. Absent where no step in this flow is one.
     posting: Option<Posting<'_>>,
     // The directory this realm federates from. Absent where it holds none.
-    federation: Option<&dyn directory::Directory>,
+    federations: &[directory::Named<'_>],
     // Where this pass came from, recorded against a failure, and when it is.
     from: Option<&str>,
     now: DateTime<Utc>,
@@ -139,7 +139,7 @@ pub async fn run_flow(
             answers,
             remembered_before.get(named.as_str()),
             posting,
-            federation,
+            federations,
         )
         .await;
         let outcome = answered.outcome;

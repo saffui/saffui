@@ -438,21 +438,33 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
-            pattern: "/admin/realms/{realm}/federation",
+            pattern: "/admin/realms/{realm}/federations",
+            action: AdminAction::IdpRead,
+            handler: Some(|| web::get().to(federation::list)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/federations/{alias}",
             action: AdminAction::IdpRead,
             handler: Some(|| web::get().to(federation::get)),
         },
         AdminRoute {
             method: Method::PUT,
-            pattern: "/admin/realms/{realm}/federation",
+            pattern: "/admin/realms/{realm}/federations/{alias}",
             action: AdminAction::IdpWrite,
             handler: Some(|| web::put().to(federation::put)),
         },
         AdminRoute {
             method: Method::DELETE,
-            pattern: "/admin/realms/{realm}/federation",
+            pattern: "/admin/realms/{realm}/federations/{alias}",
             action: AdminAction::IdpWrite,
             handler: Some(|| web::delete().to(federation::delete)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/federations/{alias}/import",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::post().to(federation::import)),
         },
         AdminRoute {
             method: Method::GET,

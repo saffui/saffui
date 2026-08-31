@@ -441,21 +441,37 @@ fn read_mapper(row: Row) -> IdpMapperModel {
     }
 }
 
-const FEDERATION_COLUMNS: &str = "tenant, realm_id, enabled, configs, created_by, created_at, \
-                                  updated_by, updated_at, version";
+const SPNEGO_COLUMNS: &str = "tenant, realm_id, enabled, configs, created_by, created_at, \
+                               updated_by, updated_at, version";
+const FEDERATION_COLUMNS: &str = "tenant, realm_id, alias, enabled, priority, configs, \
+                                  created_by, created_at, updated_by, updated_at, version";
 
-/// The one directory this realm federates from, when it holds one.
-pub async fn federation(transaction: &Transaction<'_>) -> StoreResult<Option<UserFederationModel>> {
-    let statement = format!("SELECT {FEDERATION_COLUMNS} FROM user_federation");
+/// Every directory this realm federates from, first-asked first.
+pub async fn federations(transaction: &Transaction<'_>) -> StoreResult<Vec<UserFederationModel>> {
+    let statement =
+        format!("SELECT {FEDERATION_COLUMNS} FROM user_federations ORDER BY priority, alias");
     Ok(transaction
-        .query_opt(statement.as_str(), &[])
+        .query(statement.as_str(), &[])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_federation)
+        .collect())
+}
+
+pub async fn federation(
+    transaction: &Transaction<'_>,
+    alias: &str,
+) -> StoreResult<Option<UserFederationModel>> {
+    let statement = format!("SELECT {FEDERATION_COLUMNS} FROM user_federations WHERE alias = $1");
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&alias])
         .await
         .map_err(|_| StoreError::Backend)?
         .map(read_federation))
 }
 
-/// Write the realm's directory, whole: the row is a singleton, so writing is
-/// replacing.
+/// Write one directory, whole: an alias is a name, so writing is replacing.
 pub async fn keep_federation(
     transaction: &Transaction<'_>,
     federation: &UserFederationModel,
@@ -469,26 +485,34 @@ pub async fn keep_federation(
         .map_err(|_| StoreError::Backend)?;
     transaction
         .execute(
-            "INSERT INTO user_federation (tenant, realm_id, enabled, configs, created_by) \
+            "INSERT INTO user_federations \
+                 (tenant, realm_id, alias, enabled, priority, configs, created_by) \
              SELECT current_setting('saffui.current_tenant', true), \
-                    current_setting('saffui.current_realm', true), $1, $2, $3 \
-             ON CONFLICT (tenant, realm_id) DO UPDATE \
+                    current_setting('saffui.current_realm', true), $1, $2, $3, $4, $5 \
+             ON CONFLICT (tenant, realm_id, alias) DO UPDATE \
                  SET enabled = EXCLUDED.enabled, \
+                     priority = EXCLUDED.priority, \
                      configs = EXCLUDED.configs, \
                      updated_by = EXCLUDED.created_by, \
                      updated_at = now(), \
-                     version = user_federation.version + 1",
-            &[&enabled, &configs, &federation.metadata.created_by],
+                     version = user_federations.version + 1",
+            &[
+                &federation.alias,
+                &enabled,
+                &federation.priority,
+                &configs,
+                &federation.metadata.created_by,
+            ],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(())
 }
 
-/// Take the directory away, and say whether there was one.
-pub async fn drop_federation(transaction: &Transaction<'_>) -> StoreResult<bool> {
+/// Take one directory away, and say whether it was there.
+pub async fn drop_federation(transaction: &Transaction<'_>, alias: &str) -> StoreResult<bool> {
     let removed = transaction
-        .execute("DELETE FROM user_federation", &[])
+        .execute("DELETE FROM user_federations WHERE alias = $1", &[&alias])
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(removed > 0)
@@ -496,7 +520,7 @@ pub async fn drop_federation(transaction: &Transaction<'_>) -> StoreResult<bool>
 
 /// The one ticket door this realm answers, when it holds one.
 pub async fn spnego(transaction: &Transaction<'_>) -> StoreResult<Option<RealmSpnegoModel>> {
-    let statement = format!("SELECT {FEDERATION_COLUMNS} FROM realm_spnego");
+    let statement = format!("SELECT {SPNEGO_COLUMNS} FROM realm_spnego");
     Ok(transaction
         .query_opt(statement.as_str(), &[])
         .await
@@ -565,7 +589,9 @@ fn read_spnego(row: Row) -> RealmSpnegoModel {
 fn read_federation(row: Row) -> UserFederationModel {
     UserFederationModel {
         realm_id: row.get("realm_id"),
+        alias: row.get("alias"),
         enabled: Some(row.get("enabled")),
+        priority: row.get("priority"),
         configs: row
             .get::<_, Option<serde_json::Value>>("configs")
             .and_then(|value| serde_json::from_value(value).ok()),

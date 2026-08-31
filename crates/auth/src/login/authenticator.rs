@@ -181,12 +181,12 @@ pub async fn verify_answer(
     // Where a mailed link points back to, and how this realm sends. Absent
     // where no step needs them.
     posting: Option<Posting<'_>>,
-    // The directory this realm federates from. Only the password step asks.
-    federation: Option<&dyn crate::login::directory::Directory>,
+    // The directories this realm federates from. Only the password step asks.
+    federations: &[crate::login::directory::Named<'_>],
 ) -> Answered {
     match authenticator {
         Authenticator::Password => Answered::plain(
-            password(transaction, provider, realm, subject, answers, federation).await,
+            password(transaction, provider, realm, subject, answers, federations).await,
         ),
         Authenticator::Totp => Answered::plain(totp(transaction, provider, subject, answers).await),
         Authenticator::Webauthn => {
@@ -430,7 +430,7 @@ async fn password(
     realm: &RealmModel,
     subject: Option<&UserModel>,
     answers: &[Answer],
-    federation: Option<&dyn crate::login::directory::Directory>,
+    federations: &[crate::login::directory::Named<'_>],
 ) -> Outcome {
     let Some(Answer::Password(offered)) =
         of_kind(answers, |answer| matches!(answer, Answer::Password(_)))
@@ -448,14 +448,25 @@ async fn password(
     if let Some(subject) = subject
         && subject.user_storage == Some(models::entities::user::UserStorage::Ldap)
     {
-        return match federation {
-            Some(directory) => match directory.verify(&subject.user_name, offered).await {
+        // The shadow's own directory, by the mark left at first sight; a
+        // shadow from before the mark falls to the first. The realm having
+        // stopped federating leaves nothing that could vouch for the
+        // password.
+        let origin = subject
+            .attributes
+            .as_ref()
+            .and_then(|bag| bag.get(crate::login::directory::ORIGIN_ATTRIBUTE))
+            .and_then(models::entities::attributes::AttributeValue::as_str);
+        let named = match origin {
+            Some(alias) => federations.iter().find(|held| held.alias == alias),
+            None => federations.first(),
+        };
+        return match named {
+            Some(named) => match named.directory.verify(&subject.user_name, offered).await {
                 crate::login::directory::Bound::Accepted => Outcome::Passed,
                 crate::login::directory::Bound::Refused
                 | crate::login::directory::Bound::Unreachable => Outcome::Failed,
             },
-            // The realm stopped federating and the shadow row remains: there
-            // is nothing left that could vouch for the password.
             None => Outcome::Failed,
         };
     }

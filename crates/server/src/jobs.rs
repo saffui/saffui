@@ -164,37 +164,66 @@ pub async fn sync_every_realm(
             continue;
         }
 
-        let Ok(Some(federation)) = store::providers::brokering::federation(&transaction).await
-        else {
+        let Ok(rows) = store::providers::brokering::federations(&transaction).await else {
             continue;
         };
-        if federation.enabled == Some(false) {
-            continue;
+        // All-or-nothing per realm still: every directory's pass rides one
+        // transaction, so one unreachable directory rolls the realm back
+        // whole and an outage never decides who may log in.
+        let mut landed = crate::federation::Synced::default();
+        let mut whole = true;
+        for (place, federation) in rows.iter().enumerate() {
+            if federation.enabled == Some(false) {
+                continue;
+            }
+            let Ok(settings) = services::federation::LdapSettings::parse(federation) else {
+                tracing::warn!(
+                    tenant = realm.tenant,
+                    realm = realm.realm_id,
+                    alias = federation.alias,
+                    "a directory row no longer reads; its shadows were not walked"
+                );
+                continue;
+            };
+            let directory = crate::federation::directory_for(
+                &transaction,
+                sealing,
+                &realm,
+                federation,
+                settings,
+            )
+            .await;
+            match crate::federation::sync_shadows(
+                &transaction,
+                &federation.alias,
+                place == 0,
+                &directory,
+            )
+            .await
+            {
+                Ok(synced) => landed.add(synced),
+                Err(()) => {
+                    tracing::warn!(
+                        tenant = realm.tenant,
+                        realm = realm.realm_id,
+                        alias = federation.alias,
+                        "the directory could not be asked; the realm's pass was abandoned"
+                    );
+                    whole = false;
+                    break;
+                }
+            }
         }
-        let Ok(settings) = services::federation::LdapSettings::parse(&federation) else {
-            tracing::warn!(
-                tenant = realm.tenant,
-                realm = realm.realm_id,
-                "the realm's directory row no longer reads; its shadows were not walked"
-            );
-            continue;
-        };
-        let directory =
-            crate::federation::directory_for(&transaction, sealing, &realm, &federation, settings)
-                .await;
-        match crate::federation::sync_shadows(&transaction, &directory).await {
-            Ok(synced) if transaction.commit().await.is_ok() => total.add(synced),
-            Ok(_) => tracing::warn!(
-                tenant = realm.tenant,
-                realm = realm.realm_id,
-                "a sync pass did not land"
-            ),
-            // Unreachable, mid-realm: nothing committed, nobody suspended.
-            Err(()) => tracing::warn!(
-                tenant = realm.tenant,
-                realm = realm.realm_id,
-                "the directory could not be asked; its shadows were left as they stand"
-            ),
+        if whole && landed.total() > 0 {
+            if transaction.commit().await.is_ok() {
+                total.add(landed);
+            } else {
+                tracing::warn!(
+                    tenant = realm.tenant,
+                    realm = realm.realm_id,
+                    "a sync pass did not land"
+                );
+            }
         }
     }
     Some(total)

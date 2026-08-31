@@ -185,32 +185,37 @@ pub async fn answer(
         envelope: &sealing.envelope,
     });
 
-    // The realm's directory, when it federates one and the row still reads
-    // as a directory. A row that stopped reading is skipped with a line for
-    // the operator: the plane refuses to write one, so a broken row is a
-    // migration of trouble, and bricking every login over it helps nobody.
-    let federated = match store::providers::brokering::federation(&transaction).await {
-        Ok(Some(held)) if held.enabled != Some(false) => {
-            match services::federation::LdapSettings::parse(&held) {
-                Ok(settings) => Some(
-                    crate::federation::directory_for(
-                        &transaction,
-                        &sealing,
-                        &context,
-                        &held,
-                        settings,
-                    )
-                    .await,
-                ),
-                Err(why) => {
-                    tracing::warn!(%why, "the realm's directory row no longer reads");
-                    None
-                }
-            }
-        }
-        Ok(_) => None,
+    // The realm's directories, first-asked first. A row that stopped
+    // reading is skipped with a line for the operator: the plane refuses to
+    // write one, so a broken row is a migration of trouble, and bricking
+    // every login over it helps nobody.
+    let rows = match store::providers::brokering::federations(&transaction).await {
+        Ok(rows) => rows,
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
+    let mut federated = Vec::new();
+    for held in &rows {
+        if held.enabled == Some(false) {
+            continue;
+        }
+        match services::federation::LdapSettings::parse(held) {
+            Ok(settings) => federated.push((
+                held.alias.clone(),
+                crate::federation::directory_for(&transaction, &sealing, &context, held, settings)
+                    .await,
+            )),
+            Err(why) => {
+                tracing::warn!(%why, alias = held.alias, "a directory row no longer reads");
+            }
+        }
+    }
+    let federations: Vec<auth::login::directory::Named<'_>> = federated
+        .iter()
+        .map(|(alias, directory)| auth::login::directory::Named {
+            alias,
+            directory: directory as &dyn auth::login::directory::Directory,
+        })
+        .collect();
 
     let step = browser::answer_step(
         &transaction,
@@ -246,9 +251,7 @@ pub async fn answer(
             Some("refused") => Some(false),
             _ => None,
         },
-        federated
-            .as_ref()
-            .map(|directory| directory as &dyn auth::login::directory::Directory),
+        &federations,
         now,
     )
     .await;

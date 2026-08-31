@@ -7,9 +7,7 @@ use models::entities::brokering::{UserFederationModel, UserFederationMutationMod
 use store::keyring::RealmKeyring;
 use store::providers::brokering;
 
-use crate::federation::{
-    CLEAR_BIND, LdapSettings, PURPOSE, SEALED_BIND, SINGLETON, check_bag, presentable,
-};
+use crate::federation::{CLEAR_BIND, LdapSettings, PURPOSE, SEALED_BIND, check_bag, presentable};
 
 /// Why the directory could not be written.
 #[derive(Debug, thiserror::Error)]
@@ -22,9 +20,21 @@ pub enum Unwritable {
     Backend,
 }
 
-/// The realm's directory as an answer may carry it: secrets stripped.
-pub async fn get(transaction: &Transaction<'_>) -> Result<UserFederationModel, Unwritable> {
-    brokering::federation(transaction)
+/// The realm's directories as an answer may carry them: secrets stripped.
+pub async fn list(transaction: &Transaction<'_>) -> Result<Vec<UserFederationModel>, Unwritable> {
+    Ok(brokering::federations(transaction)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .into_iter()
+        .map(presentable)
+        .collect())
+}
+
+pub async fn get(
+    transaction: &Transaction<'_>,
+    alias: &str,
+) -> Result<UserFederationModel, Unwritable> {
+    brokering::federation(transaction, alias)
         .await
         .map_err(|_| Unwritable::Backend)?
         .map(presentable)
@@ -34,18 +44,22 @@ pub async fn get(transaction: &Transaction<'_>) -> Result<UserFederationModel, U
 /// Write the realm's directory, whole. The bag is read here the way a login
 /// will read it, and the bind secret is sealed on the way in: a bag accepted
 /// unread defers every failure to somebody's sign-in.
+#[allow(clippy::too_many_arguments, reason = "each is a distinct fact")]
 pub async fn put(
     transaction: &Transaction<'_>,
     ring: &RealmKeyring,
     envelope: &Envelope,
     tenant: &str,
     realm_id: &str,
+    alias: &str,
     by: &str,
     asked: UserFederationMutationModel,
 ) -> Result<UserFederationModel, Unwritable> {
     let mut federation = UserFederationModel {
         realm_id: realm_id.to_owned(),
+        alias: alias.to_owned(),
         enabled: asked.enabled,
+        priority: asked.priority.unwrap_or(0),
         configs: asked.configs,
         metadata: AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     };
@@ -53,15 +67,15 @@ pub async fn put(
         check_bag(bag).map_err(|why| Unwritable::Invalid(why.to_string()))?;
     }
     LdapSettings::parse(&federation).map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    seal_bind(ring, envelope, &mut federation).await?;
+    seal_bind(ring, envelope, alias, &mut federation).await?;
     brokering::keep_federation(transaction, &federation)
         .await
         .map_err(|_| Unwritable::Backend)?;
-    get(transaction).await
+    get(transaction, alias).await
 }
 
-pub async fn delete(transaction: &Transaction<'_>) -> Result<(), Unwritable> {
-    brokering::drop_federation(transaction)
+pub async fn delete(transaction: &Transaction<'_>, alias: &str) -> Result<(), Unwritable> {
+    brokering::drop_federation(transaction, alias)
         .await
         .map_err(|_| Unwritable::Backend)?
         .then_some(())
@@ -71,6 +85,7 @@ pub async fn delete(transaction: &Transaction<'_>) -> Result<(), Unwritable> {
 async fn seal_bind(
     ring: &RealmKeyring,
     envelope: &Envelope,
+    alias: &str,
     federation: &mut UserFederationModel,
 ) -> Result<(), Unwritable> {
     let Some(bag) = federation.configs.as_mut() else {
@@ -85,7 +100,7 @@ async fn seal_bind(
         ));
     };
     let sealed = ring
-        .seal(envelope, PURPOSE, SINGLETON, clear.as_bytes())
+        .seal(envelope, PURPOSE, alias, clear.as_bytes())
         .await
         .map_err(|_| Unwritable::Backend)?;
     bag.insert(

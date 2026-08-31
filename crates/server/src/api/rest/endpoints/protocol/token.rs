@@ -47,6 +47,31 @@ pub async fn ask(
         return Denied::InvalidRequest.answer("the body could not be read as a form");
     };
 
+    // A workload that carries no credential but arrived through the proxy's
+    // mTLS may be a mesh identity: its certificate's URI names it, and the
+    // same trusted platforms that admit tokens admit certificates. Without a
+    // carried certificate the request falls through, to be refused as any
+    // other caller that never said who it was.
+    if asked.grant_type.as_deref() == Some("client_credentials")
+        && asked.client_id.is_none()
+        && asked.client_secret.is_none()
+        && asked.client_assertion.is_none()
+        && request.headers().get("authorization").is_none()
+        && let Some(answered) = x509_exchange(
+            &request,
+            &mut connection,
+            &tenancy,
+            &sealing,
+            &origin,
+            &context,
+            &asked,
+            now,
+        )
+        .await
+    {
+        return answered;
+    }
+
     // RFC 7523: the assertion is the whole credential, so this grant turns
     // off before the client-authentication door. Nothing in it is believed
     // until the platform's own keys have spoken.
@@ -320,6 +345,9 @@ pub async fn ask(
                     audience: asked.audience.as_deref(),
                     keys: &keys,
                 },
+                request
+                    .app_data::<web::Data<services::pdp::Journal>>()
+                    .map(|held| held.get_ref()),
                 now,
             )
             .await
@@ -560,5 +588,111 @@ async fn workload_exchange(
             answer(granted)
         }
         Err(why) => ungranted(why),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
+async fn x509_exchange(
+    request: &HttpRequest,
+    connection: &mut deadpool_postgres::Object,
+    tenancy: &Tenancy,
+    sealing: &Sealing,
+    origin: &PublicOrigin,
+    context: &store::tenancy::TenantContext,
+    asked: &Asked,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<HttpResponse> {
+    let refused = || Some(Denied::InvalidGrant.answer("the grant presented was not honoured"));
+    // Only from the proxy the operator named, like every mTLS read here. A
+    // request carrying no certificate is not this door's to answer, and
+    // falls back out; once one is carried, every refusal is final.
+    let proxying = request
+        .app_data::<web::Data<config::proxying::Proxying>>()
+        .map_or_else(config::proxying::Proxying::none, |held| (***held).clone());
+    let named = proxying.certificate_header()?;
+    let header = actix_web::http::header::HeaderName::from_bytes(named.as_bytes()).ok()?;
+    let carried = request.headers().get(header)?.to_str().ok()?;
+    let peer = request.peer_addr().map(|address| address.ip().to_string());
+    let carried = proxying.client_certificate(peer.as_deref(), Some(carried))?;
+    let Ok(uris) = services::mtls::san_uris(carried) else {
+        return refused();
+    };
+    if uris.is_empty() {
+        return refused();
+    }
+
+    let Ok(transaction) = tenancy.transaction(connection, context).await else {
+        return Some(Denied::InvalidRequest.answer("the realm could not be read"));
+    };
+    let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
+        return Some(Denied::InvalidRequest.answer("the realm could not be read"));
+    };
+    let Ok(rows) = store::providers::brokering::list_providers(&transaction).await else {
+        return Some(Denied::InvalidRequest.answer("the realm could not be read"));
+    };
+    let admitted = rows
+        .iter()
+        .filter(|row| services::workload::is_workload(row) && row.enabled != Some(false))
+        .filter_map(|row| services::workload::Trusted::parse(row).ok())
+        .find_map(|trusted| {
+            uris.iter()
+                .find(|uri| trusted.admits(uri))
+                .cloned()
+                .map(|uri| (trusted, uri))
+        });
+    let Some((trusted, identity)) = admitted else {
+        return refused();
+    };
+
+    let Ok(Some(client)) = store::providers::clients::load(&transaction, &trusted.client_id).await
+    else {
+        return refused();
+    };
+    if client.enabled != Some(true) {
+        return refused();
+    }
+    let Ok(ring) = keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    else {
+        return Some(Denied::InvalidRequest.answer("the realm could not be read"));
+    };
+    let granted = grant::workload(
+        &transaction,
+        &grant::Signing {
+            provider: sealing.provider.as_ref(),
+            ring: &ring,
+            envelope: &sealing.envelope,
+        },
+        &grant::Within {
+            tenant: context,
+            realm: &realm,
+            issuer: &origin.issuer(&context.realm_id),
+            bound_to: None,
+            certified_by: None,
+        },
+        &client,
+        &identity,
+        "x509",
+        asked.scope.as_deref(),
+        &crate::api::provenance::read_provenance(request),
+        now,
+    )
+    .await;
+    match granted {
+        Ok(granted) => {
+            if transaction.commit().await.is_err() {
+                return Some(Denied::InvalidRequest.answer("the realm could not be read"));
+            }
+            Some(answer(granted))
+        }
+        Err(why) => Some(ungranted(why)),
     }
 }

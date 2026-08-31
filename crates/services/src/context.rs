@@ -16,6 +16,12 @@ use crate::token::Verified;
 pub struct Principal(Box<UserModel>);
 
 impl Principal {
+    /// A principal built from a person already loaded and checked, for the
+    /// decision points that act on somebody's behalf without their request.
+    pub fn of_user(user: UserModel) -> Self {
+        Principal(Box::new(user))
+    }
+
     pub fn id(&self) -> &str {
         &self.0.user_id
     }

@@ -1252,12 +1252,17 @@ pub struct Exchanging<'a> {
 /// is what was asked or the actor itself, and nothing renewable is minted:
 /// acting for somebody is bounded by the token they showed, not extended by
 /// it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one grant"
+)]
 pub async fn token_exchange(
     transaction: &Transaction<'_>,
     signing: &Signing<'_>,
     within: &Within<'_>,
     client: &ClientModel,
     exchanging: &Exchanging<'_>,
+    journal: Option<&crate::pdp::Journal>,
     now: DateTime<Utc>,
 ) -> Result<Granted, Ungranted> {
     // A public client cannot exchange, and a confidential one may only when
@@ -1356,6 +1361,67 @@ pub async fn token_exchange(
     if let Some(may) = verified.claims.get("may_act") {
         let allowed = may.get("sub").and_then(Value::as_str);
         if allowed != acting.get("sub").and_then(Value::as_str) {
+            return Err(Ungranted::Unauthorized);
+        }
+    }
+
+    // The operator's fine policy, when the client bag names one: the engine
+    // that already answers permission questions answers this one, in the
+    // subject's name, journalled like every decision it makes.
+    if let (Some(server), Some(resource), Some(scope)) = (
+        exchange_policy(client, "token.exchange.policy_server"),
+        exchange_policy(client, "token.exchange.policy_resource"),
+        exchange_policy(client, "token.exchange.policy_scope"),
+    ) {
+        let Some(journal) = journal else {
+            return Err(Ungranted::Unreadable);
+        };
+        let subject_person = users::load(transaction, &account)
+            .await
+            .map_err(|_| Ungranted::Unreadable)?
+            .ok_or(Ungranted::InvalidGrant)?;
+        let asked = crate::context::Context {
+            tenant: within.tenant.clone(),
+            session_id: verified
+                .claims
+                .get("sid")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            principal: crate::context::Principal::of_user(subject_person),
+            acting: crate::context::Acting::RealmWide,
+            presenter: verified
+                .claims
+                .get("azp")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            now,
+        };
+        let mut decision_id = [0_u8; 16];
+        signing
+            .provider
+            .rand()
+            .fill(&mut decision_id)
+            .map_err(|_| Ungranted::Unmintable)?;
+        let decision_id = data_encoding::HEXLOWER.encode(&decision_id);
+        let answer = crate::pdp::decide(
+            transaction,
+            journal,
+            &asked,
+            crate::pdp::Question {
+                resource: crate::pdp::Resource::Permission {
+                    server_id: &server,
+                    resource: &resource,
+                    scope: &scope,
+                },
+                action: "token-exchange",
+                decision_id: &decision_id,
+                trace_id: None,
+            },
+        )
+        .await
+        .map_err(|_| Ungranted::Unreadable)?;
+        if !answer.permitted() {
             return Err(Ungranted::Unauthorized);
         }
     }
@@ -1470,4 +1536,15 @@ fn allows_exchange(client: &ClientModel) -> bool {
 
 fn wants_openid(scope: &str) -> bool {
     scope.split_whitespace().any(|asked| asked == "openid")
+}
+
+fn exchange_policy(client: &ClientModel, key: &str) -> Option<String> {
+    client
+        .configs
+        .as_ref()
+        .and_then(|bag| bag.get(key))
+        .and_then(models::entities::attributes::AttributeValue::as_str)
+        .map(str::trim)
+        .filter(|held| !held.is_empty())
+        .map(str::to_owned)
 }

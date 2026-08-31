@@ -26,6 +26,13 @@ pub fn thumbprint(provider: &dyn CryptoProvider, carried: &str) -> Result<String
         .map_err(|_| Unreadable::Malformed)
 }
 
+/// The URI subject-alternative-names of the forwarded certificate: the
+/// identities a workload mesh stamps into its leaves.
+pub fn san_uris(carried: &str) -> Result<Vec<String>, Unreadable> {
+    let der = der_of(carried).ok_or(Unreadable::Malformed)?;
+    crypto::x509::san_uris(&der).ok_or(Unreadable::Malformed)
+}
+
 fn der_of(carried: &str) -> Option<Vec<u8>> {
     // A header cannot hold a newline, so a proxy that forwards PEM either
     // escapes them or writes the body alone. Both arrive here as one line.

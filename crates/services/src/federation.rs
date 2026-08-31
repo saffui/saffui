@@ -7,7 +7,9 @@ pub const CLEAR_BIND: &str = "bind_password";
 /// What the sealed bind secret is scoped to.
 pub const PURPOSE: &str = "user-federation-bind";
 /// The one row a realm holds, which is also the seal's name.
-pub const SINGLETON: &str = "federation";
+/// The name secrets were sealed under when a realm held one directory.
+/// Rows migrated from that day still open under it.
+pub const LEGACY_SEAL_NAME: &str = "federation";
 
 /// The place a username lands in the search filter.
 pub const USERNAME_MARK: &str = "{username}";
@@ -90,6 +92,13 @@ impl LdapSettings {
 
     /// The search filter for one asked name, escaped so the name is a value
     /// and never more filter: RFC 4515 §3.
+    /// The user filter opened to everybody: `{username}` becomes a literal
+    /// star, which is ours, not typed input, so it is the one substitution
+    /// that skips the escaping.
+    pub fn filter_for_everyone(&self) -> String {
+        self.user_filter.replace(USERNAME_MARK, "*")
+    }
+
     pub fn filter_for(&self, username: &str) -> String {
         self.user_filter.replace(USERNAME_MARK, &escaped(username))
     }
@@ -156,6 +165,8 @@ mod tests {
     fn a_name_never_grows_the_filter() {
         let mut federation = UserFederationModel {
             realm_id: "main".into(),
+            alias: "directory".into(),
+            priority: 0,
             enabled: Some(true),
             configs: Some(AttributesMap::from([
                 ("url".to_owned(), AttributeValue::Str("ldap://x".into())),

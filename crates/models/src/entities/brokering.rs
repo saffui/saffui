@@ -72,7 +72,10 @@ impl IdpMapperMutationModel {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserFederationModel {
     pub realm_id: String,
+    pub alias: String,
     pub enabled: Option<bool>,
+    /// Lower is asked first when a realm fronts several.
+    pub priority: i32,
     pub configs: Option<crate::entities::attributes::AttributesMap>,
     pub metadata: crate::auditable::AuditableModel,
 }
@@ -82,6 +85,8 @@ pub struct UserFederationModel {
 pub struct UserFederationMutationModel {
     #[serde(default)]
     pub enabled: Option<bool>,
+    #[serde(default)]
+    pub priority: Option<i32>,
     #[serde(default)]
     pub configs: Option<crate::entities::attributes::AttributesMap>,
 }

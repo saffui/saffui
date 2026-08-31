@@ -137,6 +137,70 @@ impl Directory for LdapDirectory {
     ) -> Pin<Box<dyn Future<Output = Result<Option<DirectoryPerson>, ()>> + Send + 'a>> {
         Box::pin(async move { Ok(self.look_up(username).await?.map(|(_, person)| person)) })
     }
+
+    /// Everybody, paged through the directory's own control and capped: an
+    /// import mirrors identities, it is not an ETL.
+    fn everyone<'a>(
+        &'a self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<DirectoryPerson>, ()>> + Send + 'a>> {
+        const CEILING: usize = 10_000;
+        Box::pin(async move {
+            let mut ldap = self.dial().await?;
+            ldap.simple_bind(
+                &self.settings.bind_dn,
+                self.bind_password
+                    .as_ref()
+                    .map(|held| held.expose_secret().as_str())
+                    .unwrap_or_default(),
+            )
+            .await
+            .and_then(|answer| answer.success())
+            .map_err(|why| tracing::warn!(%why, "the service bind was refused"))?;
+
+            let wanted = [
+                self.settings.username_attribute.as_str(),
+                self.settings.email_attribute.as_str(),
+                self.settings.first_name_attribute.as_str(),
+                self.settings.last_name_attribute.as_str(),
+            ];
+            let mut search = ldap
+                .streaming_search_with(
+                    ldap3::adapters::PagedResults::new(500),
+                    &self.settings.users_dn,
+                    Scope::Subtree,
+                    &self.settings.filter_for_everyone(),
+                    &wanted,
+                )
+                .await
+                .map_err(|why| tracing::warn!(%why, "the directory listing failed"))?;
+            let mut people = Vec::new();
+            while let Ok(Some(entry)) = search.next().await {
+                if people.len() >= CEILING {
+                    tracing::warn!(ceiling = CEILING, "the import stopped at its ceiling");
+                    break;
+                }
+                let entry = SearchEntry::construct(entry);
+                let first = |named: &str| {
+                    entry
+                        .attrs
+                        .get(named)
+                        .and_then(|values| values.first())
+                        .cloned()
+                };
+                let Some(username) = first(&self.settings.username_attribute) else {
+                    continue;
+                };
+                people.push(DirectoryPerson {
+                    username,
+                    email: first(&self.settings.email_attribute),
+                    first_name: first(&self.settings.first_name_attribute),
+                    last_name: first(&self.settings.last_name_attribute),
+                });
+            }
+            let _ = ldap.unbind().await;
+            Ok(people)
+        })
+    }
 }
 
 /// The directory as the login will speak to it, its bind secret opened from
@@ -176,15 +240,27 @@ pub async fn opened_bind(
     )
     .await
     .ok()?;
-    let opened = ring
+    let mut opened = ring
         .open(
             &sealing.envelope,
             services::federation::PURPOSE,
-            services::federation::SINGLETON,
+            &held.alias,
             &sealed,
         )
         .await
-        .ok()?;
+        .ok();
+    if opened.is_none() {
+        opened = ring
+            .open(
+                &sealing.envelope,
+                services::federation::PURPOSE,
+                services::federation::LEGACY_SEAL_NAME,
+                &sealed,
+            )
+            .await
+            .ok();
+    }
+    let opened = opened?;
     let clear =
         String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()?;
     Some(crypto::secrecy::SecretBox::new(Box::new(clear)))
@@ -226,9 +302,11 @@ impl Synced {
 /// outage deciding who may log in.
 pub async fn sync_shadows(
     transaction: &deadpool_postgres::Transaction<'_>,
+    alias: &str,
+    first: bool,
     directory: &LdapDirectory,
 ) -> Result<Synced, ()> {
-    use auth::login::directory::Directory;
+    use auth::login::directory::{Directory, ORIGIN_ATTRIBUTE};
     use models::entities::attributes::AttributeValue;
     use models::entities::user::profile;
 
@@ -237,6 +315,18 @@ pub async fn sync_shadows(
         .await
         .map_err(|_| ())?;
     for mut shadow in shadows {
+        // Each pass walks its own directory's mirrors. A shadow from before
+        // the mark belongs to the first-asked directory.
+        let origin = shadow
+            .attributes
+            .as_ref()
+            .and_then(|bag| bag.get(ORIGIN_ATTRIBUTE))
+            .and_then(AttributeValue::as_str);
+        match origin {
+            Some(held) if held != alias => continue,
+            None if !first => continue,
+            _ => {}
+        }
         let found = directory.find(&shadow.user_name).await?;
         match found {
             Some(person) => {
@@ -302,4 +392,91 @@ pub async fn sync_shadows(
         }
     }
     Ok(outcome)
+}
+
+/// What an operator-asked import did.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Imported {
+    pub imported: u64,
+    pub refreshed: u64,
+    pub walked: u64,
+}
+
+/// Mirror everybody the directory holds: unknown people become shadows the
+/// way a first login would make them, known mirrors are refreshed the way
+/// the sync refreshes them. Local people keep their names.
+pub async fn import_everyone(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    context: &store::tenancy::TenantContext,
+    alias: &str,
+    directory: &LdapDirectory,
+) -> Result<Imported, ()> {
+    use auth::login::directory::Directory;
+    use chrono::Utc;
+
+    let people = directory.everyone().await?;
+    let mut told = Imported {
+        walked: people.len() as u64,
+        ..Default::default()
+    };
+    let now = Utc::now();
+    for person in people {
+        let standing = store::providers::users::load_by_name(transaction, &person.username)
+            .await
+            .map_err(|_| ())?;
+        match standing {
+            None => {
+                let shadow = auth::login::browser::shadow_row(context, alias, &person, now);
+                store::providers::users::create(transaction, &shadow)
+                    .await
+                    .map_err(|_| ())?;
+                told.imported += 1;
+            }
+            Some(held) if held.user_storage == Some(models::entities::user::UserStorage::Ldap) => {
+                let refreshed = refresh_shadow(transaction, held, &person)
+                    .await
+                    .map_err(|_| ())?;
+                if refreshed {
+                    told.refreshed += 1;
+                }
+            }
+            Some(_) => {}
+        }
+    }
+    Ok(told)
+}
+
+async fn refresh_shadow(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    mut shadow: models::entities::user::UserModel,
+    person: &auth::login::directory::DirectoryPerson,
+) -> Result<bool, store::error::StoreError> {
+    use models::entities::attributes::AttributeValue;
+    use models::entities::user::profile;
+
+    let mut changed = false;
+    let attributes = shadow.attributes.get_or_insert_with(Default::default);
+    for (key, held) in [
+        (profile::FIRST_NAME, &person.first_name),
+        (profile::LAST_NAME, &person.last_name),
+    ] {
+        if let Some(value) = held {
+            let fresh = AttributeValue::Str(value.clone());
+            if attributes.get(key) != Some(&fresh) {
+                attributes.insert(key.to_owned(), fresh);
+                changed = true;
+            }
+        }
+    }
+    if let Some(email) = &person.email
+        && &shadow.email != email
+    {
+        shadow.email = email.clone();
+        shadow.email_verified = Some(false);
+        changed = true;
+    }
+    if changed {
+        store::providers::users::update(transaction, &shadow).await?;
+    }
+    Ok(changed)
 }

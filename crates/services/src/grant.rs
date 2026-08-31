@@ -9,6 +9,7 @@ use models::entities::oidc::AuthorizationCode;
 use models::entities::realm::RealmModel;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use serde_json::{Map, Value};
+use store::providers::backchannel;
 use store::providers::oidc::Redemption;
 use store::providers::sessions::Refreshed;
 use store::providers::{oidc, realm_keys, sessions, users};
@@ -683,7 +684,157 @@ fn draw_session_id(provider: &dyn CryptoProvider) -> Result<String, Ungranted> {
         }))
 }
 
+/// Why a decoupled poll did not mint, in the words the RFC gives each case.
+#[derive(Debug)]
+pub enum Unpolled {
+    Words(&'static str, &'static str),
+    Backend,
+}
+
+/// The decoupled poll grant, CIBA §10.1: present the auth_req_id, collect
+/// once when the person has said yes.
+pub async fn ciba(
+    transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
+    within: &Within<'_>,
+    client: &ClientModel,
+    auth_req_id: &str,
+    seen: &auth::provenance::Provenance,
+    now: DateTime<Utc>,
+) -> Result<Granted, Unpolled> {
+    if client.public_client == Some(true) || !crate::ciba::allows_ciba(client) {
+        return Err(Unpolled::Words(
+            "unauthorized_client",
+            "this client does not sign people in over the backchannel",
+        ));
+    }
+
+    let digest = signing.provider.digest();
+    let previous = backchannel::touch_poll(transaction, digest, auth_req_id, now)
+        .await
+        .map_err(|_| Unpolled::Backend)?
+        .flatten();
+    let request = backchannel::load(transaction, digest, auth_req_id)
+        .await
+        .map_err(|_| Unpolled::Backend)?;
+    match crate::ciba::polled(request.as_ref(), &client.client_id, previous, now) {
+        crate::ciba::Polled::Approved => {}
+        refused => {
+            let (error, detail) = refused.error().expect("approved is the only pass");
+            return Err(Unpolled::Words(error, detail));
+        }
+    }
+    let request = backchannel::spend(transaction, digest, auth_req_id)
+        .await
+        .map_err(|_| Unpolled::Backend)?
+        .ok_or(Unpolled::Words("invalid_grant", "no such request stands"))?;
+    let (Some(user_id), Some(approved_at)) = (request.user_id.clone(), request.approved_at) else {
+        return Err(Unpolled::Words("invalid_grant", "no such request stands"));
+    };
+    let person = users::load(transaction, &user_id)
+        .await
+        .map_err(|_| Unpolled::Backend)?
+        .filter(|held| held.enabled)
+        .ok_or(Unpolled::Words("access_denied", "the person declined"))?;
+
+    let scope = crate::authorize::granted_scope(transaction, &client.client_id, &request.scope)
+        .await
+        .map_err(|_| Unpolled::Backend)?;
+    let lifespan = Duration::seconds(
+        within
+            .realm
+            .access_token_lifespan
+            .map_or(DEFAULT_ACCESS_LIFESPAN, i64::from),
+    );
+    let offline = holds_offline_access(&scope);
+    let renewal = Duration::seconds(offline_or_refresh_lifespan(within.realm, offline));
+
+    let session_id = draw_session_id(signing.provider).map_err(|_| Unpolled::Backend)?;
+    open_login(
+        transaction,
+        within.tenant,
+        &person.user_id,
+        &person.user_name,
+        &session_id,
+        client,
+        seen,
+        now,
+        renewal.max(lifespan),
+    )
+    .await
+    .map_err(|_| Unpolled::Backend)?;
+    sessions::record_authentication(transaction, &session_id, approved_at.timestamp(), None)
+        .await
+        .map_err(|_| Unpolled::Backend)?;
+
+    let overlay =
+        crate::mappers::overlay_for(transaction, &client.client_id, &person.user_id, &scope)
+            .await
+            .map_err(|_| Unpolled::Backend)?;
+    let told = crate::pairwise::subject_for(transaction, signing.provider, client, &person.user_id)
+        .await
+        .map_err(|_| Unpolled::Backend)?;
+    let minting_for = |kind: Kind, life: Duration| Minting {
+        bound_to: within.bound_to.map(str::to_owned),
+        certified_by: within.certified_by.map(str::to_owned),
+        kind,
+        issuer: within.issuer,
+        subject: &told,
+        audiences: vec![client.client_id.clone()],
+        party: &client.client_id,
+        session_id: &session_id,
+        scope: &scope,
+        lifespan: life,
+        now,
+        extra: serde_json::Map::new(),
+    };
+
+    let key = preferred_key(transaction, signing, SignAlg::Es256)
+        .await
+        .map_err(|_| Unpolled::Backend)?;
+    let identity_key = identity_key_for(transaction, signing, client)
+        .await
+        .map_err(|_| Unpolled::Backend)?;
+
+    let mut minting_access = minting_for(Kind::Access, lifespan);
+    crate::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
+    crate::mappers::fill(&mut minting_access.extra, overlay.access.clone());
+    let access =
+        mint_token(signing.provider, &key, minting_access).map_err(|_| Unpolled::Backend)?;
+
+    let mut renewing = minting_for(Kind::Refresh, renewal);
+    renewing
+        .extra
+        .insert("auth_time".into(), Value::from(approved_at.timestamp()));
+    let refresh = mint_token(signing.provider, &key, renewing).map_err(|_| Unpolled::Backend)?;
+
+    let id_token = scope
+        .split_whitespace()
+        .any(|held| held == "openid")
+        .then(|| {
+            let mut minting = minting_for(Kind::Identity, lifespan);
+            crate::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
+            minting
+                .extra
+                .insert("auth_time".into(), Value::from(approved_at.timestamp()));
+            crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
+            mint_token(signing.provider, &identity_key, minting)
+        })
+        .transpose()
+        .map_err(|_| Unpolled::Backend)?;
+
+    Ok(Granted {
+        issued_token_type: None,
+        access_token: access.token,
+        expires_in: lifespan.num_seconds(),
+        scope,
+        id_token: id_token.map(|held| held.token),
+        refresh_token: Some(refresh.token),
+    })
+}
+
 /// What a client presents to renew.
+
 #[derive(Debug)]
 pub struct Renewing<'a> {
     pub refresh_token: &'a str,

@@ -2,6 +2,7 @@ pub mod acr;
 pub mod attributes;
 pub mod auth;
 pub mod authz;
+pub mod backchannel;
 pub mod brokering;
 pub mod client;
 pub mod consent;

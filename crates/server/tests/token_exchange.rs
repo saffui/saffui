@@ -234,3 +234,191 @@ async fn a_public_client_cannot_exchange() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
     assert_eq!(told["error"], "unauthorized_client");
 }
+
+/// A subject token re-signed with extra claims, standing in for one minted
+/// by a fussier issuer. Same shape the plane accepts everywhere else.
+fn resigned_with(plane: &Plane, original: &Value, extra: &[(&str, Value)]) -> String {
+    use crypto::jose::jwt::JwtPayload;
+    let mut payload = JwtPayload::new();
+    for (name, value) in original.as_object().expect("claims") {
+        if name == "exp" || name == "iat" {
+            continue;
+        }
+        payload
+            .set_claim(name, Some(value.clone()))
+            .expect("a carried claim");
+    }
+    payload.set_expires_at(&(std::time::SystemTime::now() + std::time::Duration::from_secs(600)));
+    for (name, value) in extra {
+        payload
+            .set_claim(name, Some(value.clone()))
+            .expect("an added claim");
+    }
+    plane.token(&payload)
+}
+
+/// An actor token names who acts, and a subject's may_act is the narrowest
+/// authority in the room.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_actor_is_named_and_may_act_gates_the_room() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane, support::CONFIDENTIAL).await;
+    let minted = subject_tokens(&plane, "openid profile").await;
+    let subject_token = minted["access_token"].as_str().expect("an access token");
+
+    // The actor's own machine token: its subject is nobody, so the party it
+    // was minted for is who acts.
+    let (status, machine) = asking(
+        &plane,
+        &[("grant_type", "client_credentials")],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{machine}");
+    let actor_token = machine["access_token"].as_str().expect("a machine token");
+
+    // The type must ride the token, and ride it correctly.
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+            ("actor_token_type", ACCESS_TYPE),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+            ("actor_token", actor_token),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+            ("actor_token", actor_token),
+            ("actor_token_type", ACCESS_TYPE),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let exchanged = plane
+        .claims_of(told["access_token"].as_str().expect("a token"))
+        .await;
+    // The machine token's own subject is the realm's service account, and
+    // that, not the calling client, is who the act claim names.
+    assert_eq!(
+        exchanged["act"]["sub"], "service-account-app",
+        "{exchanged}"
+    );
+
+    // A subject token that names who may act refuses everybody else, and
+    // admits exactly who it names.
+    let original = plane.claims_of(subject_token).await;
+    let closed = resigned_with(
+        &plane,
+        &original,
+        &[("may_act", serde_json::json!({ "sub": "somebody-else" }))],
+    );
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", &closed),
+            ("subject_token_type", ACCESS_TYPE),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(told["error"], "unauthorized_client", "{told}");
+
+    let open = resigned_with(
+        &plane,
+        &original,
+        &[(
+            "may_act",
+            serde_json::json!({ "sub": support::CONFIDENTIAL }),
+        )],
+    );
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", &open),
+            ("subject_token_type", ACCESS_TYPE),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+}
+
+/// A pairwise identifier is undone at the exchange and re-spoken for the
+/// audience, so one audience's identifier never travels to another.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_pairwise_subject_is_respoken_for_the_audience() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    plane.pair_subjects(support::CONFIDENTIAL).await;
+    opted_in(&plane, support::CONFIDENTIAL).await;
+
+    let minted = subject_tokens(&plane, "openid profile").await;
+    let subject_token = minted["access_token"].as_str().expect("an access token");
+    let original = plane.claims_of(subject_token).await;
+    let worn = original["sub"].as_str().expect("a subject");
+    assert_ne!(worn, support::SUBJECT, "the subject token was not pairwise");
+
+    // Toward a public-subject client of this realm, the person is spoken
+    // plainly, not in the presenting client's dialect.
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+            ("audience", support::PARTY),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let exchanged = plane
+        .claims_of(told["access_token"].as_str().expect("a token"))
+        .await;
+    assert_eq!(exchanged["sub"], support::SUBJECT, "{exchanged}");
+
+    // Toward an audience that is no client of this realm, the actor's own
+    // policy speaks, which for a pairwise actor is its own dialect.
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+            ("audience", "resource-server"),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let kept = plane
+        .claims_of(told["access_token"].as_str().expect("a token"))
+        .await;
+    assert_eq!(kept["sub"], worn, "{kept}");
+}

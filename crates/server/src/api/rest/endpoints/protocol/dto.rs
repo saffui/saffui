@@ -21,6 +21,8 @@ pub struct Asked {
     /// RFC 8693 §2.1, when the grant is an exchange.
     pub subject_token: Option<String>,
     pub subject_token_type: Option<String>,
+    pub actor_token: Option<String>,
+    pub actor_token_type: Option<String>,
     pub requested_token_type: Option<String>,
     pub audience: Option<String>,
 }

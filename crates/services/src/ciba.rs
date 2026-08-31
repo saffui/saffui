@@ -29,17 +29,55 @@ impl Unopened {
     }
 }
 
-/// Whether the operator opted this client into the decoupled flow, and into
-/// the one delivery mode this build speaks.
-pub fn allows_ciba(client: &ClientModel) -> bool {
-    matches!(
+pub const NOTIFICATION_ENDPOINT_FLAG: &str = "ciba.notification_endpoint";
+/// The user attribute holding the sha256 hex of their user_code, when they
+/// set one.
+pub const USER_CODE_DIGEST: &str = "ciba.user_code_digest";
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Delivery {
+    Poll,
+    /// The client is told at this endpoint when the person has decided.
+    Ping {
+        endpoint: String,
+    },
+}
+
+impl Delivery {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Poll => "poll",
+            Self::Ping { .. } => "ping",
+        }
+    }
+}
+
+/// How the operator opted this client in, when they did. Ping without an
+/// https endpoint is half an opt-in, which is none.
+pub fn delivery_of(client: &ClientModel) -> Option<Delivery> {
+    let held = |key: &str| {
         client
             .configs
             .as_ref()
-            .and_then(|bag| bag.get(DELIVERY_FLAG))
-            .and_then(models::entities::attributes::AttributeValue::as_str),
-        Some("poll")
-    )
+            .and_then(|bag| bag.get(key))
+            .and_then(models::entities::attributes::AttributeValue::as_str)
+    };
+    match held(DELIVERY_FLAG) {
+        Some("poll") => Some(Delivery::Poll),
+        Some("ping") => {
+            let endpoint = held(NOTIFICATION_ENDPOINT_FLAG)?;
+            (endpoint.starts_with("https://") || endpoint.starts_with("http://")).then(|| {
+                Delivery::Ping {
+                    endpoint: endpoint.to_owned(),
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+pub fn allows_ciba(client: &ClientModel) -> bool {
+    delivery_of(client).is_some()
 }
 
 /// One identity hint, exactly: a name or address in `login_hint`, or a prior
@@ -58,6 +96,11 @@ pub struct Asked {
     pub hint: Hint,
     pub binding_message: Option<String>,
     pub expiry: Duration,
+}
+
+#[derive(Debug)]
+pub struct AskedNotification {
+    pub token: Option<String>,
 }
 
 pub fn read_initiation(
@@ -168,6 +211,44 @@ pub fn polled(
     }
 }
 
+/// Ping mode: the client's own token, required and bounded, §7.1.
+pub fn read_notification_token(
+    delivery: &Delivery,
+    client_notification_token: Option<&str>,
+) -> Result<Option<String>, Unopened> {
+    let held = client_notification_token
+        .map(str::trim)
+        .filter(|it| !it.is_empty());
+    match delivery {
+        Delivery::Poll => Ok(None),
+        Delivery::Ping { .. } => match held {
+            Some(token) if token.len() <= 1024 => Ok(Some(token.to_owned())),
+            Some(_) => Err(Unopened::invalid("client_notification_token is oversized")),
+            None => Err(Unopened::invalid(
+                "ping delivery carries a client_notification_token",
+            )),
+        },
+    }
+}
+
+/// Whether the person's own code stands. A person with no code set has
+/// nothing to check; one with a code admits only its match, and the caller
+/// turns a miss into a ghost, so nothing is enumerated.
+pub fn user_code_stands(
+    person_code_digest: Option<&str>,
+    offered: Option<&str>,
+    digest_hex_of: impl Fn(&str) -> Option<String>,
+) -> bool {
+    match person_code_digest {
+        None => true,
+        Some(expected) => offered
+            .map(str::trim)
+            .filter(|held| !held.is_empty())
+            .and_then(digest_hex_of)
+            .is_some_and(|hex| hex.eq_ignore_ascii_case(expected)),
+    }
+}
+
 /// One pending request as the person's device shows it: what they need to
 /// recognise the operation, and nothing that lets the device impersonate
 /// the client.
@@ -194,6 +275,9 @@ mod tests {
             scope: "openid".into(),
             binding_message: None,
             state,
+            delivery: "poll".into(),
+            notification_token: None,
+            sealed_request: None,
             interval_secs: interval,
             last_polled_at: None,
             approved_at: None,

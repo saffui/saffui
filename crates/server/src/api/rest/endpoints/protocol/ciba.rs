@@ -26,6 +26,8 @@ pub struct Opening {
     pub id_token_hint: Option<String>,
     pub binding_message: Option<String>,
     pub requested_expiry: Option<String>,
+    pub client_notification_token: Option<String>,
+    pub user_code: Option<String>,
 }
 
 fn told(status: StatusCode, error: &str, description: &str) -> HttpResponse {
@@ -95,14 +97,25 @@ pub async fn open(
         Err(response) => return response,
     };
 
-    if presented.public_client == Some(true) || !ciba::allows_ciba(&presented) {
-        return told(
-            StatusCode::BAD_REQUEST,
-            "unauthorized_client",
-            "this client does not sign people in over the backchannel",
-        );
-    }
+    let delivery = match ciba::delivery_of(&presented) {
+        Some(delivery) if presented.public_client != Some(true) => delivery,
+        _ => {
+            return told(
+                StatusCode::BAD_REQUEST,
+                "unauthorized_client",
+                "this client does not sign people in over the backchannel",
+            );
+        }
+    };
+    let notification_token = match ciba::read_notification_token(
+        &delivery,
+        asked.client_notification_token.as_deref(),
+    ) {
+        Ok(held) => held,
+        Err(refused) => return told(StatusCode::BAD_REQUEST, refused.error, refused.detail),
+    };
 
+    let user_code = asked.user_code.clone();
     let asked = match ciba::read_initiation(
         asked.scope.as_deref(),
         asked.login_hint.as_deref(),
@@ -179,6 +192,24 @@ pub async fn open(
         }
     };
 
+    // The person's own code, when they set one: a miss opens a ghost, so
+    // nothing is enumerated and nobody's device rings.
+    let named = named.filter(|person| {
+        let expected = person
+            .attributes
+            .as_ref()
+            .and_then(|bag| bag.get(ciba::USER_CODE_DIGEST))
+            .and_then(models::entities::attributes::AttributeValue::as_str);
+        ciba::user_code_stands(expected, user_code.as_deref(), |code| {
+            sealing
+                .provider
+                .digest()
+                .hash(crypto::provider::HashAlg::Sha256, code.as_bytes())
+                .ok()
+                .map(|held| data_encoding::HEXLOWER.encode(&held))
+        })
+    });
+
     let auth_req_id = match drawn_request_id(sealing.provider.as_ref()) {
         Some(id) => id,
         None => {
@@ -187,6 +218,45 @@ pub async fn open(
                 "invalid_request",
                 "the request could not be opened",
             );
+        }
+    };
+    // Ping must speak the request id back in the clear later, and only its
+    // digest lives in the row: the clear rides under the realm's seal.
+    let sealed_request = match &delivery {
+        ciba::Delivery::Poll => None,
+        ciba::Delivery::Ping { .. } => {
+            let Ok(ring) = store::keyring::load(
+                &transaction,
+                &sealing.envelope,
+                &context.tenant,
+                &context.realm_id,
+            )
+            .await
+            else {
+                return told(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "the request could not be opened",
+                );
+            };
+            match ring
+                .seal(
+                    &sealing.envelope,
+                    "ciba-ping",
+                    "request",
+                    auth_req_id.as_bytes(),
+                )
+                .await
+            {
+                Ok(sealed) => Some(sealed),
+                Err(_) => {
+                    return told(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        "the request could not be opened",
+                    );
+                }
+            }
         }
     };
     let opened = store::providers::backchannel::open(
@@ -201,6 +271,9 @@ pub async fn open(
             scope: asked.scope.clone(),
             binding_message: asked.binding_message.clone(),
             state: BackchannelState::Pending,
+            delivery: delivery.as_str().to_owned(),
+            notification_token,
+            sealed_request,
             interval_secs: ciba::POLL_INTERVAL,
             last_polled_at: None,
             approved_at: None,
@@ -348,6 +421,7 @@ pub async fn decide(
     body: Option<web::Json<Decision>>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Some(body) = body.map(|held| held.into_inner()) else {
@@ -414,7 +488,11 @@ pub async fn decide(
     )
     .await;
     match landed {
-        Ok(true) => {
+        Ok(Some(decided)) => {
+            // Opened before the commit so a sealed id is never left behind
+            // undeliverable, delivered after it so a ping never announces a
+            // decision that rolled back.
+            let ping = ping_of(&transaction, &sealing, &context, &decided).await;
             if transaction.commit().await.is_err() {
                 return told(
                     StatusCode::BAD_REQUEST,
@@ -422,11 +500,14 @@ pub async fn decide(
                     "the realm could not be read",
                 );
             }
+            if let Some((endpoint, bearer, auth_req_id)) = ping {
+                deliver_ping(endpoint, bearer, auth_req_id).await;
+            }
             uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
                 .json(json!({ "decided": if approved { "approved" } else { "denied" } }))
         }
         // Somebody else's, already decided, expired, or never there: one face.
-        Ok(false) => told(
+        Ok(None) => told(
             StatusCode::NOT_FOUND,
             "invalid_request",
             "no pending request of yours answers to that",
@@ -437,4 +518,70 @@ pub async fn decide(
             "the realm could not be read",
         ),
     }
+}
+
+/// What a ping needs, opened from the decided row: the client's registered
+/// endpoint, the bearer it handed in, and the request id out of its seal.
+async fn ping_of(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &Sealing,
+    context: &store::tenancy::TenantContext,
+    decided: &BackchannelRequestModel,
+) -> Option<(String, String, String)> {
+    if decided.delivery != "ping" {
+        return None;
+    }
+    let bearer = decided.notification_token.clone()?;
+    let sealed = decided.sealed_request.as_deref()?;
+    let client = store::providers::clients::load(transaction, &decided.client_id)
+        .await
+        .ok()
+        .flatten()?;
+    let ciba::Delivery::Ping { endpoint } = ciba::delivery_of(&client)? else {
+        return None;
+    };
+    let ring = store::keyring::load(
+        transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    .ok()?;
+    let opened = ring
+        .open(&sealing.envelope, "ciba-ping", "request", sealed)
+        .await
+        .ok()?;
+    let auth_req_id =
+        String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()?;
+    Some((endpoint, bearer, auth_req_id))
+}
+
+/// Tell the client its request is decided, §10.2: a POST bearing the token
+/// it handed in, saying only which request. Fire and forget: the poll grant
+/// stays the source of truth, so a lost ping costs latency, never
+/// correctness.
+async fn deliver_ping(endpoint: String, bearer: String, auth_req_id: String) {
+    let _ = tokio::task::spawn_blocking(move || {
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .max_redirects(0)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .provider(ureq::tls::TlsProvider::NativeTls)
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build()
+            .new_agent();
+        let posted = agent
+            .post(&endpoint)
+            .header("authorization", &format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .send(serde_json::json!({ "auth_req_id": auth_req_id }).to_string());
+        if let Err(why) = posted {
+            tracing::warn!(%why, "a ping did not land; the client will poll");
+        }
+    })
+    .await;
 }

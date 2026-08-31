@@ -23,6 +23,13 @@ pub struct BackchannelRequestModel {
     pub scope: String,
     pub binding_message: Option<String>,
     pub state: BackchannelState,
+    /// poll or ping; how the client learns the person decided.
+    pub delivery: String,
+    /// Ping only: the bearer the client handed in, spoken back at the ping.
+    pub notification_token: Option<String>,
+    /// Ping only: the request id under the realm's seal, since the ping must
+    /// say it in the clear and only its digest lives here otherwise.
+    pub sealed_request: Option<Vec<u8>>,
     pub interval_secs: i32,
     pub last_polled_at: Option<DateTime<Utc>>,
     pub approved_at: Option<DateTime<Utc>>,

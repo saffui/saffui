@@ -167,6 +167,41 @@ async fn a_legacy_client_binds_searches_and_asks_who_it_is() {
         "a domain-wide substring found nobody at home"
     );
 
+    // The four-way shape an address book actually types, and a couple of
+    // reads the store serves through attributes.
+    let (booked, _) = ldap
+        .search(
+            PEOPLE,
+            Scope::Subtree,
+            "(|(mail=ad*)(cn=ad*)(givenName=ad*)(sn=ad*))",
+            vec!["uid"],
+        )
+        .await
+        .expect("an answer")
+        .success()
+        .expect("the search succeeds");
+    assert_eq!(booked.len(), 1, "the address-book shape missed ada");
+    let (surnamed, _) = ldap
+        .search(PEOPLE, Scope::Subtree, "(sn=Lovelace)", vec!["uid"])
+        .await
+        .expect("an answer")
+        .success()
+        .expect("the search succeeds");
+    assert_eq!(surnamed.len(), 1, "an equality on sn missed ada");
+    let stray = ldap
+        .search(
+            PEOPLE,
+            Scope::Subtree,
+            "(|(mail=ad*)(title=boss*))",
+            vec!["uid"],
+        )
+        .await
+        .expect("an answer");
+    assert_eq!(
+        stray.1.rc, 53,
+        "a disjunction with a stray branch was answered narrowed: {stray:?}"
+    );
+
     let (exop, _) = ldap
         .extended(WhoAmI)
         .await
@@ -224,7 +259,7 @@ async fn the_door_stays_shut_to_who_it_must() {
         .expect("an answer");
     assert_eq!(bound.rc, 0);
     let vague = fresh
-        .search(PEOPLE, Scope::Subtree, "(sn=ad*)", vec!["uid"])
+        .search(PEOPLE, Scope::Subtree, "(title=ad*)", vec!["uid"])
         .await
         .expect("an answer");
     assert_eq!(

@@ -331,6 +331,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V054__replay_guard.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 55,
+            name: "backchannel_requests",
+            sql: include_str!("../migrations/V055__backchannel_requests.sql"),
+            transactional: true,
+        }),
     ]
 }
 

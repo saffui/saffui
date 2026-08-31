@@ -5,6 +5,7 @@ pub mod basic;
 pub mod binding;
 pub mod broker;
 pub mod caller;
+pub mod ciba;
 pub mod discovery;
 pub mod dto;
 pub mod hosted;

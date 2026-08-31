@@ -16,8 +16,8 @@ use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::rest::endpoints::protocol::{
-    answering, authorize, broker, discovery, introspect, keys, login, logout, page, par, recovery,
-    registration, revoke, token, userinfo,
+    answering, authorize, broker, ciba, discovery, introspect, keys, login, logout, page, par,
+    recovery, registration, revoke, token, userinfo,
 };
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
@@ -295,6 +295,9 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/form-post").route(web::get().to(answering::deliver_response)))
         .service(web::resource("/login.css").route(web::get().to(page::style)))
         .service(web::resource("/token").route(web::post().to(token::ask)))
+        .service(web::resource("/bc-authorize").route(web::post().to(ciba::open)))
+        .service(web::resource("/bc-pending").route(web::get().to(ciba::pending)))
+        .service(web::resource("/bc-decide").route(web::post().to(ciba::decide)))
         .service(web::resource("/par").route(web::post().to(par::keep)))
         .service(web::resource("/forgot-password").route(web::post().to(recovery::ask_for_link)))
         .service(

@@ -83,22 +83,28 @@ async fn seal_secret(
     let Some(bag) = provider.configs.as_mut() else {
         return Ok(());
     };
-    let Some(taken) = bag.remove(CLEAR_SECRET) else {
-        return Ok(());
-    };
-    let Some(clear) = taken.as_str() else {
-        return Err(Unwritable::Invalid(
-            "the upstream secret is a string".to_owned(),
-        ));
-    };
-    let sealed = ring
-        .seal(envelope, PURPOSE, &provider.internal_id, clear.as_bytes())
-        .await
-        .map_err(|_| Unwritable::Backend)?;
-    bag.insert(
-        SEALED_SECRET.to_owned(),
-        AttributeValue::Str(BASE64.encode(&sealed)),
-    );
+    for (clear_key, sealed_key) in [
+        (CLEAR_SECRET, SEALED_SECRET),
+        (
+            crate::outbound::CLEAR_BEARER,
+            crate::outbound::SEALED_BEARER,
+        ),
+    ] {
+        let Some(taken) = bag.remove(clear_key) else {
+            continue;
+        };
+        let Some(clear) = taken.as_str().map(str::to_owned) else {
+            return Err(Unwritable::Invalid("the secret is a string".to_owned()));
+        };
+        let sealed = ring
+            .seal(envelope, PURPOSE, &provider.internal_id, clear.as_bytes())
+            .await
+            .map_err(|_| Unwritable::Backend)?;
+        bag.insert(
+            sealed_key.to_owned(),
+            AttributeValue::Str(BASE64.encode(&sealed)),
+        );
+    }
     Ok(())
 }
 
@@ -142,6 +148,9 @@ pub async fn create_provider(
     );
     if crate::workload::is_workload(&provider) {
         crate::workload::Trusted::parse(&provider)
+            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    } else if crate::outbound::is_outbound(&provider) {
+        crate::outbound::Connector::parse(&provider)
             .map_err(|why| Unwritable::Invalid(why.to_string()))?;
     } else {
         Upstream::parse(&provider).map_err(|why| Unwritable::Invalid(why.to_string()))?;
@@ -196,6 +205,9 @@ pub async fn update_provider(
     }
     if crate::workload::is_workload(&rewritten) {
         crate::workload::Trusted::parse(&rewritten)
+            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    } else if crate::outbound::is_outbound(&rewritten) {
+        crate::outbound::Connector::parse(&rewritten)
             .map_err(|why| Unwritable::Invalid(why.to_string()))?;
     } else {
         Upstream::parse(&rewritten).map_err(|why| Unwritable::Invalid(why.to_string()))?;

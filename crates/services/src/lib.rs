@@ -22,6 +22,7 @@ pub mod mappers;
 pub mod minting;
 pub mod mtls;
 pub mod negotiation;
+pub mod outbound;
 pub mod pairwise;
 pub mod pdp;
 pub mod provisioning;

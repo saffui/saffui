@@ -20,6 +20,13 @@ const COLUMNS: &str = "tenant, realm_id, user_id, user_name, email, email_verifi
 /// pair is refused by the rules rather than written where nobody will look.
 pub async fn create(transaction: &Transaction<'_>, user: &UserModel) -> StoreResult<()> {
     let attributes = attributes_json(user)?;
+    super::outbox::emit(
+        transaction,
+        super::outbox::USER_CREATED,
+        &user.user_id,
+        &event_payload(user),
+    )
+    .await?;
     let set = WriteSet::insert(vec![
         col("tenant", &user.metadata.tenant),
         col("realm_id", &user.realm_id),
@@ -132,6 +139,13 @@ pub async fn email_taken(transaction: &Transaction<'_>, email: &str) -> StoreRes
 /// name are not written: a realm's users are addressed by them, so an update
 /// that moved one would be a different user wearing the same row.
 pub async fn update(transaction: &Transaction<'_>, user: &UserModel) -> StoreResult<bool> {
+    super::outbox::emit(
+        transaction,
+        super::outbox::USER_UPDATED,
+        &user.user_id,
+        &event_payload(user),
+    )
+    .await?;
     let attributes = attributes_json(user)?;
     let set = WriteSet::update(
         vec![
@@ -196,6 +210,13 @@ pub async fn clear_required_action(
 }
 
 pub async fn delete(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<bool> {
+    super::outbox::emit(
+        transaction,
+        super::outbox::USER_DELETED,
+        user_id,
+        &serde_json::json!({}),
+    )
+    .await?;
     let removed = transaction
         .execute("DELETE FROM users WHERE user_id = $1", &[&user_id])
         .await
@@ -330,4 +351,12 @@ fn read(row: Row) -> UserModel {
             version: row.get("version"),
         },
     }
+}
+
+fn event_payload(user: &UserModel) -> serde_json::Value {
+    serde_json::json!({
+        "user_name": user.user_name,
+        "email": user.email,
+        "enabled": user.enabled,
+    })
 }

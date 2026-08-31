@@ -24,6 +24,16 @@ pub fn federation_sync_every() -> Result<Option<Duration>, ConfigError> {
     Ok((seconds > 0).then(|| Duration::from_secs(seconds)))
 }
 
+/// How often the outbox is walked. On by default: an outbox nobody walks is
+/// a promise nobody keeps, and a realm with no connectors costs one cheap
+/// query per pass.
+const OUTBOX: &str = "OUTBOX_SECONDS";
+
+pub fn outbox_every() -> Result<Option<Duration>, ConfigError> {
+    let seconds = crate::parse_or(OUTBOX, 15)?;
+    Ok((seconds > 0).then(|| Duration::from_secs(seconds)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

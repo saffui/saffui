@@ -97,6 +97,83 @@ pub async fn sweep_every_realm(pool: &Pool, tenancy: &Tenancy) -> Option<Swept> 
     Some(total)
 }
 
+/// Which job the outbox advisory lock is for.
+const OUTBOX: i32 = 0x4F55_5442;
+
+pub fn deliver_outbox_events(
+    pool: deadpool_postgres::Pool,
+    tenancy: store::tenancy::Tenancy,
+    sealing: std::sync::Arc<crate::api::config::Sealing>,
+    every: Option<std::time::Duration>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    let every = every?;
+    Some(tokio::spawn(async move {
+        let mut ticking = tokio::time::interval(every);
+        ticking.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticking.tick().await;
+            deliver_every_realm(&pool, &tenancy, &sealing, every.as_secs() as i64).await;
+        }
+    }))
+}
+
+pub async fn deliver_every_realm(
+    pool: &deadpool_postgres::Pool,
+    tenancy: &store::tenancy::Tenancy,
+    sealing: &crate::api::config::Sealing,
+    backoff_seconds: i64,
+) {
+    let Ok(connection) = pool.get().await else {
+        return;
+    };
+    let Ok(realms) = resolve::every_realm(&connection).await else {
+        return;
+    };
+    drop(connection);
+    let now = chrono::Utc::now();
+    for realm in realms {
+        let Ok(mut connection) = pool.get().await else {
+            continue;
+        };
+        let Ok(transaction) = tenancy.transaction(&mut connection, &realm).await else {
+            continue;
+        };
+        let held = transaction
+            .query_one(
+                "SELECT pg_try_advisory_xact_lock($1, hashtext($2))",
+                &[&OUTBOX, &format!("{}:{}", realm.tenant, realm.realm_id)],
+            )
+            .await
+            .map(|row| row.get::<_, bool>(0));
+        if !matches!(held, Ok(true)) {
+            continue;
+        }
+        match crate::federation::deliver_outbox(&transaction, sealing, &realm, backoff_seconds, now)
+            .await
+        {
+            Ok(told) => {
+                if transaction.commit().await.is_ok() && (told.delivered + told.dead) > 0 {
+                    tracing::info!(
+                        tenant = realm.tenant,
+                        realm = realm.realm_id,
+                        delivered = told.delivered,
+                        failed = told.failed,
+                        dead = told.dead,
+                        "the outbox was walked"
+                    );
+                }
+            }
+            Err(()) => {
+                tracing::warn!(
+                    tenant = realm.tenant,
+                    realm = realm.realm_id,
+                    "the outbox pass could not run"
+                );
+            }
+        }
+    }
+}
+
 /// Which job the federation advisory lock is for.
 const FEDERATE: i32 = 0x4C44_4150_u32 as i32;
 

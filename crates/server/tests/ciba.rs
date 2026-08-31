@@ -337,7 +337,12 @@ async fn a_refusal_an_expiry_and_a_ghost_all_answer_their_own_words() {
     );
     assert_eq!(
         discovery["backchannel_token_delivery_modes_supported"],
-        json!(["poll"]),
+        json!(["poll", "ping"]),
+        "{discovery}"
+    );
+    assert_eq!(
+        discovery["backchannel_user_code_parameter_supported"],
+        json!(true),
         "{discovery}"
     );
     assert!(
@@ -346,4 +351,254 @@ async fn a_refusal_an_expiry_and_a_ghost_all_answer_their_own_words() {
             .is_some_and(|held| held.iter().any(|grant| grant == GRANT)),
         "{discovery}"
     );
+}
+
+async fn opted_ping(plane: &Plane, endpoint: &str) {
+    use models::entities::attributes::AttributeValue;
+    use store::tenancy::TenantContext;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+        .await
+        .unwrap()
+        .expect("the client");
+    let bag = client.configs.get_or_insert_with(Default::default);
+    bag.insert(
+        "ciba.delivery_mode".to_owned(),
+        AttributeValue::Str("ping".to_owned()),
+    );
+    bag.insert(
+        "ciba.notification_endpoint".to_owned(),
+        AttributeValue::Str(endpoint.to_owned()),
+    );
+    assert!(
+        store::providers::clients::update(&transaction, &client)
+            .await
+            .unwrap()
+    );
+    transaction.commit().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_ping_tells_the_client_and_the_poll_still_collects() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+
+    // A little client-side ear: whatever lands is handed to the test.
+    let (heard_tx, mut heard) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
+    let ear = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let ear_port = ear.local_addr().unwrap().port();
+    let listening = actix_web::HttpServer::new(move || {
+        let heard_tx = heard_tx.clone();
+        actix_web::App::new().route(
+            "/decided",
+            actix_web::web::post().to(
+                move |request: actix_web::HttpRequest, body: actix_web::web::Json<Value>| {
+                    let bearer = request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|held| held.to_str().ok())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let _ = heard_tx.send((bearer, body.into_inner()));
+                    async { actix_web::HttpResponse::NoContent().finish() }
+                },
+            ),
+        )
+    })
+    .listen(ear)
+    .expect("a listener")
+    .workers(1)
+    .disable_signals()
+    .run();
+    tokio::spawn(listening);
+
+    opted_ping(&plane, &format!("http://127.0.0.1:{ear_port}/decided")).await;
+
+    // Ping without its token is half a request.
+    let (status, told) = posted(&plane, "/bc-authorize", &[("login_hint", support::SUBJECT)]).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+
+    let (status, opened) = posted(
+        &plane,
+        "/bc-authorize",
+        &[
+            ("login_hint", support::SUBJECT),
+            ("client_notification_token", "ear-bearer-1"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let auth_req_id = opened["auth_req_id"].as_str().expect("an id").to_owned();
+
+    let bearer = ada_bearer(&plane);
+    let (_, pending) = as_person(
+        &plane,
+        actix_web::http::Method::GET,
+        "/bc-pending",
+        &bearer,
+        None,
+    )
+    .await;
+    let handle = pending["pending"][0]["request"]
+        .as_str()
+        .expect("a handle")
+        .to_owned();
+    let (status, _) = as_person(
+        &plane,
+        actix_web::http::Method::POST,
+        "/bc-decide",
+        &bearer,
+        Some(json!({ "request": handle, "decision": "approve" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The ping lands: the bearer the client handed in, and its own request
+    // id in the clear.
+    let (heard_bearer, heard_body) =
+        tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+            .await
+            .expect("a ping within its patience")
+            .expect("a ping");
+    assert_eq!(heard_bearer, "Bearer ear-bearer-1");
+    assert_eq!(
+        heard_body["auth_req_id"],
+        auth_req_id.as_str(),
+        "{heard_body}"
+    );
+
+    // And the poll still collects, single-collection intact.
+    let (status, minted) = posted(
+        &plane,
+        "/token",
+        &[("grant_type", GRANT), ("auth_req_id", &auth_req_id)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    assert!(minted["access_token"].is_string(), "{minted}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_with_a_code_rings_only_for_who_knows_it() {
+    use models::entities::attributes::AttributeValue;
+    use store::tenancy::TenantContext;
+
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane).await;
+
+    // Ada sets her code: the digest lands on her attributes.
+    let code_digest = {
+        use crypto::provider::HashAlg;
+        let provider = support::provider();
+        let held = crypto::provider::CryptoProvider::digest(&provider)
+            .hash(HashAlg::Sha256, b"7-owls")
+            .unwrap();
+        data_encoding::HEXLOWER.encode(&held)
+    };
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut person = store::providers::users::load(&transaction, support::SUBJECT)
+            .await
+            .unwrap()
+            .expect("ada");
+        person
+            .attributes
+            .get_or_insert_with(Default::default)
+            .insert(
+                "ciba.user_code_digest".to_owned(),
+                AttributeValue::Str(code_digest),
+            );
+        store::providers::users::update(&transaction, &person)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    let bearer = ada_bearer(&plane);
+
+    // Without the code, the answer is normal and nobody's device rings.
+    let (status, opened) =
+        posted(&plane, "/bc-authorize", &[("login_hint", support::SUBJECT)]).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a missing code was told apart: {opened}"
+    );
+    let (_, pending) = as_person(
+        &plane,
+        actix_web::http::Method::GET,
+        "/bc-pending",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        pending["pending"].as_array().map(Vec::len),
+        Some(0),
+        "a codeless ask rang the device: {pending}"
+    );
+
+    // With the wrong code: the same silence.
+    let (status, _) = posted(
+        &plane,
+        "/bc-authorize",
+        &[("login_hint", support::SUBJECT), ("user_code", "6-owls")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, pending) = as_person(
+        &plane,
+        actix_web::http::Method::GET,
+        "/bc-pending",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(pending["pending"].as_array().map(Vec::len), Some(0));
+
+    // With the right code, the request reaches her and the day proceeds.
+    let (status, opened) = posted(
+        &plane,
+        "/bc-authorize",
+        &[("login_hint", support::SUBJECT), ("user_code", "7-owls")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let auth_req_id = opened["auth_req_id"].as_str().expect("an id").to_owned();
+    let (_, pending) = as_person(
+        &plane,
+        actix_web::http::Method::GET,
+        "/bc-pending",
+        &bearer,
+        None,
+    )
+    .await;
+    let handle = pending["pending"][0]["request"]
+        .as_str()
+        .expect("the request reached her")
+        .to_owned();
+    let (status, _) = as_person(
+        &plane,
+        actix_web::http::Method::POST,
+        "/bc-decide",
+        &bearer,
+        Some(json!({ "request": handle, "decision": "approve" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+    let (status, minted) = posted(
+        &plane,
+        "/token",
+        &[("grant_type", GRANT), ("auth_req_id", &auth_req_id)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
 }

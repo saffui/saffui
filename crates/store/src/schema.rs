@@ -337,6 +337,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V055__backchannel_requests.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 56,
+            name: "backchannel_delivery",
+            sql: include_str!("../migrations/V056__backchannel_delivery.sql"),
+            transactional: true,
+        }),
     ]
 }
 

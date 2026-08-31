@@ -7,6 +7,7 @@ use tokio_postgres::Row;
 use crate::error::{StoreError, StoreResult};
 
 const COLUMNS: &str = "tenant, realm_id, client_id, user_id, scope, binding_message, state, \
+                       delivery, notification_token, sealed_request, \
                        interval_secs, last_polled_at, approved_at, expires_at, created_at";
 
 fn digest_of(digest: &dyn DigestProvider, auth_req_id: &str) -> StoreResult<Vec<u8>> {
@@ -26,10 +27,11 @@ pub async fn open(
         .execute(
             "INSERT INTO backchannel_requests \
                  (tenant, realm_id, request_digest, client_id, user_id, scope, \
-                  binding_message, state, interval_secs, expires_at) \
+                  binding_message, state, delivery, notification_token, sealed_request, \
+                  interval_secs, expires_at) \
              SELECT current_setting('saffui.current_tenant', true), \
                     current_setting('saffui.current_realm', true), \
-                    $1, $2, $3, $4, $5, $6, $7, $8",
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11",
             &[
                 &hash,
                 &request.client_id,
@@ -37,6 +39,9 @@ pub async fn open(
                 &request.scope,
                 &request.binding_message,
                 &request.state,
+                &request.delivery,
+                &request.notification_token,
+                &request.sealed_request,
                 &request.interval_secs,
                 &request.expires_at,
             ],
@@ -104,30 +109,34 @@ pub async fn pending_for(
 
 /// Decide one pending request, by its digest, for exactly this person: the
 /// WHERE is the authorization, so a decision for somebody else's request
-/// writes nothing.
+/// writes nothing. The row comes back so a ping delivery knows where to go.
 pub async fn decide(
     transaction: &Transaction<'_>,
     request_digest: &[u8],
     user_id: &str,
     approved: bool,
     now: DateTime<Utc>,
-) -> StoreResult<bool> {
+) -> StoreResult<Option<BackchannelRequestModel>> {
     let state = if approved {
         BackchannelState::Approved
     } else {
         BackchannelState::Denied
     };
-    let landed = transaction
-        .execute(
-            "UPDATE backchannel_requests \
-             SET state = $3, approved_at = CASE WHEN $4 THEN $5 ELSE NULL END \
-             WHERE request_digest = $1 AND user_id = $2 \
-               AND state = 'pending' AND expires_at > $5",
+    let statement = format!(
+        "UPDATE backchannel_requests \
+         SET state = $3, approved_at = CASE WHEN $4 THEN $5 ELSE NULL END \
+         WHERE request_digest = $1 AND user_id = $2 \
+           AND state = 'pending' AND expires_at > $5 \
+         RETURNING {COLUMNS}"
+    );
+    Ok(transaction
+        .query_opt(
+            statement.as_str(),
             &[&request_digest, &user_id, &state, &approved, &now],
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
-    Ok(landed > 0)
+        .map_err(|_| StoreError::Backend)?
+        .map(read))
 }
 
 /// Take an approved request off the table and hand it back: the one
@@ -169,6 +178,9 @@ fn read(row: Row) -> BackchannelRequestModel {
         scope: row.get("scope"),
         binding_message: row.get("binding_message"),
         state: row.get("state"),
+        delivery: row.get("delivery"),
+        notification_token: row.get("notification_token"),
+        sealed_request: row.get("sealed_request"),
         interval_secs: row.get("interval_secs"),
         last_polled_at: row.get("last_polled_at"),
         approved_at: row.get("approved_at"),

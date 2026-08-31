@@ -36,3 +36,4 @@ pub mod revocation;
 pub mod scim;
 pub mod token;
 pub mod userinfo;
+pub mod workload;

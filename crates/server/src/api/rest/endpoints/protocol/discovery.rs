@@ -125,6 +125,7 @@ pub async fn published(
                 "client_credentials",
                 "urn:ietf:params:oauth:grant-type:token-exchange",
                 "urn:openid:params:grant-type:ciba",
+                "urn:ietf:params:oauth:grant-type:jwt-bearer",
             ],
             "subject_types_supported": ["public", "pairwise"],
             "id_token_signing_alg_values_supported": algorithms,

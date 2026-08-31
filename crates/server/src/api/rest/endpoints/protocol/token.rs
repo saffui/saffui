@@ -47,6 +47,24 @@ pub async fn ask(
         return Denied::InvalidRequest.answer("the body could not be read as a form");
     };
 
+    // RFC 7523: the assertion is the whole credential, so this grant turns
+    // off before the client-authentication door. Nothing in it is believed
+    // until the platform's own keys have spoken.
+    if asked.grant_type.as_deref() == Some(services::workload::GRANT) {
+        return workload_exchange(
+            &request,
+            &mut connection,
+            &tenancy,
+            &sealing,
+            &origin,
+            **egress,
+            &context,
+            &asked,
+            now,
+        )
+        .await;
+    }
+
     let (transaction, client) = match caller::establish(
         &request,
         asked.client_id.as_deref(),
@@ -431,5 +449,116 @@ pub(crate) fn refused(why: Unauthenticated) -> HttpResponse {
             Denied::InvalidRequest.answer("the client could not be read")
         }
         _ => Denied::InvalidClient.answer("the client could not be authenticated"),
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
+async fn workload_exchange(
+    request: &HttpRequest,
+    connection: &mut deadpool_postgres::Object,
+    tenancy: &Tenancy,
+    sealing: &Sealing,
+    origin: &PublicOrigin,
+    egress: config::serving::Egress,
+    context: &store::tenancy::TenantContext,
+    asked: &Asked,
+    now: chrono::DateTime<chrono::Utc>,
+) -> HttpResponse {
+    let Some(assertion) = asked.assertion.as_deref().filter(|it| !it.is_empty()) else {
+        return Denied::InvalidRequest.answer("assertion carries the platform token");
+    };
+    let Some(issuer) = services::workload::peeked_issuer(assertion) else {
+        return Denied::InvalidGrant.answer("the grant presented was not honoured");
+    };
+    let Ok(transaction) = tenancy.transaction(connection, context).await else {
+        return Denied::InvalidRequest.answer("the realm could not be read");
+    };
+    let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
+        return Denied::InvalidRequest.answer("the realm could not be read");
+    };
+
+    // The one trusted platform with this issuer, still enabled, still
+    // reading as one. The issuer only picks the row; the row is the trust.
+    let Ok(rows) = store::providers::brokering::list_providers(&transaction).await else {
+        return Denied::InvalidRequest.answer("the realm could not be read");
+    };
+    let trusted = rows
+        .iter()
+        .filter(|row| services::workload::is_workload(row) && row.enabled != Some(false))
+        .filter_map(|row| services::workload::Trusted::parse(row).ok())
+        .find(|held| held.issuer == issuer);
+    let Some(trusted) = trusted else {
+        return Denied::InvalidGrant.answer("the grant presented was not honoured");
+    };
+
+    let Some(keys) = super::hosted::fetch(trusted.jwks_uri.clone(), egress).await else {
+        return Denied::InvalidGrant.answer("the grant presented was not honoured");
+    };
+    let Ok(keys) = serde_json::from_str::<serde_json::Value>(&keys) else {
+        return Denied::InvalidGrant.answer("the grant presented was not honoured");
+    };
+    let Ok(claims) = services::assertion::read_against(&keys, assertion, &trusted.allowed_algs)
+    else {
+        return Denied::InvalidGrant.answer("the grant presented was not honoured");
+    };
+    let subject = match services::workload::asserted_subject(&trusted, &claims, now.timestamp()) {
+        Ok(subject) => subject,
+        Err(why) => {
+            tracing::debug!(why, "a platform token was refused");
+            return Denied::InvalidGrant.answer("the grant presented was not honoured");
+        }
+    };
+
+    let Ok(Some(client)) = store::providers::clients::load(&transaction, &trusted.client_id).await
+    else {
+        return Denied::InvalidGrant.answer("the grant presented was not honoured");
+    };
+    if client.enabled != Some(true) {
+        return Denied::InvalidGrant.answer("the grant presented was not honoured");
+    }
+
+    let Ok(ring) = keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    else {
+        return Denied::InvalidRequest.answer("the realm could not be read");
+    };
+    let granted = grant::workload(
+        &transaction,
+        &grant::Signing {
+            provider: sealing.provider.as_ref(),
+            ring: &ring,
+            envelope: &sealing.envelope,
+        },
+        &grant::Within {
+            tenant: context,
+            realm: &realm,
+            issuer: &origin.issuer(&context.realm_id),
+            bound_to: None,
+            certified_by: None,
+        },
+        &client,
+        &subject,
+        &trusted.issuer,
+        asked.scope.as_deref(),
+        &crate::api::provenance::read_provenance(request),
+        now,
+    )
+    .await;
+    match granted {
+        Ok(granted) => {
+            if transaction.commit().await.is_err() {
+                return Denied::InvalidRequest.answer("the realm could not be read");
+            }
+            answer(granted)
+        }
+        Err(why) => ungranted(why),
     }
 }

@@ -252,6 +252,91 @@ pub async fn client_credentials(
     })
 }
 
+/// The keyless grant, RFC 7523 §2.1: a platform token stands in for the
+/// client's own credential, inside the border the trusted platform drew.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one grant"
+)]
+pub async fn workload(
+    transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
+    within: &Within<'_>,
+    client: &ClientModel,
+    external_subject: &str,
+    platform_issuer: &str,
+    requested: Option<&str>,
+    seen: &auth::provenance::Provenance,
+    now: DateTime<Utc>,
+) -> Result<Granted, Ungranted> {
+    let account = users::load_service_account(transaction, &client.client_id)
+        .await
+        .map_err(|_| Ungranted::Unreadable)?
+        .ok_or(Ungranted::Unauthorized)?;
+    if !account.enabled {
+        return Err(Ungranted::Unauthorized);
+    }
+
+    let lifespan = Duration::seconds(
+        within
+            .realm
+            .access_token_lifespan
+            .map_or(DEFAULT_ACCESS_LIFESPAN, i64::from),
+    );
+    let session_id = draw_session_id(signing.provider)?;
+    open_login(
+        transaction,
+        within.tenant,
+        &account.user_id,
+        &account.user_name,
+        &session_id,
+        client,
+        seen,
+        now,
+        lifespan,
+    )
+    .await?;
+
+    let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
+    let scope =
+        crate::authorize::granted_scope(transaction, &client.client_id, requested.unwrap_or(""))
+            .await
+            .map_err(|_| Ungranted::Unreadable)?;
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "act".to_owned(),
+        serde_json::json!({ "sub": external_subject, "iss": platform_issuer }),
+    );
+    let minted: Minted = mint_token(
+        signing.provider,
+        &key,
+        Minting {
+            bound_to: within.bound_to.map(str::to_owned),
+            certified_by: within.certified_by.map(str::to_owned),
+            kind: Kind::Access,
+            issuer: within.issuer,
+            subject: &account.user_id,
+            audiences: vec![client.client_id.clone()],
+            party: &client.client_id,
+            session_id: &session_id,
+            scope: &scope,
+            lifespan,
+            now,
+            extra,
+        },
+    )
+    .map_err(|_| Ungranted::Unmintable)?;
+
+    Ok(Granted {
+        issued_token_type: None,
+        access_token: minted.token,
+        expires_in: lifespan.num_seconds(),
+        scope,
+        id_token: None,
+        refresh_token: None,
+    })
+}
+
 /// What a request named for the identity token, of what the realm holds of
 /// the person. Nothing asked is nothing resolved, and no reading of the person
 /// either.

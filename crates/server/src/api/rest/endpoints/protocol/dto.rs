@@ -22,6 +22,7 @@ pub struct Asked {
     pub subject_token: Option<String>,
     pub subject_token_type: Option<String>,
     pub auth_req_id: Option<String>,
+    pub assertion: Option<String>,
     pub actor_token: Option<String>,
     pub actor_token_type: Option<String>,
     pub requested_token_type: Option<String>,

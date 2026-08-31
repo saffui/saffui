@@ -140,7 +140,12 @@ pub async fn create_provider(
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );
-    Upstream::parse(&provider).map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    if crate::workload::is_workload(&provider) {
+        crate::workload::Trusted::parse(&provider)
+            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    } else {
+        Upstream::parse(&provider).map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    }
     seal_secret(ring, envelope, &mut provider).await?;
     brokering::create_provider(transaction, &provider)
         .await
@@ -189,7 +194,12 @@ pub async fn update_provider(
             .get_or_insert_with(Default::default)
             .insert(SEALED_SECRET.to_owned(), kept.clone());
     }
-    Upstream::parse(&rewritten).map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    if crate::workload::is_workload(&rewritten) {
+        crate::workload::Trusted::parse(&rewritten)
+            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    } else {
+        Upstream::parse(&rewritten).map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    }
     seal_secret(ring, envelope, &mut rewritten).await?;
     if !brokering::update_provider(transaction, &rewritten)
         .await

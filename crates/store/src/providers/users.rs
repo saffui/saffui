@@ -213,6 +213,36 @@ pub async fn count(transaction: &Transaction<'_>) -> StoreResult<i64> {
 }
 
 /// One page of this realm's users, with the total when it was asked for.
+/// The one person whose attribute bag holds this exact string value, for
+/// the reconciliation questions a provisioner asks (externalId above all).
+pub async fn load_by_attribute(
+    transaction: &Transaction<'_>,
+    key: &str,
+    value: &str,
+) -> StoreResult<Option<UserModel>> {
+    let document = serde_json::json!({ key: { "Str": value } });
+    let statement = format!("SELECT {COLUMNS} FROM users WHERE attributes @> $1::jsonb LIMIT 1");
+    Ok(transaction
+        .query_opt(statement.as_str(), &[&document])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read))
+}
+
+/// Which groups this person stands in.
+pub async fn groups_of(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "SELECT group_id FROM users_groups WHERE user_id = $1 ORDER BY group_id ASC",
+            &[&user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("group_id"))
+        .collect())
+}
+
 pub async fn list(
     transaction: &Transaction<'_>,
     query: &ListQuery<'_>,

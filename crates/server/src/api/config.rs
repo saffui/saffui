@@ -98,7 +98,15 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             .app_data(web::Data::new(plane.egress))
             .app_data(web::Data::new(plane.login_ui.clone()))
             .app_data(web::Data::new(plane.sealing.clone()))
-            .service(admin_scope(plane))
+            .service({
+                let (admin, scim) = admin_scope(plane);
+                let _ = &scim;
+                admin
+            })
+            .service({
+                let (_, scim) = admin_scope(plane);
+                scim
+            })
             .service(authz_scope(plane))
             .service(protocol_scope())
             // Not under the protocol scope. RFC 8414 §3 fixes this path at the
@@ -144,7 +152,12 @@ pub fn observed() -> App<
 /// A scope rather than a registrar, because it is assembled before it is
 /// registered: the table is walked to build it, and a half built scope is not
 /// something to hand a `ServiceConfig`.
-fn admin_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
+fn admin_scope(
+    plane: &Plane,
+) -> (
+    impl HttpServiceFactory + 'static,
+    impl HttpServiceFactory + 'static,
+) {
     let mut scope = web::scope("/admin")
         // The raised ceiling stops here, at the authenticated boundary.
         .app_data(web::JsonConfig::default().limit(ADMIN_BODY))
@@ -159,6 +172,7 @@ fn admin_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
     // two resources on one path would have the second shadow the first, and
     // every verb of the first answer 405.
     let mut by_path: Vec<(&'static str, Vec<Route>)> = Vec::new();
+    let mut scim_by_path: Vec<(&'static str, Vec<Route>)> = Vec::new();
     for route in routes::routes() {
         let Some(build) = route.handler else {
             // Declared, and nothing answers it yet. The cost is settled first,
@@ -168,10 +182,17 @@ fn admin_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
         // The scope prefixes what it mounts, so the table's full pattern has its
         // own prefix taken back off. The table keeps the full one because that
         // is what the guard compares against what actix reports for a request.
+        if let Some(within) = route.pattern.strip_prefix("/realms/{realm}/scim/v2") {
+            match scim_by_path.iter_mut().find(|(path, _)| *path == within) {
+                Some((_, verbs)) => verbs.push(build()),
+                None => scim_by_path.push((within, vec![build()])),
+            }
+            continue;
+        }
         let within = route
             .pattern
             .strip_prefix("/admin")
-            .expect("an admin route is declared under /admin");
+            .expect("a guarded route is declared under /admin or the scim root");
         match by_path.iter_mut().find(|(path, _)| *path == within) {
             Some((_, verbs)) => verbs.push(build()),
             None => by_path.push((within, vec![build()])),
@@ -184,7 +205,36 @@ fn admin_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
         }
         scope = scope.service(resource);
     }
-    scope
+
+    // The provisioning door: the same guard, its own root, and a JSON reader
+    // that accepts the protocol's own content type.
+    let mut scim = web::scope("/realms/{realm}/scim/v2")
+        .app_data(
+            web::JsonConfig::default()
+                .limit(ADMIN_BODY)
+                .content_type(|mime| {
+                    mime.subtype().as_str() == "json"
+                        || mime
+                            .suffix()
+                            .is_some_and(|suffix| suffix.as_str() == "json")
+                        || mime.subtype().as_str() == "scim+json"
+                })
+                .content_type_required(false),
+        )
+        .wrap(Guard {
+            pool: plane.pool.clone(),
+            tenancy: plane.tenancy.clone(),
+            policy: plane.policy.clone(),
+            origin: plane.origin.clone(),
+        });
+    for (path, verbs) in scim_by_path {
+        let mut resource = web::resource(path);
+        for verb in verbs {
+            resource = resource.route(verb);
+        }
+        scim = scim.service(resource);
+    }
+    (scope, scim)
 }
 
 /// The point of application: only that the token stood up.

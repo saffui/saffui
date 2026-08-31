@@ -8,6 +8,7 @@ use crate::api::rest::endpoints::admin::{
     idps, keys, mail, negotiation, portability, protocol_mappers, realm_keys, realms, rebac,
     sessions, users,
 };
+use crate::api::rest::endpoints::scim;
 
 /// One route: the verb, the path, what it costs, and what answers it.
 ///
@@ -465,6 +466,96 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/federations/{alias}/import",
             action: AdminAction::IdpWrite,
             handler: Some(|| web::post().to(federation::import)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/realms/{realm}/scim/v2/Users",
+            action: AdminAction::ScimRead,
+            handler: Some(|| web::get().to(scim::users::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/realms/{realm}/scim/v2/Users",
+            action: AdminAction::ScimWrite,
+            handler: Some(|| web::post().to(scim::users::create)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/realms/{realm}/scim/v2/Users/{id}",
+            action: AdminAction::ScimRead,
+            handler: Some(|| web::get().to(scim::users::get)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/realms/{realm}/scim/v2/Users/{id}",
+            action: AdminAction::ScimWrite,
+            handler: Some(|| web::put().to(scim::users::replace)),
+        },
+        AdminRoute {
+            method: Method::PATCH,
+            pattern: "/realms/{realm}/scim/v2/Users/{id}",
+            action: AdminAction::ScimWrite,
+            handler: Some(|| web::patch().to(scim::users::patch)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/realms/{realm}/scim/v2/Users/{id}",
+            action: AdminAction::ScimWrite,
+            handler: Some(|| web::delete().to(scim::users::delete)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/realms/{realm}/scim/v2/Groups",
+            action: AdminAction::ScimRead,
+            handler: Some(|| web::get().to(scim::groups::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/realms/{realm}/scim/v2/Groups",
+            action: AdminAction::ScimWrite,
+            handler: Some(|| web::post().to(scim::groups::create)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/realms/{realm}/scim/v2/Groups/{id}",
+            action: AdminAction::ScimRead,
+            handler: Some(|| web::get().to(scim::groups::get)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/realms/{realm}/scim/v2/Groups/{id}",
+            action: AdminAction::ScimWrite,
+            handler: Some(|| web::put().to(scim::groups::replace)),
+        },
+        AdminRoute {
+            method: Method::PATCH,
+            pattern: "/realms/{realm}/scim/v2/Groups/{id}",
+            action: AdminAction::ScimWrite,
+            handler: Some(|| web::patch().to(scim::groups::patch)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/realms/{realm}/scim/v2/Groups/{id}",
+            action: AdminAction::ScimWrite,
+            handler: Some(|| web::delete().to(scim::groups::delete)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/realms/{realm}/scim/v2/ServiceProviderConfig",
+            action: AdminAction::ScimRead,
+            handler: Some(|| web::get().to(scim::discovery::service_provider_config)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/realms/{realm}/scim/v2/Schemas",
+            action: AdminAction::ScimRead,
+            handler: Some(|| web::get().to(scim::discovery::schemas)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/realms/{realm}/scim/v2/ResourceTypes",
+            action: AdminAction::ScimRead,
+            handler: Some(|| web::get().to(scim::discovery::resource_types)),
         },
         AdminRoute {
             method: Method::GET,

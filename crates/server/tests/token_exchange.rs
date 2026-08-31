@@ -422,3 +422,62 @@ async fn a_pairwise_subject_is_respoken_for_the_audience() {
         .await;
     assert_eq!(kept["sub"], worn, "{kept}");
 }
+
+/// The operator can bound where a client points an exchange; the client
+/// itself always stands, and the refusal wears the unauthorized face.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_exchange_points_only_where_the_operator_said() {
+    use models::entities::attributes::AttributeValue;
+    use store::tenancy::TenantContext;
+
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane, support::CONFIDENTIAL).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        client.configs.get_or_insert_with(Default::default).insert(
+            "token.exchange.audiences".to_owned(),
+            AttributeValue::Str("billing reports".to_owned()),
+        );
+        assert!(
+            store::providers::clients::update(&transaction, &client)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+    }
+    let minted = subject_tokens(&plane, "openid").await;
+    let subject_token = minted["access_token"].as_str().expect("an access token");
+
+    for (audience, admitted) in [
+        ("billing", true),
+        ("reports", true),
+        ("elsewhere", false),
+        (support::CONFIDENTIAL, true),
+    ] {
+        let (status, told) = asking(
+            &plane,
+            &[
+                ("grant_type", EXCHANGE),
+                ("subject_token", subject_token),
+                ("subject_token_type", ACCESS_TYPE),
+                ("audience", audience),
+            ],
+            Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+        )
+        .await;
+        if admitted {
+            assert_eq!(status, StatusCode::OK, "{audience}: {told}");
+        } else {
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{audience}: {told}");
+            assert_eq!(told["error"], "unauthorized_client", "{told}");
+        }
+    }
+}

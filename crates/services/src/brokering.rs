@@ -519,6 +519,8 @@ async fn remember(
 #[derive(Debug)]
 pub struct Dismissal {
     pub external_user_id: String,
+    /// The token's own identifier, for the replay guard at the door.
+    pub jti: String,
 }
 
 /// Read an upstream's logout token against its published keys, Back-Channel
@@ -580,8 +582,14 @@ pub fn dismissed(
         );
         return Err(Unbrokered::Refused);
     };
+    // §2.4: the identifier is required, and it is what the replay guard
+    // remembers.
+    let Some(jti) = text("jti").filter(|held| !held.is_empty()) else {
+        return Err(Unbrokered::Refused);
+    };
     Ok(Dismissal {
         external_user_id: subject.to_owned(),
+        jti: jti.to_owned(),
     })
 }
 

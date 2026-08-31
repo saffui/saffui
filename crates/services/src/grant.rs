@@ -991,6 +991,9 @@ pub const ACCESS_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_tok
 /// The flag on a client's bag that opts it into exchanging. Default-deny:
 /// acting for somebody is a power an operator grants by name.
 pub const EXCHANGE_FLAG: &str = "token.exchange.enabled";
+/// Space-separated audiences an exchange may point at. Absent means any;
+/// the client itself always stands.
+pub const EXCHANGE_AUDIENCES: &str = "token.exchange.audiences";
 
 /// What a client presents to exchange, RFC 8693 §2.1.
 #[derive(Debug)]
@@ -1139,6 +1142,18 @@ pub async fn token_exchange(
         .filter(|named| !named.is_empty())
         .unwrap_or(&client.client_id)
         .to_owned();
+    // The operator can bound where this client may point an exchange. The
+    // client itself always stands: exchanging toward yourself widens
+    // nothing. Same refusal face as not being opted in.
+    if audience != client.client_id
+        && let Some(models::entities::attributes::AttributeValue::Str(allowed)) = client
+            .configs
+            .as_ref()
+            .and_then(|bag| bag.get(EXCHANGE_AUDIENCES))
+        && !allowed.split_whitespace().any(|named| named == audience)
+    {
+        return Err(Ungranted::Unauthorized);
+    }
     let session_id = verified
         .claims
         .get("sid")

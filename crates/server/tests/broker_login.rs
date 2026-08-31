@@ -635,8 +635,9 @@ async fn an_upstream_logout_reaches_down() {
     assert_eq!(standing(&plane).await.len(), 1, "one login stands behind");
 
     // The logout token, minted by the upstream's own logout machinery for
-    // the client the broker is: real issuer, real key, real audience.
-    let logout_token = {
+    // the client the broker is: real issuer, real key, real audience. Each
+    // call mints a fresh one, fresh jti included.
+    async fn minted_logout(plane: &Plane) -> String {
         use store::tenancy::TenantContext;
         let mut connection = plane.connection().await;
         let transaction = plane
@@ -665,7 +666,8 @@ async fn an_upstream_logout_reaches_down() {
             .find(|notice| notice.client_id == support::CONFIDENTIAL)
             .expect("the upstream minted a notice for the broker client")
             .logout_token
-    };
+    }
+    let logout_token = minted_logout(&plane).await;
 
     // Garbage is refused the same flat way; the real token lands.
     let response = test::call_service(
@@ -706,8 +708,8 @@ async fn an_upstream_logout_reaches_down() {
         "the dismissed subject still stands behind the upstream"
     );
 
-    // Told twice, the second telling closes nobody and is still not an
-    // error: the state it asks for is the state that holds.
+    // The same token again is a replay, and a replay is refused with the
+    // same face as a bad token.
     let response = test::call_service(
         &app,
         test::TestRequest::post()
@@ -715,6 +717,21 @@ async fn an_upstream_logout_reaches_down() {
                 "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/backchannel-logout"
             ))
             .set_form([("logout_token", logout_token.as_str())])
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // A fresh telling of the same fact closes nobody and is still not an
+    // error: the state it asks for is the state that holds.
+    let fresh = minted_logout(&plane).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/backchannel-logout"
+            ))
+            .set_form([("logout_token", fresh.as_str())])
             .to_request(),
     )
     .await;

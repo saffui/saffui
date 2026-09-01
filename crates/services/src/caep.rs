@@ -31,12 +31,24 @@ pub fn is_receiver(provider: &IdentityProviderModel) -> bool {
         == Some(KIND)
 }
 
-/// One receiver this realm pushes Security Event Tokens to: where, under which
-/// audience, and which events it asked for. The bearer it expects rides the
-/// bag sealed, like the outbound connector's.
+/// How a receiver takes delivery: told at its endpoint the moment something
+/// happens (RFC 8935), or collecting from this transmitter when it likes
+/// (RFC 8936).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    Push,
+    Poll,
+}
+
+/// One receiver of this realm's Security Event Tokens: how it takes them,
+/// where when pushed, under which audience, and which events it asked for.
+/// The bearer on the bag rides sealed, like the outbound connector's: pushed
+/// with, or presented back by a collector as its credential.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Receiver {
-    pub endpoint: String,
+    pub delivery: Delivery,
+    /// Where a push lands. A collector names none.
+    pub endpoint: Option<String>,
     pub audience: String,
     /// Empty means everything this transmitter emits.
     pub events: Vec<String>,
@@ -49,8 +61,9 @@ impl Receiver {
             .as_ref()
             .ok_or(Unusable::Missing("a receiver names its endpoint"))?;
         for key in bag.keys() {
-            const KNOWN: [&str; 6] = [
+            const KNOWN: [&str; 7] = [
                 "kind",
+                "delivery",
                 "endpoint",
                 "audience",
                 "events",
@@ -68,12 +81,30 @@ impl Receiver {
                 .filter(|held| !held.is_empty())
                 .map(str::to_owned)
         };
-        let endpoint = read("endpoint").ok_or(Unusable::Missing(
-            "endpoint names where the events are pushed",
-        ))?;
-        if !endpoint.starts_with("https://") && !endpoint.starts_with("http://") {
-            return Err(Unusable::Malformed("endpoint is a url"));
-        }
+        let delivery = match read("delivery").as_deref() {
+            None | Some("push") => Delivery::Push,
+            Some("poll") => Delivery::Poll,
+            Some(_) => return Err(Unusable::Malformed("delivery is push or poll")),
+        };
+        let endpoint = match delivery {
+            Delivery::Push => {
+                let named = read("endpoint").ok_or(Unusable::Missing(
+                    "endpoint names where the events are pushed",
+                ))?;
+                if !named.starts_with("https://") && !named.starts_with("http://") {
+                    return Err(Unusable::Malformed("endpoint is a url"));
+                }
+                Some(named)
+            }
+            // A collector comes to this transmitter; an endpoint on it would
+            // be a place nothing is ever sent.
+            Delivery::Poll => match read("endpoint") {
+                None => None,
+                Some(_) => {
+                    return Err(Unusable::Malformed("a collector names no endpoint"));
+                }
+            },
+        };
         let events: Vec<String> = read("events")
             .map(|held| {
                 held.split_whitespace()
@@ -94,8 +125,15 @@ impl Receiver {
                 "events names an event this transmitter does not emit",
             ));
         }
+        let audience = match read("audience") {
+            Some(named) => named,
+            None => endpoint
+                .clone()
+                .ok_or(Unusable::Missing("a collector names its audience"))?,
+        };
         Ok(Self {
-            audience: read("audience").unwrap_or_else(|| endpoint.clone()),
+            delivery,
+            audience,
             endpoint,
             events,
         })
@@ -143,7 +181,7 @@ pub async fn minted_set(
     uri: &str,
     body: Value,
     now: DateTime<Utc>,
-) -> Result<String, crate::grant::Ungranted> {
+) -> Result<crate::token::issuance::Minted, crate::grant::Ungranted> {
     let key =
         crate::grant::preferred_key(transaction, signing, crypto::provider::SignAlg::Rs256).await?;
     let mut extra = serde_json::Map::new();
@@ -154,7 +192,7 @@ pub async fn minted_set(
     let mut told = body;
     told["event_timestamp"] = json!(now.timestamp());
     extra.insert("events".into(), json!({ uri: told }));
-    let minted = crate::token::issuance::mint_token(
+    crate::token::issuance::mint_token(
         signing.provider,
         &key,
         crate::token::issuance::Minting {
@@ -167,13 +205,14 @@ pub async fn minted_set(
             party: "",
             session_id: "",
             scope: "",
-            lifespan: chrono::Duration::minutes(5),
+            // Long enough for a collector that comes by on its own schedule;
+            // a pushed one is verified the moment it lands.
+            lifespan: chrono::Duration::hours(24),
             now,
             extra,
         },
     )
-    .map_err(|_| crate::grant::Ungranted::Unmintable)?;
-    Ok(minted.token)
+    .map_err(|_| crate::grant::Ungranted::Unmintable)
 }
 
 #[cfg(test)]
@@ -210,13 +249,42 @@ mod tests {
             ("events", SESSION_REVOKED),
         ]);
         let parsed = Receiver::parse(&whole).unwrap();
-        assert_eq!(parsed.endpoint, "https://apps.example/events");
+        assert_eq!(
+            parsed.endpoint.as_deref(),
+            Some("https://apps.example/events")
+        );
         assert_eq!(parsed.audience, "https://apps.example/events");
         assert!(parsed.wants(SESSION_REVOKED));
         assert!(!parsed.wants(ACCOUNT_PURGED));
 
         let unfiltered = receiver_row(&[("kind", KIND), ("endpoint", "https://apps.example/e")]);
         assert!(Receiver::parse(&unfiltered).unwrap().wants(ACCOUNT_PURGED));
+
+        // A collector names no endpoint and must say who it is instead.
+        let collector = receiver_row(&[
+            ("kind", KIND),
+            ("delivery", "poll"),
+            ("audience", "https://collector.example"),
+        ]);
+        let parsed = Receiver::parse(&collector).unwrap();
+        assert_eq!(parsed.delivery, Delivery::Poll);
+        assert!(parsed.endpoint.is_none());
+        for broken in [
+            receiver_row(&[("kind", KIND), ("delivery", "poll")]),
+            receiver_row(&[
+                ("kind", KIND),
+                ("delivery", "poll"),
+                ("audience", "a"),
+                ("endpoint", "https://x"),
+            ]),
+            receiver_row(&[
+                ("kind", KIND),
+                ("delivery", "carrier-pigeon"),
+                ("audience", "a"),
+            ]),
+        ] {
+            assert!(Receiver::parse(&broken).is_err());
+        }
 
         for broken in [
             receiver_row(&[("kind", KIND)]),

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use store::providers::{
-    deliveries, dpop, form_post, login, oidc, one_time_tokens, pushed, replay, sessions,
+    caep_queue, deliveries, dpop, form_post, login, oidc, one_time_tokens, pushed, replay, sessions,
 };
 
 /// How long a receipt is kept. One nobody looked at for a month is one nobody
@@ -25,6 +25,7 @@ pub struct Swept {
     pub pushed_requests: u64,
     pub form_post_landings: u64,
     pub dpop_proofs: u64,
+    pub security_events: u64,
     pub sessions: u64,
 }
 
@@ -40,6 +41,7 @@ impl Swept {
             + self.pushed_requests
             + self.form_post_landings
             + self.dpop_proofs
+            + self.security_events
             + self.sessions
     }
 
@@ -99,6 +101,9 @@ pub async fn drop_expired_rows(
             .await
             .map_err(failed)?,
         pushed_requests: pushed::drop_expired_requests(transaction)
+            .await
+            .map_err(failed)?,
+        security_events: caep_queue::drop_expired(transaction, now)
             .await
             .map_err(failed)?,
         // Last, because it cascades: a login taken away here takes its client

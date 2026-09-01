@@ -361,6 +361,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V059__dpop_jkt_on_codes.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 60,
+            name: "security_event_queue",
+            sql: include_str!("../migrations/V060__security_event_queue.sql"),
+            transactional: true,
+        }),
     ]
 }
 

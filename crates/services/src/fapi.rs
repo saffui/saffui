@@ -27,8 +27,11 @@ pub fn conformant(client: &ClientModel) -> Result<(), &'static str> {
     if client.public_client == Some(true) {
         return Err("the profile names a confidential client");
     }
-    if client.client_authenticator_type.as_deref() != Some("private-key-jwt") {
-        return Err("the profile authenticates by private_key_jwt");
+    if !matches!(
+        client.client_authenticator_type.as_deref(),
+        Some("private-key-jwt" | "tls-client-auth")
+    ) {
+        return Err("the profile authenticates by private_key_jwt or by TLS");
     }
     if !matches!(
         client.id_token_signed_response_alg,

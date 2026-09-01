@@ -47,7 +47,16 @@ pub async fn establish<'a>(
             let transaction = scoped(connection, tenancy, context).await?;
             super::hosted::refresh_client_keys(&transaction, presented.client_id(), egress, now)
                 .await;
-            let client = checked(&transaction, sealing, origin, context, &presented, now).await?;
+            let client = checked(
+                request,
+                &transaction,
+                sealing,
+                origin,
+                context,
+                &presented,
+                now,
+            )
+            .await?;
             transaction.commit().await.map_err(|why| {
                 tracing::warn!(why = %why, "the assertion could not be spent");
                 Denied::InvalidRequest.answer("the assertion could not be spent")
@@ -62,7 +71,18 @@ pub async fn establish<'a>(
     let transaction = scoped(connection, tenancy, context).await?;
     let client = match client {
         Some(client) => client,
-        None => checked(&transaction, sealing, origin, context, &presented, now).await?,
+        None => {
+            checked(
+                request,
+                &transaction,
+                sealing,
+                origin,
+                context,
+                &presented,
+                now,
+            )
+            .await?
+        }
     };
     Ok((transaction, client))
 }
@@ -79,6 +99,7 @@ async fn scoped<'a>(
 }
 
 async fn checked(
+    request: &HttpRequest,
     transaction: &Transaction<'_>,
     sealing: &Sealing,
     origin: &PublicOrigin,
@@ -118,6 +139,7 @@ async fn checked(
             tenant: context,
             audiences: &audiences(origin, &context.realm_id),
             sealing: ring.as_ref().map(|ring| (ring, sealing.envelope.as_ref())),
+            certificate: certificate_names(request),
         },
         presented,
         now,
@@ -129,6 +151,25 @@ async fn checked(
 /// The names an assertion may be addressed to: RFC 7523 §3 says the token
 /// endpoint, OIDC Core §9 says the issuer, and a client picking either has
 /// addressed this server and no other.
+/// The names off the certificate a trusted proxy forwarded, read with the
+/// discipline every mTLS read here has: the operator-named header, from the
+/// operator-named peers, and from nobody else.
+fn certificate_names(request: &HttpRequest) -> Option<client::CertificateNames> {
+    let proxying = request
+        .app_data::<actix_web::web::Data<config::proxying::Proxying>>()
+        .map_or_else(config::proxying::Proxying::none, |held| (***held).clone());
+    let named =
+        actix_web::http::header::HeaderName::from_bytes(proxying.certificate_header()?.as_bytes())
+            .ok()?;
+    let carried = request.headers().get(named)?.to_str().ok()?;
+    let peer = request.peer_addr().map(|address| address.ip().to_string());
+    let carried = proxying.client_certificate(peer.as_deref(), Some(carried))?;
+    Some(client::CertificateNames {
+        dns: services::mtls::san_dns(carried).unwrap_or_default(),
+        uris: services::mtls::san_uris(carried).unwrap_or_default(),
+    })
+}
+
 pub fn audiences(origin: &PublicOrigin, realm_id: &str) -> Vec<String> {
     let issuer = origin.issuer(realm_id);
     let protocol = format!("{issuer}/protocol/openid-connect");

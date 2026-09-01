@@ -140,15 +140,28 @@ pub struct Establishing<'a> {
     /// How a sealed secret is opened. Absent, a client that keeps one cannot
     /// authenticate rather than authenticating without it.
     pub sealing: Option<(&'a RealmKeyring, &'a Envelope)>,
+    /// What the proxy said this caller presented, for the method that is
+    /// nothing else. Absent is no certificate, not a proxy misread.
+    pub certificate: Option<CertificateNames>,
 }
 
 /// Which methods this build performs, by the name the column holds.
-const PERFORMED: [&str; 4] = [
+const PERFORMED: [&str; 5] = [
     "client-secret",
     "none",
     "client-secret-jwt",
     "private-key-jwt",
+    "tls-client-auth",
 ];
+
+/// The names a trusted proxy read off the certificate this caller presented.
+/// RFC 8705 §2: for a client registered to authenticate by TLS, one of these
+/// matching the one name it registered is the whole authentication.
+#[derive(Debug, Clone, Default)]
+pub struct CertificateNames {
+    pub dns: Vec<String>,
+    pub uris: Vec<String>,
+}
 
 /// What a client secret is sealed for, so a blob lifted from another column
 /// opens as nothing.
@@ -242,6 +255,37 @@ pub async fn authenticate(
         .client_authenticator_type
         .as_deref()
         .unwrap_or("client-secret");
+    // RFC 8705 §2: the certificate the proxy vouched for is the whole
+    // credential, matched against the one name the registration holds.
+    // Exactly one name registered, or the client is misprovisioned and
+    // refused whole; a bare name with no certificate is anybody.
+    if registered == "tls-client-auth" {
+        if !matches!(presented, Presented::Bare { .. }) {
+            return Err(Unauthenticated::Refused);
+        }
+        let Some(names) = within.certificate.as_ref() else {
+            return Err(Unauthenticated::Refused);
+        };
+        let expected = |key: &str| {
+            client
+                .configs
+                .as_ref()
+                .and_then(|bag| bag.get(key))
+                .and_then(models::entities::attributes::AttributeValue::as_str)
+                .map(str::trim)
+                .filter(|held| !held.is_empty())
+                .map(str::to_owned)
+        };
+        let admitted = match (expected("tls.san_dns"), expected("tls.san_uri")) {
+            (Some(dns), None) => names.dns.iter().any(|held| held.eq_ignore_ascii_case(&dns)),
+            (None, Some(uri)) => names.uris.contains(&uri),
+            _ => false,
+        };
+        if !admitted {
+            return Err(Unauthenticated::Refused);
+        }
+        return Ok(client);
+    }
     let signs = matches!(registered, "client-secret-jwt" | "private-key-jwt");
     if signs != matches!(presented, Presented::Assertion { .. }) {
         return Err(Unauthenticated::Refused);

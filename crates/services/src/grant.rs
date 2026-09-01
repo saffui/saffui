@@ -926,6 +926,9 @@ pub struct Renewing<'a> {
     /// The realm's published keys. The token is one this realm signed, so it is
     /// verified the way any presented token is.
     pub keys: &'a [RealmSigningKeyView],
+    /// What this caller proved on the way in. A refresh token bound to a key
+    /// renews only for the caller that proves it again, RFC 9449 §5.
+    pub proofs: crate::token::Proofs<'a>,
 }
 
 /// Renewing without the user, RFC 6749 §6.
@@ -946,7 +949,7 @@ pub async fn refresh_token(
         transaction,
         renewing.keys,
         renewing.refresh_token,
-        crate::token::Binding::Presented(crate::token::Proofs::none()),
+        crate::token::Binding::Presented(renewing.proofs),
         now,
     )
     .await

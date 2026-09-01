@@ -90,9 +90,11 @@ pub async fn keep(
             uncached(&mut HttpResponseBuilder::new(StatusCode::CREATED))
                 .json(json!({ "request_uri": handle, "expires_in": lifespan }))
         }
-        Err(refusal @ (Unpushable::NotTheClient | Unpushable::CarriesAReference)) => {
-            Denied::InvalidRequest.answer(&refusal.to_string())
-        }
+        Err(
+            refusal @ (Unpushable::NotTheClient
+            | Unpushable::CarriesAReference
+            | Unpushable::AgainstTheProfile(_)),
+        ) => Denied::InvalidRequest.answer(&refusal.to_string()),
         Err(Unpushable::Unwritable) => {
             Denied::InvalidRequest.answer("the request could not be kept")
         }

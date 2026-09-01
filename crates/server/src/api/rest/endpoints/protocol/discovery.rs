@@ -121,6 +121,9 @@ pub async fn published(
             "backchannel_authentication_endpoint": format!("{protocol}/bc-authorize"),
             "backchannel_token_delivery_modes_supported": ["poll", "ping"],
             "backchannel_user_code_parameter_supported": true,
+            "backchannel_authentication_request_signing_alg_values_supported": [
+                "RS256", "PS256", "ES256", "EdDSA",
+            ],
             "jwks_uri": format!("{protocol}/certs"),
             "userinfo_endpoint": format!("{protocol}/userinfo"),
             "end_session_endpoint": format!("{protocol}/logout"),

@@ -152,7 +152,11 @@ pub fn read(
 
 /// The client's key the object's header names, or its only one of that
 /// algorithm when the header names none.
-fn key_named(keys: &Value, token: &str, algorithm: SignAlgOf) -> Result<Jwk, Unreadable> {
+pub(crate) fn key_named(
+    keys: &Value,
+    token: &str,
+    algorithm: SignAlgOf,
+) -> Result<Jwk, Unreadable> {
     let set = JwkSet::from_map(keys.as_object().cloned().ok_or(Unreadable::Unregistered)?)
         .map_err(|_| Unreadable::Unregistered)?;
     let header = jwt::decode_header(token).map_err(|_| Unreadable::Malformed)?;

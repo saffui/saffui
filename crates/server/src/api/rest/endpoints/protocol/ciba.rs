@@ -24,10 +24,14 @@ pub struct Opening {
     pub scope: Option<String>,
     pub login_hint: Option<String>,
     pub id_token_hint: Option<String>,
+    pub login_hint_token: Option<String>,
     pub binding_message: Option<String>,
     pub requested_expiry: Option<String>,
     pub client_notification_token: Option<String>,
     pub user_code: Option<String>,
+    /// CIBA §7.1: the whole initiation, as one token the client signed. A
+    /// client registered for signing sends this and nothing beside it.
+    pub request: Option<String>,
 }
 
 fn told(status: StatusCode, error: &str, description: &str) -> HttpResponse {
@@ -107,6 +111,65 @@ pub async fn open(
             );
         }
     };
+    // §7.1: a client registered for signed requests speaks only in them, and
+    // one that is not registered may not present one. The parameters then
+    // come from inside the token alone.
+    let mut asked = asked.into_inner();
+    match (
+        ciba::signing_alg_of(&presented),
+        asked.request.as_deref().map(str::to_owned),
+    ) {
+        (None, None) => {}
+        (None, Some(_)) => {
+            return told(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "this client did not register request signing",
+            );
+        }
+        (Some(_), None) => {
+            return told(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "this client signs its backchannel requests",
+            );
+        }
+        (Some(algorithm), Some(token)) => {
+            let issuer = origin.issuer(&context.realm_id);
+            let inside =
+                match ciba::read_signed_request(&presented, algorithm, &token, &issuer, now) {
+                    Ok(inside) => inside,
+                    Err(refused) => {
+                        return told(StatusCode::BAD_REQUEST, refused.error, refused.detail);
+                    }
+                };
+            let text = |named: &str| {
+                inside
+                    .get(named)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            };
+            asked = Opening {
+                client_id: asked.client_id,
+                client_secret: None,
+                client_assertion_type: None,
+                client_assertion: None,
+                scope: text("scope"),
+                login_hint: text("login_hint"),
+                id_token_hint: text("id_token_hint"),
+                login_hint_token: text("login_hint_token"),
+                binding_message: text("binding_message"),
+                requested_expiry: inside.get("requested_expiry").map(|held| match held {
+                    serde_json::Value::String(spelled) => spelled.clone(),
+                    other => other.to_string(),
+                }),
+                client_notification_token: text("client_notification_token"),
+                user_code: text("user_code"),
+                request: None,
+            };
+        }
+    }
+
     let notification_token = match ciba::read_notification_token(
         &delivery,
         asked.client_notification_token.as_deref(),
@@ -120,6 +183,7 @@ pub async fn open(
         asked.scope.as_deref(),
         asked.login_hint.as_deref(),
         asked.id_token_hint.as_deref(),
+        asked.login_hint_token.as_deref(),
         asked.binding_message.as_deref(),
         asked.requested_expiry.as_deref(),
     ) {
@@ -135,6 +199,42 @@ pub async fn open(
                 store::providers::users::load_by_email(&transaction, hint).await
             } else {
                 store::providers::users::load_by_name(&transaction, hint).await
+            };
+            match found {
+                Ok(person) => person.filter(|held| held.enabled),
+                Err(_) => {
+                    return told(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request",
+                        "the realm could not be read",
+                    );
+                }
+            }
+        }
+        // The client vouched for the hint by signing it; a hint it cannot
+        // sign is a protocol fault, and a verified hint naming nobody is the
+        // same ghost an unknown login_hint opens.
+        Hint::HintToken(token) => {
+            let Some(algorithm) = ciba::signing_alg_of(&presented) else {
+                return told(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_request",
+                    "this client did not register request signing",
+                );
+            };
+            let hinted = match ciba::read_hint_token(&presented, algorithm, token) {
+                Ok(hinted) => hinted,
+                Err(refused) => {
+                    return told(StatusCode::BAD_REQUEST, refused.error, refused.detail);
+                }
+            };
+            let found = match &hinted {
+                ciba::Hinted::Subject(subject) => {
+                    store::providers::users::load(&transaction, subject).await
+                }
+                ciba::Hinted::Email(address) => {
+                    store::providers::users::load_by_email(&transaction, address).await
+                }
             };
             match found {
                 Ok(person) => person.filter(|held| held.enabled),

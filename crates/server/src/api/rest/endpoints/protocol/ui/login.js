@@ -42,6 +42,12 @@
   const allow = document.getElementById("allow");
   const deny = document.getElementById("deny");
 
+  // What the script says, it reads off the page, so the page's tongue is the
+  // script's tongue too.
+  function spoken(id) {
+    return document.getElementById(id).textContent;
+  }
+
   // Everything told so far. Every round carries all of it, because the flow
   // runs each step against the whole answer: a second factor travels beside
   // the first rather than instead of it.
@@ -125,7 +131,7 @@
         return read(answer.status, answer.told);
       })
       .catch(function () {
-        say("Something went wrong. Try again.");
+        say(spoken("went-wrong"));
       })
       .then(function () {
         busy(false);
@@ -143,18 +149,18 @@
       if (typeof told.redirect_to === "string" && told.redirect_to) {
         location.assign(told.redirect_to);
       } else {
-        say("Something went wrong. Try again.");
+        say(spoken("went-wrong"));
       }
       return;
     }
     if (status === 404) {
-      say("This sign-in has expired or was never started. Go back to the application and try again.");
+      say(spoken("no-such-login"));
       return;
     }
     if (told.status === "refused") {
       forget();
       show(true, false, false);
-      say("Sign-in refused.");
+      say(spoken("refused"));
       return;
     }
     if (told.status === "consent") {
@@ -164,11 +170,11 @@
     if (told.status === "locked-out") {
       forget();
       show(true, false, false);
-      say("Too many failed attempts. Sign-in is paused for a while.");
+      say(spoken("locked-out"));
       return;
     }
     if (told.status !== "challenge") {
-      say("Something went wrong. Try again.");
+      say(spoken("went-wrong"));
       return;
     }
     if (told.execution === "totp-register" && told.asks) {
@@ -192,7 +198,7 @@
   // is what the browser's own JSON methods speak.
   function ceremony(told) {
     if (!window.PublicKeyCredential || !PublicKeyCredential.parseRequestOptionsFromJSON) {
-      say("This browser cannot use a security key here.");
+      say(spoken("no-key-here"));
       return Promise.resolve();
     }
     show(false, false, true);
@@ -220,7 +226,7 @@
     // is not: that one belongs to the round, which says its own piece.
     return asked.then(round, function () {
       show(true, false, false);
-      say("The key did not answer.");
+      say(spoken("key-silent"));
     });
   }
 

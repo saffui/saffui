@@ -3,8 +3,8 @@ use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
+use crate::api::rest::endpoints::protocol::i18n;
 
-const PAGE: &str = include_str!("ui/login.html");
 const CHECK_SESSION: &str = include_str!("ui/check-session.html");
 const CHECK_SESSION_SCRIPT: &str = include_str!("ui/check-session.js");
 const SCRIPT: &str = include_str!("ui/login.js");
@@ -104,8 +104,28 @@ pub fn escaped(value: &str) -> String {
         .collect()
 }
 
-pub async fn login() -> HttpResponse {
-    serve("text/html; charset=utf-8", PAGE)
+pub async fn login(request: actix_web::HttpRequest) -> HttpResponse {
+    page(&request)
+}
+
+/// The sign-in page in the tongue the browser asked for, told which it got
+/// and that the answer varies by the asking.
+fn page(request: &actix_web::HttpRequest) -> HttpResponse {
+    let tongue = i18n::spoken(
+        request
+            .headers()
+            .get("accept-language")
+            .and_then(|value| value.to_str().ok()),
+    );
+    uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .insert_header(("Content-Type", "text/html; charset=utf-8"))
+        .insert_header(("Content-Language", tongue))
+        .insert_header(("Vary", "Accept-Language"))
+        .insert_header(("Content-Security-Policy", POLICY))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("X-Frame-Options", "DENY"))
+        .insert_header(("Referrer-Policy", "no-referrer"))
+        .body(i18n::page_in(tongue))
 }
 
 /// What sends the form-post page on. Served rather than written into it: a
@@ -202,7 +222,11 @@ fn serve(content_type: &'static str, body: &'static str) -> HttpResponse {
 /// The value is written into the form and nowhere else. Rendered into a page
 /// this server serves, so nothing else on it can read it, and the page carries
 /// no script and no referrer.
-pub async fn magic_link(realm: web::Path<String>, asked: web::Query<Followed>) -> HttpResponse {
+pub async fn magic_link(
+    request: actix_web::HttpRequest,
+    realm: web::Path<String>,
+    asked: web::Query<Followed>,
+) -> HttpResponse {
     let asked = asked.into_inner();
     // Which link was followed decides which field the page posts back. A page
     // that always posted the same one would spend a sign-in token where an
@@ -218,7 +242,7 @@ pub async fn magic_link(realm: web::Path<String>, asked: web::Query<Followed>) -
                 .map(|token| ("verify_email", token))
         });
     let Some((named, token)) = followed else {
-        return serve("text/html; charset=utf-8", PAGE);
+        return page(&request);
     };
     let body = LINK_PAGE
         .replace(
@@ -266,6 +290,7 @@ pub struct Resetting {
 /// says whether the link is any good. Telling that here would answer it to
 /// whoever holds the link rather than to whoever can set a password.
 pub async fn reset_password(
+    request: actix_web::HttpRequest,
     realm: web::Path<String>,
     asked: web::Query<Resetting>,
 ) -> HttpResponse {
@@ -274,7 +299,7 @@ pub async fn reset_password(
         asked.token.filter(|held| !held.is_empty()),
         asked.user.filter(|held| !held.is_empty()),
     ) else {
-        return serve("text/html; charset=utf-8", PAGE);
+        return page(&request);
     };
     let body = RESET_PAGE
         .replace(
@@ -315,10 +340,12 @@ const RESET_PAGE: &str = r#"<!doctype html>
 
 #[cfg(test)]
 mod tests {
-    use super::{PAGE, SCRIPT};
+    use super::SCRIPT;
+    use super::i18n;
 
     /// The script reaches for the page by identifier, and a page that lost one
-    /// hands it `null`. Every name it asks for has to be on the page.
+    /// hands it `null`. Every name it asks for has to be on every render of
+    /// the page.
     #[test]
     fn every_element_the_script_reaches_for_is_on_the_page() {
         let mut asked = Vec::new();
@@ -330,11 +357,14 @@ mod tests {
             rest = &rest[end..];
         }
         assert!(asked.len() >= 8, "the identifiers were not read: {asked:?}");
-        for named in asked {
-            assert!(
-                PAGE.contains(&format!("id=\"{named}\"")),
-                "the script asks for `{named}`, which the page does not carry"
-            );
+        for tongue in i18n::TONGUES {
+            let page = i18n::page_in(tongue);
+            for named in &asked {
+                assert!(
+                    page.contains(&format!("id=\"{named}\"")),
+                    "the script asks for `{named}`, which the {tongue} page does not carry"
+                );
+            }
         }
     }
 

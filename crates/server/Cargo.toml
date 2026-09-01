@@ -39,6 +39,10 @@ ureq = { version = "3", default-features = false, features = ["native-tls"] }
 # and no other crate links a directory protocol.
 cross-krb5 = { version = "0.4", default-features = false, optional = true }
 ldap3 = { version = "0.11", default-features = false, features = ["tls-native"] }
+# The hosted pages in every tongue they speak, rendered once at startup from
+# the same strings a themed deployment would translate.
+fluent-bundle = "0.15"
+unic-langid = "0.9"
 lettre = { workspace = true }
 async-trait = { workspace = true }
 

@@ -103,3 +103,18 @@ ciba-empty = Nothing waiting.
 ciba-approve = Approve
 ciba-decline = Deny
 ciba-expires = Expires in { $seconds }s
+
+## Page glue — strings the sign-in page itself carries
+totp-one-time = One-time code
+enroll-add = Add this account to your authenticator app, then enter the code it shows.
+enroll-open = Open in your authenticator app
+consent-asking = is asking for access to your account.
+flash-refused = Sign-in refused.
+flash-no-such-login = This sign-in has expired or was never started. Go back to the application and try again.
+flash-key-needs-script = A security key needs scripts enabled on this page.
+flash-wrong-browser = Open that link in the browser where you started signing in. It is still good.
+flash-consent = This application is asking for access to your account, and answering that needs scripts enabled on this page.
+flash-locked-out = Too many failed attempts. Sign-in is paused for a while; try again later, or ask an administrator to lift it.
+flash-went-wrong = Something went wrong. Try again.
+flash-no-key-here = This browser cannot use a security key here.
+flash-key-silent = The key did not answer.

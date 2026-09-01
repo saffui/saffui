@@ -103,3 +103,18 @@ ciba-empty = Aucune demande.
 ciba-approve = Approuver
 ciba-decline = Refuser
 ciba-expires = Expire dans { $seconds } s
+
+## Colle de page — les chaînes portées par la page de connexion elle-même
+totp-one-time = Code à usage unique
+enroll-add = Ajoutez ce compte à votre application de codes, puis saisissez le code affiché.
+enroll-open = Ouvrir dans votre application
+consent-asking = demande l'accès à votre compte.
+flash-refused = Connexion refusée.
+flash-no-such-login = Cette connexion a expiré ou n'a jamais commencé. Retournez à l'application et réessayez.
+flash-key-needs-script = Une clé de sécurité nécessite les scripts sur cette page.
+flash-wrong-browser = Ouvrez ce lien dans le navigateur où vous avez commencé la connexion. Il est toujours valable.
+flash-consent = Cette application demande l'accès à votre compte, et répondre nécessite les scripts sur cette page.
+flash-locked-out = Trop de tentatives échouées. La connexion est suspendue un moment ; réessayez plus tard, ou demandez à un administrateur de la débloquer.
+flash-went-wrong = Une erreur est survenue. Réessayez.
+flash-no-key-here = Ce navigateur ne peut pas utiliser de clé de sécurité ici.
+flash-key-silent = La clé n'a pas répondu.

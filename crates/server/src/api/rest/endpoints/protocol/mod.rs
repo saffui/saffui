@@ -9,6 +9,7 @@ pub mod ciba;
 pub mod discovery;
 pub mod dto;
 pub mod hosted;
+pub mod i18n;
 pub mod introspect;
 pub mod keys;
 pub mod login;

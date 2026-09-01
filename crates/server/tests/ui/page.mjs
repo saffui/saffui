@@ -13,8 +13,30 @@ const ui = join(
   "../../src/api/rest/endpoints/protocol/ui",
 );
 
-const PAGE = readFileSync(join(ui, "login.html"), "utf8");
+// The template is rendered the way the server renders it, in English: each
+// `{{name}}` becomes that string from the same file the server reads. The
+// strings the page glue uses are all plain one-liners, so a line map is
+// enough of a Fluent reader here.
+const STRINGS = new Map(
+  [...readFileSync(join(ui, "themes/en.ftl"), "utf8").matchAll(/^([a-z][a-z0-9-]*) = (.+)$/gm)]
+    .map((found) => [found[1], found[2]]),
+);
+const PAGE = readFileSync(join(ui, "login.html"), "utf8").replace(
+  /\{\{([a-z-]+)\}\}/g,
+  (_, name) => {
+    if (name === "lang") return "en";
+    const held = STRINGS.get(name);
+    if (held === undefined) throw new Error(`the page asks for \`${name}\`, which en.ftl does not hold`);
+    return held;
+  },
+);
 const SCRIPT = readFileSync(join(ui, "login.js"), "utf8");
+
+/// What the page says inside the element with that identifier, for the
+/// script to read back as a person would.
+const SAID = new Map(
+  [...PAGE.matchAll(/id="([^"]+)"[^>]*>([^<]*)</g)].map((found) => [found[1], found[2]]),
+);
 
 class Element {
   constructor(tag, id) {
@@ -68,7 +90,11 @@ export function opened({ rounds = [], fetching = true } = {}) {
 
   const element = (id) => {
     if (!named.has(id)) return null;
-    if (!elements.has(id)) elements.set(id, new Element("div", id));
+    if (!elements.has(id)) {
+      const held = new Element("div", id);
+      held.textContent = SAID.get(id) || "";
+      elements.set(id, held);
+    }
     return elements.get(id);
   };
 

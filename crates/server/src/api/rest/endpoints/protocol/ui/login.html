@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{lang}}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sign in</title>
+<title>{{login-title}}</title>
 <link rel="stylesheet" href="login.css">
 </head>
 <body>
@@ -12,46 +12,50 @@
     <div id="realm-mark" aria-hidden="true"></div>
     <div id="realm-name"></div>
   </div>
-  <h1>Sign in</h1>
+  <h1>{{login-title}}</h1>
   <form id="login" method="post" novalidate>
     <div id="credentials">
-      <label>Username
+      <label>{{login-username}}
         <input name="username" autocomplete="username" required autofocus>
       </label>
-      <label>Password
+      <label>{{login-password}}
         <input name="password" type="password" autocomplete="current-password" required>
       </label>
     </div>
     <div id="code" hidden>
-      <label>One-time code
+      <label>{{totp-one-time}}
         <input name="totp" inputmode="numeric" autocomplete="one-time-code">
       </label>
     </div>
-    <p id="key" hidden>Touch your security key, or use this device, to continue.</p>
+    <p id="key" hidden>{{passkey-waiting}}</p>
     <div id="app" hidden>
-      <p>Add this account to your authenticator app, then enter the code it shows.</p>
-      <p><a id="otpauth" href="">Open in your authenticator app</a></p>
-      <p>Or enter this key by hand: <code id="secret"></code></p>
-      <label>Code from the app
+      <p>{{enroll-add}}</p>
+      <p><a id="otpauth" href="">{{enroll-open}}</a></p>
+      <p>{{enroll-secret-label}}: <code id="secret"></code></p>
+      <label>{{enroll-code}}
         <input name="totp_register" inputmode="numeric" autocomplete="one-time-code">
       </label>
     </div>
     <div id="asking" hidden>
-      <p><strong id="asking-client"></strong> is asking for access to your account.</p>
+      <p><strong id="asking-client"></strong> {{consent-asking}}</p>
       <ul id="asking-scopes"></ul>
-      <button type="button" id="allow">Allow</button>
-      <button type="button" id="deny">Deny</button>
+      <button type="button" id="allow">{{consent-accept}}</button>
+      <button type="button" id="deny">{{consent-decline}}</button>
     </div>
-    <button type="submit" id="continue">Continue</button>
+    <button type="submit" id="continue">{{action-continue}}</button>
   </form>
   <p id="notice" role="alert" hidden></p>
   <!-- Without a script, the outcome arrives as a fragment and these show themselves. -->
-  <p id="refused" class="flash" role="alert">Sign-in refused.</p>
-  <p id="no-such-login" class="flash" role="alert">This sign-in has expired or was never started. Go back to the application and try again.</p>
-  <p id="key-needs-script" class="flash" role="alert">A security key needs scripts enabled on this page.</p>
-  <p id="wrong-browser" class="flash" role="alert">Open that link in the browser where you started signing in. It is still good.</p>
-  <p id="consent" class="flash" role="alert">This application is asking for access to your account, and answering that needs scripts enabled on this page.</p>
-  <p id="locked-out" class="flash" role="alert">Too many failed attempts. Sign-in is paused for a while; try again later, or ask an administrator to lift it.</p>
+  <p id="refused" class="flash" role="alert">{{flash-refused}}</p>
+  <p id="no-such-login" class="flash" role="alert">{{flash-no-such-login}}</p>
+  <p id="key-needs-script" class="flash" role="alert">{{flash-key-needs-script}}</p>
+  <p id="wrong-browser" class="flash" role="alert">{{flash-wrong-browser}}</p>
+  <p id="consent" class="flash" role="alert">{{flash-consent}}</p>
+  <p id="locked-out" class="flash" role="alert">{{flash-locked-out}}</p>
+  <!-- What the script says, held here so the page speaks one language throughout. -->
+  <p id="went-wrong" hidden>{{flash-went-wrong}}</p>
+  <p id="no-key-here" hidden>{{flash-no-key-here}}</p>
+  <p id="key-silent" hidden>{{flash-key-silent}}</p>
 </main>
 <script src="login.js"></script>
 </body>

@@ -22,6 +22,31 @@ const AUTHENTICATED: [&str; 5] = [
 ];
 
 /// The realm's metadata, OpenID Connect Discovery §3.
+/// SSF transmitter metadata: enough for a receiver to verify what this realm
+/// pushes. Streams are configured by the realm's operator, so the management
+/// endpoints of the spec are absent rather than refused.
+pub async fn ssf_configuration(
+    realm: web::Path<String>,
+    pool: web::Data<Pool>,
+    origin: web::Data<PublicOrigin>,
+) -> HttpResponse {
+    let Ok(connection) = pool.get().await else {
+        return refused(StatusCode::INTERNAL_SERVER_ERROR);
+    };
+    if resolve::realm_by_name(&connection, &realm).await.is_err() {
+        return refused(StatusCode::NOT_FOUND);
+    }
+    let issuer = origin.issuer(&realm);
+    HttpResponse::Ok().json(serde_json::json!({
+        "spec_version": "1_0",
+        "issuer": issuer,
+        "jwks_uri": format!("{issuer}/protocol/openid-connect/certs"),
+        "delivery_methods_supported": [
+            "urn:ietf:rfc:8935",
+        ],
+    }))
+}
+
 pub async fn published(
     realm: web::Path<String>,
     pool: web::Data<Pool>,

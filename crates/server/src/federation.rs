@@ -495,6 +495,7 @@ const DEAD_AFTER: i32 = 8;
 pub async fn deliver_outbox(
     transaction: &deadpool_postgres::Transaction<'_>,
     sealing: &crate::api::config::Sealing,
+    origin: &config::serving::PublicOrigin,
     context: &store::tenancy::TenantContext,
     backoff_seconds: i64,
     now: chrono::DateTime<chrono::Utc>,
@@ -516,6 +517,29 @@ pub async fn deliver_outbox(
                 .map(|connector| (row, connector))
         })
         .collect();
+    let receivers: Vec<_> = rows
+        .iter()
+        .filter(|row| services::caep::is_receiver(row) && row.enabled != Some(false))
+        .filter_map(|row| {
+            services::caep::Receiver::parse(row)
+                .ok()
+                .map(|receiver| (row, receiver))
+        })
+        .collect();
+    // The realm's keys, only when somebody is listening for signed events.
+    let ring = if receivers.is_empty() {
+        None
+    } else {
+        store::keyring::load(
+            transaction,
+            &sealing.envelope,
+            &context.tenant,
+            &context.realm_id,
+        )
+        .await
+        .ok()
+    };
+    let issuer = origin.issuer(&context.realm_id);
 
     let due = store::providers::outbox::due(transaction, DELIVERY_CEILING, backoff_seconds, now)
         .await
@@ -531,18 +555,51 @@ pub async fn deliver_outbox(
             told.failed += 1;
             continue;
         }
-        if connectors.is_empty() {
-            // Nobody to tell is a telling done, not one to retry forever.
-            store::providers::outbox::delivered(transaction, event.event_id)
-                .await
-                .map_err(|_| ())?;
-            continue;
-        }
+        // Nobody to tell is a telling done, not one to retry forever: with
+        // no push attempted, `landed` stays true and the event is put away.
         let mut landed = true;
-        for (row, connector) in &connectors {
-            let bearer = opened_bearer(transaction, sealing, context, row).await;
-            if !push_one(connector, bearer.as_deref(), &event).await {
-                landed = false;
+        if let Some((uri, body)) = services::caep::security_event(&event.kind, &event.payload) {
+            for (row, receiver) in &receivers {
+                if !receiver.wants(uri) {
+                    continue;
+                }
+                let minted = match &ring {
+                    Some(ring) => services::caep::minted_set(
+                        transaction,
+                        &services::grant::Signing {
+                            provider: sealing.provider.as_ref(),
+                            ring,
+                            envelope: &sealing.envelope,
+                        },
+                        &issuer,
+                        receiver,
+                        &event,
+                        uri,
+                        body.clone(),
+                        now,
+                    )
+                    .await
+                    .ok(),
+                    None => None,
+                };
+                let Some(set) = minted else {
+                    landed = false;
+                    continue;
+                };
+                let bearer = opened_bearer(transaction, sealing, context, row).await;
+                if !push_set(receiver, bearer.as_deref(), &set).await {
+                    landed = false;
+                }
+            }
+        }
+        // The connectors speak person; a session or credential happening is
+        // not theirs to provision.
+        if event.kind.starts_with("user.") {
+            for (row, connector) in &connectors {
+                let bearer = opened_bearer(transaction, sealing, context, row).await;
+                if !push_one(connector, bearer.as_deref(), &event).await {
+                    landed = false;
+                }
             }
         }
         if landed {
@@ -598,6 +655,37 @@ async fn opened_bearer(
         .await
         .ok()?;
     String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()
+}
+
+/// Hand one Security Event Token to one receiver, RFC 8935: a POST whose
+/// body is the token, acknowledged with a bare success.
+async fn push_set(receiver: &services::caep::Receiver, bearer: Option<&str>, set: &str) -> bool {
+    let endpoint = receiver.endpoint.clone();
+    let bearer = bearer.map(str::to_owned);
+    let set = set.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .max_redirects(0)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .provider(ureq::tls::TlsProvider::NativeTls)
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build()
+            .new_agent();
+        let mut asked = agent
+            .post(&endpoint)
+            .header("content-type", "application/secevent+jwt")
+            .header("accept", "application/json");
+        if let Some(bearer) = bearer {
+            asked = asked.header("authorization", &format!("Bearer {bearer}"));
+        }
+        asked.send(set.as_str()).is_ok()
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Reconcile-then-write, the way the cloud provisioners do it: find the

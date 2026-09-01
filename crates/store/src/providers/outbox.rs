@@ -7,6 +7,8 @@ use crate::error::{StoreError, StoreResult};
 pub const USER_CREATED: &str = "user.created";
 pub const USER_UPDATED: &str = "user.updated";
 pub const USER_DELETED: &str = "user.deleted";
+pub const SESSION_REVOKED: &str = "session.revoked";
+pub const CREDENTIAL_CHANGED: &str = "credential.changed";
 
 #[derive(Debug, Clone)]
 pub struct OutboxEvent {

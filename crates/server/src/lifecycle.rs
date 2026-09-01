@@ -61,7 +61,7 @@ pub async fn converge_event(
     transaction: &Transaction<'_>,
     event: &store::providers::outbox::OutboxEvent,
 ) -> Result<(), ()> {
-    if event.kind == store::providers::outbox::USER_DELETED {
+    if !event.kind.starts_with("user.") || event.kind == store::providers::outbox::USER_DELETED {
         return Ok(());
     }
     let Some(person) = users::load(transaction, &event.user_id)

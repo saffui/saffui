@@ -21,6 +21,9 @@ pub enum Kind {
     /// credential and not a record of a login, and a client must refuse it
     /// wherever an identity token is expected.
     Logout,
+    /// A Security Event Token, RFC 8417: tells a receiver something happened.
+    /// Same standing as a logout token: never a credential.
+    SecurityEvent,
 }
 
 impl Kind {
@@ -35,6 +38,7 @@ impl Kind {
             Kind::Access => "at+jwt",
             Kind::Identity | Kind::Refresh => "JWT",
             Kind::Logout => "logout+jwt",
+            Kind::SecurityEvent => "secevent+jwt",
         }
     }
 
@@ -46,6 +50,7 @@ impl Kind {
             Kind::Identity => "ID",
             Kind::Refresh => "Refresh",
             Kind::Logout => "Logout",
+            Kind::SecurityEvent => "SecurityEvent",
         }
     }
 }
@@ -159,7 +164,15 @@ pub fn mint_token(
     // do and what kind of token it is are an access token's business, and a
     // relying party reading claims it never asked for is a finding.
     let mut claims = vec![("azp", minting.party), ("sid", minting.session_id)];
-    if minting.kind != Kind::Identity && minting.kind != Kind::Logout {
+    // A security event names no login and no scope; its azp and sid arrive
+    // empty and writing them empty would say something false.
+    if minting.kind == Kind::SecurityEvent {
+        claims.retain(|(_, value)| !value.is_empty());
+    }
+    if minting.kind != Kind::Identity
+        && minting.kind != Kind::Logout
+        && minting.kind != Kind::SecurityEvent
+    {
         claims.push(("typ", minting.kind.claimed()));
         claims.push(("scope", minting.scope));
     }

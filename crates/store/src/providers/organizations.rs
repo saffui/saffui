@@ -452,3 +452,35 @@ fn audit(row: &Row) -> models::auditable::AuditableModel {
         version: row.get("version"),
     }
 }
+
+/// The organization's stored theme, worn by the hosted pages after the
+/// realm's own; absent is the realm's look.
+pub async fn theme_of(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+) -> StoreResult<Option<serde_json::Value>> {
+    let row = transaction
+        .query_opt(
+            "SELECT theme FROM organizations WHERE org_id = $1",
+            &[&org_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.and_then(|row| row.get("theme")))
+}
+
+/// Dress or undress the organization; absent is the realm's look.
+pub async fn set_theme(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    theme: Option<&serde_json::Value>,
+) -> StoreResult<bool> {
+    let touched = transaction
+        .execute(
+            "UPDATE organizations SET theme = $2 WHERE org_id = $1",
+            &[&org_id, &theme],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(touched > 0)
+}

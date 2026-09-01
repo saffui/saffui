@@ -155,11 +155,18 @@ pub async fn script() -> HttpResponse {
     serve("text/javascript; charset=utf-8", SCRIPT)
 }
 
-/// The stylesheet, wearing the realm's overrides after its own defaults. A
-/// theme that cannot be read leaves the default look rather than a broken
-/// page: the door already refused anything unsound, so a failure here is a
-/// store fault and never the caller's.
+/// The stylesheet, wearing the realm's overrides after its own defaults and
+/// the organization's after the realm's. A theme that cannot be read leaves
+/// the look beneath it rather than a broken page: the door already refused
+/// anything unsound, so a failure here is a store fault and never the
+/// caller's.
+///
+/// Which organization is read off the login this browser holds, where the
+/// request that opened it named one. It is a look and not an entitlement:
+/// the page is dressed before anyone has proved who they are, which is the
+/// point of dressing it, and membership is enforced where the tokens are.
 pub async fn style(
+    request: actix_web::HttpRequest,
     realm: web::Path<String>,
     pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<store::tenancy::Tenancy>,
@@ -168,11 +175,33 @@ pub async fn style(
     if let Ok(mut connection) = pool.get().await
         && let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, &realm).await
         && let Ok(transaction) = tenancy.transaction(&mut connection, &context).await
-        && let Ok(Some(theme)) =
-            store::providers::realms::theme_of(&transaction, &context.realm_id).await
-        && let Ok(overrides) = services::theme::css_of(&theme)
     {
-        dressed = Some(format!("{STYLE}\n{overrides}"));
+        let mut sheet = STYLE.to_owned();
+        if let Ok(Some(theme)) =
+            store::providers::realms::theme_of(&transaction, &context.realm_id).await
+            && let Ok(overrides) = services::theme::css_of(&theme)
+        {
+            sheet.push('\n');
+            sheet.push_str(&overrides);
+            dressed = Some(sheet.clone());
+        }
+        if let Some(binding) = super::binding::read(&request, super::binding::AUTH_SESSION)
+            && let Ok(Some(login)) = store::providers::login::resume(&transaction, &binding).await
+            && let Some(slug) = login
+                .notes
+                .get("organization")
+                .and_then(|held| held.as_str())
+            && let Ok(Some(org)) =
+                store::providers::organizations::load_by_name(&transaction, slug).await
+            && org.enabled
+            && let Ok(Some(theme)) =
+                store::providers::organizations::theme_of(&transaction, &org.org_id).await
+            && let Ok(overrides) = services::theme::css_of(&theme)
+        {
+            sheet.push('\n');
+            sheet.push_str(&overrides);
+            dressed = Some(sheet);
+        }
     }
     match dressed {
         Some(body) => uncached(&mut HttpResponseBuilder::new(StatusCode::OK))

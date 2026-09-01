@@ -925,6 +925,24 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/organizations/{organization}/theme",
+            action: AdminAction::OrgRead,
+            handler: Some(|| web::get().to(directory::get_organization_theme)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/organizations/{organization}/theme",
+            action: AdminAction::OrgWrite,
+            handler: Some(|| web::put().to(directory::set_organization_theme)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/organizations/{organization}/theme",
+            action: AdminAction::OrgWrite,
+            handler: Some(|| web::delete().to(directory::clear_organization_theme)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/users",
             action: AdminAction::UserRead,
             handler: Some(|| web::get().to(users::list)),

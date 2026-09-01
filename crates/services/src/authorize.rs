@@ -49,6 +49,9 @@ pub struct Requested<'a> {
     pub acr_values: Option<&'a str>,
     /// The `claims` parameter, OIDC Core §5.5, as the client sent it.
     pub claims: Option<&'a str>,
+    /// The organization this login should act within, by slug. Resolved and
+    /// enforced once the user is known, never taken on faith.
+    pub organization: Option<&'a str>,
 }
 
 /// Where the browser goes next.
@@ -356,6 +359,19 @@ pub async fn begin(
     }
 
     if let Some(login) = held {
+        // The user is known here, so the organization is answerable here: a
+        // pinned one they do not belong to refuses the request before a code
+        // exists to argue about.
+        let acting = crate::organization::resolve_organization(
+            transaction,
+            &login.user_id,
+            requested.organization,
+        )
+        .await
+        .map_err(|reason| match reason {
+            crate::organization::Unresolved::Refused => Refusal::Redirect("access_denied"),
+            crate::organization::Unresolved::Unreadable => Refusal::Unshowable("unavailable"),
+        })?;
         let landing = crate::minting::mint_code(
             transaction,
             provider,
@@ -390,6 +406,7 @@ pub async fn begin(
                         auth_time: login.auth_time.unwrap_or(login.started_at),
                     },
                 ),
+                org: acting.as_ref(),
                 claims: stored_claims.as_ref(),
             },
             now,
@@ -486,6 +503,10 @@ async fn start_login(
                 // the store reads back, so the door is the only place it is
                 // parsed.
                 "claims": claims,
+                // The asked-for organization rides the login as its slug and
+                // nothing more: it is resolved against the user only once
+                // there is one.
+                "organization": requested.organization,
                 // How the answer travels. Kept because by the time the flow
                 // finishes, the request that named it is gone.
                 "response_mode": mode.as_str(),

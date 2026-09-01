@@ -55,6 +55,14 @@ impl Landing {
         }
     }
 
+    /// Whether this answer refuses rather than admits: it carries an `error`
+    /// and nothing redeemable. What the flow labels the outcome follows the
+    /// answer itself, so a refusal minted where an admission usually is does
+    /// not get announced as one.
+    pub fn refuses(&self) -> bool {
+        self.parameters.iter().any(|(named, _)| *named == "error")
+    }
+
     pub fn carrying(mut self, named: &'static str, value: impl Into<String>) -> Self {
         self.parameters.push((named, value.into()));
         self

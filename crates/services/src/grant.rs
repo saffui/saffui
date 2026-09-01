@@ -498,6 +498,15 @@ pub async fn authorization_code(
     let mut minting_access = minting_for(Kind::Access, lifespan, vec![client.client_id.clone()]);
     crate::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
     crate::mappers::fill(&mut minting_access.extra, overlay.access.clone());
+    // The organization rides the access token too: it is what a resource or a
+    // policy decision reads to know which confinement the caller acts within.
+    for (named, value) in [("org_id", &code.org_id), ("org_name", &code.org_name)] {
+        if let Some(value) = value {
+            minting_access
+                .extra
+                .insert(named.into(), Value::from(value.as_str()));
+        }
+    }
     let access =
         mint_token(signing.provider, &key, minting_access).map_err(|_| Ungranted::Unmintable)?;
 
@@ -508,7 +517,11 @@ pub async fn authorization_code(
     renewing
         .extra
         .insert("auth_time".into(), Value::from(code.auth_time));
-    for (named, value) in [("acr", &code.acr), ("org_id", &code.org_id)] {
+    for (named, value) in [
+        ("acr", &code.acr),
+        ("org_id", &code.org_id),
+        ("org_name", &code.org_name),
+    ] {
         if let Some(value) = value {
             renewing
                 .extra
@@ -540,10 +553,12 @@ pub async fn authorization_code(
                     .extra
                     .insert("acr".into(), Value::from(acr.as_str()));
             }
-            if let Some(org) = &code.org_id {
-                minting
-                    .extra
-                    .insert("org_id".into(), Value::from(org.as_str()));
+            for (named, value) in [("org_id", &code.org_id), ("org_name", &code.org_name)] {
+                if let Some(value) = value {
+                    minting
+                        .extra
+                        .insert(named.into(), Value::from(value.as_str()));
+                }
             }
             minting.extra.extend(asked_of_person.clone());
             crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
@@ -1106,6 +1121,14 @@ pub async fn refresh_token(
         crate::pairwise::subject_for(transaction, signing.provider, client, &subject.user_id)
             .await
             .map_err(|_| Ungranted::Unreadable)?;
+    // The organization rides the chain, but it is re-stamped only while the
+    // user still belongs. One who has left gets a realm-level token: the stale
+    // claim is dropped rather than carried, and never trusted on its own.
+    let org_kept = match verified.claims.get("org_id").and_then(Value::as_str) {
+        Some(org) => crate::organization::still_a_member(transaction, org, &subject.user_id).await,
+        None => false,
+    };
+    let carries = |named: &&str| *named != "org_id" && *named != "org_name" || org_kept;
     let minting_for = |kind: Kind, life: Duration| {
         // The same split as issuance: only a public client's renewal is
         // bound to the proved key.
@@ -1135,7 +1158,21 @@ pub async fn refresh_token(
     // that never changes is one an interception keeps forever.
     let rotates = within.realm.revoke_refresh_token != Some(false);
     let successor = rotates
-        .then(|| mint_token(signing.provider, &key, minting_for(Kind::Refresh, renewal)))
+        .then(|| {
+            // The successor carries what the chain attests, as its predecessor
+            // did: a rotation that dropped these would strip `acr` and the
+            // organization from every renewal after the first.
+            let mut renewing = minting_for(Kind::Refresh, renewal);
+            for named in ["auth_time", "acr", "org_id", "org_name"]
+                .into_iter()
+                .filter(carries)
+            {
+                if let Some(value) = verified.claims.get(named) {
+                    renewing.extra.insert(named.to_owned(), value.clone());
+                }
+            }
+            mint_token(signing.provider, &key, renewing)
+        })
         .transpose()
         .map_err(|_| Ungranted::Unmintable)?;
 
@@ -1220,6 +1257,11 @@ pub async fn refresh_token(
     let mut minting_access = minting_for(Kind::Access, lifespan);
     crate::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
     crate::mappers::fill(&mut minting_access.extra, overlay.access.clone());
+    for named in ["org_id", "org_name"].into_iter().filter(carries) {
+        if let Some(value) = verified.claims.get(named) {
+            minting_access.extra.insert(named.to_owned(), value.clone());
+        }
+    }
     let access =
         mint_token(signing.provider, &key, minting_access).map_err(|_| Ungranted::Unmintable)?;
 
@@ -1230,7 +1272,10 @@ pub async fn refresh_token(
             // Carried, not resolved again. A nonce belongs to the authentication
             // that asked for it and means nothing on a renewal, so it is the one
             // claim deliberately dropped.
-            for named in ["auth_time", "acr", "org_id"] {
+            for named in ["auth_time", "acr", "org_id", "org_name"]
+                .into_iter()
+                .filter(carries)
+            {
                 if let Some(value) = verified.claims.get(named) {
                     minting.extra.insert(named.to_owned(), value.clone());
                 }

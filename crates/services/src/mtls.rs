@@ -33,6 +33,13 @@ pub fn san_uris(carried: &str) -> Result<Vec<String>, Unreadable> {
     crypto::x509::san_uris(&der).ok_or(Unreadable::Malformed)
 }
 
+/// The DNS subject-alternative-names of the forwarded certificate: the name
+/// RFC 8705 §2.1.2 lets a client register to be known by.
+pub fn san_dns(carried: &str) -> Result<Vec<String>, Unreadable> {
+    let der = der_of(carried).ok_or(Unreadable::Malformed)?;
+    crypto::x509::san_dns(&der).ok_or(Unreadable::Malformed)
+}
+
 fn der_of(carried: &str) -> Option<Vec<u8>> {
     // A header cannot hold a newline, so a proxy that forwards PEM either
     // escapes them or writes the body alone. Both arrive here as one line.

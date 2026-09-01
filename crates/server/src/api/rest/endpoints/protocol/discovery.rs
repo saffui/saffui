@@ -13,12 +13,13 @@ use crate::api::rest::endpoints::protocol::dto::uncached;
 /// How a client may prove it is itself, §9. One list, because one sequence
 /// establishes the caller at every endpoint that has one, and three lists
 /// would be three chances to say something the server does not do.
-const AUTHENTICATED: [&str; 5] = [
+const AUTHENTICATED: [&str; 6] = [
     "client_secret_basic",
     "client_secret_post",
     "client_secret_jwt",
     "private_key_jwt",
     "none",
+    "tls_client_auth",
 ];
 
 /// The realm's metadata, OpenID Connect Discovery §3.

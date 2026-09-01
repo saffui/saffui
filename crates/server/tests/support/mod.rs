@@ -530,6 +530,7 @@ impl Plane {
                 nonce: Some(nonce.to_owned()),
                 code_challenge: challenge.map(|(value, _)| value.to_owned()),
                 code_challenge_method: challenge.map(|(_, method)| method.to_owned()),
+                dpop_jkt: None,
                 auth_time: 1_700_000_000,
                 acr: Some("password".into()),
                 org_id: None,

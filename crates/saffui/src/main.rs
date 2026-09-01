@@ -75,6 +75,11 @@ enum Command {
         /// The clients' redirect URIs.
         #[arg(long = "redirect")]
         redirects: Vec<String>,
+        /// A client held to the FAPI 2.0 Security Profile, as
+        /// `id=/path/to/public.jwks.json`: confidential, private_key_jwt
+        /// against the published set in that file, ES256 identity tokens.
+        #[arg(long = "fapi-client")]
+        fapi_clients: Vec<String>,
         /// Where the clients may send a browser after a logout.
         #[arg(long = "after-logout")]
         after_logout: Vec<String>,
@@ -216,6 +221,7 @@ fn main() -> ExitCode {
                         console_redirects,
                         clients,
                         redirects,
+                        fapi_clients,
                         after_logout,
                         backchannel_logout,
                         frontchannel_logout,
@@ -238,6 +244,7 @@ fn main() -> ExitCode {
                             console_redirects,
                             clients,
                             redirects,
+                            fapi_clients,
                             after_logout,
                             backchannel_logout,
                             frontchannel_logout,
@@ -483,6 +490,7 @@ struct Wanted {
     console_redirects: Vec<String>,
     clients: Vec<String>,
     redirects: Vec<String>,
+    fapi_clients: Vec<String>,
     after_logout: Vec<String>,
     backchannel_logout: Option<String>,
     frontchannel_logout: Option<String>,
@@ -628,6 +636,29 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
         .map_err(unreadable)?;
         if created {
             println!("client {client_id} registered");
+        }
+    }
+    for pair in &wanted.fapi_clients {
+        let Some((client_id, jwks_path)) = pair.split_once('=') else {
+            return Err(format!("--fapi-client wants id=path, got {pair}"));
+        };
+        let raw = std::fs::read_to_string(jwks_path)
+            .map_err(|why| format!("cannot read {jwks_path}: {why}"))?;
+        let public_jwks: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|why| format!("{jwks_path} is not a key set: {why}"))?;
+        let created = provisioning::provision_fapi_client(
+            &transaction,
+            plane.sealing.provider.as_ref(),
+            tenant,
+            realm,
+            client_id,
+            public_jwks,
+            wanted.redirects.clone(),
+        )
+        .await
+        .map_err(unreadable)?;
+        if created {
+            println!("client {client_id} registered under the fapi2 profile");
         }
     }
     if let Some(user_name) = wanted.user.as_deref() {

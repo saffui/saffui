@@ -129,6 +129,11 @@ pub async fn ask(
     // RFC 9449 §5. A caller that proves a key gets tokens only that key may
     // present; one that proves none gets what it always got. Proven before the
     // grant runs, so a bad proof is refused rather than costing a code.
+    // §4.3: one proof and exactly one. Reading the first of two would verify
+    // one header while the other rode along unexamined.
+    if request.headers().get_all("dpop").count() > 1 {
+        return Denied::InvalidDpopProof.answer("one proof, exactly");
+    }
     let proven = match request.headers().get("dpop") {
         None => None,
         Some(proof) => {
@@ -155,7 +160,8 @@ pub async fn ask(
             .await
             {
                 Ok(proven) => Some(proven),
-                Err(_) => {
+                Err(why) => {
+                    tracing::warn!(why = ?why, "dpop proof refused");
                     return Denied::InvalidDpopProof.answer("the proof does not bind this request");
                 }
             }
@@ -446,17 +452,19 @@ pub async fn ask(
     if transaction.commit().await.is_err() {
         return Denied::InvalidRequest.answer("the grant could not be recorded");
     }
-    answer(granted)
+    answer(granted, bound_to.is_some())
 }
 
-/// What a client gets when it worked.
-fn answer(granted: Granted) -> HttpResponse {
+/// What a client gets when it worked. RFC 9449 §5: a token bound to a proved
+/// key says so in its type, and a client that reads `Bearer` there would
+/// present it bare and be refused.
+fn answer(granted: Granted, proof_bound: bool) -> HttpResponse {
     uncached(&mut HttpResponseBuilder::new(
         actix_web::http::StatusCode::OK,
     ))
     .json(crate::api::rest::endpoints::protocol::dto::Granted {
         access_token: granted.access_token,
-        token_type: "Bearer",
+        token_type: if proof_bound { "DPoP" } else { "Bearer" },
         expires_in: granted.expires_in,
         refresh_token: granted.refresh_token,
         id_token: granted.id_token,
@@ -603,7 +611,7 @@ async fn workload_exchange(
             if transaction.commit().await.is_err() {
                 return Denied::InvalidRequest.answer("the realm could not be read");
             }
-            answer(granted)
+            answer(granted, false)
         }
         Err(why) => ungranted(why),
     }
@@ -709,7 +717,7 @@ async fn x509_exchange(
             if transaction.commit().await.is_err() {
                 return Some(Denied::InvalidRequest.answer("the realm could not be read"));
             }
-            Some(answer(granted))
+            Some(answer(granted, false))
         }
         Err(why) => Some(ungranted(why)),
     }

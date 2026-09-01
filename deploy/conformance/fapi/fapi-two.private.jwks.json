@@ -1,0 +1,14 @@
+{
+  "keys": [
+    {
+      "kty": "EC",
+      "crv": "P-256",
+      "kid": "fapi-two",
+      "x": "kJpHGJtY9IbhIjUr_ekFZ-kVqxhSMcFS6jhg5Zhh-ts",
+      "y": "li1Rx512zsqEC1FrBGfv7YOUR-GGlTQDIGHbFx0C1l8",
+      "d": "eYhqS7DKXxMPk7IzJUP8Mz3iZ9riAP0jW1gPxdp5v20",
+      "alg": "ES256",
+      "use": "sig"
+    }
+  ]
+}

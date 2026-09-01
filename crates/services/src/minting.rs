@@ -47,6 +47,8 @@ pub struct Authorized<'a> {
     pub nonce: Option<&'a str>,
     pub code_challenge: Option<&'a str>,
     pub code_challenge_method: Option<&'a str>,
+    /// RFC 9449 §10.1: the key the token request will prove, named ahead.
+    pub dpop_jkt: Option<&'a str>,
     /// When the user authenticated, not when this code was minted. `max_age`
     /// asks about the first, and a session begun at nine and re-authenticated
     /// at noon is three hours old with an authentication minutes old.
@@ -93,6 +95,7 @@ pub async fn mint_code(
                 nonce: authorized.nonce.map(str::to_owned),
                 code_challenge: authorized.code_challenge.map(str::to_owned),
                 code_challenge_method: authorized.code_challenge_method.map(str::to_owned),
+                dpop_jkt: authorized.dpop_jkt.map(str::to_owned),
                 auth_time: authorized.auth_time,
                 acr: authorized.acr.map(str::to_owned),
                 org_id: None,
@@ -238,6 +241,7 @@ pub async fn landed(
             redirect_uri: &admitted.login.redirect_uri,
             scope: noted(notes, "scope").unwrap_or_default(),
             state: noted(notes, "state"),
+            dpop_jkt: noted(notes, "dpop_jkt"),
             browser_state: admitted.browser_state.as_deref(),
             mode: answering(notes),
             asked_for: coming_back(notes),

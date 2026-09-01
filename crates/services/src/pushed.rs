@@ -122,6 +122,7 @@ impl PushedRequest {
             nonce: self.text("nonce"),
             code_challenge: self.text("code_challenge"),
             code_challenge_method: self.text("code_challenge_method"),
+            dpop_jkt: self.text("dpop_jkt"),
             request: self.text("request"),
             request_uri: None,
             response_mode: self.text("response_mode"),

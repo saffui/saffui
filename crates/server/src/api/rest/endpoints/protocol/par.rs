@@ -74,6 +74,54 @@ pub async fn keep(
         Err(response) => return response,
     };
 
+    // RFC 9449 §10.1: a proof pushed here is verified here, and a push that
+    // names a key in `dpop_jkt` while proving another has contradicted
+    // itself: refused now, when the client still reads a status code.
+    if request.headers().get_all("dpop").count() > 1 {
+        return Denied::InvalidDpopProof.answer("one proof, exactly");
+    }
+    if let Some(proof) = request.headers().get("dpop") {
+        let Ok(proof) = proof.to_str() else {
+            return Denied::InvalidDpopProof.answer("the proof could not be read");
+        };
+        let proven = services::dpop::proven(
+            &transaction,
+            sealing.provider.as_ref(),
+            proof,
+            services::dpop::Bound {
+                method: "POST",
+                url: &format!(
+                    "{}/realms/{}/protocol/openid-connect/par",
+                    origin.as_str(),
+                    context.realm_id
+                ),
+                access_token: None,
+            },
+            now,
+        )
+        .await;
+        match proven {
+            Ok(proven) => {
+                if parameters
+                    .get("dpop_jkt")
+                    .and_then(Value::as_str)
+                    .is_some_and(|named| named != proven.thumbprint)
+                {
+                    return Denied::InvalidDpopProof
+                        .answer("the push names one key and proves another");
+                }
+                // §10.1: a proof pushed with the request is the request
+                // naming its key, and the code is bound to it as though
+                // `dpop_jkt` had spelled it out.
+                parameters.insert("dpop_jkt".to_owned(), Value::from(proven.thumbprint));
+            }
+            Err(why) => {
+                tracing::warn!(why = ?why, "dpop proof refused at par");
+                return Denied::InvalidDpopProof.answer("the proof does not bind this request");
+            }
+        }
+    }
+
     match pushed::keep_request(
         &transaction,
         sealing.provider.as_ref(),

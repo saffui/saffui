@@ -22,6 +22,20 @@ const SKEW: i64 = 60;
 /// permanent credential, and the replay row for it would never be swept.
 const LONGEST: i64 = 3600;
 
+/// The `aud` claim as the assertion states it, read without verifying: what
+/// shape it has is decided before any signature is trusted, and the verified
+/// read happens in [`verify`] as always.
+pub fn peeked_aud(assertion: &str) -> Option<serde_json::Value> {
+    let payload = assertion.split('.').nth(1)?;
+    let decoded = data_encoding::BASE64URL_NOPAD
+        .decode(payload.as_bytes())
+        .ok()?;
+    serde_json::from_slice::<serde_json::Value>(&decoded)
+        .ok()?
+        .get("aud")
+        .cloned()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Unverifiable {
     #[error("this client registered no way to verify an assertion")]

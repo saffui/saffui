@@ -54,6 +54,11 @@ pub async fn tell(
     // RFC 9449 §7.1. Proven here, where the token is presented, and carrying
     // `ath`: a proof that did not name this token would bind a request holding
     // another one.
+    // §4.3: one proof and exactly one. Reading the first of two would verify
+    // one header while the other rode along unexamined.
+    if request.headers().get_all("dpop").count() > 1 {
+        return challenged("one proof, exactly");
+    }
     let proven = match request.headers().get("dpop") {
         None => None,
         Some(proof) => {
@@ -81,6 +86,21 @@ pub async fn tell(
                 Err(_) => return challenged("the proof does not bind this request"),
             }
         }
+    };
+    // The spend above has to outlive this read, or the same proof presents
+    // again tomorrow: a replay refused on paper and rolled back in practice
+    // is not refused. Committed here and the claims read on a fresh
+    // transaction, so a failure past this point costs nothing recorded.
+    let transaction = if proven.is_some() {
+        if transaction.commit().await.is_err() {
+            return challenged("the proof could not be spent");
+        }
+        let Ok(fresh) = tenancy.transaction(&mut connection, &context).await else {
+            return challenged("the realm could not be read");
+        };
+        fresh
+    } else {
+        transaction
     };
 
     match userinfo::claims_for(
@@ -151,10 +171,21 @@ pub struct Carried {
 /// The query form is deliberately not read: a token in a URL lands in logs
 /// and history.
 fn presented(request: &HttpRequest, body: Option<&Carried>) -> Option<String> {
-    match (
-        basic::bearer(request),
-        body.and_then(|form| form.access_token.clone()),
-    ) {
+    // RFC 9449 §7.1 beside RFC 6750: a bound token arrives under the `DPoP`
+    // scheme, an unbound one under `Bearer`, and the scheme is name-matched
+    // the case-insensitive way §11.1 of RFC 9110 reads every scheme. Which
+    // proof the token then needs is the token's `cnf` to say, not the
+    // scheme's.
+    let from_header = basic::bearer(request).or_else(|| {
+        let header = request.headers().get("authorization")?.to_str().ok()?;
+        let (scheme, token) = header.split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case("DPoP") {
+            return None;
+        }
+        let token = token.trim();
+        (!token.is_empty()).then(|| token.to_owned())
+    });
+    match (from_header, body.and_then(|form| form.access_token.clone())) {
         (Some(header), None) => Some(header),
         (None, Some(field)) if !field.is_empty() => Some(field),
         // Two tokens is one more than a request may carry: §2 forbids it, and

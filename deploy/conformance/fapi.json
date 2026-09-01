@@ -1,0 +1,202 @@
+{
+  "alias": "saffui",
+  "description": "saffui, FAPI 2.0 Security Profile",
+  "server": {
+    "discoveryUrl": "https://saffui.test/realms/main/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance-fapi-one",
+    "scope": "openid profile",
+    "jwks": {
+      "keys": [
+        {
+          "kty": "EC",
+          "crv": "P-256",
+          "kid": "fapi-one",
+          "x": "hccT2flUwtpPgfeSx0aqG_woSUltlQbeXroZxWZablM",
+          "y": "_KwWVMLQZcyAD8O5iS6QG_syYdedTM41ClXAtuahgZs",
+          "d": "wL_jU1hBreT9M4gVZ0ccYyWl5viZXGrPCTT0RgiFAHQ",
+          "alg": "ES256",
+          "use": "sig"
+        }
+      ]
+    }
+  },
+  "client2": {
+    "client_id": "conformance-fapi-two",
+    "scope": "openid profile",
+    "jwks": {
+      "keys": [
+        {
+          "kty": "EC",
+          "crv": "P-256",
+          "kid": "fapi-two",
+          "x": "kJpHGJtY9IbhIjUr_ekFZ-kVqxhSMcFS6jhg5Zhh-ts",
+          "y": "li1Rx512zsqEC1FrBGfv7YOUR-GGlTQDIGHbFx0C1l8",
+          "d": "eYhqS7DKXxMPk7IzJUP8Mz3iZ9riAP0jW1gPxdp5v20",
+          "alg": "ES256",
+          "use": "sig"
+        }
+      ]
+    }
+  },
+  "resource": {
+    "resourceUrl": "https://saffui.test/realms/main/protocol/openid-connect/userinfo"
+  },
+  "browser": [
+    {
+      "match": "https://saffui.test/realms/main/protocol/openid-connect/auth*",
+      "tasks": [
+        {
+          "task": "Login",
+          "optional": true,
+          "match": "https://saffui.test/realms/main/protocol/openid-connect/login*",
+          "commands": [
+            [
+              "wait",
+              "xpath",
+              "//*",
+              10,
+              ".*Sign in.*",
+              "update-image-placeholder-optional"
+            ],
+            [
+              "text",
+              "name",
+              "username",
+              "ada",
+              "optional"
+            ],
+            [
+              "text",
+              "name",
+              "password",
+              "a-password-of-decent-length",
+              "optional"
+            ],
+            [
+              "click",
+              "css",
+              "button[type=submit]"
+            ]
+          ]
+        },
+        {
+          "task": "Refused where it stands",
+          "optional": true,
+          "match": "https://saffui.test/realms/main/protocol/openid-connect/auth*",
+          "commands": [
+            [
+              "wait",
+              "xpath",
+              "//*",
+              10,
+              ".*could not start.*",
+              "update-image-placeholder"
+            ]
+          ]
+        },
+        {
+          "task": "Verify Complete",
+          "match": "https://localhost.emobix.co.uk:8443/test/*/callback*",
+          "commands": [
+            [
+              "wait",
+              "id",
+              "submission_complete",
+              10
+            ]
+          ],
+          "optional": true
+        }
+      ]
+    },
+    {
+      "match": "https://saffui.test/realms/main/protocol/openid-connect/logout*",
+      "tasks": [
+        {
+          "task": "Asked, or told",
+          "optional": true,
+          "match": "https://saffui.test/realms/main/protocol/openid-connect/logout*",
+          "commands": [
+            [
+              "wait",
+              "xpath",
+              "//*",
+              10,
+              ".*(Sign out\\?|signed out).*"
+            ],
+            [
+              "click",
+              "xpath",
+              "//button[@type='submit']",
+              "optional"
+            ]
+          ]
+        },
+        {
+          "task": "Told it is over",
+          "optional": true,
+          "match": "https://saffui.test/realms/main/protocol/openid-connect/logout*",
+          "commands": [
+            [
+              "wait",
+              "xpath",
+              "//*",
+              10,
+              ".*signed out.*",
+              "update-image-placeholder-optional"
+            ]
+          ]
+        },
+        {
+          "task": "Verify Complete",
+          "optional": true,
+          "match": "https://localhost.emobix.co.uk:8443/test/*/post_logout_redirect*",
+          "commands": [
+            [
+              "wait",
+              "contains",
+              "/post_logout_redirect",
+              10
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "match": "https://localhost.emobix.co.uk:8443/test/a/saffui/session_verify*",
+      "tasks": [
+        {
+          "task": "Let the frames answer each other",
+          "match": "https://localhost.emobix.co.uk:8443/test/a/saffui/session_verify*",
+          "commands": [
+            [
+              "wait",
+              "contains",
+              "session_result",
+              20
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "match": "https://localhost.emobix.co.uk:8443/test/a/saffui/second_session_verify*",
+      "tasks": [
+        {
+          "task": "Let the frames answer each other",
+          "match": "https://localhost.emobix.co.uk:8443/test/a/saffui/second_session_verify*",
+          "commands": [
+            [
+              "wait",
+              "contains",
+              "session_result",
+              20
+            ]
+          ]
+        }
+      ]
+    }
+  ]
+}

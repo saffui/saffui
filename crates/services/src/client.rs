@@ -309,12 +309,31 @@ async fn by_assertion(
         "private-key-jwt" => None,
         _ => Some(shared_secret(transaction, within, &client.client_id).await?),
     };
+    // FAPI 2.0: the profile narrows §3's generosity to one name, the issuer,
+    // as one string. The endpoint URLs stop being names of this server, and
+    // an array is refused even when the issuer is in it.
+    let issuer_alone;
+    let accepted: &[String] = if crate::fapi::is_fapi2(client) {
+        let aud = crate::assertion::peeked_aud(assertion);
+        if !matches!(aud, Some(serde_json::Value::String(_))) {
+            return Err(Unauthenticated::Refused);
+        }
+        issuer_alone = within
+            .audiences
+            .last()
+            .cloned()
+            .into_iter()
+            .collect::<Vec<_>>();
+        &issuer_alone
+    } else {
+        within.audiences
+    };
     crate::assertion::verify(
         transaction,
         within.provider,
         client,
         assertion,
-        within.audiences,
+        accepted,
         secret.as_ref(),
         now,
     )

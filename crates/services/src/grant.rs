@@ -34,7 +34,7 @@ const DEFAULT_REFRESH_LIFESPAN: i64 = 1_800;
 /// from an attacker replaying a stolen token, and reuse detection would destroy
 /// its session for a double submit. A stolen token presented later than this
 /// still trips it.
-const ROTATION_GRACE: i64 = 30;
+const ROTATION_GRACE: i64 = 60;
 
 /// Thirty days. A grant that outlives its login is renewed by something with no
 /// user in front of it, so the bound is the grant's own and not a login's.
@@ -414,6 +414,14 @@ pub async fn authorization_code(
         return Err(Ungranted::InvalidGrant);
     }
     verify_code_challenge(signing.provider, client, &code, redeeming.code_verifier)?;
+    // RFC 9449 §10.1: a code minted for a named key is redeemed only by a
+    // caller proving that key. No key or another key is the same refusal: a
+    // request that cannot present the named proof holds somebody else's code.
+    if let Some(named) = code.dpop_jkt.as_deref()
+        && within.bound_to != Some(named)
+    {
+        return Err(Ungranted::InvalidGrant);
+    }
 
     // A code outlives nothing. Logging out between authorizing and redeeming
     // would leave these tokens naming a session no gate can find.
@@ -456,19 +464,30 @@ pub async fn authorization_code(
     let told = crate::pairwise::subject_for(transaction, signing.provider, client, &code.user_id)
         .await
         .map_err(|_| Ungranted::Unreadable)?;
-    let minting_for = |kind: Kind, life: Duration, audiences: Vec<String>| Minting {
-        bound_to: within.bound_to.map(str::to_owned),
-        certified_by: within.certified_by.map(str::to_owned),
-        kind,
-        issuer: within.issuer,
-        subject: &told,
-        audiences,
-        party: &client.client_id,
-        session_id: &code.session_id,
-        scope: &code.scope,
-        lifespan: life,
-        now,
-        extra: serde_json::Map::new(),
+    let minting_for = |kind: Kind, life: Duration, audiences: Vec<String>| {
+        // RFC 9449 §5 and RFC 8705 §3 bind a refresh token by who holds it: a
+        // public client's is bound to the key it proved, having nothing else;
+        // a confidential client's is bound to its authentication, and the
+        // proved key may turn at renewal.
+        let key_bound = kind != Kind::Refresh || client.public_client == Some(true);
+        Minting {
+            bound_to: key_bound
+                .then(|| within.bound_to.map(str::to_owned))
+                .flatten(),
+            certified_by: key_bound
+                .then(|| within.certified_by.map(str::to_owned))
+                .flatten(),
+            kind,
+            issuer: within.issuer,
+            subject: &told,
+            audiences,
+            party: &client.client_id,
+            session_id: &code.session_id,
+            scope: &code.scope,
+            lifespan: life,
+            now,
+            extra: serde_json::Map::new(),
+        }
     };
 
     // Once each. Three reads are three chances for a rotation to land between
@@ -859,19 +878,28 @@ pub async fn ciba(
     let told = crate::pairwise::subject_for(transaction, signing.provider, client, &person.user_id)
         .await
         .map_err(|_| Unpolled::Backend)?;
-    let minting_for = |kind: Kind, life: Duration| Minting {
-        bound_to: within.bound_to.map(str::to_owned),
-        certified_by: within.certified_by.map(str::to_owned),
-        kind,
-        issuer: within.issuer,
-        subject: &told,
-        audiences: vec![client.client_id.clone()],
-        party: &client.client_id,
-        session_id: &session_id,
-        scope: &scope,
-        lifespan: life,
-        now,
-        extra: serde_json::Map::new(),
+    let minting_for = |kind: Kind, life: Duration| {
+        // The same split as the code exchange: only a public client's
+        // renewal is bound to the proved key.
+        let key_bound = kind != Kind::Refresh || client.public_client == Some(true);
+        Minting {
+            bound_to: key_bound
+                .then(|| within.bound_to.map(str::to_owned))
+                .flatten(),
+            certified_by: key_bound
+                .then(|| within.certified_by.map(str::to_owned))
+                .flatten(),
+            kind,
+            issuer: within.issuer,
+            subject: &told,
+            audiences: vec![client.client_id.clone()],
+            party: &client.client_id,
+            session_id: &session_id,
+            scope: &scope,
+            lifespan: life,
+            now,
+            extra: serde_json::Map::new(),
+        }
     };
 
     let key = preferred_key(transaction, signing, SignAlg::Es256)
@@ -1078,19 +1106,28 @@ pub async fn refresh_token(
         crate::pairwise::subject_for(transaction, signing.provider, client, &subject.user_id)
             .await
             .map_err(|_| Ungranted::Unreadable)?;
-    let minting_for = |kind: Kind, life: Duration| Minting {
-        bound_to: within.bound_to.map(str::to_owned),
-        certified_by: within.certified_by.map(str::to_owned),
-        kind,
-        issuer: within.issuer,
-        subject: &told,
-        audiences: vec![client.client_id.clone()],
-        party: &client.client_id,
-        session_id,
-        scope: &scope,
-        lifespan: life,
-        now,
-        extra: serde_json::Map::new(),
+    let minting_for = |kind: Kind, life: Duration| {
+        // The same split as issuance: only a public client's renewal is
+        // bound to the proved key.
+        let key_bound = kind != Kind::Refresh || client.public_client == Some(true);
+        Minting {
+            bound_to: key_bound
+                .then(|| within.bound_to.map(str::to_owned))
+                .flatten(),
+            certified_by: key_bound
+                .then(|| within.certified_by.map(str::to_owned))
+                .flatten(),
+            kind,
+            issuer: within.issuer,
+            subject: &told,
+            audiences: vec![client.client_id.clone()],
+            party: &client.client_id,
+            session_id,
+            scope: &scope,
+            lifespan: life,
+            now,
+            extra: serde_json::Map::new(),
+        }
     };
 
     // Rotation unless the realm has said otherwise. A realm that has said

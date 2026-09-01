@@ -355,6 +355,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V058__birthright.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 59,
+            name: "dpop_jkt_on_codes",
+            sql: include_str!("../migrations/V059__dpop_jkt_on_codes.sql"),
+            transactional: true,
+        }),
     ]
 }
 

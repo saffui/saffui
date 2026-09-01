@@ -194,14 +194,20 @@ pub fn mint_token(
     }
 
     // After the mappers, and not among them: nothing a flow adds can put a
-    // token on another key, or take it off the one it was bound to.
-    let confirmation: Map<String, Value> = [
-        ("jkt", minting.bound_to),
-        ("x5t#S256", minting.certified_by),
-    ]
-    .into_iter()
-    .filter_map(|(method, held)| held.map(|held| (method.to_owned(), Value::from(held))))
-    .collect();
+    // token on another key, or take it off the one it was bound to. Only on
+    // what is presented back here: an identity token is read, not presented,
+    // and a confirmation on it says something about the subject nobody asked.
+    let confirmation: Map<String, Value> = if minting.kind == Kind::Identity {
+        Map::new()
+    } else {
+        [
+            ("jkt", minting.bound_to),
+            ("x5t#S256", minting.certified_by),
+        ]
+        .into_iter()
+        .filter_map(|(method, held)| held.map(|held| (method.to_owned(), Value::from(held))))
+        .collect()
+    };
     if !confirmation.is_empty() {
         payload
             .set_claim("cnf", Some(Value::Object(confirmation)))

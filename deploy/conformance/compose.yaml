@@ -112,6 +112,28 @@ services:
       provision:
         condition: service_completed_successfully
 
+  # The profile's clients: confidential, authenticating by the keys whose
+  # private halves live in fapi.json with the suite.
+  provision-fapi:
+    extends:
+      file: ../local/compose.yaml
+      service: provision
+    command:
+      - provision
+      - --tenant=local
+      - --realm=main
+      - --redirect=https://localhost.emobix.co.uk:8443/test/a/saffui/callback
+      - --redirect=https://localhost.emobix.co.uk:8443/test/a/saffui/callback?dummy1=lorem&dummy2=ipsum
+      - --fapi-client=conformance-fapi-one=/fapi/fapi-one.public.jwks.json
+      - --fapi-client=conformance-fapi-two=/fapi/fapi-two.public.jwks.json
+    environment:
+      SAFFUI_PUBLIC_ORIGIN: https://saffui.test
+    volumes:
+      - ./fapi:/fapi:ro
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
   saffui:
     extends:
       file: ../local/compose.yaml
@@ -134,6 +156,8 @@ services:
       provision-backchannel:
         condition: service_completed_successfully
       provision-frontchannel:
+        condition: service_completed_successfully
+      provision-fapi:
         condition: service_completed_successfully
       ca-bundle:
         condition: service_completed_successfully
@@ -297,6 +321,34 @@ services:
         "oidcc-dynamic-certification-test-plan[response_type=code]"
         /plans/basic.json
 
+    depends_on:
+      - nginx
+
+  # The financial-grade plan, on its own switch: one plan, one config, the
+  # same no-parallel discipline.
+  runner-fapi:
+    image: python:3.12-slim
+    profiles: ["run-fapi"]
+    environment:
+      CONFORMANCE_SERVER: https://localhost.emobix.co.uk:8443/
+      CONFORMANCE_DEV_MODE: "1"
+    volumes:
+      - ${CONFORMANCE_SUITE_DIR:?a checkout of gitlab.com/openid/conformance-suite}/scripts:/suite/scripts:ro
+      - ./fapi.json:/plans/fapi.json:ro
+      - ./fapi-expected-failures.json:/plans/fapi-expected-failures.json:ro
+      - ./fapi-expected-skips.json:/plans/fapi-expected-skips.json:ro
+      - ./results:/results
+    working_dir: /suite/scripts
+    command:
+      - sh
+      - -c
+      - >
+        pip install -q -r requirements.txt &&
+        python3 run-test-plan.py --export-dir /results --verbose --no-parallel
+        --expected-failures-file /plans/fapi-expected-failures.json
+        --expected-skips-file /plans/fapi-expected-skips.json
+        "fapi2-security-profile-final-test-plan[openid=openid_connect][client_auth_type=private_key_jwt][sender_constrain=dpop][fapi_profile=plain_fapi]"
+        /plans/fapi.json
     depends_on:
       - nginx
 

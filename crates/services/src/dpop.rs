@@ -91,7 +91,13 @@ pub async fn proven(
     // it. What makes that worth anything is the token naming its thumbprint:
     // a key alone proves possession of itself and nothing more.
     let key = header.claim("jwk").ok_or(Unproven::Refused)?;
-    let jwk = Jwk::from_map(key.as_object().cloned().ok_or(Unproven::Refused)?)
+    let mut jwk = Jwk::from_map(key.as_object().cloned().ok_or(Unproven::Refused)?)
+        .map_err(|_| Unproven::Refused)?;
+    // A `kid` riding the embedded key would make the verifier demand the
+    // proof's header name it too, which §4.2 does not ask of a proof: the
+    // key itself travels in the header, and its name adds nothing here. The
+    // thumbprint is unaffected, being computed over RFC 7638's members alone.
+    jwk.set_parameter("kid", None)
         .map_err(|_| Unproven::Refused)?;
     // A private half here is a client publishing its own secret, and a server
     // that verified against it would accept whatever it was sent.
@@ -110,8 +116,29 @@ pub async fn proven(
 
     // §4.3: the method and the address this proof was made for, so one lifted
     // off a call does not bind another.
+    // §4.3 compares htu by RFC 3986's simple rules: no query or fragment,
+    // the scheme and host case-insensitive, and a port that is the scheme's
+    // default is the same address as no port at all. The path keeps its case.
+    fn bare(named: &str) -> String {
+        let named = named.split_once('#').map_or(named, |(kept, _)| kept);
+        let named = named.split_once('?').map_or(named, |(kept, _)| kept);
+        let Some((scheme, rest)) = named.split_once("://") else {
+            return named.to_owned();
+        };
+        let scheme = scheme.to_ascii_lowercase();
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let mut authority = authority.to_ascii_lowercase();
+        for (of, default) in [("https", ":443"), ("http", ":80")] {
+            if scheme == of
+                && let Some(bare_host) = authority.strip_suffix(default)
+            {
+                authority = bare_host.to_owned();
+            }
+        }
+        format!("{scheme}://{authority}/{path}")
+    }
     if !claim("htm").is_some_and(|held| held.eq_ignore_ascii_case(bound.method))
-        || claim("htu") != Some(bound.url)
+        || claim("htu").map(bare) != Some(bare(bound.url))
     {
         return Err(Unproven::Refused);
     }

@@ -34,6 +34,7 @@ pub struct Requested<'a> {
     pub nonce: Option<&'a str>,
     pub code_challenge: Option<&'a str>,
     pub code_challenge_method: Option<&'a str>,
+    pub dpop_jkt: Option<&'a str>,
     /// A signed request object, or where to fetch one. Neither is read here,
     /// and both have to be refused rather than ignored.
     pub request: Option<&'a str>,
@@ -375,6 +376,7 @@ pub async fn begin(
                 nonce: requested.nonce,
                 code_challenge: requested.code_challenge,
                 code_challenge_method: requested.code_challenge_method,
+                dpop_jkt: requested.dpop_jkt,
                 // The login's instant, not this one. A client asking how
                 // recently the user authenticated is asking about the login.
                 auth_time: login.auth_time.unwrap_or(login.started_at),
@@ -479,6 +481,7 @@ async fn start_login(
                 "nonce": requested.nonce,
                 "code_challenge": requested.code_challenge,
                 "code_challenge_method": requested.code_challenge_method,
+                "dpop_jkt": requested.dpop_jkt,
                 // What the client named, already read and kept in the shape
                 // the store reads back, so the door is the only place it is
                 // parsed.

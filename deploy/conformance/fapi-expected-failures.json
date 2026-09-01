@@ -1,0 +1,52 @@
+[
+  {
+    "test-name": "fapi2-security-profile-final-user-rejects-authentication",
+    "variant": "*",
+    "configuration-filename": "*fapi.json",
+    "block": "*",
+    "current-block": "*",
+    "condition": "EnsureErrorFromAuthorizationEndpointResponse",
+    "expected-result": "failure",
+    "comment": "Interactive by design: the module's own summary instructs the tester to press cancel on the login screen. The scripted browser signs in, so the expected access_denied never happens. Run by hand when certifying."
+  },
+  {
+    "test-name": "fapi2-security-profile-final-user-rejects-authentication",
+    "variant": "*",
+    "configuration-filename": "*fapi.json",
+    "block": "*",
+    "current-block": "*",
+    "condition": "ExpectAccessDeniedErrorFromAuthorizationEndpointDueToUserRejectingRequest",
+    "expected-result": "failure",
+    "comment": "Same module, second condition of the same manual interaction."
+  },
+  {
+    "test-name": "fapi2-security-profile-final-user-rejects-authentication",
+    "variant": "*",
+    "configuration-filename": "*fapi.json",
+    "block": "*",
+    "current-block": "*",
+    "condition": "CheckForUnexpectedParametersInErrorResponseFromAuthorizationEndpoint",
+    "expected-result": "warning",
+    "comment": "Follows from the same manual interaction: with no error returned, the check for extra parameters warns."
+  },
+  {
+    "test-name": "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds",
+    "variant": "*",
+    "configuration-filename": "*fapi.json",
+    "block": "*",
+    "current-block": "*",
+    "condition": "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds",
+    "expected-result": "failure",
+    "comment": "The module wants the first visit to the login screen left incomplete so the same request_uri can be presented a second time; the scripted browser completes every login it sees. Run by hand when certifying."
+  },
+  {
+    "test-name": "fapi2-security-profile-final-test-claims-parameter-identity-claims",
+    "variant": "*",
+    "configuration-filename": "*fapi.json",
+    "block": "*",
+    "current-block": "*",
+    "condition": "CheckForUnexpectedClaimsInIdToken",
+    "expected-result": "warning",
+    "comment": "The unknown claim is `sid`, which OIDC Front/Back-Channel Logout defines and this provider mints so a logout can name the login. An extension claim, not a leak: the suite itself says the warning may indicate extensions in use."
+  }
+]

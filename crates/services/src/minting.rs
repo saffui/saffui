@@ -57,6 +57,10 @@ pub struct Authorized<'a> {
     /// the session may have stepped up in another tab, and a value resolved
     /// then would attest to a strength this code was never issued under.
     pub acr: Option<&'a str>,
+    /// The organization this login acts within, already resolved against the
+    /// user. Frozen for the same reason as `acr`: what the code attests is
+    /// what was true when it was minted.
+    pub org: Option<&'a crate::organization::Acting>,
     /// The `claims` the request named, as the store keeps them.
     pub claims: Option<&'a Value>,
 }
@@ -98,8 +102,8 @@ pub async fn mint_code(
                 dpop_jkt: authorized.dpop_jkt.map(str::to_owned),
                 auth_time: authorized.auth_time,
                 acr: authorized.acr.map(str::to_owned),
-                org_id: None,
-                org_name: None,
+                org_id: authorized.org.map(|acting| acting.org_id.clone()),
+                org_name: authorized.org.map(|acting| acting.org_name.clone()),
                 claims: authorized.claims.cloned(),
             },
             now + Duration::seconds(CODE_LIFESPAN),
@@ -230,6 +234,25 @@ pub async fn landed(
         .map_err(|_| Unanswerable::Unreadable)?
         .ok_or(Unanswerable::Unrunnable)?;
     let notes = &admitted.login.notes;
+    // The organization the request named rode the login as a slug; the user is
+    // known only now, so this is where it is resolved and enforced. A refusal
+    // is the client's answer, not a failed login: the person is signed in, and
+    // the client is told no.
+    let acting = match crate::organization::resolve_organization(
+        transaction,
+        &admitted.user_id,
+        noted(notes, "organization"),
+    )
+    .await
+    {
+        Ok(acting) => acting,
+        Err(crate::organization::Unresolved::Refused) => {
+            return Ok(refused(&admitted.login, "access_denied", issuer));
+        }
+        Err(crate::organization::Unresolved::Unreadable) => {
+            return Err(Unanswerable::Unreadable);
+        }
+    };
     mint_code(
         transaction,
         provider,
@@ -267,6 +290,7 @@ pub async fn landed(
                     )
                 })
             }),
+            org: acting.as_ref(),
         },
         now,
     )

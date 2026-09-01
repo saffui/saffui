@@ -172,6 +172,14 @@ pub async fn claims_for(
     let mut claims = claims_of_scope(&verified.scope, &held);
     claims.insert("sub".into(), json!(verified.subject));
 
+    // Echoed from the token, not resolved again: the answer describes the
+    // confinement the presented token acts within.
+    for named in ["org_id", "org_name"] {
+        if let Some(value) = verified.claims.get(named) {
+            claims.insert(named.into(), value.clone());
+        }
+    }
+
     let asked = match (
         verified.claims.get("sid").and_then(Value::as_str),
         verified.claims.get("azp").and_then(Value::as_str),

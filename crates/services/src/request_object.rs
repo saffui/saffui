@@ -89,6 +89,7 @@ impl Carried {
                 .or(outer.max_age),
             acr_values: self.text("acr_values").or(outer.acr_values),
             claims: self.claims.as_deref().or(outer.claims),
+            organization: self.text("organization").or(outer.organization),
         })
     }
 }

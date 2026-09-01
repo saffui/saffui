@@ -18,10 +18,10 @@ pub async fn mint_code(
             "INSERT INTO oidc_auth_codes \
                  (tenant, realm_id, code_hash, client_id, user_id, session_id, redirect_uri, \
                   scope, nonce, code_challenge, code_challenge_method, auth_time, acr, org_id, \
-                  expires_at, claims, dpop_jkt) \
+                  org_name, expires_at, claims, dpop_jkt) \
              SELECT current_setting('saffui.current_tenant', true), \
                     current_setting('saffui.current_realm', true), \
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15",
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16",
             &[
                 &code.code_hash,
                 &code.client_id,
@@ -35,6 +35,7 @@ pub async fn mint_code(
                 &code.auth_time,
                 &code.acr,
                 &code.org_id,
+                &code.org_name,
                 &expires_at,
                 &code.claims,
                 &code.dpop_jkt,
@@ -80,7 +81,7 @@ pub async fn redeem_code(
              WHERE code_hash = $1 AND redeemed_at IS NULL AND expires_at > now() \
              RETURNING tenant, realm_id, code_hash, client_id, user_id, session_id, \
                        redirect_uri, scope, nonce, code_challenge, code_challenge_method, dpop_jkt, \
-                       auth_time, acr, org_id, expires_at, claims",
+                       auth_time, acr, org_id, org_name, expires_at, claims",
             &[&code_hash],
         )
         .await
@@ -236,7 +237,7 @@ fn read_code(row: Row) -> AuthorizationCode {
         auth_time: row.get("auth_time"),
         acr: row.get("acr"),
         org_id: row.get("org_id"),
-        org_name: None,
+        org_name: row.get("org_name"),
         claims: row.get("claims"),
     }
 }

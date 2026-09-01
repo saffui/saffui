@@ -398,7 +398,15 @@ pub async fn answer(
                         binding::set_browser_state(&mut response, state, &context.realm_id);
                     }
                     hand_over(&mut response, &context.realm_id, ticket.as_deref());
-                    told_landing(&mut response, spoken, "admitted", &landing, &origin, &realm)
+                    // An admission whose answer is a refusal, such as an
+                    // organization the user does not hold, is said as what it
+                    // is: the person signed in, and the client was told no.
+                    let outcome = if landing.refuses() {
+                        "sent_back"
+                    } else {
+                        "admitted"
+                    };
+                    told_landing(&mut response, spoken, outcome, &landing, &origin, &realm)
                 }
                 Step::Refused => {
                     tracing::warn!("login refused");

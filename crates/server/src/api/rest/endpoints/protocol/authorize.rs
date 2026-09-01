@@ -41,6 +41,8 @@ pub struct Asked {
     pub acr_values: Option<String>,
     /// OIDC Core §5.5, JSON as the client sent it.
     pub claims: Option<String>,
+    /// The organization to act within, by slug.
+    pub organization: Option<String>,
 }
 
 /// Begin a login, asked in the query.
@@ -231,6 +233,7 @@ async fn start(
             max_age: asked.max_age,
             acr_values: asked.acr_values.as_deref(),
             claims: asked.claims.as_deref(),
+            organization: asked.organization.as_deref(),
         },
         binding::read(&request, binding::SSO_SESSION).as_deref(),
         signing.as_ref(),

@@ -129,7 +129,7 @@ pub async fn ask(
     // RFC 9449 §5. A caller that proves a key gets tokens only that key may
     // present; one that proves none gets what it always got. Proven before the
     // grant runs, so a bad proof is refused rather than costing a code.
-    let bound_to = match request.headers().get("dpop") {
+    let proven = match request.headers().get("dpop") {
         None => None,
         Some(proof) => {
             let Ok(proof) = proof.to_str() else {
@@ -154,13 +154,27 @@ pub async fn ask(
             )
             .await
             {
-                Ok(proven) => Some(proven.thumbprint),
+                Ok(proven) => Some(proven),
                 Err(_) => {
                     return Denied::InvalidDpopProof.answer("the proof does not bind this request");
                 }
             }
         }
     };
+    let bound_to = proven.as_ref().map(|held| held.thumbprint.clone());
+
+    // FAPI 2.0: a client wearing the profile is held to it wherever tokens
+    // are asked for. Provisioned against it, it is refused whole; unable to
+    // name a key its tokens will be bound to, it gets none.
+    if services::fapi::is_fapi2(&client) {
+        if services::fapi::conformant(&client).is_err() {
+            return Denied::InvalidClient.answer("the client is provisioned against its profile");
+        }
+        if bound_to.is_none() && certified_by.is_none() {
+            return Denied::InvalidRequest
+                .answer("the profile requires sender-constrained tokens: prove a key");
+        }
+    }
 
     let granted = match grant_type {
         "client_credentials" => {
@@ -271,6 +285,10 @@ pub async fn ask(
                 &grant::Renewing {
                     refresh_token,
                     keys: &keys,
+                    proofs: services::token::Proofs {
+                        key: proven.as_ref(),
+                        certificate: certified_by.as_deref(),
+                    },
                 },
                 now,
             )

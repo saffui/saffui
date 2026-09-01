@@ -292,6 +292,22 @@ pub async fn begin(
         return Err(Refusal::Redirect("invalid_request"));
     }
 
+    // FAPI 2.0 Security Profile: the registration is the profile, and it
+    // strips the options the profile forbids whatever the realm tolerates.
+    // A client provisioned against its own profile is refused whole rather
+    // than served under it.
+    if crate::fapi::is_fapi2(&client) {
+        if crate::fapi::conformant(&client).is_err() {
+            return Err(Refusal::Redirect("unauthorized_client"));
+        }
+        if !asked_for.code || asked_for.mints_here() {
+            return Err(Refusal::Redirect("unsupported_response_type"));
+        }
+        if !pushed_first || requested.code_challenge.is_none() {
+            return Err(Refusal::Redirect("invalid_request"));
+        }
+    }
+
     // A session somebody else holds does not answer a request for this
     // subject, §3.1.2.2. It is not reused; whoever the client named has to
     // log in, and the flow's end is where a different outcome is refused.

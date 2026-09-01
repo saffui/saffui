@@ -24,6 +24,9 @@ pub enum Unpushable {
     CarriesAReference,
     #[error("the request could not be kept")]
     Unwritable,
+    /// A push that already violates the client's own security profile.
+    #[error("{0}")]
+    AgainstTheProfile(&'static str),
 }
 
 /// Keep a pushed request, and hand back the reference and how long it lives.
@@ -42,6 +45,20 @@ pub async fn keep_request(
     // §2.1: a pushed request cannot carry a reference to another one.
     if parameters.contains_key("request_uri") {
         return Err(Unpushable::CarriesAReference);
+    }
+    // FAPI 2.0: what would be refused at the authorization endpoint anyway is
+    // refused here, where the client still gets a status code it can read.
+    if crate::fapi::is_fapi2(client) {
+        if parameters.get("response_type").and_then(Value::as_str) != Some("code") {
+            return Err(Unpushable::AgainstTheProfile(
+                "the profile speaks the code flow alone",
+            ));
+        }
+        if !parameters.contains_key("code_challenge") {
+            return Err(Unpushable::AgainstTheProfile(
+                "the profile requires proof key for code exchange",
+            ));
+        }
     }
 
     let mut drawn = [0u8; 32];

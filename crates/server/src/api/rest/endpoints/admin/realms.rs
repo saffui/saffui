@@ -95,3 +95,87 @@ fn brief(realm: models::entities::realm::RealmModel) -> RealmBrief {
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
 }
+
+/// The realm's theme tokens, for the console that edits them.
+pub async fn theme(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+    let held = store::providers::realms::theme_of(&transaction, &realm_id)
+        .await
+        .map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(held.unwrap_or(serde_json::Value::Null)))
+}
+
+/// Dress the realm. Refused whole on the first token the pages do not read
+/// or the first value that could leave its declaration: the stylesheet is
+/// executable enough that this door is the security boundary.
+pub async fn set_theme(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+    body: web::Json<serde_json::Value>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let asked = body.into_inner();
+    if let Err(why) = services::theme::css_of(&asked) {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            why.to_owned(),
+        ));
+    }
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+    if !store::providers::realms::set_theme(&transaction, &realm_id, Some(&asked))
+        .await
+        .map_err(|_| internal())?
+    {
+        return Err(ApiError::new(ErrorCode::RealmNotFound));
+    }
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
+/// Back to the default look.
+pub async fn clear_theme(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+    if !store::providers::realms::set_theme(&transaction, &realm_id, None)
+        .await
+        .map_err(|_| internal())?
+    {
+        return Err(ApiError::new(ErrorCode::RealmNotFound));
+    }
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}

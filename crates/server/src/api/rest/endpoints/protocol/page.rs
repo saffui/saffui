@@ -135,8 +135,35 @@ pub async fn script() -> HttpResponse {
     serve("text/javascript; charset=utf-8", SCRIPT)
 }
 
-pub async fn style() -> HttpResponse {
-    serve("text/css; charset=utf-8", STYLE)
+/// The stylesheet, wearing the realm's overrides after its own defaults. A
+/// theme that cannot be read leaves the default look rather than a broken
+/// page: the door already refused anything unsound, so a failure here is a
+/// store fault and never the caller's.
+pub async fn style(
+    realm: web::Path<String>,
+    pool: web::Data<deadpool_postgres::Pool>,
+    tenancy: web::Data<store::tenancy::Tenancy>,
+) -> HttpResponse {
+    let mut dressed: Option<String> = None;
+    if let Ok(mut connection) = pool.get().await
+        && let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, &realm).await
+        && let Ok(transaction) = tenancy.transaction(&mut connection, &context).await
+        && let Ok(Some(theme)) =
+            store::providers::realms::theme_of(&transaction, &context.realm_id).await
+        && let Ok(overrides) = services::theme::css_of(&theme)
+    {
+        dressed = Some(format!("{STYLE}\n{overrides}"));
+    }
+    match dressed {
+        Some(body) => uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+            .insert_header(("Content-Type", "text/css; charset=utf-8"))
+            .insert_header(("Content-Security-Policy", POLICY))
+            .insert_header(("X-Content-Type-Options", "nosniff"))
+            .insert_header(("X-Frame-Options", "DENY"))
+            .insert_header(("Referrer-Policy", "no-referrer"))
+            .body(body),
+        None => serve("text/css; charset=utf-8", STYLE),
+    }
 }
 
 /// The same, for the one page whose job is to be inside somebody else's.

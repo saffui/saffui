@@ -38,6 +38,7 @@ pub mod request_object;
 pub mod response_type;
 pub mod revocation;
 pub mod scim;
+pub mod theme;
 pub mod token;
 pub mod userinfo;
 pub mod workload;

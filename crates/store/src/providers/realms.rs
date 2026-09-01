@@ -280,3 +280,31 @@ fn as_document(
 ) -> StoreResult<Option<serde_json::Value>> {
     value.transpose().map_err(|_| StoreError::Backend)
 }
+
+/// The realm's theme tokens, or nothing when it wears the default.
+pub async fn theme_of(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+) -> StoreResult<Option<serde_json::Value>> {
+    let row = transaction
+        .query_opt("SELECT theme FROM realms WHERE realm_id = $1", &[&realm_id])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.and_then(|row| row.get("theme")))
+}
+
+/// Dress or undress the realm; absent is the default look.
+pub async fn set_theme(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+    theme: Option<&serde_json::Value>,
+) -> StoreResult<bool> {
+    let changed = transaction
+        .execute(
+            "UPDATE realms SET theme = $2 WHERE realm_id = $1",
+            &[&realm_id, &theme],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}

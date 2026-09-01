@@ -54,6 +54,107 @@ impl Delivery {
 
 /// How the operator opted this client in, when they did. Ping without an
 /// https endpoint is half an opt-in, which is none.
+/// The algorithm this client registered for signed backchannel requests,
+/// CIBA §7.1: registered, every initiation from it must arrive signed.
+pub fn signing_alg_of(client: &ClientModel) -> Option<crypto::provider::SignAlg> {
+    client
+        .configs
+        .as_ref()?
+        .get("ciba.request_signing_alg")?
+        .as_str()?
+        .parse()
+        .ok()
+}
+
+/// What a login hint token names: the account, or the address, that the
+/// client vouches for by signing.
+#[derive(Debug)]
+pub enum Hinted {
+    Subject(String),
+    Email(String),
+}
+
+/// Open a login hint token, this deployment's shape of CIBA §7.1's
+/// structured hint: signed by the client with its published keys, naming
+/// `sub` or `email`. A token that cannot be verified is a protocol fault
+/// told to the client; a verified token naming nobody is the ghost's
+/// business, decided by the caller.
+pub fn read_hint_token(
+    client: &ClientModel,
+    algorithm: crypto::provider::SignAlg,
+    token: &str,
+) -> Result<Hinted, Unopened> {
+    let malformed = |detail: &'static str| Unopened {
+        error: "invalid_request",
+        detail,
+    };
+    let keys = client
+        .jwks
+        .as_ref()
+        .ok_or(malformed("this client published no keys"))?;
+    let jwk = crate::request_object::key_named(keys, token, algorithm)
+        .map_err(|_| malformed("no published key signs this hint"))?;
+    let verifier = crate::token::verifier_for(algorithm, &jwk)
+        .ok_or(malformed("no published key signs this hint"))?;
+    let payload = crypto::jose::jwt::decode_with_verifier(token, &*verifier)
+        .map_err(|_| malformed("the hint's signature does not hold"))?
+        .0;
+    let text = |named: &str| {
+        payload
+            .claim(named)
+            .and_then(Value::as_str)
+            .filter(|held| !held.is_empty())
+            .map(str::to_owned)
+    };
+    match (text("sub"), text("email")) {
+        (Some(subject), None) => Ok(Hinted::Subject(subject)),
+        (None, Some(address)) => Ok(Hinted::Email(address)),
+        _ => Err(malformed("the hint names sub or email, one of the two")),
+    }
+}
+
+/// Open a signed initiation, CIBA §7.1.1: verified against the client's
+/// published keys at exactly the algorithm it registered, and the binding
+/// claims are required here, not merely honoured when present.
+pub fn read_signed_request(
+    client: &ClientModel,
+    algorithm: crypto::provider::SignAlg,
+    token: &str,
+    issuer: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<serde_json::Map<String, Value>, Unopened> {
+    let malformed = |detail: &'static str| Unopened {
+        error: "invalid_request",
+        detail,
+    };
+    let keys = client
+        .jwks
+        .as_ref()
+        .ok_or(malformed("this client published no keys"))?;
+    let jwk = crate::request_object::key_named(keys, token, algorithm)
+        .map_err(|_| malformed("no published key signs this request"))?;
+    let verifier = crate::token::verifier_for(algorithm, &jwk)
+        .ok_or(malformed("no published key signs this request"))?;
+    let payload = crypto::jose::jwt::decode_with_verifier(token, &*verifier)
+        .map_err(|_| malformed("the request's signature does not hold"))?
+        .0;
+
+    let text = |named: &str| payload.claim(named).and_then(Value::as_str);
+    let instant = |named: &str| payload.claim(named).and_then(Value::as_i64);
+    if text("iss") != Some(client.client_id.as_str()) || text("aud") != Some(issuer) {
+        return Err(malformed("the request names another client or server"));
+    }
+    if text("jti").is_none_or(str::is_empty) {
+        return Err(malformed("the request carries no identifier"));
+    }
+    let stamp = now.timestamp();
+    match (instant("exp"), instant("nbf"), instant("iat")) {
+        (Some(exp), Some(nbf), Some(_)) if stamp <= exp && stamp >= nbf => {}
+        _ => return Err(malformed("the request is outside its own window")),
+    }
+    Ok(payload.claims_set().clone())
+}
+
 pub fn delivery_of(client: &ClientModel) -> Option<Delivery> {
     let held = |key: &str| {
         client
@@ -87,6 +188,9 @@ pub fn allows_ciba(client: &ClientModel) -> bool {
 pub enum Hint {
     Named(String),
     IdToken(String),
+    /// CIBA §7.1's structured hint, in this deployment's shape: a token the
+    /// client signed with its published keys, naming `sub` or `email`.
+    HintToken(String),
 }
 
 /// What an initiation asks, read fail-closed.
@@ -107,6 +211,7 @@ pub fn read_initiation(
     scope: Option<&str>,
     login_hint: Option<&str>,
     id_token_hint: Option<&str>,
+    login_hint_token: Option<&str>,
     binding_message: Option<&str>,
     requested_expiry: Option<&str>,
 ) -> Result<Asked, Unopened> {
@@ -115,16 +220,21 @@ pub fn read_initiation(
             .filter(|it| !it.is_empty())
             .map(str::to_owned)
     };
-    let hint = match (blank(login_hint), blank(id_token_hint)) {
-        (Some(named), None) => Hint::Named(named),
-        (None, Some(token)) => Hint::IdToken(token),
-        (Some(_), Some(_)) => {
-            return Err(Unopened::invalid("one hint, not two"));
-        }
-        (None, None) => {
+    let hint = match (
+        blank(login_hint),
+        blank(id_token_hint),
+        blank(login_hint_token),
+    ) {
+        (Some(named), None, None) => Hint::Named(named),
+        (None, Some(token), None) => Hint::IdToken(token),
+        (None, None, Some(token)) => Hint::HintToken(token),
+        (None, None, None) => {
             return Err(Unopened::invalid(
-                "login_hint or id_token_hint names who signs in",
+                "login_hint, login_hint_token or id_token_hint names who signs in",
             ));
+        }
+        _ => {
+            return Err(Unopened::invalid("one hint, not two"));
         }
     };
     let binding_message = blank(binding_message);
@@ -292,6 +402,7 @@ mod tests {
             Some("openid profile"),
             Some(" ada@example.test "),
             None,
+            None,
             Some("Virement 240"),
             Some("120"),
         )
@@ -300,21 +411,27 @@ mod tests {
         assert_eq!(asked.expiry, Duration::seconds(120));
 
         assert!(
-            read_initiation(None, None, None, None, None).is_err(),
+            read_initiation(None, None, None, None, None, None).is_err(),
             "no hint held"
         );
         assert!(
-            read_initiation(None, Some("ada"), Some("x.y.z"), None, None).is_err(),
+            read_initiation(None, Some("ada"), Some("x.y.z"), None, None, None).is_err(),
             "two hints held"
         );
         assert_eq!(
-            read_initiation(None, Some("ada"), None, Some(&"m".repeat(65)), None)
+            read_initiation(None, None, None, Some("h.i.nt"), None, None)
+                .unwrap()
+                .hint,
+            Hint::HintToken("h.i.nt".into())
+        );
+        assert_eq!(
+            read_initiation(None, Some("ada"), None, None, Some(&"m".repeat(65)), None)
                 .unwrap_err()
                 .error,
             "invalid_binding_message"
         );
         assert_eq!(
-            read_initiation(None, Some("ada"), None, None, Some("9999"))
+            read_initiation(None, Some("ada"), None, None, None, Some("9999"))
                 .unwrap()
                 .expiry,
             Duration::seconds(MAX_EXPIRY),

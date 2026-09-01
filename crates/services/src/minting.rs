@@ -253,6 +253,47 @@ pub async fn landed(
             return Err(Unanswerable::Unreadable);
         }
     };
+
+    // A login opened by a typed device code, RFC 8628 §3.3: its whole answer
+    // is the row it approves. The device is polling for that row, so nothing
+    // redeemable goes to this browser; the person is sent to the page that
+    // says to go back to their device.
+    if let Some(user_code) = noted(notes, "device_user_code") {
+        let approved = store::providers::devices::approve(
+            transaction,
+            user_code,
+            &admitted.user_id,
+            &admitted.session_id,
+            admitted.auth_time,
+            realm.acr_loa_map.as_ref().and_then(|map| {
+                admitted.reached.and_then(|loa| {
+                    acr::acr_claim(
+                        map,
+                        AchievedAuth {
+                            loa,
+                            auth_time: admitted.auth_time,
+                        },
+                    )
+                })
+            }),
+            acting.as_ref().map(|acting| acting.org_id.as_str()),
+            acting.as_ref().map(|acting| acting.org_name.as_str()),
+            now,
+        )
+        .await
+        .map_err(|_| Unanswerable::Unreadable)?;
+        // The row may have expired while the person authenticated. Landing on
+        // the same page unapproved would lie, so the expiry page names it.
+        let landing = if approved {
+            admitted.login.redirect_uri.clone()
+        } else {
+            admitted
+                .login
+                .redirect_uri
+                .replace("#approved", "#expired-code")
+        };
+        return Ok(Landing::new(&landing, ResponseMode::Query));
+    }
     mint_code(
         transaction,
         provider,

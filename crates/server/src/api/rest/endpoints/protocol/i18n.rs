@@ -8,18 +8,25 @@ use unic_langid::LanguageIdentifier;
 pub const TONGUES: [&str; 2] = ["en", "fr"];
 
 const TEMPLATE: &str = include_str!("ui/login.html");
+const DEVICE_TEMPLATE: &str = include_str!("ui/device.html");
 const STRINGS: [&str; 2] = [
     include_str!("ui/themes/en.ftl"),
     include_str!("ui/themes/fr.ftl"),
 ];
 
-/// The sign-in page in every tongue, rendered once. A missing string is a
+/// The hosted pages in every tongue, rendered once. A missing string is a
 /// build fault, so it stops the process rather than serving a page with a
 /// hole in it.
 static PAGES: LazyLock<[String; 2]> = LazyLock::new(|| {
     [
-        rendered(TONGUES[0], STRINGS[0]),
-        rendered(TONGUES[1], STRINGS[1]),
+        rendered(TEMPLATE, TONGUES[0], STRINGS[0]),
+        rendered(TEMPLATE, TONGUES[1], STRINGS[1]),
+    ]
+});
+static DEVICE_PAGES: LazyLock<[String; 2]> = LazyLock::new(|| {
+    [
+        rendered(DEVICE_TEMPLATE, TONGUES[0], STRINGS[0]),
+        rendered(DEVICE_TEMPLATE, TONGUES[1], STRINGS[1]),
     ]
 });
 
@@ -57,15 +64,22 @@ fn first_spoken_of(asked: &str) -> Option<&'static str> {
     TONGUES.into_iter().find(|tongue| *tongue == primary)
 }
 
-/// The rendered page in the given tongue; anything unspoken gets the first.
+/// The rendered sign-in page in the given tongue; anything unspoken gets the
+/// first.
 pub fn page_in(tongue: &str) -> &'static str {
     let at = TONGUES.iter().position(|held| *held == tongue).unwrap_or(0);
     &PAGES[at]
 }
 
+/// The rendered device page, RFC 8628 §3.3, the same way.
+pub fn device_page_in(tongue: &str) -> &'static str {
+    let at = TONGUES.iter().position(|held| *held == tongue).unwrap_or(0);
+    &DEVICE_PAGES[at]
+}
+
 /// The template with every `{{name}}` replaced by that tongue's string,
 /// escaped on the way in: the strings are prose, and prose holds no markup.
-fn rendered(tongue: &str, strings: &str) -> String {
+fn rendered(template: &str, tongue: &str, strings: &str) -> String {
     let locale: LanguageIdentifier = tongue.parse().expect("a language tag");
     let mut bundle = FluentBundle::new(vec![locale]);
     bundle.set_use_isolating(false);
@@ -75,8 +89,8 @@ fn rendered(tongue: &str, strings: &str) -> String {
         .add_resource(resource)
         .unwrap_or_else(|_| panic!("the {tongue} strings repeat a name"));
 
-    let mut page = String::with_capacity(TEMPLATE.len());
-    let mut rest = TEMPLATE;
+    let mut page = String::with_capacity(template.len());
+    let mut rest = template;
     while let Some(at) = rest.find("{{") {
         page.push_str(&rest[..at]);
         rest = &rest[at + 2..];
@@ -106,14 +120,15 @@ fn rendered(tongue: &str, strings: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Both renders resolve every marker, and each speaks its own tongue
-    /// where the browser reads it: the root's `lang` and the title.
+    /// Both renders of both pages resolve every marker, and each speaks its
+    /// own tongue where the browser reads it: the root's `lang` and the title.
     #[test]
     fn the_page_speaks_every_tongue_it_promises() {
         for tongue in TONGUES {
-            let page = page_in(tongue);
-            assert!(!page.contains("{{"), "an unresolved marker in {tongue}");
-            assert!(page.contains(&format!("<html lang=\"{tongue}\">")));
+            for page in [page_in(tongue), device_page_in(tongue)] {
+                assert!(!page.contains("{{"), "an unresolved marker in {tongue}");
+                assert!(page.contains(&format!("<html lang=\"{tongue}\">")));
+            }
         }
         assert!(page_in("en").contains("<title>Sign in</title>"));
         assert!(page_in("fr").contains("<title>Se connecter</title>"));

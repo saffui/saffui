@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="{{lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{device-title}}</title>
+<link rel="stylesheet" href="login.css">
+</head>
+<body>
+<main>
+  <h1>{{device-title}}</h1>
+  <p class="told">{{device-subtitle}}</p>
+  <form id="device" method="post" novalidate>
+    <label>{{device-code}}
+      <input name="user_code" autocomplete="one-time-code" autofocus>
+    </label>
+    <button type="submit" id="continue">{{action-continue}}</button>
+  </form>
+  <!-- The outcome arrives as a fragment and these show themselves. -->
+  <p id="no-such-code" class="flash" role="alert">{{flash-no-such-code}}</p>
+  <p id="approved" class="flash">{{device-done-body}}</p>
+  <p id="expired-code" class="flash" role="alert">{{flash-device-expired}}</p>
+</main>
+</body>
+</html>

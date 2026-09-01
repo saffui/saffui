@@ -664,7 +664,7 @@ fn proof_is_registered(client: &ClientModel, requested: &Requested<'_>) -> Resul
 }
 
 /// The flow this client's browser login runs.
-async fn browser_flow(
+pub(crate) async fn browser_flow(
     transaction: &Transaction<'_>,
     client: &ClientModel,
 ) -> Result<String, Refusal> {
@@ -682,7 +682,7 @@ async fn browser_flow(
         .ok_or(Refusal::Redirect("server_error"))
 }
 
-fn draw_id(provider: &dyn CryptoProvider) -> Result<String, Refusal> {
+pub(crate) fn draw_id(provider: &dyn CryptoProvider) -> Result<String, Refusal> {
     let mut drawn = [0_u8; 16];
     provider
         .rand()

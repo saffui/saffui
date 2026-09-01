@@ -961,6 +961,219 @@ pub async fn ciba(
     })
 }
 
+/// The device poll grant, RFC 8628 §3.4: present the device_code, collect
+/// once when the person has approved on their own screen.
+///
+/// The words are CIBA's words on purpose: §3.5 names the same four, and the
+/// same pending-poll rule holds, so the stamp a refusal writes must commit.
+pub async fn device_code(
+    transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
+    within: &Within<'_>,
+    client: &ClientModel,
+    device_code: &str,
+    seen: &auth::provenance::Provenance,
+    now: DateTime<Utc>,
+) -> Result<Granted, Unpolled> {
+    if !crate::device::allows_device(client) {
+        return Err(Unpolled::Words(
+            "unauthorized_client",
+            "this client does not sign people in over a device",
+        ));
+    }
+
+    let digest = signing.provider.digest();
+    let previous = store::providers::devices::touch_poll(transaction, digest, device_code, now)
+        .await
+        .map_err(|_| Unpolled::Backend)?
+        .flatten();
+    let waiting = store::providers::devices::load(transaction, digest, device_code)
+        .await
+        .map_err(|_| Unpolled::Backend)?;
+
+    let Some(waiting) = waiting.filter(|held| held.client_id == client.client_id) else {
+        // Unknown, or another client's: one refusal, or a client could learn
+        // whether a secret it does not hold exists.
+        return Err(Unpolled::Words("invalid_grant", "no such device sign-in"));
+    };
+    if waiting.expires_at <= now {
+        return Err(Unpolled::Words(
+            "expired_token",
+            "this device sign-in has run out; start another",
+        ));
+    }
+    if previous.is_some_and(|last| now < last + Duration::seconds(i64::from(waiting.interval_secs)))
+    {
+        return Err(Unpolled::Words(
+            "slow_down",
+            "poll at the interval you were given",
+        ));
+    }
+    match waiting.state {
+        models::entities::device::DeviceCodeState::Pending => {
+            return Err(Unpolled::Words(
+                "authorization_pending",
+                "the person has not decided yet",
+            ));
+        }
+        models::entities::device::DeviceCodeState::Denied => {
+            return Err(Unpolled::Words("access_denied", "the person declined"));
+        }
+        models::entities::device::DeviceCodeState::Approved => {}
+    }
+
+    let approved = store::providers::devices::spend(transaction, digest, device_code)
+        .await
+        .map_err(|_| Unpolled::Backend)?
+        .ok_or(Unpolled::Words("invalid_grant", "no such device sign-in"))?;
+    let (Some(user_id), Some(session_id), Some(auth_time)) = (
+        approved.user_id.clone(),
+        approved.session_id.clone(),
+        approved.auth_time,
+    ) else {
+        return Err(Unpolled::Words("invalid_grant", "no such device sign-in"));
+    };
+    let person = users::load(transaction, &user_id)
+        .await
+        .map_err(|_| Unpolled::Backend)?
+        .filter(|held| held.enabled)
+        .ok_or(Unpolled::Words("access_denied", "the person declined"))?;
+
+    let scope = approved.scope.clone();
+    let lifespan = Duration::seconds(
+        within
+            .realm
+            .access_token_lifespan
+            .map_or(DEFAULT_ACCESS_LIFESPAN, i64::from),
+    );
+    let offline = holds_offline_access(&scope);
+    let renewal = Duration::seconds(offline_or_refresh_lifespan(within.realm, offline));
+
+    // The approving login is this grant's login: the person authenticated in
+    // a browser, and what a logout ends there ends here too. A device whose
+    // login is gone by redemption gets nothing to hang off.
+    let _ = seen;
+    sessions::load(transaction, &session_id)
+        .await
+        .map_err(|_| Unpolled::Backend)?
+        .ok_or(Unpolled::Words(
+            "expired_token",
+            "the approving login ended",
+        ))?;
+
+    let overlay =
+        crate::mappers::overlay_for(transaction, &client.client_id, &person.user_id, &scope)
+            .await
+            .map_err(|_| Unpolled::Backend)?;
+    let told = crate::pairwise::subject_for(transaction, signing.provider, client, &person.user_id)
+        .await
+        .map_err(|_| Unpolled::Backend)?;
+    let flowed: Vec<(&str, Option<Value>)> = vec![
+        ("auth_time", Some(Value::from(auth_time))),
+        ("acr", approved.acr.as_deref().map(Value::from)),
+        ("org_id", approved.org_id.as_deref().map(Value::from)),
+        ("org_name", approved.org_name.as_deref().map(Value::from)),
+    ];
+    let minting_for = |kind: Kind, life: Duration| {
+        let key_bound = kind != Kind::Refresh || client.public_client == Some(true);
+        Minting {
+            bound_to: key_bound
+                .then(|| within.bound_to.map(str::to_owned))
+                .flatten(),
+            certified_by: key_bound
+                .then(|| within.certified_by.map(str::to_owned))
+                .flatten(),
+            kind,
+            issuer: within.issuer,
+            subject: &told,
+            audiences: vec![client.client_id.clone()],
+            party: &client.client_id,
+            session_id: &session_id,
+            scope: &scope,
+            lifespan: life,
+            now,
+            extra: serde_json::Map::new(),
+        }
+    };
+    let carried = |minting: &mut Minting| {
+        for (named, value) in &flowed {
+            if let Some(value) = value {
+                minting.extra.insert((*named).to_owned(), value.clone());
+            }
+        }
+    };
+
+    let key = preferred_key(transaction, signing, SignAlg::Es256)
+        .await
+        .map_err(|_| Unpolled::Backend)?;
+    let identity_key = identity_key_for(transaction, signing, client)
+        .await
+        .map_err(|_| Unpolled::Backend)?;
+
+    let mut minting_access = minting_for(Kind::Access, lifespan);
+    crate::mappers::widen(&mut minting_access.audiences, &overlay.access_audiences);
+    crate::mappers::fill(&mut minting_access.extra, overlay.access.clone());
+    for named in ["org_id", "org_name"] {
+        if let Some((_, Some(value))) = flowed.iter().find(|(held, _)| *held == named) {
+            minting_access.extra.insert(named.to_owned(), value.clone());
+        }
+    }
+    let access =
+        mint_token(signing.provider, &key, minting_access).map_err(|_| Unpolled::Backend)?;
+
+    let mut renewing = minting_for(Kind::Refresh, renewal);
+    carried(&mut renewing);
+    let refresh = mint_token(signing.provider, &key, renewing).map_err(|_| Unpolled::Backend)?;
+
+    let id_token = scope
+        .split_whitespace()
+        .any(|held| held == "openid")
+        .then(|| {
+            let mut minting = minting_for(Kind::Identity, lifespan);
+            crate::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
+            carried(&mut minting);
+            crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
+            mint_token(signing.provider, &identity_key, minting)
+        })
+        .transpose()
+        .map_err(|_| Unpolled::Backend)?;
+
+    // Anchored by the refresh token's own identifier and hung off the
+    // approving login, the way a code's redemption is: a later renewal is
+    // compared against what was handed out, and the browser's logout ends it.
+    sessions::open_client_session(
+        transaction,
+        &ClientSessionModel {
+            tenant: within.tenant.tenant.clone(),
+            session_id: refresh.token_id.clone(),
+            realm_id: within.tenant.realm_id.clone(),
+            user_session_id: session_id.clone(),
+            user_id: person.user_id.clone(),
+            client_id: client.client_id.clone(),
+            auth_method: Some("device_code".to_owned()),
+            redirect_uri: None,
+            started_at: now.timestamp(),
+            expiration: Some((now + renewal).timestamp()),
+            notes: None,
+            current_refresh_token: Some(refresh.token_id.clone()),
+            current_refresh_token_use_count: Some(0),
+            offline: Some(offline),
+            requested_claims: None,
+        },
+    )
+    .await
+    .map_err(|_| Unpolled::Backend)?;
+
+    Ok(Granted {
+        issued_token_type: None,
+        access_token: access.token,
+        expires_in: lifespan.num_seconds(),
+        scope,
+        id_token: id_token.map(|held| held.token),
+        refresh_token: Some(refresh.token),
+    })
+}
+
 /// What a client presents to renew.
 
 #[derive(Debug)]

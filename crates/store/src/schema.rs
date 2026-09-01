@@ -391,6 +391,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V064__org_theme.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 65,
+            name: "device_codes",
+            sql: include_str!("../migrations/V065__device_codes.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -10,6 +10,7 @@ pub mod clients;
 pub mod consents;
 pub mod credentials;
 pub mod deliveries;
+pub mod devices;
 pub mod dpop;
 pub mod form_post;
 pub mod login;

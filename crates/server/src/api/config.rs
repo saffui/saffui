@@ -16,8 +16,8 @@ use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::rest::endpoints::protocol::{
-    answering, authorize, broker, ciba, discovery, introspect, keys, login, logout, page, par,
-    recovery, registration, revoke, ssf, token, userinfo,
+    answering, authorize, broker, ciba, device, discovery, introspect, keys, login, logout, page,
+    par, recovery, registration, revoke, ssf, token, userinfo,
 };
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
@@ -287,6 +287,12 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
             web::resource("/login")
                 .route(web::get().to(page::magic_link))
                 .route(web::post().to(login::answer)),
+        )
+        .service(web::resource("/device-authorization").route(web::post().to(device::open)))
+        .service(
+            web::resource("/device")
+                .route(web::get().to(device::page))
+                .route(web::post().to(device::verify)),
         )
         .service(web::resource("/login.js").route(web::get().to(page::script)))
         .service(web::resource("/broker/{alias}/login").route(web::get().to(broker::begin)))

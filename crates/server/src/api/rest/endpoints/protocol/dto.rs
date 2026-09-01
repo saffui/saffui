@@ -22,6 +22,8 @@ pub struct Asked {
     pub subject_token: Option<String>,
     pub subject_token_type: Option<String>,
     pub auth_req_id: Option<String>,
+    /// RFC 8628 §3.4, when the grant is a device poll.
+    pub device_code: Option<String>,
     pub assertion: Option<String>,
     pub actor_token: Option<String>,
     pub actor_token_type: Option<String>,

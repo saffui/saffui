@@ -376,6 +376,60 @@ pub async fn ask(
             )
             .await
         }
+        services::device::GRANT => {
+            let Some(device_code) = asked.device_code.as_deref().filter(|it| !it.is_empty()) else {
+                return Denied::InvalidRequest.answer("device_code is required");
+            };
+            let Ok(ring) = keyring::load(
+                &transaction,
+                &sealing.envelope,
+                &context.tenant,
+                &context.realm_id,
+            )
+            .await
+            else {
+                return Denied::InvalidRequest.answer("the realm could not be read");
+            };
+            match grant::device_code(
+                &transaction,
+                &grant::Signing {
+                    provider: sealing.provider.as_ref(),
+                    ring: &ring,
+                    envelope: &sealing.envelope,
+                },
+                &grant::Within {
+                    tenant: &context,
+                    realm: &realm,
+                    issuer: &origin.issuer(&context.realm_id),
+                    bound_to: bound_to.as_deref(),
+                    certified_by: certified_by.as_deref(),
+                },
+                &client,
+                device_code,
+                &crate::api::provenance::read_provenance(&request),
+                now,
+            )
+            .await
+            {
+                Ok(granted) => Ok(granted),
+                Err(grant::Unpolled::Words(error, description)) => {
+                    // RFC 8628 §3.5 speaks CIBA's polling words, under the
+                    // same rule: a pending poll must still commit its
+                    // slow-down stamp or every poll reads as the first.
+                    let _ = transaction.commit().await;
+                    return uncached(&mut actix_web::HttpResponseBuilder::new(
+                        actix_web::http::StatusCode::BAD_REQUEST,
+                    ))
+                    .json(serde_json::json!({
+                        "error": error,
+                        "error_description": description,
+                    }));
+                }
+                Err(grant::Unpolled::Backend) => {
+                    return Denied::InvalidRequest.answer("the realm could not be read");
+                }
+            }
+        }
         services::ciba::GRANT => {
             let Some(auth_req_id) = asked.auth_req_id.as_deref().filter(|it| !it.is_empty()) else {
                 return Denied::InvalidRequest.answer("auth_req_id is required");

@@ -8,7 +8,13 @@ use secrecy::SecretBox;
 /// readers of one header are two chances to disagree about what it says.
 pub fn bearer(request: &HttpRequest) -> Option<String> {
     let header = request.headers().get("authorization")?.to_str().ok()?;
-    let token = header.strip_prefix("Bearer ")?.trim();
+    // RFC 9110 §11.1: the scheme is case-insensitive, so `bearer` and
+    // `BEARER` present the same way `Bearer` does.
+    let (scheme, token) = header.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return None;
+    }
+    let token = token.trim();
     (!token.is_empty()).then(|| token.to_owned())
 }
 

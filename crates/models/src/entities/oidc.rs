@@ -30,6 +30,10 @@ pub struct AuthorizationCode {
     /// PKCE challenge; required (with method `S256`) for public clients.
     pub code_challenge: Option<String>,
     pub code_challenge_method: Option<String>,
+    /// RFC 9449 section 10.1: the thumbprint of the key the token request
+    /// will prove, named ahead of time by the authorization request.
+    #[serde(default)]
+    pub dpop_jkt: Option<String>,
     /// When the user authenticated (`auth_time`), Unix epoch seconds.
     pub auth_time: i64,
     /// The realm's context value for the level this login reached, frozen here: by
@@ -121,6 +125,7 @@ mod tests {
             nonce: None,
             code_challenge: Some("challenge".into()),
             code_challenge_method: Some("S256".into()),
+            dpop_jkt: None,
             auth_time: 1_700_000_000,
             acr: None,
             org_id: None,

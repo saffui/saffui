@@ -86,14 +86,10 @@ fn assertion(key: &SigningKey, jti: &str) -> String {
     for (named, value) in [("iss", FINTECH), ("sub", FINTECH), ("jti", jti)] {
         payload.set_claim(named, Some(Value::from(value))).unwrap();
     }
+    // The profile's audience: the issuer, as one string. The endpoint URLs
+    // stop being names of this server under fapi2.
     payload
-        .set_claim(
-            "aud",
-            Some(Value::from(format!(
-                "{}/protocol/openid-connect/token",
-                support::origin().issuer(REALM)
-            ))),
-        )
+        .set_claim("aud", Some(Value::from(support::origin().issuer(REALM))))
         .unwrap();
     payload
         .set_claim("exp", Some(Value::from(now + 60)))

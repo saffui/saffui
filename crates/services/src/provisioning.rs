@@ -567,6 +567,57 @@ pub async fn provision_client(
     Ok(true)
 }
 
+/// Register a client wearing the FAPI 2.0 Security Profile: confidential,
+/// authenticating by a key it published, ES256 identity tokens, and the
+/// profile flag the doors read. The private half stays with the client; what
+/// arrives here is the published set.
+pub async fn provision_fapi_client(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &str,
+    realm_id: &str,
+    client_id: &str,
+    public_jwks: serde_json::Value,
+    redirect_uris: Vec<String>,
+) -> StoreResult<bool> {
+    if clients::load(transaction, client_id).await?.is_some() {
+        return Ok(false);
+    }
+    let spec = admin::clients::Spec {
+        name: None,
+        confidential: true,
+        redirect_uris,
+        post_logout_redirect_uris: Vec::new(),
+        backchannel_logout_uri: None,
+        frontchannel_logout_uri: None,
+        registered: admin::clients::Registered::default(),
+    };
+    admin::clients::register(
+        transaction,
+        provider,
+        tenant,
+        realm_id,
+        PROVISIONER,
+        client_id,
+        &spec,
+        admin::clients::Secret::Drawn,
+    )
+    .await
+    .map_err(|_| StoreError::Backend)?;
+    let mut client = clients::load(transaction, client_id)
+        .await?
+        .ok_or(StoreError::Backend)?;
+    client.client_authenticator_type = Some("private-key-jwt".into());
+    client.jwks = Some(public_jwks);
+    client.id_token_signed_response_alg = Some(crypto::provider::SignAlg::Es256);
+    client.configs.get_or_insert_with(Default::default).insert(
+        "profile".to_owned(),
+        models::entities::attributes::AttributeValue::Str("fapi2".to_owned()),
+    );
+    clients::update(transaction, &client).await?;
+    Ok(true)
+}
+
 /// A person who can log in.
 pub struct Person<'a> {
     pub user_name: &'a str,

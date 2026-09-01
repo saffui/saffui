@@ -1,0 +1,8 @@
+[
+  {
+    "test-name": "fapi2-security-profile-final-ensure-signed-client-assertion-with-RS256-fails",
+    "variant": "*",
+    "configuration-filename": "*fapi.json",
+    "comment": "The clients publish EC P-256 keys alone, so the suite has no RSA key to sign an RS256 assertion with and skips itself. The refusal of RS256 client assertions is covered by the door accepting only what the key set can verify."
+  }
+]

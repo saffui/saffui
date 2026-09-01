@@ -31,6 +31,7 @@ pub struct Asked {
     pub nonce: Option<String>,
     pub code_challenge: Option<String>,
     pub code_challenge_method: Option<String>,
+    pub dpop_jkt: Option<String>,
     pub request: Option<String>,
     pub request_uri: Option<String>,
     /// How the client asked to be answered.
@@ -222,6 +223,7 @@ async fn start(
             nonce: asked.nonce.as_deref(),
             code_challenge: asked.code_challenge.as_deref(),
             code_challenge_method: asked.code_challenge_method.as_deref(),
+            dpop_jkt: asked.dpop_jkt.as_deref(),
             request: asked.request.as_deref(),
             request_uri: asked.request_uri.as_deref(),
             response_mode: asked.response_mode.as_deref(),

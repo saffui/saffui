@@ -18,6 +18,7 @@ fn code(hash: &str) -> AuthorizationCode {
         nonce: Some("n-1".to_owned()),
         code_challenge: Some("challenge".to_owned()),
         code_challenge_method: Some("S256".to_owned()),
+        dpop_jkt: None,
         auth_time: 1_700_000_000,
         acr: Some("gold".to_owned()),
         org_id: None,

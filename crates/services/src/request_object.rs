@@ -76,6 +76,7 @@ impl Carried {
             code_challenge_method: self
                 .text("code_challenge_method")
                 .or(outer.code_challenge_method),
+            dpop_jkt: self.text("dpop_jkt").or(outer.dpop_jkt),
             // Neither travels inside an object: one is what carried it.
             request: None,
             request_uri: None,

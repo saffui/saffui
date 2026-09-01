@@ -23,6 +23,7 @@ pub mod password;
 pub mod provider;
 pub mod secret;
 pub mod thumbprint;
+pub mod x509;
 
 /// The optional capabilities this build of the crypto crate carries, by the
 /// registry slugs. Spelled here because only this crate sees its own cfg.

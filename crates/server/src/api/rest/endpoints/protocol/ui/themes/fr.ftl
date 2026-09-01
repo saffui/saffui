@@ -120,3 +120,5 @@ flash-no-key-here = Ce navigateur ne peut pas utiliser de clé de sécurité ici
 flash-key-silent = La clé n'a pas répondu.
 org-choose-title = Choisissez une organisation pour continuer.
 flash-choice-needs-script = Choisir une organisation nécessite les scripts sur cette page.
+flash-no-such-code = Ce code n'est pas valable. Vérifiez-le sur votre appareil et réessayez.
+flash-device-expired = Cette connexion a expiré. Recommencez sur votre appareil.

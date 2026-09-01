@@ -9,6 +9,7 @@ pub mod ciba;
 pub mod client;
 pub mod context;
 pub mod detached;
+pub mod device;
 pub mod dpop;
 pub mod encryption;
 pub mod fapi;

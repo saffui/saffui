@@ -7,6 +7,7 @@ pub mod brokering;
 pub mod client;
 pub mod consent;
 pub mod credentials;
+pub mod device;
 pub mod export;
 pub mod keys;
 pub mod mail;

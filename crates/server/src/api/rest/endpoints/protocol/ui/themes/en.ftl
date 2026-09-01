@@ -120,3 +120,5 @@ flash-no-key-here = This browser cannot use a security key here.
 flash-key-silent = The key did not answer.
 org-choose-title = Choose an organization to continue.
 flash-choice-needs-script = Choosing an organization needs scripts enabled on this page.
+flash-no-such-code = That code does not stand. Check it on your device and try again.
+flash-device-expired = That sign-in has run out. Start again on your device.

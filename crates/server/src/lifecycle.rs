@@ -45,6 +45,20 @@ pub async fn converge_person(
             .map_err(|_| ())?;
         told.revoked += 1;
     }
+    // Time-bound access ends by the clock, whatever wrote it: a grant past
+    // its own end is taken back the way a rule's verdict is.
+    for role in birthright::expired_grants(transaction, &person.user_id, chrono::Utc::now())
+        .await
+        .map_err(|_| ())?
+    {
+        roles::revoke_from_user(transaction, &person.user_id, &role)
+            .await
+            .map_err(|_| ())?;
+        birthright::erase_grant(transaction, &person.user_id, &role)
+            .await
+            .map_err(|_| ())?;
+        told.revoked += 1;
+    }
     // The leaver's other half: due-nothing because switched off means no
     // standing session should keep working either.
     if !person.enabled && (told.revoked > 0 || !governed.is_empty()) {

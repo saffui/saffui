@@ -487,6 +487,24 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::POST,
+            pattern: "/admin/realms/{realm}/iga/grants",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::post().to(iga::put_grant)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/iga/grants/{user}",
+            action: AdminAction::IgaRead,
+            handler: Some(|| web::get().to(iga::grants_of)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/iga/grants/{user}/{role}",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::delete().to(iga::delete_grant)),
+        },
+        AdminRoute {
+            method: Method::POST,
             pattern: "/admin/realms/{realm}/iga/converge",
             action: AdminAction::IgaWrite,
             handler: Some(|| web::post().to(iga::converge)),

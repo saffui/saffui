@@ -367,6 +367,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V060__security_event_queue.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 61,
+            name: "timed_grants",
+            sql: include_str!("../migrations/V061__timed_grants.sql"),
+            transactional: true,
+        }),
     ]
 }
 

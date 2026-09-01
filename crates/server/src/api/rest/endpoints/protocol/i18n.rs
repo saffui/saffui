@@ -9,6 +9,7 @@ pub const TONGUES: [&str; 2] = ["en", "fr"];
 
 const TEMPLATE: &str = include_str!("ui/login.html");
 const DEVICE_TEMPLATE: &str = include_str!("ui/device.html");
+const REQUESTS_TEMPLATE: &str = include_str!("ui/requests.html");
 const STRINGS: [&str; 2] = [
     include_str!("ui/themes/en.ftl"),
     include_str!("ui/themes/fr.ftl"),
@@ -27,6 +28,12 @@ static DEVICE_PAGES: LazyLock<[String; 2]> = LazyLock::new(|| {
     [
         rendered(DEVICE_TEMPLATE, TONGUES[0], STRINGS[0]),
         rendered(DEVICE_TEMPLATE, TONGUES[1], STRINGS[1]),
+    ]
+});
+static REQUESTS_PAGES: LazyLock<[String; 2]> = LazyLock::new(|| {
+    [
+        rendered(REQUESTS_TEMPLATE, TONGUES[0], STRINGS[0]),
+        rendered(REQUESTS_TEMPLATE, TONGUES[1], STRINGS[1]),
     ]
 });
 
@@ -77,6 +84,12 @@ pub fn device_page_in(tongue: &str) -> &'static str {
     &DEVICE_PAGES[at]
 }
 
+/// The rendered doorbell page, where a person answers what waits on them.
+pub fn requests_page_in(tongue: &str) -> &'static str {
+    let at = TONGUES.iter().position(|held| *held == tongue).unwrap_or(0);
+    &REQUESTS_PAGES[at]
+}
+
 /// The template with every `{{name}}` replaced by that tongue's string,
 /// escaped on the way in: the strings are prose, and prose holds no markup.
 fn rendered(template: &str, tongue: &str, strings: &str) -> String {
@@ -125,7 +138,11 @@ mod tests {
     #[test]
     fn the_page_speaks_every_tongue_it_promises() {
         for tongue in TONGUES {
-            for page in [page_in(tongue), device_page_in(tongue)] {
+            for page in [
+                page_in(tongue),
+                device_page_in(tongue),
+                requests_page_in(tongue),
+            ] {
                 assert!(!page.contains("{{"), "an unresolved marker in {tongue}");
                 assert!(page.contains(&format!("<html lang=\"{tongue}\">")));
             }

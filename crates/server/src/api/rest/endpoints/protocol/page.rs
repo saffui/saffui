@@ -415,6 +415,15 @@ mod tests {
         for tongue in i18n::TONGUES {
             let page = i18n::page_in(tongue);
             for named in &asked {
+                // A capture ending in `-` is a family the script builds the
+                // rest of at runtime; the page has to carry at least one.
+                if let Some(family) = named.strip_suffix('-') {
+                    assert!(
+                        page.contains(&format!("id=\"{family}-")),
+                        "the script asks for `{family}-*`, which the {tongue} page does not carry"
+                    );
+                    continue;
+                }
                 assert!(
                     page.contains(&format!("id=\"{named}\"")),
                     "the script asks for `{named}`, which the {tongue} page does not carry"

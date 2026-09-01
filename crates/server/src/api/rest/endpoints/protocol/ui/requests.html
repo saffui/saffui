@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="{{lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ciba-title}}</title>
+<link rel="stylesheet" href="login.css">
+</head>
+<body>
+<main>
+  <h1>{{ciba-title}}</h1>
+  <p id="nothing" class="told" hidden>{{ciba-empty}}</p>
+  <div id="waiting"></div>
+  <p id="notice" role="alert" hidden></p>
+  <!-- What the script says, held here so the page speaks one language throughout. -->
+  <p id="signed-out" hidden>{{flash-doorbell-signed-out}}</p>
+  <p id="went-wrong" hidden>{{flash-went-wrong}}</p>
+  <p id="approve-word" hidden>{{ciba-approve}}</p>
+  <p id="decline-word" hidden>{{ciba-decline}}</p>
+</main>
+<script src="requests.js"></script>
+</body>
+</html>

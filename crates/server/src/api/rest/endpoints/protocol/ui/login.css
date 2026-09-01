@@ -176,3 +176,21 @@ a { color: var(--ink); }
   border-color: var(--border);
   text-align: left;
 }
+
+.doorbell {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.doorbell p { margin: 0 0 10px; font-size: 14.5px; word-break: break-word; }
+.doorbell button {
+  background: var(--brand-primary);
+  color: var(--brand-on-primary);
+  margin-right: 8px;
+}
+.doorbell button.decline {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--border);
+}

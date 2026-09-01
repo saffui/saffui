@@ -39,6 +39,13 @@ pub async fn create(
         )
         .await
         .map_err(|_| StoreError::Backend)?;
+    super::outbox::emit(
+        transaction,
+        super::outbox::CREDENTIAL_CHANGED,
+        &credential.user_id,
+        &serde_json::json!({ "credential_type": credential.credential_type }),
+    )
+    .await?;
     Ok(())
 }
 
@@ -129,10 +136,25 @@ pub async fn replace_secret(
     );
 
     let changed = transaction
-        .execute(statement.as_str(), &set.params())
+        .query(
+            &format!("{} RETURNING user_id, credential_type", statement.as_str()),
+            &set.params(),
+        )
         .await
         .map_err(|_| StoreError::Backend)?;
-    Ok(changed > 0)
+    let Some(row) = changed.first() else {
+        return Ok(false);
+    };
+    let user_id: String = row.get("user_id");
+    let credential_type: CredentialType = row.get("credential_type");
+    super::outbox::emit(
+        transaction,
+        super::outbox::CREDENTIAL_CHANGED,
+        &user_id,
+        &serde_json::json!({ "credential_type": credential_type }),
+    )
+    .await?;
+    Ok(true)
 }
 
 /// Remove a credential, and say whether there was one to remove.
@@ -165,13 +187,26 @@ pub async fn consume_otp_step(
 
 pub async fn delete(transaction: &Transaction<'_>, credential_id: &str) -> StoreResult<bool> {
     let removed = transaction
-        .execute(
-            "DELETE FROM user_credentials WHERE credential_id = $1",
+        .query(
+            "DELETE FROM user_credentials WHERE credential_id = $1 \
+             RETURNING user_id, credential_type",
             &[&credential_id],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
-    Ok(removed > 0)
+    let Some(row) = removed.first() else {
+        return Ok(false);
+    };
+    let user_id: String = row.get("user_id");
+    let credential_type: CredentialType = row.get("credential_type");
+    super::outbox::emit(
+        transaction,
+        super::outbox::CREDENTIAL_CHANGED,
+        &user_id,
+        &serde_json::json!({ "credential_type": credential_type }),
+    )
+    .await?;
+    Ok(true)
 }
 
 /// Which kinds a user holds, without any of the material.

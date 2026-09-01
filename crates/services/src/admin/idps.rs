@@ -152,6 +152,9 @@ pub async fn create_provider(
     } else if crate::outbound::is_outbound(&provider) {
         crate::outbound::Connector::parse(&provider)
             .map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    } else if crate::caep::is_receiver(&provider) {
+        crate::caep::Receiver::parse(&provider)
+            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
     } else {
         Upstream::parse(&provider).map_err(|why| Unwritable::Invalid(why.to_string()))?;
     }
@@ -208,6 +211,9 @@ pub async fn update_provider(
             .map_err(|why| Unwritable::Invalid(why.to_string()))?;
     } else if crate::outbound::is_outbound(&rewritten) {
         crate::outbound::Connector::parse(&rewritten)
+            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    } else if crate::caep::is_receiver(&rewritten) {
+        crate::caep::Receiver::parse(&rewritten)
             .map_err(|why| Unwritable::Invalid(why.to_string()))?;
     } else {
         Upstream::parse(&rewritten).map_err(|why| Unwritable::Invalid(why.to_string()))?;

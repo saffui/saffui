@@ -104,6 +104,7 @@ pub fn deliver_outbox_events(
     pool: deadpool_postgres::Pool,
     tenancy: store::tenancy::Tenancy,
     sealing: std::sync::Arc<crate::api::config::Sealing>,
+    origin: config::serving::PublicOrigin,
     every: Option<std::time::Duration>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let every = every?;
@@ -112,7 +113,7 @@ pub fn deliver_outbox_events(
         ticking.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticking.tick().await;
-            deliver_every_realm(&pool, &tenancy, &sealing, every.as_secs() as i64).await;
+            deliver_every_realm(&pool, &tenancy, &sealing, &origin, every.as_secs() as i64).await;
         }
     }))
 }
@@ -121,6 +122,7 @@ pub async fn deliver_every_realm(
     pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     sealing: &crate::api::config::Sealing,
+    origin: &config::serving::PublicOrigin,
     backoff_seconds: i64,
 ) {
     let Ok(connection) = pool.get().await else {
@@ -148,8 +150,15 @@ pub async fn deliver_every_realm(
         if !matches!(held, Ok(true)) {
             continue;
         }
-        match crate::federation::deliver_outbox(&transaction, sealing, &realm, backoff_seconds, now)
-            .await
+        match crate::federation::deliver_outbox(
+            &transaction,
+            sealing,
+            origin,
+            &realm,
+            backoff_seconds,
+            now,
+        )
+        .await
         {
             Ok(told) => {
                 if transaction.commit().await.is_ok() && (told.delivered + told.dead) > 0 {

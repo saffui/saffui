@@ -297,7 +297,11 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         plane.tenancy.clone(),
         plane.sealing.provider.clone(),
     );
-    let (plane_pool_for_outbox, tenancy_for_outbox) = (plane.pool.clone(), plane.tenancy.clone());
+    let (plane_pool_for_outbox, tenancy_for_outbox, origin_for_outbox) = (
+        plane.pool.clone(),
+        plane.tenancy.clone(),
+        plane.origin.clone(),
+    );
 
     // Bound with the other ports: a front asked for and not listenable fails
     // the deployment now, not on the first directory client. So does a key
@@ -362,6 +366,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         plane_pool_for_outbox,
         tenancy_for_outbox,
         synced_sealing,
+        origin_for_outbox,
         config::jobs::outbox_every().map_err(|reason| reason.to_string())?,
     );
 

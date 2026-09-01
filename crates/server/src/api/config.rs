@@ -116,6 +116,12 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 web::resource("/realms/{realm}/.well-known/openid-configuration")
                     .route(web::get().to(discovery::published)),
             )
+            // Shared Signals: where a receiver learns how to verify what this
+            // realm transmits, at the name the SSF spec fixes under the issuer.
+            .service(
+                web::resource("/realms/{realm}/.well-known/ssf-configuration")
+                    .route(web::get().to(discovery::ssf_configuration)),
+            )
             // The same document at the name RFC 8414 §3.1 gives it: the
             // well-known segment goes after the host and the issuer's path
             // after that, so a client that reads OAuth metadata and one that

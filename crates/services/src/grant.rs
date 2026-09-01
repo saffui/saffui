@@ -619,7 +619,7 @@ fn verify_code_challenge(
 }
 
 /// The active key of this algorithm, or of any when the realm has none of it.
-async fn preferred_key(
+pub(crate) async fn preferred_key(
     transaction: &Transaction<'_>,
     signing: &Signing<'_>,
     algorithm: SignAlg,

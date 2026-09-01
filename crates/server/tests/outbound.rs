@@ -122,8 +122,14 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     assert_eq!(status, StatusCode::CREATED, "{told}");
 
     // One outbox pass, run the way the job runs it.
-    server::jobs::deliver_every_realm(&plane.pool(), &plane.tenancy(), &support::sealing(), 1)
-        .await;
+    server::jobs::deliver_every_realm(
+        &plane.pool(),
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
 
     // The mirror holds her, tied by our identifier.
     let (status, found) = asked(
@@ -156,8 +162,14 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    server::jobs::deliver_every_realm(&plane.pool(), &plane.tenancy(), &support::sealing(), 1)
-        .await;
+    server::jobs::deliver_every_realm(
+        &plane.pool(),
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
     let (_, shown) = asked(
         &plane,
         Method::GET,
@@ -178,8 +190,14 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    server::jobs::deliver_every_realm(&plane.pool(), &plane.tenancy(), &support::sealing(), 1)
-        .await;
+    server::jobs::deliver_every_realm(
+        &plane.pool(),
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
     let (status, _) = asked(
         &plane,
         Method::GET,
@@ -191,6 +209,12 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // Running the pass again moves nothing: everything due was delivered.
-    server::jobs::deliver_every_realm(&plane.pool(), &plane.tenancy(), &support::sealing(), 1)
-        .await;
+    server::jobs::deliver_every_realm(
+        &plane.pool(),
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
 }

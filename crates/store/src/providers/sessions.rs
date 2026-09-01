@@ -161,13 +161,24 @@ pub async fn set_state(
 /// End a session, and everything a client got out of it.
 pub async fn close(transaction: &Transaction<'_>, session_id: &str) -> StoreResult<bool> {
     let removed = transaction
-        .execute(
-            "DELETE FROM user_sessions WHERE session_id = $1",
+        .query(
+            "DELETE FROM user_sessions WHERE session_id = $1 RETURNING user_id",
             &[&session_id],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
-    Ok(removed > 0)
+    let Some(row) = removed.first() else {
+        return Ok(false);
+    };
+    let user_id: String = row.get("user_id");
+    super::outbox::emit(
+        transaction,
+        super::outbox::SESSION_REVOKED,
+        &user_id,
+        &serde_json::json!({ "session_id": session_id }),
+    )
+    .await?;
+    Ok(true)
 }
 
 /// Remove the logins that have run out, and say how many went. Their client
@@ -189,10 +200,20 @@ pub async fn end_all_of_user(transaction: &Transaction<'_>, user_id: &str) -> St
         )
         .await
         .map_err(|_| StoreError::Backend)?;
-    transaction
+    let removed = transaction
         .execute("DELETE FROM user_sessions WHERE user_id = $1", &[&user_id])
         .await
-        .map_err(|_| StoreError::Backend)
+        .map_err(|_| StoreError::Backend)?;
+    if removed > 0 {
+        super::outbox::emit(
+            transaction,
+            super::outbox::SESSION_REVOKED,
+            user_id,
+            &serde_json::json!({ "all": true }),
+        )
+        .await?;
+    }
+    Ok(removed)
 }
 
 pub async fn drop_expired_sessions(

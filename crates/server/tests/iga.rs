@@ -86,8 +86,14 @@ async fn roles_of(plane: &Plane, user_id: &str) -> Vec<String> {
 }
 
 async fn walked(plane: &Plane) {
-    server::jobs::deliver_every_realm(&plane.pool(), &plane.tenancy(), &support::sealing(), 1)
-        .await;
+    server::jobs::deliver_every_realm(
+        &plane.pool(),
+        &plane.tenancy(),
+        &support::sealing(),
+        &support::origin(),
+        1,
+    )
+    .await;
 }
 
 #[tokio::test]

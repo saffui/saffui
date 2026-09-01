@@ -4,6 +4,7 @@ pub mod authz_surface;
 pub mod backchannel;
 pub mod birthright;
 pub mod brokering;
+pub mod caep_queue;
 pub mod client_scopes;
 pub mod clients;
 pub mod consents;

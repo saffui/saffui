@@ -586,9 +586,28 @@ pub async fn deliver_outbox(
                     landed = false;
                     continue;
                 };
-                let bearer = opened_bearer(transaction, sealing, context, row).await;
-                if !push_set(receiver, bearer.as_deref(), &set).await {
-                    landed = false;
+                match receiver.delivery {
+                    // A collector's tokens wait here; queueing is delivery.
+                    services::caep::Delivery::Poll => {
+                        if store::providers::caep_queue::queue(
+                            transaction,
+                            &row.internal_id,
+                            &set.token_id,
+                            &set.token,
+                            set.expires_at,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            landed = false;
+                        }
+                    }
+                    services::caep::Delivery::Push => {
+                        let bearer = opened_bearer(transaction, sealing, context, row).await;
+                        if !push_set(receiver, bearer.as_deref(), &set.token).await {
+                            landed = false;
+                        }
+                    }
                 }
             }
         }
@@ -624,7 +643,7 @@ pub async fn deliver_outbox(
     Ok(told)
 }
 
-async fn opened_bearer(
+pub(crate) async fn opened_bearer(
     transaction: &deadpool_postgres::Transaction<'_>,
     sealing: &crate::api::config::Sealing,
     context: &store::tenancy::TenantContext,
@@ -660,7 +679,9 @@ async fn opened_bearer(
 /// Hand one Security Event Token to one receiver, RFC 8935: a POST whose
 /// body is the token, acknowledged with a bare success.
 async fn push_set(receiver: &services::caep::Receiver, bearer: Option<&str>, set: &str) -> bool {
-    let endpoint = receiver.endpoint.clone();
+    let Some(endpoint) = receiver.endpoint.clone() else {
+        return false;
+    };
     let bearer = bearer.map(str::to_owned);
     let set = set.to_owned();
     tokio::task::spawn_blocking(move || {

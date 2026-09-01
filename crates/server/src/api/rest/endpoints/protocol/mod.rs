@@ -19,5 +19,6 @@ pub mod par;
 pub mod recovery;
 pub mod registration;
 pub mod revoke;
+pub mod ssf;
 pub mod token;
 pub mod userinfo;

@@ -44,6 +44,7 @@ pub async fn ssf_configuration(
         "jwks_uri": format!("{issuer}/protocol/openid-connect/certs"),
         "delivery_methods_supported": [
             "urn:ietf:rfc:8935",
+            "urn:ietf:rfc:8936",
         ],
     }))
 }

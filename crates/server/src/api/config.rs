@@ -17,7 +17,7 @@ use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::rest::endpoints::protocol::{
     answering, authorize, broker, ciba, discovery, introspect, keys, login, logout, page, par,
-    recovery, registration, revoke, token, userinfo,
+    recovery, registration, revoke, ssf, token, userinfo,
 };
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
@@ -122,6 +122,8 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 web::resource("/realms/{realm}/.well-known/ssf-configuration")
                     .route(web::get().to(discovery::ssf_configuration)),
             )
+            // Where a collecting receiver comes for its events, RFC 8936.
+            .service(web::resource("/realms/{realm}/ssf/poll").route(web::post().to(ssf::poll)))
             // The same document at the name RFC 8414 §3.1 gives it: the
             // well-known segment goes after the host and the issuer's path
             // after that, so a client that reads OAuth metadata and one that

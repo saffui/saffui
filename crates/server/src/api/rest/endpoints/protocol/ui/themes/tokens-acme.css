@@ -1,0 +1,69 @@
+/* Acme Bank — realm tokens. Institutional, deep blue, square corners.
+   Served per realm (generated from the realm's TOML). Components read
+   these variables only; no component carries a hard-coded value. */
+
+[data-realm="acme"] {
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --radius: 0px;
+  --radius-field: 0px;
+  --radius-pill: 0px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --card-max: 420px;
+  --card-border-width: 1px;
+  --card-shadow: 0 1px 2px rgb(15 25 45 / 0.10);
+  --field-border-width: 1px;
+  --button-weight: 600;
+  --button-transform: none;
+  --logo-radius: 0px;
+}
+
+[data-realm="acme"][data-theme="light"] {
+  --bg: #eef1f5;
+  --surface: #ffffff;
+  --surface-alt: #f5f7fa;
+  --ink: #14181f;
+  --ink-muted: #4f5b6b;
+  --border: #ccd4df;
+  --border-strong: #9fabbb;
+  --field-bg: #ffffff;
+  --brand-primary: #12305e;
+  --brand-primary-hover: #0d2447;
+  --brand-on-primary: #ffffff;
+  --brand-tint: #e7edf6;
+  --link: #12305e;
+  --danger: #9d251c;
+  --danger-bg: #fbeceb;
+  --danger-border: #e3b6b2;
+  --success: #1c6b47;
+  --focus: #12305e;
+}
+
+[data-realm="acme"][data-theme="dark"] {
+  --bg: #0a0f16;
+  --surface: #131a24;
+  --surface-alt: #1a2230;
+  --ink: #e8edf4;
+  --ink-muted: #97a4b5;
+  --border: #26313f;
+  --border-strong: #3b4859;
+  --field-bg: #0e141c;
+  --brand-primary: #9dbdf0;
+  --brand-primary-hover: #b8cef5;
+  --brand-on-primary: #0a0f16;
+  --brand-tint: #16202e;
+  --link: #9dbdf0;
+  --danger: #ff9b8f;
+  --danger-bg: #2a1615;
+  --danger-border: #5c2b26;
+  --success: #6fd3a4;
+  --focus: #9dbdf0;
+}

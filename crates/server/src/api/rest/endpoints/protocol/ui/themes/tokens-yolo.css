@@ -1,0 +1,68 @@
+/* Yolo — realm tokens. Startup, vivid violet + coral, rounded corners.
+   Same variable names as tokens-acme.css: only the values differ. */
+
+[data-realm="yolo"] {
+  --font-sans: "Outfit", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --radius: 20px;
+  --radius-field: 12px;
+  --radius-pill: 999px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  --card-max: 420px;
+  --card-border-width: 0px;
+  --card-shadow: 0 18px 40px rgb(60 30 140 / 0.14);
+  --field-border-width: 1.5px;
+  --button-weight: 700;
+  --button-transform: none;
+  --logo-radius: 999px;
+}
+
+[data-realm="yolo"][data-theme="light"] {
+  --bg: #f6f2ff;
+  --surface: #ffffff;
+  --surface-alt: #f4efff;
+  --ink: #1b1430;
+  --ink-muted: #665d80;
+  --border: #e0d8f7;
+  --border-strong: #bfb0ec;
+  --field-bg: #faf8ff;
+  --brand-primary: #6234e8;
+  --brand-primary-hover: #4e28c4;
+  --brand-on-primary: #ffffff;
+  --brand-tint: #efe9ff;
+  --link: #5a2fd9;
+  --danger: #c62b46;
+  --danger-bg: #fdecef;
+  --danger-border: #f3bcc7;
+  --success: #147a5c;
+  --focus: #ff5a5f;
+}
+
+[data-realm="yolo"][data-theme="dark"] {
+  --bg: #120e1f;
+  --surface: #1d1731;
+  --surface-alt: #262040;
+  --ink: #f3effe;
+  --ink-muted: #a79dc6;
+  --border: #322a4d;
+  --border-strong: #4a3f70;
+  --field-bg: #17122a;
+  --brand-primary: #b79bff;
+  --brand-primary-hover: #cbb6ff;
+  --brand-on-primary: #17112a;
+  --brand-tint: #241c3d;
+  --link: #b79bff;
+  --danger: #ff90a2;
+  --danger-bg: #2c1621;
+  --danger-border: #5b2a3a;
+  --success: #6fd8b4;
+  --focus: #ff7a80;
+}

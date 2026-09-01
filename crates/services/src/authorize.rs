@@ -52,6 +52,9 @@ pub struct Requested<'a> {
     /// The organization this login should act within, by slug. Resolved and
     /// enforced once the user is known, never taken on faith.
     pub organization: Option<&'a str>,
+    /// OIDC Core §3.1.2.1 `ui_locales`: the tongues the client would like the
+    /// pages in, space separated, most wanted first. Advisory by the spec.
+    pub ui_locales: Option<&'a str>,
 }
 
 /// Where the browser goes next.
@@ -362,15 +365,15 @@ pub async fn begin(
         // The user is known here, so the organization is answerable here: a
         // pinned one they do not belong to refuses the request before a code
         // exists to argue about.
-        let acting = crate::organization::resolve_organization(
+        let acting = auth::organization::resolve_organization(
             transaction,
             &login.user_id,
             requested.organization,
         )
         .await
         .map_err(|reason| match reason {
-            crate::organization::Unresolved::Refused => Refusal::Redirect("access_denied"),
-            crate::organization::Unresolved::Unreadable => Refusal::Unshowable("unavailable"),
+            auth::organization::Unresolved::Refused => Refusal::Redirect("access_denied"),
+            auth::organization::Unresolved::Unreadable => Refusal::Unshowable("unavailable"),
         })?;
         let landing = crate::minting::mint_code(
             transaction,
@@ -507,6 +510,8 @@ async fn start_login(
                 // nothing more: it is resolved against the user only once
                 // there is one.
                 "organization": requested.organization,
+                // Advisory: the pages read it before the browser's own list.
+                "ui_locales": requested.ui_locales,
                 // How the answer travels. Kept because by the time the flow
                 // finishes, the request that named it is gone.
                 "response_mode": mode.as_str(),

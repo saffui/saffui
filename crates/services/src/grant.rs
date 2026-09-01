@@ -1125,7 +1125,7 @@ pub async fn refresh_token(
     // user still belongs. One who has left gets a realm-level token: the stale
     // claim is dropped rather than carried, and never trusted on its own.
     let org_kept = match verified.claims.get("org_id").and_then(Value::as_str) {
-        Some(org) => crate::organization::still_a_member(transaction, org, &subject.user_id).await,
+        Some(org) => auth::organization::still_a_member(transaction, org, &subject.user_id).await,
         None => false,
     };
     let carries = |named: &&str| *named != "org_id" && *named != "org_name" || org_kept;

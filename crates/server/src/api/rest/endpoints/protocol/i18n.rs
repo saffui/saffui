@@ -31,18 +31,30 @@ pub fn spoken(accept: Option<&str>) -> &'static str {
     accept
         .into_iter()
         .flat_map(|held| held.split(','))
-        .filter_map(|asked| {
-            let primary = asked
-                .split(';')
-                .next()?
-                .trim()
-                .split('-')
-                .next()?
-                .to_ascii_lowercase();
-            TONGUES.into_iter().find(|tongue| *tongue == primary)
-        })
+        .filter_map(first_spoken_of)
         .next()
         .unwrap_or(TONGUES[0])
+}
+
+/// The first spoken tongue a `ui_locales` value names, OIDC Core §3.1.2.1:
+/// space separated, most wanted first. `None` when it names only tongues the
+/// pages do not speak, so the browser's own list can still answer.
+pub fn first_spoken(ui_locales: &str) -> Option<&'static str> {
+    ui_locales
+        .split_whitespace()
+        .filter_map(first_spoken_of)
+        .next()
+}
+
+fn first_spoken_of(asked: &str) -> Option<&'static str> {
+    let primary = asked
+        .split(';')
+        .next()?
+        .trim()
+        .split('-')
+        .next()?
+        .to_ascii_lowercase();
+    TONGUES.into_iter().find(|tongue| *tongue == primary)
 }
 
 /// The rendered page in the given tongue; anything unspoken gets the first.
@@ -106,6 +118,20 @@ mod tests {
         assert!(page_in("en").contains("<title>Sign in</title>"));
         assert!(page_in("fr").contains("<title>Se connecter</title>"));
         assert!(page_in("nothing-spoken").contains("<title>Sign in</title>"));
+    }
+
+    /// `ui_locales` is space separated and advisory: the first spoken tongue
+    /// answers, and a list naming none leaves the browser's list to answer.
+    #[test]
+    fn ui_locales_speaks_first_and_yields_when_unspoken() {
+        for (asked, told) in [
+            ("fr-CA fr en", Some("fr")),
+            ("de en-GB", Some("en")),
+            ("de ja", None),
+            ("", None),
+        ] {
+            assert_eq!(first_spoken(asked), told, "{asked:?}");
+        }
     }
 
     /// The browser's list is read in its own order, by primary tag, first

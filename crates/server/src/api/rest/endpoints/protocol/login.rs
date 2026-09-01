@@ -40,6 +40,8 @@ pub struct Answered {
     pub verify_email: Option<String>,
     /// What the consent screen answered: `granted` or `refused`.
     pub consent: Option<String>,
+    /// Which organization the chooser answered, by slug.
+    pub organization: Option<String>,
 }
 
 /// How the answer arrived, which is how the outcome is told.
@@ -251,6 +253,7 @@ pub async fn answer(
             Some("refused") => Some(false),
             _ => None,
         },
+        answered.organization.as_deref(),
         &federations,
         now,
     )
@@ -429,6 +432,21 @@ pub async fn answer(
                         }),
                     ),
                     Spoken::Form => shown(&page, "consent"),
+                },
+                Step::Organization { held } => match spoken {
+                    Spoken::Json => uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(
+                        serde_json::json!({
+                            "status": "organization",
+                            "organizations": held
+                                .iter()
+                                .map(|choice| serde_json::json!({
+                                    "name": choice.name,
+                                    "display_name": choice.display_name,
+                                }))
+                                .collect::<Vec<_>>(),
+                        }),
+                    ),
+                    Spoken::Form => shown(&page, "choice-needs-script"),
                 },
                 Step::LockedOut { until } => {
                     tracing::warn!(until, "login locked out");

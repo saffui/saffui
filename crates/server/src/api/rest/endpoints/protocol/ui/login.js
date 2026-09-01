@@ -41,6 +41,8 @@
   const button = document.getElementById("continue");
   const allow = document.getElementById("allow");
   const deny = document.getElementById("deny");
+  const whichOrg = document.getElementById("which-org");
+  const whichOrgList = document.getElementById("which-org-list");
 
   // What the script says, it reads off the page, so the page's tongue is the
   // script's tongue too.
@@ -64,6 +66,7 @@
     key.hidden = !keyOn;
     app.hidden = !appOn;
     asking.hidden = true;
+    whichOrg.hidden = true;
     button.hidden = false;
   }
 
@@ -82,7 +85,32 @@
     key.hidden = true;
     app.hidden = true;
     asking.hidden = false;
+    whichOrg.hidden = true;
     // The two buttons are the answer, so the form's own has nothing to do.
+    button.hidden = true;
+  }
+
+  // The organizations the person could sign in as, one button each. Written
+  // as text and never as markup: the names travel from the store.
+  function offer(told) {
+    whichOrgList.replaceChildren();
+    (told.organizations || []).forEach(function (org) {
+      const pick = document.createElement("button");
+      pick.type = "button";
+      pick.textContent = org.display_name || org.name;
+      pick.addEventListener("click", function () {
+        answered.organization = org.name;
+        round();
+      });
+      whichOrgList.appendChild(pick);
+    });
+    credentials.hidden = true;
+    code.hidden = true;
+    key.hidden = true;
+    app.hidden = true;
+    asking.hidden = true;
+    whichOrg.hidden = false;
+    // The buttons are the answer, so the form's own has nothing to do.
     button.hidden = true;
   }
 
@@ -165,6 +193,10 @@
     }
     if (told.status === "consent") {
       ask(told);
+      return;
+    }
+    if (told.status === "organization") {
+      offer(told);
       return;
     }
     if (told.status === "locked-out") {

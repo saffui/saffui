@@ -166,3 +166,13 @@ a { color: var(--ink); }
 [hidden], .flash { display: none; }
 /* The fragment names the outcome, and the element it names shows itself. */
 #code:target, .flash:target { display: block; }
+
+#which-org > p { font-size: 14.5px; }
+#which-org-list button {
+  width: 100%;
+  margin-top: 8px;
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--border);
+  text-align: left;
+}

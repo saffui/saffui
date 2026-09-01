@@ -38,6 +38,11 @@ pub enum Step {
         client_name: String,
         scopes: Vec<String>,
     },
+    /// Several organizations could answer for this person and nothing picks
+    /// one, so the person is asked which they are signing in as.
+    Organization {
+        held: Vec<crate::organization::Choice>,
+    },
     /// The person is established, and the login is over. What is done with that
     /// belongs to whatever asked for the login: a redirect URI and a response
     /// mode are the protocol's, and holding them here would mean rewriting this
@@ -114,6 +119,8 @@ pub async fn answer_step(
     signing: Option<&store::keyring::Signing<'_>>,
     // What the person answered to the consent screen, when they answered.
     consented: Option<bool>,
+    // Which organization the person chose, when the screen asked.
+    organization: Option<&str>,
     // The directories this realm federates from, first-asked first.
     federations: &[crate::login::directory::Named<'_>],
     now: DateTime<Utc>,
@@ -314,6 +321,32 @@ pub async fn answer_step(
                             error: "access_denied",
                             login: Box::new(login.clone()),
                         });
+                    }
+                }
+            }
+
+            // Which organization, when several could answer and nothing picks
+            // one. Asked here for the reason consent is: the person is
+            // established, and nothing is minted yet. The answer is written
+            // into the notes as if the request had pinned it, and the same
+            // resolution that enforces a pin enforces this one.
+            let mut login = login;
+            if noted(&login.notes, "organization").is_none()
+                && let Some(held) =
+                    crate::organization::offer_choices(transaction, &subject.user_id)
+                        .await
+                        .map_err(|_| Unanswerable::Unreadable)?
+            {
+                match organization.filter(|slug| held.iter().any(|choice| choice.name == *slug)) {
+                    // Not answered yet, or answered something never offered:
+                    // the screen is shown, or shown again.
+                    None => return Ok(Step::Organization { held }),
+                    Some(slug) => {
+                        let chosen = serde_json::json!({ "organization": slug });
+                        login::record_step(transaction, &login.session_id, None, None, &chosen)
+                            .await
+                            .map_err(|_| Unanswerable::Unreadable)?;
+                        login.notes["organization"] = serde_json::Value::from(slug);
                     }
                 }
             }

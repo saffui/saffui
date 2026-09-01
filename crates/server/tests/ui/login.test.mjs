@@ -215,3 +215,27 @@ test("the script is written for an engine that predates async", () => {
   assert.doesNotMatch(code, /\bawait\b/);
   assert.doesNotMatch(code, /XMLHttpRequest/, "a transport whose answer nothing waits for");
 });
+
+test("an organization chooser offers each name, and the pick rides the next round", async () => {
+  const page = opened({
+    rounds: [
+      { told: { status: "organization", organizations: [
+        { name: "acme", display_name: "Acme Corp" },
+        { name: "beta", display_name: "Beta LLC" },
+      ] } },
+      { told: { status: "admitted", redirect_to: "https://app.example/done" } },
+    ],
+  });
+  await page.signIn();
+
+  const list = page.element("which-org-list");
+  assert.equal(page.element("which-org").hidden, false);
+  assert.equal(page.element("credentials").hidden, true);
+  assert.deepEqual(list.text, ["Acme Corp", "Beta LLC"]);
+
+  list.children[1].fire("click");
+  await page.settle();
+  assert.equal(page.sent.length, 2);
+  assert.equal(page.sent[1].body.organization, "beta");
+  assert.deepEqual(page.went, ["https://app.example/done"]);
+});

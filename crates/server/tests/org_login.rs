@@ -124,6 +124,35 @@ async fn answered(plane: &Plane, binding: &str) -> (Value, Vec<String>) {
     (test::read_body_json(response).await, cookies)
 }
 
+/// Answer the chooser round with the organization named.
+async fn chosen(plane: &Plane, binding: &str, organization: &str) -> (Value, Vec<String>) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/login"))
+            .insert_header((
+                "cookie",
+                format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+            ))
+            .set_json(serde_json::json!({
+                "username": support::SUBJECT,
+                "password": support::PASSWORD,
+                "organization": organization,
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookies: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    (test::read_body_json(response).await, cookies)
+}
+
 /// Sign in with the organization the query names, and say where the browser
 /// was sent.
 async fn signed_in(plane: &Plane, organization: Option<&str>) -> String {
@@ -348,20 +377,32 @@ async fn with_nothing_pinned_the_memberships_decide() {
         .await;
     assert_eq!(claims["org_id"], acme.as_str(), "{claims}");
 
-    // Two memberships and no voice: refused, because guessing would hand the
-    // client a confinement nobody chose.
+    // Two memberships and no voice: the person is asked, not guessed for. A
+    // choice that was never offered redraws the screen; the chosen one rides
+    // into the tokens as if the request had pinned it.
     let beta = born_org(&plane, &bearer, "beta", "Beta LLC").await;
     plane.add_org_member(&beta, support::SUBJECT).await;
     let binding = opened(&plane, None).await;
     let (told, _) = answered(&plane, &binding).await;
-    assert_eq!(told["status"], "sent_back", "{told}");
+    assert_eq!(told["status"], "organization", "{told}");
+    let offered = told["organizations"].as_array().expect("choices");
+    assert_eq!(offered.len(), 2, "{told}");
     assert!(
-        told["redirect_to"]
-            .as_str()
-            .expect("a landing")
-            .contains("error=access_denied"),
+        offered
+            .iter()
+            .any(|choice| choice["name"] == "beta" && choice["display_name"] == "Beta LLC"),
         "{told}"
     );
+    let (told, _) = chosen(&plane, &binding, "nowhere").await;
+    assert_eq!(told["status"], "organization", "{told}");
+    let (told, _) = chosen(&plane, &binding, "beta").await;
+    assert_eq!(told["status"], "admitted", "{told}");
+    let granted = redeemed(&plane, told["redirect_to"].as_str().expect("a landing")).await;
+    let claims = plane
+        .claims_of(granted["access_token"].as_str().unwrap())
+        .await;
+    assert_eq!(claims["org_id"], beta.as_str(), "{claims}");
+    assert_eq!(claims["org_name"], "Beta LLC", "{claims}");
 
     // The user's verified mail domain is a voice, and it may only name an
     // organization they belong to.

@@ -142,10 +142,8 @@ async fn a_realm_wears_its_own_tokens() {
     assert!(!stylesheet(&plane).await.contains("#12305e"));
 }
 
-async fn opened_login(plane: &Plane, organization: Option<&str>) -> String {
-    let pinned = organization
-        .map(|slug| format!("&organization={slug}"))
-        .unwrap_or_default();
+async fn opened_login(plane: &Plane, extra_query: &str) -> String {
+    let pinned = extra_query;
     let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
     let response = test::call_service(
         &app,
@@ -258,19 +256,21 @@ async fn an_organization_dresses_over_the_realm() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
     // No organization named: the realm's look and nothing more.
-    let plain = stylesheet_holding(&plane, &opened_login(&plane, None).await).await;
+    let plain = stylesheet_holding(&plane, &opened_login(&plane, "").await).await;
     assert!(plain.contains("#12305e"), "{plain}");
     assert!(!plain.contains("#a0325a"));
 
     // Named: the organization's overrides ride after the realm's, so they win.
-    let dressed = stylesheet_holding(&plane, &opened_login(&plane, Some("acme")).await).await;
+    let dressed =
+        stylesheet_holding(&plane, &opened_login(&plane, "&organization=acme").await).await;
     let realm_at = dressed.find("#12305e").expect("the realm's look");
     let org_at = dressed.find("#a0325a").expect("the organization's look");
     assert!(realm_at < org_at, "the cascade is backwards");
     assert!(dressed.contains("--radius:3px;"), "{dressed}");
 
     // A name that resolves to nothing dresses nothing, and breaks nothing.
-    let fallback = stylesheet_holding(&plane, &opened_login(&plane, Some("nowhere")).await).await;
+    let fallback =
+        stylesheet_holding(&plane, &opened_login(&plane, "&organization=nowhere").await).await;
     assert!(fallback.contains("#12305e"));
     assert!(!fallback.contains("#a0325a"));
 
@@ -284,6 +284,56 @@ async fn an_organization_dresses_over_the_realm() {
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let bare = stylesheet_holding(&plane, &opened_login(&plane, Some("acme")).await).await;
+    let bare = stylesheet_holding(&plane, &opened_login(&plane, "&organization=acme").await).await;
     assert!(!bare.contains("#a0325a"));
+}
+
+/// `ui_locales` rides the login and outranks the browser's list on the page
+/// this login shows; a list naming no spoken tongue leaves the browser's
+/// list to answer, and a page fetched outside any login follows the browser.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_client_may_ask_the_page_tongue_for_its_login() {
+    let plane = Plane::with_actions(&[]).await;
+
+    let binding = opened_login(&plane, "&ui_locales=fr-CA%20fr").await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let asked = |cookie: Option<String>, accept: &'static str| {
+        let mut request = test::TestRequest::get()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/login"))
+            .insert_header(("accept-language", accept));
+        if let Some(cookie) = cookie {
+            request = request.insert_header(("cookie", cookie));
+        }
+        request.to_request()
+    };
+
+    let response = test::call_service(
+        &app,
+        asked(
+            Some(format!("{}={binding}", support::AUTH_SESSION_COOKIE)),
+            "en-US",
+        ),
+    )
+    .await;
+    let page = String::from_utf8(test::read_body(response).await.to_vec()).expect("a page");
+    assert!(page.contains("<html lang=\"fr\">"), "the client's say lost");
+
+    // The same login, no cookie on the fetch: the browser's list answers.
+    let response = test::call_service(&app, asked(None, "en-US")).await;
+    let page = String::from_utf8(test::read_body(response).await.to_vec()).expect("a page");
+    assert!(page.contains("<html lang=\"en\">"), "{page:.100}");
+
+    // A list naming nothing spoken: the browser's list answers too.
+    let binding = opened_login(&plane, "&ui_locales=de%20ja").await;
+    let response = test::call_service(
+        &app,
+        asked(
+            Some(format!("{}={binding}", support::AUTH_SESSION_COOKIE)),
+            "fr-FR",
+        ),
+    )
+    .await;
+    let page = String::from_utf8(test::read_body(response).await.to_vec()).expect("a page");
+    assert!(page.contains("<html lang=\"fr\">"), "the fallback lost");
 }

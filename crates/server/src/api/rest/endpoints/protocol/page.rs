@@ -104,19 +104,42 @@ pub fn escaped(value: &str) -> String {
         .collect()
 }
 
-pub async fn login(request: actix_web::HttpRequest) -> HttpResponse {
-    page(&request)
+/// The tongue the login this browser holds asked for, OIDC Core §3.1.2.1:
+/// the client's `ui_locales` rode the login's notes, and it outranks the
+/// browser's own list, because the client knows what tongue its person chose
+/// in the application. Advisory, so anything unreadable here reads as no
+/// say, and the browser's list answers.
+async fn asked_tongue(
+    request: &actix_web::HttpRequest,
+    pool: &deadpool_postgres::Pool,
+    tenancy: &store::tenancy::Tenancy,
+    realm: &str,
+) -> Option<&'static str> {
+    let binding = super::binding::read(request, super::binding::AUTH_SESSION)?;
+    let mut connection = pool.get().await.ok()?;
+    let context = store::tenancy::resolve::realm_by_name(&connection, realm)
+        .await
+        .ok()?;
+    let transaction = tenancy.transaction(&mut connection, &context).await.ok()?;
+    let login = store::providers::login::resume(&transaction, &binding)
+        .await
+        .ok()??;
+    let wanted = login.notes.get("ui_locales")?.as_str()?.to_owned();
+    i18n::first_spoken(&wanted)
 }
 
-/// The sign-in page in the tongue the browser asked for, told which it got
-/// and that the answer varies by the asking.
-fn page(request: &actix_web::HttpRequest) -> HttpResponse {
-    let tongue = i18n::spoken(
-        request
-            .headers()
-            .get("accept-language")
-            .and_then(|value| value.to_str().ok()),
-    );
+/// The sign-in page in the tongue asked for, the request's own say first and
+/// the browser's list otherwise, told which it got and that the answer
+/// varies by the asking.
+fn page(request: &actix_web::HttpRequest, asked: Option<&'static str>) -> HttpResponse {
+    let tongue = asked.unwrap_or_else(|| {
+        i18n::spoken(
+            request
+                .headers()
+                .get("accept-language")
+                .and_then(|value| value.to_str().ok()),
+        )
+    });
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
         .insert_header(("Content-Language", tongue))
@@ -254,6 +277,8 @@ fn serve(content_type: &'static str, body: &'static str) -> HttpResponse {
 pub async fn magic_link(
     request: actix_web::HttpRequest,
     realm: web::Path<String>,
+    pool: web::Data<deadpool_postgres::Pool>,
+    tenancy: web::Data<store::tenancy::Tenancy>,
     asked: web::Query<Followed>,
 ) -> HttpResponse {
     let asked = asked.into_inner();
@@ -271,7 +296,8 @@ pub async fn magic_link(
                 .map(|token| ("verify_email", token))
         });
     let Some((named, token)) = followed else {
-        return page(&request);
+        let asked = asked_tongue(&request, &pool, &tenancy, &realm).await;
+        return page(&request, asked);
     };
     let body = LINK_PAGE
         .replace(
@@ -328,7 +354,7 @@ pub async fn reset_password(
         asked.token.filter(|held| !held.is_empty()),
         asked.user.filter(|held| !held.is_empty()),
     ) else {
-        return page(&request);
+        return page(&request, None);
     };
     let body = RESET_PAGE
         .replace(
@@ -405,6 +431,7 @@ mod tests {
         for named in [
             "challenge",
             "consent",
+            "organization",
             "locked-out",
             "refused",
             "admitted",

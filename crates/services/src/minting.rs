@@ -60,7 +60,7 @@ pub struct Authorized<'a> {
     /// The organization this login acts within, already resolved against the
     /// user. Frozen for the same reason as `acr`: what the code attests is
     /// what was true when it was minted.
-    pub org: Option<&'a crate::organization::Acting>,
+    pub org: Option<&'a auth::organization::Acting>,
     /// The `claims` the request named, as the store keeps them.
     pub claims: Option<&'a Value>,
 }
@@ -238,7 +238,7 @@ pub async fn landed(
     // known only now, so this is where it is resolved and enforced. A refusal
     // is the client's answer, not a failed login: the person is signed in, and
     // the client is told no.
-    let acting = match crate::organization::resolve_organization(
+    let acting = match auth::organization::resolve_organization(
         transaction,
         &admitted.user_id,
         noted(notes, "organization"),
@@ -246,10 +246,10 @@ pub async fn landed(
     .await
     {
         Ok(acting) => acting,
-        Err(crate::organization::Unresolved::Refused) => {
+        Err(auth::organization::Unresolved::Refused) => {
             return Ok(refused(&admitted.login, "access_denied", issuer));
         }
-        Err(crate::organization::Unresolved::Unreadable) => {
+        Err(auth::organization::Unresolved::Unreadable) => {
             return Err(Unanswerable::Unreadable);
         }
     };

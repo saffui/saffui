@@ -118,3 +118,5 @@ flash-locked-out = Trop de tentatives échouées. La connexion est suspendue un 
 flash-went-wrong = Une erreur est survenue. Réessayez.
 flash-no-key-here = Ce navigateur ne peut pas utiliser de clé de sécurité ici.
 flash-key-silent = La clé n'a pas répondu.
+org-choose-title = Choisissez une organisation pour continuer.
+flash-choice-needs-script = Choisir une organisation nécessite les scripts sur cette page.

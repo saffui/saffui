@@ -42,6 +42,10 @@
       <button type="button" id="allow">{{consent-accept}}</button>
       <button type="button" id="deny">{{consent-decline}}</button>
     </div>
+    <div id="which-org" hidden>
+      <p>{{org-choose-title}}</p>
+      <div id="which-org-list"></div>
+    </div>
     <button type="submit" id="continue">{{action-continue}}</button>
   </form>
   <p id="notice" role="alert" hidden></p>
@@ -52,6 +56,7 @@
   <p id="wrong-browser" class="flash" role="alert">{{flash-wrong-browser}}</p>
   <p id="consent" class="flash" role="alert">{{flash-consent}}</p>
   <p id="locked-out" class="flash" role="alert">{{flash-locked-out}}</p>
+  <p id="choice-needs-script" class="flash" role="alert">{{flash-choice-needs-script}}</p>
   <!-- What the script says, held here so the page speaks one language throughout. -->
   <p id="went-wrong" hidden>{{flash-went-wrong}}</p>
   <p id="no-key-here" hidden>{{flash-no-key-here}}</p>

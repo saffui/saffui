@@ -393,3 +393,82 @@ pub async fn organization_members(
         })?;
     Ok(HttpResponse::Ok().json(members))
 }
+
+/// The organization's stored theme, or `null` when it wears the realm's look.
+pub async fn get_organization_theme(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, org_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    store::providers::organizations::load(&transaction, &org_id)
+        .await
+        .map_err(|_| internal())?
+        .ok_or_else(|| ApiError::new(ErrorCode::OrganizationNotFound))?;
+    let held = store::providers::organizations::theme_of(&transaction, &org_id)
+        .await
+        .map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(held.unwrap_or(serde_json::Value::Null)))
+}
+
+/// Dress the organization, over the realm's look. The same door as the
+/// realm's: refused whole on the first token the pages do not read or the
+/// first value that could leave its declaration.
+pub async fn set_organization_theme(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+    body: web::Json<serde_json::Value>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, org_id) = path.into_inner();
+    let asked = body.into_inner();
+    if let Err(why) = services::theme::css_of(&asked) {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            why.to_owned(),
+        ));
+    }
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let worn = store::providers::organizations::set_theme(&transaction, &org_id, Some(&asked))
+        .await
+        .map_err(|_| internal())?;
+    if !worn {
+        return Err(ApiError::new(ErrorCode::OrganizationNotFound));
+    }
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
+/// Undress the organization; its pages fall back to the realm's look.
+pub async fn clear_organization_theme(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, org_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let undressed = store::providers::organizations::set_theme(&transaction, &org_id, None)
+        .await
+        .map_err(|_| internal())?;
+    if !undressed {
+        return Err(ApiError::new(ErrorCode::OrganizationNotFound));
+    }
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}

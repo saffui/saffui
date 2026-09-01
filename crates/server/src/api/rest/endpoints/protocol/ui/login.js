@@ -19,6 +19,16 @@
     return;
   }
 
+  // Cosmetic only: the path names the realm, and the header wears it. The
+  // POST target never depends on this.
+  const realmOf = window.location.pathname.match(/\/realms\/([^/]+)\//);
+  if (realmOf) {
+    const named = decodeURIComponent(realmOf[1]);
+    const header = document.getElementById("realm");
+    document.getElementById("realm-name").textContent = named;
+    document.getElementById("realm-mark").textContent = named.slice(0, 2).toUpperCase();
+    header.hidden = false;
+  }
   const form = document.getElementById("login");
   const credentials = document.getElementById("credentials");
   const code = document.getElementById("code");

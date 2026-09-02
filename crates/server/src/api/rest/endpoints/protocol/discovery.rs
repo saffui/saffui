@@ -95,8 +95,10 @@ pub async fn published(
         .as_ref()
         .is_some_and(|realm| realm.require_pushed_authorization_requests);
     let tongues = crate::api::rest::endpoints::protocol::i18n::RealmTongues::of(
-        held.as_ref().and_then(|realm| realm.supported_locales.as_deref()),
-        held.as_ref().and_then(|realm| realm.default_locale.as_deref()),
+        held.as_ref()
+            .and_then(|realm| realm.supported_locales.as_deref()),
+        held.as_ref()
+            .and_then(|realm| realm.default_locale.as_deref()),
     );
     let mapped = held
         .and_then(|realm| realm.acr_loa_map)

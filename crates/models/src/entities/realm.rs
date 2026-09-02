@@ -521,8 +521,7 @@ impl RealmUpdateModel {
             realm.require_pushed_authorization_requests = require_pushed;
         }
         if let Some(supported_locales) = self.supported_locales {
-            realm.supported_locales =
-                (!supported_locales.is_empty()).then_some(supported_locales);
+            realm.supported_locales = (!supported_locales.is_empty()).then_some(supported_locales);
         }
         if let Some(default_locale) = self.default_locale {
             realm.default_locale = (!default_locale.is_empty()).then_some(default_locale);

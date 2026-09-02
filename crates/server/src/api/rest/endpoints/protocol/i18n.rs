@@ -88,11 +88,7 @@ impl RealmTongues {
         let offered: Vec<&'static str> = match supported {
             Some(named) if !named.is_empty() => TONGUES
                 .into_iter()
-                .filter(|tongue| {
-                    named
-                        .iter()
-                        .any(|asked| asked.eq_ignore_ascii_case(tongue))
-                })
+                .filter(|tongue| named.iter().any(|asked| asked.eq_ignore_ascii_case(tongue)))
                 .collect(),
             _ => TONGUES.to_vec(),
         };

@@ -77,7 +77,10 @@ mod tests {
         let (kind, caching, body) = served("").await;
         assert!(kind.starts_with("text/html"), "{kind}");
         assert_eq!(caching, "no-cache");
-        assert!(body.windows(9).any(|held| held == b"<div id=\""), "not the shell");
+        assert!(
+            body.windows(9).any(|held| held == b"<div id=\""),
+            "not the shell"
+        );
 
         let (kind, caching, spa) = served("main/users").await;
         assert!(kind.starts_with("text/html"), "{kind}");

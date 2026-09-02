@@ -243,7 +243,13 @@ function changesOf(which: Group): RealmUpdate {
 async function saveGroup() {
   failed.value = "";
   try {
-    adopt(await reshapeRealm(realm.value, changesOf(group.value)));
+    adopt(
+      await reshapeRealm(
+        realm.value,
+        changesOf(group.value),
+        say(`settings-group-${group.value}`),
+      ),
+    );
     } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }

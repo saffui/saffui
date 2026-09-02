@@ -41,6 +41,7 @@ async function anchor() {
     await api<unknown>(adminPath(realm.value, "journal/anchors"), {
       method: "POST",
       json: { witness: witness.value.trim(), receipt: receipt.value.trim() },
+      subject: say("journal-anchors"),
     });
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);

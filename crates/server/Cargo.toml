@@ -43,6 +43,10 @@ ldap3 = { version = "0.11", default-features = false, features = ["tls-native"] 
 # the same strings a themed deployment would translate.
 fluent-bundle = "0.15"
 unic-langid = "0.9"
+# The admin console, embedded at build time when the feature asks for it: one
+# binary carries the whole plane. Building with the feature requires
+# `pnpm --dir admin build` to have produced admin/dist first.
+include_dir = { version = "0.7", optional = true }
 lettre = { workspace = true }
 async-trait = { workspace = true }
 
@@ -51,6 +55,9 @@ async-trait = { workspace = true }
 # system Kerberos libraries, and a deployment that does not negotiate
 # should not carry them.
 kerberos = ["dep:cross-krb5"]
+# Serve the admin console from inside the binary, under /console. Off by
+# default so a build never fails on a front nobody built.
+embedded-admin = ["dep:include_dir"]
 
 [dev-dependencies]
 # The client half of a SPNEGO exchange, so the bench can hold a real ticket.

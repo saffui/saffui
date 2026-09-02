@@ -58,10 +58,12 @@ services:
       - provision
       - --tenant=local
       - --realm=main
+      - --console-redirect=http://localhost:8080/console/login/return
       - --console-redirect=http://localhost:5173/callback
       - --client=${SAFFUI_CLIENT_ID:-conformance}
       - --redirect=${SAFFUI_CLIENT_REDIRECT:-https://localhost.emobix.co.uk:8443/test/a/saffui/callback}
       - --user=ada
+      - --administrator
       - --email=ada@example.test
       - --given-name=Ada
       - --family-name=Lovelace

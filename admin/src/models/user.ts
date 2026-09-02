@@ -9,6 +9,15 @@ export interface UserBrief {
   family_name: string | null;
   phone_number: string | null;
   required_actions: string[];
+  created_at: string | null;
+  /// Where the account's truth lives: "local", or "ldap" for a shadow.
+  origin: string | null;
+}
+
+/// The single-user read: the brief, plus what the listing keeps to itself.
+export interface UserFull extends UserBrief {
+  attributes: Record<string, { Str?: string } | string> | null;
+  identity_providers: string[];
 }
 
 /// Mirrors the `GET .../users/{user}/lockout` answer.

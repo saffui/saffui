@@ -643,3 +643,17 @@ subject-execution = flow step { $step }
 subject-rule = the birthright rule
 subject-converge = the rule walk
 subject-hand-grant = { $role } for { $user }
+
+## Paging, honesty chips, and the user identity card.
+paging-size = Per page
+settings-not-enforced = not enforced yet
+user-identifier = Identifier
+user-identifier-help = What grants, sessions and the journal point at. It is fixed at creation and never changes; today it is the username itself.
+user-born = Created
+user-born-unknown = unrecorded
+user-origin = Origin
+user-idp-links = Signs in via
+user-idp-none = this realm only
+user-attributes = Attributes
+user-attributes-help = The account's custom attributes, beyond the profile fields above. They feed policies and token claims.
+user-password-reveal = Show or hide the password

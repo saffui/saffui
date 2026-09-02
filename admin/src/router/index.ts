@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
 import { useSession } from "@/stores/session";
+import { rememberPath } from "@/services/auth";
 
 const routes: RouteRecordRaw[] = [
   { path: "/login", component: () => import("@/pages/login/LoginPage.vue") },
@@ -94,6 +95,17 @@ router.beforeEach((to) => {
     session.preview();
   }
   if (to.path.startsWith("/login")) return true;
-  if (!session.signedIn) return "/login";
+  if (!session.signedIn) {
+    // A reload lost the in-memory tokens, not the server's session cookie.
+    // When the path already names a realm, start the sign-in right away and
+    // come back here; the login page is only for not knowing the realm.
+    const realm = typeof to.params.realm === "string" ? to.params.realm : "";
+    if (realm) {
+      rememberPath(to.fullPath);
+      void session.login(realm);
+      return false;
+    }
+    return "/login";
+  }
   return true;
 });

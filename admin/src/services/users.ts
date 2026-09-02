@@ -10,6 +10,7 @@ import type {
   RoleBrief,
   SessionBrief,
   UserBrief,
+  UserFull,
 } from "@/models/user";
 
 export async function listUsers(
@@ -17,11 +18,11 @@ export async function listUsers(
   first: number,
   max: number,
 ): Promise<Page<UserBrief>> {
-  return api<Page<UserBrief>>(`${adminPath(realm, "users")}?first=${first}&max=${max}&count=true`);
+  return api<Page<UserBrief>>(`${adminPath(realm, "users")}?first=${first}&max=${max}`);
 }
 
-export async function getUser(realm: string, userId: string): Promise<UserBrief> {
-  return api<UserBrief>(adminPath(realm, `users/${encodeURIComponent(userId)}`));
+export async function getUser(realm: string, userId: string): Promise<UserFull> {
+  return api<UserFull>(adminPath(realm, `users/${encodeURIComponent(userId)}`));
 }
 
 export async function getLockout(realm: string, userId: string): Promise<Lockout> {

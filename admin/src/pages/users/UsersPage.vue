@@ -9,12 +9,18 @@ import AppToggle from "@/components/AppToggle.vue";
 import type { Page } from "@/models/paging";
 import type { UserBrief } from "@/models/user";
 import UserDrawer from "./UserDrawer.vue";
+import AppPaging from "@/components/AppPaging.vue";
 
-const PAGE_SIZE = 25;
 const route = useRoute();
 const router = useRouter();
 const realm = computed(() => String(route.params.realm));
 const first = ref(0);
+const size = ref(25);
+function resize(asked: number) {
+  size.value = asked;
+  first.value = 0;
+  void load();
+}
 const page = ref<Page<UserBrief> | null>(null);
 const failed = ref("");
 
@@ -26,7 +32,7 @@ const opened = computed(() => {
 async function load() {
   failed.value = "";
   try {
-    page.value = await listUsers(realm.value, first.value, PAGE_SIZE);
+    page.value = await listUsers(realm.value, first.value, size.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -98,10 +104,6 @@ async function makeUser() {
   }
 }
 
-const shownTotal = computed(() => {
-  const total = page.value?.total;
-  return total === null || total === undefined ? "" : new Intl.NumberFormat().format(total);
-});
 </script>
 
 <template>
@@ -115,7 +117,6 @@ const shownTotal = computed(() => {
       >
         {{ say("user-new") }}
       </button>
-      <span v-if="shownTotal" class="font-mono text-[11px] text-faint">{{ shownTotal }}</span>
     </div>
 
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
@@ -170,25 +171,14 @@ const shownTotal = computed(() => {
       </table>
     </div>
 
-    <div v-if="page" class="mt-3 flex items-center gap-2 text-[11px] text-muted">
-      <button
-        type="button"
-        class="rounded-md border border-border px-2 py-1 hover:bg-surface-2 disabled:opacity-40"
-        :disabled="first === 0"
-        @click="first = Math.max(0, first - PAGE_SIZE)"
-      >
-        {{ say("paging-previous") }}
-      </button>
-      <button
-        type="button"
-        class="rounded-md border border-border px-2 py-1 hover:bg-surface-2 disabled:opacity-40"
-        :disabled="page.items.length < PAGE_SIZE"
-        @click="first = first + PAGE_SIZE"
-      >
-        {{ say("paging-next") }}
-      </button>
-      <span class="font-mono">{{ first + 1 }}&ndash;{{ first + page.items.length }}</span>
-    </div>
+    <AppPaging
+      v-if="page"
+      :first="first"
+      :count="page.items.length"
+      :size="size"
+      @update:first="first = $event"
+      @update:size="resize"
+    />
 
     <AppDrawer
       v-if="making"

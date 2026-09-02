@@ -104,7 +104,7 @@ export async function listFeatures() {
 /// One page of the sign-in log, newest first.
 export async function listSignInEvents(realm: string, first: number, max: number) {
   return api<import("@/models/paging").Page<import("@/models/events").SignInEvent>>(
-    adminPath(realm, `sign-in-events?first=${first}&max=${max}&count=true`),
+    adminPath(realm, `sign-in-events?first=${first}&max=${max}`),
   );
 }
 

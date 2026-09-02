@@ -105,10 +105,6 @@ function joined(member: OrgMember): string {
               class="ml-auto inline-flex items-center gap-1.5 text-[10.5px]"
               :class="domain.verified ? 'text-ok' : 'text-warn'"
             >
-              <span
-                class="size-1.5 rounded-full"
-                :class="domain.verified ? 'bg-ok' : 'bg-warn'"
-              ></span>
               {{ domain.verified ? say("org-domain-verified") : say("org-domain-pending") }}
             </span>
           </div>

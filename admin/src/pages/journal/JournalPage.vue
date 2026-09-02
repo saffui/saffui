@@ -69,7 +69,6 @@ function instant(epoch: number): string {
         class="inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[10.5px]"
         :class="chain.holds ? 'border-ok/40 text-ok' : 'border-danger/40 text-danger'"
       >
-        <span class="size-1.5 rounded-full" :class="chain.holds ? 'bg-ok' : 'bg-danger'"></span>
         {{
           chain.holds
             ? say("overview-chain-holds", { count: chain.entries })

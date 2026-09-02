@@ -23,6 +23,7 @@ import {
   Plus,
   Eye,
   EyeOff,
+  BadgeCheck,
   type LucideProps,
 } from "lucide-vue-next";
 import type { FunctionalComponent } from "vue";
@@ -48,6 +49,7 @@ const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
   plus: Plus,
   eye: Eye,
   "eye-off": EyeOff,
+  verified: BadgeCheck,
 };
 
 const props = defineProps<{ name: keyof typeof GLYPHS; size?: number }>();

@@ -59,7 +59,7 @@ export async function forgetRealmTheme(realm: string): Promise<void> {
 export async function rotateRegistrationSecret(realm: string): Promise<string> {
   const drawn = await api<{ registration_secret: string }>(
     adminPath(realm, "registration-secret"),
-    { method: "POST" },
+    { method: "POST", quiet: true },
   );
   return drawn.registration_secret;
 }

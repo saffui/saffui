@@ -6,9 +6,9 @@ import { ref } from "vue";
 import { Info } from "lucide-vue-next";
 import { say } from "@/i18n";
 
-const props = defineProps<{ name: string }>();
+const props = defineProps<{ name?: string; text?: string }>();
 const open = ref(false);
-const text = () => say(props.name);
+const text = () => props.text ?? (props.name ? say(props.name) : "");
 </script>
 
 <template>

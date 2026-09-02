@@ -54,3 +54,22 @@ export async function writeRealmTheme(
 export async function forgetRealmTheme(realm: string): Promise<void> {
   await api<void>(adminPath(realm, "theme"), { method: "DELETE" });
 }
+
+/// Draw the secret protected registration is opened with; answered once.
+export async function rotateRegistrationSecret(realm: string): Promise<string> {
+  const drawn = await api<{ registration_secret: string }>(
+    adminPath(realm, "registration-secret"),
+    { method: "POST" },
+  );
+  return drawn.registration_secret;
+}
+
+export async function forgetRegistrationSecret(realm: string): Promise<void> {
+  await api<void>(adminPath(realm, "registration-secret"), { method: "DELETE" });
+}
+
+/// What this build carries and what is on. Read-only by nature: the gating
+/// is compile-time.
+export async function listFeatures() {
+  return api<import("@/models/feature").FeatureBrief[]>("/admin/features");
+}

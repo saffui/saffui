@@ -1,7 +1,17 @@
 import { useSession } from "@/stores/session";
+import { say } from "@/i18n";
+import { toastRefused } from "@/services/toasts";
 
-/// One door to the admin API: bearer attached, JSON both ways, a refusal
-/// thrown with the server's own words so pages can show them.
+/// Console-side hints for refusals whose server message states what happened
+/// but not what to do about it. Keyed by the catalogue's error_code slug.
+const HINTS: Record<string, string> = {
+  forbidden: "toast-hint-forbidden",
+  unauthorized: "toast-hint-unauthorized",
+};
+
+/// One door to the admin API: bearer attached, JSON both ways. A refusal is
+/// thrown with the server's own words, and every failed write also lands on
+/// the toast rail so the person is told even when a page swallows the throw.
 export async function api<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
   const session = useSession();
   const bearer = await session.bearer();
@@ -23,7 +33,18 @@ export async function api<T>(path: string, init?: RequestInit & { json?: unknown
   }
   if (!answer.ok) {
     const told = await answer.json().catch(() => ({}));
-    throw new ApiError(answer.status, String(told.detail ?? told.error ?? answer.statusText));
+    const message = String(told.message ?? told.detail ?? told.error ?? answer.statusText);
+    const code = typeof told.error_code === "string" ? told.error_code : "";
+    const refusal = new ApiError(answer.status, message, code);
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method !== "GET") {
+      toastRefused(
+        say("toast-refused", { status: answer.status }),
+        message,
+        code && HINTS[code] ? say(HINTS[code]) : undefined,
+      );
+    }
+    throw refusal;
   }
   if (answer.status === 204) return undefined as T;
   return (await answer.json()) as T;
@@ -31,9 +52,12 @@ export async function api<T>(path: string, init?: RequestInit & { json?: unknown
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  /// The catalogue slug the server named, "" when it named none.
+  code: string;
+  constructor(status: number, message: string, code = "") {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 

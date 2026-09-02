@@ -36,13 +36,18 @@ export interface RealmSettings {
   revoke_refresh_token: boolean | null;
   refresh_token_max_reuse: number | null;
   access_token_lifespan: number | null;
+  refresh_token_lifespan: number | null;
+  session_max_lifespan: number;
   offline_session_lifespan: number | null;
   offline_session_max_lifespan: number;
   max_offline_grants: number;
   action_tokens_lifespan: number | null;
   access_code_lifespan: number | null;
   access_code_lifespan_login: number | null;
+  access_code_lifespan_user_action: number | null;
   not_before: number | null;
+  acr_loa_map: Record<string, number> | null;
+  attributes: Record<string, unknown> | null;
   ssl_enforcement: string | null;
   password_policy: unknown;
   brute_force: BruteForce;
@@ -74,13 +79,18 @@ export interface RealmUpdate {
   revoke_refresh_token?: boolean;
   refresh_token_max_reuse?: number;
   access_token_lifespan?: number;
+  refresh_token_lifespan?: number;
+  session_max_lifespan?: number;
   offline_session_lifespan?: number;
   offline_session_max_lifespan?: number;
   max_offline_grants?: number;
   action_tokens_lifespan?: number;
   access_code_lifespan?: number;
   access_code_lifespan_login?: number;
+  access_code_lifespan_user_action?: number;
   not_before?: number;
+  acr_loa_map?: Record<string, number>;
+  attributes?: Record<string, string>;
   client_registration?: "disabled" | "open" | "protected";
   brute_force?: BruteForce;
   registration_bounds?: {

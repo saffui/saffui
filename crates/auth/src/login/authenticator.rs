@@ -516,13 +516,11 @@ fn burn(
     }
 }
 
-/// How far either side of now a code is still accepted.
-///
-/// One step, which is thirty seconds at the usual period. It buys tolerance for
-/// a clock that drifts and a user who types slowly, and it costs acceptance
-/// width: a code stays good for `period * (2 * WINDOW + 1)`, ninety seconds
-/// here, which is exactly why the step it was accepted at has to be spent.
-const WINDOW: u32 = 1;
+/// How far either side of now a code is still accepted, when the realm has
+/// not said: one step. It buys tolerance for a clock that drifts and a user
+/// who types slowly, and it costs acceptance width, a code staying good for
+/// `period * (2 * window + 1)`, which is exactly why the step it was
+/// accepted at has to be spent.
 
 /// A time-based code, against what the realm stores.
 async fn totp(
@@ -572,6 +570,15 @@ async fn totp(
     };
     let secret = SecretBox::new(Box::new(secret));
 
+    // The credential keeps its own shape; the drift window is the realm's
+    // one live knob over codes already enrolled.
+    let window = store::providers::realms::of_context(transaction)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|realm| realm.otp_policy)
+        .unwrap_or_default()
+        .window;
     let step = totp_verify_step(
         provider.hmac(),
         &secret,
@@ -581,7 +588,7 @@ async fn totp(
             digits,
             hash: algorithm.hash(),
         },
-        WINDOW,
+        window,
     );
     let Ok(Some(step)) = step else {
         return Outcome::Failed;

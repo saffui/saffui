@@ -20,7 +20,7 @@ import { useSession } from "@/stores/session";
 import type { FeatureBrief } from "@/models/feature";
 import { ApiError } from "@/services/http";
 import type { MailBrief } from "@/models/mail";
-import { OWASP_HASHING } from "@/models/realm";
+import { OTP_DEFAULTS, OWASP_HASHING } from "@/models/realm";
 import type { PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 
 const GROUPS = [
@@ -124,6 +124,10 @@ const POLICY_CHECKS = [
   ["not_birthdate", "policy-not-birthdate"],
 ] as const;
 
+/// What a fresh authenticator app enrolment is set up with, plus the one
+/// live knob over enrolled codes: the drift window.
+const otp = ref({ ...OTP_DEFAULTS });
+
 /// The password policy, spread into fields; the hashing block rides along
 /// untouched because the server requires it whole.
 const policy = ref({
@@ -191,6 +195,7 @@ function adopt(held: RealmSettings) {
   }));
   offeredTongues.value = held.supported_locales ?? [...TONGUES];
   defaultTongue.value = held.default_locale ?? "";
+  otp.value = { ...(held.otp_policy ?? OTP_DEFAULTS) };
   const rules = held.password_policy;
   policy.value = {
     min_length: rules?.min_length ?? "",
@@ -340,6 +345,7 @@ function changesOf(which: Group): RealmUpdate {
     hashing: rules.hashing,
   };
   changes.password_policy = written;
+  changes.otp_policy = { ...otp.value };
   return changes;
 }
 
@@ -894,6 +900,54 @@ async function removeMail() {
                 {{ say("settings-secret-once") }}
               </p>
             </template>
+
+            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("otp-title") }} <AppHint name="otp-title-help" />
+            </div>
+            <div class="grid grid-cols-4 gap-3">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("otp-digits") }} <AppHint name="otp-digits-help" />
+                <select
+                  v-model.number="otp.digits"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                >
+                  <option :value="6">6</option>
+                  <option :value="7">7</option>
+                  <option :value="8">8</option>
+                </select>
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("otp-period") }} <AppHint name="otp-period-help" />
+                <input
+                  v-model.number="otp.period"
+                  type="number"
+                  min="15"
+                  max="300"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("otp-algorithm") }} <AppHint name="otp-algorithm-help" />
+                <select
+                  v-model="otp.algorithm"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                >
+                  <option value="SHA1">SHA1</option>
+                  <option value="SHA256">SHA256</option>
+                  <option value="SHA512">SHA512</option>
+                </select>
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("otp-window") }} <AppHint name="otp-window-help" />
+                <input
+                  v-model.number="otp.window"
+                  type="number"
+                  min="0"
+                  max="4"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+            </div>
 
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("settings-password-policy") }} <AppHint name="settings-password-policy-help" />

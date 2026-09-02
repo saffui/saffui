@@ -35,10 +35,7 @@ const VERIFY_COOLDOWN: i64 = 60;
 
 /// What a fresh authenticator app is enrolled with: RFC 6238's defaults, which
 /// every app reads without being told.
-const TOTP_DIGITS: u32 = 6;
-const TOTP_PERIOD: u64 = 30;
 const TOTP_SECRET_BYTES: usize = 20;
-const TOTP_WINDOW: u32 = 1;
 
 /// What the caller sent for whichever ceremony is running.
 #[derive(Debug, Default, Clone, Copy)]
@@ -146,6 +143,7 @@ pub async fn required(
 /// The start leg of an authenticator app: a fresh secret, shown once as the
 /// URI an app scans and as text for the one that cannot, and remembered.
 fn start_totp(provider: &dyn CryptoProvider, realm: &RealmModel, subject: &UserModel) -> Enrolment {
+    let policy = realm.otp_policy.unwrap_or_default();
     let mut secret = vec![0u8; TOTP_SECRET_BYTES];
     if provider.rand().fill(&mut secret).is_err() {
         return Enrolment::Refused;
@@ -157,9 +155,13 @@ fn start_totp(provider: &dyn CryptoProvider, realm: &RealmModel, subject: &UserM
         &realm.display_name
     };
     let otpauth = format!(
-        "otpauth://totp/{issuer}:{account}?secret={encoded}&issuer={issuer}&algorithm=SHA1&digits={TOTP_DIGITS}&period={TOTP_PERIOD}",
+        "otpauth://totp/{issuer}:{account}?secret={encoded}&issuer={issuer}\
+         &algorithm={algorithm}&digits={digits}&period={period}",
         issuer = percent(issuer),
         account = percent(&subject.user_name),
+        algorithm = policy.algorithm.as_str(),
+        digits = policy.digits,
+        period = policy.period,
     );
     Enrolment::Asked {
         named: CONFIGURE_TOTP,
@@ -190,18 +192,27 @@ async fn finish_totp(
     let Ok(code) = typed.split_whitespace().collect::<String>().parse::<u32>() else {
         return Enrolment::Refused;
     };
+    // The same policy the start leg wrote into the app's URI: read fresh
+    // off the realm, because the parameters the app enrolled with are the
+    // only ones its codes will ever match.
+    let policy = store::providers::realms::of_context(transaction)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|realm| realm.otp_policy)
+        .unwrap_or_default();
     let params = TotpParams {
-        period: TOTP_PERIOD,
-        digits: TOTP_DIGITS,
-        hash: HashAlg::Sha1,
+        period: policy.period,
+        digits: policy.digits,
+        hash: policy.algorithm.hash(),
     };
     let secret = SecretBox::new(Box::new(secret));
-    let Ok(Some(step)) = totp_verify_step(provider.hmac(), &secret, code, params, TOTP_WINDOW)
+    let Ok(Some(step)) = totp_verify_step(provider.hmac(), &secret, code, params, policy.window)
     else {
         return Enrolment::Refused;
     };
 
-    let Ok(parameters) = OtpParameters::totp(TOTP_DIGITS, TOTP_PERIOD) else {
+    let Ok(parameters) = OtpParameters::totp(policy.digits, policy.period) else {
         return Enrolment::Refused;
     };
     let mut drawn = [0u8; 16];
@@ -214,7 +225,7 @@ async fn finish_totp(
         tenant.realm_id.clone(),
         subject.user_id.clone(),
         CredentialSecret::new(encoded.to_owned()),
-        OtpAlgorithm::Sha1,
+        policy.algorithm,
         parameters,
         AuditableModel::from_creator(tenant.tenant.clone(), subject.user_id.clone()),
     );

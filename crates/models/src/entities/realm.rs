@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::entities::credentials::OtpAlgorithm;
+
 use crypto::provider::Argon2Params;
 
 use crate::auditable::AuditableModel;
@@ -101,6 +103,38 @@ pub struct PasswordPolicy {
     pub history_look_back: Option<u32>,
     /// What a stored password costs to compute.
     pub hashing: Argon2Params,
+}
+
+/// What a newly enrolled authenticator app is set up with, and how much
+/// clock drift a login tolerates.
+///
+/// Enrolment policy first: a credential keeps the parameters it was minted
+/// with, so changing this reshapes the next enrolment and never breaks a
+/// code already in someone's app. The window is the one live knob: how many
+/// steps either side of now a code is still accepted, at every login.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OtpPolicy {
+    pub digits: u32,
+    /// Seconds per step.
+    pub period: u64,
+    pub algorithm: OtpAlgorithm,
+    /// Steps of drift tolerated either side of now.
+    pub window: u32,
+}
+
+impl Default for OtpPolicy {
+    fn default() -> Self {
+        // What every realm did before it could say: six digits, thirty
+        // seconds, SHA1 (the one digest every authenticator app implements),
+        // one step of drift.
+        OtpPolicy {
+            digits: 6,
+            period: 30,
+            algorithm: OtpAlgorithm::Sha1,
+            window: 1,
+        }
+    }
 }
 
 /// Who the password is for, of what the policy compares against.
@@ -343,6 +377,9 @@ pub struct RealmModel {
     /// Which top-level flow answers `/authorize` when the client binds
     /// none. None keeps the built default, the flow aliased `browser`.
     pub browser_flow: Option<String>,
+    /// What a new authenticator app enrolment is set up with. None keeps
+    /// the built defaults.
+    pub otp_policy: Option<OtpPolicy>,
     /// Which built tongues this realm offers. None offers them all.
     pub supported_locales: Option<Vec<String>>,
     /// The tongue that answers when the browser says nothing. None takes the
@@ -410,6 +447,7 @@ impl RealmCreateModel {
             access_code_lifespan_user_action: None,
             access_code_lifespan_login: None,
             browser_flow: None,
+            otp_policy: None,
             supported_locales: None,
             default_locale: None,
             master_admin_client: None,
@@ -464,6 +502,8 @@ pub struct RealmUpdateModel {
     /// Which top-level flow answers `/authorize` for clients binding none.
     /// Empty clears back to the built default.
     pub browser_flow: Option<String>,
+    /// What a new authenticator app enrolment is set up with.
+    pub otp_policy: Option<OtpPolicy>,
     /// Which built tongues this realm offers. None leaves it unchanged; an
     /// empty list offers them all.
     pub supported_locales: Option<Vec<String>>,
@@ -526,6 +566,9 @@ impl RealmUpdateModel {
         }
         if let Some(require_pushed) = self.require_pushed_authorization_requests {
             realm.require_pushed_authorization_requests = require_pushed;
+        }
+        if let Some(otp_policy) = self.otp_policy {
+            realm.otp_policy = Some(otp_policy);
         }
         if let Some(browser_flow) = self.browser_flow {
             realm.browser_flow = (!browser_flow.is_empty()).then_some(browser_flow);

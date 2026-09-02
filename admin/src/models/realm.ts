@@ -48,6 +48,7 @@ export interface RealmSettings {
   not_before: number | null;
   acr_loa_map: Record<string, number> | null;
   attributes: Record<string, unknown> | null;
+  otp_policy: OtpPolicy | null;
   browser_flow: string | null;
   supported_locales: string[] | null;
   default_locale: string | null;
@@ -76,6 +77,16 @@ export interface PasswordPolicy {
   history_look_back: number | null;
   hashing: { m_cost: number; t_cost: number; p_cost: number; output_len: number };
 }
+
+/// Mirrors `models::entities::realm::OtpPolicy`; defaults mirror the
+/// server's own (6 digits, 30 s, SHA1, 1 step).
+export interface OtpPolicy {
+  digits: number;
+  period: number;
+  algorithm: "SHA1" | "SHA256" | "SHA512";
+  window: number;
+}
+export const OTP_DEFAULTS: OtpPolicy = { digits: 6, period: 30, algorithm: "SHA1", window: 1 };
 
 /// `crypto::provider::Argon2Params::default()`: the OWASP 2024 baseline.
 export const OWASP_HASHING = { m_cost: 19456, t_cost: 2, p_cost: 1, output_len: 32 };
@@ -119,6 +130,7 @@ export interface RealmUpdate {
   not_before?: number;
   acr_loa_map?: Record<string, number>;
   attributes?: Record<string, string>;
+  otp_policy?: OtpPolicy;
   browser_flow?: string;
   supported_locales?: string[];
   default_locale?: string;

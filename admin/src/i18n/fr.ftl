@@ -1,0 +1,87 @@
+# Chaînes de la console saffui (fr). Clés partagées avec en.ftl.
+
+console-name = saffui
+nav-overview = Vue d'ensemble
+nav-directory = Annuaire
+nav-users = Utilisateurs
+nav-roles = Rôles
+nav-groups = Groupes
+nav-organizations = Organisations
+nav-clients = Clients
+nav-scopes = Étendues client
+nav-authentication = Authentification
+nav-authorization = Autorisation
+nav-federation = Fédération
+nav-governance = Gouvernance
+nav-events = Événements
+nav-settings = Réglages
+nav-keys = Clés
+nav-theme = Thème
+nav-features = Fonctions
+nav-portability = Portabilité
+
+topbar-search = Rechercher ou aller à
+topbar-realm = Realm
+action-sign-out = Se déconnecter
+
+login-title = console saffui
+login-lede = Administrez un realm avec la connexion du realm.
+login-realm = Realm
+login-continue = Continuer
+login-failed = Cette connexion n'a pas abouti. Réessayez.
+
+overview-title = Vue d'ensemble
+overview-empty = Rien à montrer pour le moment. Les mesures arrivent ici avec l'usage du realm.
+
+overview-users = Utilisateurs
+overview-clients = Clients
+overview-organizations = Organisations
+overview-keys = Clés de signature
+overview-attention = À traiter
+overview-fix = Corriger
+overview-quiet = Rien à traiter.
+attention-no-signing-key = Ce realm n'a aucune clé de signature ; rien ne peut être émis avant d'en frapper une.
+attention-no-mail = La messagerie n'est pas configurée : liens de réinitialisation et liens magiques ne partiront pas.
+attention-open-registration = L'enregistrement de clients est ouvert sans hôtes de confiance : n'importe qui peut enregistrer un client ici.
+
+users-title = Utilisateurs
+users-col-username = Identifiant
+users-col-email = E-mail
+users-col-name = Nom
+users-col-state = État
+users-email-verified = Vérifié
+users-disabled = Désactivé
+users-active = Actif
+users-actions-pending = { $count } en attente
+paging-previous = Précédent
+paging-next = Suivant
+user-tab-overview = Vue d'ensemble
+user-tab-credentials = Identifiants
+user-tab-sessions = Sessions
+user-tab-consents = Consentements
+user-phone = Téléphone
+user-required-actions = Actions requises
+user-locked = Verrouillé jusqu'à { $until } après des échecs répétés.
+user-lift-lock = Déverrouiller
+user-webauthn = Clés de sécurité
+user-no-keys = Aucune clé de sécurité enrôlée.
+user-key-unnamed = Clé sans nom
+user-key-enrolled = enrôlée
+user-key-last-used = dernier usage
+user-revoke = Révoquer
+user-no-sessions = Aucune session en cours.
+user-session-unknown = Appareil inconnu
+user-session-close = Déconnecter
+user-session-started = ouverte
+user-no-consents = Rien n'a été consenti.
+
+user-tab-memberships = Appartenances
+user-roles = Rôles
+user-no-roles = Aucun rôle détenu.
+user-groups = Groupes
+user-no-groups = Dans aucun groupe.
+user-organizations = Organisations
+user-no-organizations = Dans aucune organisation.
+overview-journal = Écritures admin récentes
+overview-chain-holds = chaîne intègre, { $count } entrées
+overview-chain-broken = chaîne rompue au n° { $seq }

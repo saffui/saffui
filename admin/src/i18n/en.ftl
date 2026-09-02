@@ -1,0 +1,87 @@
+# saffui console strings (en). Keys shared with fr.ftl.
+
+console-name = saffui
+nav-overview = Overview
+nav-directory = Directory
+nav-users = Users
+nav-roles = Roles
+nav-groups = Groups
+nav-organizations = Organizations
+nav-clients = Clients
+nav-scopes = Client scopes
+nav-authentication = Authentication
+nav-authorization = Authorization
+nav-federation = Federation
+nav-governance = Governance
+nav-events = Events
+nav-settings = Settings
+nav-keys = Keys
+nav-theme = Theme
+nav-features = Features
+nav-portability = Portability
+
+topbar-search = Search or jump to
+topbar-realm = Realm
+action-sign-out = Sign out
+
+login-title = saffui console
+login-lede = Administer a realm with the realm's own sign-in.
+login-realm = Realm
+login-continue = Continue
+login-failed = That sign-in did not go through. Try again.
+
+overview-title = Overview
+overview-empty = Nothing to show yet. Metrics land here as the realm is used.
+
+overview-users = Users
+overview-clients = Clients
+overview-organizations = Organizations
+overview-keys = Signing keys
+overview-attention = Needs attention
+overview-fix = Fix
+overview-quiet = Nothing needs attention.
+attention-no-signing-key = This realm has no signing key; nothing can be issued until one is minted.
+attention-no-mail = Mail is not configured, so reset links and magic links cannot be sent.
+attention-open-registration = Client registration is open with no trusted hosts; anyone can register a client here.
+
+users-title = Users
+users-col-username = Username
+users-col-email = Email
+users-col-name = Name
+users-col-state = State
+users-email-verified = Verified
+users-disabled = Disabled
+users-active = Active
+users-actions-pending = { $count } pending
+paging-previous = Previous
+paging-next = Next
+user-tab-overview = Overview
+user-tab-credentials = Credentials
+user-tab-sessions = Sessions
+user-tab-consents = Consents
+user-phone = Phone
+user-required-actions = Required actions
+user-locked = Locked out until { $until } after repeated failures.
+user-lift-lock = Lift lockout
+user-webauthn = Security keys
+user-no-keys = No security key is enrolled.
+user-key-unnamed = Unnamed key
+user-key-enrolled = enrolled
+user-key-last-used = last used
+user-revoke = Revoke
+user-no-sessions = No live session.
+user-session-unknown = Unknown device
+user-session-close = Sign out
+user-session-started = started
+user-no-consents = Nothing has been consented to.
+
+user-tab-memberships = Memberships
+user-roles = Roles
+user-no-roles = No role is held.
+user-groups = Groups
+user-no-groups = In no group.
+user-organizations = Organizations
+user-no-organizations = In no organization.
+overview-journal = Recent admin writes
+overview-chain-holds = chain holds, { $count } entries
+overview-chain-broken = chain broken at #{ $seq }

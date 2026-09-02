@@ -1,0 +1,17 @@
+{
+  "name": "saffui-js",
+  "version": "0.1.0",
+  "description": "Browser client for saffui: OAuth code flow with PKCE, token renewal, sign-out.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

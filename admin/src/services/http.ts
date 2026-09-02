@@ -1,6 +1,6 @@
 import { useSession } from "@/stores/session";
 import { say } from "@/i18n";
-import { toastRefused } from "@/services/toasts";
+import { toastOk, toastRefused } from "@/services/toasts";
 
 /// Console-side hints for refusals whose server message states what happened
 /// but not what to do about it. Keyed by the catalogue's error_code slug.
@@ -10,14 +10,26 @@ const HINTS: Record<string, string> = {
 };
 
 /// One door to the admin API: bearer attached, JSON both ways. A refusal is
-/// thrown with the server's own words, and every failed write also lands on
-/// the toast rail so the person is told even when a page swallows the throw.
-export async function api<T>(path: string, init?: RequestInit & { json?: unknown }): Promise<T> {
+/// thrown with the server's own words, and every write lands on the toast
+/// rail naming its subject, so the person is told what was kept or what was
+/// refused even when a page swallows the throw.
+export async function api<T>(
+  path: string,
+  init?: RequestInit & { json?: unknown; quiet?: boolean; subject?: string },
+): Promise<T> {
   const session = useSession();
   const bearer = await session.bearer();
+  const method = (init?.method ?? "GET").toUpperCase();
+  const speaks = method !== "GET" && !init?.quiet;
+  const kept = () =>
+    toastOk(
+      init?.subject ? say("toast-kept", { subject: init.subject }) : say("toast-saved"),
+    );
   if (import.meta.env.DEV && bearer === "preview") {
     const { previewAnswer } = await import("@/services/preview");
-    return previewAnswer<T>(path);
+    const answered = previewAnswer<T>(path);
+    if (speaks) kept();
+    return answered;
   }
   const headers = new Headers(init?.headers);
   headers.set("authorization", `Bearer ${bearer}`);
@@ -36,16 +48,18 @@ export async function api<T>(path: string, init?: RequestInit & { json?: unknown
     const message = String(told.message ?? told.detail ?? told.error ?? answer.statusText);
     const code = typeof told.error_code === "string" ? told.error_code : "";
     const refusal = new ApiError(answer.status, message, code);
-    const method = (init?.method ?? "GET").toUpperCase();
     if (method !== "GET") {
       toastRefused(
-        say("toast-refused", { status: answer.status }),
+        init?.subject
+          ? say("toast-failed", { subject: init.subject, status: answer.status })
+          : say("toast-refused", { status: answer.status }),
         message,
         code && HINTS[code] ? say(HINTS[code]) : undefined,
       );
     }
     throw refusal;
   }
+  if (speaks) kept();
   if (answer.status === 204) return undefined as T;
   return (await answer.json()) as T;
 }

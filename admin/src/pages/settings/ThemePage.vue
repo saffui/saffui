@@ -32,7 +32,6 @@ const realm = computed(() => String(route.params.realm));
 const half = ref<Half>("light");
 const held = reactive<Record<Half, Record<string, string>>>({ light: {}, dark: {} });
 const failed = ref("");
-const saved = ref(false);
 const worn = ref(false);
 
 onMounted(async () => {
@@ -56,7 +55,6 @@ function pruned(half_: Record<string, string>): Record<string, string> {
 
 async function save() {
   failed.value = "";
-  saved.value = false;
   const asked: { light?: Record<string, string>; dark?: Record<string, string> } = {};
   const light = pruned(held.light);
   const dark = pruned(held.dark);
@@ -65,8 +63,7 @@ async function save() {
   try {
     await writeRealmTheme(realm.value, asked);
     worn.value = true;
-    saved.value = true;
-  } catch (refused) {
+    } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
@@ -76,7 +73,6 @@ async function undress() {
   held.light = {};
   held.dark = {};
   worn.value = false;
-  saved.value = false;
 }
 
 // A small living sample: the login card, wearing exactly what is typed.
@@ -114,7 +110,6 @@ const sample = computed(() => {
         >
           {{ say("theme-undress") }}
         </button>
-        <span v-if="saved" class="text-[11px] text-ok">{{ say("settings-saved") }}</span>
       </div>
     </div>
     <p class="mt-1 text-xs text-muted">{{ say("theme-lede") }}</p>

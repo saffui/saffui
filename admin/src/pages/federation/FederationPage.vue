@@ -64,7 +64,6 @@ const brokers = computed(() =>
                 v-if="row.trust_email"
                 class="inline-flex items-center gap-1.5 text-[10.5px] text-ok"
               >
-                <span class="size-1.5 rounded-full bg-ok"></span>
                 {{ say("federation-trusted") }}
               </span>
             </td>

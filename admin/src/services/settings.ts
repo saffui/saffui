@@ -1,4 +1,5 @@
 import { adminPath, api } from "@/services/http";
+import { say } from "@/i18n";
 import type { MailBrief, MailWrite } from "@/models/mail";
 import type { RealmKeys } from "@/models/keys";
 import type { RealmSettings, RealmTheme, RealmUpdate } from "@/models/realm";
@@ -11,10 +12,15 @@ export async function getRealmSettings(realm: string): Promise<RealmSettings> {
 
 /// Rewrite the mentioned switches; the server leaves absent ones alone and
 /// answers the whole settings document back.
-export async function reshapeRealm(realm: string, changes: RealmUpdate): Promise<RealmSettings> {
+export async function reshapeRealm(
+  realm: string,
+  changes: RealmUpdate,
+  subject: string,
+): Promise<RealmSettings> {
   return api<RealmSettings>(`/admin/realms/${encodeURIComponent(realm)}`, {
     method: "PUT",
     json: changes,
+    subject,
   });
 }
 
@@ -23,11 +29,18 @@ export async function getMail(realm: string): Promise<MailBrief> {
 }
 
 export async function writeMail(realm: string, asked: MailWrite): Promise<void> {
-  await api<unknown>(adminPath(realm, "mail"), { method: "PUT", json: asked });
+  await api<unknown>(adminPath(realm, "mail"), {
+    method: "PUT",
+    json: asked,
+    subject: say("settings-group-email"),
+  });
 }
 
 export async function forgetMail(realm: string): Promise<void> {
-  await api<void>(adminPath(realm, "mail"), { method: "DELETE" });
+  await api<void>(adminPath(realm, "mail"), {
+    method: "DELETE",
+    subject: say("settings-group-email"),
+  });
 }
 
 export async function getRealmKeys(realm: string): Promise<RealmKeys> {
@@ -37,7 +50,11 @@ export async function getRealmKeys(realm: string): Promise<RealmKeys> {
 /// Mint a successor for the named algorithm: the active key goes passive
 /// and keeps verifying, the fresh one signs.
 export async function rotateKey(realm: string, algorithm: string): Promise<void> {
-  await api<unknown>(adminPath(realm, "keys"), { method: "POST", json: { algorithm } });
+  await api<unknown>(adminPath(realm, "keys"), {
+    method: "POST",
+    json: { algorithm },
+    subject: say("subject-key", { algorithm }),
+  });
 }
 
 export async function getRealmTheme(realm: string): Promise<RealmTheme> {
@@ -48,24 +65,34 @@ export async function writeRealmTheme(
   realm: string,
   theme: NonNullable<RealmTheme>,
 ): Promise<void> {
-  await api<void>(adminPath(realm, "theme"), { method: "PUT", json: theme });
+  await api<void>(adminPath(realm, "theme"), {
+    method: "PUT",
+    json: theme,
+    subject: say("nav-theme"),
+  });
 }
 
 export async function forgetRealmTheme(realm: string): Promise<void> {
-  await api<void>(adminPath(realm, "theme"), { method: "DELETE" });
+  await api<void>(adminPath(realm, "theme"), {
+    method: "DELETE",
+    subject: say("nav-theme"),
+  });
 }
 
 /// Draw the secret protected registration is opened with; answered once.
 export async function rotateRegistrationSecret(realm: string): Promise<string> {
   const drawn = await api<{ registration_secret: string }>(
     adminPath(realm, "registration-secret"),
-    { method: "POST" },
+    { method: "POST", quiet: true },
   );
   return drawn.registration_secret;
 }
 
 export async function forgetRegistrationSecret(realm: string): Promise<void> {
-  await api<void>(adminPath(realm, "registration-secret"), { method: "DELETE" });
+  await api<void>(adminPath(realm, "registration-secret"), {
+    method: "DELETE",
+    subject: say("settings-registration-secret"),
+  });
 }
 
 /// What this build carries and what is on. Read-only by nature: the gating

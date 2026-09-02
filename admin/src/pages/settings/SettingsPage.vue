@@ -47,7 +47,6 @@ const group = ref<Group>("general");
 const settings = ref<RealmSettings | null>(null);
 const mail = ref<MailBrief | null>(null);
 const failed = ref("");
-const saved = ref(false);
 
 /// The editable copy the forms bind to; adopting a settings document resets
 /// it, so a save reflects what the server actually kept.
@@ -242,12 +241,16 @@ function changesOf(which: Group): RealmUpdate {
 }
 
 async function saveGroup() {
-  saved.value = false;
   failed.value = "";
   try {
-    adopt(await reshapeRealm(realm.value, changesOf(group.value)));
-    saved.value = true;
-  } catch (refused) {
+    adopt(
+      await reshapeRealm(
+        realm.value,
+        changesOf(group.value),
+        say(`settings-group-${group.value}`),
+      ),
+    );
+    } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
@@ -303,7 +306,6 @@ async function loadFeatures() {
 }
 function openGroup(which: Group) {
   group.value = which;
-  saved.value = false;
   if (which === "features" && !features.value.length) void loadFeatures();
 }
 
@@ -318,7 +320,6 @@ const mailForm = ref({
 });
 
 async function saveMail() {
-  saved.value = false;
   const asked = mailForm.value;
   await writeMail(realm.value, {
     host: asked.host,
@@ -332,13 +333,11 @@ async function saveMail() {
     password: asked.password || null,
   });
   mail.value = await getMail(realm.value);
-  saved.value = true;
 }
 
 async function removeMail() {
   await forgetMail(realm.value);
   mail.value = null;
-  saved.value = false;
 }
 </script>
 
@@ -811,7 +810,6 @@ async function removeMail() {
             >
               {{ say("settings-save") }}
             </button>
-            <span v-if="saved" class="text-[11px] text-ok">{{ say("settings-saved") }}</span>
           </div>
         </form>
 
@@ -823,10 +821,6 @@ async function removeMail() {
               :key="held.slug"
               class="flex items-center gap-2.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs"
             >
-              <span
-                class="size-1.5 shrink-0 rounded-full"
-                :class="held.enabled ? 'bg-ok' : held.compiled ? 'bg-warn' : 'bg-faint'"
-              ></span>
               <span class="font-mono text-[11.5px]">{{ held.slug }}</span>
               <span
                 class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted"
@@ -919,7 +913,6 @@ async function removeMail() {
               >
                 {{ say("mail-forget") }}
               </button>
-              <span v-if="saved" class="text-[11px] text-ok">{{ say("settings-saved") }}</span>
             </div>
           </form>
         </div>

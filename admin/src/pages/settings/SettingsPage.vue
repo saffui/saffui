@@ -15,6 +15,7 @@ import {
   writeMail,
 } from "@/services/settings";
 import { deleteRealm } from "@/services/realms";
+import { toastOk } from "@/services/toasts";
 import { useSession } from "@/stores/session";
 import type { FeatureBrief } from "@/models/feature";
 import { ApiError } from "@/services/http";
@@ -285,6 +286,7 @@ async function dropRealm() {
   failed.value = "";
   try {
     await deleteRealm(realm.value);
+    toastOk(say("toast-realm-deleted", { realm: realm.value }));
     router.push(`/${home.value}/overview`);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);

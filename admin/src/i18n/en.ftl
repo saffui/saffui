@@ -358,3 +358,7 @@ features-off = compiled, off
 features-not-compiled = not in this build
 action-remove = Remove
 action-copy = Copy
+toast-refused = Refused ({ $status })
+toast-hint-forbidden = The plane accepted who you are and refused what you asked: your role does not hold this capability. Re-running provision refreshes an untouched administrator role; otherwise grant the capability to a role you hold.
+toast-hint-unauthorized = The session no longer stands; sign in again.
+toast-realm-deleted = Realm { $realm } deleted.

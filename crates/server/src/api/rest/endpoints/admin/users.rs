@@ -57,7 +57,24 @@ pub async fn get(
         .await
         .map_err(|_| internal())?;
     let found = people::get(&transaction, &user_id).await.map_err(refused)?;
-    Ok(HttpResponse::Ok().json(UserBrief::from(found)))
+    // The single read carries what the listing keeps to itself: the whole
+    // attribute bag, and which identity providers this account is bound to.
+    let attributes = found.attributes.clone();
+    let links = store::providers::brokering::links_of(&transaction, &user_id)
+        .await
+        .map_err(|_| internal())?;
+    let mut answer = serde_json::to_value(UserBrief::from(found)).map_err(|_| internal())?;
+    if let Some(held) = answer.as_object_mut() {
+        held.insert(
+            "attributes".to_owned(),
+            serde_json::to_value(attributes).map_err(|_| internal())?,
+        );
+        held.insert(
+            "identity_providers".to_owned(),
+            serde_json::to_value(links).map_err(|_| internal())?,
+        );
+    }
+    Ok(HttpResponse::Ok().json(answer))
 }
 
 /// Create a person, with what they first sign in with when it was given.

@@ -41,15 +41,18 @@ const GROUPS = [
 const TONGUES = ["en", "fr"] as const;
 type Group = (typeof GROUPS)[number];
 
+/// The third member says whether the engine reads the flag today. A switch
+/// the server stores but nothing enforces yet wears it plainly, instead of
+/// promising behaviour the build does not have.
 const LOGIN_TOGGLES = [
-  ["registration_allowed", "settings-self-registration"],
-  ["register_email_as_username", "settings-email-as-username"],
-  ["verify_email", "settings-verify-email"],
-  ["login_with_email_allowed", "settings-login-with-email"],
-  ["duplicated_email_allowed", "settings-duplicated-email"],
-  ["edit_user_name_allowed", "settings-edit-username"],
-  ["reset_password_allowed", "settings-reset-password"],
-  ["remember_me", "settings-remember-me"],
+  ["registration_allowed", "settings-self-registration", false],
+  ["register_email_as_username", "settings-email-as-username", false],
+  ["verify_email", "settings-verify-email", false],
+  ["login_with_email_allowed", "settings-login-with-email", false],
+  ["duplicated_email_allowed", "settings-duplicated-email", false],
+  ["edit_user_name_allowed", "settings-edit-username", false],
+  ["reset_password_allowed", "settings-reset-password", true],
+  ["remember_me", "settings-remember-me", false],
 ] as const;
 
 const route = useRoute();
@@ -675,6 +678,11 @@ async function removeMail() {
           <template v-if="group === 'login'">
             <AppToggle v-for="held in LOGIN_TOGGLES" :key="held[0]" v-model="draft[held[0]]">
               {{ say(held[1]) }} <AppHint :name="held[1] + '-help'" />
+              <span
+                v-if="!held[2]"
+                class="rounded border border-warn/40 px-1.5 py-0.5 text-[10px] text-warn"
+                >{{ say("settings-not-enforced") }}</span
+              >
             </AppToggle>
 
             <label class="mt-2 block text-[11px] font-medium text-muted">

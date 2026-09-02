@@ -7,7 +7,21 @@ import { say } from "@/i18n";
 import { getRealmKeys, rotateKey } from "@/services/settings";
 import type { RealmKeys } from "@/models/keys";
 
-const ALGORITHMS = ["ES256", "RS256", "PS256", "EdDSA"] as const;
+/// Every algorithm the build's signer mints: crypto's SignAlg::ALL, in the
+/// order worth recommending. The 384 and 512 variants exist for peers that
+/// demand them; they add bits, not strength that matters.
+const ALGORITHMS = [
+  "ES256",
+  "EdDSA",
+  "PS256",
+  "RS256",
+  "ES384",
+  "ES512",
+  "PS384",
+  "PS512",
+  "RS384",
+  "RS512",
+] as const;
 
 /// Key identities stay covered until asked for: a kid is not a secret, but
 /// it is a correlator, and a screen share should not hand it out by default.

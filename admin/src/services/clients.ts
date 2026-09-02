@@ -9,7 +9,7 @@ export async function listClients(
   max: number,
 ): Promise<Page<ClientBrief>> {
   return api<Page<ClientBrief>>(
-    `${adminPath(realm, "clients")}?first=${first}&max=${max}&count=true`,
+    `${adminPath(realm, "clients")}?first=${first}&max=${max}`,
   );
 }
 

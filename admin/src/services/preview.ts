@@ -17,6 +17,8 @@ const PEOPLE: UserBrief[] = [
     family_name: "Lovelace",
     phone_number: null,
     required_actions: [],
+    created_at: "2026-08-16T09:00:00Z",
+    origin: "local",
   },
   {
     user_id: "grace",
@@ -28,6 +30,8 @@ const PEOPLE: UserBrief[] = [
     family_name: "Hopper",
     phone_number: "+228 90 00 00 00",
     required_actions: ["update-password"],
+    created_at: "2026-08-16T09:00:00Z",
+    origin: "local",
   },
   {
     user_id: "linus",
@@ -39,6 +43,8 @@ const PEOPLE: UserBrief[] = [
     family_name: "Ekwueme",
     phone_number: null,
     required_actions: [],
+    created_at: "2026-08-16T09:00:00Z",
+    origin: "local",
   },
   {
     user_id: "margaret",
@@ -50,6 +56,8 @@ const PEOPLE: UserBrief[] = [
     family_name: "Mensah",
     phone_number: null,
     required_actions: [],
+    created_at: "2026-08-16T09:00:00Z",
+    origin: "local",
   },
 ];
 
@@ -177,7 +185,13 @@ export function previewAnswer<T>(path: string): T {
     });
   }
   const who = person(path);
-  if (who) return answer(who);
+  if (who) {
+    return answer({
+      ...who,
+      attributes: { department: { Str: "engineering" }, cost_center: { Str: "cc-7" } },
+      identity_providers: who.user_id === "grace" ? ["corp-okta"] : [],
+    });
+  }
   if (path.includes("/users?")) {
     return answer({ items: PEOPLE, first: 0, max: 25, total: 1284 });
   }

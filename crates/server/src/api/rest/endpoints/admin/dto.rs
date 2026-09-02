@@ -100,6 +100,9 @@ pub struct UserBrief {
     pub family_name: Option<String>,
     pub phone_number: Option<String>,
     pub required_actions: Vec<models::entities::user::RequiredAction>,
+    pub created_at: Option<String>,
+    /// Where the account's truth lives: local, or a federated directory.
+    pub origin: Option<String>,
 }
 
 impl From<models::entities::user::UserModel> for UserBrief {
@@ -121,6 +124,8 @@ impl From<models::entities::user::UserModel> for UserBrief {
             email: user.email,
             email_verified: user.email_verified.unwrap_or(false),
             phone_number: user.phone_number,
+            created_at: user.metadata.created_at.map(|at| at.to_rfc3339()),
+            origin: user.user_storage.map(|held| held.as_str().to_owned()),
             required_actions: user.required_actions.unwrap_or_default(),
         }
     }

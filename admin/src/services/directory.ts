@@ -11,7 +11,7 @@ import type {
 } from "@/models/directory";
 
 function paged(leaf: string, first: number, max: number): string {
-  return `${leaf}?first=${first}&max=${max}&count=true`;
+  return `${leaf}?first=${first}&max=${max}`;
 }
 
 export async function listRoles(

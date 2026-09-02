@@ -159,6 +159,22 @@ pub async fn link(
     Ok(())
 }
 
+/// The provider aliases a local account is bound to, for reading a person's
+/// provenance. Ordered so the answer is stable.
+pub async fn links_of(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "SELECT provider_alias FROM federated_identities \
+             WHERE user_id = $1 ORDER BY provider_alias ASC",
+            &[&user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("provider_alias"))
+        .collect())
+}
+
 /// The local user an upstream subject is bound to, if any.
 pub async fn linked_user(
     transaction: &Transaction<'_>,

@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
+import AppPaging from "@/components/AppPaging.vue";
 import { createClient, listClients } from "@/services/clients";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
@@ -9,11 +10,17 @@ import type { Page } from "@/models/paging";
 import type { ClientBrief } from "@/models/client";
 import ClientDrawer from "./ClientDrawer.vue";
 
-const PAGE_SIZE = 25;
+
 const route = useRoute();
 const router = useRouter();
 const realm = computed(() => String(route.params.realm));
 const first = ref(0);
+const size = ref(25);
+function resize(asked: number) {
+  size.value = asked;
+  first.value = 0;
+  void load();
+}
 const page = ref<Page<ClientBrief> | null>(null);
 const failed = ref("");
 
@@ -25,7 +32,7 @@ const opened = computed(() => {
 async function load() {
   failed.value = "";
   try {
-    page.value = await listClients(realm.value, first.value, PAGE_SIZE);
+    page.value = await listClients(realm.value, first.value, size.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -108,9 +115,6 @@ function finishMaking() {
     <div class="flex items-center justify-between">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("clients-title") }}</h1>
       <div class="flex items-center gap-3">
-        <span v-if="page?.total != null" class="font-mono text-[11px] text-faint">{{
-          page.total
-        }}</span>
         <button
           type="button"
           class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
@@ -163,24 +167,14 @@ function finishMaking() {
       </table>
     </div>
 
-    <div v-if="page" class="mt-3 flex items-center gap-2 text-[11px] text-muted">
-      <button
-        type="button"
-        class="rounded-md border border-border px-2 py-1 hover:bg-surface-2 disabled:opacity-40"
-        :disabled="first === 0"
-        @click="first = Math.max(0, first - PAGE_SIZE)"
-      >
-        {{ say("paging-previous") }}
-      </button>
-      <button
-        type="button"
-        class="rounded-md border border-border px-2 py-1 hover:bg-surface-2 disabled:opacity-40"
-        :disabled="page.items.length < PAGE_SIZE"
-        @click="first = first + PAGE_SIZE"
-      >
-        {{ say("paging-next") }}
-      </button>
-    </div>
+    <AppPaging
+      v-if="page"
+      :first="first"
+      :count="page.items.length"
+      :size="size"
+      @update:first="first = $event"
+      @update:size="resize"
+    />
 
     <AppDrawer
       v-if="making"

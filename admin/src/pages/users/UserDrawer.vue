@@ -27,6 +27,7 @@ import AppToggle from "@/components/AppToggle.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppPicker from "@/components/AppPicker.vue";
 import { useRouter } from "vue-router";
+import { Eye, EyeOff } from "lucide-vue-next";
 import type {
   ConsentBrief,
   GroupBrief,
@@ -35,7 +36,7 @@ import type {
   OrgBrief,
   RoleBrief,
   SessionBrief,
-  UserBrief,
+  UserFull,
 } from "@/models/user";
 
 const props = defineProps<{ realm: string; userId: string }>();
@@ -44,7 +45,7 @@ const emit = defineEmits<{ close: [] }>();
 const TABS = ["overview", "credentials", "sessions", "memberships", "consents"] as const;
 const tab = ref<(typeof TABS)[number]>("overview");
 
-const user = ref<UserBrief | null>(null);
+const user = ref<UserFull | null>(null);
 const lockout = ref<Lockout | null>(null);
 const keys = ref<KeyBrief[]>([]);
 const sessions = ref<SessionBrief[]>([]);
@@ -54,6 +55,25 @@ const groups = ref<GroupBrief[]>([]);
 const organizations = ref<OrgBrief[]>([]);
 const failed = ref("");
 const router = useRouter();
+
+/// The custom attributes: the bag minus the profile keys shown as fields.
+const PROFILE_KEYS = new Set(["given_name", "family_name"]);
+function customAttributes(held: UserFull): [string, string][] {
+  const bag = held.attributes ?? {};
+  return Object.entries(bag)
+    .filter(([key]) => !PROFILE_KEYS.has(key))
+    .map(([key, value]) => [
+      key,
+      typeof value === "string" ? value : (value?.Str ?? JSON.stringify(value)),
+    ]);
+}
+function born(held: UserFull): string {
+  if (!held.created_at) return "";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+    new Date(held.created_at),
+  );
+}
+const showPassword = ref(false);
 
 /// The editable half of the overview, adopted from the loaded user.
 const profile = ref({
@@ -252,6 +272,41 @@ function instant(epoch: number | null | undefined): string {
 
     <div v-if="tab === 'overview' && user" class="mt-4 flex flex-col gap-4">
       <div
+        v-if="user"
+        class="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-lg border border-border bg-surface px-3 py-2.5 text-[11px]"
+      >
+        <div class="flex items-center gap-1.5">
+          <span class="text-muted">{{ say("user-identifier") }}</span>
+          <AppHint name="user-identifier-help" />
+          <code class="rounded border border-border bg-surface-2 px-1.5 py-0.5 font-mono text-[10.5px]">{{
+            user.user_id
+          }}</code>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="text-muted">{{ say("user-born") }}</span>
+          <span class="font-mono text-[10.5px]">{{ born(user) || say("user-born-unknown") }}</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="text-muted">{{ say("user-origin") }}</span>
+          <span class="rounded border border-border px-1.5 py-0.5 text-[10px]">{{
+            user.origin ?? "local"
+          }}</span>
+        </div>
+        <div class="flex items-center gap-1.5">
+          <span class="text-muted">{{ say("user-idp-links") }}</span>
+          <template v-if="user.identity_providers?.length">
+            <span
+              v-for="alias in user.identity_providers"
+              :key="alias"
+              class="rounded border border-info/40 px-1.5 py-0.5 font-mono text-[10px] text-info"
+              >{{ alias }}</span
+            >
+          </template>
+          <span v-else class="text-faint">{{ say("user-idp-none") }}</span>
+        </div>
+      </div>
+
+      <div
         v-if="lockout?.locked"
         class="flex items-center gap-3 rounded-lg border border-danger/40 px-3 py-2.5"
       >
@@ -376,6 +431,22 @@ function instant(epoch: number | null | undefined): string {
           </div>
         </div>
       </form>
+
+      <div v-if="user && customAttributes(user).length">
+        <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          {{ say("user-attributes") }} <AppHint name="user-attributes-help" />
+        </div>
+        <div class="mt-1.5 grid max-w-lg gap-1">
+          <div
+            v-for="[key, value] in customAttributes(user)"
+            :key="key"
+            class="flex items-center gap-2 rounded border border-border bg-surface px-2 py-1 text-[11px]"
+          >
+            <code class="font-mono text-[10.5px] text-muted">{{ key }}</code>
+            <span class="font-mono text-[10.5px]">{{ value }}</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div v-if="tab === 'credentials'" class="mt-4">
@@ -385,18 +456,29 @@ function instant(epoch: number | null | undefined): string {
       <form class="mt-2 flex items-end gap-2" @submit.prevent="savePassword">
         <label class="flex-1 text-[11px] font-medium text-muted">
           {{ say("user-new-password") }}
-          <input
-            v-model="newPassword"
-            type="password"
-            autocomplete="new-password"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
-          />
+          <span class="relative mt-1 block">
+            <input
+              v-model="newPassword"
+              :type="showPassword ? 'text' : 'password'"
+              autocomplete="new-password"
+              class="w-full rounded-md border border-border bg-surface-2 py-1.5 pr-7 pl-2.5 text-xs text-ink"
+            />
+            <button
+              type="button"
+              class="absolute inset-y-0 right-1.5 grid place-items-center text-faint hover:text-muted"
+              :aria-label="say('user-password-reveal')"
+              @click="showPassword = !showPassword"
+            >
+              <EyeOff v-if="showPassword" :size="13" :stroke-width="1.6" />
+              <Eye v-else :size="13" :stroke-width="1.6" />
+            </button>
+          </span>
         </label>
         <label class="flex-1 text-[11px] font-medium text-muted">
           {{ say("user-new-password-again") }}
           <input
             v-model="newPasswordAgain"
-            type="password"
+            :type="showPassword ? 'text' : 'password'"
             autocomplete="new-password"
             class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
           />

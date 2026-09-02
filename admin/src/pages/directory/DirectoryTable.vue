@@ -7,7 +7,6 @@ import { say } from "@/i18n";
 
 defineProps<{
   items: T[];
-  total: number | null;
   openedKey?: string | null;
   keyOf: (row: T) => string;
   /// Tree depth per row, when the listing is a hierarchy. Zero stays flat.

@@ -4,6 +4,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
+import AppPaging from "@/components/AppPaging.vue";
 import { kindOf, listIdps } from "@/services/federation";
 import { getRealmSettings, listSignInEvents } from "@/services/settings";
 import type { IdpRow } from "@/models/federation";
@@ -18,13 +19,27 @@ const failed = ref("");
 /// The sign-in log, when the realm switched it on; null says it is off.
 const signIns = ref<Page<SignInEvent> | null>(null);
 const recording = ref(false);
+const first = ref(0);
+const size = ref(25);
+async function turn() {
+  try {
+    signIns.value = await listSignInEvents(realm.value, first.value, size.value);
+  } catch {
+    // The listing simply stays where it was.
+  }
+}
+function resize(asked: number) {
+  size.value = asked;
+  first.value = 0;
+  void turn();
+}
 
 onMounted(async () => {
   try {
     idps.value = await listIdps(realm.value);
     recording.value = (await getRealmSettings(realm.value)).events_enabled ?? false;
     if (recording.value) {
-      signIns.value = await listSignInEvents(realm.value, 0, 25);
+      signIns.value = await listSignInEvents(realm.value, first.value, size.value);
     }
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
@@ -57,9 +72,6 @@ function bagText(row: IdpRow, key: string): string {
 
     <h2 class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
       {{ say("signin-events-title") }}
-      <span v-if="signIns?.total != null" class="ml-1 font-mono text-[10px] text-faint">{{
-        signIns.total
-      }}</span>
     </h2>
     <p v-if="!recording" class="mt-1.5 text-xs text-muted">
       {{ say("signin-events-off") }}
@@ -111,6 +123,14 @@ function bagText(row: IdpRow, key: string): string {
         </tbody>
       </table>
     </div>
+    <AppPaging
+      v-if="signIns"
+      :first="first"
+      :count="signIns.items.length"
+      :size="size"
+      @update:first="(held) => { first = held; void turn(); }"
+      @update:size="resize"
+    />
 
     <h2 class="mt-6 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
       {{ say("events-receivers") }}

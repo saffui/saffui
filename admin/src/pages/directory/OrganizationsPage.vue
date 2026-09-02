@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
+import AppPaging from "@/components/AppPaging.vue";
 import {
   claimDomain,
   createOrganization,
@@ -21,13 +22,28 @@ import DirectoryTable from "./DirectoryTable.vue";
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
 const page = ref<Page<OrganizationRow> | null>(null);
+const first = ref(0);
+const size = ref(25);
+function resize(asked: number) {
+  size.value = asked;
+  first.value = 0;
+  void turn();
+}
+async function turn() {
+  try {
+    page.value = await listOrganizations(realm.value, first.value, size.value);
+  } catch {
+    // The listing simply stays where it was.
+  }
+}
+
 const failed = ref("");
 const opened = ref<OrganizationRow | null>(null);
 const members = ref<OrgMember[] | null>(null);
 
 onMounted(async () => {
   try {
-    page.value = await listOrganizations(realm.value, 0, 50);
+    page.value = await listOrganizations(realm.value, first.value, size.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -46,7 +62,7 @@ async function makeOrg() {
     making.value = false;
     newName.value = "";
     newDisplay.value = "";
-    page.value = await listOrganizations(realm.value, 0, 50);
+    page.value = await listOrganizations(realm.value, first.value, size.value);
   } catch {
     // The toast already said.
   }
@@ -99,7 +115,7 @@ async function dropOrg() {
   try {
     await deleteOrganization(realm.value, opened.value.org_id);
     opened.value = null;
-    page.value = await listOrganizations(realm.value, 0, 50);
+    page.value = await listOrganizations(realm.value, first.value, size.value);
   } catch {
     // The toast already said.
   }
@@ -135,9 +151,6 @@ function joined(member: OrgMember): string {
       >
         {{ say("org-new") }}
       </button>
-      <span v-if="page?.total != null" class="font-mono text-[11px] text-faint">{{
-        page.total
-      }}</span>
     </div>
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
@@ -172,7 +185,6 @@ function joined(member: OrgMember): string {
     <div v-if="page" class="mt-4">
       <DirectoryTable
         :items="page.items"
-        :total="page.total"
         :opened-key="opened?.org_id ?? null"
         :key-of="(row: OrganizationRow) => row.org_id"
         @open="open"
@@ -183,12 +195,20 @@ function joined(member: OrgMember): string {
           }}</span>
         </template>
       </DirectoryTable>
+    <AppPaging
+      v-if="page"
+      :first="first"
+      :count="page.items.length"
+      :size="size"
+      @update:first="(held) => { first = held; void turn(); }"
+      @update:size="resize"
+    />
     </div>
 
     <AppDrawer
       v-if="opened"
       :title="opened.display_name || opened.name"
-      :subtitle="opened.org_id"
+      :subtitle="opened.name"
       @close="opened = null"
     >
       <dl class="grid grid-cols-[140px_1fr] gap-y-2 text-xs">

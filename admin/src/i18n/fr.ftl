@@ -643,3 +643,17 @@ subject-execution = étape de flux { $step }
 subject-rule = la règle d'attribution
 subject-converge = le parcours des règles
 subject-hand-grant = { $role } pour { $user }
+
+## Pagination, pastilles d'honnêteté et carte d'identité du compte.
+paging-size = Par page
+settings-not-enforced = pas encore appliqué
+user-identifier = Identifiant
+user-identifier-help = Ce que les octrois, les sessions et le journal pointent. Fixé à la création, il ne change jamais ; c'est aujourd'hui le nom d'utilisateur lui-même.
+user-born = Créé
+user-born-unknown = non consigné
+user-origin = Origine
+user-idp-links = Se connecte via
+user-idp-none = ce realm seulement
+user-attributes = Attributs
+user-attributes-help = Les attributs libres du compte, au-delà des champs de profil ci-dessus. Ils nourrissent les politiques et les revendications des jetons.
+user-password-reveal = Montrer ou cacher le mot de passe

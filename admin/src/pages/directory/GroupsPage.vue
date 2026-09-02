@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
+import AppPaging from "@/components/AppPaging.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import {
@@ -26,13 +27,28 @@ import DirectoryTable from "./DirectoryTable.vue";
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
 const page = ref<Page<GroupRow> | null>(null);
+const first = ref(0);
+const size = ref(25);
+function resize(asked: number) {
+  size.value = asked;
+  first.value = 0;
+  void turn();
+}
+async function turn() {
+  try {
+    page.value = await listGroups(realm.value, first.value, size.value);
+  } catch {
+    // The listing simply stays where it was.
+  }
+}
+
 const failed = ref("");
 const opened = ref<GroupRow | null>(null);
 const membership = ref<GroupMembership | null>(null);
 
 onMounted(async () => {
   try {
-    page.value = await listGroups(realm.value, 0, 50);
+    page.value = await listGroups(realm.value, first.value, size.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -69,7 +85,7 @@ async function makeGroup() {
     newName.value = "";
     newDescription.value = "";
     newParent.value = "";
-    page.value = await listGroups(realm.value, 0, 50);
+    page.value = await listGroups(realm.value, first.value, size.value);
   } catch {
     // The toast already said.
   }
@@ -87,7 +103,7 @@ async function saveGroup() {
     };
     await updateGroup(realm.value, reshaped);
     Object.assign(opened.value, reshaped);
-    page.value = await listGroups(realm.value, 0, 50);
+    page.value = await listGroups(realm.value, first.value, size.value);
   } catch {
     // The toast already said: the server refuses a chain that would loop.
   }
@@ -126,7 +142,7 @@ async function dropGroup() {
   try {
     await deleteGroup(realm.value, opened.value.group_id);
     opened.value = null;
-    page.value = await listGroups(realm.value, 0, 50);
+    page.value = await listGroups(realm.value, first.value, size.value);
   } catch {
     // The toast already said: a group still holding members refuses in words.
   }
@@ -194,9 +210,6 @@ async function flipDefault(group: GroupRow) {
     <div class="flex items-center justify-between">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("groups-title") }}</h1>
       <div class="flex items-center gap-3">
-        <span v-if="page?.total != null" class="font-mono text-[11px] text-faint">{{
-          page.total
-        }}</span>
         <button
           type="button"
           class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
@@ -251,12 +264,19 @@ async function flipDefault(group: GroupRow) {
     <div v-if="page" class="mt-4">
       <DirectoryTable
         :items="shown.rows"
-        :total="page.total"
         :opened-key="opened?.group_id ?? null"
         :key-of="(row: GroupRow) => row.group_id"
         :indent-of="(row: GroupRow) => shown.depths.get(row.group_id) ?? 0"
         @open="open"
       />
+    <AppPaging
+      v-if="page"
+      :first="first"
+      :count="page.items.length"
+      :size="size"
+      @update:first="(held) => { first = held; void turn(); }"
+      @update:size="resize"
+    />
     </div>
 
     <AppDrawer

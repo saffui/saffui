@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
 import { say } from "@/i18n";
+import AppPaging from "@/components/AppPaging.vue";
 import {
   createRole,
   deleteRole,
@@ -18,13 +19,28 @@ import DirectoryTable from "./DirectoryTable.vue";
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
 const page = ref<Page<RoleRow> | null>(null);
+const first = ref(0);
+const size = ref(25);
+function resize(asked: number) {
+  size.value = asked;
+  first.value = 0;
+  void turn();
+}
+async function turn() {
+  try {
+    page.value = await listRoles(realm.value, first.value, size.value);
+  } catch {
+    // The listing simply stays where it was.
+  }
+}
+
 const failed = ref("");
 const opened = ref<RoleRow | null>(null);
 const holders = ref<RoleHolders | null>(null);
 
 onMounted(async () => {
   try {
-    page.value = await listRoles(realm.value, 0, 50);
+    page.value = await listRoles(realm.value, first.value, size.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -51,7 +67,7 @@ async function makeRole() {
     making.value = false;
     newName.value = "";
     newDescription.value = "";
-    page.value = await listRoles(realm.value, 0, 50);
+    page.value = await listRoles(realm.value, first.value, size.value);
   } catch {
     // The toast already said.
   }
@@ -79,7 +95,7 @@ async function dropRole() {
   try {
     await deleteRole(realm.value, opened.value.role_id);
     opened.value = null;
-    page.value = await listRoles(realm.value, 0, 50);
+    page.value = await listRoles(realm.value, first.value, size.value);
   } catch {
     // The toast already said: a role still granted refuses in words.
   }
@@ -91,9 +107,6 @@ async function dropRole() {
     <div class="flex items-center justify-between">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("roles-title") }}</h1>
       <div class="flex items-center gap-3">
-        <span v-if="page?.total != null" class="font-mono text-[11px] text-faint">{{
-          page.total
-        }}</span>
         <button
           type="button"
           class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
@@ -136,7 +149,6 @@ async function dropRole() {
     <div v-if="page" class="mt-4">
       <DirectoryTable
         :items="page.items"
-        :total="page.total"
         :opened-key="opened?.role_id ?? null"
         :key-of="(row: RoleRow) => row.role_id"
         @open="open"
@@ -149,12 +161,20 @@ async function dropRole() {
           >
         </template>
       </DirectoryTable>
+    <AppPaging
+      v-if="page"
+      :first="first"
+      :count="page.items.length"
+      :size="size"
+      @update:first="(held) => { first = held; void turn(); }"
+      @update:size="resize"
+    />
     </div>
 
     <AppDrawer
       v-if="opened"
       :title="opened.display_name || opened.name"
-      :subtitle="opened.role_id"
+      :subtitle="opened.name"
       @close="opened = null"
     >
       <form class="flex flex-col gap-2 text-xs" @submit.prevent="saveRole">

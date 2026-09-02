@@ -24,3 +24,16 @@ export function rememberRealm(realm: string): void {
 export function rememberedRealm(): string {
   return sessionStorage.getItem(REALM_KEY) ?? "";
 }
+
+/// The path a reload interrupted. A path is not a secret: keeping it in
+/// sessionStorage is what lets the sign-in land back where the person was,
+/// while the tokens themselves stay in memory only.
+const RETURN_KEY = "sf-console-return-to";
+export function rememberPath(path: string): void {
+  sessionStorage.setItem(RETURN_KEY, path);
+}
+export function takeRememberedPath(): string {
+  const held = sessionStorage.getItem(RETURN_KEY) ?? "";
+  sessionStorage.removeItem(RETURN_KEY);
+  return held;
+}

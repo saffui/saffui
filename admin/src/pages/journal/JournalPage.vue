@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
+import AppPaging from "@/components/AppPaging.vue";
 import { listJournal, verifyChain } from "@/services/journal";
 import { getRealmSettings, reshapeRealm } from "@/services/settings";
 import AppToggle from "@/components/AppToggle.vue";
@@ -9,10 +10,16 @@ import AppHint from "@/components/AppHint.vue";
 import { adminPath, api } from "@/services/http";
 import type { ChainVerified, JournalPage as Held } from "@/models/journal";
 
-const PAGE_SIZE = 25;
+
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
 const first = ref(0);
+const size = ref(25);
+function resize(asked: number) {
+  size.value = asked;
+  first.value = 0;
+  void load();
+}
 const page = ref<Held | null>(null);
 const chain = ref<ChainVerified | null>(null);
 const anchors = ref<{ seq: number; witness: string; receipt: string; anchored_at: number }[]>([]);
@@ -41,7 +48,7 @@ async function load() {
   try {
     readsToo.value = (await getRealmSettings(realm.value)).admin_events_enabled ?? false;
     [page.value, chain.value] = await Promise.all([
-      listJournal(realm.value, first.value, PAGE_SIZE),
+      listJournal(realm.value, first.value, size.value),
       verifyChain(realm.value),
     ]);
     const held = await api<{ anchors: typeof anchors.value }>(
@@ -96,9 +103,6 @@ function instant(epoch: number): string {
             : say("overview-chain-broken", { seq: chain.broken_at ?? 0 })
         }}
       </span>
-      <span v-if="page?.total != null" class="ml-auto font-mono text-[11px] text-faint">{{
-        page.total
-      }}</span>
     </div>
     <p class="mt-1 text-xs text-muted">{{ say("journal-lede") }}</p>
     <div class="mt-2">
@@ -144,24 +148,14 @@ function instant(epoch: number): string {
         </tbody>
       </table>
     </div>
-    <div v-if="page" class="mt-3 flex items-center gap-2 text-[11px] text-muted">
-      <button
-        type="button"
-        class="rounded-md border border-border px-2 py-1 hover:bg-surface-2 disabled:opacity-40"
-        :disabled="first === 0"
-        @click="first = Math.max(0, first - PAGE_SIZE)"
-      >
-        {{ say("paging-previous") }}
-      </button>
-      <button
-        type="button"
-        class="rounded-md border border-border px-2 py-1 hover:bg-surface-2 disabled:opacity-40"
-        :disabled="page.items.length < PAGE_SIZE"
-        @click="first = first + PAGE_SIZE"
-      >
-        {{ say("paging-next") }}
-      </button>
-    </div>
+    <AppPaging
+      v-if="page"
+      :first="first"
+      :count="page.items.length"
+      :size="size"
+      @update:first="first = $event"
+      @update:size="resize"
+    />
 
     <h2 class="mt-6 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
       {{ say("journal-anchors") }}

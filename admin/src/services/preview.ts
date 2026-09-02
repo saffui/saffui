@@ -287,6 +287,33 @@ export function previewAnswer<T>(path: string): T {
   if (path.endsWith("/theme")) {
     return answer(null);
   }
+  if (path.endsWith("/authz/evaluate")) {
+    return answer({
+      decision_id: "d-sim-1",
+      reported: "deny",
+      computed: "deny",
+      detail: {
+        reasons: [
+          { EmptyBinding: { policy_id: "p-editors", kind: "role" } },
+          { DanglingCondition: { policy_id: "p-hours", condition: "office-hours" } },
+        ],
+      },
+    });
+  }
+  if (/\/authz\/servers\/[^/]+\/policies$/.test(path)) {
+    return answer([
+      { policy_id: "p-editors", name: "editors", description: "Holds the editor role", policy_type: "role", policies: [], resources: [], scopes: [] },
+      { policy_id: "p-hours", name: "office hours", description: "Mon to Fri, 08:00 to 19:00", policy_type: "time", policies: [], resources: [], scopes: [] },
+      { policy_id: "p-org", name: "acting for acme", description: "", policy_type: "organization", policies: [], resources: [], scopes: [] },
+      { policy_id: "p-gate", name: "edit archive", description: "All of the above, against the archive", policy_type: "aggregated", policies: ["p-editors", "p-hours", "p-org"], resources: ["res-1"], scopes: ["sc-1"] },
+    ]);
+  }
+  if (/\/authz\/servers\/[^/]+\/resources$/.test(path)) {
+    return answer([{ resource_id: "res-1", name: "doc archive" }]);
+  }
+  if (/\/authz\/servers\/[^/]+\/scopes$/.test(path)) {
+    return answer([{ scope_id: "sc-1", name: "edit" }]);
+  }
   if (/\/auth\/flows\/[^/]+$/.test(path)) {
     return answer({
       flow: { flow_id: "f-browser", alias: "browser", description: "The realm's own sign-in", top_level: true, built_in: true },

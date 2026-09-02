@@ -49,6 +49,14 @@ const routes: RouteRecordRaw[] = [
         path: "theme",
         component: () => import("@/pages/settings/ThemePage.vue"),
       },
+      {
+        path: "authentication",
+        component: () => import("@/pages/authentication/FlowsPage.vue"),
+      },
+      {
+        path: "authentication/:flow",
+        component: () => import("@/pages/authentication/FlowEditorPage.vue"),
+      },
     ],
   },
   { path: "/", redirect: "/login" },

@@ -287,6 +287,29 @@ export function previewAnswer<T>(path: string): T {
   if (path.endsWith("/theme")) {
     return answer(null);
   }
+  if (/\/auth\/flows\/[^/]+$/.test(path)) {
+    return answer({
+      flow: { flow_id: "f-browser", alias: "browser", description: "The realm's own sign-in", top_level: true, built_in: true },
+      executions: [
+        { execution_id: "x-1", alias: "Password", flow_id: "f-browser", priority: 10,
+          step: { kind: "authenticator", authenticator: "password", config_id: null }, requirement: "required" },
+        { execution_id: "x-2", alias: "Authenticator app", flow_id: "f-browser", priority: 20,
+          step: { kind: "authenticator", authenticator: "totp", config_id: null }, requirement: "alternative" },
+        { execution_id: "x-3", alias: "Security key", flow_id: "f-browser", priority: 30,
+          step: { kind: "authenticator", authenticator: "webauthn", config_id: null }, requirement: "alternative" },
+        { execution_id: "x-4", alias: "Mailed link", flow_id: "f-browser", priority: 40,
+          step: { kind: "authenticator", authenticator: "magic-link", config_id: null }, requirement: "disabled" },
+        { execution_id: "x-5", alias: "Step up", flow_id: "f-browser", priority: 50,
+          step: { kind: "sub_flow", flow_id: "f-stepup" }, requirement: "required" },
+      ],
+    });
+  }
+  if (path.endsWith("/auth/flows")) {
+    return answer([
+      { flow_id: "f-browser", alias: "browser", description: "The realm's own sign-in", top_level: true, built_in: true },
+      { flow_id: "f-stepup", alias: "step-up", description: "Second factor on demand", top_level: false, built_in: false },
+    ]);
+  }
   if (/\/admin\/realms\/[^/]+$/.test(path)) {
     return answer({
       realm_id: "main",

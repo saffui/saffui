@@ -343,17 +343,16 @@ pub async fn update(
         }
     }
     // A shown name a browser dialog can actually render.
-    if let Some(policy) = &asked.webauthn_policy {
-        if policy
-            .rp_name
-            .as_deref()
-            .is_some_and(|held| held.len() > 64)
-        {
-            return Err(ApiError::with_detail(
-                ErrorCode::ValidationError,
-                "a relying party name is at most 64 characters".to_owned(),
-            ));
-        }
+    if asked
+        .webauthn_policy
+        .as_ref()
+        .and_then(|policy| policy.rp_name.as_deref())
+        .is_some_and(|held| held.len() > 64)
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "a relying party name is at most 64 characters".to_owned(),
+        ));
     }
     // A binding is checked at the door, not at the first login it breaks:
     // the named flow must exist here and be one a login can start at.

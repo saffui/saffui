@@ -462,3 +462,7 @@ signin-col-client = Client
 signin-col-from = From
 journal-reads-too = Also record reads
 journal-reads-too-help = Forensic mode. Writes always land in the chain; this records admin reads too, spelled admin.read. Costs one journal row per admin read while it stands.
+device-lifespan = Device code
+device-lifespan-help = How long a device sign-in code lives, RFC 8628: the TV shows it, the person walks to a phone. 60 to 3600 seconds; empty takes the built 600.
+device-interval = Device poll
+device-interval-help = How often the waiting device may ask, in seconds. A code keeps the pace it was born with; retuning reaches the next one.

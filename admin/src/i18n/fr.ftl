@@ -462,3 +462,7 @@ signin-col-client = Client
 signin-col-from = Depuis
 journal-reads-too = Enregistrer aussi les lectures
 journal-reads-too-help = Mode forensique. Les écritures tombent toujours dans la chaîne ; ceci enregistre aussi les lectures admin, épelées admin.read. Coûte une ligne de journal par lecture admin tant que c'est levé.
+device-lifespan = Code appareil
+device-lifespan-help = Durée de vie d'un code de connexion d'appareil, RFC 8628 : la télé l'affiche, la personne va au téléphone. 60 à 3600 secondes ; vide prend le 600 du build.
+device-interval = Poll appareil
+device-interval-help = Cadence à laquelle l'appareil en attente peut demander, en secondes. Un code garde la cadence de sa naissance ; un réglage touche le suivant.

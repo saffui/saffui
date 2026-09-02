@@ -297,3 +297,39 @@ async fn the_device_doors_refuse_the_unregistered_and_the_expired() {
         .expect("a sweep");
     assert!(swept.device_codes >= 1, "{}", swept.device_codes);
 }
+
+/// The realm paces its own device flow: a retuned lifespan and interval
+/// reach the next opening, spoken in the answer exactly as stored.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realm_paces_its_device_flow() {
+    let plane = Plane::with_actions(&[models::entities::authz::AdminAction::RealmWrite]).await;
+    allow_device(&plane).await;
+
+    {
+        let mut connection = plane.pool().get().await.expect("a connection");
+        let transaction = plane
+            .tenancy()
+            .transaction(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await
+            .expect("a scoped transaction");
+        let mut realm = store::providers::realms::load(&transaction, support::REALM)
+            .await
+            .unwrap()
+            .expect("the realm");
+        realm.device_code_lifespan = Some(120);
+        realm.device_poll_interval = Some(9);
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    let (status, opened) = posted(&plane, "/device-authorization", &[("scope", "openid")]).await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert_eq!(opened["expires_in"], 120, "{opened}");
+    assert_eq!(opened["interval"], 9, "{opened}");
+}

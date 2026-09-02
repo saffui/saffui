@@ -28,6 +28,7 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        master_admin_client, events_enabled, admin_events_enabled, not_before, \
                        attributes, acr_loa_map, \
                        browser_flow, otp_policy, webauthn_policy, \
+                       device_code_lifespan, device_poll_interval, \
                        supported_locales, default_locale, \
                        created_by, created_at, updated_by, updated_at, version";
 
@@ -231,6 +232,8 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("browser_flow", &realm.browser_flow),
             col("otp_policy", &otp_policy),
             col("webauthn_policy", &webauthn_policy),
+            col("device_code_lifespan", &realm.device_code_lifespan),
+            col("device_poll_interval", &realm.device_poll_interval),
             col("supported_locales", &supported_locales),
             col("default_locale", &realm.default_locale),
             col("updated_by", &realm.metadata.updated_by),
@@ -298,6 +301,8 @@ fn read(row: Row) -> RealmModel {
         otp_policy: row
             .get::<_, Option<serde_json::Value>>("otp_policy")
             .and_then(|held| serde_json::from_value(held).ok()),
+        device_code_lifespan: row.get("device_code_lifespan"),
+        device_poll_interval: row.get("device_poll_interval"),
         webauthn_policy: row
             .get::<_, Option<serde_json::Value>>("webauthn_policy")
             .and_then(|held| serde_json::from_value(held).ok()),

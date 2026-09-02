@@ -5,6 +5,7 @@ import { say } from "@/i18n";
 import { createUser, listUsers } from "@/services/users";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
+import AppToggle from "@/components/AppToggle.vue";
 import type { Page } from "@/models/paging";
 import type { UserBrief } from "@/models/user";
 import UserDrawer from "./UserDrawer.vue";
@@ -249,19 +250,16 @@ const shownTotal = computed(() => {
           <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
             {{ say("user-ask-first") }} <AppHint name="user-required-actions-help" />
           </div>
-          <label
-            v-for="action in REQUIRED_ACTIONS"
-            :key="action"
-            class="mt-1.5 flex items-center gap-2 text-xs"
-          >
-            <input
-              type="checkbox"
-              :checked="born.actions.includes(action)"
-              class="accent-(--sf-accent)"
-              @change="flipAction(action)"
-            />
-            <span class="font-mono text-[11px]">{{ action }}</span>
-          </label>
+          <div class="mt-1.5 flex flex-col gap-1.5">
+            <AppToggle
+              v-for="action in REQUIRED_ACTIONS"
+              :key="action"
+              :model-value="born.actions.includes(action)"
+              @update:model-value="flipAction(action)"
+            >
+              <span class="font-mono text-[11px]">{{ action }}</span>
+            </AppToggle>
+          </div>
         </div>
         <p class="text-[10.5px] text-faint">{{ say("user-new-note") }}</p>
         <div>

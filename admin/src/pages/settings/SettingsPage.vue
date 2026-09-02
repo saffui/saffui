@@ -1139,16 +1139,19 @@ async function removeMail() {
             <div class="mt-1 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("locales-offered") }} <AppHint name="locales-offered-help" />
             </div>
-            <label v-for="tongue in TONGUES" :key="tongue" class="flex items-center gap-2 text-xs">
-              <input
-                v-model="offeredTongues"
-                type="checkbox"
-                :value="tongue"
-                class="accent-(--sf-accent)"
-              />
+            <AppToggle
+              v-for="tongue in TONGUES"
+              :key="tongue"
+              :model-value="offeredTongues.includes(tongue)"
+              @update:model-value="
+                offeredTongues = offeredTongues.includes(tongue)
+                  ? offeredTongues.filter((held) => held !== tongue)
+                  : [...offeredTongues, tongue]
+              "
+            >
               <span class="font-mono text-[11.5px]">{{ tongue }}</span>
               <span class="text-muted">{{ say(`locale-${tongue}`) }}</span>
-            </label>
+            </AppToggle>
             <label class="mt-2 block text-[11px] font-medium text-muted">
               {{ say("locales-default") }} <AppHint name="locales-default-help" />
               <select

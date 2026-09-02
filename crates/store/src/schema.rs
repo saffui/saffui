@@ -397,6 +397,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V065__device_codes.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 66,
+            name: "realm_session_bounds",
+            sql: include_str!("../migrations/V066__realm_session_bounds.sql"),
+            transactional: true,
+        }),
     ]
 }
 

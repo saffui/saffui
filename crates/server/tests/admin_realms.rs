@@ -54,6 +54,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let plane = Plane::with_actions(&[
         AdminAction::RealmCreate,
         AdminAction::RealmWrite,
+        AdminAction::RealmDelete,
         AdminAction::RealmRead,
         AdminAction::ClientRead,
     ])
@@ -132,6 +133,8 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
         Some(serde_json::json!({
             "display_name": "Staging ground",
             "access_token_lifespan": 600,
+            "refresh_token_lifespan": 900,
+            "session_max_lifespan": 28800,
             "require_pushed_authorization_requests": true,
             "registration_bounds": {
                 "max_clients": 5,
@@ -145,6 +148,8 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     assert_eq!(shaped["name"], "staging", "{shaped}");
     assert_eq!(shaped["display_name"], "Staging ground", "{shaped}");
     assert_eq!(shaped["access_token_lifespan"], 600, "{shaped}");
+    assert_eq!(shaped["refresh_token_lifespan"], 900, "{shaped}");
+    assert_eq!(shaped["session_max_lifespan"], 28800, "{shaped}");
     assert_eq!(shaped["require_pushed_authorization_requests"], true);
     assert_eq!(shaped["registration_bounds"]["max_clients"], 5, "{shaped}");
 
@@ -170,4 +175,91 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+
+    // The registration secret is drawn, answered once, and never read back.
+    let (status, drawn) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/staging/registration-secret",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{drawn}");
+    let first = drawn["registration_secret"]
+        .as_str()
+        .expect("a secret answered once")
+        .to_owned();
+
+    let (status, drawn) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/staging/registration-secret",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_ne!(
+        drawn["registration_secret"].as_str().unwrap(),
+        first,
+        "a rotation answered the same secret twice"
+    );
+
+    let (status, read) = asked(
+        &plane,
+        Method::GET,
+        "/admin/realms/staging?briefRepresentation=false",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        read.get("registration_secret").is_none(),
+        "the stored secret is serialised: {read}"
+    );
+
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        "/admin/realms/staging/registration-secret",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // A realm is deleted from somewhere else, never out from under its own
+    // console, and the schema takes everything keyed under it along.
+    let (status, told) = asked(&plane, Method::DELETE, "/admin/realms/main", &bearer, None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        "/admin/realms/staging",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        "/admin/realms/staging?briefRepresentation=false",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        "/admin/realms/staging",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

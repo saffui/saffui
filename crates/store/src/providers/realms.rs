@@ -21,6 +21,7 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        edit_user_name_allowed, reset_password_allowed, remember_me, \
                        ssl_enforcement, password_policy, \
                        revoke_refresh_token, refresh_token_max_reuse, access_token_lifespan, \
+                       refresh_token_lifespan, session_max_lifespan, \
                        offline_session_lifespan, \
                        action_tokens_lifespan, access_code_lifespan, \
                        access_code_lifespan_user_action, access_code_lifespan_login, \
@@ -61,6 +62,16 @@ pub async fn load(
         .await
         .map_err(|_| StoreError::Backend)?
         .map(read))
+}
+
+/// Take a realm away. The schema cascades: everything keyed under the
+/// realm goes with the row, which is the point of deleting one.
+pub async fn delete(transaction: &Transaction<'_>, realm_id: &str) -> StoreResult<bool> {
+    let gone = transaction
+        .execute("DELETE FROM realms WHERE realm_id = $1", &[&realm_id])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(gone > 0)
 }
 
 /// Whether a name is taken in this tenant.
@@ -178,6 +189,8 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("revoke_refresh_token", &realm.revoke_refresh_token),
             col("refresh_token_max_reuse", &realm.refresh_token_max_reuse),
             col("access_token_lifespan", &realm.access_token_lifespan),
+            col("refresh_token_lifespan", &realm.refresh_token_lifespan),
+            col("session_max_lifespan", &realm.session_max_lifespan),
             col("offline_session_lifespan", &realm.offline_session_lifespan),
             col("action_tokens_lifespan", &realm.action_tokens_lifespan),
             col("access_code_lifespan", &realm.access_code_lifespan),
@@ -248,6 +261,8 @@ fn read(row: Row) -> RealmModel {
         revoke_refresh_token: row.get("revoke_refresh_token"),
         refresh_token_max_reuse: row.get("refresh_token_max_reuse"),
         access_token_lifespan: row.get("access_token_lifespan"),
+        refresh_token_lifespan: row.get("refresh_token_lifespan"),
+        session_max_lifespan: row.get("session_max_lifespan"),
         offline_session_lifespan: row.get("offline_session_lifespan"),
         action_tokens_lifespan: row.get("action_tokens_lifespan"),
         access_code_lifespan: row.get("access_code_lifespan"),

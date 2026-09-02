@@ -209,6 +209,96 @@ pub async fn create(
     Ok(HttpResponse::Created().json(brief(realm)))
 }
 
+/// Take the realm away. The schema cascades, so everything keyed under it
+/// goes with the row: users, clients, sessions, keys, the lot.
+///
+/// The realm this caller's own token was minted by is refused: deleting it
+/// would take the admin plane down with it, and the person would learn that
+/// from a broken console rather than an answer. Do it from another realm.
+pub async fn delete(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    if admin.context.tenant.realm_id == realm_id {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "a realm is not deleted from its own console: sign into another realm first".to_owned(),
+        ));
+    }
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+    if !store::providers::realms::delete(&transaction, &realm_id)
+        .await
+        .map_err(|_| internal())?
+    {
+        return Err(ApiError::new(ErrorCode::RealmNotFound));
+    }
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
+/// Draw the secret protected client registration is opened with, and answer
+/// it exactly once. Only the hash is kept.
+pub async fn rotate_registration_secret(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+    let secret = services::registration::rotate_registration_secret(
+        &transaction,
+        sealing.provider.as_ref(),
+        &realm_id,
+    )
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::RealmNotFound))?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "registration_secret": secret })))
+}
+
+/// Take the registration secret away. Protected registration then admits
+/// nobody until a new one is drawn.
+pub async fn forget_registration_secret(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+    services::registration::forget_registration_secret(&transaction, &realm_id)
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::RealmNotFound))?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
 /// Rewrite the realm's switches.
 ///
 /// Absent fields stay as they are, so an edit that mentions one setting does

@@ -26,6 +26,7 @@ str_enum! {
         RealmRead => "realm:read",
         RealmWrite => "realm:write",
         RealmCreate => "realm:create",
+        RealmDelete => "realm:delete",
         RealmList => "realm:list",
         RealmImport => "realm:import",
         RealmExport => "realm:export",
@@ -948,7 +949,7 @@ mod tests {
 
     #[test]
     fn the_vocabulary_agrees_with_its_own_spelling() {
-        assert_eq!(AdminAction::ALL.len(), 41);
+        assert_eq!(AdminAction::ALL.len(), 42);
         assert_round_trips(AdminAction::ALL);
     }
 
@@ -962,7 +963,7 @@ mod tests {
             assert!(
                 matches!(
                     action.verb(),
-                    "read" | "write" | "create" | "list" | "import" | "export"
+                    "read" | "write" | "create" | "delete" | "list" | "import" | "export"
                 ),
                 "{action} ends in an unexpected verb"
             );
@@ -982,6 +983,7 @@ mod tests {
             AdminAction::RealmImport,
             AdminAction::RealmExport,
             AdminAction::RealmKeysWrite,
+            AdminAction::RealmDelete,
         ] {
             assert_ne!(standalone, AdminAction::RealmWrite);
             assert_ne!(standalone.as_str(), AdminAction::RealmWrite.as_str());

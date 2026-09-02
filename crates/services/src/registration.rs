@@ -745,6 +745,47 @@ fn matches(provider: &dyn CryptoProvider, held: &str, presented: &str) -> bool {
     verify_and_plan(provider, &offered, &stored).is_ok_and(|plan| plan.valid)
 }
 
+/// Draw the secret protected registration is opened with, and hand it back
+/// once. Only the hash is kept, so losing the answer means drawing again.
+pub async fn rotate_registration_secret(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    realm_id: &str,
+) -> Result<String, Refused> {
+    let mut realm = store::providers::realms::load(transaction, realm_id)
+        .await
+        .map_err(|_| Refused::Unwritable)?
+        .ok_or(Refused::Closed)?;
+    let mut drawn = [0u8; 32];
+    provider
+        .rand()
+        .fill(&mut drawn)
+        .map_err(|_| Refused::Unwritable)?;
+    let secret = data_encoding::BASE64URL_NOPAD.encode(&drawn);
+    realm.registration_secret = Some(hashed(provider, &secret)?);
+    store::providers::realms::update(transaction, &realm)
+        .await
+        .map_err(|_| Refused::Unwritable)?;
+    Ok(secret)
+}
+
+/// Take the secret away. Protected registration then admits nobody until a
+/// new one is drawn, which is the safe direction to fail in.
+pub async fn forget_registration_secret(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+) -> Result<(), Refused> {
+    let mut realm = store::providers::realms::load(transaction, realm_id)
+        .await
+        .map_err(|_| Refused::Unwritable)?
+        .ok_or(Refused::Closed)?;
+    realm.registration_secret = None;
+    store::providers::realms::update(transaction, &realm)
+        .await
+        .map_err(|_| Refused::Unwritable)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

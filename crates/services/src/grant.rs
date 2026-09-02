@@ -46,7 +46,9 @@ fn offline_or_refresh_lifespan(realm: &models::entities::realm::RealmModel, offl
             .offline_session_lifespan
             .map_or(DEFAULT_OFFLINE_LIFESPAN, i64::from)
     } else {
-        DEFAULT_REFRESH_LIFESPAN
+        realm
+            .refresh_token_lifespan
+            .map_or(DEFAULT_REFRESH_LIFESPAN, i64::from)
     }
 }
 
@@ -78,6 +80,11 @@ fn offline_ends_at(realm: &models::entities::realm::RealmModel, started_at: i64)
         .then(|| started_at + i64::from(realm.offline_session_max_lifespan))
 }
 
+/// The same ceiling for a signed-in session, where the realm hung one.
+fn session_ends_at(realm: &models::entities::realm::RealmModel, started_at: i64) -> Option<i64> {
+    (realm.session_max_lifespan > 0).then(|| started_at + i64::from(realm.session_max_lifespan))
+}
+
 /// The token's own expiry is this same instant. A client told it holds
 /// something with no end, then refused, has nothing to explain it.
 fn bounded_end(
@@ -86,10 +93,12 @@ fn bounded_end(
     started_at: i64,
     sliding: i64,
 ) -> i64 {
-    match offline
-        .then(|| offline_ends_at(realm, started_at))
-        .flatten()
-    {
+    let ceiling = if offline {
+        offline_ends_at(realm, started_at)
+    } else {
+        session_ends_at(realm, started_at)
+    };
+    match ceiling {
         Some(absolute) => sliding.min(absolute),
         None => sliding,
     }
@@ -1845,4 +1854,57 @@ fn exchange_policy(client: &ClientModel, key: &str) -> Option<String> {
         .map(str::trim)
         .filter(|held| !held.is_empty())
         .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod session_bounds {
+    use super::*;
+
+    fn realm() -> models::entities::realm::RealmModel {
+        models::entities::realm::RealmCreateModel {
+            name: "main".into(),
+            display_name: "Main".into(),
+            enabled: true,
+        }
+        .into_model(
+            "main".into(),
+            models::auditable::AuditableModel::from_creator("acme".into(), "test".into()),
+        )
+    }
+
+    /// The sliding window is the realm's where it set one, and the compiled
+    /// default where it did not, on both kinds of grant.
+    #[test]
+    fn the_sliding_window_is_the_realms_to_set() {
+        let mut held = realm();
+        assert_eq!(
+            offline_or_refresh_lifespan(&held, false),
+            DEFAULT_REFRESH_LIFESPAN
+        );
+        assert_eq!(
+            offline_or_refresh_lifespan(&held, true),
+            DEFAULT_OFFLINE_LIFESPAN
+        );
+        held.refresh_token_lifespan = Some(600);
+        held.offline_session_lifespan = Some(86_400);
+        assert_eq!(offline_or_refresh_lifespan(&held, false), 600);
+        assert_eq!(offline_or_refresh_lifespan(&held, true), 86_400);
+    }
+
+    /// Zero hangs no ceiling; set, the ceiling wins only once the sliding
+    /// window would pass it, for a signed-in session as for an offline one.
+    #[test]
+    fn the_ceiling_holds_the_window_back() {
+        let mut held = realm();
+        assert_eq!(bounded_end(&held, false, 1_000, 2_000), 2_000);
+
+        held.session_max_lifespan = 500;
+        assert_eq!(bounded_end(&held, false, 1_000, 2_000), 1_500);
+        assert_eq!(bounded_end(&held, false, 1_000, 1_200), 1_200);
+        // The online ceiling does not reach the offline grant.
+        assert_eq!(bounded_end(&held, true, 1_000, 2_000), 2_000);
+
+        held.offline_session_max_lifespan = 300;
+        assert_eq!(bounded_end(&held, true, 1_000, 2_000), 1_300);
+    }
 }

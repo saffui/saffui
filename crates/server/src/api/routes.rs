@@ -84,6 +84,24 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::put().to(realms::update)),
         },
         AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}",
+            action: AdminAction::RealmDelete,
+            handler: Some(|| web::delete().to(realms::delete)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/registration-secret",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::post().to(realms::rotate_registration_secret)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/registration-secret",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::delete().to(realms::forget_registration_secret)),
+        },
+        AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms/{realm}/mail",
             action: AdminAction::RealmRead,

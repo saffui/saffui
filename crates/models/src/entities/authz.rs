@@ -176,6 +176,9 @@ pub struct GroupModel {
     pub description: String,
     /// Whether new users join it without anyone adding them.
     pub is_default: bool,
+    /// The group this one sits under, when it is a sub-group: its members
+    /// also stand in every group above it.
+    pub parent_id: Option<String>,
     pub metadata: AuditableModel,
 }
 
@@ -188,6 +191,8 @@ pub struct GroupMutationModel {
     pub description: String,
     #[serde(default)]
     pub is_default: bool,
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 impl GroupMutationModel {
@@ -208,6 +213,7 @@ impl GroupMutationModel {
             display_name: self.display_name,
             description: self.description,
             is_default: self.is_default,
+            parent_id: self.parent_id,
             metadata,
         }
     }
@@ -1101,6 +1107,7 @@ mod tests {
             display_name: "Engineering".into(),
             description: String::new(),
             is_default: false,
+            parent_id: None,
         }
         .into_model("group-1".into(), "realm-1".into(), metadata());
 

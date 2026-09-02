@@ -274,6 +274,7 @@ function instant(epoch: number | null | undefined): string {
             </span>
             <input
               v-model="profile.email"
+              type="email"
               class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
               spellcheck="false"
             />

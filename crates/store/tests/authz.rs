@@ -35,6 +35,7 @@ fn group(id: &str, is_default: bool) -> GroupModel {
         display_name: id.to_owned(),
         description: String::new(),
         is_default,
+        parent_id: None,
     }
     .into_model(
         id.to_owned(),

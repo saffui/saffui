@@ -451,6 +451,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V074__drop_master_admin_client.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 75,
+            name: "group_parents",
+            sql: include_str!("../migrations/V075__group_parents.sql"),
+            transactional: true,
+        }),
     ]
 }
 

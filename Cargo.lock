@@ -2764,6 +2764,7 @@ dependencies = [
  "crypto",
  "data-encoding",
  "deadpool-postgres",
+ "email_address",
  "models",
  "pgcore",
  "secrecy",

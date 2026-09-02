@@ -47,6 +47,9 @@ pub async fn create(
     spec: &Spec,
 ) -> Result<UserModel, Uncreatable> {
     check_name(user_name)?;
+    if let Some(email) = &spec.email {
+        check_mail(email)?;
+    }
     if users::load_by_name(transaction, user_name)
         .await
         .map_err(|_| Uncreatable::Unwritable)?
@@ -123,6 +126,7 @@ pub async fn update(
 ) -> Result<UserModel, Uncreatable> {
     let mut user = get(transaction, user_id).await?;
     if let Some(email) = &spec.email {
+        check_mail(email)?;
         user.email = email.clone();
     }
     if let Some(verified) = spec.email_verified {
@@ -258,6 +262,18 @@ fn apply_attributes(user: &mut UserModel, spec: &Spec) {
         }
     }
     user.attributes = (!held.is_empty()).then_some(held);
+}
+
+/// An address is either absent or the shape of one. Emptiness is absence:
+/// clearing a mail address is allowed, misspelling one is not.
+fn check_mail(email: &str) -> Result<(), Uncreatable> {
+    if email.is_empty() || email_address::EmailAddress::is_valid(email) {
+        Ok(())
+    } else {
+        Err(Uncreatable::Invalid(
+            "this is not the shape of a mail address",
+        ))
+    }
 }
 
 fn check_name(user_name: &str) -> Result<(), Uncreatable> {

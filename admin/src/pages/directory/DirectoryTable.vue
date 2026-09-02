@@ -2,6 +2,7 @@
 // The one table the three directory listings share: name in the monospace,
 // the human name, the description, and whatever extra column the caller
 // renders through the slot. Rows open whatever the caller decides.
+import { CornerDownRight } from "lucide-vue-next";
 import { say } from "@/i18n";
 
 defineProps<{
@@ -9,6 +10,8 @@ defineProps<{
   total: number | null;
   openedKey?: string | null;
   keyOf: (row: T) => string;
+  /// Tree depth per row, when the listing is a hierarchy. Zero stays flat.
+  indentOf?: (row: T) => number;
 }>();
 const emit = defineEmits<{ open: [row: T] }>();
 </script>
@@ -32,7 +35,20 @@ const emit = defineEmits<{ open: [row: T] }>();
           :class="openedKey === keyOf(row) && 'bg-surface-2'"
           @click="emit('open', row)"
         >
-          <td class="px-3 py-2 font-mono text-[11.5px]">{{ row.name }}</td>
+          <td class="px-3 py-2 font-mono text-[11.5px]">
+            <span
+              class="inline-flex items-center gap-1"
+              :style="{ paddingLeft: `${(indentOf?.(row) ?? 0) * 16}px` }"
+            >
+              <CornerDownRight
+                v-if="(indentOf?.(row) ?? 0) > 0"
+                :size="11"
+                :stroke-width="1.6"
+                class="text-faint"
+              />
+              {{ row.name }}
+            </span>
+          </td>
           <td class="px-3 py-2">{{ row.display_name }}</td>
           <td class="px-3 py-2 text-muted">{{ row.description }}</td>
           <td class="px-3 py-2"><slot name="extra" :row="row" /></td>

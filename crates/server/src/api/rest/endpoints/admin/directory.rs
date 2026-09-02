@@ -195,6 +195,10 @@ fn refused(why: Unwritable, exists: ErrorCode, missing: ErrorCode) -> ApiError {
         Unwritable::NotFound => ApiError::new(missing),
         Unwritable::NoSuchUser => ApiError::new(ErrorCode::UserNotFound),
         Unwritable::StillHeld => ApiError::new(ErrorCode::StillGranted),
+        Unwritable::StillParent => ApiError::with_detail(
+            ErrorCode::StillGranted,
+            "its sub-groups remain, so not deleted",
+        ),
         Unwritable::Invalid(what) => ApiError::with_detail(ErrorCode::ValidationError, what),
         Unwritable::Backend => internal(),
     }

@@ -7,6 +7,15 @@
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
+import AppDrawer from "@/components/AppDrawer.vue";
+import AppHint from "@/components/AppHint.vue";
+import {
+  createPolicy,
+  createResource,
+  eraseRelation,
+  protectClient,
+  writeRelation,
+} from "@/services/authz";
 import { evaluate, listAuthzScopes, listPolicies, listResources } from "@/services/authz";
 import { ApiError } from "@/services/http";
 import type {
@@ -205,6 +214,104 @@ async function simulate() {
   }
 }
 
+/// The four families of evaluator this build carries, plus the one shown
+/// unavailable so the palette reads as a place with room, not a closed set.
+const EVALUATORS = [
+  { type: "role", family: "who" },
+  { type: "group", family: "who" },
+  { type: "attribute", family: "what" },
+  { type: "relationship", family: "owns" },
+  { type: "context", family: "narrows" },
+  { type: "time", family: "narrows" },
+  { type: "aggregated", family: "composes" },
+] as const;
+
+const drawer = ref<"" | "protect" | "policy" | "resource" | "relation" | "palette">("");
+const protectDraft = ref({ enforcement: "enforcing", strategy: "affirmative" });
+async function doProtect() {
+  try {
+    await protectClient(
+      realm.value,
+      clientId.value,
+      protectDraft.value.enforcement,
+      protectDraft.value.strategy,
+    );
+    drawer.value = "";
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
+const policyDraft = ref({ name: "", policy_type: "role", description: "", terms: "" });
+async function makePolicy() {
+  if (!policyDraft.value.name.trim()) return;
+  const roles = policyDraft.value.terms
+    .split(/[\n,]/)
+    .map((held) => held.trim())
+    .filter(Boolean);
+  try {
+    await createPolicy(realm.value, clientId.value, {
+      name: policyDraft.value.name.trim(),
+      description: policyDraft.value.description,
+      policy_type: policyDraft.value.policy_type,
+      logic: "positive",
+      decision_strategy: "affirmative",
+      configs: roles.length ? { names: { Str: roles.join(",") } } : undefined,
+    });
+    drawer.value = "";
+    policyDraft.value = { name: "", policy_type: "role", description: "", terms: "" };
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
+const resourceDraft = ref({ name: "", resource_type: "", uris: "", owner: "" });
+async function makeResource() {
+  if (!resourceDraft.value.name.trim()) return;
+  try {
+    await createResource(realm.value, clientId.value, {
+      name: resourceDraft.value.name.trim(),
+      display_name: resourceDraft.value.name.trim(),
+      description: "",
+      resource_type: resourceDraft.value.resource_type.trim(),
+      resource_uris: resourceDraft.value.uris
+        .split(/[\n,]/)
+        .map((held) => held.trim())
+        .filter(Boolean),
+      resource_owner: resourceDraft.value.owner.trim() || clientId.value,
+      user_managed_access: false,
+    });
+    drawer.value = "";
+    resourceDraft.value = { name: "", resource_type: "", uris: "", owner: "" };
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
+const tuple = ref({
+  subject_type: "user",
+  subject_id: "",
+  relation: "",
+  object_type: "",
+  object_id: "",
+});
+const tupleWritten = ref(false);
+async function saveTuple(erase: boolean) {
+  tupleWritten.value = false;
+  const held = tuple.value;
+  if (!held.subject_id.trim() || !held.relation.trim() || !held.object_id.trim()) return;
+  try {
+    if (erase) await eraseRelation(realm.value, { ...held });
+    else await writeRelation(realm.value, { ...held });
+    tupleWritten.value = true;
+  } catch {
+    // The toast already said.
+  }
+}
+
 function onWheel(event: WheelEvent) {
   const factor = event.deltaY < 0 ? 1.1 : 0.9;
   view.value.zoom = Math.min(2.5, Math.max(0.35, view.value.zoom * factor));
@@ -252,6 +359,41 @@ function nodeStroke(row: PolicyRow): string {
           class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
         >
           {{ say("authz-load") }}
+        </button>
+        <button
+          type="button"
+          class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
+          @click="drawer = 'protect'"
+        >
+          {{ say("authz-protect") }}
+        </button>
+        <button
+          type="button"
+          class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
+          @click="drawer = 'policy'"
+        >
+          {{ say("authz-new-policy") }}
+        </button>
+        <button
+          type="button"
+          class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
+          @click="drawer = 'resource'"
+        >
+          {{ say("authz-new-resource") }}
+        </button>
+        <button
+          type="button"
+          class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
+          @click="drawer = 'relation'"
+        >
+          {{ say("authz-write-relation") }}
+        </button>
+        <button
+          type="button"
+          class="rounded-md border border-border px-2 py-1 text-xs text-muted hover:bg-surface-2"
+          @click="drawer = 'palette'"
+        >
+          {{ say("authz-palette") }}
         </button>
       </form>
     </div>
@@ -452,5 +594,140 @@ function nodeStroke(row: PolicyRow): string {
         </div>
       </aside>
     </div>
+
+    <AppDrawer v-if="drawer === 'protect'" :title="say('authz-protect')" :subtitle="clientId" @close="drawer = ''">
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="doProtect">
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-enforcement") }} <AppHint name="authz-enforcement-help" />
+          <select v-model="protectDraft.enforcement" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+            <option value="enforcing">enforcing</option>
+            <option value="permissive">permissive</option>
+            <option value="disabled">disabled</option>
+          </select>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-strategy") }} <AppHint name="authz-strategy-help" />
+          <select v-model="protectDraft.strategy" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+            <option value="affirmative">affirmative</option>
+            <option value="unanimous">unanimous</option>
+            <option value="consensus">consensus</option>
+          </select>
+        </label>
+        <div>
+          <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+            {{ say("authz-protect") }}
+          </button>
+        </div>
+      </form>
+    </AppDrawer>
+
+    <AppDrawer v-if="drawer === 'policy'" :title="say('authz-new-policy')" :subtitle="clientId" @close="drawer = ''">
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="makePolicy">
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("settings-name") }}
+          <input v-model="policyDraft.name" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-evaluator") }} <AppHint name="authz-evaluator-help" />
+          <select v-model="policyDraft.policy_type" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+            <option v-for="held in EVALUATORS" :key="held.type" :value="held.type">{{ held.type }}</option>
+          </select>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("scopes-col-description") }}
+          <input v-model="policyDraft.description" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-terms") }} <AppHint name="authz-terms-help" />
+          <textarea v-model="policyDraft.terms" rows="2" :placeholder="say('policy-blacklist-hint')" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false"></textarea>
+        </label>
+        <div>
+          <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+            {{ say("realm-create") }}
+          </button>
+        </div>
+      </form>
+    </AppDrawer>
+
+    <AppDrawer v-if="drawer === 'resource'" :title="say('authz-new-resource')" :subtitle="clientId" @close="drawer = ''">
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="makeResource">
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("settings-name") }}
+          <input v-model="resourceDraft.name" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-resource-type") }} <AppHint name="authz-resource-type-help" />
+          <input v-model="resourceDraft.resource_type" placeholder="document" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-resource-uris") }} <AppHint name="authz-resource-uris-help" />
+          <textarea v-model="resourceDraft.uris" rows="2" :placeholder="say('policy-blacklist-hint')" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false"></textarea>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-resource-owner") }}
+          <input v-model="resourceDraft.owner" :placeholder="clientId" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        </label>
+        <div>
+          <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+            {{ say("realm-create") }}
+          </button>
+        </div>
+      </form>
+    </AppDrawer>
+
+    <AppDrawer v-if="drawer === 'relation'" :title="say('authz-write-relation')" :subtitle="realm" @close="drawer = ''">
+      <p class="text-[11px] text-muted">{{ say("authz-relation-lede") }}</p>
+      <form class="mt-3 flex flex-col gap-3 text-xs" @submit.prevent="saveTuple(false)">
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("authz-subject-type") }}
+            <input v-model="tuple.subject_type" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("authz-subject-id") }}
+            <input v-model="tuple.subject_id" placeholder="ada" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          </label>
+        </div>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-relation-name") }} <AppHint name="authz-relation-help" />
+          <input v-model="tuple.relation" placeholder="owner" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        </label>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("authz-object-type") }}
+            <input v-model="tuple.object_type" placeholder="document" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("authz-object-id") }}
+            <input v-model="tuple.object_id" placeholder="doc-42" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          </label>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+            {{ say("authz-write") }}
+          </button>
+          <button type="button" class="rounded-md border border-danger/40 px-3 py-1.5 text-xs text-danger hover:bg-surface-2" @click="saveTuple(true)">
+            {{ say("authz-erase") }}
+          </button>
+          <span v-if="tupleWritten" class="text-[11px] text-ok">{{ say("authz-tuple-kept") }}</span>
+        </div>
+        <p class="text-[10.5px] text-faint">{{ say("authz-tuple-test") }}</p>
+      </form>
+    </AppDrawer>
+
+    <AppDrawer v-if="drawer === 'palette'" :title="say('authz-palette')" :subtitle="say('authz-palette-sub')" @close="drawer = ''">
+      <p class="text-[11px] text-muted">{{ say("authz-palette-lede") }}</p>
+      <div class="mt-3 flex flex-col gap-1.5">
+        <div v-for="held in EVALUATORS" :key="held.type" class="flex items-center gap-2.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs">
+          <span class="font-mono text-[11.5px]">{{ held.type }}</span>
+          <span class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted">{{ say(`authz-family-${held.family}`) }}</span>
+        </div>
+        <div class="flex items-center gap-2.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs opacity-60">
+          <span class="font-mono text-[11.5px]">uma-sharing</span>
+          <span class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted">{{ say("authz-family-owns") }}</span>
+          <span class="ml-auto text-[10.5px] text-faint">{{ say("features-not-compiled") }}</span>
+        </div>
+      </div>
+    </AppDrawer>
   </div>
 </template>

@@ -802,12 +802,33 @@ async fn a_group_chain_stays_a_tree() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
 
-    let (status, told) = asked(&plane, Method::DELETE, &format!("{base}/{top}"), &bearer, None).await;
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{base}/{top}"),
+        &bearer,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::CONFLICT, "{told}");
 
-    let (status, _) = asked(&plane, Method::DELETE, &format!("{base}/{under}"), &bearer, None).await;
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{base}/{under}"),
+        &bearer,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (status, _) = asked(&plane, Method::DELETE, &format!("{base}/{top}"), &bearer, None).await;
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{base}/{top}"),
+        &bearer,
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
 

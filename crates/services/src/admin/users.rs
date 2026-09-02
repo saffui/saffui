@@ -270,7 +270,9 @@ fn check_mail(email: &str) -> Result<(), Uncreatable> {
     if email.is_empty() || email_address::EmailAddress::is_valid(email) {
         Ok(())
     } else {
-        Err(Uncreatable::Invalid("this is not the shape of a mail address"))
+        Err(Uncreatable::Invalid(
+            "this is not the shape of a mail address",
+        ))
     }
 }
 

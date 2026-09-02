@@ -320,6 +320,12 @@ pub struct RealmModel {
     pub refresh_token_max_reuse: Option<i32>,
     /// Lifespans, in seconds.
     pub access_token_lifespan: Option<i32>,
+    /// How long a session may sleep between renewals. None takes the
+    /// compiled default; each renewal slides the window.
+    pub refresh_token_lifespan: Option<i32>,
+    /// The oldest a signed-in session may get, however often it renews.
+    /// Zero is no ceiling, which leaves the sliding window alone to bound it.
+    pub session_max_lifespan: i32,
     /// How long a grant carrying `offline_access` may keep renewing.
     pub offline_session_lifespan: Option<i32>,
     /// The oldest an offline grant may get, however often it checks in. Zero
@@ -387,6 +393,8 @@ impl RealmCreateModel {
             revoke_refresh_token: None,
             refresh_token_max_reuse: None,
             access_token_lifespan: None,
+            refresh_token_lifespan: None,
+            session_max_lifespan: 0,
             offline_session_lifespan: None,
             action_tokens_lifespan: None,
             access_code_lifespan: None,
@@ -425,6 +433,10 @@ pub struct RealmUpdateModel {
     pub revoke_refresh_token: Option<bool>,
     pub refresh_token_max_reuse: Option<i32>,
     pub access_token_lifespan: Option<i32>,
+    /// How long a session may sleep between renewals, in seconds.
+    pub refresh_token_lifespan: Option<i32>,
+    /// The oldest a signed-in session may get. Zero is no ceiling.
+    pub session_max_lifespan: Option<i32>,
     /// How long a grant carrying `offline_access` may keep renewing.
     pub offline_session_lifespan: Option<i32>,
     pub action_tokens_lifespan: Option<i32>,
@@ -486,6 +498,9 @@ impl RealmUpdateModel {
         if let Some(offline_session_max_lifespan) = self.offline_session_max_lifespan {
             realm.offline_session_max_lifespan = offline_session_max_lifespan;
         }
+        if let Some(session_max_lifespan) = self.session_max_lifespan {
+            realm.session_max_lifespan = session_max_lifespan;
+        }
         if let Some(max_offline_grants) = self.max_offline_grants {
             realm.max_offline_grants = max_offline_grants;
         }
@@ -507,6 +522,7 @@ impl RealmUpdateModel {
             revoke_refresh_token,
             refresh_token_max_reuse,
             access_token_lifespan,
+            refresh_token_lifespan,
             offline_session_lifespan,
             action_tokens_lifespan,
             access_code_lifespan,

@@ -84,6 +84,13 @@ pub async fn mint_code(
         .code
         .then(|| draw(provider))
         .transpose()?;
+    // The realm's own code lifespan, now that it is a setting and not only a
+    // column. One indexed read per code minted, which is one per login.
+    let code_lifespan = store::providers::realms::load(transaction, &tenant.realm_id)
+        .await
+        .map_err(|_| Unanswerable::Unreadable)?
+        .and_then(|realm| realm.access_code_lifespan)
+        .map_or(CODE_LIFESPAN, i64::from);
     if let Some(raw) = &raw {
         oidc::mint_code(
             transaction,
@@ -106,7 +113,7 @@ pub async fn mint_code(
                 org_name: authorized.org.map(|acting| acting.org_name.clone()),
                 claims: authorized.claims.cloned(),
             },
-            now + Duration::seconds(CODE_LIFESPAN),
+            now + Duration::seconds(code_lifespan),
         )
         .await
         .map_err(|_| Unanswerable::Unreadable)?;
@@ -170,6 +177,8 @@ pub async fn mint_code(
 /// One minute, which is OIDC Core §3.1.3.3's guidance. It travels through a
 /// browser redirect and is spent immediately after, so anything longer is a
 /// window nobody uses and an attacker might.
+/// The default when the realm has not said, kept short: a code is a bearer
+/// credential in a URL.
 const CODE_LIFESPAN: i64 = 60;
 
 fn draw(provider: &dyn CryptoProvider) -> Result<String, Unanswerable> {

@@ -258,7 +258,25 @@ pub async fn provision_realm_administration(
     user_id: &str,
 ) -> StoreResult<bool> {
     let created = match roles::load(transaction, ADMINISTRATOR_ROLE).await? {
-        Some(_) => false,
+        Some(mut held) => {
+            // The catalogue grows, and a role materialised under an older one
+            // silently lacks the newest capabilities. A role no operator ever
+            // touched is the provisioner's to keep current; one an operator
+            // reshaped keeps its shape, and the update trail is what tells
+            // the two apart.
+            let untouched = held
+                .metadata
+                .updated_by
+                .as_deref()
+                .is_none_or(|by| by == PROVISIONER);
+            let current = AdminAction::ALL.to_vec();
+            if untouched && held.admin_actions.as_deref() != Some(current.as_slice()) {
+                held.admin_actions = Some(current);
+                held.metadata.updated_by = Some(PROVISIONER.to_owned());
+                roles::update(transaction, &held).await?;
+            }
+            false
+        }
         None => {
             roles::create(
                 transaction,

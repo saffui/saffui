@@ -53,6 +53,17 @@ const PEOPLE: UserBrief[] = [
   },
 ];
 
+const CLIENTS = [
+  { client_id: "web-dashboard", name: "Web dashboard", enabled: true, confidential: true,
+    redirect_uris: ["https://app.acme.example/callback"], post_logout_redirect_uris: ["https://app.acme.example/"] },
+  { client_id: "kiosk-tv", name: "Lobby kiosk", enabled: true, confidential: false,
+    redirect_uris: [], post_logout_redirect_uris: [] },
+  { client_id: "payments-api", name: "Payments API", enabled: true, confidential: true,
+    redirect_uris: ["https://payments.acme.example/oauth/return"], post_logout_redirect_uris: [] },
+  { client_id: "counter-desk", name: "Counter desk", enabled: false, confidential: true,
+    redirect_uris: ["https://counter.beta.example/back"], post_logout_redirect_uris: [] },
+];
+
 function person(path: string): UserBrief | null {
   const found = /\/users\/([^/?]+)/.exec(path);
   return found ? (PEOPLE.find((held) => held.user_id === found[1]) ?? null) : null;
@@ -170,8 +181,39 @@ export function previewAnswer<T>(path: string): T {
   if (path.includes("/users?")) {
     return answer({ items: PEOPLE, first: 0, max: 25, total: 1284 });
   }
+  if (/\/clients\/[^/]+\/scopes$/.test(path)) {
+    return answer([
+      { client_scope_id: "cs-1", name: "openid", description: "", protocol: "openid-connect", default_scope: true, optional: false },
+      { client_scope_id: "cs-2", name: "profile", description: "Name and picture", protocol: "openid-connect", default_scope: true, optional: false },
+      { client_scope_id: "cs-3", name: "payments:write", description: "Move money", protocol: "openid-connect", default_scope: false, optional: true },
+    ]);
+  }
+  if (/\/clients\/[^/]+\/mappers$/.test(path)) {
+    return answer([
+      { mapper_id: "m-1", name: "audience for payments", protocol: "openid-connect", mapper_type: "audience" },
+      { mapper_id: "m-2", name: "department claim", protocol: "openid-connect", mapper_type: "user-attribute" },
+    ]);
+  }
+  if (/\/clients\/[^/?]+$/.test(path)) {
+    const found = CLIENTS.find((held) => path.endsWith(`/${held.client_id}`));
+    if (found) return answer(found);
+  }
   if (path.includes("/clients?")) {
-    return answer({ items: [{}], first: 0, max: 1, total: 12 });
+    return answer({ items: CLIENTS, first: 0, max: 25, total: 12 });
+  }
+  if (/\/client-scopes\/[^/]+\/mappers$/.test(path)) {
+    return answer([
+      { mapper_id: "m-3", name: "email claims", protocol: "openid-connect", mapper_type: "user-property" },
+    ]);
+  }
+  if (path.endsWith("/client-scopes")) {
+    return answer([
+      { client_scope_id: "cs-1", name: "openid", description: "The protocol's own word", protocol: "openid-connect", default_scope: true },
+      { client_scope_id: "cs-2", name: "profile", description: "Name and picture", protocol: "openid-connect", default_scope: true },
+      { client_scope_id: "cs-4", name: "email", description: "Email address", protocol: "openid-connect", default_scope: true },
+      { client_scope_id: "cs-5", name: "offline_access", description: "Access while away", protocol: "openid-connect", default_scope: false },
+      { client_scope_id: "cs-3", name: "payments:write", description: "Move money", protocol: "openid-connect", default_scope: false },
+    ]);
   }
   if (path.includes("/organizations?")) {
     return answer({ items: [{}], first: 0, max: 1, total: 2 });

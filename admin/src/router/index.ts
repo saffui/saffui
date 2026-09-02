@@ -17,6 +17,14 @@ const routes: RouteRecordRaw[] = [
         path: "users",
         component: () => import("@/pages/users/UsersPage.vue"),
       },
+      {
+        path: "clients",
+        component: () => import("@/pages/clients/ClientsPage.vue"),
+      },
+      {
+        path: "client-scopes",
+        component: () => import("@/pages/scopes/ScopesPage.vue"),
+      },
     ],
   },
   { path: "/", redirect: "/login" },

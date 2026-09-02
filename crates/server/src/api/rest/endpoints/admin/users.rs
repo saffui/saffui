@@ -342,3 +342,109 @@ pub async fn withdraw_consent(
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
+
+/// Every role this user holds, directly or through a group: one answer, the
+/// way a decision reads it.
+pub async fn effective_roles(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    named_user(&transaction, &user_id).await?;
+    let held = store::providers::roles::effective_roles(&transaction, &user_id)
+        .await
+        .map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "roles": held
+            .iter()
+            .map(|role| serde_json::json!({
+                "role_id": role.role_id,
+                "name": role.name,
+                "display_name": role.display_name,
+                "description": role.description,
+                "client_id": role.client_id,
+            }))
+            .collect::<Vec<_>>(),
+    })))
+}
+
+/// The groups this user belongs to, as the directory shows them.
+pub async fn member_groups(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    named_user(&transaction, &user_id).await?;
+    let mut groups = Vec::new();
+    for group_id in store::providers::roles::groups_of(&transaction, &user_id)
+        .await
+        .map_err(|_| internal())?
+    {
+        if let Ok(group) = services::admin::directory::get_group(&transaction, &group_id).await {
+            groups.push(serde_json::json!({
+                "group_id": group.group_id,
+                "name": group.name,
+                "display_name": group.display_name,
+                "description": group.description,
+            }));
+        }
+    }
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "groups": groups })))
+}
+
+/// The organizations this user belongs to, as the directory shows them.
+pub async fn member_organizations(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    named_user(&transaction, &user_id).await?;
+    let mut organizations = Vec::new();
+    for org_id in store::providers::organizations::of_member(&transaction, &user_id)
+        .await
+        .map_err(|_| internal())?
+    {
+        if let Ok(org) = services::admin::directory::get_organization(&transaction, &org_id).await {
+            organizations.push(serde_json::json!({
+                "org_id": org.org_id,
+                "name": org.name,
+                "display_name": org.display_name,
+                "enabled": org.enabled,
+            }));
+        }
+    }
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "organizations": organizations })))
+}
+
+/// The user the path names, or the not-found the whole file answers with.
+async fn named_user(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    user_id: &str,
+) -> Result<(), ApiError> {
+    store::providers::users::load(transaction, user_id)
+        .await
+        .map_err(|_| internal())?
+        .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;
+    Ok(())
+}

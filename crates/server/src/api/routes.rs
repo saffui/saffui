@@ -5,8 +5,8 @@ use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
     authorization, claim_sources, client_scopes, clients, directory, features, federation, flows,
-    idps, iga, keys, mail, negotiation, portability, protocol_mappers, realm_keys, realms, rebac,
-    sessions, users,
+    idps, iga, journal, keys, mail, negotiation, portability, protocol_mappers, realm_keys, realms,
+    rebac, sessions, users,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -1018,6 +1018,48 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/users/{user}/keys/{credential}",
             action: AdminAction::UserWrite,
             handler: Some(|| web::delete().to(keys::revoke)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/roles",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(users::effective_roles)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/groups",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(users::member_groups)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/organizations",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(users::member_organizations)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/journal",
+            action: AdminAction::JournalRead,
+            handler: Some(|| web::get().to(journal::list_entries)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/journal/verify",
+            action: AdminAction::JournalRead,
+            handler: Some(|| web::get().to(journal::verify_chain)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/journal/anchors",
+            action: AdminAction::JournalRead,
+            handler: Some(|| web::get().to(journal::list_anchors)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/journal/anchors",
+            action: AdminAction::JournalWrite,
+            handler: Some(|| web::post().to(journal::anchor_head)),
         },
         AdminRoute {
             method: Method::GET,

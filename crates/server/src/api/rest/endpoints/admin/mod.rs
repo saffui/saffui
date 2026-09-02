@@ -9,6 +9,7 @@ pub mod federation;
 pub mod flows;
 pub mod idps;
 pub mod iga;
+pub mod journal;
 pub mod keys;
 pub mod mail;
 pub mod negotiation;

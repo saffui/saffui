@@ -214,3 +214,82 @@ pub async fn anchor(
         hash: head_hash,
     })
 }
+
+/// One entry as a reader is shown it: the chain position, the instant the
+/// row was written, and the envelope exactly as it was hashed.
+#[derive(Debug)]
+pub struct JournalEntry {
+    pub seq: i64,
+    pub recorded_at: chrono::DateTime<chrono::Utc>,
+    pub envelope: Value,
+}
+
+/// The newest entries first, one page at a time. The chain is verified by
+/// [`verify`], not here: a listing is for reading, and it reads what stands.
+pub async fn list_entries(
+    transaction: &Transaction<'_>,
+    first: i64,
+    max: i64,
+    count: bool,
+) -> StoreResult<(Vec<JournalEntry>, Option<i64>)> {
+    let rows = transaction
+        .query(
+            "SELECT seq, recorded_at, envelope FROM audit_events \
+             ORDER BY seq DESC OFFSET $1 LIMIT $2",
+            &[&first, &max],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let total = if count {
+        Some(
+            transaction
+                .query_one("SELECT count(*) FROM audit_events", &[])
+                .await
+                .map_err(|_| StoreError::Backend)?
+                .get::<_, i64>(0),
+        )
+    } else {
+        None
+    };
+    Ok((
+        rows.into_iter()
+            .map(|row| JournalEntry {
+                seq: row.get("seq"),
+                recorded_at: row.get("recorded_at"),
+                envelope: row.get("envelope"),
+            })
+            .collect(),
+        total,
+    ))
+}
+
+/// One published head.
+#[derive(Debug)]
+pub struct Anchor {
+    pub seq: i64,
+    pub head_hash: Vec<u8>,
+    pub witness: String,
+    pub receipt: String,
+    pub anchored_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Every head this realm has published, newest first.
+pub async fn list_anchors(transaction: &Transaction<'_>) -> StoreResult<Vec<Anchor>> {
+    Ok(transaction
+        .query(
+            "SELECT seq, head_hash, witness, receipt, anchored_at \
+             FROM audit_anchors ORDER BY seq DESC",
+            &[],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| Anchor {
+            seq: row.get("seq"),
+            head_hash: row.get("head_hash"),
+            witness: row.get("witness"),
+            receipt: row.get("receipt"),
+            anchored_at: row.get("anchored_at"),
+        })
+        .collect())
+}

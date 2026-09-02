@@ -174,6 +174,13 @@ fn admin_scope(
             tenancy: plane.tenancy.clone(),
             policy: plane.policy.clone(),
             origin: plane.origin.clone(),
+        })
+        // Added after the guard so it runs outside it: it reads the identity
+        // the guard established and the status the handler answered.
+        .wrap(crate::middleware::admin_audit::Journal {
+            pool: plane.pool.clone(),
+            tenancy: plane.tenancy.clone(),
+            provider: Arc::clone(&plane.sealing.provider),
         });
 
     // One resource per path, carrying every verb the table declares for it:

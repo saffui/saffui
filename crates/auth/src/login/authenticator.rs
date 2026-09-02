@@ -516,13 +516,12 @@ fn burn(
     }
 }
 
-/// How far either side of now a code is still accepted, when the realm has
-/// not said: one step. It buys tolerance for a clock that drifts and a user
-/// who types slowly, and it costs acceptance width, a code staying good for
+/// A time-based code, against what the realm stores.
+///
+/// The drift window buys tolerance for a clock that drifts and a user who
+/// types slowly, and it costs acceptance width, a code staying good for
 /// `period * (2 * window + 1)`, which is exactly why the step it was
 /// accepted at has to be spent.
-
-/// A time-based code, against what the realm stores.
 async fn totp(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,

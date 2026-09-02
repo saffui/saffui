@@ -1,12 +1,10 @@
 use config::serving::PublicOrigin;
 use crypto::otp::totp::{TotpParams, totp_verify_step};
-use crypto::provider::{CryptoProvider, HashAlg};
+use crypto::provider::CryptoProvider;
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
-use models::entities::credentials::{
-    CredentialModel, CredentialSecret, OtpAlgorithm, OtpParameters,
-};
+use models::entities::credentials::{CredentialModel, CredentialSecret, OtpParameters};
 use models::entities::realm::RealmModel;
 use models::entities::user::{RequiredAction, UserModel};
 use secrecy::SecretBox;

@@ -61,6 +61,22 @@ const routes: RouteRecordRaw[] = [
         path: "authorization",
         component: () => import("@/pages/authorization/AuthorizationPage.vue"),
       },
+      {
+        path: "federation",
+        component: () => import("@/pages/federation/FederationPage.vue"),
+      },
+      {
+        path: "governance",
+        component: () => import("@/pages/governance/GovernancePage.vue"),
+      },
+      {
+        path: "events",
+        component: () => import("@/pages/events/EventsPage.vue"),
+      },
+      {
+        path: "journal",
+        component: () => import("@/pages/journal/JournalPage.vue"),
+      },
     ],
   },
   { path: "/", redirect: "/login" },

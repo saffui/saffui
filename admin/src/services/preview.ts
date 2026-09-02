@@ -287,6 +287,38 @@ export function previewAnswer<T>(path: string): T {
   if (path.endsWith("/theme")) {
     return answer(null);
   }
+  if (path.endsWith("/identity-providers")) {
+    return answer([
+      { internal_id: "i-1", provider_id: "corp-okta", name: "corp-okta", display_name: "Corp Okta", description: "", enabled: true, trust_email: true, configs: null },
+      { internal_id: "i-2", provider_id: "the-collector", name: "the-collector", display_name: "SOC collector", description: "", enabled: true, trust_email: false,
+        configs: { kind: { Str: "caep-push" }, delivery: { Str: "poll" }, audience: { Str: "https://soc.example" } } },
+      { internal_id: "i-3", provider_id: "crm-webhook", name: "crm-webhook", display_name: "CRM provisioning", description: "", enabled: true, trust_email: false,
+        configs: { kind: { Str: "scim-outbound" }, base_url: { Str: "https://crm.example/scim/v2" } } },
+    ]);
+  }
+  if (path.endsWith("/federations")) {
+    return answer([
+      { alias: "corp-ldap", enabled: true, priority: 10, configs: null },
+      { alias: "legacy-ad", enabled: false, priority: 20, configs: null },
+    ]);
+  }
+  if (path.endsWith("/iga/rules")) {
+    return answer([
+      { rule_id: "ru-1", when_attribute: "department", when_value: "finance", when_expr: null, roles: ["r-1"], priority: 10, enabled: true },
+      { rule_id: "ru-2", when_attribute: null, when_value: null, when_expr: "department=eng && clearance!=none", roles: ["r-2", "r-3"], priority: 20, enabled: true },
+    ]);
+  }
+  if (/\/iga\/grants\/[^/]+$/.test(path)) {
+    return answer([
+      { role_id: "auditor", rule_id: "ru-1", expires_at: null },
+      { role_id: "contractor-access", rule_id: null, expires_at: new Date(Date.now() + 86_400_000 * 9).toISOString() },
+    ]);
+  }
+  if (path.endsWith("/journal/anchors")) {
+    return answer({ anchors: [
+      { seq: 38, head_hash: "ab12", witness: "https://witness.example/log", receipt: "r-2026-09-01", anchored_at: NOW - 86_000 },
+    ] });
+  }
   if (path.endsWith("/authz/evaluate")) {
     return answer({
       decision_id: "d-sim-1",

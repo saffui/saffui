@@ -294,6 +294,18 @@ pub async fn default_groups(transaction: &Transaction<'_>) -> StoreResult<Vec<Gr
         .collect())
 }
 
+/// Put a fresh account into every group the realm marked default.
+///
+/// One door for every way a person comes to exist, an administrator's POST,
+/// a federation shadow, a SCIM push, so birthright membership does not
+/// depend on which door was used.
+pub async fn join_default_groups(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<()> {
+    for group in default_groups(transaction).await? {
+        add_to_group(transaction, user_id, &group.group_id).await?;
+    }
+    Ok(())
+}
+
 /// Grant a role to a user.
 ///
 /// Granting twice is not an error and not a second grant. A caller reconciling a

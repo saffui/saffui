@@ -430,3 +430,7 @@ webauthn-rp-name-help = What the browser's dialog names during enrolment and sig
 webauthn-subdomains = Apex answers for subdomains
 webauthn-subdomains-help = A key enrolled at example.com also answers on app.example.com. Off, every host stands alone.
 webauthn-fixed-line = Fixed by the verifier: user verification required, no attestation collected. That is the passkey contract, not a setting.
+group-default = Every new account joins this group
+group-default-help = Birthright membership: accounts created after the mark land here at creation, whichever door made them, an administrator, a federation, a SCIM push. Unmarking stops the intake and touches nobody already inside.
+group-default-chip = default
+subject-group = group { $group }

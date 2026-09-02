@@ -593,6 +593,9 @@ async fn named_subject(
         users::create(transaction, &shadow)
             .await
             .map_err(|_| Unanswerable::Unreadable)?;
+        store::providers::roles::join_default_groups(transaction, &shadow.user_id)
+            .await
+            .map_err(|_| Unanswerable::Unreadable)?;
         return Ok(Some(shadow));
     }
     Ok(None)

@@ -14,6 +14,7 @@ export interface GroupRow {
   name: string;
   display_name: string;
   description: string;
+  is_default: boolean;
 }
 
 /// Partial mirror of `models::entities::organization::OrganizationModel`.

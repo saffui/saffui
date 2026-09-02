@@ -1,3 +1,4 @@
+import { say } from "@/i18n";
 import { adminPath, api } from "@/services/http";
 import type { Page } from "@/models/paging";
 import type {
@@ -31,6 +32,24 @@ export async function listGroups(
   max: number,
 ): Promise<Page<GroupRow>> {
   return api<Page<GroupRow>>(adminPath(realm, paged("groups", first, max)));
+}
+
+/// Mark or unmark a group as one every new account joins at creation.
+export async function markGroupDefault(
+  realm: string,
+  group: GroupRow,
+  isDefault: boolean,
+): Promise<void> {
+  await api<unknown>(adminPath(realm, `groups/${encodeURIComponent(group.group_id)}`), {
+    method: "PUT",
+    json: {
+      name: group.name,
+      display_name: group.display_name,
+      description: group.description,
+      is_default: isDefault,
+    },
+    subject: say("subject-group", { group: group.name }),
+  });
 }
 
 export async function listGroupMembership(

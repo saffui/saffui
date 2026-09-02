@@ -430,3 +430,7 @@ webauthn-rp-name-help = Ce que la boîte de dialogue du navigateur nomme à l'en
 webauthn-subdomains = L'apex répond pour les sous-domaines
 webauthn-subdomains-help = Une clé enrôlée sur example.com répond aussi sur app.example.com. Coupé, chaque hôte est seul.
 webauthn-fixed-line = Figé par le vérificateur : vérification utilisateur exigée, aucune attestation collectée. C'est le contrat passkey, pas un réglage.
+group-default = Chaque nouveau compte rejoint ce groupe
+group-default-help = Appartenance de naissance : les comptes créés après la marque y entrent à la création, quelle que soit la porte, administrateur, fédération, poussée SCIM. Démarquer arrête l'entrée et ne touche personne déjà dedans.
+group-default-chip = défaut
+subject-group = groupe { $group }

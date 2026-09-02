@@ -221,6 +221,12 @@ pub async fn create(
     if users::create(&transaction, &person).await.is_err() {
         return unavailable();
     }
+    if store::providers::roles::join_default_groups(&transaction, &person.user_id)
+        .await
+        .is_err()
+    {
+        return unavailable();
+    }
     if let Some(password) = &asserted.password
         && planted_password(
             &transaction,

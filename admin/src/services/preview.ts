@@ -369,6 +369,16 @@ export function previewAnswer<T>(path: string): T {
       { flow_id: "f-stepup", alias: "step-up", description: "Second factor on demand", top_level: false, built_in: false },
     ]);
   }
+  if (path === "/admin/features") {
+    return answer([
+      { slug: "kerberos", lifecycle: "stable", compiled: false, enabled: false, doc: "SPNEGO desktop tickets at the LDAP front; links the system Kerberos libraries." },
+      { slug: "embedded-admin", lifecycle: "stable", compiled: true, enabled: true, doc: "This console, served from inside the binary under /console." },
+      { slug: "fapi2", lifecycle: "preview", compiled: true, enabled: false, doc: "The FAPI 2.0 security profile gates, per client." },
+    ]);
+  }
+  if (path.endsWith("/registration-secret")) {
+    return answer({ registration_secret: "preview-secret-drawn-once" });
+  }
   if (path === "/admin/realms" || path.startsWith("/admin/realms?")) {
     const rows = [
       { realm_id: "main", name: "main", display_name: "Main", enabled: true },
@@ -407,6 +417,11 @@ export function previewAnswer<T>(path: string): T {
       access_code_lifespan_login: 900,
       not_before: 0,
       ssl_enforcement: "external",
+      acr_loa_map: { mfa: 2 },
+      attributes: { support: "it@acme.example" },
+      refresh_token_lifespan: null,
+      session_max_lifespan: 0,
+      access_code_lifespan_user_action: null,
       password_policy: { length: 12, digits: 1 },
       brute_force: {
         protected: true,

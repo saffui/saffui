@@ -16,3 +16,8 @@ export async function createRealm(name: string, displayName: string): Promise<Re
     json: { name, display_name: displayName, enabled: true },
   });
 }
+
+/// Take a realm away. Refused for the realm the session belongs to.
+export async function deleteRealm(realm: string): Promise<void> {
+  await api<void>(`/admin/realms/${encodeURIComponent(realm)}`, { method: "DELETE" });
+}

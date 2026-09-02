@@ -3,18 +3,25 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
+import { useRouter } from "vue-router";
 import {
   forgetMail,
+  forgetRegistrationSecret,
   getMail,
   getRealmSettings,
+  listFeatures,
   reshapeRealm,
+  rotateRegistrationSecret,
   writeMail,
 } from "@/services/settings";
+import { deleteRealm } from "@/services/realms";
+import { useSession } from "@/stores/session";
+import type { FeatureBrief } from "@/models/feature";
 import { ApiError } from "@/services/http";
 import type { MailBrief } from "@/models/mail";
 import type { RealmSettings, RealmUpdate } from "@/models/realm";
 
-const GROUPS = ["general", "login", "sessions", "security", "email"] as const;
+const GROUPS = ["general", "login", "sessions", "security", "email", "features"] as const;
 type Group = (typeof GROUPS)[number];
 
 const LOGIN_TOGGLES = [
@@ -22,12 +29,19 @@ const LOGIN_TOGGLES = [
   ["register_email_as_username", "settings-email-as-username"],
   ["verify_email", "settings-verify-email"],
   ["login_with_email_allowed", "settings-login-with-email"],
+  ["duplicated_email_allowed", "settings-duplicated-email"],
+  ["edit_user_name_allowed", "settings-edit-username"],
   ["reset_password_allowed", "settings-reset-password"],
   ["remember_me", "settings-remember-me"],
 ] as const;
 
 const route = useRoute();
+const router = useRouter();
+const session = useSession();
 const realm = computed(() => String(route.params.realm));
+/// The realm this session's own token was minted by; the one realm that
+/// cannot be deleted from here.
+const home = computed(() => session.realm);
 const group = ref<Group>("general");
 const settings = ref<RealmSettings | null>(null);
 const mail = ref<MailBrief | null>(null);
@@ -52,6 +66,13 @@ const draft = ref({
   bounds_requires_consent: false,
   bounds_trusted_hosts: "",
   access_token_lifespan: "" as string | number,
+  refresh_token_lifespan: "" as string | number,
+  session_max_lifespan: 0 as string | number,
+  access_code_lifespan: "" as string | number,
+  access_code_lifespan_login: "" as string | number,
+  access_code_lifespan_user_action: "" as string | number,
+  action_tokens_lifespan: "" as string | number,
+  not_before: "" as string | number,
   revoke_refresh_token: false,
   refresh_token_max_reuse: "" as string | number,
   offline_session_lifespan: "" as string | number,
@@ -65,6 +86,10 @@ const draft = ref({
   bf_max_lockout_seconds: 900,
   bf_reset_seconds: 900,
 });
+
+/// Assurance levels and free attributes, edited as rows.
+const acrRows = ref<{ context: string; level: string | number }[]>([]);
+const attrRows = ref<{ name: string; value: string }[]>([]);
 
 function adopt(held: RealmSettings) {
   settings.value = held;
@@ -84,6 +109,13 @@ function adopt(held: RealmSettings) {
     bounds_requires_consent: held.registration_bounds.requires_consent,
     bounds_trusted_hosts: held.registration_bounds.trusted_hosts.join("\n"),
     access_token_lifespan: held.access_token_lifespan ?? "",
+    refresh_token_lifespan: held.refresh_token_lifespan ?? "",
+    session_max_lifespan: held.session_max_lifespan,
+    access_code_lifespan: held.access_code_lifespan ?? "",
+    access_code_lifespan_login: held.access_code_lifespan_login ?? "",
+    access_code_lifespan_user_action: held.access_code_lifespan_user_action ?? "",
+    action_tokens_lifespan: held.action_tokens_lifespan ?? "",
+    not_before: held.not_before ?? "",
     revoke_refresh_token: held.revoke_refresh_token ?? false,
     refresh_token_max_reuse: held.refresh_token_max_reuse ?? "",
     offline_session_lifespan: held.offline_session_lifespan ?? "",
@@ -97,6 +129,14 @@ function adopt(held: RealmSettings) {
     bf_max_lockout_seconds: held.brute_force.max_lockout_seconds,
     bf_reset_seconds: held.brute_force.reset_seconds,
   };
+  acrRows.value = Object.entries(held.acr_loa_map ?? {}).map(([context, level]) => ({
+    context,
+    level,
+  }));
+  attrRows.value = Object.entries(held.attributes ?? {}).map(([name, value]) => ({
+    name,
+    value: typeof value === "string" ? value : JSON.stringify(value),
+  }));
 }
 
 onMounted(async () => {
@@ -132,7 +172,16 @@ function whole(value: string | number): number | undefined {
 function changesOf(which: Group): RealmUpdate {
   const held = draft.value;
   if (which === "general") {
-    return { display_name: held.display_name, enabled: held.enabled };
+    const attributes: Record<string, string> = {};
+    for (const row of attrRows.value) {
+      if (row.name.trim()) attributes[row.name.trim()] = row.value;
+    }
+    return {
+      display_name: held.display_name,
+      enabled: held.enabled,
+      not_before: whole(held.not_before) ?? 0,
+      attributes,
+    };
   }
   if (which === "login") {
     return {
@@ -158,6 +207,12 @@ function changesOf(which: Group): RealmUpdate {
   if (which === "sessions") {
     return {
       access_token_lifespan: whole(held.access_token_lifespan),
+      refresh_token_lifespan: whole(held.refresh_token_lifespan),
+      session_max_lifespan: whole(held.session_max_lifespan) ?? 0,
+      access_code_lifespan: whole(held.access_code_lifespan),
+      access_code_lifespan_login: whole(held.access_code_lifespan_login),
+      access_code_lifespan_user_action: whole(held.access_code_lifespan_user_action),
+      action_tokens_lifespan: whole(held.action_tokens_lifespan),
       revoke_refresh_token: held.revoke_refresh_token,
       refresh_token_max_reuse: whole(held.refresh_token_max_reuse),
       offline_session_lifespan: whole(held.offline_session_lifespan),
@@ -176,6 +231,12 @@ function changesOf(which: Group): RealmUpdate {
     },
   };
   if (held.ssl_enforcement) changes.ssl_enforcement = held.ssl_enforcement;
+  const map: Record<string, number> = {};
+  for (const row of acrRows.value) {
+    const level = Number(row.level);
+    if (row.context.trim() && Number.isFinite(level)) map[row.context.trim()] = level;
+  }
+  changes.acr_loa_map = map;
   return changes;
 }
 
@@ -188,6 +249,60 @@ async function saveGroup() {
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
+}
+
+/// The secret protected registration is opened with, shown exactly once.
+const drawnSecret = ref("");
+async function drawRegistrationSecret() {
+  failed.value = "";
+  try {
+    drawnSecret.value = await rotateRegistrationSecret(realm.value);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+async function dropRegistrationSecret() {
+  failed.value = "";
+  drawnSecret.value = "";
+  try {
+    await forgetRegistrationSecret(realm.value);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+async function copySecret() {
+  try {
+    await navigator.clipboard.writeText(drawnSecret.value);
+  } catch {
+    // The box stays selectable; copying by hand still works.
+  }
+}
+
+/// Deleting the realm: typed name arms the button; the session's own realm
+/// is refused here as the server refuses it.
+const doomName = ref("");
+async function dropRealm() {
+  failed.value = "";
+  try {
+    await deleteRealm(realm.value);
+    router.push(`/${home.value}/overview`);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+const features = ref<FeatureBrief[]>([]);
+async function loadFeatures() {
+  try {
+    features.value = await listFeatures();
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+function openGroup(which: Group) {
+  group.value = which;
+  saved.value = false;
+  if (which === "features" && !features.value.length) void loadFeatures();
 }
 
 const mailForm = ref({
@@ -235,7 +350,7 @@ async function removeMail() {
           type="button"
           class="rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-surface-2 hover:text-ink"
           :class="group === held && 'bg-surface-2 font-medium text-ink'"
-          @click="group = held; saved = false"
+          @click="openGroup(held)"
         >
           {{ say(`settings-group-${held}`) }}
         </button>
@@ -250,7 +365,7 @@ async function removeMail() {
 
       <template v-if="settings">
         <form
-          v-if="group !== 'email'"
+          v-if="group !== 'email' && group !== 'features'"
           class="mt-4 flex max-w-lg flex-col gap-3 text-xs"
           @submit.prevent="saveGroup"
         >
@@ -272,6 +387,83 @@ async function removeMail() {
               <input v-model="draft.enabled" type="checkbox" class="accent-(--sf-accent)" />
               {{ say("users-active") }} <AppHint name="settings-enabled-help" />
             </label>
+            <label class="block text-[11px] font-medium text-muted">
+              {{ say("settings-not-before") }} <AppHint name="settings-not-before-help" />
+              <input
+                v-model="draft.not_before"
+                type="number"
+                min="0"
+                placeholder="0"
+                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              />
+            </label>
+
+            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("settings-attributes") }} <AppHint name="settings-attributes-help" />
+            </div>
+            <div
+              v-for="(row, at) in attrRows"
+              :key="at"
+              class="grid grid-cols-[1fr_1fr_28px] gap-2"
+            >
+              <input
+                v-model="row.name"
+                :placeholder="say('settings-attr-name')"
+                class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                spellcheck="false"
+              />
+              <input
+                v-model="row.value"
+                :placeholder="say('settings-attr-value')"
+                class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                spellcheck="false"
+              />
+              <button
+                type="button"
+                class="rounded border border-border text-xs text-muted hover:text-danger"
+                :aria-label="say('action-remove')"
+                @click="attrRows.splice(at, 1)"
+              >
+                &times;
+              </button>
+            </div>
+            <button
+              type="button"
+              class="w-fit rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-surface-2"
+              @click="attrRows.push({ name: '', value: '' })"
+            >
+              {{ say("settings-attr-add") }}
+            </button>
+
+            <div class="mt-4 rounded-lg border border-danger/40 p-3">
+              <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">
+                {{ say("settings-danger") }}
+              </div>
+              <p class="mt-1 text-[11px] text-muted">
+                {{
+                  realm === home
+                    ? say("settings-delete-own")
+                    : say("settings-delete-lede", { realm })
+                }}
+                <AppHint name="settings-delete-help" />
+              </p>
+              <div v-if="realm !== home" class="mt-2 flex items-center gap-2">
+                <input
+                  v-model="doomName"
+                  :placeholder="realm"
+                  class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  spellcheck="false"
+                />
+                <button
+                  type="button"
+                  class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+                  :disabled="doomName !== realm"
+                  @click="dropRealm"
+                >
+                  {{ say("settings-delete-realm") }}
+                </button>
+              </div>
+            </div>
           </template>
 
           <template v-if="group === 'login'">
@@ -385,6 +577,67 @@ async function removeMail() {
                   class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
                 />
               </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-refresh-sliding") }}
+                <AppHint name="settings-refresh-sliding-help" />
+                <input
+                  v-model="draft.refresh_token_lifespan"
+                  type="number"
+                  min="1"
+                  placeholder="1800"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-session-ceiling") }}
+                <AppHint name="settings-session-ceiling-help" />
+                <input
+                  v-model="draft.session_max_lifespan"
+                  type="number"
+                  min="0"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-code-lifespan") }} <AppHint name="settings-code-lifespan-help" />
+                <input
+                  v-model="draft.access_code_lifespan"
+                  type="number"
+                  min="1"
+                  placeholder="60"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-login-window") }} <AppHint name="settings-login-window-help" />
+                <input
+                  v-model="draft.access_code_lifespan_login"
+                  type="number"
+                  min="1"
+                  :placeholder="say('settings-unset')"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-action-window") }} <AppHint name="settings-action-window-help" />
+                <input
+                  v-model="draft.access_code_lifespan_user_action"
+                  type="number"
+                  min="1"
+                  :placeholder="say('settings-unset')"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-action-tokens") }} <AppHint name="settings-action-tokens-help" />
+                <input
+                  v-model="draft.action_tokens_lifespan"
+                  type="number"
+                  min="1"
+                  :placeholder="say('settings-unset')"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
             </div>
             <p class="text-[10.5px] text-faint">{{ say("settings-zero-unbounded") }}</p>
             <label class="flex items-center gap-2 text-xs">
@@ -465,6 +718,79 @@ async function removeMail() {
               </label>
             </div>
 
+            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("settings-assurance") }} <AppHint name="settings-assurance-help" />
+            </div>
+            <div v-for="(row, at) in acrRows" :key="at" class="grid grid-cols-[1fr_110px_28px] gap-2">
+              <input
+                v-model="row.context"
+                :placeholder="say('settings-assurance-context')"
+                class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                spellcheck="false"
+              />
+              <input
+                v-model="row.level"
+                type="number"
+                min="0"
+                :placeholder="say('settings-assurance-level')"
+                class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              />
+              <button
+                type="button"
+                class="rounded border border-border text-xs text-muted hover:text-danger"
+                :aria-label="say('action-remove')"
+                @click="acrRows.splice(at, 1)"
+              >
+                &times;
+              </button>
+            </div>
+            <button
+              type="button"
+              class="w-fit rounded-md border border-border px-2 py-1 text-[11px] text-muted hover:bg-surface-2"
+              @click="acrRows.push({ context: '', level: 1 })"
+            >
+              {{ say("settings-assurance-add") }}
+            </button>
+
+            <template v-if="draft.client_registration === 'protected'">
+              <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+                {{ say("settings-registration-secret") }}
+                <AppHint name="settings-registration-secret-help" />
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  class="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2"
+                  @click="drawRegistrationSecret"
+                >
+                  {{ say("settings-secret-draw") }}
+                </button>
+                <button
+                  type="button"
+                  class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface-2"
+                  @click="dropRegistrationSecret"
+                >
+                  {{ say("settings-secret-forget") }}
+                </button>
+              </div>
+              <div
+                v-if="drawnSecret"
+                class="flex items-center gap-2 rounded-md border border-warn/40 bg-surface-2 px-2.5 py-2"
+              >
+                <code class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ drawnSecret }}</code>
+                <button
+                  type="button"
+                  class="rounded border border-border px-2 py-0.5 text-[10.5px] text-muted hover:bg-surface-3"
+                  @click="copySecret"
+                >
+                  {{ say("action-copy") }}
+                </button>
+              </div>
+              <p v-if="drawnSecret" class="text-[10.5px] text-warn">
+                {{ say("settings-secret-once") }}
+              </p>
+            </template>
+
             <div class="mt-2">
               <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
                 {{ say("settings-password-policy") }} <AppHint name="settings-password-policy-help" />
@@ -486,6 +812,35 @@ async function removeMail() {
             <span v-if="saved" class="text-[11px] text-ok">{{ say("settings-saved") }}</span>
           </div>
         </form>
+
+        <div v-if="group === 'features'" class="mt-4 max-w-2xl">
+          <p class="text-xs text-muted">{{ say("features-lede") }}</p>
+          <div class="mt-3 grid gap-1.5">
+            <div
+              v-for="held in features"
+              :key="held.slug"
+              class="flex items-center gap-2.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs"
+            >
+              <span
+                class="size-1.5 shrink-0 rounded-full"
+                :class="held.enabled ? 'bg-ok' : held.compiled ? 'bg-warn' : 'bg-faint'"
+              ></span>
+              <span class="font-mono text-[11.5px]">{{ held.slug }}</span>
+              <span
+                class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted"
+                >{{ held.lifecycle }}</span
+              >
+              <span class="ml-auto text-[10.5px] text-faint">{{
+                held.enabled
+                  ? say("features-on")
+                  : held.compiled
+                    ? say("features-off")
+                    : say("features-not-compiled")
+              }}</span>
+              <AppHint :text="held.doc" />
+            </div>
+          </div>
+        </div>
 
         <div v-if="group === 'email'" class="mt-4 max-w-lg">
           <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveMail">

@@ -102,8 +102,8 @@ function instant(epoch: number): string {
           >
             <td class="px-3 py-2 font-mono text-[10.5px] text-faint">{{ held.seq }}</td>
             <td class="px-3 py-2">{{ held.entry.actor }}</td>
-            <td class="px-3 py-2 font-mono text-[10.5px]">
-              {{ held.entry.method }} {{ held.entry.pattern ?? held.entry.path }}
+            <td class="px-3 py-2 font-mono text-[10.5px]" :title="held.entry.pattern ?? ''">
+              {{ held.entry.method }} {{ held.entry.path || held.entry.pattern }}
             </td>
             <td class="px-3 py-2">
               <span

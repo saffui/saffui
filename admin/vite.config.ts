@@ -7,7 +7,10 @@ import { fileURLToPath, URL } from "node:url";
 // saffui, so the console is developed against the real thing.
 const upstream = process.env.SAFFUI_UPSTREAM ?? "http://localhost:8080";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // Embedded builds live under /console/ inside the server binary; dev keeps
+  // the root so review links stay stable.
+  base: command === "build" ? "/console/" : "/",
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
@@ -19,4 +22,4 @@ export default defineConfig({
       "/admin": { target: upstream, changeOrigin: false },
     },
   },
-});
+}));

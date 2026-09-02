@@ -369,6 +369,13 @@ export function previewAnswer<T>(path: string): T {
       { flow_id: "f-stepup", alias: "step-up", description: "Second factor on demand", top_level: false, built_in: false },
     ]);
   }
+  if (path === "/admin/realms" || path.startsWith("/admin/realms?")) {
+    return answer([
+      { realm_id: "main", name: "main", display_name: "Main", enabled: true },
+      { realm_id: "staging", name: "staging", display_name: "Staging", enabled: true },
+      { realm_id: "sunset", name: "sunset", display_name: "Legacy", enabled: false },
+    ]);
+  }
   if (/\/admin\/realms\/[^/]+$/.test(path)) {
     return answer({
       realm_id: "main",

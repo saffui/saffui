@@ -256,3 +256,6 @@ journal-anchors-lede = Une tête publiée borne jusqu'où une réécriture pourr
 journal-witness = Témoin
 journal-receipt = Reçu
 journal-anchor = Ancrer la tête
+
+palette-switch = basculer vers { $realm }
+palette-nothing = Rien ne correspond.

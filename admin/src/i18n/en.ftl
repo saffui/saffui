@@ -256,3 +256,6 @@ journal-anchors-lede = A published head bounds how far back a rewrite could reac
 journal-witness = Witness
 journal-receipt = Receipt
 journal-anchor = Anchor the head
+
+palette-switch = switch to { $realm }
+palette-nothing = Nothing matches.

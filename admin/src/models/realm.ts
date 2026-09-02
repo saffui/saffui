@@ -48,6 +48,8 @@ export interface RealmSettings {
   not_before: number | null;
   acr_loa_map: Record<string, number> | null;
   attributes: Record<string, unknown> | null;
+  supported_locales: string[] | null;
+  default_locale: string | null;
   ssl_enforcement: string | null;
   password_policy: unknown;
   brute_force: BruteForce;
@@ -91,6 +93,8 @@ export interface RealmUpdate {
   not_before?: number;
   acr_loa_map?: Record<string, number>;
   attributes?: Record<string, string>;
+  supported_locales?: string[];
+  default_locale?: string;
   client_registration?: "disabled" | "open" | "protected";
   brute_force?: BruteForce;
   registration_bounds?: {

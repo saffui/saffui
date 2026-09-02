@@ -114,7 +114,20 @@ async fn asked_tongue(
     pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     realm: &str,
-) -> Option<&'static str> {
+) -> (Option<String>, i18n::RealmTongues) {
+    let tongues = tongues_of_realm(pool, tenancy, realm).await;
+    let wanted = ui_locales_of_login(request, pool, tenancy, realm).await;
+    (wanted, tongues)
+}
+
+/// The `ui_locales` the login carried, raw: the realm decides what of it is
+/// honoured, not this reader.
+async fn ui_locales_of_login(
+    request: &actix_web::HttpRequest,
+    pool: &deadpool_postgres::Pool,
+    tenancy: &store::tenancy::Tenancy,
+    realm: &str,
+) -> Option<String> {
     let binding = super::binding::read(request, super::binding::AUTH_SESSION)?;
     let mut connection = pool.get().await.ok()?;
     let context = store::tenancy::resolve::realm_by_name(&connection, realm)
@@ -124,22 +137,51 @@ async fn asked_tongue(
     let login = store::providers::login::resume(&transaction, &binding)
         .await
         .ok()??;
-    let wanted = login.notes.get("ui_locales")?.as_str()?.to_owned();
-    i18n::first_spoken(&wanted)
+    Some(login.notes.get("ui_locales")?.as_str()?.to_owned())
+}
+
+/// What this realm says about tongues, read fresh; a realm that cannot be
+/// read speaks the whole build, which is what every realm said before it
+/// could say anything.
+pub(in crate::api) async fn tongues_of_realm(
+    pool: &deadpool_postgres::Pool,
+    tenancy: &store::tenancy::Tenancy,
+    realm: &str,
+) -> i18n::RealmTongues {
+    let fallback = || i18n::RealmTongues::of(None, None);
+    let Ok(mut connection) = pool.get().await else {
+        return fallback();
+    };
+    let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, realm).await else {
+        return fallback();
+    };
+    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+        return fallback();
+    };
+    match store::providers::realms::load(&transaction, &context.realm_id).await {
+        Ok(Some(held)) => i18n::RealmTongues::of(
+            held.supported_locales.as_deref(),
+            held.default_locale.as_deref(),
+        ),
+        _ => fallback(),
+    }
 }
 
 /// The sign-in page in the tongue asked for, the request's own say first and
 /// the browser's list otherwise, told which it got and that the answer
 /// varies by the asking.
-fn page(request: &actix_web::HttpRequest, asked: Option<&'static str>) -> HttpResponse {
-    let tongue = asked.unwrap_or_else(|| {
-        i18n::spoken(
-            request
-                .headers()
-                .get("accept-language")
-                .and_then(|value| value.to_str().ok()),
-        )
-    });
+fn page(
+    request: &actix_web::HttpRequest,
+    wanted: Option<&str>,
+    tongues: &i18n::RealmTongues,
+) -> HttpResponse {
+    let tongue = tongues.negotiated(
+        wanted,
+        request
+            .headers()
+            .get("accept-language")
+            .and_then(|value| value.to_str().ok()),
+    );
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
         .insert_header(("Content-Language", tongue))
@@ -296,8 +338,8 @@ pub async fn magic_link(
                 .map(|token| ("verify_email", token))
         });
     let Some((named, token)) = followed else {
-        let asked = asked_tongue(&request, &pool, &tenancy, &realm).await;
-        return page(&request, asked);
+        let (wanted, tongues) = asked_tongue(&request, &pool, &tenancy, &realm).await;
+        return page(&request, wanted.as_deref(), &tongues);
     };
     let body = LINK_PAGE
         .replace(
@@ -347,6 +389,8 @@ pub struct Resetting {
 pub async fn reset_password(
     request: actix_web::HttpRequest,
     realm: web::Path<String>,
+    pool: web::Data<deadpool_postgres::Pool>,
+    tenancy: web::Data<store::tenancy::Tenancy>,
     asked: web::Query<Resetting>,
 ) -> HttpResponse {
     let asked = asked.into_inner();
@@ -354,7 +398,8 @@ pub async fn reset_password(
         asked.token.filter(|held| !held.is_empty()),
         asked.user.filter(|held| !held.is_empty()),
     ) else {
-        return page(&request, None);
+        let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
+        return page(&request, None, &tongues);
     };
     let body = RESET_PAGE
         .replace(

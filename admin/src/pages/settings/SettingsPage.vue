@@ -22,7 +22,19 @@ import { ApiError } from "@/services/http";
 import type { MailBrief } from "@/models/mail";
 import type { RealmSettings, RealmUpdate } from "@/models/realm";
 
-const GROUPS = ["general", "login", "sessions", "security", "email", "features"] as const;
+const GROUPS = [
+  "general",
+  "login",
+  "sessions",
+  "security",
+  "localization",
+  "email",
+  "features",
+] as const;
+
+/// What the build's hosted pages speak; mirrors `i18n::TONGUES` in
+/// crates/server. The realm narrows this list, never widens it.
+const TONGUES = ["en", "fr"] as const;
 type Group = (typeof GROUPS)[number];
 
 const LOGIN_TOGGLES = [
@@ -91,6 +103,10 @@ const draft = ref({
 const acrRows = ref<{ context: string; level: string | number }[]>([]);
 const attrRows = ref<{ name: string; value: string }[]>([]);
 
+/// The realm's cut of the built tongues, and the silence answer.
+const offeredTongues = ref<string[]>([]);
+const defaultTongue = ref("");
+
 function adopt(held: RealmSettings) {
   settings.value = held;
   draft.value = {
@@ -137,6 +153,8 @@ function adopt(held: RealmSettings) {
     name,
     value: typeof value === "string" ? value : JSON.stringify(value),
   }));
+  offeredTongues.value = held.supported_locales ?? [...TONGUES];
+  defaultTongue.value = held.default_locale ?? "";
 }
 
 onMounted(async () => {
@@ -219,6 +237,17 @@ function changesOf(which: Group): RealmUpdate {
       offline_session_max_lifespan: whole(held.offline_session_max_lifespan) ?? 0,
       max_offline_grants: whole(held.max_offline_grants) ?? 0,
       require_pushed_authorization_requests: held.require_pushed_authorization_requests,
+    };
+  }
+  if (which === "localization") {
+    const offered = offeredTongues.value.filter((held) =>
+      (TONGUES as readonly string[]).includes(held),
+    );
+    return {
+      // Every tongue checked reads as no restriction, which the server
+      // stores as none.
+      supported_locales: offered.length === TONGUES.length ? [] : offered,
+      default_locale: defaultTongue.value,
     };
   }
   const changes: RealmUpdate = {
@@ -801,6 +830,35 @@ async function removeMail() {
                 >{{ JSON.stringify(settings.password_policy ?? null, null, 2) }}</pre
               >
             </div>
+          </template>
+
+          <template v-if="group === 'localization'">
+            <p class="text-[11px] text-muted">{{ say("locales-lede") }}</p>
+            <div class="mt-1 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("locales-offered") }} <AppHint name="locales-offered-help" />
+            </div>
+            <label v-for="tongue in TONGUES" :key="tongue" class="flex items-center gap-2 text-xs">
+              <input
+                v-model="offeredTongues"
+                type="checkbox"
+                :value="tongue"
+                class="accent-(--sf-accent)"
+              />
+              <span class="font-mono text-[11.5px]">{{ tongue }}</span>
+              <span class="text-muted">{{ say(`locale-${tongue}`) }}</span>
+            </label>
+            <label class="mt-2 block text-[11px] font-medium text-muted">
+              {{ say("locales-default") }} <AppHint name="locales-default-help" />
+              <select
+                v-model="defaultTongue"
+                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              >
+                <option value="">{{ say("locales-default-first") }}</option>
+                <option v-for="tongue in offeredTongues" :key="tongue" :value="tongue">
+                  {{ tongue }} · {{ say(`locale-${tongue}`) }}
+                </option>
+              </select>
+            </label>
           </template>
 
           <div class="mt-1 flex items-center gap-2">

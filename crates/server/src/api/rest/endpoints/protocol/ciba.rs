@@ -724,8 +724,15 @@ async fn deliver_ping(endpoint: String, bearer: String, auth_req_id: String) {
 /// The doorbell page: what waits on the signed-in person, and the two
 /// answers. Served in the browser's tongue; the listing itself is what
 /// `bc-pending` says to this browser's session.
-pub async fn doorbell(request: HttpRequest) -> HttpResponse {
-    let tongue = super::i18n::spoken(
+pub async fn doorbell(
+    request: HttpRequest,
+    realm: web::Path<String>,
+    pool: web::Data<deadpool_postgres::Pool>,
+    tenancy: web::Data<store::tenancy::Tenancy>,
+) -> HttpResponse {
+    let tongues = super::page::tongues_of_realm(&pool, &tenancy, &realm).await;
+    let tongue = tongues.negotiated(
+        None,
         request
             .headers()
             .get("accept-language")

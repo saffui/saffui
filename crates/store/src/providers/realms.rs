@@ -27,6 +27,7 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        access_code_lifespan_user_action, access_code_lifespan_login, \
                        master_admin_client, events_enabled, admin_events_enabled, not_before, \
                        attributes, acr_loa_map, \
+                       supported_locales, default_locale, \
                        created_by, created_at, updated_by, updated_at, version";
 
 /// Record a realm.
@@ -136,6 +137,8 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
     let password_policy = as_document(realm.password_policy.as_ref().map(serde_json::to_value))?;
     let attributes = as_document(realm.attributes.as_ref().map(serde_json::to_value))?;
     let acr_loa_map = as_document(realm.acr_loa_map.as_ref().map(serde_json::to_value))?;
+    let supported_locales =
+        as_document(realm.supported_locales.as_ref().map(serde_json::to_value))?;
     let policy = realm.client_registration.as_str();
 
     let set = WriteSet::update(
@@ -208,6 +211,8 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("not_before", &realm.not_before),
             col("attributes", &attributes),
             col("acr_loa_map", &acr_loa_map),
+            col("supported_locales", &supported_locales),
+            col("default_locale", &realm.default_locale),
             col("updated_by", &realm.metadata.updated_by),
         ],
         vec![col("realm_id", &realm.realm_id)],
@@ -269,6 +274,10 @@ fn read(row: Row) -> RealmModel {
         access_code_lifespan_user_action: row.get("access_code_lifespan_user_action"),
         access_code_lifespan_login: row.get("access_code_lifespan_login"),
         master_admin_client: row.get("master_admin_client"),
+        supported_locales: row
+            .get::<_, Option<serde_json::Value>>("supported_locales")
+            .and_then(|held| serde_json::from_value(held).ok()),
+        default_locale: row.get("default_locale"),
         events_enabled: row.get("events_enabled"),
         admin_events_enabled: row.get("admin_events_enabled"),
         not_before: row.get("not_before"),

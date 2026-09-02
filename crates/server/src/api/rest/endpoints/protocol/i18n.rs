@@ -71,6 +71,62 @@ fn first_spoken_of(asked: &str) -> Option<&'static str> {
     TONGUES.into_iter().find(|tongue| *tongue == primary)
 }
 
+/// What a realm says about tongues, reduced to what this build can honour.
+///
+/// The offered list is the realm's cut of the built tongues, every built one
+/// when the realm says nothing, and never empty: a realm naming only tongues
+/// the build does not speak offers the whole build rather than silence. The
+/// fallback is the realm's default where it is offered, the first offered
+/// tongue otherwise.
+pub struct RealmTongues {
+    offered: Vec<&'static str>,
+    fallback: &'static str,
+}
+
+impl RealmTongues {
+    pub fn of(supported: Option<&[String]>, default_locale: Option<&str>) -> Self {
+        let offered: Vec<&'static str> = match supported {
+            Some(named) if !named.is_empty() => TONGUES
+                .into_iter()
+                .filter(|tongue| named.iter().any(|asked| asked.eq_ignore_ascii_case(tongue)))
+                .collect(),
+            _ => TONGUES.to_vec(),
+        };
+        let offered = if offered.is_empty() {
+            TONGUES.to_vec()
+        } else {
+            offered
+        };
+        let fallback = default_locale
+            .and_then(|asked| offered.iter().find(|held| asked.eq_ignore_ascii_case(held)))
+            .copied()
+            .unwrap_or(offered[0]);
+        RealmTongues { offered, fallback }
+    }
+
+    /// What discovery publishes as `ui_locales_supported`.
+    pub fn offered(&self) -> &[&'static str] {
+        &self.offered
+    }
+
+    /// The tongue this realm answers with: the request's own say first, the
+    /// browser's list next, both held to what the realm offers, and the
+    /// realm's fallback when neither speaks.
+    pub fn negotiated(&self, ui_locales: Option<&str>, accept: Option<&str>) -> &'static str {
+        ui_locales
+            .and_then(first_spoken)
+            .filter(|tongue| self.offered.contains(tongue))
+            .or_else(|| {
+                accept
+                    .into_iter()
+                    .flat_map(|held| held.split(','))
+                    .filter_map(first_spoken_of)
+                    .find(|tongue| self.offered.contains(tongue))
+            })
+            .unwrap_or(self.fallback)
+    }
+}
+
 /// The rendered sign-in page in the given tongue; anything unspoken gets the
 /// first.
 pub fn page_in(tongue: &str) -> &'static str {
@@ -164,6 +220,30 @@ mod tests {
         ] {
             assert_eq!(first_spoken(asked), told, "{asked:?}");
         }
+    }
+
+    /// The realm narrows what the build speaks and names the silence answer:
+    /// a French-only realm answers French to an English browser, a named
+    /// default answers silence, and a realm naming only unspoken tongues
+    /// falls back to the whole build.
+    #[test]
+    fn the_realm_narrows_the_tongues_and_names_the_silence() {
+        let french_only = RealmTongues::of(Some(&["fr".to_owned()]), None);
+        assert_eq!(french_only.offered(), &["fr"]);
+        assert_eq!(french_only.negotiated(None, Some("en-US,en;q=0.9")), "fr");
+        assert_eq!(french_only.negotiated(Some("fr en"), None), "fr");
+
+        let defaulted = RealmTongues::of(None, Some("fr"));
+        assert_eq!(defaulted.negotiated(None, None), "fr");
+        assert_eq!(defaulted.negotiated(None, Some("en")), "en");
+        assert_eq!(defaulted.negotiated(Some("en"), None), "en");
+
+        let unspoken = RealmTongues::of(Some(&["de".to_owned()]), Some("de"));
+        assert_eq!(unspoken.offered(), TONGUES.as_slice());
+        assert_eq!(unspoken.negotiated(None, None), "en");
+
+        let cased = RealmTongues::of(Some(&["FR".to_owned(), "en".to_owned()]), Some("FR"));
+        assert_eq!(cased.negotiated(None, None), "fr");
     }
 
     /// The browser's list is read in its own order, by primary tag, first

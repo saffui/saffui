@@ -663,16 +663,23 @@ fn proof_is_registered(client: &ClientModel, requested: &Requested<'_>) -> Resul
     Ok(())
 }
 
-/// The flow this client's browser login runs.
+/// The flow this client's browser login runs: the client's own binding
+/// first, the realm's next, and the flow aliased `browser` when neither
+/// says.
 pub(crate) async fn browser_flow(
     transaction: &Transaction<'_>,
     client: &ClientModel,
 ) -> Result<String, Refusal> {
+    let realm_bound = store::providers::realms::of_context(transaction)
+        .await
+        .map_err(|_| Refusal::Redirect("server_error"))?
+        .and_then(|realm| realm.browser_flow);
     let named = client
         .auth_flow_binding_overrides
         .as_ref()
         .and_then(|bound| bound.get(BROWSER_FLOW))
         .and_then(AttributeValue::as_str)
+        .or(realm_bound.as_deref())
         .unwrap_or(BROWSER_FLOW);
 
     auth_flows::flow_by_alias(transaction, named)

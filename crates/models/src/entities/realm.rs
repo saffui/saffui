@@ -340,6 +340,9 @@ pub struct RealmModel {
     pub access_code_lifespan_user_action: Option<i32>,
     pub access_code_lifespan_login: Option<i32>,
 
+    /// Which top-level flow answers `/authorize` when the client binds
+    /// none. None keeps the built default, the flow aliased `browser`.
+    pub browser_flow: Option<String>,
     /// Which built tongues this realm offers. None offers them all.
     pub supported_locales: Option<Vec<String>>,
     /// The tongue that answers when the browser says nothing. None takes the
@@ -406,6 +409,7 @@ impl RealmCreateModel {
             access_code_lifespan: None,
             access_code_lifespan_user_action: None,
             access_code_lifespan_login: None,
+            browser_flow: None,
             supported_locales: None,
             default_locale: None,
             master_admin_client: None,
@@ -457,6 +461,9 @@ pub struct RealmUpdateModel {
     pub not_before: Option<i32>,
     pub attributes: Option<AttributesMap>,
     pub acr_loa_map: Option<AcrLoaMap>,
+    /// Which top-level flow answers `/authorize` for clients binding none.
+    /// Empty clears back to the built default.
+    pub browser_flow: Option<String>,
     /// Which built tongues this realm offers. None leaves it unchanged; an
     /// empty list offers them all.
     pub supported_locales: Option<Vec<String>>,
@@ -519,6 +526,9 @@ impl RealmUpdateModel {
         }
         if let Some(require_pushed) = self.require_pushed_authorization_requests {
             realm.require_pushed_authorization_requests = require_pushed;
+        }
+        if let Some(browser_flow) = self.browser_flow {
+            realm.browser_flow = (!browser_flow.is_empty()).then_some(browser_flow);
         }
         if let Some(supported_locales) = self.supported_locales {
             realm.supported_locales = (!supported_locales.is_empty()).then_some(supported_locales);

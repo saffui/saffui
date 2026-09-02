@@ -418,6 +418,7 @@ export function previewAnswer<T>(path: string): T {
       not_before: 0,
       ssl_enforcement: "external",
       acr_loa_map: { mfa: 2 },
+      browser_flow: null,
       supported_locales: null,
       default_locale: null,
       attributes: { support: "it@acme.example" },

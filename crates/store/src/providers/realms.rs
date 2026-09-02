@@ -27,7 +27,7 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        access_code_lifespan_user_action, access_code_lifespan_login, \
                        master_admin_client, events_enabled, admin_events_enabled, not_before, \
                        attributes, acr_loa_map, \
-                       supported_locales, default_locale, \
+                       browser_flow, supported_locales, default_locale, \
                        created_by, created_at, updated_by, updated_at, version";
 
 /// Record a realm.
@@ -60,6 +60,20 @@ pub async fn load(
     let statement = format!("SELECT {COLUMNS} FROM realms WHERE realm_id = $1");
     Ok(transaction
         .query_opt(statement.as_str(), &[&realm_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read))
+}
+
+/// The realm this transaction is scoped to, read off the tenancy setting:
+/// for engine code that holds a scoped transaction and no realm name.
+pub async fn of_context(transaction: &Transaction<'_>) -> StoreResult<Option<RealmModel>> {
+    let statement = format!(
+        "SELECT {COLUMNS} FROM realms \
+         WHERE realm_id = current_setting('saffui.current_realm', true)"
+    );
+    Ok(transaction
+        .query_opt(statement.as_str(), &[])
         .await
         .map_err(|_| StoreError::Backend)?
         .map(read))
@@ -211,6 +225,7 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("not_before", &realm.not_before),
             col("attributes", &attributes),
             col("acr_loa_map", &acr_loa_map),
+            col("browser_flow", &realm.browser_flow),
             col("supported_locales", &supported_locales),
             col("default_locale", &realm.default_locale),
             col("updated_by", &realm.metadata.updated_by),
@@ -274,6 +289,7 @@ fn read(row: Row) -> RealmModel {
         access_code_lifespan_user_action: row.get("access_code_lifespan_user_action"),
         access_code_lifespan_login: row.get("access_code_lifespan_login"),
         master_admin_client: row.get("master_admin_client"),
+        browser_flow: row.get("browser_flow"),
         supported_locales: row
             .get::<_, Option<serde_json::Value>>("supported_locales")
             .and_then(|held| serde_json::from_value(held).ok()),

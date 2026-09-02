@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
+import AppToggle from "@/components/AppToggle.vue";
 import { useRouter } from "vue-router";
 import {
   forgetMail,
@@ -525,10 +526,9 @@ async function removeMail() {
                 class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
               />
             </label>
-            <label class="flex items-center gap-2 text-xs">
-              <input v-model="draft.enabled" type="checkbox" class="accent-(--sf-accent)" />
+            <AppToggle v-model="draft.enabled">
               {{ say("users-active") }} <AppHint name="settings-enabled-help" />
-            </label>
+            </AppToggle>
             <label class="block text-[11px] font-medium text-muted">
               {{ say("settings-not-before") }} <AppHint name="settings-not-before-help" />
               <input
@@ -609,14 +609,9 @@ async function removeMail() {
           </template>
 
           <template v-if="group === 'login'">
-            <label
-              v-for="held in LOGIN_TOGGLES"
-              :key="held[0]"
-              class="flex items-center gap-2 text-xs"
-            >
-              <input v-model="draft[held[0]]" type="checkbox" class="accent-(--sf-accent)" />
+            <AppToggle v-for="held in LOGIN_TOGGLES" :key="held[0]" v-model="draft[held[0]]">
               {{ say(held[1]) }} <AppHint :name="held[1] + '-help'" />
-            </label>
+            </AppToggle>
 
             <label class="mt-2 block text-[11px] font-medium text-muted">
               {{ say("settings-client-registration") }} <AppHint name="settings-client-registration-help" />
@@ -641,14 +636,12 @@ async function removeMail() {
                     class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
                   />
                 </label>
-                <label class="flex items-end gap-2 pb-1.5 text-xs">
-                  <input
-                    v-model="draft.bounds_requires_consent"
-                    type="checkbox"
-                    class="accent-(--sf-accent)"
-                  />
-                  {{ say("settings-requires-consent") }} <AppHint name="settings-requires-consent-help" />
-                </label>
+                <div class="flex items-end pb-1.5">
+                  <AppToggle v-model="draft.bounds_requires_consent">
+                    {{ say("settings-requires-consent") }}
+                    <AppHint name="settings-requires-consent-help" />
+                  </AppToggle>
+                </div>
               </div>
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-trusted-hosts") }} <AppHint name="settings-trusted-hosts-help" />
@@ -782,22 +775,13 @@ async function removeMail() {
               </label>
             </div>
             <p class="text-[10.5px] text-faint">{{ say("settings-zero-unbounded") }}</p>
-            <label class="flex items-center gap-2 text-xs">
-              <input
-                v-model="draft.revoke_refresh_token"
-                type="checkbox"
-                class="accent-(--sf-accent)"
-              />
-              {{ say("settings-refresh-rotation") }} <AppHint name="settings-refresh-rotation-help" />
-            </label>
-            <label class="flex items-center gap-2 text-xs">
-              <input
-                v-model="draft.require_pushed_authorization_requests"
-                type="checkbox"
-                class="accent-(--sf-accent)"
-              />
+            <AppToggle v-model="draft.revoke_refresh_token">
+              {{ say("settings-refresh-rotation") }}
+              <AppHint name="settings-refresh-rotation-help" />
+            </AppToggle>
+            <AppToggle v-model="draft.require_pushed_authorization_requests">
               {{ say("settings-require-par") }} <AppHint name="settings-require-par-help" />
-            </label>
+            </AppToggle>
           </template>
 
           <template v-if="group === 'security'">
@@ -817,10 +801,10 @@ async function removeMail() {
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("settings-brute-force") }}
             </div>
-            <label class="flex items-center gap-2 text-xs">
-              <input v-model="draft.bf_protected" type="checkbox" class="accent-(--sf-accent)" />
-              {{ say("settings-lockout-protected") }} <AppHint name="settings-lockout-protected-help" />
-            </label>
+            <AppToggle v-model="draft.bf_protected">
+              {{ say("settings-lockout-protected") }}
+              <AppHint name="settings-lockout-protected-help" />
+            </AppToggle>
             <div v-if="draft.bf_protected" class="grid grid-cols-2 gap-3">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-lockout-failures") }} <AppHint name="settings-lockout-failures-help" />
@@ -997,14 +981,11 @@ async function removeMail() {
                   class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
                 />
               </label>
-              <label class="flex items-end gap-2 pb-1.5 text-xs">
-                <input
-                  v-model="webauthn.allow_subdomains"
-                  type="checkbox"
-                  class="accent-(--sf-accent)"
-                />
-                {{ say("webauthn-subdomains") }} <AppHint name="webauthn-subdomains-help" />
-              </label>
+              <div class="flex items-end pb-1.5">
+                <AppToggle v-model="webauthn.allow_subdomains">
+                  {{ say("webauthn-subdomains") }} <AppHint name="webauthn-subdomains-help" />
+                </AppToggle>
+              </div>
             </div>
             <p class="text-[10.5px] text-faint">{{ say("webauthn-fixed-line") }}</p>
 
@@ -1027,14 +1008,9 @@ async function removeMail() {
                 />
               </label>
             </div>
-            <label
-              v-for="held in POLICY_CHECKS"
-              :key="held[0]"
-              class="flex items-center gap-2 text-xs"
-            >
-              <input v-model="policy[held[0]]" type="checkbox" class="accent-(--sf-accent)" />
+            <AppToggle v-for="held in POLICY_CHECKS" :key="held[0]" v-model="policy[held[0]]">
               {{ say(held[1]) }} <AppHint :name="held[1] + '-help'" />
-            </label>
+            </AppToggle>
             <label class="block text-[11px] font-medium text-muted">
               {{ say("policy-regex") }} <AppHint name="policy-regex-help" />
               <input
@@ -1188,10 +1164,9 @@ async function removeMail() {
                 />
               </label>
             </div>
-            <label class="flex items-center gap-2 text-xs">
-              <input v-model="mailForm.implicit_tls" type="checkbox" class="accent-(--sf-accent)" />
+            <AppToggle v-model="mailForm.implicit_tls">
               {{ say("mail-implicit-tls") }} <AppHint name="mail-implicit-tls-help" />
-            </label>
+            </AppToggle>
             <div class="mt-1 flex items-center gap-2">
               <button
                 type="submit"

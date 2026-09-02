@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
+import AppToggle from "@/components/AppToggle.vue";
 import { listGroupMembership, listGroups, markGroupDefault } from "@/services/directory";
 import type { Page } from "@/models/paging";
 import type { GroupMembership, GroupRow } from "@/models/directory";
@@ -69,20 +70,19 @@ async function flipDefault(group: GroupRow) {
       @close="opened = null"
     >
       <p v-if="opened.description" class="text-xs text-muted">{{ opened.description }}</p>
-      <label class="mt-3 flex items-center gap-2 text-xs">
-        <input
-          type="checkbox"
-          :checked="opened.is_default"
-          class="accent-(--sf-accent)"
-          @change="flipDefault(opened)"
-        />
-        {{ say("group-default") }} <AppHint name="group-default-help" />
-        <span
-          v-if="opened.is_default"
-          class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted"
-          >{{ say("group-default-chip") }}</span
+      <div class="mt-3">
+        <AppToggle
+          :model-value="opened.is_default"
+          @update:model-value="flipDefault(opened)"
         >
-      </label>
+          {{ say("group-default") }} <AppHint name="group-default-help" />
+          <span
+            v-if="opened.is_default"
+            class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted"
+            >{{ say("group-default-chip") }}</span
+          >
+        </AppToggle>
+      </div>
       <div class="mt-4">
         <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("group-members") }}

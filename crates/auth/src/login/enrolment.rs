@@ -133,7 +133,7 @@ pub async fn required(
                 )
                 .await
             }
-            None => start_verify(transaction, provider, origin, subject, posting).await,
+            None => start_verify(transaction, provider, origin, realm, subject, posting).await,
         };
     }
     Enrolment::Settled
@@ -356,6 +356,7 @@ async fn start_verify(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
     origin: &PublicOrigin,
+    realm: &RealmModel,
     subject: &UserModel,
     posting: Option<crate::login::authenticator::Posting<'_>>,
 ) -> Enrolment {
@@ -430,13 +431,20 @@ async fn start_verify(
         },
         sending: Some(Box::new(crate::messaging::Outgoing {
             settings: settings.duplicate(),
-            message: crate::messaging::Message {
-                to: subject.email.clone(),
-                subject: "Confirm your address".to_owned(),
-                body: format!(
+            message: {
+                let (worded_subject, worded_body) = crate::messaging::worded(
+                    realm,
+                    VERIFY_EMAIL,
+                    &link,
+                    "Confirm your address",
                     "Confirm this address to finish signing in. The link works once, and \
-                     only in the browser you started from.\n\n{link}\n"
-                ),
+                     only in the browser you started from.\n\n{{link}}\n",
+                );
+                crate::messaging::Message {
+                    to: subject.email.clone(),
+                    subject: worded_subject,
+                    body: worded_body,
+                }
             },
             about: crate::messaging::About {
                 user_id: subject.user_id.clone(),

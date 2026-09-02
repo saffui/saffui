@@ -439,6 +439,18 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V072__realm_device_bounds.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 73,
+            name: "realm_mail_templates",
+            sql: include_str!("../migrations/V073__realm_mail_templates.sql"),
+            transactional: true,
+        }),
+        Migration::Sql(SqlMigration {
+            version: 74,
+            name: "drop_master_admin_client",
+            sql: include_str!("../migrations/V074__drop_master_admin_client.sql"),
+            transactional: true,
+        }),
     ]
 }
 

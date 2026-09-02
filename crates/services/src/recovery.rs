@@ -98,15 +98,20 @@ pub async fn offer_link(
         realm.name,
         subject.user_id,
     );
+    let (worded_subject, worded_body) = auth::messaging::worded(
+        realm,
+        "reset_password",
+        &link,
+        "Set a new password",
+        "Somebody asked to set a new password for this account. If it was not \
+         you, nothing has changed and you can ignore this.\n\n{{link}}\n",
+    );
     Ok(Some(Outgoing {
         settings: settings.duplicate(),
         message: Message {
             to: subject.email.clone(),
-            subject: "Set a new password".to_owned(),
-            body: format!(
-                "Somebody asked to set a new password for this account. If it was not \
-                 you, nothing has changed and you can ignore this.\n\n{link}\n"
-            ),
+            subject: worded_subject,
+            body: worded_body,
         },
         about: auth::messaging::About {
             user_id: subject.user_id.clone(),

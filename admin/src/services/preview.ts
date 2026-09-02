@@ -436,6 +436,7 @@ export function previewAnswer<T>(path: string): T {
       admin_events_enabled: false,
       otp_policy: null,
       webauthn_policy: null,
+      mail_templates: null,
       device_code_lifespan: null,
       device_poll_interval: null,
       browser_flow: null,

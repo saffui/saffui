@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
@@ -22,7 +22,7 @@ import type { FeatureBrief } from "@/models/feature";
 import { ApiError } from "@/services/http";
 import type { MailBrief } from "@/models/mail";
 import { OTP_DEFAULTS, OWASP_HASHING } from "@/models/realm";
-import type { PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
+import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 
 const GROUPS = [
   "general",
@@ -212,6 +212,7 @@ function adopt(held: RealmSettings) {
     value: typeof value === "string" ? value : JSON.stringify(value),
   }));
   offeredTongues.value = held.supported_locales ?? [...TONGUES];
+  templates.value = JSON.parse(JSON.stringify(held.mail_templates ?? {}));
   defaultTongue.value = held.default_locale ?? "";
   otp.value = { ...(held.otp_policy ?? OTP_DEFAULTS) };
   webauthn.value = {
@@ -449,6 +450,45 @@ async function loadFeatures() {
 function openGroup(which: Group) {
   group.value = which;
   if (which === "features" && !features.value.length) void loadFeatures();
+}
+
+/// The realm's rewording of its mails, kept whole and saved whole.
+const MAIL_KINDS = ["magic_link", "verify_email", "reset_password"] as const;
+const templates = ref<Record<string, Record<string, MailTemplate>>>({});
+const templateKind = ref<string>("magic_link");
+const templateTongue = ref("en");
+const templateDraft = ref({ subject: "", body: "" });
+
+function adoptTemplate() {
+  const held = templates.value[templateKind.value]?.[templateTongue.value];
+  templateDraft.value = { subject: held?.subject ?? "", body: held?.body ?? "" };
+}
+watch([templateKind, templateTongue], adoptTemplate);
+
+async function saveTemplate() {
+  const next = JSON.parse(JSON.stringify(templates.value)) as typeof templates.value;
+  if (templateDraft.value.subject.trim() || templateDraft.value.body.trim()) {
+    next[templateKind.value] = {
+      ...(next[templateKind.value] ?? {}),
+      [templateTongue.value]: { ...templateDraft.value },
+    };
+  } else {
+    delete next[templateKind.value]?.[templateTongue.value];
+    if (next[templateKind.value] && !Object.keys(next[templateKind.value]).length) {
+      delete next[templateKind.value];
+    }
+  }
+  try {
+    const kept = await reshapeRealm(
+      realm.value,
+      { mail_templates: next },
+      say("mail-templates-title"),
+    );
+    adopt(kept);
+    adoptTemplate();
+  } catch {
+    // The toast already said.
+  }
 }
 
 const mailForm = ref({
@@ -1120,6 +1160,79 @@ async function removeMail() {
             }}</span>
           </div>
         </form>
+
+        <div v-if="group === 'email'" class="mt-6 max-w-lg">
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("mail-templates-title") }} <AppHint name="mail-templates-title-help" />
+          </div>
+          <form class="mt-2 flex flex-col gap-3 text-xs" @submit.prevent="saveTemplate">
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("mail-templates-kind") }}
+                <select
+                  v-model="templateKind"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                >
+                  <option v-for="kind in MAIL_KINDS" :key="kind" :value="kind">
+                    {{ say(`mail-kind-${kind}`) }}
+                  </option>
+                </select>
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("locales-default") }}
+                <select
+                  v-model="templateTongue"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                >
+                  <option v-for="tongue in offeredTongues" :key="tongue" :value="tongue">
+                    {{ tongue }} · {{ say(`locale-${tongue}`) }}
+                  </option>
+                </select>
+              </label>
+            </div>
+            <label class="block text-[11px] font-medium text-muted">
+              {{ say("mail-templates-subject") }}
+              <input
+                v-model="templateDraft.subject"
+                maxlength="200"
+                :placeholder="say('mail-templates-built')"
+                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              />
+            </label>
+            <label class="block text-[11px] font-medium text-muted">
+              {{ say("mail-templates-body") }} <AppHint name="mail-templates-body-help" />
+              <textarea
+                v-model="templateDraft.body"
+                rows="5"
+                maxlength="4000"
+                :placeholder="say('mail-templates-built')"
+                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                spellcheck="false"
+              ></textarea>
+            </label>
+            <p
+              v-if="templateDraft.body.trim() && !templateDraft.body.includes('{{link}}')"
+              class="rounded border border-warn/40 px-2 py-1 text-[11px] text-warn"
+            >
+              {{ say("mail-templates-no-link") }}
+            </p>
+            <div class="flex items-center gap-2">
+              <button
+                type="submit"
+                class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+              >
+                {{ say("settings-save") }}
+              </button>
+              <button
+                type="button"
+                class="rounded-md border border-border px-3 py-1.5 text-xs text-muted hover:bg-surface-2"
+                @click="templateDraft = { subject: '', body: '' }; saveTemplate()"
+              >
+                {{ say("mail-templates-clear") }}
+              </button>
+            </div>
+          </form>
+        </div>
 
         <div v-if="group === 'features'" class="mt-4 max-w-2xl">
           <p class="text-xs text-muted">{{ say("features-lede") }}</p>

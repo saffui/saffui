@@ -51,7 +51,7 @@ pub fn routes() -> Vec<AdminRoute> {
             method: Method::POST,
             pattern: "/admin/realms",
             action: AdminAction::RealmCreate,
-            handler: None,
+            handler: Some(|| web::post().to(realms::create)),
         },
         AdminRoute {
             method: Method::POST,
@@ -81,7 +81,7 @@ pub fn routes() -> Vec<AdminRoute> {
             method: Method::PUT,
             pattern: "/admin/realms/{realm}",
             action: AdminAction::RealmWrite,
-            handler: None,
+            handler: Some(|| web::put().to(realms::update)),
         },
         AdminRoute {
             method: Method::GET,

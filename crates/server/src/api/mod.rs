@@ -4,3 +4,4 @@ pub mod console;
 pub mod provenance;
 pub mod rest;
 pub mod routes;
+pub mod welcome;

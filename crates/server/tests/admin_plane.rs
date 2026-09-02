@@ -518,7 +518,7 @@ async fn an_undeclared_route_is_refused_to_a_caller_holding_everything() {
     let bearer = plane.token(&claims());
 
     assert_eq!(
-        request(&plane, Method::DELETE, "/admin/realms/main", Some(&bearer)).await,
+        request(&plane, Method::DELETE, "/admin/realms", Some(&bearer)).await,
         StatusCode::FORBIDDEN,
         "an undeclared method was answered by the router instead of the guard"
     );

@@ -2,7 +2,21 @@
 import { computed, onMounted, ref } from "vue";
 import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
-import { getClient, listAttachedScopes, listClientMappers } from "@/services/clients";
+import {
+  attachScope,
+  deleteClient,
+  detachScope,
+  getClient,
+  listAttachedScopes,
+  listClientMappers,
+  rotateClientSecret,
+  updateClient,
+} from "@/services/clients";
+import { listScopeCatalogue } from "@/services/scopes";
+import AppToggle from "@/components/AppToggle.vue";
+import AppHint from "@/components/AppHint.vue";
+import AppPicker from "@/components/AppPicker.vue";
+import { useRouter } from "vue-router";
 import type { ClientBrief, ClientScope, ProtocolMapper } from "@/models/client";
 
 const props = defineProps<{ realm: string; clientId: string }>();
@@ -28,11 +42,99 @@ async function load() {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
-onMounted(load);
+onMounted(async () => {
+  await load();
+  adoptClient();
+});
 
 // Required is granted without being asked for; offered waits to be asked.
 const required = computed(() => scopes.value.filter((held) => !held.optional));
 const offered = computed(() => scopes.value.filter((held) => held.optional));
+
+const router = useRouter();
+const draft = ref({ name: "", enabled: true, redirects: "", logouts: "" });
+function adoptClient() {
+  const held = client.value;
+  if (!held) return;
+  draft.value = {
+    name: held.name ?? "",
+    enabled: held.enabled,
+    redirects: held.redirect_uris.join("\n"),
+    logouts: held.post_logout_redirect_uris.join("\n"),
+  };
+}
+function lines(held: string): string[] {
+  return held
+    .split(/\n/)
+    .map((row) => row.trim())
+    .filter(Boolean);
+}
+async function saveClient() {
+  try {
+    await updateClient(props.realm, props.clientId, {
+      name: draft.value.name || undefined,
+      redirect_uris: lines(draft.value.redirects),
+      post_logout_redirect_uris: lines(draft.value.logouts),
+    });
+    await load();
+    adoptClient();
+  } catch {
+    // The toast already said.
+  }
+}
+
+const freshSecret = ref("");
+async function rotate() {
+  try {
+    freshSecret.value = await rotateClientSecret(props.realm, props.clientId);
+  } catch {
+    // The toast already said.
+  }
+}
+async function copyFreshSecret() {
+  try {
+    await navigator.clipboard.writeText(freshSecret.value);
+  } catch {
+    // Selectable by hand.
+  }
+}
+
+const doomName = ref("");
+async function dropClient() {
+  try {
+    await deleteClient(props.realm, props.clientId);
+    emit("close");
+    router.replace(`/${props.realm}/clients`);
+  } catch {
+    // The toast already said.
+  }
+}
+
+const picker = ref<"" | "required" | "offered">("");
+const pickRows = ref<{ id: string; label: string; held: boolean }[]>([]);
+async function openPicker(kind: "required" | "offered") {
+  picker.value = kind;
+  const catalogue = await listScopeCatalogue(props.realm);
+  const held = new Set(scopes.value.map((row) => row.name));
+  pickRows.value = catalogue.map((row) => ({
+    id: row.name,
+    label: row.name,
+    held: held.has(row.name),
+  }));
+}
+async function pickAdd(name: string) {
+  try {
+    await attachScope(props.realm, props.clientId, name, picker.value === "offered");
+    picker.value = "";
+    scopes.value = await listAttachedScopes(props.realm, props.clientId);
+  } catch {
+    // The toast already said.
+  }
+}
+async function dropScope(name: string) {
+  await detachScope(props.realm, props.clientId, name);
+  scopes.value = await listAttachedScopes(props.realm, props.clientId);
+}
 </script>
 
 <template>
@@ -57,43 +159,97 @@ const offered = computed(() => scopes.value.filter((held) => held.optional));
     </div>
 
     <div v-if="tab === 'overview' && client" class="mt-4 flex flex-col gap-4">
-      <dl class="grid grid-cols-[140px_1fr] gap-y-2 text-xs">
-        <dt class="text-muted">{{ say("clients-col-kind") }}</dt>
-        <dd>{{ client.confidential ? say("clients-confidential") : say("clients-public") }}</dd>
-        <dt class="text-muted">{{ say("users-col-state") }}</dt>
-        <dd>{{ client.enabled ? say("users-active") : say("users-disabled") }}</dd>
-      </dl>
-      <div>
-        <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-          {{ say("client-redirects") }}
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveClient">
+        <div class="grid grid-cols-[140px_1fr] items-center gap-y-2">
+          <span class="text-muted">{{ say("clients-col-kind") }}</span>
+          <span>{{ client.confidential ? say("clients-confidential") : say("clients-public") }}</span>
         </div>
-        <p v-if="!client.redirect_uris.length" class="mt-1.5 text-xs text-muted">
-          {{ say("client-no-redirects") }}
-        </p>
-        <ul class="mt-1.5 flex flex-col gap-1">
-          <li
-            v-for="uri in client.redirect_uris"
-            :key="uri"
-            class="rounded border border-border bg-surface-2 px-2 py-1 font-mono text-[10.5px]"
-          >
-            {{ uri }}
-          </li>
-        </ul>
-      </div>
-      <div v-if="client.post_logout_redirect_uris.length">
-        <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("directory-col-display") }}
+          <input
+            v-model="draft.name"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("client-redirects") }} <AppHint name="client-redirects-help" />
+          <textarea
+            v-model="draft.redirects"
+            rows="3"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-[10.5px] text-ink"
+            spellcheck="false"
+          ></textarea>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
           {{ say("client-post-logout") }}
-        </div>
-        <ul class="mt-1.5 flex flex-col gap-1">
-          <li
-            v-for="uri in client.post_logout_redirect_uris"
-            :key="uri"
-            class="rounded border border-border bg-surface-2 px-2 py-1 font-mono text-[10.5px]"
+          <textarea
+            v-model="draft.logouts"
+            rows="2"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-[10.5px] text-ink"
+            spellcheck="false"
+          ></textarea>
+        </label>
+        <div>
+          <button
+            type="submit"
+            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
           >
-            {{ uri }}
-          </li>
-        </ul>
-      </div>
+            {{ say("settings-save") }}
+          </button>
+        </div>
+
+        <template v-if="client.confidential">
+          <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("client-secret-title") }} <AppHint name="client-secret-help" />
+          </div>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2"
+              @click="rotate"
+            >
+              {{ say("client-rotate-secret") }}
+            </button>
+          </div>
+          <div
+            v-if="freshSecret"
+            class="flex items-center gap-2 rounded-md border border-warn/40 bg-surface-2 px-2.5 py-2"
+          >
+            <code class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ freshSecret }}</code>
+            <button
+              type="button"
+              class="rounded border border-border px-2 py-0.5 text-[10.5px] text-muted hover:bg-surface-3"
+              @click="copyFreshSecret"
+            >
+              {{ say("action-copy") }}
+            </button>
+          </div>
+          <p v-if="freshSecret" class="text-[10.5px] text-warn">{{ say("settings-secret-once") }}</p>
+        </template>
+
+        <div class="mt-2 rounded-lg border border-danger/40 p-3">
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">
+            {{ say("settings-danger") }}
+          </div>
+          <p class="mt-1 text-[11px] text-muted">{{ say("client-delete-lede") }}</p>
+          <div class="mt-2 flex items-center gap-2">
+            <input
+              v-model="doomName"
+              :placeholder="props.clientId"
+              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              spellcheck="false"
+            />
+            <button
+              type="button"
+              class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              :disabled="doomName !== props.clientId"
+              @click="dropClient"
+            >
+              {{ say("client-delete") }}
+            </button>
+          </div>
+        </div>
+      </form>
     </div>
 
     <div v-if="tab === 'scopes'" class="mt-4 flex flex-col gap-5">
@@ -104,14 +260,37 @@ const offered = computed(() => scopes.value.filter((held) => held.optional));
         <p v-if="!required.length" class="mt-1.5 text-xs text-muted">
           {{ say("client-scopes-none") }}
         </p>
-        <div class="mt-1.5 flex flex-wrap gap-1.5">
+        <div class="relative mt-1.5 flex flex-wrap items-center gap-1.5">
           <span
             v-for="scope in required"
             :key="scope.client_scope_id"
-            class="rounded border border-border px-1.5 py-0.5 font-mono text-[11px]"
+            class="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 font-mono text-[11px]"
             :title="scope.description"
-            >{{ scope.name }}</span
           >
+            {{ scope.name }}
+            <button
+              type="button"
+              class="text-faint hover:text-danger"
+              :aria-label="say('action-remove')"
+              @click="dropScope(scope.name)"
+            >
+              &times;
+            </button>
+          </span>
+          <button
+            type="button"
+            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-accent hover:bg-surface-2"
+            @click="openPicker('required')"
+          >
+            {{ say("client-attach-required") }}
+          </button>
+          <AppPicker
+            v-if="picker === 'required'"
+            :rows="pickRows"
+            :title="say('client-attach-required')"
+            @add="pickAdd"
+            @close="picker = ''"
+          />
         </div>
       </div>
       <div>
@@ -121,14 +300,37 @@ const offered = computed(() => scopes.value.filter((held) => held.optional));
         <p v-if="!offered.length" class="mt-1.5 text-xs text-muted">
           {{ say("client-scopes-none") }}
         </p>
-        <div class="mt-1.5 flex flex-wrap gap-1.5">
+        <div class="relative mt-1.5 flex flex-wrap items-center gap-1.5">
           <span
             v-for="scope in offered"
             :key="scope.client_scope_id"
-            class="rounded border border-border px-1.5 py-0.5 font-mono text-[11px] text-muted"
+            class="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 font-mono text-[11px] text-muted"
             :title="scope.description"
-            >{{ scope.name }}</span
           >
+            {{ scope.name }}
+            <button
+              type="button"
+              class="text-faint hover:text-danger"
+              :aria-label="say('action-remove')"
+              @click="dropScope(scope.name)"
+            >
+              &times;
+            </button>
+          </span>
+          <button
+            type="button"
+            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-accent hover:bg-surface-2"
+            @click="openPicker('offered')"
+          >
+            {{ say("client-attach-offered") }}
+          </button>
+          <AppPicker
+            v-if="picker === 'offered'"
+            :rows="pickRows"
+            :title="say('client-attach-offered')"
+            @add="pickAdd"
+            @close="picker = ''"
+          />
         </div>
       </div>
     </div>

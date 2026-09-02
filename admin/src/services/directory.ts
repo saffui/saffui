@@ -84,3 +84,45 @@ export async function listOrganizationMembers(
     adminPath(realm, `organizations/${encodeURIComponent(orgId)}/members`),
   );
 }
+
+export async function createGroup(realm: string, name: string, description: string) {
+  return api<GroupRow>(adminPath(realm, "groups"), {
+    method: "POST",
+    json: { name, description },
+    subject: say("subject-group", { group: name }),
+  });
+}
+
+export async function updateGroup(realm: string, group: GroupRow): Promise<void> {
+  await api<unknown>(adminPath(realm, `groups/${encodeURIComponent(group.group_id)}`), {
+    method: "PUT",
+    json: {
+      name: group.name,
+      display_name: group.display_name,
+      description: group.description,
+      is_default: group.is_default,
+    },
+    subject: say("subject-group", { group: group.name }),
+  });
+}
+
+export async function deleteGroup(realm: string, groupId: string): Promise<void> {
+  await api<void>(adminPath(realm, `groups/${encodeURIComponent(groupId)}`), {
+    method: "DELETE",
+    quiet: true,
+  });
+}
+
+export async function grantRoleToGroup(realm: string, groupId: string, roleId: string) {
+  await api<unknown>(
+    adminPath(realm, `groups/${encodeURIComponent(groupId)}/roles/${encodeURIComponent(roleId)}`),
+    { method: "PUT", subject: say("subject-group-role", { group: groupId, role: roleId }) },
+  );
+}
+
+export async function revokeRoleFromGroup(realm: string, groupId: string, roleId: string) {
+  await api<unknown>(
+    adminPath(realm, `groups/${encodeURIComponent(groupId)}/roles/${encodeURIComponent(roleId)}`),
+    { method: "DELETE", subject: say("subject-group-role", { group: groupId, role: roleId }) },
+  );
+}

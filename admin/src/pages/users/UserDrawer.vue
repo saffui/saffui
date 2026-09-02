@@ -4,8 +4,12 @@ import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
 import {
   closeSession,
+  deleteUser,
   getLockout,
   getUser,
+  grantRoleToUser,
+  joinGroup,
+  leaveGroup,
   liftLockout,
   listConsents,
   listEffectiveRoles,
@@ -13,8 +17,16 @@ import {
   listMemberOrganizations,
   listSessions,
   listWebAuthnKeys,
+  revokeRoleFromUser,
   revokeWebAuthnKey,
+  setUserPassword,
+  updateUser,
 } from "@/services/users";
+import { listRoles, listGroups } from "@/services/directory";
+import AppToggle from "@/components/AppToggle.vue";
+import AppHint from "@/components/AppHint.vue";
+import AppPicker from "@/components/AppPicker.vue";
+import { useRouter } from "vue-router";
 import type {
   ConsentBrief,
   GroupBrief,
@@ -41,6 +53,30 @@ const roles = ref<RoleBrief[]>([]);
 const groups = ref<GroupBrief[]>([]);
 const organizations = ref<OrgBrief[]>([]);
 const failed = ref("");
+const router = useRouter();
+
+/// The editable half of the overview, adopted from the loaded user.
+const profile = ref({
+  email: "",
+  given_name: "",
+  family_name: "",
+  phone_number: "",
+  enabled: true,
+});
+const REQUIRED_ACTIONS = [
+  "update-password",
+  "verify-email",
+  "configure-totp",
+  "configure-webauthn",
+] as const;
+const askedActions = ref<string[]>([]);
+const askOpen = ref(false);
+
+const newPassword = ref("");
+const newPasswordAgain = ref("");
+const doomName = ref("");
+const picker = ref<"" | "role" | "group">("");
+const pickRows = ref<{ id: string; label: string; held: boolean }[]>([]);
 
 async function load() {
   failed.value = "";
@@ -64,11 +100,112 @@ async function load() {
       listMemberGroups(props.realm, props.userId),
       listMemberOrganizations(props.realm, props.userId),
     ]);
+    const held = user.value;
+    if (held) {
+      profile.value = {
+        email: held.email ?? "",
+        given_name: held.given_name ?? "",
+        family_name: held.family_name ?? "",
+        phone_number: held.phone_number ?? "",
+        enabled: held.enabled,
+      };
+      askedActions.value = [...held.required_actions];
+    }
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
 onMounted(load);
+
+async function saveProfile() {
+  try {
+    await updateUser(props.realm, props.userId, {
+      email: profile.value.email || undefined,
+      given_name: profile.value.given_name || undefined,
+      family_name: profile.value.family_name || undefined,
+      phone_number: profile.value.phone_number || undefined,
+      enabled: profile.value.enabled,
+      required_actions: askedActions.value,
+    });
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
+function dropAction(action: string) {
+  askedActions.value = askedActions.value.filter((held) => held !== action);
+}
+function askFor(action: string) {
+  if (!askedActions.value.includes(action)) askedActions.value.push(action);
+  askOpen.value = false;
+}
+
+async function savePassword() {
+  if (!newPassword.value || newPassword.value !== newPasswordAgain.value) {
+    failed.value = say("user-password-mismatch");
+    return;
+  }
+  try {
+    await setUserPassword(props.realm, props.userId, newPassword.value);
+    newPassword.value = "";
+    newPasswordAgain.value = "";
+    failed.value = "";
+  } catch {
+    // The toast already said.
+  }
+}
+
+async function dropUser() {
+  try {
+    await deleteUser(props.realm, props.userId);
+    emit("close");
+    router.replace(`/${props.realm}/users`);
+  } catch {
+    // The toast already said.
+  }
+}
+
+async function openPicker(kind: "role" | "group") {
+  picker.value = kind;
+  if (kind === "role") {
+    const page = await listRoles(props.realm, 0, 200);
+    const held = new Set(roles.value.map((row) => row.role_id));
+    pickRows.value = page.items.map((row) => ({
+      id: row.role_id,
+      label: row.name,
+      held: held.has(row.role_id),
+    }));
+  } else {
+    const page = await listGroups(props.realm, 0, 200);
+    const held = new Set(groups.value.map((row) => row.group_id));
+    pickRows.value = page.items.map((row) => ({
+      id: row.group_id,
+      label: row.name,
+      held: held.has(row.group_id),
+    }));
+  }
+}
+
+async function pickAdd(id: string) {
+  try {
+    if (picker.value === "role") await grantRoleToUser(props.realm, id, props.userId);
+    else await joinGroup(props.realm, id, props.userId);
+    picker.value = "";
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
+async function dropRole(roleId: string) {
+  await revokeRoleFromUser(props.realm, roleId, props.userId);
+  await load();
+}
+async function dropGroup(groupId: string) {
+  await leaveGroup(props.realm, groupId, props.userId);
+  await load();
+}
 
 async function onLift() {
   await liftLockout(props.realm, props.userId);
@@ -128,37 +265,150 @@ function instant(epoch: number | null | undefined): string {
         </button>
       </div>
 
-      <dl class="grid grid-cols-[140px_1fr] gap-y-2 text-xs">
-        <dt class="text-muted">{{ say("users-col-email") }}</dt>
-        <dd class="flex items-center gap-1.5">
-          {{ user.email }}
-          <AppIcon v-if="user.email_verified" name="verified" :size="12" class="text-ok" />
-        </dd>
-        <dt class="text-muted">{{ say("users-col-name") }}</dt>
-        <dd>{{ [user.given_name, user.family_name].filter(Boolean).join(" ") || "·" }}</dd>
-        <dt class="text-muted">{{ say("user-phone") }}</dt>
-        <dd>{{ user.phone_number || "·" }}</dd>
-        <dt class="text-muted">{{ say("users-col-state") }}</dt>
-        <dd>{{ user.enabled ? say("users-active") : say("users-disabled") }}</dd>
-      </dl>
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveProfile">
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("users-col-email") }}
+            <span class="inline-flex items-center gap-1">
+              <AppIcon v-if="user.email_verified" name="verified" :size="12" class="text-ok" />
+            </span>
+            <input
+              v-model="profile.email"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              spellcheck="false"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("user-phone") }}
+            <input
+              v-model="profile.phone_number"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("user-given") }}
+            <input
+              v-model="profile.given_name"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("user-family") }}
+            <input
+              v-model="profile.family_name"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            />
+          </label>
+        </div>
+        <AppToggle v-model="profile.enabled">
+          {{ say("users-active") }} <AppHint name="user-enabled-help" />
+        </AppToggle>
 
-      <div v-if="user.required_actions.length">
-        <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-          {{ say("user-required-actions") }}
+        <div>
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("user-required-actions") }} <AppHint name="user-required-actions-help" />
+          </div>
+          <div class="relative mt-1.5 flex flex-wrap items-center gap-1.5">
+            <span
+              v-for="action in askedActions"
+              :key="action"
+              class="inline-flex items-center gap-1 rounded border border-warn/40 px-1.5 py-0.5 font-mono text-[10.5px] text-warn"
+            >
+              {{ action }}
+              <button type="button" class="hover:text-danger" @click="dropAction(action)">
+                &times;
+              </button>
+            </span>
+            <button
+              type="button"
+              class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-muted hover:bg-surface-2"
+              @click="askOpen = !askOpen"
+            >
+              {{ say("user-ask-for") }}
+            </button>
+            <div
+              v-if="askOpen"
+              class="absolute top-full left-0 z-40 mt-1 w-56 rounded-md border border-border bg-surface p-1 shadow-(--sf-shadow)"
+            >
+              <button
+                v-for="action in REQUIRED_ACTIONS.filter((a) => !askedActions.includes(a))"
+                :key="action"
+                type="button"
+                class="block w-full rounded px-2 py-1 text-left font-mono text-[11px] hover:bg-surface-2"
+                @click="askFor(action)"
+              >
+                {{ action }}
+              </button>
+            </div>
+          </div>
         </div>
-        <div class="mt-1.5 flex flex-wrap gap-1.5">
-          <span
-            v-for="action in user.required_actions"
-            :key="action"
-            class="rounded border border-warn/40 px-1.5 py-0.5 font-mono text-[10.5px] text-warn"
-            >{{ action }}</span
+
+        <div>
+          <button
+            type="submit"
+            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
           >
+            {{ say("settings-save") }}
+          </button>
         </div>
-      </div>
+
+        <div class="mt-2 rounded-lg border border-danger/40 p-3">
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">
+            {{ say("settings-danger") }}
+          </div>
+          <p class="mt-1 text-[11px] text-muted">{{ say("user-delete-lede") }}</p>
+          <div class="mt-2 flex items-center gap-2">
+            <input
+              v-model="doomName"
+              :placeholder="user.user_name"
+              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              spellcheck="false"
+            />
+            <button
+              type="button"
+              class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              :disabled="doomName !== user.user_name"
+              @click="dropUser"
+            >
+              {{ say("user-delete") }}
+            </button>
+          </div>
+        </div>
+      </form>
     </div>
 
     <div v-if="tab === 'credentials'" class="mt-4">
       <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("user-set-password") }} <AppHint name="user-set-password-help" />
+      </div>
+      <form class="mt-2 flex items-end gap-2" @submit.prevent="savePassword">
+        <label class="flex-1 text-[11px] font-medium text-muted">
+          {{ say("user-new-password") }}
+          <input
+            v-model="newPassword"
+            type="password"
+            autocomplete="new-password"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          />
+        </label>
+        <label class="flex-1 text-[11px] font-medium text-muted">
+          {{ say("user-new-password-again") }}
+          <input
+            v-model="newPasswordAgain"
+            type="password"
+            autocomplete="new-password"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          />
+        </label>
+        <button
+          type="submit"
+          class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        >
+          {{ say("settings-save") }}
+        </button>
+      </form>
+
+      <div class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("user-webauthn") }}
       </div>
       <p v-if="!keys.length" class="mt-2 text-xs text-muted">{{ say("user-no-keys") }}</p>
@@ -224,12 +474,12 @@ function instant(epoch: number | null | undefined): string {
     </div>
 
     <div v-if="tab === 'memberships'" class="mt-4 flex flex-col gap-5">
-      <div>
+      <div class="relative">
         <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("user-roles") }}
         </div>
         <p v-if="!roles.length" class="mt-1.5 text-xs text-muted">{{ say("user-no-roles") }}</p>
-        <div class="mt-1.5 flex flex-wrap gap-1.5">
+        <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
           <span
             v-for="role in roles"
             :key="role.role_id"
@@ -240,23 +490,68 @@ function instant(epoch: number | null | undefined): string {
             <span v-if="role.client_id" class="font-mono text-[10px] text-faint">{{
               role.client_id
             }}</span>
+            <button
+              type="button"
+              class="text-faint hover:text-danger"
+              :aria-label="say('action-remove')"
+              @click="dropRole(role.role_id)"
+            >
+              &times;
+            </button>
           </span>
+          <button
+            type="button"
+            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-accent hover:bg-surface-2"
+            @click="openPicker('role')"
+          >
+            {{ say("user-grant-role") }}
+          </button>
         </div>
+        <AppPicker
+          v-if="picker === 'role'"
+          :rows="pickRows"
+          :title="say('user-grant-role')"
+          @add="pickAdd"
+          @close="picker = ''"
+        />
       </div>
-      <div>
+      <div class="relative">
         <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("user-groups") }}
         </div>
         <p v-if="!groups.length" class="mt-1.5 text-xs text-muted">{{ say("user-no-groups") }}</p>
-        <div class="mt-1.5 flex flex-wrap gap-1.5">
+        <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
           <span
             v-for="group in groups"
             :key="group.group_id"
-            class="rounded border border-border px-1.5 py-0.5 text-[11px]"
+            class="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px]"
             :title="group.description"
-            >{{ group.display_name || group.name }}</span
           >
+            {{ group.display_name || group.name }}
+            <button
+              type="button"
+              class="text-faint hover:text-danger"
+              :aria-label="say('action-remove')"
+              @click="dropGroup(group.group_id)"
+            >
+              &times;
+            </button>
+          </span>
+          <button
+            type="button"
+            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-accent hover:bg-surface-2"
+            @click="openPicker('group')"
+          >
+            {{ say("user-join-group") }}
+          </button>
         </div>
+        <AppPicker
+          v-if="picker === 'group'"
+          :rows="pickRows"
+          :title="say('user-join-group')"
+          @add="pickAdd"
+          @close="picker = ''"
+        />
       </div>
       <div>
         <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">

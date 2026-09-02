@@ -13,6 +13,7 @@ import {
   listFeatures,
   reshapeRealm,
   rotateRegistrationSecret,
+  sendTestMail,
   writeMail,
 } from "@/services/settings";
 import { deleteRealm } from "@/services/realms";
@@ -515,6 +516,20 @@ async function saveMail() {
     password: asked.password || null,
   });
   mail.value = await getMail(realm.value);
+}
+
+/// One real mail through the relay: connect, TLS, auth, delivery. Green
+/// means the settings on screen actually carry mail.
+const testTo = ref("");
+const testPassed = ref(false);
+async function testMail() {
+  testPassed.value = false;
+  try {
+    await sendTestMail(realm.value, testTo.value.trim());
+    testPassed.value = true;
+  } catch {
+    // The toast carries the server's refusal.
+  }
 }
 
 async function removeMail() {
@@ -1335,6 +1350,31 @@ async function removeMail() {
               </button>
             </div>
           </form>
+
+          <div v-if="mail" class="mt-4">
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("mail-test-title") }} <AppHint name="mail-test-help" />
+            </div>
+            <form class="mt-2 flex items-end gap-2 text-xs" @submit.prevent="testMail">
+              <label class="flex-1 text-[11px] font-medium text-muted">
+                {{ say("mail-test-to") }}
+                <input
+                  v-model="testTo"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  spellcheck="false"
+                />
+              </label>
+              <button
+                type="submit"
+                class="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2"
+              >
+                {{ say("mail-test-send") }}
+              </button>
+              <span v-if="testPassed" class="pb-1.5 text-[11px] text-ok">{{
+                say("mail-test-passed")
+              }}</span>
+            </form>
+          </div>
         </div>
       </template>
     </div>

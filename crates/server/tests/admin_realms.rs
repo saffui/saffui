@@ -306,6 +306,27 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     assert_eq!(status, StatusCode::OK);
     assert!(shaped["browser_flow"].is_null(), "{shaped}");
 
+    // The relay test refuses in words when no settings stand, and wants an
+    // address that is one.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/staging/mail/test",
+        &bearer,
+        Some(serde_json::json!({ "to": "nobody" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/staging/mail/test",
+        &bearer,
+        Some(serde_json::json!({ "to": "someone@acme.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+
     // Reshaping what does not exist is not creating it.
     let (status, told) = asked(
         &plane,

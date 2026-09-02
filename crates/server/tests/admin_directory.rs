@@ -648,3 +648,214 @@ async fn a_default_group_receives_the_newly_born() {
         "an unmarked group still swallowed the next account: {held}"
     );
 }
+
+/// A sub-group is a narrower slice of its parent: joining it is standing in
+/// the parent too, so the parent's roles reach the member. The membership
+/// listing stays literal, showing only the group actually joined.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_sub_group_hands_down_what_the_parent_holds() {
+    let plane = Plane::with_actions(&[
+        AdminAction::UserRead,
+        AdminAction::RoleRead,
+        AdminAction::RoleWrite,
+        AdminAction::GroupRead,
+        AdminAction::GroupWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}");
+
+    let (status, parent) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/groups"),
+        &bearer,
+        Some(serde_json::json!({ "name": "engineering" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{parent}");
+    let parent = parent["group_id"].as_str().expect("a group").to_owned();
+
+    let (status, child) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/groups"),
+        &bearer,
+        Some(serde_json::json!({ "name": "backend", "parent_id": parent })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{child}");
+    assert_eq!(child["parent_id"], parent.as_str(), "{child}");
+    let child = child["group_id"].as_str().expect("a group").to_owned();
+
+    let (_, role) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/roles"),
+        &bearer,
+        Some(serde_json::json!({ "name": "deployer", "description": "" })),
+    )
+    .await;
+    let role = role["role_id"].as_str().expect("a role").to_owned();
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/groups/{parent}/roles/{role}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/groups/{child}/members/{}", support::SUBJECT),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, roles) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}/users/{}/roles", support::SUBJECT),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{roles}");
+    assert!(
+        roles["roles"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .any(|held| held["name"] == "deployer"),
+        "the parent's role did not reach the sub-group's member: {roles}"
+    );
+
+    let (_, held) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}/users/{}/groups", support::SUBJECT),
+        &bearer,
+        None,
+    )
+    .await;
+    let listed = held["groups"].as_array().expect("a membership listing");
+    assert!(
+        listed.iter().any(|g| g["group_id"] == child.as_str()),
+        "{held}"
+    );
+    assert!(
+        !listed.iter().any(|g| g["group_id"] == parent.as_str()),
+        "the listing invented a membership nobody joined: {held}"
+    );
+}
+
+/// The chain refuses to close on itself, a parent must exist, and a parent
+/// still carrying sub-groups is not deleted.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_group_chain_stays_a_tree() {
+    let plane = Plane::with_actions(&[AdminAction::GroupRead, AdminAction::GroupWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/groups");
+
+    let (_, top) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({ "name": "ops" })),
+    )
+    .await;
+    let top = top["group_id"].as_str().expect("a group").to_owned();
+    let (_, under) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({ "name": "oncall", "parent_id": top })),
+    )
+    .await;
+    let under = under["group_id"].as_str().expect("a group").to_owned();
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{top}"),
+        &bearer,
+        Some(serde_json::json!({ "name": "ops", "parent_id": under })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({ "name": "orphan", "parent_id": "group-nobody" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, told) = asked(&plane, Method::DELETE, &format!("{base}/{top}"), &bearer, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+
+    let (status, _) = asked(&plane, Method::DELETE, &format!("{base}/{under}"), &bearer, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = asked(&plane, Method::DELETE, &format!("{base}/{top}"), &bearer, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+/// An address is either absent or the shape of one, at birth and on rewrite.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_that_is_not_one_is_refused() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead, AdminAction::UserWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/users");
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({ "user_name": "misspelt", "email": "not-an-address" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({ "user_name": "spelt", "email": "spelt@acme.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/spelt"),
+        &bearer,
+        Some(serde_json::json!({ "email": "two@@ats" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // Clearing is not misspelling: emptiness is absence.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/spelt"),
+        &bearer,
+        Some(serde_json::json!({ "email": "" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+}

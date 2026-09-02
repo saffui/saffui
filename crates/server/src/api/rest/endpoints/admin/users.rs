@@ -390,7 +390,9 @@ pub async fn member_groups(
         .map_err(|_| internal())?;
     named_user(&transaction, &user_id).await?;
     let mut groups = Vec::new();
-    for group_id in store::providers::roles::groups_of(&transaction, &user_id)
+    // Joined memberships only: each row here backs a remove control, and a
+    // group reached through a parent has no membership row to remove.
+    for group_id in store::providers::users::groups_of(&transaction, &user_id)
         .await
         .map_err(|_| internal())?
     {

@@ -85,10 +85,15 @@ export async function listOrganizationMembers(
   );
 }
 
-export async function createGroup(realm: string, name: string, description: string) {
+export async function createGroup(
+  realm: string,
+  name: string,
+  description: string,
+  parentId: string | null = null,
+) {
   return api<GroupRow>(adminPath(realm, "groups"), {
     method: "POST",
-    json: { name, description },
+    json: { name, description, parent_id: parentId },
     subject: say("subject-group", { group: name }),
   });
 }
@@ -101,6 +106,7 @@ export async function updateGroup(realm: string, group: GroupRow): Promise<void>
       display_name: group.display_name,
       description: group.description,
       is_default: group.is_default,
+      parent_id: group.parent_id ?? null,
     },
     subject: say("subject-group", { group: group.name }),
   });
@@ -124,5 +130,98 @@ export async function revokeRoleFromGroup(realm: string, groupId: string, roleId
   await api<unknown>(
     adminPath(realm, `groups/${encodeURIComponent(groupId)}/roles/${encodeURIComponent(roleId)}`),
     { method: "DELETE", subject: say("subject-group-role", { group: groupId, role: roleId }) },
+  );
+}
+
+export async function createRole(
+  realm: string,
+  spec: { name: string; description?: string; display_name?: string; client_id?: string },
+) {
+  return api<{ role_id: string; name: string }>(adminPath(realm, "roles"), {
+    method: "POST",
+    json: spec,
+    subject: say("subject-role", { role: spec.name }),
+  });
+}
+
+export async function updateRole(
+  realm: string,
+  roleId: string,
+  spec: { name: string; description?: string; display_name?: string; client_id?: string },
+): Promise<void> {
+  await api<unknown>(adminPath(realm, `roles/${encodeURIComponent(roleId)}`), {
+    method: "PUT",
+    json: spec,
+    subject: say("subject-role", { role: spec.name }),
+  });
+}
+
+export async function deleteRole(realm: string, roleId: string): Promise<void> {
+  await api<void>(adminPath(realm, `roles/${encodeURIComponent(roleId)}`), {
+    method: "DELETE",
+    quiet: true,
+  });
+}
+
+export async function createOrganization(
+  realm: string,
+  spec: { name: string; display_name?: string; description?: string },
+) {
+  return api<{ org_id: string; name: string }>(adminPath(realm, "organizations"), {
+    method: "POST",
+    json: spec,
+    subject: say("subject-org", { org: spec.name }),
+  });
+}
+
+export async function updateOrganization(
+  realm: string,
+  orgId: string,
+  spec: { name: string; display_name?: string; description?: string },
+): Promise<void> {
+  await api<unknown>(adminPath(realm, `organizations/${encodeURIComponent(orgId)}`), {
+    method: "PUT",
+    json: spec,
+    subject: say("subject-org", { org: spec.name }),
+  });
+}
+
+export async function deleteOrganization(realm: string, orgId: string): Promise<void> {
+  await api<void>(adminPath(realm, `organizations/${encodeURIComponent(orgId)}`), {
+    method: "DELETE",
+    quiet: true,
+  });
+}
+
+/// Claim a domain; the answer carries the TXT challenge to publish.
+export async function claimDomain(realm: string, orgId: string, domain: string) {
+  return api<{ domain: string; challenge: string }>(
+    adminPath(realm, `organizations/${encodeURIComponent(orgId)}/domains`),
+    {
+      method: "POST",
+      json: { domain },
+      subject: say("subject-domain", { domain }),
+    },
+  );
+}
+
+/// The operator attests the record is published; no probe runs server side.
+export async function verifyDomain(realm: string, orgId: string, domain: string): Promise<void> {
+  await api<unknown>(
+    adminPath(
+      realm,
+      `organizations/${encodeURIComponent(orgId)}/domains/${encodeURIComponent(domain)}/verify`,
+    ),
+    { method: "POST", subject: say("subject-domain", { domain }) },
+  );
+}
+
+export async function dropDomain(realm: string, orgId: string, domain: string): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `organizations/${encodeURIComponent(orgId)}/domains/${encodeURIComponent(domain)}`,
+    ),
+    { method: "DELETE", subject: say("subject-domain", { domain }) },
   );
 }

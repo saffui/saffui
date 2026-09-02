@@ -13,6 +13,8 @@ import {
   updateClient,
 } from "@/services/clients";
 import { listScopeCatalogue } from "@/services/scopes";
+import { createRole, deleteRole, listRoles } from "@/services/directory";
+import type { RoleRow } from "@/models/directory";
 import AppToggle from "@/components/AppToggle.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppPicker from "@/components/AppPicker.vue";
@@ -22,13 +24,43 @@ import type { ClientBrief, ClientScope, ProtocolMapper } from "@/models/client";
 const props = defineProps<{ realm: string; clientId: string }>();
 const emit = defineEmits<{ close: [] }>();
 
-const TABS = ["overview", "scopes", "mappers"] as const;
+const TABS = ["overview", "scopes", "mappers", "roles"] as const;
 const tab = ref<(typeof TABS)[number]>("overview");
 
 const client = ref<ClientBrief | null>(null);
 const scopes = ref<ClientScope[]>([]);
 const mappers = ref<ProtocolMapper[]>([]);
 const failed = ref("");
+
+/// The roles this client is the audience of, apart from the realm's own.
+const clientRoles = ref<RoleRow[]>([]);
+const roleDraft = ref({ name: "", description: "" });
+async function loadClientRoles() {
+  const held = await listRoles(props.realm, 0, 200);
+  clientRoles.value = held.items.filter((row) => row.client_id === props.clientId);
+}
+async function makeClientRole() {
+  if (!roleDraft.value.name.trim()) return;
+  try {
+    await createRole(props.realm, {
+      name: roleDraft.value.name.trim(),
+      description: roleDraft.value.description.trim(),
+      client_id: props.clientId,
+    });
+    roleDraft.value = { name: "", description: "" };
+    await loadClientRoles();
+  } catch {
+    // The toast already said.
+  }
+}
+async function dropClientRole(roleId: string) {
+  try {
+    await deleteRole(props.realm, roleId);
+    await loadClientRoles();
+  } catch {
+    // The toast already said: a granted role refuses in words.
+  }
+}
 
 async function load() {
   failed.value = "";
@@ -45,6 +77,11 @@ async function load() {
 onMounted(async () => {
   await load();
   adoptClient();
+  try {
+    await loadClientRoles();
+  } catch {
+    // Read-only callers still get the other tabs.
+  }
 });
 
 // Required is granted without being asked for; offered waits to be asked.
@@ -354,6 +391,64 @@ async function dropScope(name: string) {
               <td class="px-3 py-2">{{ mapper.name }}</td>
               <td class="px-3 py-2 font-mono text-[10.5px] text-muted">
                 {{ mapper.mapper_type }}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div v-if="tab === 'roles'" class="mt-4 flex flex-col gap-3">
+      <p class="text-[11px] text-muted">{{ say("client-roles-lede") }}</p>
+      <form class="flex max-w-xl items-end gap-2 text-xs" @submit.prevent="makeClientRole">
+        <label class="flex-1 text-[11px] font-medium text-muted">
+          {{ say("settings-name") }}
+          <input
+            v-model="roleDraft.name"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            spellcheck="false"
+          />
+        </label>
+        <label class="flex-1 text-[11px] font-medium text-muted">
+          {{ say("scopes-col-description") }}
+          <input
+            v-model="roleDraft.description"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          />
+        </label>
+        <button
+          type="submit"
+          class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        >
+          {{ say("realm-create") }}
+        </button>
+      </form>
+      <p v-if="!clientRoles.length" class="text-xs text-muted">{{ say("client-roles-none") }}</p>
+      <div v-else class="overflow-x-auto rounded-lg border border-border">
+        <table class="w-full text-left text-xs">
+          <thead>
+            <tr class="border-b border-border text-[11px] text-muted">
+              <th class="px-3 py-2 font-medium">{{ say("scopes-col-name") }}</th>
+              <th class="px-3 py-2 font-medium">{{ say("scopes-col-description") }}</th>
+              <th class="px-3 py-2 font-medium"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="role in clientRoles"
+              :key="role.role_id"
+              class="border-b border-border/60 last:border-0"
+            >
+              <td class="px-3 py-2 font-mono text-[11.5px]">{{ role.name }}</td>
+              <td class="px-3 py-2 text-muted">{{ role.description }}</td>
+              <td class="px-3 py-2 text-right">
+                <button
+                  type="button"
+                  class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-danger hover:bg-surface-2"
+                  @click="dropClientRole(role.role_id)"
+                >
+                  {{ say("action-remove") }}
+                </button>
               </td>
             </tr>
           </tbody>

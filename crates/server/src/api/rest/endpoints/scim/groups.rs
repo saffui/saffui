@@ -163,6 +163,7 @@ pub async fn create(
         display_name: name.to_owned(),
         description: String::new(),
         is_default: false,
+        parent_id: None,
         metadata,
     };
     if roles::create_group(&transaction, &group).await.is_err() {

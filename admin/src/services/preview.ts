@@ -236,8 +236,21 @@ export function previewAnswer<T>(path: string): T {
   if (path.includes("/groups?")) {
     return answer({
       items: [
-        { group_id: "g-1", name: "finance", display_name: "Finance", description: "Money people" },
-        { group_id: "g-2", name: "platform", display_name: "Platform", description: "" },
+        {
+          group_id: "g-1",
+          name: "finance",
+          display_name: "Finance",
+          description: "Money people",
+          parent_id: null,
+        },
+        { group_id: "g-2", name: "platform", display_name: "Platform", description: "", parent_id: null },
+        {
+          group_id: "g-3",
+          name: "payments",
+          display_name: "Payments",
+          description: "Cards and ledgers",
+          parent_id: "g-1",
+        },
       ],
       first: 0,
       max: 50,

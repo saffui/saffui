@@ -7,6 +7,9 @@
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
+import AppDrawer from "@/components/AppDrawer.vue";
+import AppHint from "@/components/AppHint.vue";
+import { addExecution, removeExecution } from "@/services/flows";
 import { getFlow, setRequirement } from "@/services/flows";
 import type { ExecutionRow, FlowDetail, Requirement } from "@/models/flows";
 
@@ -145,6 +148,37 @@ function onPointerMove(event: PointerEvent) {
 function onPointerUp() {
   dragging.value = null;
 }
+/// What this build can run; mirrors the engine's catalogue.
+const AUTHENTICATORS = ["password", "totp", "webauthn", "magic-link", "kerberos"] as const;
+const adding = ref(false);
+const stepDraft = ref({ alias: "", authenticator: "password", requirement: "required" });
+async function addStep() {
+  if (!held.value) return;
+  const top = Math.max(0, ...held.value.executions.map((row) => row.priority));
+  try {
+    await addExecution(realm.value, flowId.value, {
+      alias: stepDraft.value.alias.trim() || stepDraft.value.authenticator,
+      flow_id: flowId.value,
+      priority: top + 10,
+      step: { kind: "authenticator", authenticator: stepDraft.value.authenticator },
+      requirement: stepDraft.value.requirement,
+    });
+    adding.value = false;
+    stepDraft.value = { alias: "", authenticator: "password", requirement: "required" };
+    held.value = await getFlow(realm.value, flowId.value);
+  } catch {
+    // The toast already said.
+  }
+}
+async function dropStep(executionId: string) {
+  try {
+    await removeExecution(realm.value, executionId);
+    held.value = await getFlow(realm.value, flowId.value);
+  } catch {
+    // The toast already said.
+  }
+}
+
 function fit() {
   view.value = { x: -60, y: -40 - 120, zoom: 0.9 };
 }
@@ -173,6 +207,13 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
         @click="router.push(`/${realm}/authentication`)"
       >
         &larr; {{ say("flows-title") }}
+      </button>
+      <button
+        type="button"
+        class="rounded-md bg-accent px-2.5 py-1 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        @click="adding = true"
+      >
+        {{ say("flow-add-step") }}
       </button>
       <h1 class="font-mono text-sm font-semibold tracking-tight">
         {{ held?.flow.alias ?? flowId }}
@@ -373,10 +414,46 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
               </button>
             </div>
             <p class="mt-2 text-[10.5px] text-faint">{{ say("flow-req-help") }}</p>
+            <button
+              type="button"
+              class="mt-3 w-full rounded-md border border-danger/40 px-2 py-1.5 text-xs text-danger hover:bg-surface-2"
+              @click="dropStep(selected.execution_id)"
+            >
+              {{ say("flow-remove-step") }}
+            </button>
           </div>
         </template>
         <p v-else class="text-xs text-muted">{{ say("flow-pick") }}</p>
       </aside>
     </div>
-  </div>
+  
+  <AppDrawer v-if="adding" :title="say('flow-add-step')" :subtitle="held?.flow.alias ?? flowId" @close="adding = false">
+    <form class="flex flex-col gap-3 text-xs" @submit.prevent="addStep">
+      <label class="block text-[11px] font-medium text-muted">
+        {{ say("flow-step-what") }} <AppHint name="flow-step-what-help" />
+        <select v-model="stepDraft.authenticator" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+          <option v-for="held2 in AUTHENTICATORS" :key="held2" :value="held2">{{ held2 }}</option>
+        </select>
+      </label>
+      <label class="block text-[11px] font-medium text-muted">
+        {{ say("flows-col-alias") }}
+        <input v-model="stepDraft.alias" :placeholder="stepDraft.authenticator" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+      </label>
+      <label class="block text-[11px] font-medium text-muted">
+        {{ say("flow-requirement") }} <AppHint name="flow-requirement-help" />
+        <select v-model="stepDraft.requirement" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+          <option value="required">required</option>
+          <option value="alternative">alternative</option>
+          <option value="disabled">disabled</option>
+        </select>
+      </label>
+      <p class="text-[10.5px] text-faint">{{ say("flow-add-note") }}</p>
+      <div>
+        <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+          {{ say("flow-add-step") }}
+        </button>
+      </div>
+    </form>
+  </AppDrawer>
+</div>
 </template>

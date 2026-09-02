@@ -13,7 +13,8 @@ pub(crate) const ROLE_COLUMNS: &str = "tenant, realm_id, role_id, name, display_
                             updated_by, updated_at, version";
 
 const GROUP_COLUMNS: &str = "tenant, realm_id, group_id, name, display_name, description, \
-                             is_default, created_by, created_at, updated_by, updated_at, version";
+                             is_default, parent_id, created_by, created_at, updated_by, \
+                             updated_at, version";
 
 /// One role by the name a caller spelled, which the realm holds unique.
 pub async fn load_by_name(
@@ -143,6 +144,7 @@ pub async fn update_group(transaction: &Transaction<'_>, group: &GroupModel) -> 
             col("display_name", &group.display_name),
             col("description", &group.description),
             col("is_default", &group.is_default),
+            col("parent_id", &group.parent_id),
             col("updated_by", &group.metadata.updated_by),
         ],
         vec![col("group_id", &group.group_id)],
@@ -180,6 +182,18 @@ pub async fn group_still_held(transaction: &Transaction<'_>, group_id: &str) -> 
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM users_groups WHERE group_id = $1)                  OR EXISTS(SELECT 1 FROM groups_roles WHERE group_id = $1) \
                  OR EXISTS(SELECT 1 FROM policies_groups WHERE group_id = $1)",
+            &[&group_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get::<_, bool>(0))
+}
+
+/// Whether any group sits under this one.
+pub async fn has_children(transaction: &Transaction<'_>, group_id: &str) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM groups WHERE parent_id = $1)",
             &[&group_id],
         )
         .await
@@ -258,6 +272,7 @@ pub async fn create_group(transaction: &Transaction<'_>, group: &GroupModel) -> 
         col("display_name", &group.display_name),
         col("description", &group.description),
         col("is_default", &group.is_default),
+        col("parent_id", &group.parent_id),
         col("created_by", &group.metadata.created_by),
     ]);
 
@@ -489,14 +504,24 @@ pub async fn effective_roles(
     // routes is still one role in the set. `DISTINCT` on top would be a second
     // mechanism for one property, and a test could then only ever exercise
     // whichever of the two runs first.
+    // The walk up `parent_id` is what makes a sub-group mean something: its
+    // members stand in every group above it, so those groups' roles are
+    // theirs too. `UNION` in the walk, so a malformed chain terminates.
     let statement = format!(
-        "SELECT {ROLE_COLUMNS} FROM roles \
+        "WITH RECURSIVE standing AS ( \
+             SELECT g.group_id, g.parent_id FROM groups g \
+             JOIN users_groups ug ON ug.group_id = g.group_id \
+             WHERE ug.user_id = $1 \
+             UNION \
+             SELECT g.group_id, g.parent_id FROM groups g \
+             JOIN standing s ON g.group_id = s.parent_id \
+         ) \
+         SELECT {ROLE_COLUMNS} FROM roles \
          WHERE role_id IN ( \
              SELECT role_id FROM users_roles WHERE user_id = $1 \
              UNION ALL \
              SELECT gr.role_id FROM groups_roles gr \
-             JOIN users_groups ug ON ug.group_id = gr.group_id \
-             WHERE ug.user_id = $1 \
+             JOIN standing s ON s.group_id = gr.group_id \
          ) ORDER BY name ASC"
     );
 
@@ -509,16 +534,22 @@ pub async fn effective_roles(
         .collect())
 }
 
-/// The groups a subject belongs to, by identifier.
-///
-/// Direct membership only, since that is what a group policy reads: the model
-/// carries no parent, so there is no subgroup to fold in. Ordered by identifier
-/// so two reads of one membership answer in one order, which a decision that
-/// records what it saw depends on.
+/// The groups a subject stands in, by identifier: the ones joined, and every
+/// group above those, since standing in a sub-group is standing in the whole.
+/// Ordered by identifier so two reads of one membership answer in one order,
+/// which a decision that records what it saw depends on.
 pub async fn groups_of(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
-            "SELECT group_id FROM users_groups WHERE user_id = $1 ORDER BY group_id ASC",
+            "WITH RECURSIVE standing AS ( \
+                 SELECT g.group_id, g.parent_id FROM groups g \
+                 JOIN users_groups ug ON ug.group_id = g.group_id \
+                 WHERE ug.user_id = $1 \
+                 UNION \
+                 SELECT g.group_id, g.parent_id FROM groups g \
+                 JOIN standing s ON g.group_id = s.parent_id \
+             ) \
+             SELECT group_id FROM standing ORDER BY group_id ASC",
             &[&user_id],
         )
         .await
@@ -551,6 +582,7 @@ fn read_group(row: Row) -> GroupModel {
         display_name: row.get("display_name"),
         description: row.get("description"),
         is_default: row.get("is_default"),
+        parent_id: row.get("parent_id"),
         metadata: audit(&row),
     }
 }

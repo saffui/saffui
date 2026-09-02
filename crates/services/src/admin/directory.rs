@@ -24,6 +24,9 @@ pub enum Unwritable {
     /// rather than the deletion being told no.
     #[error("still granted, so not deleted")]
     StillHeld,
+    /// A parent's deletion would take its sub-groups with it; told no instead.
+    #[error("its sub-groups remain, so not deleted")]
+    StillParent,
     #[error("{0}")]
     Invalid(&'static str),
     #[error("the store could not be written")]
@@ -146,6 +149,38 @@ pub async fn delete_role(transaction: &Transaction<'_>, role_id: &str) -> Result
         .ok_or(Unwritable::NotFound)
 }
 
+/// Refuse a parent that does not exist, and a chain that would loop.
+///
+/// The walk is what refuses the loop: from the asked parent up to a root,
+/// meeting the group being reshaped means the chain would close on itself.
+/// A creation walks too, only to surface a parent deleted underneath it.
+async fn check_parent(
+    transaction: &Transaction<'_>,
+    asked: &Option<String>,
+    reshaped: Option<&str>,
+) -> Result<(), Unwritable> {
+    let Some(parent) = asked else { return Ok(()) };
+    let mut cursor = Some(parent.clone());
+    while let Some(held) = cursor {
+        if reshaped == Some(held.as_str()) {
+            return Err(Unwritable::Invalid(
+                "a group cannot sit under its own descendant",
+            ));
+        }
+        cursor = match roles::load_group(transaction, &held)
+            .await
+            .map_err(|_| Unwritable::Backend)?
+        {
+            Some(above) => above.parent_id,
+            None if held == *parent => {
+                return Err(Unwritable::Invalid("the parent group does not exist"));
+            }
+            None => None,
+        };
+    }
+    Ok(())
+}
+
 pub async fn create_group(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
@@ -162,6 +197,7 @@ pub async fn create_group(
     {
         return Err(Unwritable::AlreadyExists);
     }
+    check_parent(transaction, &asked.parent_id, None).await?;
     let group = asked.into_model(
         draw(provider, "group")?,
         realm_id.to_owned(),
@@ -209,10 +245,12 @@ pub async fn update_group(
     {
         return Err(Unwritable::AlreadyExists);
     }
+    check_parent(transaction, &asked.parent_id, Some(group_id)).await?;
     group.name = asked.name;
     group.display_name = asked.display_name;
     group.description = asked.description;
     group.is_default = asked.is_default;
+    group.parent_id = asked.parent_id;
     group.metadata.updated_by = Some(by.to_owned());
     roles::update_group(transaction, &group)
         .await
@@ -223,6 +261,12 @@ pub async fn update_group(
 
 pub async fn delete_group(transaction: &Transaction<'_>, group_id: &str) -> Result<(), Unwritable> {
     get_group(transaction, group_id).await?;
+    if roles::has_children(transaction, group_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+    {
+        return Err(Unwritable::StillParent);
+    }
     if roles::group_still_held(transaction, group_id)
         .await
         .map_err(|_| Unwritable::Backend)?

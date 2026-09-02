@@ -40,7 +40,11 @@ onMounted(async () => {
 
 async function open(group: GroupRow) {
   opened.value = group;
-  draft.value = { name: group.name, description: group.description };
+  draft.value = {
+    name: group.name,
+    description: group.description,
+    parent_id: group.parent_id ?? "",
+  };
   doomName.value = "";
   picker.value = "";
   membership.value = null;
@@ -51,34 +55,70 @@ async function open(group: GroupRow) {
 const making = ref(false);
 const newName = ref("");
 const newDescription = ref("");
+const newParent = ref("");
 async function makeGroup() {
   if (!newName.value.trim()) return;
   try {
-    await createGroup(realm.value, newName.value.trim(), newDescription.value.trim());
+    await createGroup(
+      realm.value,
+      newName.value.trim(),
+      newDescription.value.trim(),
+      newParent.value || null,
+    );
     making.value = false;
     newName.value = "";
     newDescription.value = "";
+    newParent.value = "";
     page.value = await listGroups(realm.value, 0, 50);
   } catch {
     // The toast already said.
   }
 }
 
-const draft = ref({ name: "", description: "" });
+const draft = ref({ name: "", description: "", parent_id: "" });
 async function saveGroup() {
   if (!opened.value) return;
   try {
-    await updateGroup(realm.value, {
+    const reshaped = {
       ...opened.value,
       name: draft.value.name.trim() || opened.value.name,
       description: draft.value.description,
-    });
-    opened.value.name = draft.value.name.trim() || opened.value.name;
-    opened.value.description = draft.value.description;
+      parent_id: draft.value.parent_id || null,
+    };
+    await updateGroup(realm.value, reshaped);
+    Object.assign(opened.value, reshaped);
+    page.value = await listGroups(realm.value, 0, 50);
   } catch {
-    // The toast already said.
+    // The toast already said: the server refuses a chain that would loop.
   }
 }
+
+/// The loaded page in tree order: roots first, each sub-group under its
+/// parent. A parent beyond the page leaves its child standing as a root.
+const shown = computed(() => {
+  const rows = page.value?.items ?? [];
+  const here = new Set(rows.map((row) => row.group_id));
+  const under = new Map<string, GroupRow[]>();
+  const roots: GroupRow[] = [];
+  for (const row of rows) {
+    if (row.parent_id && here.has(row.parent_id)) {
+      const held = under.get(row.parent_id) ?? [];
+      held.push(row);
+      under.set(row.parent_id, held);
+    } else {
+      roots.push(row);
+    }
+  }
+  const out: GroupRow[] = [];
+  const depths = new Map<string, number>();
+  const walk = (row: GroupRow, depth: number) => {
+    out.push(row);
+    depths.set(row.group_id, depth);
+    for (const child of under.get(row.group_id) ?? []) walk(child, depth + 1);
+  };
+  for (const root of roots) walk(root, 0);
+  return { rows: out, depths };
+});
 
 const doomName = ref("");
 async function dropGroup() {
@@ -187,6 +227,18 @@ async function flipDefault(group: GroupRow) {
           class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
         />
       </label>
+      <label class="w-44 text-[11px] font-medium text-muted">
+        {{ say("group-parent") }} <AppHint name="group-parent-help" />
+        <select
+          v-model="newParent"
+          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+        >
+          <option value="">{{ say("group-parent-none") }}</option>
+          <option v-for="row in page?.items ?? []" :key="row.group_id" :value="row.group_id">
+            {{ row.name }}
+          </option>
+        </select>
+      </label>
       <button
         type="submit"
         class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
@@ -198,10 +250,11 @@ async function flipDefault(group: GroupRow) {
 
     <div v-if="page" class="mt-4">
       <DirectoryTable
-        :items="page.items"
+        :items="shown.rows"
         :total="page.total"
         :opened-key="opened?.group_id ?? null"
         :key-of="(row: GroupRow) => row.group_id"
+        :indent-of="(row: GroupRow) => shown.depths.get(row.group_id) ?? 0"
         @open="open"
       />
     </div>
@@ -209,7 +262,7 @@ async function flipDefault(group: GroupRow) {
     <AppDrawer
       v-if="opened"
       :title="opened.display_name || opened.name"
-      :subtitle="opened.group_id"
+      :subtitle="opened.name"
       @close="opened = null"
     >
       <form class="flex flex-col gap-2 text-xs" @submit.prevent="saveGroup">
@@ -230,6 +283,22 @@ async function flipDefault(group: GroupRow) {
             />
           </label>
         </div>
+        <label class="block max-w-56 text-[11px] font-medium text-muted">
+          {{ say("group-parent") }} <AppHint name="group-parent-help" />
+          <select
+            v-model="draft.parent_id"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          >
+            <option value="">{{ say("group-parent-none") }}</option>
+            <option
+              v-for="row in (page?.items ?? []).filter((held) => held.group_id !== opened?.group_id)"
+              :key="row.group_id"
+              :value="row.group_id"
+            >
+              {{ row.name }}
+            </option>
+          </select>
+        </label>
         <div>
           <button
             type="submit"

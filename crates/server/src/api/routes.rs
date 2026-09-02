@@ -924,6 +924,24 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::delete().to(directory::remove_organization_member)),
         },
         AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/organizations/{organization}/domains",
+            action: AdminAction::OrgWrite,
+            handler: Some(|| web::post().to(directory::claim_organization_domain)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/organizations/{organization}/domains/{domain}/verify",
+            action: AdminAction::OrgWrite,
+            handler: Some(|| web::post().to(directory::verify_organization_domain)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/organizations/{organization}/domains/{domain}",
+            action: AdminAction::OrgWrite,
+            handler: Some(|| web::delete().to(directory::drop_organization_domain)),
+        },
+        AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms/{realm}/organizations/{organization}/theme",
             action: AdminAction::OrgRead,

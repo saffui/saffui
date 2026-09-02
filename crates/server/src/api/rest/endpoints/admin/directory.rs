@@ -472,3 +472,110 @@ pub async fn clear_organization_theme(
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
+
+#[derive(serde::Deserialize)]
+pub struct DomainClaim {
+    pub domain: Option<String>,
+}
+
+/// Claim a mail domain for the organization. The answer carries the
+/// challenge the operator publishes where the domain's owner can, and
+/// checks before verifying; nothing routes until verification.
+pub async fn claim_organization_domain(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    path: web::Path<(String, String)>,
+    body: web::Json<DomainClaim>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, org_id) = path.into_inner();
+    let domain = body
+        .into_inner()
+        .domain
+        .map(|held| held.trim().to_ascii_lowercase())
+        .filter(|held| !held.is_empty() && held.contains('.') && !held.contains('@'));
+    let Some(domain) = domain else {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "domain is required, as a bare host name".to_owned(),
+        ));
+    };
+    let mut drawn = [0_u8; 16];
+    sealing
+        .provider
+        .rand()
+        .fill(&mut drawn)
+        .map_err(|_| internal())?;
+    let challenge = format!("saffui-domain-{}", data_encoding::HEXLOWER.encode(&drawn));
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    directory::claim_organization_domain(&transaction, &org_id, &domain, &challenge)
+        .await
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::OrganizationDomainAlreadyClaimed,
+                ErrorCode::OrganizationNotFound,
+            )
+        })?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Created().json(serde_json::json!({
+        "domain": domain,
+        "challenge": challenge,
+    })))
+}
+
+/// Record that the challenge was seen where the domain's owner published it.
+pub async fn verify_organization_domain(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, org_id, domain) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    directory::verify_organization_domain(&transaction, &org_id, &domain)
+        .await
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::OrganizationDomainAlreadyClaimed,
+                ErrorCode::OrganizationDomainNotFound,
+            )
+        })?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
+pub async fn drop_organization_domain(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, org_id, domain) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    directory::drop_organization_domain(&transaction, &org_id, &domain)
+        .await
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::OrganizationDomainAlreadyClaimed,
+                ErrorCode::OrganizationDomainNotFound,
+            )
+        })?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}

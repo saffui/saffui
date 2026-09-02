@@ -484,3 +484,19 @@ pub async fn set_theme(
         .map_err(|_| StoreError::Backend)?;
     Ok(touched > 0)
 }
+
+/// Take a claimed domain away from the organization, proven or not.
+pub async fn drop_domain(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    domain: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM organization_domains WHERE org_id = $1 AND domain = $2",
+            &[&org_id, &domain],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}

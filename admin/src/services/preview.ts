@@ -370,13 +370,16 @@ export function previewAnswer<T>(path: string): T {
     ]);
   }
   if (path === "/admin/realms" || path.startsWith("/admin/realms?")) {
-    return answer([
+    const rows = [
       { realm_id: "main", name: "main", display_name: "Main", enabled: true },
       { realm_id: "staging", name: "staging", display_name: "Staging", enabled: true },
       { realm_id: "sunset", name: "sunset", display_name: "Legacy", enabled: false },
-    ]);
+    ];
+    return answer({ items: rows, first: 0, max: rows.length, total: rows.length });
   }
-  if (/\/admin\/realms\/[^/]+$/.test(path)) {
+  if (/\/admin\/realms\/[^/?]+(\?.*)?$/.test(path)) {
+    // GET and PUT both land here in preview: the same settings document,
+    // which is exactly what the real PUT answers back.
     return answer({
       realm_id: "main",
       name: "main",
@@ -405,7 +408,13 @@ export function previewAnswer<T>(path: string): T {
       not_before: 0,
       ssl_enforcement: "external",
       password_policy: { length: 12, digits: 1 },
-      brute_force: { max_failures: 5, wait_seconds: 900 },
+      brute_force: {
+        protected: true,
+        max_failures: 5,
+        lockout_seconds: 60,
+        max_lockout_seconds: 900,
+        reset_seconds: 900,
+      },
     });
   }
   throw new ApiError(404, "the preview world does not hold this");

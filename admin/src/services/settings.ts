@@ -1,10 +1,21 @@
 import { adminPath, api } from "@/services/http";
 import type { MailBrief, MailWrite } from "@/models/mail";
 import type { RealmKeys } from "@/models/keys";
-import type { RealmSettings, RealmTheme } from "@/models/realm";
+import type { RealmSettings, RealmTheme, RealmUpdate } from "@/models/realm";
 
 export async function getRealmSettings(realm: string): Promise<RealmSettings> {
-  return api<RealmSettings>(`/admin/realms/${encodeURIComponent(realm)}`);
+  return api<RealmSettings>(
+    `/admin/realms/${encodeURIComponent(realm)}?briefRepresentation=false`,
+  );
+}
+
+/// Rewrite the mentioned switches; the server leaves absent ones alone and
+/// answers the whole settings document back.
+export async function reshapeRealm(realm: string, changes: RealmUpdate): Promise<RealmSettings> {
+  return api<RealmSettings>(`/admin/realms/${encodeURIComponent(realm)}`, {
+    method: "PUT",
+    json: changes,
+  });
 }
 
 export async function getMail(realm: string): Promise<MailBrief> {

@@ -41,6 +41,79 @@ pub struct MailWrite {
     pub password: Option<String>,
 }
 
+/// Prove the relay works while the operator is still looking at the form:
+/// one test mail, sent with the held settings, the SMTP refusal spoken back
+/// in words when it does not.
+#[derive(serde::Deserialize)]
+pub struct TestAsked {
+    pub to: String,
+}
+
+pub async fn send_test(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<crate::api::config::Sealing>,
+    path: web::Path<String>,
+    body: web::Json<TestAsked>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let to = body.into_inner().to;
+    if !to.contains('@') {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "the test wants an address to send to".to_owned(),
+        ));
+    }
+    let mut connection = pool
+        .get()
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+    let ring = keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &admin.context.tenant.tenant,
+        &realm_id,
+    )
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+    let settings = services::admin::mail::read(&transaction, &ring, &sealing.envelope)
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::MailSettingsNotFound))?;
+
+    let message = auth::messaging::Message {
+        to,
+        subject: "saffui mail test".to_owned(),
+        body: "This is the test mail. The settings that sent it are the ones \
+               on the email screen; nothing else was used.\n"
+            .to_owned(),
+    };
+    // Straight through the SMTP transport, never the deployment's sink: a
+    // Logged sink would print the mail and prove nothing about the relay.
+    // This drives the whole dialogue, connect, TLS, auth, delivery, so a
+    // green answer means the settings on screen actually carry mail.
+    use auth::messaging::Deliver;
+    crate::messaging::Smtp
+        .send(&settings, &message)
+        .await
+        .map_err(|_| {
+            ApiError::with_detail(
+                ErrorCode::ValidationError,
+                "the relay refused: connection, TLS, authentication or delivery failed \
+                 with these settings; the server log holds the exact refusal"
+                    .to_owned(),
+            )
+        })?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
 pub async fn read(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,

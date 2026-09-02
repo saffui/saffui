@@ -107,3 +107,13 @@ export async function listSignInEvents(realm: string, first: number, max: number
     adminPath(realm, `sign-in-events?first=${first}&max=${max}&count=true`),
   );
 }
+
+/// Drive the relay end to end: connect, TLS, auth, one real mail to the
+/// given address. Green means the settings on screen actually carry mail.
+export async function sendTestMail(realm: string, to: string): Promise<void> {
+  await api<void>(adminPath(realm, "mail/test"), {
+    method: "POST",
+    json: { to },
+    subject: say("mail-test-subject"),
+  });
+}

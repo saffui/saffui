@@ -101,3 +101,79 @@ export async function listMemberOrganizations(
   );
   return told.organizations;
 }
+
+/// What the plane is asked to create or reshape a person as; mirrors the
+/// server's UserSpec.
+export interface UserSpec {
+  user_name?: string;
+  email?: string;
+  enabled?: boolean;
+  given_name?: string;
+  family_name?: string;
+  phone_number?: string;
+  required_actions?: string[];
+  password?: string;
+}
+
+export async function createUser(realm: string, spec: UserSpec) {
+  return api<{ user_id: string; user_name: string }>(adminPath(realm, "users"), {
+    method: "POST",
+    json: spec,
+    subject: say("subject-user", { user: spec.user_name ?? "" }),
+  });
+}
+
+export async function updateUser(realm: string, userId: string, spec: UserSpec): Promise<void> {
+  await api<unknown>(adminPath(realm, `users/${encodeURIComponent(userId)}`), {
+    method: "PUT",
+    json: spec,
+    subject: say("subject-user", { user: userId }),
+  });
+}
+
+export async function deleteUser(realm: string, userId: string): Promise<void> {
+  await api<void>(adminPath(realm, `users/${encodeURIComponent(userId)}`), {
+    method: "DELETE",
+    quiet: true,
+  });
+}
+
+export async function setUserPassword(
+  realm: string,
+  userId: string,
+  password: string,
+): Promise<void> {
+  await api<void>(adminPath(realm, `users/${encodeURIComponent(userId)}/password`), {
+    method: "PUT",
+    json: { password },
+    subject: say("subject-password", { user: userId }),
+  });
+}
+
+export async function grantRoleToUser(realm: string, roleId: string, userId: string) {
+  await api<unknown>(
+    adminPath(realm, `roles/${encodeURIComponent(roleId)}/holders/${encodeURIComponent(userId)}`),
+    { method: "PUT", subject: say("subject-grant", { role: roleId, user: userId }) },
+  );
+}
+
+export async function revokeRoleFromUser(realm: string, roleId: string, userId: string) {
+  await api<unknown>(
+    adminPath(realm, `roles/${encodeURIComponent(roleId)}/holders/${encodeURIComponent(userId)}`),
+    { method: "DELETE", subject: say("subject-grant", { role: roleId, user: userId }) },
+  );
+}
+
+export async function joinGroup(realm: string, groupId: string, userId: string) {
+  await api<unknown>(
+    adminPath(realm, `groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`),
+    { method: "PUT", subject: say("subject-membership", { group: groupId, user: userId }) },
+  );
+}
+
+export async function leaveGroup(realm: string, groupId: string, userId: string) {
+  await api<unknown>(
+    adminPath(realm, `groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`),
+    { method: "DELETE", subject: say("subject-membership", { group: groupId, user: userId }) },
+  );
+}

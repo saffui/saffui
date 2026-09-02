@@ -2,7 +2,10 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
-import { listUsers } from "@/services/users";
+import { createUser, listUsers } from "@/services/users";
+import AppDrawer from "@/components/AppDrawer.vue";
+import AppHint from "@/components/AppHint.vue";
+import AppToggle from "@/components/AppToggle.vue";
 import type { Page } from "@/models/paging";
 import type { UserBrief } from "@/models/user";
 import UserDrawer from "./UserDrawer.vue";
@@ -43,6 +46,58 @@ function close() {
   router.replace({ query: rest });
 }
 
+/// The birth drawer: identity now, authority later on the memberships tab.
+const making = ref(false);
+const REQUIRED_ACTIONS = [
+  "update-password",
+  "verify-email",
+  "configure-totp",
+  "configure-webauthn",
+] as const;
+const born = ref({
+  user_name: "",
+  email: "",
+  given_name: "",
+  family_name: "",
+  phone_number: "",
+  password: "",
+  actions: ["verify-email"] as string[],
+});
+function flipAction(action: string) {
+  born.value.actions = born.value.actions.includes(action)
+    ? born.value.actions.filter((held) => held !== action)
+    : [...born.value.actions, action];
+}
+async function makeUser() {
+  const spec = born.value;
+  if (!spec.user_name.trim()) return;
+  try {
+    const made = await createUser(realm.value, {
+      user_name: spec.user_name.trim(),
+      email: spec.email.trim() || undefined,
+      given_name: spec.given_name.trim() || undefined,
+      family_name: spec.family_name.trim() || undefined,
+      phone_number: spec.phone_number.trim() || undefined,
+      password: spec.password || undefined,
+      required_actions: spec.actions,
+    });
+    making.value = false;
+    born.value = {
+      user_name: "",
+      email: "",
+      given_name: "",
+      family_name: "",
+      phone_number: "",
+      password: "",
+      actions: ["verify-email"],
+    };
+    await load();
+    router.replace({ query: { ...route.query, user: made.user_id ?? spec.user_name.trim() } });
+  } catch {
+    // The toast already said.
+  }
+}
+
 const shownTotal = computed(() => {
   const total = page.value?.total;
   return total === null || total === undefined ? "" : new Intl.NumberFormat().format(total);
@@ -53,6 +108,13 @@ const shownTotal = computed(() => {
   <div>
     <div class="flex items-center justify-between">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("users-title") }}</h1>
+      <button
+        type="button"
+        class="ml-3 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        @click="making = true"
+      >
+        {{ say("user-new") }}
+      </button>
       <span v-if="shownTotal" class="font-mono text-[11px] text-faint">{{ shownTotal }}</span>
     </div>
 
@@ -127,6 +189,89 @@ const shownTotal = computed(() => {
       </button>
       <span class="font-mono">{{ first + 1 }}&ndash;{{ first + page.items.length }}</span>
     </div>
+
+    <AppDrawer
+      v-if="making"
+      :title="say('user-new')"
+      :subtitle="realm"
+      @close="making = false"
+    >
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="makeUser">
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("users-col-username") }} <AppHint name="user-username-help" />
+          <input
+            v-model="born.user_name"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            spellcheck="false"
+          />
+        </label>
+        <div class="grid grid-cols-2 gap-3">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("users-col-email") }}
+            <input
+              v-model="born.email"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              spellcheck="false"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("user-phone") }}
+            <input
+              v-model="born.phone_number"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("user-given") }}
+            <input
+              v-model="born.given_name"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("user-family") }}
+            <input
+              v-model="born.family_name"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            />
+          </label>
+        </div>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("user-first-password") }} <AppHint name="user-first-password-help" />
+          <input
+            v-model="born.password"
+            type="password"
+            autocomplete="new-password"
+            :placeholder="say('user-first-password-skip')"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          />
+        </label>
+        <div>
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("user-ask-first") }} <AppHint name="user-required-actions-help" />
+          </div>
+          <div class="mt-1.5 flex flex-col gap-1.5">
+            <AppToggle
+              v-for="action in REQUIRED_ACTIONS"
+              :key="action"
+              :model-value="born.actions.includes(action)"
+              @update:model-value="flipAction(action)"
+            >
+              <span class="font-mono text-[11px]">{{ action }}</span>
+            </AppToggle>
+          </div>
+        </div>
+        <p class="text-[10.5px] text-faint">{{ say("user-new-note") }}</p>
+        <div>
+          <button
+            type="submit"
+            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+          >
+            {{ say("realm-create") }}
+          </button>
+        </div>
+      </form>
+    </AppDrawer>
 
     <UserDrawer v-if="opened" :realm="realm" :user-id="opened" @close="close" />
   </div>

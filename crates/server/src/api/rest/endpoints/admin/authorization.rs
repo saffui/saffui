@@ -414,3 +414,154 @@ pub async fn prune_decisions(
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({ "removed": removed })))
 }
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EvaluationQuestion {
+    Policy {
+        server_id: String,
+        policy_id: String,
+    },
+    Permission {
+        server_id: String,
+        resource: String,
+        scope: String,
+    },
+    Relationship {
+        object_type: String,
+        object_id: String,
+        relation: String,
+    },
+}
+
+#[derive(Deserialize)]
+pub struct Evaluation {
+    /// Who the question is about; the console asks on their behalf.
+    pub subject: Option<String>,
+    /// The organization the simulated login would act within, by id.
+    pub organization: Option<String>,
+    pub question: Option<EvaluationQuestion>,
+}
+
+/// Ask the decision engine what it would answer, for a named subject.
+///
+/// The very engine the exchange consults, on a context built for the subject
+/// instead of the caller, so the simulator can never drift from the thing it
+/// simulates. The decision is recorded in the decision log like any other,
+/// under the action `simulated`: an evaluation is an act worth remembering.
+pub async fn evaluate(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    journal: web::Data<services::pdp::Journal>,
+    sealing: web::Data<Sealing>,
+    path: web::Path<String>,
+    body: web::Json<Evaluation>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let asked = body.into_inner();
+    let (Some(subject), Some(question)) = (asked.subject, asked.question) else {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "subject and question are required".to_owned(),
+        ));
+    };
+
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+
+    let person = store::providers::users::load(&transaction, &subject)
+        .await
+        .map_err(|_| internal())?
+        .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;
+    let acting = match &asked.organization {
+        None => services::context::Acting::RealmWide,
+        Some(org) => {
+            let member = store::providers::organizations::of_member(&transaction, &person.user_id)
+                .await
+                .map_err(|_| internal())?
+                .contains(org);
+            if !member {
+                return Err(ApiError::with_detail(
+                    ErrorCode::ValidationError,
+                    "the subject is not a member of that organization".to_owned(),
+                ));
+            }
+            services::context::Acting::In {
+                org_id: org.clone(),
+            }
+        }
+    };
+    let context = services::context::Context {
+        tenant: TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        session_id: String::new(),
+        principal: services::context::Principal::of_user(person),
+        acting,
+        presenter: None,
+        now: chrono::Utc::now(),
+    };
+
+    let mut drawn = [0_u8; 16];
+    sealing
+        .provider
+        .rand()
+        .fill(&mut drawn)
+        .map_err(|_| internal())?;
+    let decision_id = data_encoding::HEXLOWER.encode(&drawn);
+
+    let resource = match &question {
+        EvaluationQuestion::Policy {
+            server_id,
+            policy_id,
+        } => services::pdp::Resource::Policy {
+            server_id,
+            policy_id,
+        },
+        EvaluationQuestion::Permission {
+            server_id,
+            resource,
+            scope,
+        } => services::pdp::Resource::Permission {
+            server_id,
+            resource,
+            scope,
+        },
+        EvaluationQuestion::Relationship {
+            object_type,
+            object_id,
+            relation,
+        } => services::pdp::Resource::Relationship {
+            object_type,
+            object_id,
+            relation,
+        },
+    };
+
+    let answer = services::pdp::decide(
+        &transaction,
+        &journal,
+        &context,
+        services::pdp::Question {
+            resource,
+            action: "simulated",
+            decision_id: &decision_id,
+            trace_id: None,
+        },
+    )
+    .await
+    .map_err(|_| internal())?;
+    transaction.commit().await.map_err(|_| internal())?;
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "decision_id": decision_id,
+        "reported": answer.reported,
+        "computed": answer.computed,
+        "detail": answer.detail,
+    })))
+}

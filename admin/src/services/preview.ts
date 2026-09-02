@@ -284,6 +284,9 @@ export function previewAnswer<T>(path: string): T {
       encryption: [],
     });
   }
+  if (path.endsWith("/theme")) {
+    return answer(null);
+  }
   if (/\/admin\/realms\/[^/]+$/.test(path)) {
     return answer({
       realm_id: "main",
@@ -293,6 +296,27 @@ export function previewAnswer<T>(path: string): T {
       client_registration: "open",
       registration_bounds: { max_clients: null, requires_consent: false, trusted_hosts: [] },
       require_pushed_authorization_requests: false,
+      registration_allowed: false,
+      register_email_as_username: null,
+      verify_email: true,
+      login_with_email_allowed: true,
+      duplicated_email_allowed: false,
+      edit_user_name_allowed: null,
+      reset_password_allowed: true,
+      remember_me: true,
+      revoke_refresh_token: true,
+      refresh_token_max_reuse: 0,
+      access_token_lifespan: 300,
+      offline_session_lifespan: 2592000,
+      offline_session_max_lifespan: 0,
+      max_offline_grants: 5,
+      action_tokens_lifespan: null,
+      access_code_lifespan: 60,
+      access_code_lifespan_login: 900,
+      not_before: 0,
+      ssl_enforcement: "external",
+      password_policy: { length: 12, digits: 1 },
+      brute_force: { max_failures: 5, wait_seconds: 900 },
     });
   }
   throw new ApiError(404, "the preview world does not hold this");

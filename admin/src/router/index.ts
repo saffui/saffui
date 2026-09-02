@@ -37,6 +37,18 @@ const routes: RouteRecordRaw[] = [
         path: "organizations",
         component: () => import("@/pages/directory/OrganizationsPage.vue"),
       },
+      {
+        path: "settings",
+        component: () => import("@/pages/settings/SettingsPage.vue"),
+      },
+      {
+        path: "keys",
+        component: () => import("@/pages/settings/KeysPage.vue"),
+      },
+      {
+        path: "theme",
+        component: () => import("@/pages/settings/ThemePage.vue"),
+      },
     ],
   },
   { path: "/", redirect: "/login" },

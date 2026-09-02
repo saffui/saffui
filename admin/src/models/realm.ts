@@ -51,9 +51,33 @@ export interface RealmSettings {
   supported_locales: string[] | null;
   default_locale: string | null;
   ssl_enforcement: string | null;
-  password_policy: unknown;
+  password_policy: PasswordPolicy | null;
   brute_force: BruteForce;
 }
+
+/// Mirrors `models::entities::realm::PasswordPolicy`. The hashing block is
+/// required by the server's deserializer, so a write always echoes the held
+/// one; OWASP_HASHING mirrors the server's own default for a realm that has
+/// no policy yet.
+export interface PasswordPolicy {
+  min_length: number | null;
+  max_length: number | null;
+  min_digits: number | null;
+  min_upper_case: number | null;
+  min_lower_case: number | null;
+  min_special_chars: number | null;
+  not_email: boolean | null;
+  not_username: boolean | null;
+  not_birthdate: boolean | null;
+  blacklisted: string[] | null;
+  regex_pattern: string | null;
+  expires_after_days: number | null;
+  history_look_back: number | null;
+  hashing: { m_cost: number; t_cost: number; p_cost: number; output_len: number };
+}
+
+/// `crypto::provider::Argon2Params::default()`: the OWASP 2024 baseline.
+export const OWASP_HASHING = { m_cost: 19456, t_cost: 2, p_cost: 1, output_len: 32 };
 
 /// Mirrors `models::entities::realm::BruteForce`.
 export interface BruteForce {
@@ -78,6 +102,7 @@ export interface RealmUpdate {
   reset_password_allowed?: boolean;
   remember_me?: boolean;
   ssl_enforcement?: string;
+  password_policy?: PasswordPolicy;
   revoke_refresh_token?: boolean;
   refresh_token_max_reuse?: number;
   access_token_lifespan?: number;

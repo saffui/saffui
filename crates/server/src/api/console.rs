@@ -6,15 +6,20 @@
 //! cache life when its name carries a build hash, and everything else gets
 //! `index.html`, which is how a client-side router survives a reload.
 
-use actix_web::{HttpResponse, web};
+use actix_web::{HttpRequest, HttpResponse};
 use include_dir::{Dir, include_dir};
 
 static CONSOLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../admin/dist");
 
-pub async fn serve(path: web::Path<String>) -> HttpResponse {
-    let asked = path.into_inner();
-    let (name, file) = match CONSOLE.get_file(asked.as_str()) {
-        Some(file) if !asked.is_empty() => (asked.as_str(), file),
+/// Read off the match rather than extracted, because the bare `/console`
+/// route has no `path` segment to extract and must still answer the shell.
+pub async fn serve(request: HttpRequest) -> HttpResponse {
+    answer(request.match_info().get("path").unwrap_or(""))
+}
+
+fn answer(asked: &str) -> HttpResponse {
+    let (name, file) = match CONSOLE.get_file(asked) {
+        Some(file) if !asked.is_empty() => (asked, file),
         _ => match CONSOLE.get_file("index.html") {
             Some(file) => ("index.html", file),
             None => return HttpResponse::NotFound().finish(),
@@ -50,9 +55,10 @@ pub async fn serve(path: web::Path<String>) -> HttpResponse {
 mod tests {
     use super::*;
     use actix_web::body::MessageBody;
+    use actix_web::web;
 
-    async fn served(path: &str) -> (String, String, Vec<u8>) {
-        let answer = serve(web::Path::from(path.to_owned())).await;
+    fn served(path: &str) -> (String, String, Vec<u8>) {
+        let answer = answer(path);
         let content_type = answer
             .headers()
             .get("content-type")
@@ -72,9 +78,9 @@ mod tests {
     /// The app owns its root: the shell comes back for the root, for any
     /// route its own router knows, and always fresh; a hashed asset comes
     /// back as itself and may be kept for good.
-    #[actix_web::test]
-    async fn the_console_serves_its_shell_and_keeps_its_assets() {
-        let (kind, caching, body) = served("").await;
+    #[test]
+    fn the_console_serves_its_shell_and_keeps_its_assets() {
+        let (kind, caching, body) = served("");
         assert!(kind.starts_with("text/html"), "{kind}");
         assert_eq!(caching, "no-cache");
         assert!(
@@ -82,7 +88,7 @@ mod tests {
             "not the shell"
         );
 
-        let (kind, caching, spa) = served("main/users").await;
+        let (kind, caching, spa) = served("main/users");
         assert!(kind.starts_with("text/html"), "{kind}");
         assert_eq!(caching, "no-cache");
         assert_eq!(spa, body, "a route the router owns did not get the shell");
@@ -96,8 +102,29 @@ mod tests {
             .path()
             .to_string_lossy()
             .into_owned();
-        let (kind, caching, _) = served(&asset).await;
+        let (kind, caching, _) = served(&asset);
         assert!(kind.starts_with("text/javascript"), "{kind}");
         assert!(caching.contains("immutable"), "{caching}");
+    }
+
+    /// The route the app is mounted on has no `path` segment on its bare
+    /// form, which is exactly where an extractor-typed handler answers 404.
+    #[actix_web::test]
+    async fn the_bare_console_path_answers_the_shell() {
+        let app = actix_web::test::init_service(actix_web::App::new().service(
+            web::resource(["/console", "/console/{path:.*}"]).route(web::get().to(serve)),
+        ))
+        .await;
+        for asked in ["/console", "/console/", "/console/main/users"] {
+            let request = actix_web::test::TestRequest::get().uri(asked).to_request();
+            let answered = actix_web::test::call_service(&app, request).await;
+            assert!(answered.status().is_success(), "{asked} was refused");
+            let kind = answered
+                .headers()
+                .get("content-type")
+                .and_then(|held| held.to_str().ok())
+                .unwrap_or_default();
+            assert!(kind.starts_with("text/html"), "{asked} answered {kind}");
+        }
     }
 }

@@ -215,8 +215,65 @@ export function previewAnswer<T>(path: string): T {
       { client_scope_id: "cs-3", name: "payments:write", description: "Move money", protocol: "openid-connect", default_scope: false },
     ]);
   }
+  if (/\/roles\/[^/]+\/holders$/.test(path)) {
+    return answer({ users: ["ada", "grace"], groups: ["finance"] });
+  }
+  if (path.includes("/roles?")) {
+    return answer({
+      items: [
+        { role_id: "r-1", name: "auditor", display_name: "Auditor", description: "Reads the journal", client_id: null },
+        { role_id: "r-2", name: "reader", display_name: "Reader", description: "", client_id: "web-dashboard" },
+        { role_id: "r-3", name: "payments-officer", display_name: "Payments officer", description: "May move money", client_id: "payments-api" },
+      ],
+      first: 0,
+      max: 50,
+      total: 3,
+    });
+  }
+  if (/\/groups\/[^/]+\/membership$/.test(path)) {
+    return answer({ users: ["ada", "grace", "linus"], roles: ["reader"] });
+  }
+  if (path.includes("/groups?")) {
+    return answer({
+      items: [
+        { group_id: "g-1", name: "finance", display_name: "Finance", description: "Money people" },
+        { group_id: "g-2", name: "platform", display_name: "Platform", description: "" },
+      ],
+      first: 0,
+      max: 50,
+      total: 2,
+    });
+  }
+  if (/\/organizations\/[^/]+\/members$/.test(path)) {
+    return answer([
+      { user_id: "ada", membership_type: "unmanaged", roles: [], joined_at: "2026-07-02T09:00:00Z" },
+      { user_id: "grace", membership_type: "managed", roles: ["org-admin"], joined_at: "2026-08-11T14:00:00Z" },
+    ]);
+  }
+  if (/\/organizations\/[^/?]+$/.test(path) && !path.endsWith("/theme")) {
+    return answer({
+      org_id: "o-1",
+      name: "acme",
+      display_name: "Acme Corp",
+      description: "The anchor customer",
+      enabled: true,
+      domains: [
+        { name: "acme.example", verified: true },
+        { name: "acme-labs.example", verified: false },
+      ],
+      redirect_url: "https://app.acme.example/",
+    });
+  }
   if (path.includes("/organizations?")) {
-    return answer({ items: [{}], first: 0, max: 1, total: 2 });
+    return answer({
+      items: [
+        { org_id: "o-1", name: "acme", display_name: "Acme Corp", description: "The anchor customer", enabled: true, domains: [], redirect_url: null },
+        { org_id: "o-2", name: "beta", display_name: "Beta LLC", description: "", enabled: false, domains: [], redirect_url: null },
+      ],
+      first: 0,
+      max: 50,
+      total: 2,
+    });
   }
   if (path.endsWith("/keys")) {
     return answer({

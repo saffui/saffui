@@ -25,6 +25,18 @@ const routes: RouteRecordRaw[] = [
         path: "client-scopes",
         component: () => import("@/pages/scopes/ScopesPage.vue"),
       },
+      {
+        path: "roles",
+        component: () => import("@/pages/directory/RolesPage.vue"),
+      },
+      {
+        path: "groups",
+        component: () => import("@/pages/directory/GroupsPage.vue"),
+      },
+      {
+        path: "organizations",
+        component: () => import("@/pages/directory/OrganizationsPage.vue"),
+      },
     ],
   },
   { path: "/", redirect: "/login" },

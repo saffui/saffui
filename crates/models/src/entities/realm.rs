@@ -105,6 +105,22 @@ pub struct PasswordPolicy {
     pub hashing: Argon2Params,
 }
 
+/// How this realm presents itself to a browser's key ceremony.
+///
+/// Deliberately small. The verifier fixes the security posture, user
+/// verification required and no attestation, because those are the passkey
+/// contract; what a realm may shape is its shown name and whether keys
+/// enrolled at the apex answer for subdomains.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebauthnPolicy {
+    /// The name a browser shows during the ceremony. None shows the
+    /// origin's host.
+    pub rp_name: Option<String>,
+    /// Whether a key enrolled at the apex answers for subdomains too.
+    pub allow_subdomains: bool,
+}
+
 /// What a newly enrolled authenticator app is set up with, and how much
 /// clock drift a login tolerates.
 ///
@@ -380,6 +396,8 @@ pub struct RealmModel {
     /// What a new authenticator app enrolment is set up with. None keeps
     /// the built defaults.
     pub otp_policy: Option<OtpPolicy>,
+    /// How this realm presents itself to a browser's key ceremony.
+    pub webauthn_policy: Option<WebauthnPolicy>,
     /// Which built tongues this realm offers. None offers them all.
     pub supported_locales: Option<Vec<String>>,
     /// The tongue that answers when the browser says nothing. None takes the
@@ -448,6 +466,7 @@ impl RealmCreateModel {
             access_code_lifespan_login: None,
             browser_flow: None,
             otp_policy: None,
+            webauthn_policy: None,
             supported_locales: None,
             default_locale: None,
             master_admin_client: None,
@@ -504,6 +523,8 @@ pub struct RealmUpdateModel {
     pub browser_flow: Option<String>,
     /// What a new authenticator app enrolment is set up with.
     pub otp_policy: Option<OtpPolicy>,
+    /// How this realm presents itself to a browser's key ceremony.
+    pub webauthn_policy: Option<WebauthnPolicy>,
     /// Which built tongues this realm offers. None leaves it unchanged; an
     /// empty list offers them all.
     pub supported_locales: Option<Vec<String>>,
@@ -569,6 +590,9 @@ impl RealmUpdateModel {
         }
         if let Some(otp_policy) = self.otp_policy {
             realm.otp_policy = Some(otp_policy);
+        }
+        if let Some(webauthn_policy) = self.webauthn_policy {
+            realm.webauthn_policy = Some(webauthn_policy);
         }
         if let Some(browser_flow) = self.browser_flow {
             realm.browser_flow = (!browser_flow.is_empty()).then_some(browser_flow);

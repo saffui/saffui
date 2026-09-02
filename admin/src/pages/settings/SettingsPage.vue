@@ -128,6 +128,9 @@ const POLICY_CHECKS = [
 /// live knob over enrolled codes: the drift window.
 const otp = ref({ ...OTP_DEFAULTS });
 
+/// The key ceremony's face: shown name, subdomain reach.
+const webauthn = ref({ rp_name: "", allow_subdomains: false });
+
 /// The password policy, spread into fields; the hashing block rides along
 /// untouched because the server requires it whole.
 const policy = ref({
@@ -196,6 +199,10 @@ function adopt(held: RealmSettings) {
   offeredTongues.value = held.supported_locales ?? [...TONGUES];
   defaultTongue.value = held.default_locale ?? "";
   otp.value = { ...(held.otp_policy ?? OTP_DEFAULTS) };
+  webauthn.value = {
+    rp_name: held.webauthn_policy?.rp_name ?? "",
+    allow_subdomains: held.webauthn_policy?.allow_subdomains ?? false,
+  };
   const rules = held.password_policy;
   policy.value = {
     min_length: rules?.min_length ?? "",
@@ -346,6 +353,10 @@ function changesOf(which: Group): RealmUpdate {
   };
   changes.password_policy = written;
   changes.otp_policy = { ...otp.value };
+  changes.webauthn_policy = {
+    rp_name: webauthn.value.rp_name.trim() || null,
+    allow_subdomains: webauthn.value.allow_subdomains,
+  };
   return changes;
 }
 
@@ -948,6 +959,30 @@ async function removeMail() {
                 />
               </label>
             </div>
+
+            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("webauthn-title") }} <AppHint name="webauthn-title-help" />
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("webauthn-rp-name") }} <AppHint name="webauthn-rp-name-help" />
+                <input
+                  v-model="webauthn.rp_name"
+                  maxlength="64"
+                  :placeholder="settings.name"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                />
+              </label>
+              <label class="flex items-end gap-2 pb-1.5 text-xs">
+                <input
+                  v-model="webauthn.allow_subdomains"
+                  type="checkbox"
+                  class="accent-(--sf-accent)"
+                />
+                {{ say("webauthn-subdomains") }} <AppHint name="webauthn-subdomains-help" />
+              </label>
+            </div>
+            <p class="text-[10.5px] text-faint">{{ say("webauthn-fixed-line") }}</p>
 
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("settings-password-policy") }} <AppHint name="settings-password-policy-help" />

@@ -49,6 +49,7 @@ export interface RealmSettings {
   acr_loa_map: Record<string, number> | null;
   attributes: Record<string, unknown> | null;
   otp_policy: OtpPolicy | null;
+  webauthn_policy: WebauthnPolicy | null;
   browser_flow: string | null;
   supported_locales: string[] | null;
   default_locale: string | null;
@@ -76,6 +77,14 @@ export interface PasswordPolicy {
   expires_after_days: number | null;
   history_look_back: number | null;
   hashing: { m_cost: number; t_cost: number; p_cost: number; output_len: number };
+}
+
+/// Mirrors `models::entities::realm::WebauthnPolicy`. Deliberately small:
+/// the verifier fixes user verification and attestation, the passkey
+/// contract; the realm shapes only its shown name and the subdomain reach.
+export interface WebauthnPolicy {
+  rp_name: string | null;
+  allow_subdomains: boolean;
 }
 
 /// Mirrors `models::entities::realm::OtpPolicy`; defaults mirror the
@@ -131,6 +140,7 @@ export interface RealmUpdate {
   acr_loa_map?: Record<string, number>;
   attributes?: Record<string, string>;
   otp_policy?: OtpPolicy;
+  webauthn_policy?: WebauthnPolicy;
   browser_flow?: string;
   supported_locales?: string[];
   default_locale?: string;

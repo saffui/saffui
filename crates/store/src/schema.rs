@@ -421,6 +421,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V069__realm_otp_policy.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 70,
+            name: "realm_webauthn_policy",
+            sql: include_str!("../migrations/V070__realm_webauthn_policy.sql"),
+            transactional: true,
+        }),
     ]
 }
 

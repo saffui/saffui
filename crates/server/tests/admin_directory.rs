@@ -458,3 +458,96 @@ async fn holding_the_group_is_not_holding_its_roles() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// A domain's whole life on an organization: claimed with a challenge the
+/// operator can publish, listed pending on the organization itself, proven,
+/// and taken away. Nothing routes while unproven, and an unknown domain or
+/// organization answers not-found.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_domain_is_claimed_proven_and_taken_away() {
+    let plane = Plane::with_actions(&[AdminAction::OrgRead, AdminAction::OrgWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/organizations");
+
+    let (_, born) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({
+            "name": "acme", "display_name": "Acme Corp",
+            "description": "", "enabled": true,
+        })),
+    )
+    .await;
+    let org = born["org_id"].as_str().expect("an identity").to_owned();
+
+    let (status, claimed) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/{org}/domains"),
+        &bearer,
+        Some(serde_json::json!({ "domain": " Acme.Example " })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{claimed}");
+    assert_eq!(claimed["domain"], "acme.example", "{claimed}");
+    assert!(
+        claimed["challenge"]
+            .as_str()
+            .is_some_and(|held| held.starts_with("saffui-domain-")),
+        "{claimed}"
+    );
+
+    // The organization now carries it, unproven.
+    let (_, held) = asked(&plane, Method::GET, &format!("{base}/{org}"), &bearer, None).await;
+    assert_eq!(held["domains"][0]["name"], "acme.example", "{held}");
+    assert_eq!(held["domains"][0]["verified"], false, "{held}");
+
+    // A second claim of the same domain is a conflict, not a rewrite.
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/{org}/domains"),
+        &bearer,
+        Some(serde_json::json!({ "domain": "acme.example" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/{org}/domains/acme.example/verify"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, held) = asked(&plane, Method::GET, &format!("{base}/{org}"), &bearer, None).await;
+    assert_eq!(held["domains"][0]["verified"], true, "{held}");
+
+    // Verifying what is not claimed, on this or any organization, is 404.
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/{org}/domains/nowhere.example/verify"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{base}/{org}/domains/acme.example"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, held) = asked(&plane, Method::GET, &format!("{base}/{org}"), &bearer, None).await;
+    assert_eq!(held["domains"].as_array().map(Vec::len), Some(0), "{held}");
+}

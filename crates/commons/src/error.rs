@@ -78,6 +78,8 @@ catalogue! {
     RequiredActionAlreadyExists = 451, 409, "auth.required_action.already_exists", "a required action with this alias already exists";
     OrganizationNotFound = 700, 404, "organization.not_found", "organization not found";
     OrganizationAlreadyExists = 701, 409, "organization.already_exists", "an organization with this name already exists";
+    OrganizationDomainNotFound = 702, 404, "organization.domain.not_found", "domain not found on this organization";
+    OrganizationDomainAlreadyClaimed = 703, 409, "organization.domain.already_claimed", "this domain is already claimed";
     CredentialNotFound = 800, 404, "credential.not_found", "credential not found";
     RoleNotFound = 900, 404, "role.not_found", "role not found";
     RoleAlreadyExists = 901, 409, "role.already_exists", "a role with this name already exists";
@@ -174,7 +176,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 54);
+        assert_eq!(ErrorCode::ALL.len(), 56);
     }
 
     /// A message never restates the slug, and never carries a value.

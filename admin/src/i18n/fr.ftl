@@ -362,3 +362,4 @@ toast-refused = Refusé ({ $status })
 toast-hint-forbidden = Le plan a reconnu qui tu es et refusé ce que tu demandes : ton rôle ne porte pas cette capacité. Rejouer provision rafraîchit un rôle administrateur jamais retouché ; sinon accorde la capacité à un rôle que tu tiens.
 toast-hint-unauthorized = La session ne tient plus ; reconnecte-toi.
 toast-realm-deleted = Realm { $realm } supprimé.
+toast-saved = Enregistré

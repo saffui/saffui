@@ -80,11 +80,13 @@ const shownTotal = computed(() => {
             <td class="px-3 py-2">
               <span class="inline-flex items-center gap-1.5">
                 {{ user.email }}
-                <span
+                <AppIcon
                   v-if="user.email_verified"
-                  class="size-1.5 rounded-full bg-ok"
+                  name="verified"
+                  :size="12"
+                  class="text-ok"
                   :title="say('users-email-verified')"
-                ></span>
+                />
               </span>
             </td>
             <td class="px-3 py-2 text-muted">{{ fullName(user) }}</td>

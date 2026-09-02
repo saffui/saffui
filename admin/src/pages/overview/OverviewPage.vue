@@ -70,7 +70,6 @@ const CARDS = [
           :to="`/${route.params.realm}/${held.where}`"
           class="group flex items-center gap-3 rounded-lg border border-warn/40 bg-surface px-4 py-3 hover:bg-surface-2"
         >
-          <span class="size-1.5 shrink-0 rounded-full bg-warn"></span>
           <span class="text-xs text-ink">{{ say(`attention-${held.what}`) }}</span>
           <span class="ml-auto flex items-center gap-1 text-[11px] text-muted group-hover:text-ink">
             {{ say("overview-fix") }}
@@ -94,10 +93,6 @@ const CARDS = [
           class="inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[10.5px]"
           :class="told.chain.holds ? 'border-ok/40 text-ok' : 'border-danger/40 text-danger'"
         >
-          <span
-            class="size-1.5 rounded-full"
-            :class="told.chain.holds ? 'bg-ok' : 'bg-danger'"
-          ></span>
           {{
             told.chain.holds
               ? say("overview-chain-holds", { count: told.chain.entries })

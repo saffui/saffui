@@ -492,6 +492,26 @@ async fn a_provisioned_administrator_holds_the_whole_plane() {
         .unwrap();
     assert!(!created, "a second run recreated the role");
 
+    // A role the provisioner made and nobody touched is kept current when
+    // the catalogue grows: stale it by hand, provision widens it back.
+    let mut role = roles::load(&transaction, ADMINISTRATOR_ROLE)
+        .await
+        .unwrap()
+        .expect("the administrator role");
+    role.admin_actions = Some(vec![AdminAction::UserRead, AdminAction::RealmRead]);
+    roles::update(&transaction, &role).await.unwrap();
+    provision_realm_administration(&transaction, "acme", "main", "ada")
+        .await
+        .unwrap();
+    let held = services::authorization::admin_actions(&transaction, "ada", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        held.len(),
+        AdminAction::ALL.len(),
+        "an untouched provisioner role was not kept current"
+    );
+
     // The operator narrowed the role; provisioning re-asserts the grant and
     // nothing else, so the narrowing stands.
     let mut role = roles::load(&transaction, ADMINISTRATOR_ROLE)
@@ -499,6 +519,7 @@ async fn a_provisioned_administrator_holds_the_whole_plane() {
         .unwrap()
         .expect("the administrator role");
     role.admin_actions = Some(vec![AdminAction::UserRead]);
+    role.metadata.updated_by = Some("ada".to_owned());
     roles::update(&transaction, &role).await.unwrap();
     provision_realm_administration(&transaction, "acme", "main", "ada")
         .await

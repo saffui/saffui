@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
+import AppHint from "@/components/AppHint.vue";
 import {
   forgetMail,
   getMail,
@@ -255,13 +256,13 @@ async function removeMail() {
         >
           <template v-if="group === 'general'">
             <div class="grid grid-cols-[220px_1fr] items-center gap-y-2.5">
-              <span class="text-muted">{{ say("settings-name") }}</span>
-              <span class="font-mono text-[11.5px]" :title="say('settings-name-fixed')">{{
-                settings.name
-              }}</span>
+              <span class="text-muted"
+                >{{ say("settings-name") }} <AppHint name="settings-name-fixed"
+              /></span>
+              <span class="font-mono text-[11.5px]">{{ settings.name }}</span>
             </div>
             <label class="block text-[11px] font-medium text-muted">
-              {{ say("directory-col-display") }}
+              {{ say("directory-col-display") }} <AppHint name="settings-display-help" />
               <input
                 v-model="draft.display_name"
                 class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
@@ -269,7 +270,7 @@ async function removeMail() {
             </label>
             <label class="flex items-center gap-2 text-xs">
               <input v-model="draft.enabled" type="checkbox" class="accent-(--sf-accent)" />
-              {{ say("users-active") }}
+              {{ say("users-active") }} <AppHint name="settings-enabled-help" />
             </label>
           </template>
 
@@ -280,11 +281,11 @@ async function removeMail() {
               class="flex items-center gap-2 text-xs"
             >
               <input v-model="draft[held[0]]" type="checkbox" class="accent-(--sf-accent)" />
-              {{ say(held[1]) }}
+              {{ say(held[1]) }} <AppHint :name="held[1] + '-help'" />
             </label>
 
             <label class="mt-2 block text-[11px] font-medium text-muted">
-              {{ say("settings-client-registration") }}
+              {{ say("settings-client-registration") }} <AppHint name="settings-client-registration-help" />
               <select
                 v-model="draft.client_registration"
                 class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
@@ -297,7 +298,7 @@ async function removeMail() {
             <div v-if="draft.client_registration !== 'disabled'" class="flex flex-col gap-3">
               <div class="grid grid-cols-2 gap-3">
                 <label class="block text-[11px] font-medium text-muted">
-                  {{ say("settings-max-clients") }}
+                  {{ say("settings-max-clients") }} <AppHint name="settings-max-clients-help" />
                   <input
                     v-model="draft.bounds_max_clients"
                     type="number"
@@ -312,11 +313,11 @@ async function removeMail() {
                     type="checkbox"
                     class="accent-(--sf-accent)"
                   />
-                  {{ say("settings-requires-consent") }}
+                  {{ say("settings-requires-consent") }} <AppHint name="settings-requires-consent-help" />
                 </label>
               </div>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-trusted-hosts") }}
+                {{ say("settings-trusted-hosts") }} <AppHint name="settings-trusted-hosts-help" />
                 <textarea
                   v-model="draft.bounds_trusted_hosts"
                   rows="3"
@@ -337,7 +338,7 @@ async function removeMail() {
           <template v-if="group === 'sessions'">
             <div class="grid grid-cols-2 gap-3">
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-access-lifespan") }}
+                {{ say("settings-access-lifespan") }} <AppHint name="settings-access-lifespan-help" />
                 <input
                   v-model="draft.access_token_lifespan"
                   type="number"
@@ -347,7 +348,7 @@ async function removeMail() {
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-refresh-reuse") }}
+                {{ say("settings-refresh-reuse") }} <AppHint name="settings-refresh-reuse-help" />
                 <input
                   v-model="draft.refresh_token_max_reuse"
                   type="number"
@@ -357,7 +358,7 @@ async function removeMail() {
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-offline-sliding") }}
+                {{ say("settings-offline-sliding") }} <AppHint name="settings-offline-sliding-help" />
                 <input
                   v-model="draft.offline_session_lifespan"
                   type="number"
@@ -367,7 +368,7 @@ async function removeMail() {
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-offline-ceiling") }}
+                {{ say("settings-offline-ceiling") }} <AppHint name="settings-offline-ceiling-help" />
                 <input
                   v-model="draft.offline_session_max_lifespan"
                   type="number"
@@ -376,7 +377,7 @@ async function removeMail() {
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-offline-grants") }}
+                {{ say("settings-offline-grants") }} <AppHint name="settings-offline-grants-help" />
                 <input
                   v-model="draft.max_offline_grants"
                   type="number"
@@ -392,7 +393,7 @@ async function removeMail() {
                 type="checkbox"
                 class="accent-(--sf-accent)"
               />
-              {{ say("settings-refresh-rotation") }}
+              {{ say("settings-refresh-rotation") }} <AppHint name="settings-refresh-rotation-help" />
             </label>
             <label class="flex items-center gap-2 text-xs">
               <input
@@ -400,13 +401,13 @@ async function removeMail() {
                 type="checkbox"
                 class="accent-(--sf-accent)"
               />
-              {{ say("settings-require-par") }}
+              {{ say("settings-require-par") }} <AppHint name="settings-require-par-help" />
             </label>
           </template>
 
           <template v-if="group === 'security'">
             <label class="block text-[11px] font-medium text-muted">
-              {{ say("settings-ssl") }}
+              {{ say("settings-ssl") }} <AppHint name="settings-ssl-help" />
               <select
                 v-model="draft.ssl_enforcement"
                 class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
@@ -423,11 +424,11 @@ async function removeMail() {
             </div>
             <label class="flex items-center gap-2 text-xs">
               <input v-model="draft.bf_protected" type="checkbox" class="accent-(--sf-accent)" />
-              {{ say("settings-lockout-protected") }}
+              {{ say("settings-lockout-protected") }} <AppHint name="settings-lockout-protected-help" />
             </label>
             <div v-if="draft.bf_protected" class="grid grid-cols-2 gap-3">
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-lockout-failures") }}
+                {{ say("settings-lockout-failures") }} <AppHint name="settings-lockout-failures-help" />
                 <input
                   v-model="draft.bf_max_failures"
                   type="number"
@@ -436,7 +437,7 @@ async function removeMail() {
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-lockout-first") }}
+                {{ say("settings-lockout-first") }} <AppHint name="settings-lockout-first-help" />
                 <input
                   v-model="draft.bf_lockout_seconds"
                   type="number"
@@ -445,7 +446,7 @@ async function removeMail() {
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-lockout-ceiling") }}
+                {{ say("settings-lockout-ceiling") }} <AppHint name="settings-lockout-ceiling-help" />
                 <input
                   v-model="draft.bf_max_lockout_seconds"
                   type="number"
@@ -454,7 +455,7 @@ async function removeMail() {
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-lockout-reset") }}
+                {{ say("settings-lockout-reset") }} <AppHint name="settings-lockout-reset-help" />
                 <input
                   v-model="draft.bf_reset_seconds"
                   type="number"
@@ -466,7 +467,7 @@ async function removeMail() {
 
             <div class="mt-2">
               <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-                {{ say("settings-password-policy") }}
+                {{ say("settings-password-policy") }} <AppHint name="settings-password-policy-help" />
               </div>
               <pre
                 class="mt-1.5 overflow-x-auto rounded border border-border bg-surface-2 p-2 font-mono text-[10.5px]"
@@ -490,7 +491,7 @@ async function removeMail() {
           <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveMail">
             <div class="grid grid-cols-[1fr_110px] gap-3">
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("mail-host") }}
+                {{ say("mail-host") }} <AppHint name="mail-host-help" />
                 <input
                   v-model="mailForm.host"
                   class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
@@ -498,7 +499,7 @@ async function removeMail() {
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("mail-port") }}
+                {{ say("mail-port") }} <AppHint name="mail-port-help" />
                 <input
                   v-model.number="mailForm.port"
                   type="number"
@@ -507,7 +508,7 @@ async function removeMail() {
               </label>
             </div>
             <label class="block text-[11px] font-medium text-muted">
-              {{ say("mail-from") }}
+              {{ say("mail-from") }} <AppHint name="mail-from-help" />
               <input
                 v-model="mailForm.from_address"
                 class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
@@ -515,7 +516,7 @@ async function removeMail() {
               />
             </label>
             <label class="block text-[11px] font-medium text-muted">
-              {{ say("mail-from-name") }}
+              {{ say("mail-from-name") }} <AppHint name="mail-from-name-help" />
               <input
                 v-model="mailForm.from_name"
                 class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
@@ -523,7 +524,7 @@ async function removeMail() {
             </label>
             <div class="grid grid-cols-2 gap-3">
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("mail-username") }}
+                {{ say("mail-username") }} <AppHint name="mail-username-help" />
                 <input
                   v-model="mailForm.username"
                   class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
@@ -532,7 +533,7 @@ async function removeMail() {
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("mail-password") }}
+                {{ say("mail-password") }} <AppHint name="mail-password-help" />
                 <input
                   v-model="mailForm.password"
                   type="password"
@@ -544,7 +545,7 @@ async function removeMail() {
             </div>
             <label class="flex items-center gap-2 text-xs">
               <input v-model="mailForm.implicit_tls" type="checkbox" class="accent-(--sf-accent)" />
-              {{ say("mail-implicit-tls") }}
+              {{ say("mail-implicit-tls") }} <AppHint name="mail-implicit-tls-help" />
             </label>
             <div class="mt-1 flex items-center gap-2">
               <button

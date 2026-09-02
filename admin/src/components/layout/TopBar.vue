@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppIcon from "@/components/AppIcon.vue";
 import { say } from "@/i18n";
+import AppHint from "@/components/AppHint.vue";
 import { useSession } from "@/stores/session";
 import { createRealm, listRealms } from "@/services/realms";
 import type { RealmBrief } from "@/models/realm";
@@ -145,7 +146,7 @@ function initials(name: string): string {
         <h2 class="text-sm font-semibold">{{ say("realm-new") }}</h2>
         <p class="mt-1 text-[11px] text-muted">{{ say("realm-new-lede") }}</p>
         <label class="mt-3 block text-[11px] font-medium text-muted">
-          {{ say("settings-name") }}
+          {{ say("settings-name") }} <AppHint name="realm-new-name-help" />
           <input
             v-model="newName"
             class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
@@ -154,7 +155,7 @@ function initials(name: string): string {
           />
         </label>
         <label class="mt-2 block text-[11px] font-medium text-muted">
-          {{ say("directory-col-display") }}
+          {{ say("directory-col-display") }} <AppHint name="realm-new-display-help" />
           <input
             v-model="newDisplay"
             class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"

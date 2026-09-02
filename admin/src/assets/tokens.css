@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+/* The console's design tokens, lifted from the approved deck. Brass is the
+   one accent, spent only where it means something; every other color is a
+   quiet step of the ground. Both halves are complete: the class `dark` on
+   the root flips the whole set, and components read tokens, never hexes. */
+:root {
+  --sf-bg: #f3f3ef;
+  --sf-surface: #ffffff;
+  --sf-surface-2: #eef1f5;
+  --sf-surface-3: #e8edf4;
+  --sf-border: #ccd4df;
+  --sf-ink: #14181f;
+  --sf-muted: #4f5b6b;
+  --sf-faint: #97a4b5;
+  --sf-accent: #b8862f;
+  --sf-accent-strong: #8f6b20;
+  --sf-accent-ink: #171104;
+  --sf-ok: #2f7d54;
+  --sf-danger: #b23b34;
+  --sf-warn: #8a7a1f;
+  --sf-info: #3d6a9e;
+  --sf-shadow: 0 1px 2px rgb(20 24 31 / 0.06);
+}
+.dark {
+  --sf-bg: #0a0f16;
+  --sf-surface: #131a24;
+  --sf-surface-2: #1a2130;
+  --sf-surface-3: #202433;
+  --sf-border: #26313f;
+  --sf-ink: #e6e9f0;
+  --sf-muted: #8a93a5;
+  --sf-faint: #4f5b6b;
+  --sf-accent: #d9a441;
+  --sf-accent-strong: #e3be7c;
+  --sf-accent-ink: #171104;
+  --sf-ok: #4caf7d;
+  --sf-danger: #e07a72;
+  --sf-warn: #c9b458;
+  --sf-info: #7ea7d8;
+  --sf-shadow: none;
+}
+
+@theme inline {
+  --color-bg: var(--sf-bg);
+  --color-surface: var(--sf-surface);
+  --color-surface-2: var(--sf-surface-2);
+  --color-surface-3: var(--sf-surface-3);
+  --color-border: var(--sf-border);
+  --color-ink: var(--sf-ink);
+  --color-muted: var(--sf-muted);
+  --color-faint: var(--sf-faint);
+  --color-accent: var(--sf-accent);
+  --color-accent-strong: var(--sf-accent-strong);
+  --color-accent-ink: var(--sf-accent-ink);
+  --color-ok: var(--sf-ok);
+  --color-danger: var(--sf-danger);
+  --color-warn: var(--sf-warn);
+  --color-info: var(--sf-info);
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+body {
+  margin: 0;
+  background: var(--sf-bg);
+  color: var(--sf-ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+::selection {
+  background: color-mix(in srgb, var(--sf-accent) 28%, transparent);
+}
+:focus-visible {
+  outline: 2px solid var(--sf-accent);
+  outline-offset: 1px;
+}

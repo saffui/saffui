@@ -165,6 +165,40 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     assert_eq!(read["access_token_lifespan"], 600, "{read}");
     assert_eq!(read["display_name"], "Staging ground", "{read}");
 
+    // The realm's browser binding: a named flow must exist and stand top
+    // level; the seeded flow does, a ghost does not, and empty clears.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({ "browser_flow": "ghost" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({ "browser_flow": "browser" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+    assert_eq!(shaped["browser_flow"], "browser", "{shaped}");
+
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({ "browser_flow": "" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(shaped["browser_flow"].is_null(), "{shaped}");
+
     // Reshaping what does not exist is not creating it.
     let (status, told) = asked(
         &plane,

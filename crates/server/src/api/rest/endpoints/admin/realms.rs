@@ -325,7 +325,26 @@ pub async fn update(
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::RealmNotFound))?;
-    body.into_inner().apply(&mut held);
+    let asked = body.into_inner();
+    // A binding is checked at the door, not at the first login it breaks:
+    // the named flow must exist here and be one a login can start at.
+    if let Some(alias) = asked
+        .browser_flow
+        .as_deref()
+        .filter(|held| !held.is_empty())
+    {
+        let usable = store::providers::auth_flows::flow_by_alias(&transaction, alias)
+            .await
+            .map_err(|_| internal())?
+            .is_some_and(|flow| flow.top_level == Some(true));
+        if !usable {
+            return Err(ApiError::with_detail(
+                ErrorCode::ValidationError,
+                format!("no top-level flow is aliased {alias}"),
+            ));
+        }
+    }
+    asked.apply(&mut held);
     if !services::realm::reshape(&transaction, &held)
         .await
         .map_err(|_| internal())?

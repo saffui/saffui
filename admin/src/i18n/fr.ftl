@@ -409,3 +409,7 @@ policy-blacklist-help = Un mot de passe contenant l'un d'eux est refusé, sans c
 policy-blacklist-hint = un par ligne
 policy-hashing-line = Stocké en Argon2id : { $memory } KiB, { $passes } passes, { $lanes } voie(s).
 policy-hashing-help = Ce qu'un mot de passe stocké coûte à calculer, la base OWASP du serveur. Se règle avec le déploiement, pas à chaque save ; montré pour que l'opérateur sache ce qui s'applique.
+flows-binding = Flux navigateur
+flows-binding-help = Quel flux top-level répond à /authorize quand le client n'en lie aucun. Le défaut du build est le flux d'alias browser.
+flows-binding-default = le défaut du build (browser)
+flows-binding-subject = liaison du flux navigateur

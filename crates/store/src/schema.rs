@@ -409,6 +409,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V067__realm_locales.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 68,
+            name: "realm_flow_binding",
+            sql: include_str!("../migrations/V068__realm_flow_binding.sql"),
+            transactional: true,
+        }),
     ]
 }
 

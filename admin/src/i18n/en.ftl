@@ -409,3 +409,7 @@ policy-blacklist-help = Passwords containing any of these are refused, case-inse
 policy-blacklist-hint = one per line
 policy-hashing-line = Stored with Argon2id: { $memory } KiB, { $passes } passes, { $lanes } lane(s).
 policy-hashing-help = What a stored password costs to compute, the server's own OWASP baseline. Set beside the deployment, not per save; shown so an operator knows what is in force.
+flows-binding = Browser flow
+flows-binding-help = Which top-level flow answers /authorize when the client binds none of its own. The built default is the flow aliased browser.
+flows-binding-default = the built default (browser)
+flows-binding-subject = browser flow binding

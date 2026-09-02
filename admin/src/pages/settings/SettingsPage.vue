@@ -469,7 +469,7 @@ async function saveTemplate() {
   const next = JSON.parse(JSON.stringify(templates.value)) as typeof templates.value;
   if (templateDraft.value.subject.trim() || templateDraft.value.body.trim()) {
     next[templateKind.value] = {
-      ...(next[templateKind.value] ?? {}),
+      ...next[templateKind.value],
       [templateTongue.value]: { ...templateDraft.value },
     };
   } else {

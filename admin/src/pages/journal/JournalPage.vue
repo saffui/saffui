@@ -37,10 +37,16 @@ watch(first, load);
 
 async function anchor() {
   if (!witness.value.trim() || !receipt.value.trim()) return;
-  await api<unknown>(adminPath(realm.value, "journal/anchors"), {
-    method: "POST",
-    json: { witness: witness.value.trim(), receipt: receipt.value.trim() },
-  });
+  try {
+    await api<unknown>(adminPath(realm.value, "journal/anchors"), {
+      method: "POST",
+      json: { witness: witness.value.trim(), receipt: receipt.value.trim() },
+    });
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+    await load();
+    return;
+  }
   witness.value = "";
   receipt.value = "";
   await load();

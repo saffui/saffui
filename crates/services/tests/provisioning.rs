@@ -1,10 +1,15 @@
 mod support;
 
 use models::auditable::AuditableModel;
+use models::entities::authz::AdminAction;
 use models::entities::client::{ClientScopeModel, Protocol};
 use services::authorize::granted_scope;
-use services::provisioning::{ADMIN_SCOPE, AdminConsole, provision_admin_console};
+use services::provisioning::{
+    ADMIN_SCOPE, ADMINISTRATOR_ROLE, AdminConsole, provision_admin_console,
+    provision_realm_administration,
+};
 use store::providers::client_scopes;
+use store::providers::roles;
 use store::tenancy::TenantContext;
 use support::Fixture;
 
@@ -455,4 +460,55 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         "the provisioned password does not verify"
     );
     transaction.commit().await.unwrap();
+}
+/// The first administrator is provisioned, not clicked into being: the role
+/// carries every admin plane action and the grant is re-asserted on every
+/// run, while a role the operator reshaped keeps its shape.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_provisioned_administrator_holds_the_whole_plane() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    let created = provision_realm_administration(&transaction, "acme", "main", "ada")
+        .await
+        .unwrap();
+    assert!(created, "the role was not created");
+
+    let held = services::authorization::admin_actions(&transaction, "ada", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        held.len(),
+        AdminAction::ALL.len(),
+        "the administrator is missing actions"
+    );
+
+    let created = provision_realm_administration(&transaction, "acme", "main", "ada")
+        .await
+        .unwrap();
+    assert!(!created, "a second run recreated the role");
+
+    // The operator narrowed the role; provisioning re-asserts the grant and
+    // nothing else, so the narrowing stands.
+    let mut role = roles::load(&transaction, ADMINISTRATOR_ROLE)
+        .await
+        .unwrap()
+        .expect("the administrator role");
+    role.admin_actions = Some(vec![AdminAction::UserRead]);
+    roles::update(&transaction, &role).await.unwrap();
+    provision_realm_administration(&transaction, "acme", "main", "ada")
+        .await
+        .unwrap();
+    let held = services::authorization::admin_actions(&transaction, "ada", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        held,
+        vec![AdminAction::UserRead],
+        "provisioning widened a role the operator narrowed"
+    );
 }

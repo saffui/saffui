@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppIcon from "@/components/AppIcon.vue";
-import { say } from "@/i18n";
+import { offeredTongues, pinTongue, say, tongueInForce } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
 import { useSession } from "@/stores/session";
 import { createRealm, listRealms } from "@/services/realms";
@@ -15,6 +15,9 @@ const router = useRouter();
 const dark = ref(document.documentElement.classList.contains("dark"));
 const paletteOpen = ref(false);
 const realmsOpen = ref(false);
+const profileOpen = ref(false);
+const tongues = offeredTongues();
+const tongue = tongueInForce();
 const realms = ref<RealmBrief[]>([]);
 
 const current = computed(() => String(route.params.realm ?? session.realm ?? "main"));
@@ -83,7 +86,9 @@ async function makeRealm() {
 }
 
 function onAway(event: MouseEvent) {
-  if (!(event.target as HTMLElement).closest("[data-realm-menu]")) realmsOpen.value = false;
+  const target = event.target as HTMLElement;
+  if (!target.closest("[data-realm-menu]")) realmsOpen.value = false;
+  if (!target.closest("[data-profile-menu]")) profileOpen.value = false;
 }
 onMounted(() => document.addEventListener("click", onAway));
 onUnmounted(() => document.removeEventListener("click", onAway));
@@ -192,26 +197,60 @@ function initials(name: string): string {
       >
     </button>
 
-    <div class="ml-auto flex items-center gap-2">
+    <div class="relative ml-auto flex items-center gap-2" data-profile-menu>
       <button
         type="button"
-        class="grid size-7 place-items-center rounded-md text-muted hover:bg-surface-2"
-        :aria-label="dark ? 'Light' : 'Dark'"
-        @click="flipTheme"
-      >
-        <AppIcon :name="dark ? 'sun' : 'moon'" :size="14" />
-      </button>
-      <button
-        type="button"
-        class="rounded-md px-2 py-1 text-xs text-muted hover:bg-surface-2"
-        @click="signOut"
-      >
-        {{ say("action-sign-out") }}
-      </button>
-      <div
-        class="grid size-7 place-items-center rounded-full border border-border bg-surface-2 text-[10.5px] font-semibold"
+        class="grid size-7 place-items-center rounded-full border border-border bg-surface-2 text-[10.5px] font-semibold hover:border-accent/50"
+        :aria-label="say('profile-open')"
+        @click.stop="profileOpen = !profileOpen"
       >
         {{ initials(session.displayName) }}
+      </button>
+
+      <div
+        v-if="profileOpen"
+        class="absolute top-9 right-0 z-40 w-60 rounded-md border border-border bg-surface p-1 shadow-(--sf-shadow)"
+      >
+        <div class="px-2.5 pt-2 pb-1.5">
+          <p class="text-xs font-semibold">{{ session.displayName }}</p>
+          <p class="font-mono text-[10.5px] text-faint">{{ say("profile-realm") }} {{ current }}</p>
+        </div>
+        <div class="my-1 border-t border-border"></div>
+        <div class="flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-muted">
+          {{ say("profile-tongue") }}
+          <span class="ml-auto flex gap-1">
+            <button
+              v-for="held in tongues"
+              :key="held"
+              type="button"
+              class="rounded border px-1.5 py-0.5 font-mono text-[10.5px]"
+              :class="
+                held === tongue
+                  ? 'border-accent/60 text-accent'
+                  : 'border-border text-muted hover:text-ink'
+              "
+              @click="pinTongue(held)"
+            >
+              {{ held }}
+            </button>
+          </span>
+        </div>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs hover:bg-surface-2"
+          @click="flipTheme"
+        >
+          <AppIcon :name="dark ? 'sun' : 'moon'" :size="13" class="text-faint" />
+          {{ dark ? say("profile-light") : say("profile-dark") }}
+        </button>
+        <div class="my-1 border-t border-border"></div>
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs text-danger hover:bg-surface-2"
+          @click="signOut"
+        >
+          {{ say("action-sign-out") }}
+        </button>
       </div>
     </div>
 

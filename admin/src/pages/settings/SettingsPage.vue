@@ -28,6 +28,7 @@ const GROUPS = [
   "login",
   "sessions",
   "security",
+  "credentials",
   "localization",
   "email",
   "features",
@@ -57,6 +58,12 @@ const realm = computed(() => String(route.params.realm));
 /// cannot be deleted from here.
 const home = computed(() => session.realm);
 const group = ref<Group>("general");
+/// Which groups hold edits the server has not seen. Cleared on adopt, since
+/// adopting resets every draft to what the server kept.
+const dirtyGroups = ref<Record<string, boolean>>({});
+function markDirty() {
+  dirtyGroups.value = { ...dirtyGroups.value, [group.value]: true };
+}
 const settings = ref<RealmSettings | null>(null);
 const mail = ref<MailBrief | null>(null);
 const failed = ref("");
@@ -151,6 +158,7 @@ const policy = ref({
 });
 
 function adopt(held: RealmSettings) {
+  dirtyGroups.value = {};
   settings.value = held;
   draft.value = {
     display_name: held.display_name,
@@ -315,22 +323,26 @@ function changesOf(which: Group): RealmUpdate {
       default_locale: defaultTongue.value,
     };
   }
-  const changes: RealmUpdate = {
-    brute_force: {
-      protected: held.bf_protected,
-      max_failures: whole(held.bf_max_failures) ?? 10,
-      lockout_seconds: whole(held.bf_lockout_seconds) ?? 60,
-      max_lockout_seconds: whole(held.bf_max_lockout_seconds) ?? 900,
-      reset_seconds: whole(held.bf_reset_seconds) ?? 900,
-    },
-  };
-  if (held.ssl_enforcement) changes.ssl_enforcement = held.ssl_enforcement;
-  const map: Record<string, number> = {};
-  for (const row of acrRows.value) {
-    const level = Number(row.level);
-    if (row.context.trim() && Number.isFinite(level)) map[row.context.trim()] = level;
+  if (which === "security") {
+    const changes: RealmUpdate = {
+      brute_force: {
+        protected: held.bf_protected,
+        max_failures: whole(held.bf_max_failures) ?? 10,
+        lockout_seconds: whole(held.bf_lockout_seconds) ?? 60,
+        max_lockout_seconds: whole(held.bf_max_lockout_seconds) ?? 900,
+        reset_seconds: whole(held.bf_reset_seconds) ?? 900,
+      },
+    };
+    if (held.ssl_enforcement) changes.ssl_enforcement = held.ssl_enforcement;
+    const map: Record<string, number> = {};
+    for (const row of acrRows.value) {
+      const level = Number(row.level);
+      if (row.context.trim() && Number.isFinite(level)) map[row.context.trim()] = level;
+    }
+    changes.acr_loa_map = map;
+    return changes;
   }
-  changes.acr_loa_map = map;
+  const changes: RealmUpdate = {};
   const rules = policy.value;
   const written: PasswordPolicy = {
     min_length: whole(rules.min_length) ?? null,
@@ -463,17 +475,24 @@ async function removeMail() {
 
 <template>
   <div class="flex gap-6">
-    <nav class="w-44 shrink-0">
+    <nav class="w-52 shrink-0">
       <div class="sticky top-0 flex flex-col gap-0.5">
         <button
           v-for="held in GROUPS"
           :key="held"
           type="button"
-          class="rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-surface-2 hover:text-ink"
-          :class="group === held && 'bg-surface-2 font-medium text-ink'"
+          class="relative rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-surface-2 hover:text-ink"
+          :class="group === held && 'bg-surface-2 text-ink'"
           @click="openGroup(held)"
         >
-          {{ say(`settings-group-${held}`) }}
+          <span
+            v-if="dirtyGroups[held]"
+            class="absolute top-1.5 bottom-1.5 left-0 w-0.5 rounded bg-accent"
+          ></span>
+          <span class="block font-medium">{{ say(`settings-group-${held}`) }}</span>
+          <span class="block text-[10px] leading-tight text-faint">{{
+            say(`settings-group-${held}-desc`)
+          }}</span>
         </button>
       </div>
     </nav>
@@ -489,6 +508,8 @@ async function removeMail() {
           v-if="group !== 'email' && group !== 'features'"
           class="mt-4 flex max-w-lg flex-col gap-3 text-xs"
           @submit.prevent="saveGroup"
+          @input="markDirty"
+          @change="markDirty"
         >
           <template v-if="group === 'general'">
             <div class="grid grid-cols-[220px_1fr] items-center gap-y-2.5">
@@ -912,7 +933,10 @@ async function removeMail() {
               </p>
             </template>
 
-            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          </template>
+
+          <template v-if="group === 'credentials'">
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("otp-title") }} <AppHint name="otp-title-help" />
             </div>
             <div class="grid grid-cols-4 gap-3">
@@ -1077,6 +1101,9 @@ async function removeMail() {
             >
               {{ say("settings-save") }}
             </button>
+            <span v-if="dirtyGroups[group]" class="text-[11px] text-warn">{{
+              say("settings-unsaved")
+            }}</span>
           </div>
         </form>
 

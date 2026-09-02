@@ -50,3 +50,17 @@ pub async fn listed(
         .await
         .map_err(|_| Unreadable)
 }
+
+/// Write the realm's switches back.
+///
+/// False when no realm by that identity holds a row to write, which the
+/// caller reads as not found rather than as a fresh realm: reshaping is not
+/// creating.
+pub async fn reshape(
+    transaction: &Transaction<'_>,
+    realm: &RealmModel,
+) -> Result<bool, Unreadable> {
+    realms::update(transaction, realm)
+        .await
+        .map_err(|_| Unreadable)
+}

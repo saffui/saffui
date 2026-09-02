@@ -437,6 +437,18 @@ pub struct RealmUpdateModel {
     pub not_before: Option<i32>,
     pub attributes: Option<AttributesMap>,
     pub acr_loa_map: Option<AcrLoaMap>,
+    /// Whether a client may register itself here, and on what terms.
+    pub client_registration: Option<ClientRegistration>,
+    /// What this realm does about a password being guessed at.
+    pub brute_force: Option<BruteForce>,
+    /// What an open registration is bounded by.
+    pub registration_bounds: Option<RegistrationBounds>,
+    /// The oldest an offline grant may get. Zero is no bound.
+    pub offline_session_max_lifespan: Option<i32>,
+    /// How many live offline grants one person may hold. Zero is no bound.
+    pub max_offline_grants: Option<i32>,
+    /// Whether every client here must push its request first, RFC 9126 §5.
+    pub require_pushed_authorization_requests: Option<bool>,
 }
 
 impl RealmUpdateModel {
@@ -462,6 +474,24 @@ impl RealmUpdateModel {
         if let Some(enabled) = self.enabled {
             realm.enabled = enabled;
         }
+        if let Some(client_registration) = self.client_registration {
+            realm.client_registration = client_registration;
+        }
+        if let Some(brute_force) = self.brute_force {
+            realm.brute_force = brute_force;
+        }
+        if let Some(registration_bounds) = self.registration_bounds {
+            realm.registration_bounds = registration_bounds;
+        }
+        if let Some(offline_session_max_lifespan) = self.offline_session_max_lifespan {
+            realm.offline_session_max_lifespan = offline_session_max_lifespan;
+        }
+        if let Some(max_offline_grants) = self.max_offline_grants {
+            realm.max_offline_grants = max_offline_grants;
+        }
+        if let Some(require_pushed) = self.require_pushed_authorization_requests {
+            realm.require_pushed_authorization_requests = require_pushed;
+        }
 
         set!(
             registration_allowed,
@@ -477,6 +507,7 @@ impl RealmUpdateModel {
             revoke_refresh_token,
             refresh_token_max_reuse,
             access_token_lifespan,
+            offline_session_lifespan,
             action_tokens_lifespan,
             access_code_lifespan,
             access_code_lifespan_user_action,

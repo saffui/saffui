@@ -1,14 +1,19 @@
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
+use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
+use models::entities::realm::{RealmCreateModel, RealmUpdateModel};
 use models::paging::PagingParams;
 use models::representation::RepresentationParams;
+use services::provisioning;
 use store::query::list_query::ListQuery;
 use store::tenancy::{Tenancy, TenantContext};
 
+use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::RealmBrief;
 use crate::middleware::admin_guard::Admin;
+use crate::middleware::admin_policy::AdminPolicy;
 
 /// The realms of the tenant this token belongs to.
 pub async fn list(
@@ -94,6 +99,151 @@ fn brief(realm: models::entities::realm::RealmModel) -> RealmBrief {
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
+}
+
+/// What a realm may be called: it becomes a path segment and the tail of an
+/// issuer, so only characters that survive both are taken.
+fn usable_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// A realm, and everything it cannot work without.
+///
+/// Seeded the way `provision` seeds: the standard scopes, this deployment's
+/// console client pointed at the console this server serves, a signing key
+/// and the browser flow. A bare row would answer every login with an error
+/// and every scope request with nothing, and nothing about it would say so.
+///
+/// Two transactions, because the row is written tenant wide and everything
+/// inside the realm is written scoped to it, which is how row security is
+/// told who is writing. A failure between the two leaves a realm that a
+/// second create refuses; `provision` heals such a realm, and so does the
+/// deployment's next start.
+pub async fn create(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    policy: web::Data<AdminPolicy>,
+    origin: web::Data<PublicOrigin>,
+    sealing: web::Data<Sealing>,
+    body: web::Json<RealmCreateModel>,
+) -> Result<HttpResponse, ApiError> {
+    let asked = body.into_inner();
+    if !usable_name(&asked.name) {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "a realm name is 1 to 63 characters of a-z, A-Z, 0-9, - or _".to_owned(),
+        ));
+    }
+    let tenant = admin.context.tenant.tenant.clone();
+    let realm_id = asked.name.clone();
+    let now = chrono::Utc::now().timestamp();
+
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::tenant_wide(&tenant))
+        .await
+        .map_err(|_| internal())?;
+    if store::providers::realms::load(&transaction, &realm_id)
+        .await
+        .map_err(|_| internal())?
+        .is_some()
+    {
+        return Err(ApiError::new(ErrorCode::RealmAlreadyExists));
+    }
+    let realm = asked.into_model(
+        realm_id.clone(),
+        models::auditable::AuditableModel::from_creator(
+            tenant.clone(),
+            admin.context.principal.id().to_owned(),
+        ),
+    );
+    store::providers::realms::create(&transaction, &realm)
+        .await
+        .map_err(|_| internal())?;
+    transaction.commit().await.map_err(|_| internal())?;
+
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new(&tenant, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    provisioning::provision_standard_scopes(&transaction, &tenant, &realm_id)
+        .await
+        .map_err(|_| internal())?;
+    if let Some(console) = policy.parties.first() {
+        provisioning::provision_admin_console(
+            &transaction,
+            &tenant,
+            &realm_id,
+            &provisioning::AdminConsole {
+                client_id: console,
+                scope: &policy.scope,
+                redirect_uris: vec![format!("{}/console/login/return", origin.as_str())],
+            },
+        )
+        .await
+        .map_err(|_| internal())?;
+    }
+    provisioning::provision_signing_key(
+        &transaction,
+        sealing.provider.as_ref(),
+        &sealing.envelope,
+        &tenant,
+        &realm_id,
+        now,
+    )
+    .await
+    .map_err(|_| internal())?;
+    provisioning::provision_browser_flow(&transaction, &tenant, &realm_id)
+        .await
+        .map_err(|_| internal())?;
+    provisioning::provision_levels(&transaction, &realm_id)
+        .await
+        .map_err(|_| internal())?;
+    transaction.commit().await.map_err(|_| internal())?;
+
+    Ok(HttpResponse::Created().json(brief(realm)))
+}
+
+/// Rewrite the realm's switches.
+///
+/// Absent fields stay as they are, so an edit that mentions one setting does
+/// not reset the rest. The name and the identity are not writable here: the
+/// issuer is built from them, and tokens outlive a rename.
+pub async fn update(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+    body: web::Json<RealmUpdateModel>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+
+    let mut held = services::realm::named(&transaction, &realm_id)
+        .await
+        .map_err(|_| internal())?
+        .ok_or_else(|| ApiError::new(ErrorCode::RealmNotFound))?;
+    body.into_inner().apply(&mut held);
+    if !services::realm::reshape(&transaction, &held)
+        .await
+        .map_err(|_| internal())?
+    {
+        return Err(ApiError::new(ErrorCode::RealmNotFound));
+    }
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(held))
 }
 
 /// The realm's theme tokens, for the console that edits them.

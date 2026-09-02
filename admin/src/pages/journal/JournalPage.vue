@@ -41,6 +41,7 @@ async function anchor() {
     await api<unknown>(adminPath(realm.value, "journal/anchors"), {
       method: "POST",
       json: { witness: witness.value.trim(), receipt: receipt.value.trim() },
+      subject: say("journal-anchors"),
     });
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
@@ -69,7 +70,6 @@ function instant(epoch: number): string {
         class="inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[10.5px]"
         :class="chain.holds ? 'border-ok/40 text-ok' : 'border-danger/40 text-danger'"
       >
-        <span class="size-1.5 rounded-full" :class="chain.holds ? 'bg-ok' : 'bg-danger'"></span>
         {{
           chain.holds
             ? say("overview-chain-holds", { count: chain.entries })

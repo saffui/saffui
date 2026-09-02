@@ -118,7 +118,6 @@ function instant(epoch: number | null | undefined): string {
         v-if="lockout?.locked"
         class="flex items-center gap-3 rounded-lg border border-danger/40 px-3 py-2.5"
       >
-        <span class="size-1.5 shrink-0 rounded-full bg-danger"></span>
         <span class="text-xs">{{ say("user-locked", { until: instant(lockout.until) }) }}</span>
         <button
           type="button"
@@ -133,7 +132,7 @@ function instant(epoch: number | null | undefined): string {
         <dt class="text-muted">{{ say("users-col-email") }}</dt>
         <dd class="flex items-center gap-1.5">
           {{ user.email }}
-          <span v-if="user.email_verified" class="size-1.5 rounded-full bg-ok"></span>
+          <AppIcon v-if="user.email_verified" name="verified" :size="12" class="text-ok" />
         </dd>
         <dt class="text-muted">{{ say("users-col-name") }}</dt>
         <dd>{{ [user.given_name, user.family_name].filter(Boolean).join(" ") || "·" }}</dd>

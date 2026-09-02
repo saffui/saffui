@@ -1,4 +1,5 @@
 import { adminPath, api } from "@/services/http";
+import { say } from "@/i18n";
 import type { Page } from "@/models/paging";
 import type {
   ConsentBrief,
@@ -30,6 +31,7 @@ export async function getLockout(realm: string, userId: string): Promise<Lockout
 export async function liftLockout(realm: string, userId: string): Promise<void> {
   await api<void>(adminPath(realm, `users/${encodeURIComponent(userId)}/lockout`), {
     method: "DELETE",
+    subject: say("subject-lockout", { user: userId }),
   });
 }
 
@@ -47,7 +49,7 @@ export async function revokeWebAuthnKey(
       realm,
       `users/${encodeURIComponent(userId)}/keys/${encodeURIComponent(credentialId)}`,
     ),
-    { method: "DELETE" },
+    { method: "DELETE", subject: say("subject-credential", { user: userId }) },
   );
 }
 
@@ -65,7 +67,7 @@ export async function closeSession(
       realm,
       `users/${encodeURIComponent(userId)}/sessions/${encodeURIComponent(sessionId)}`,
     ),
-    { method: "DELETE" },
+    { method: "DELETE", subject: say("subject-session", { user: userId }) },
   );
 }
 

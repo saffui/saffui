@@ -32,5 +32,7 @@ export async function evaluate(
   return api<EvaluateAnswer>(adminPath(realm, "authz/evaluate"), {
     method: "POST",
     json: { subject, organization: organization || undefined, question },
+    // A question, not a write: the verdict panel is the answer.
+    quiet: true,
   });
 }

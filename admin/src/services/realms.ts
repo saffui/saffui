@@ -1,4 +1,5 @@
 import { api } from "@/services/http";
+import { say } from "@/i18n";
 import type { Page } from "@/models/paging";
 import type { RealmBrief } from "@/models/realm";
 
@@ -14,10 +15,14 @@ export async function createRealm(name: string, displayName: string): Promise<Re
   return api<RealmBrief>("/admin/realms", {
     method: "POST",
     json: { name, display_name: displayName, enabled: true },
+    subject: say("subject-realm", { realm: name }),
   });
 }
 
 /// Take a realm away. Refused for the realm the session belongs to.
 export async function deleteRealm(realm: string): Promise<void> {
-  await api<void>(`/admin/realms/${encodeURIComponent(realm)}`, { method: "DELETE" });
+  await api<void>(`/admin/realms/${encodeURIComponent(realm)}`, {
+    method: "DELETE",
+    quiet: true,
+  });
 }

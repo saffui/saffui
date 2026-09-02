@@ -331,3 +331,116 @@ async fn the_capabilities_split_where_they_should() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// The simulator asks the engine itself: a role policy denies the subject
+/// who lacks the role with its reasons on show, permits once granted, and a
+/// subject nobody is answers not-found.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_simulated_decision_is_the_engine_speaking() {
+    let plane = Plane::with_actions(&[
+        AdminAction::UmaRead,
+        AdminAction::UmaWrite,
+        AdminAction::RoleRead,
+        AdminAction::RoleWrite,
+        AdminAction::AuthzDecisionWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!(
+        "/admin/realms/{REALM}/authz/servers/{}",
+        support::CONFIDENTIAL
+    );
+
+    let (_, editor) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(json!({ "name": "editor" })),
+    )
+    .await;
+    let editor_id = editor["role_id"].as_str().expect("a role").to_owned();
+    let (status, _) = asked(&plane, Method::POST, &base, &bearer, Some(protection())).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, policy) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/policies"),
+        &bearer,
+        Some(json!({
+            "name": "editors-only",
+            "description": "",
+            "decision": "unanimous",
+            "logic": "positive",
+            "policy_owner": "app",
+            "policies": [],
+            "resources": [],
+            "scopes": [],
+            "policy_type": "role",
+            "roles": [editor_id],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{policy}");
+    let policy_id = policy["policy_id"].as_str().expect("a policy").to_owned();
+
+    let question = |subject: &str| {
+        json!({
+            "subject": subject,
+            "question": {
+                "kind": "policy",
+                "server_id": support::CONFIDENTIAL,
+                "policy_id": policy_id,
+            },
+        })
+    };
+
+    // Without the role: denied, and the trace says what the engine met.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/authz/evaluate"),
+        &bearer,
+        Some(question(support::SUBJECT)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["computed"], "deny", "{told}");
+    assert!(told["detail"]["reasons"].is_array(), "{told}");
+
+    // Granted the role, the same question permits.
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!(
+            "/admin/realms/{REALM}/roles/{editor_id}/holders/{}",
+            support::SUBJECT
+        ),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/authz/evaluate"),
+        &bearer,
+        Some(question(support::SUBJECT)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["computed"], "permit", "{told}");
+
+    // A subject nobody is answers not-found, before any engine runs.
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/authz/evaluate"),
+        &bearer,
+        Some(question("nobody-here")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

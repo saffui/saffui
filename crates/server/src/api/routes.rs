@@ -720,6 +720,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::delete().to(authorization::remove_policy)),
         },
         AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/authz/evaluate",
+            action: AdminAction::AuthzDecisionWrite,
+            handler: Some(|| web::post().to(authorization::evaluate)),
+        },
+        AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms/{realm}/authz/decisions",
             action: AdminAction::AuthzDecisionRead,

@@ -340,6 +340,12 @@ pub struct RealmModel {
     pub access_code_lifespan_user_action: Option<i32>,
     pub access_code_lifespan_login: Option<i32>,
 
+    /// Which built tongues this realm offers. None offers them all.
+    pub supported_locales: Option<Vec<String>>,
+    /// The tongue that answers when the browser says nothing. None takes the
+    /// build's first.
+    pub default_locale: Option<String>,
+
     pub master_admin_client: Option<String>,
     pub events_enabled: Option<bool>,
     pub admin_events_enabled: Option<bool>,
@@ -400,6 +406,8 @@ impl RealmCreateModel {
             access_code_lifespan: None,
             access_code_lifespan_user_action: None,
             access_code_lifespan_login: None,
+            supported_locales: None,
+            default_locale: None,
             master_admin_client: None,
             events_enabled: None,
             admin_events_enabled: None,
@@ -449,6 +457,11 @@ pub struct RealmUpdateModel {
     pub not_before: Option<i32>,
     pub attributes: Option<AttributesMap>,
     pub acr_loa_map: Option<AcrLoaMap>,
+    /// Which built tongues this realm offers. None leaves it unchanged; an
+    /// empty list offers them all.
+    pub supported_locales: Option<Vec<String>>,
+    /// The tongue that answers when the browser says nothing. Empty clears.
+    pub default_locale: Option<String>,
     /// Whether a client may register itself here, and on what terms.
     pub client_registration: Option<ClientRegistration>,
     /// What this realm does about a password being guessed at.
@@ -506,6 +519,13 @@ impl RealmUpdateModel {
         }
         if let Some(require_pushed) = self.require_pushed_authorization_requests {
             realm.require_pushed_authorization_requests = require_pushed;
+        }
+        if let Some(supported_locales) = self.supported_locales {
+            realm.supported_locales =
+                (!supported_locales.is_empty()).then_some(supported_locales);
+        }
+        if let Some(default_locale) = self.default_locale {
+            realm.default_locale = (!default_locale.is_empty()).then_some(default_locale);
         }
 
         set!(

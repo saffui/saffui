@@ -112,8 +112,15 @@ pub async fn open(
 
 /// §3.3, the page a person types the short code into. The code may ride the
 /// query off a QR, filling the field; it spends nothing until posted.
-pub async fn page(request: HttpRequest) -> HttpResponse {
-    let tongue = i18n::spoken(
+pub async fn page(
+    request: HttpRequest,
+    realm: web::Path<String>,
+    pool: web::Data<deadpool_postgres::Pool>,
+    tenancy: web::Data<store::tenancy::Tenancy>,
+) -> HttpResponse {
+    let tongues = super::page::tongues_of_realm(&pool, &tenancy, &realm).await;
+    let tongue = tongues.negotiated(
+        None,
         request
             .headers()
             .get("accept-language")

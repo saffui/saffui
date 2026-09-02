@@ -94,6 +94,10 @@ pub async fn published(
     let pushes_first = held
         .as_ref()
         .is_some_and(|realm| realm.require_pushed_authorization_requests);
+    let tongues = crate::api::rest::endpoints::protocol::i18n::RealmTongues::of(
+        held.as_ref().and_then(|realm| realm.supported_locales.as_deref()),
+        held.as_ref().and_then(|realm| realm.default_locale.as_deref()),
+    );
     let mapped = held
         .and_then(|realm| realm.acr_loa_map)
         .filter(|map| !map.is_empty());
@@ -202,6 +206,9 @@ pub async fn published(
                 .collect::<Vec<_>>(),
             "claims_supported": claims_named(!contexts.is_empty()),
             "acr_values_supported": contexts,
+            // OIDC Discovery §3: the tongues the hosted pages will honour for
+            // this realm, the realm's cut of what the build speaks.
+            "ui_locales_supported": tongues.offered(),
             // OIDC Core §6.1 is supported and §6.2 is not: an object a client
             // signs and sends is read, one this server would have to fetch is
             // refused. What a reference may name is therefore only what RFC

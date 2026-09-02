@@ -45,7 +45,50 @@ export interface RealmSettings {
   not_before: number | null;
   ssl_enforcement: string | null;
   password_policy: unknown;
-  brute_force: unknown;
+  brute_force: BruteForce;
+}
+
+/// Mirrors `models::entities::realm::BruteForce`.
+export interface BruteForce {
+  protected: boolean;
+  max_failures: number;
+  lockout_seconds: number;
+  max_lockout_seconds: number;
+  reset_seconds: number;
+}
+
+/// Mirrors `models::entities::realm::RealmUpdateModel`: every field optional,
+/// absent means unchanged, so a save sends only the group it edited.
+export interface RealmUpdate {
+  display_name?: string;
+  enabled?: boolean;
+  registration_allowed?: boolean;
+  register_email_as_username?: boolean;
+  verify_email?: boolean;
+  login_with_email_allowed?: boolean;
+  duplicated_email_allowed?: boolean;
+  edit_user_name_allowed?: boolean;
+  reset_password_allowed?: boolean;
+  remember_me?: boolean;
+  ssl_enforcement?: string;
+  revoke_refresh_token?: boolean;
+  refresh_token_max_reuse?: number;
+  access_token_lifespan?: number;
+  offline_session_lifespan?: number;
+  offline_session_max_lifespan?: number;
+  max_offline_grants?: number;
+  action_tokens_lifespan?: number;
+  access_code_lifespan?: number;
+  access_code_lifespan_login?: number;
+  not_before?: number;
+  client_registration?: "disabled" | "open" | "protected";
+  brute_force?: BruteForce;
+  registration_bounds?: {
+    max_clients: number | null;
+    requires_consent: boolean;
+    trusted_hosts: string[];
+  };
+  require_pushed_authorization_requests?: boolean;
 }
 
 /// The realm theme, as `GET /admin/realms/{realm}/theme` answers it: the 15

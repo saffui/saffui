@@ -20,6 +20,9 @@ import {
   ChevronRight,
   Sun,
   Moon,
+  Plus,
+  Eye,
+  EyeOff,
   type LucideProps,
 } from "lucide-vue-next";
 import type { FunctionalComponent } from "vue";
@@ -42,6 +45,9 @@ const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
   chevron: ChevronRight,
   sun: Sun,
   moon: Moon,
+  plus: Plus,
+  eye: Eye,
+  "eye-off": EyeOff,
 };
 
 const props = defineProps<{ name: keyof typeof GLYPHS; size?: number }>();

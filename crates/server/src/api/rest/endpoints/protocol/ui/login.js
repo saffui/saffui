@@ -70,14 +70,25 @@
     button.hidden = false;
   }
 
+  // What a scope means to a person, when the page knows: read off the page,
+  // so it speaks the page's tongue. An unknown scope is shown as itself, and
+  // `openid` is the protocol's own word, not something anybody agreed to.
+  function scopeName(scope) {
+    const named = document.getElementById("scope-" + scope);
+    return named ? named.textContent : scope;
+  }
+
   // What the client asked for, listed by name. Written as text and never as
   // markup: the names travel from a client's own registration.
   function ask(told) {
     askingClient.textContent = told.client_name || told.client_id || "";
     askingScopes.replaceChildren();
     (told.scopes || []).forEach(function (scope) {
+      if (scope === "openid") {
+        return;
+      }
       const line = document.createElement("li");
-      line.textContent = scope;
+      line.textContent = scopeName(scope);
       askingScopes.appendChild(line);
     });
     credentials.hidden = true;

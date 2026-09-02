@@ -312,6 +312,8 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/bc-authorize").route(web::post().to(ciba::open)))
         .service(web::resource("/bc-pending").route(web::get().to(ciba::pending)))
         .service(web::resource("/bc-decide").route(web::post().to(ciba::decide)))
+        .service(web::resource("/requests").route(web::get().to(ciba::doorbell)))
+        .service(web::resource("/requests.js").route(web::get().to(ciba::doorbell_script)))
         .service(web::resource("/par").route(web::post().to(par::keep)))
         .service(web::resource("/forgot-password").route(web::post().to(recovery::ask_for_link)))
         .service(

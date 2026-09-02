@@ -460,6 +460,41 @@ async fn bearer_person(
         .ok_or_else(refused)
 }
 
+/// The person asking: a bearer token, or the browser's own live login. The
+/// cookie is `SameSite=Lax` and the deciding body is JSON, so a cross-site
+/// page can neither attach the one nor send the other; what remains is the
+/// signed-in person on this realm's own pages, which is who a doorbell is
+/// for.
+async fn asking_person(
+    request: &HttpRequest,
+    transaction: &deadpool_postgres::Transaction<'_>,
+    now: chrono::DateTime<Utc>,
+) -> Result<models::entities::user::UserModel, HttpResponse> {
+    if request.headers().get("authorization").is_some() {
+        return bearer_person(request, transaction, now).await;
+    }
+    let refused = || {
+        told(
+            StatusCode::UNAUTHORIZED,
+            "invalid_token",
+            "a bearer token of this realm decides here",
+        )
+    };
+    let session_id =
+        super::binding::read(request, super::binding::SSO_SESSION).ok_or_else(refused)?;
+    let login = store::providers::sessions::load(transaction, &session_id)
+        .await
+        .map_err(|_| refused())?
+        .filter(|held| held.state == models::sessions::records::UserSessionState::LoggedIn)
+        .filter(|held| held.expiration.is_none_or(|until| now.timestamp() < until))
+        .ok_or_else(refused)?;
+    store::providers::users::load(transaction, &login.user_id)
+        .await
+        .map_err(|_| refused())?
+        .filter(|held| held.enabled)
+        .ok_or_else(refused)
+}
+
 pub async fn pending(
     request: HttpRequest,
     realm: web::Path<String>,
@@ -488,7 +523,7 @@ pub async fn pending(
             "the realm could not be read",
         );
     };
-    let person = match bearer_person(&request, &transaction, now).await {
+    let person = match asking_person(&request, &transaction, now).await {
         Ok(person) => person,
         Err(response) => return response,
     };
@@ -575,7 +610,7 @@ pub async fn decide(
             "the realm could not be read",
         );
     };
-    let person = match bearer_person(&request, &transaction, now).await {
+    let person = match asking_person(&request, &transaction, now).await {
         Ok(person) => person,
         Err(response) => return response,
     };
@@ -685,3 +720,42 @@ async fn deliver_ping(endpoint: String, bearer: String, auth_req_id: String) {
     })
     .await;
 }
+
+/// The doorbell page: what waits on the signed-in person, and the two
+/// answers. Served in the browser's tongue; the listing itself is what
+/// `bc-pending` says to this browser's session.
+pub async fn doorbell(request: HttpRequest) -> HttpResponse {
+    let tongue = super::i18n::spoken(
+        request
+            .headers()
+            .get("accept-language")
+            .and_then(|value| value.to_str().ok()),
+    );
+    uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .insert_header(("Content-Type", "text/html; charset=utf-8"))
+        .insert_header(("Content-Language", tongue))
+        .insert_header(("Vary", "Accept-Language"))
+        .insert_header((
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'self'; style-src 'self'; \
+             connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
+        ))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("X-Frame-Options", "DENY"))
+        .insert_header(("Referrer-Policy", "no-referrer"))
+        .body(super::i18n::requests_page_in(tongue))
+}
+
+pub async fn doorbell_script() -> HttpResponse {
+    uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .insert_header(("Content-Type", "text/javascript; charset=utf-8"))
+        .insert_header((
+            "Content-Security-Policy",
+            "default-src 'none'; script-src 'self'; base-uri 'none'",
+        ))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("Referrer-Policy", "no-referrer"))
+        .body(REQUESTS_SCRIPT)
+}
+
+const REQUESTS_SCRIPT: &str = include_str!("ui/requests.js");

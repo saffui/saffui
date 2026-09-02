@@ -92,7 +92,12 @@ test("a request for consent is shown, named and listed", async () => {
 
   assert.equal(page.element("asking").hidden, false, "the request was never shown");
   assert.equal(page.element("asking-client").textContent, "an application");
-  assert.deepEqual(page.element("asking-scopes").text, ["openid", "profile", "email"]);
+  // The known scopes speak the page's tongue, an unknown one is itself, and
+  // `openid` is the protocol's own word, not something anybody agreed to.
+  assert.deepEqual(page.element("asking-scopes").text, [
+    "Your name and picture",
+    "Your email address",
+  ]);
   assert.equal(page.element("credentials").hidden, true, "the form stayed under the request");
   assert.equal(page.element("continue").hidden, true, "two answers and a third button");
 });

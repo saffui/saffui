@@ -132,6 +132,13 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 web::resource("/.well-known/oauth-authorization-server/realms/{realm}")
                     .route(web::get().to(discovery::published)),
             );
+        // The admin console, when the build carries one: the app owns every
+        // path under its root, so its own router survives a reload.
+        #[cfg(feature = "embedded-admin")]
+        config.service(
+            web::resource(["/console", "/console/{path:.*}"])
+                .route(web::get().to(crate::api::console::serve)),
+        );
     }
 }
 

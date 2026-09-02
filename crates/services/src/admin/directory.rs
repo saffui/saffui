@@ -277,10 +277,65 @@ pub async fn get_organization(
     transaction: &Transaction<'_>,
     org_id: &str,
 ) -> Result<OrganizationModel, Unwritable> {
-    organizations::load(transaction, org_id)
+    let mut org = organizations::load(transaction, org_id)
         .await
         .map_err(|_| Unwritable::Backend)?
-        .ok_or(Unwritable::NotFound)
+        .ok_or(Unwritable::NotFound)?;
+    // The domains belong on the answer: a caller reading one organization is
+    // exactly the caller deciding about its domains.
+    org.domains = organizations::domains(transaction, &org.org_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    Ok(org)
+}
+
+/// Claim a mail domain for the organization: written unproven, with the
+/// challenge the operator will verify against. Claiming routes nothing; only
+/// a proven domain ever discovers anybody.
+pub async fn claim_organization_domain(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    domain: &str,
+    challenge: &str,
+) -> Result<(), Unwritable> {
+    get_organization(transaction, org_id).await?;
+    organizations::claim_domain(transaction, org_id, domain, challenge)
+        .await
+        .map_err(|_| Unwritable::AlreadyExists)
+}
+
+/// Mark a claimed domain proven. The proof itself happened outside: the
+/// operator checked the challenge wherever the domain's owner published it,
+/// and this records that they did.
+pub async fn verify_organization_domain(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    domain: &str,
+) -> Result<(), Unwritable> {
+    get_organization(transaction, org_id).await?;
+    let proven = organizations::verify_domain(transaction, domain)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    if !proven {
+        return Err(Unwritable::NotFound);
+    }
+    Ok(())
+}
+
+/// Take a domain away from the organization, proven or not.
+pub async fn drop_organization_domain(
+    transaction: &Transaction<'_>,
+    org_id: &str,
+    domain: &str,
+) -> Result<(), Unwritable> {
+    get_organization(transaction, org_id).await?;
+    let removed = organizations::drop_domain(transaction, org_id, domain)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    if !removed {
+        return Err(Unwritable::NotFound);
+    }
+    Ok(())
 }
 
 pub async fn update_organization(

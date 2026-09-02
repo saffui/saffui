@@ -82,7 +82,10 @@ where
                 "POST" | "PUT" | "PATCH" | "DELETE"
             );
             let answered = service.call(request).await?;
-            if !mutates {
+            // Writes are journalled unconditionally: that is the design. A
+            // read lands in the chain only where the realm switched its
+            // admin_events_enabled on, the forensic mode.
+            if !mutates && !reads_are_journalled(&pool, &tenancy, answered.request()).await {
                 return Ok(answered);
             }
             // The identity the guard established. Absent means the request
@@ -98,7 +101,7 @@ where
                     let realm = realm_of(&path)?;
                     let context = TenantContext::new(&admin.context.tenant.tenant, &realm);
                     let envelope = serde_json::json!({
-                        "kind": "admin.write",
+                        "kind": if mutates { "admin.write" } else { "admin.read" },
                         "occurred_at": Utc::now().timestamp() as f64,
                         "actor": admin.context.principal.id(),
                         "party": admin.context.presenter,
@@ -116,6 +119,37 @@ where
             Ok(answered)
         })
     }
+}
+
+/// Whether this realm journals its reads too. One indexed load per admin
+/// GET when consulted; false on any failure, because a read that cannot be
+/// checked is treated the way every realm treats reads by default.
+async fn reads_are_journalled(
+    pool: &Pool,
+    tenancy: &Tenancy,
+    request: &actix_web::HttpRequest,
+) -> bool {
+    let Some(admin) = request
+        .extensions()
+        .get::<Admin>()
+        .map(|held| held.context.tenant.tenant.clone())
+    else {
+        return false;
+    };
+    let Some(realm) = realm_of(request.path()) else {
+        return false;
+    };
+    let Ok(mut connection) = pool.get().await else {
+        return false;
+    };
+    let context = TenantContext::new(&admin, &realm);
+    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+        return false;
+    };
+    matches!(
+        store::providers::realms::load(&transaction, &realm).await,
+        Ok(Some(held)) if held.admin_events_enabled == Some(true)
+    )
 }
 
 /// The realm segment of an admin path: `/admin/realms/{realm}/...`, already

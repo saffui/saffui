@@ -162,3 +162,61 @@ async fn the_plane_journals_its_own_writes() {
     let (grown, _) = journalled(&plane, &bearer).await;
     assert_eq!(grown, total + 1, "the anchoring itself was not journalled");
 }
+
+/// Forensic mode: with admin_events_enabled the chain records reads too,
+/// spelled admin.read; without it, reads leave no trace, which is the
+/// default every realm starts with. Writes land either way.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn reads_land_in_the_chain_only_in_forensic_mode() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmRead,
+        AdminAction::RealmWrite,
+        AdminAction::JournalRead,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let journal = format!("/admin/realms/{REALM}/journal?first=0&max=50");
+
+    // A read before the switch: nothing lands.
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}?briefRepresentation=false"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, held) = asked(&plane, Method::GET, &journal, &bearer, None).await;
+    assert!(
+        !held.to_string().contains("admin.read"),
+        "a read was journalled before the switch: {held}"
+    );
+
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}"),
+        &bearer,
+        Some(serde_json::json!({ "admin_events_enabled": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}?briefRepresentation=false"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (_, held) = asked(&plane, Method::GET, &journal, &bearer, None).await;
+    assert!(
+        held.to_string().contains("admin.read"),
+        "forensic mode did not journal the read: {held}"
+    );
+}

@@ -4,9 +4,9 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, claim_sources, client_scopes, clients, directory, features, federation, flows,
-    idps, iga, journal, keys, mail, negotiation, portability, protocol_mappers, realm_keys, realms,
-    rebac, sessions, users,
+    authorization, claim_sources, client_scopes, clients, directory, events, features, federation,
+    flows, idps, iga, journal, keys, mail, negotiation, portability, protocol_mappers, realm_keys,
+    realms, rebac, sessions, users,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -1078,6 +1078,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/users/{user}/organizations",
             action: AdminAction::UserRead,
             handler: Some(|| web::get().to(users::member_organizations)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/sign-in-events",
+            action: AdminAction::EventRead,
+            handler: Some(|| web::get().to(events::list_sign_ins)),
         },
         AdminRoute {
             method: Method::GET,

@@ -427,6 +427,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V070__realm_webauthn_policy.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 71,
+            name: "login_events",
+            sql: include_str!("../migrations/V071__login_events.sql"),
+            transactional: true,
+        }),
     ]
 }
 

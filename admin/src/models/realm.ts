@@ -48,6 +48,8 @@ export interface RealmSettings {
   not_before: number | null;
   acr_loa_map: Record<string, number> | null;
   attributes: Record<string, unknown> | null;
+  events_enabled: boolean | null;
+  admin_events_enabled: boolean | null;
   otp_policy: OtpPolicy | null;
   webauthn_policy: WebauthnPolicy | null;
   browser_flow: string | null;
@@ -139,6 +141,8 @@ export interface RealmUpdate {
   not_before?: number;
   acr_loa_map?: Record<string, number>;
   attributes?: Record<string, string>;
+  events_enabled?: boolean;
+  admin_events_enabled?: boolean;
   otp_policy?: OtpPolicy;
   webauthn_policy?: WebauthnPolicy;
   browser_flow?: string;

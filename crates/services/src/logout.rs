@@ -66,6 +66,21 @@ pub async fn end_session(
         // Transitioned, not deleted. The row is the record of a login, and a
         // session that ended is not a session that never happened.
         let _ = sessions::set_state(transaction, session_id, UserSessionState::LoggedOut).await;
+        if let Ok(Some(realm)) = store::providers::realms::of_context(transaction).await
+            && realm.events_enabled == Some(true)
+        {
+            let _ = store::providers::login_events::record(
+                transaction,
+                now.timestamp(),
+                &store::providers::login_events::LoginEventWrite {
+                    kind: "signed_out",
+                    session_id: Some(session_id),
+                    user_id: claim(hint.as_ref(), "sub").as_deref(),
+                    ..Default::default()
+                },
+            )
+            .await;
+        }
     }
 
     match requested.post_logout_redirect_uri {

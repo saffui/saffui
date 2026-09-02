@@ -3,6 +3,9 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import { listJournal, verifyChain } from "@/services/journal";
+import { getRealmSettings, reshapeRealm } from "@/services/settings";
+import AppToggle from "@/components/AppToggle.vue";
+import AppHint from "@/components/AppHint.vue";
 import { adminPath, api } from "@/services/http";
 import type { ChainVerified, JournalPage as Held } from "@/models/journal";
 
@@ -17,9 +20,26 @@ const failed = ref("");
 const witness = ref("");
 const receipt = ref("");
 
+/// Forensic mode: reads land in the chain too. Writes always do.
+const readsToo = ref(false);
+async function flipReads() {
+  const wanted = !readsToo.value;
+  try {
+    await reshapeRealm(
+      realm.value,
+      { admin_events_enabled: wanted },
+      say("journal-title"),
+    );
+    readsToo.value = wanted;
+  } catch {
+    // The toast already said; the switch stays where the server left it.
+  }
+}
+
 async function load() {
   failed.value = "";
   try {
+    readsToo.value = (await getRealmSettings(realm.value)).admin_events_enabled ?? false;
     [page.value, chain.value] = await Promise.all([
       listJournal(realm.value, first.value, PAGE_SIZE),
       verifyChain(realm.value),
@@ -81,6 +101,11 @@ function instant(epoch: number): string {
       }}</span>
     </div>
     <p class="mt-1 text-xs text-muted">{{ say("journal-lede") }}</p>
+    <div class="mt-2">
+      <AppToggle :model-value="readsToo" @update:model-value="flipReads">
+        {{ say("journal-reads-too") }} <AppHint name="journal-reads-too-help" />
+      </AppToggle>
+    </div>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
 
     <div v-if="page" class="mt-4 overflow-x-auto rounded-lg border border-border bg-surface">

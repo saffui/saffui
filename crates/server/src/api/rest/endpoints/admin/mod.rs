@@ -4,6 +4,7 @@ pub mod client_scopes;
 pub mod clients;
 pub mod directory;
 pub mod dto;
+pub mod events;
 pub mod features;
 pub mod federation;
 pub mod flows;

@@ -551,3 +551,100 @@ async fn a_domain_is_claimed_proven_and_taken_away() {
     let (_, held) = asked(&plane, Method::GET, &format!("{base}/{org}"), &bearer, None).await;
     assert_eq!(held["domains"].as_array().map(Vec::len), Some(0), "{held}");
 }
+
+/// Birthright membership: a group marked default receives every account
+/// created after, whichever door made it, and unmarking stops the intake
+/// without touching anyone already inside.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_default_group_receives_the_newly_born() {
+    let plane = Plane::with_actions(&[
+        AdminAction::GroupRead,
+        AdminAction::GroupWrite,
+        AdminAction::UserRead,
+        AdminAction::UserWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let groups = format!("/admin/realms/{REALM}/groups");
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &groups,
+        &bearer,
+        Some(serde_json::json!({ "name": "everyone", "description": "all of us" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let group_id = born["group_id"].as_str().expect("an identity").to_owned();
+
+    let (status, marked) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{groups}/{group_id}"),
+        &bearer,
+        Some(serde_json::json!({ "name": "everyone", "is_default": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{marked}");
+
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/users"),
+        &bearer,
+        Some(serde_json::json!({ "user_name": "newborn", "email": "new@acme.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+
+    let (status, held) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/users/newborn/groups"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert!(
+        held["groups"]
+            .as_array()
+            .expect("a membership listing")
+            .iter()
+            .any(|g| g["group_id"] == group_id.as_str() || g == &serde_json::json!(group_id)),
+        "the newborn missed the default group: {held}"
+    );
+
+    // Unmarked, the intake stops; the next account stays out.
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{groups}/{group_id}"),
+        &bearer,
+        Some(serde_json::json!({ "name": "everyone", "is_default": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/users"),
+        &bearer,
+        Some(serde_json::json!({ "user_name": "later", "email": "later@acme.test" })),
+    )
+    .await;
+    let (_, held) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/users/later/groups"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert!(
+        !held.to_string().contains(&group_id),
+        "an unmarked group still swallowed the next account: {held}"
+    );
+}

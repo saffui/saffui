@@ -92,6 +92,9 @@ pub async fn create(
     users::create(transaction, &user)
         .await
         .map_err(|_| Uncreatable::Unwritable)?;
+    store::providers::roles::join_default_groups(transaction, &user.user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?;
     Ok(user)
 }
 

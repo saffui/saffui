@@ -3,7 +3,9 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
-import { listGroupMembership, listGroups } from "@/services/directory";
+import AppHint from "@/components/AppHint.vue";
+import AppToggle from "@/components/AppToggle.vue";
+import { listGroupMembership, listGroups, markGroupDefault } from "@/services/directory";
 import type { Page } from "@/models/paging";
 import type { GroupMembership, GroupRow } from "@/models/directory";
 import DirectoryTable from "./DirectoryTable.vue";
@@ -27,6 +29,17 @@ async function open(group: GroupRow) {
   opened.value = group;
   membership.value = null;
   membership.value = await listGroupMembership(realm.value, group.group_id);
+}
+
+/// Birthright intake: flips the mark and keeps the row honest on refusal.
+async function flipDefault(group: GroupRow) {
+  const wanted = !group.is_default;
+  try {
+    await markGroupDefault(realm.value, group, wanted);
+    group.is_default = wanted;
+  } catch {
+    // The toast already said; the switch stays where the server left it.
+  }
 }
 </script>
 
@@ -57,6 +70,19 @@ async function open(group: GroupRow) {
       @close="opened = null"
     >
       <p v-if="opened.description" class="text-xs text-muted">{{ opened.description }}</p>
+      <div class="mt-3">
+        <AppToggle
+          :model-value="opened.is_default"
+          @update:model-value="flipDefault(opened)"
+        >
+          {{ say("group-default") }} <AppHint name="group-default-help" />
+          <span
+            v-if="opened.is_default"
+            class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted"
+            >{{ say("group-default-chip") }}</span
+          >
+        </AppToggle>
+      </div>
       <div class="mt-4">
         <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("group-members") }}

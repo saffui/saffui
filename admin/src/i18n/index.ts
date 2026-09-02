@@ -18,6 +18,13 @@ const bundles = new Map(
 );
 
 function spoken(): string {
+  // A pinned choice from the profile menu outranks the browser's list.
+  try {
+    const pinned = localStorage.getItem("sf-console-tongue");
+    if (pinned && bundles.has(pinned)) return pinned;
+  } catch {
+    // Storage can be walled off; the browser's list still answers.
+  }
   for (const asked of navigator.languages ?? []) {
     const primary = asked.split("-")[0].toLowerCase();
     if (bundles.has(primary)) return primary;
@@ -26,6 +33,26 @@ function spoken(): string {
 }
 
 const tongue = spoken();
+
+/// The tongue in force, and the ones on offer, for the profile menu.
+export function tongueInForce(): string {
+  return tongue;
+}
+export function offeredTongues(): string[] {
+  return TONGUES.map(([held]) => held);
+}
+
+/// Pin a tongue and reload: the bundles are chosen at boot, and a reload is
+/// honest about that rather than half-translating the open page.
+export function pinTongue(chosen: string): void {
+  try {
+    if (chosen) localStorage.setItem("sf-console-tongue", chosen);
+    else localStorage.removeItem("sf-console-tongue");
+  } catch {
+    // Nothing to pin into; the reload still follows the browser.
+  }
+  location.reload();
+}
 
 /// A message by name, in the visitor's tongue, falling back to the first
 /// tongue and then to the name itself, so a missing string is visible and

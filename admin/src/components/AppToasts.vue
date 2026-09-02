@@ -14,10 +14,6 @@ import { dismissToast, toasts } from "@/services/toasts";
         role="alert"
       >
         <div class="flex items-start gap-2">
-          <span
-            class="mt-1 size-1.5 shrink-0 rounded-full"
-            :class="held.tone === 'danger' ? 'bg-danger' : 'bg-ok'"
-          ></span>
           <div class="min-w-0 flex-1">
             <p class="text-xs font-semibold">{{ held.title }}</p>
             <p v-if="held.body" class="mt-0.5 text-[11px] break-words text-muted">

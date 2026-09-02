@@ -433,6 +433,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V071__login_events.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 72,
+            name: "realm_device_bounds",
+            sql: include_str!("../migrations/V072__realm_device_bounds.sql"),
+            transactional: true,
+        }),
     ]
 }
 

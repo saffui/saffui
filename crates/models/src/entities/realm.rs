@@ -398,6 +398,10 @@ pub struct RealmModel {
     pub otp_policy: Option<OtpPolicy>,
     /// How this realm presents itself to a browser's key ceremony.
     pub webauthn_policy: Option<WebauthnPolicy>,
+    /// How long a device code lives, RFC 8628. None keeps the built default.
+    pub device_code_lifespan: Option<i32>,
+    /// How often a device may poll, in seconds. None keeps the built default.
+    pub device_poll_interval: Option<i32>,
     /// Which built tongues this realm offers. None offers them all.
     pub supported_locales: Option<Vec<String>>,
     /// The tongue that answers when the browser says nothing. None takes the
@@ -467,6 +471,8 @@ impl RealmCreateModel {
             browser_flow: None,
             otp_policy: None,
             webauthn_policy: None,
+            device_code_lifespan: None,
+            device_poll_interval: None,
             supported_locales: None,
             default_locale: None,
             master_admin_client: None,
@@ -525,6 +531,10 @@ pub struct RealmUpdateModel {
     pub otp_policy: Option<OtpPolicy>,
     /// How this realm presents itself to a browser's key ceremony.
     pub webauthn_policy: Option<WebauthnPolicy>,
+    /// How long a device code lives, in seconds.
+    pub device_code_lifespan: Option<i32>,
+    /// How often a device may poll, in seconds.
+    pub device_poll_interval: Option<i32>,
     /// Which built tongues this realm offers. None leaves it unchanged; an
     /// empty list offers them all.
     pub supported_locales: Option<Vec<String>>,
@@ -619,6 +629,8 @@ impl RealmUpdateModel {
             refresh_token_max_reuse,
             access_token_lifespan,
             refresh_token_lifespan,
+            device_code_lifespan,
+            device_poll_interval,
             offline_session_lifespan,
             action_tokens_lifespan,
             access_code_lifespan,

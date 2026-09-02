@@ -95,6 +95,8 @@ const draft = ref({
   access_code_lifespan_user_action: "" as string | number,
   action_tokens_lifespan: "" as string | number,
   not_before: "" as string | number,
+  device_code_lifespan: "" as string | number,
+  device_poll_interval: "" as string | number,
   revoke_refresh_token: false,
   refresh_token_max_reuse: "" as string | number,
   offline_session_lifespan: "" as string | number,
@@ -186,6 +188,8 @@ function adopt(held: RealmSettings) {
     access_code_lifespan_user_action: held.access_code_lifespan_user_action ?? "",
     action_tokens_lifespan: held.action_tokens_lifespan ?? "",
     not_before: held.not_before ?? "",
+    device_code_lifespan: held.device_code_lifespan ?? "",
+    device_poll_interval: held.device_poll_interval ?? "",
     revoke_refresh_token: held.revoke_refresh_token ?? false,
     refresh_token_max_reuse: held.refresh_token_max_reuse ?? "",
     offline_session_lifespan: held.offline_session_lifespan ?? "",
@@ -307,6 +311,8 @@ function changesOf(which: Group): RealmUpdate {
       access_code_lifespan_login: whole(held.access_code_lifespan_login),
       access_code_lifespan_user_action: whole(held.access_code_lifespan_user_action),
       action_tokens_lifespan: whole(held.action_tokens_lifespan),
+      device_code_lifespan: whole(held.device_code_lifespan),
+      device_poll_interval: whole(held.device_poll_interval),
       revoke_refresh_token: held.revoke_refresh_token,
       refresh_token_max_reuse: whole(held.refresh_token_max_reuse),
       offline_session_lifespan: whole(held.offline_session_lifespan),
@@ -773,6 +779,28 @@ async function removeMail() {
                   type="number"
                   min="1"
                   :placeholder="say('settings-unset')"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("device-lifespan") }} <AppHint name="device-lifespan-help" />
+                <input
+                  v-model="draft.device_code_lifespan"
+                  type="number"
+                  min="60"
+                  max="3600"
+                  placeholder="600"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("device-interval") }} <AppHint name="device-interval-help" />
+                <input
+                  v-model="draft.device_poll_interval"
+                  type="number"
+                  min="1"
+                  max="60"
+                  placeholder="5"
                   class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
                 />
               </label>

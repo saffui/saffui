@@ -15,9 +15,11 @@ pub const GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 pub const GRANT_FLAG: &str = "device.grant";
 
 /// How long the pair of codes lives, §3.2's guidance.
+/// The default when the realm has not said.
 const CODE_LIFESPAN: i64 = 600;
 
 /// How often the device may poll, §3.2's default.
+/// The default polling pace when the realm has not said.
 const POLL_INTERVAL: i32 = 5;
 
 /// How long the login a verification opens may sit half finished.
@@ -71,6 +73,15 @@ pub async fn open(
             .await
             .map_err(|_| Unopened::Unreadable)?;
 
+    // The realm's pacing where it set one; the row keeps its birth interval,
+    // so a later retune never reshapes a code already in someone's hand.
+    let (lifespan, interval) = match store::providers::realms::of_context(transaction).await {
+        Ok(Some(realm)) => (
+            realm.device_code_lifespan.map_or(CODE_LIFESPAN, i64::from),
+            realm.device_poll_interval.unwrap_or(POLL_INTERVAL),
+        ),
+        _ => (CODE_LIFESPAN, POLL_INTERVAL),
+    };
     let device_code = drawn_secret(provider)?;
     let user_code = drawn_user_code(provider)?;
     devices::open(
@@ -90,10 +101,10 @@ pub async fn open(
             acr: None,
             org_id: None,
             org_name: None,
-            interval_secs: POLL_INTERVAL,
+            interval_secs: interval,
             last_polled_at: None,
             approved_at: None,
-            expires_at: now + Duration::seconds(CODE_LIFESPAN),
+            expires_at: now + Duration::seconds(lifespan),
             created_at: None,
         },
     )
@@ -103,8 +114,8 @@ pub async fn open(
     Ok(Opened {
         device_code,
         user_code: format!("{}-{}", &user_code[..4], &user_code[4..]),
-        expires_in: CODE_LIFESPAN,
-        interval: POLL_INTERVAL,
+        expires_in: lifespan,
+        interval,
     })
 }
 

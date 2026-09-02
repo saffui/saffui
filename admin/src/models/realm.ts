@@ -52,6 +52,8 @@ export interface RealmSettings {
   admin_events_enabled: boolean | null;
   otp_policy: OtpPolicy | null;
   webauthn_policy: WebauthnPolicy | null;
+  device_code_lifespan: number | null;
+  device_poll_interval: number | null;
   browser_flow: string | null;
   supported_locales: string[] | null;
   default_locale: string | null;
@@ -145,6 +147,8 @@ export interface RealmUpdate {
   admin_events_enabled?: boolean;
   otp_policy?: OtpPolicy;
   webauthn_policy?: WebauthnPolicy;
+  device_code_lifespan?: number;
+  device_poll_interval?: number;
   browser_flow?: string;
   supported_locales?: string[];
   default_locale?: string;

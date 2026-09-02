@@ -342,6 +342,23 @@ pub async fn update(
             ));
         }
     }
+    // Device pacing a waiting screen can live with: a code shorter than a
+    // minute expires while the person walks to their phone, and a poll
+    // faster than a second is a client hammering its own server.
+    if asked
+        .device_code_lifespan
+        .is_some_and(|held| !(60..=3600).contains(&held))
+        || asked
+            .device_poll_interval
+            .is_some_and(|held| !(1..=60).contains(&held))
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "device pacing wants a code lifespan of 60 to 3600 seconds \
+             and a poll interval of 1 to 60"
+                .to_owned(),
+        ));
+    }
     // A shown name a browser dialog can actually render.
     if asked
         .webauthn_policy

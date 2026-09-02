@@ -190,6 +190,29 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     assert_eq!(shaped["otp_policy"]["digits"], 8, "{shaped}");
     assert_eq!(shaped["otp_policy"]["algorithm"], "SHA256", "{shaped}");
 
+    // Device pacing is bounded to what a waiting screen can live with.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({ "device_code_lifespan": 10 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({ "device_code_lifespan": 300, "device_poll_interval": 10 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+    assert_eq!(shaped["device_code_lifespan"], 300, "{shaped}");
+    assert_eq!(shaped["device_poll_interval"], 10, "{shaped}");
+
     // The key ceremony's shown name is bounded; the subdomain switch rides.
     let (status, told) = asked(
         &plane,

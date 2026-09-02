@@ -25,10 +25,10 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        offline_session_lifespan, \
                        action_tokens_lifespan, access_code_lifespan, \
                        access_code_lifespan_user_action, access_code_lifespan_login, \
-                       master_admin_client, events_enabled, admin_events_enabled, not_before, \
+                       events_enabled, admin_events_enabled, not_before, \
                        attributes, acr_loa_map, \
                        browser_flow, otp_policy, webauthn_policy, \
-                       device_code_lifespan, device_poll_interval, \
+                       mail_templates, device_code_lifespan, device_poll_interval, \
                        supported_locales, default_locale, \
                        created_by, created_at, updated_by, updated_at, version";
 
@@ -157,6 +157,7 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
         as_document(realm.supported_locales.as_ref().map(serde_json::to_value))?;
     let otp_policy = as_document(realm.otp_policy.as_ref().map(serde_json::to_value))?;
     let webauthn_policy = as_document(realm.webauthn_policy.as_ref().map(serde_json::to_value))?;
+    let mail_templates = as_document(realm.mail_templates.as_ref().map(serde_json::to_value))?;
     let policy = realm.client_registration.as_str();
 
     let set = WriteSet::update(
@@ -223,7 +224,6 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
                 "access_code_lifespan_login",
                 &realm.access_code_lifespan_login,
             ),
-            col("master_admin_client", &realm.master_admin_client),
             col("events_enabled", &realm.events_enabled),
             col("admin_events_enabled", &realm.admin_events_enabled),
             col("not_before", &realm.not_before),
@@ -232,6 +232,7 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("browser_flow", &realm.browser_flow),
             col("otp_policy", &otp_policy),
             col("webauthn_policy", &webauthn_policy),
+            col("mail_templates", &mail_templates),
             col("device_code_lifespan", &realm.device_code_lifespan),
             col("device_poll_interval", &realm.device_poll_interval),
             col("supported_locales", &supported_locales),
@@ -296,10 +297,12 @@ fn read(row: Row) -> RealmModel {
         access_code_lifespan: row.get("access_code_lifespan"),
         access_code_lifespan_user_action: row.get("access_code_lifespan_user_action"),
         access_code_lifespan_login: row.get("access_code_lifespan_login"),
-        master_admin_client: row.get("master_admin_client"),
         browser_flow: row.get("browser_flow"),
         otp_policy: row
             .get::<_, Option<serde_json::Value>>("otp_policy")
+            .and_then(|held| serde_json::from_value(held).ok()),
+        mail_templates: row
+            .get::<_, Option<serde_json::Value>>("mail_templates")
             .and_then(|held| serde_json::from_value(held).ok()),
         device_code_lifespan: row.get("device_code_lifespan"),
         device_poll_interval: row.get("device_poll_interval"),

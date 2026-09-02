@@ -52,6 +52,7 @@ export interface RealmSettings {
   admin_events_enabled: boolean | null;
   otp_policy: OtpPolicy | null;
   webauthn_policy: WebauthnPolicy | null;
+  mail_templates: Record<string, Record<string, MailTemplate>> | null;
   device_code_lifespan: number | null;
   device_poll_interval: number | null;
   browser_flow: string | null;
@@ -81,6 +82,12 @@ export interface PasswordPolicy {
   expires_after_days: number | null;
   history_look_back: number | null;
   hashing: { m_cost: number; t_cost: number; p_cost: number; output_len: number };
+}
+
+/// Mirrors `models::entities::realm::MailTemplate`.
+export interface MailTemplate {
+  subject: string;
+  body: string;
 }
 
 /// Mirrors `models::entities::realm::WebauthnPolicy`. Deliberately small:
@@ -147,6 +154,7 @@ export interface RealmUpdate {
   admin_events_enabled?: boolean;
   otp_policy?: OtpPolicy;
   webauthn_policy?: WebauthnPolicy;
+  mail_templates?: Record<string, Record<string, MailTemplate>>;
   device_code_lifespan?: number;
   device_poll_interval?: number;
   browser_flow?: string;

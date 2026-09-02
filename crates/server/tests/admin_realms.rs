@@ -190,6 +190,37 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     assert_eq!(shaped["otp_policy"]["digits"], 8, "{shaped}");
     assert_eq!(shaped["otp_policy"]["algorithm"], "SHA256", "{shaped}");
 
+    // A reworded mail keeps its link or is refused; sound words round-trip.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({
+            "mail_templates": { "magic_link": { "fr": { "subject": "Lien", "body": "sans lien" } } }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({
+            "mail_templates": {
+                "magic_link": { "fr": { "subject": "Votre lien", "body": "Suivez : {{link}}" } }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+    assert_eq!(
+        shaped["mail_templates"]["magic_link"]["fr"]["subject"], "Votre lien",
+        "{shaped}"
+    );
+
     // Device pacing is bounded to what a waiting screen can live with.
     let (status, told) = asked(
         &plane,

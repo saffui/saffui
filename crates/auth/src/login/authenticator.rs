@@ -386,13 +386,33 @@ async fn magic_link(
         }),
         sending: Some(Outgoing {
             settings: settings.duplicate(),
-            message: Message {
-                to: subject.email.clone(),
-                subject: "Your sign-in link".to_owned(),
-                body: format!(
-                    "Follow this link to sign in. It works once, and only in the browser \
-                     you started from.\n\n{link}\n"
-                ),
+            message: {
+                let realm_row = store::providers::realms::of_context(transaction)
+                    .await
+                    .ok()
+                    .flatten();
+                let (worded_subject, worded_body) = match &realm_row {
+                    Some(realm) => crate::messaging::worded(
+                        realm,
+                        MAGIC_LINK,
+                        &link,
+                        "Your sign-in link",
+                        "Follow this link to sign in. It works once, and only in the \
+                         browser you started from.\n\n{{link}}\n",
+                    ),
+                    None => (
+                        "Your sign-in link".to_owned(),
+                        format!(
+                            "Follow this link to sign in. It works once, and only in the \
+                             browser you started from.\n\n{link}\n"
+                        ),
+                    ),
+                };
+                Message {
+                    to: subject.email.clone(),
+                    subject: worded_subject,
+                    body: worded_body,
+                }
             },
             about: crate::messaging::About {
                 user_id: subject.user_id.clone(),

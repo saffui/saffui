@@ -342,6 +342,35 @@ pub async fn update(
             ));
         }
     }
+    // A reworded mail still has to work: the body carries the link or the
+    // mail does nothing, and the words stay mail-sized.
+    if let Some(templates) = &asked.mail_templates {
+        for (kind, tongues) in templates {
+            if !matches!(
+                kind.as_str(),
+                "magic_link" | "verify_email" | "reset_password"
+            ) {
+                return Err(ApiError::with_detail(
+                    ErrorCode::ValidationError,
+                    format!("{kind} is not a mail this server sends"),
+                ));
+            }
+            for template in tongues.values() {
+                let sound = !template.subject.trim().is_empty()
+                    && template.subject.len() <= 200
+                    && template.body.len() <= 4000
+                    && template.body.contains("{{link}}");
+                if !sound {
+                    return Err(ApiError::with_detail(
+                        ErrorCode::ValidationError,
+                        "a mail template wants a subject up to 200 characters and a body \
+                         up to 4000 that carries {{link}}"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+    }
     // Device pacing a waiting screen can live with: a code shorter than a
     // minute expires while the person walks to their phone, and a poll
     // faster than a second is a client hammering its own server.

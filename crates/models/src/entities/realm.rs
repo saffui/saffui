@@ -153,6 +153,15 @@ impl Default for OtpPolicy {
     }
 }
 
+/// One mail, reworded: the subject line and the body the realm speaks in
+/// place of the built words. The body must carry `{{link}}`, because a mail
+/// whose link was worded away is a mail that does nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailTemplate {
+    pub subject: String,
+    pub body: String,
+}
+
 /// Who the password is for, of what the policy compares against.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct About<'a> {
@@ -398,6 +407,10 @@ pub struct RealmModel {
     pub otp_policy: Option<OtpPolicy>,
     /// How this realm presents itself to a browser's key ceremony.
     pub webauthn_policy: Option<WebauthnPolicy>,
+    /// The realm's rewording of its mails: kind, then tongue, then the
+    /// words. Kinds are magic_link, verify_email and reset_password.
+    pub mail_templates:
+        Option<std::collections::HashMap<String, std::collections::HashMap<String, MailTemplate>>>,
     /// How long a device code lives, RFC 8628. None keeps the built default.
     pub device_code_lifespan: Option<i32>,
     /// How often a device may poll, in seconds. None keeps the built default.
@@ -408,7 +421,6 @@ pub struct RealmModel {
     /// build's first.
     pub default_locale: Option<String>,
 
-    pub master_admin_client: Option<String>,
     pub events_enabled: Option<bool>,
     pub admin_events_enabled: Option<bool>,
     /// Tokens issued before this instant are refused.
@@ -471,11 +483,11 @@ impl RealmCreateModel {
             browser_flow: None,
             otp_policy: None,
             webauthn_policy: None,
+            mail_templates: None,
             device_code_lifespan: None,
             device_poll_interval: None,
             supported_locales: None,
             default_locale: None,
-            master_admin_client: None,
             events_enabled: None,
             admin_events_enabled: None,
             not_before: None,
@@ -518,7 +530,6 @@ pub struct RealmUpdateModel {
     pub access_code_lifespan: Option<i32>,
     pub access_code_lifespan_user_action: Option<i32>,
     pub access_code_lifespan_login: Option<i32>,
-    pub master_admin_client: Option<String>,
     pub events_enabled: Option<bool>,
     pub admin_events_enabled: Option<bool>,
     pub not_before: Option<i32>,
@@ -531,6 +542,9 @@ pub struct RealmUpdateModel {
     pub otp_policy: Option<OtpPolicy>,
     /// How this realm presents itself to a browser's key ceremony.
     pub webauthn_policy: Option<WebauthnPolicy>,
+    /// The realm's rewording of its mails, replacing the held map whole.
+    pub mail_templates:
+        Option<std::collections::HashMap<String, std::collections::HashMap<String, MailTemplate>>>,
     /// How long a device code lives, in seconds.
     pub device_code_lifespan: Option<i32>,
     /// How often a device may poll, in seconds.
@@ -629,6 +643,7 @@ impl RealmUpdateModel {
             refresh_token_max_reuse,
             access_token_lifespan,
             refresh_token_lifespan,
+            mail_templates,
             device_code_lifespan,
             device_poll_interval,
             offline_session_lifespan,
@@ -636,7 +651,6 @@ impl RealmUpdateModel {
             access_code_lifespan,
             access_code_lifespan_user_action,
             access_code_lifespan_login,
-            master_admin_client,
             events_enabled,
             admin_events_enabled,
             not_before,

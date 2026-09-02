@@ -94,7 +94,8 @@ pub async fn required(
             .contains(&action)
     };
     if pending(RequiredAction::ConfigureWebauthn) {
-        let Ok(party) = relying_party(origin) else {
+        let Ok(party) = relying_party(origin, &realm.webauthn_policy.clone().unwrap_or_default())
+        else {
             return Enrolment::Refused;
         };
         let round = match (answers.attestation, remembered.get(CONFIGURE_WEBAUTHN)) {

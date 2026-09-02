@@ -190,6 +190,34 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     assert_eq!(shaped["otp_policy"]["digits"], 8, "{shaped}");
     assert_eq!(shaped["otp_policy"]["algorithm"], "SHA256", "{shaped}");
 
+    // The key ceremony's shown name is bounded; the subdomain switch rides.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({ "webauthn_policy": { "rp_name": "x".repeat(65) } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({
+            "webauthn_policy": { "rp_name": "Acme Staging", "allow_subdomains": true }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+    assert_eq!(
+        shaped["webauthn_policy"]["rp_name"], "Acme Staging",
+        "{shaped}"
+    );
+    assert_eq!(shaped["webauthn_policy"]["allow_subdomains"], true);
+
     // The realm's browser binding: a named flow must exist and stand top
     // level; the seeded flow does, a ghost does not, and empty clears.
     let (status, told) = asked(

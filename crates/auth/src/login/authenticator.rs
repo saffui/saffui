@@ -624,7 +624,13 @@ async fn webauthn(
     // relying party a caller could name is one a caller could impersonate, and a
     // credential is scoped to the party it was enrolled against for exactly that
     // reason.
-    let Ok(party) = relying_party(origin) else {
+    let policy = store::providers::realms::of_context(transaction)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|realm| realm.webauthn_policy)
+        .unwrap_or_default();
+    let Ok(party) = relying_party(origin, &policy) else {
         return Answered::plain(Outcome::Failed);
     };
     let Some(subject) = subject else {
@@ -693,10 +699,19 @@ async fn webauthn(
     }
 }
 
-/// The party a credential is scoped to.
-pub(crate) fn relying_party(origin: &PublicOrigin) -> Result<Webauthn, ()> {
+/// The party a credential is scoped to, shaped by what the realm says of
+/// itself: its shown name, and whether the apex answers for subdomains.
+pub(crate) fn relying_party(
+    origin: &PublicOrigin,
+    policy: &models::entities::realm::WebauthnPolicy,
+) -> Result<Webauthn, ()> {
     let url = Url::parse(origin.as_str()).map_err(|_| ())?;
-    WebauthnBuilder::new(origin.host(), &url)
-        .and_then(WebauthnBuilder::build)
+    let mut builder = WebauthnBuilder::new(origin.host(), &url).map_err(|_| ())?;
+    if let Some(shown) = policy.rp_name.as_deref().filter(|held| !held.is_empty()) {
+        builder = builder.rp_name(shown);
+    }
+    builder
+        .allow_subdomains(policy.allow_subdomains)
+        .build()
         .map_err(|_| ())
 }

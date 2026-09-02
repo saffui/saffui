@@ -7,6 +7,11 @@ use store::providers::{
 
 /// How long a receipt is kept. One nobody looked at for a month is one nobody
 /// is going to, and it names an address.
+/// How long the sign-in log looks back. A window, not an archive: long
+/// enough to answer "who signed in this month", short enough that enabling
+/// the log is not enabling a dossier.
+const LOGIN_EVENTS_KEPT_DAYS: i64 = 30;
+
 const RECEIPTS_KEPT_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -27,6 +32,8 @@ pub struct Swept {
     pub form_post_landings: u64,
     pub dpop_proofs: u64,
     pub security_events: u64,
+    /// Sign-in log rows past the retention window.
+    pub login_events: u64,
     pub backchannel_requests: u64,
     pub device_codes: u64,
     pub sessions: u64,
@@ -45,6 +52,7 @@ impl Swept {
             + self.form_post_landings
             + self.dpop_proofs
             + self.security_events
+            + self.login_events
             + self.backchannel_requests
             + self.device_codes
             + self.sessions
@@ -62,6 +70,7 @@ impl Swept {
         self.form_post_landings += other.form_post_landings;
         self.dpop_proofs += other.dpop_proofs;
         self.security_events += other.security_events;
+        self.login_events += other.login_events;
         self.backchannel_requests += other.backchannel_requests;
         self.device_codes += other.device_codes;
         self.sessions += other.sessions;
@@ -114,6 +123,12 @@ pub async fn drop_expired_rows(
         security_events: caep_queue::drop_expired(transaction, now)
             .await
             .map_err(failed)?,
+        login_events: store::providers::login_events::drop_older_than(
+            transaction,
+            (now - chrono::Duration::days(LOGIN_EVENTS_KEPT_DAYS)).timestamp(),
+        )
+        .await
+        .map_err(failed)?,
         backchannel_requests: backchannel::drop_expired(transaction, now)
             .await
             .map_err(failed)?,

@@ -30,6 +30,7 @@ str_enum! {
         RealmList => "realm:list",
         RealmImport => "realm:import",
         RealmExport => "realm:export",
+        EventRead => "event:read",
         RealmKeysRead => "realm:keys:read",
         RealmKeysWrite => "realm:keys:write",
         UserRead => "user:read",
@@ -949,7 +950,7 @@ mod tests {
 
     #[test]
     fn the_vocabulary_agrees_with_its_own_spelling() {
-        assert_eq!(AdminAction::ALL.len(), 42);
+        assert_eq!(AdminAction::ALL.len(), 43);
         assert_round_trips(AdminAction::ALL);
     }
 

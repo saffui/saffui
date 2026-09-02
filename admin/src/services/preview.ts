@@ -369,6 +369,20 @@ export function previewAnswer<T>(path: string): T {
       { flow_id: "f-stepup", alias: "step-up", description: "Second factor on demand", top_level: false, built_in: false },
     ]);
   }
+  if (path.includes("/sign-in-events")) {
+    const row = (id: number, kind: string, user: string, ip: string, ago: number) => ({
+      id, recorded_at: NOW - ago, kind, user_id: user, client_id: "web-dashboard",
+      session_id: "s-" + id, ip, user_agent: "Mozilla/5.0", detail: null,
+    });
+    return answer({
+      items: [
+        row(3, "signed_in", "ada", "203.0.113.9", 120),
+        row(2, "sign_in_failed", "grace", "198.51.100.7", 300),
+        row(1, "signed_out", "linus", "203.0.113.9", 900),
+      ],
+      first: 0, max: 25, total: 3,
+    });
+  }
   if (path === "/admin/features") {
     return answer([
       { slug: "kerberos", lifecycle: "stable", compiled: false, enabled: false, doc: "SPNEGO desktop tickets at the LDAP front; links the system Kerberos libraries." },
@@ -418,6 +432,8 @@ export function previewAnswer<T>(path: string): T {
       not_before: 0,
       ssl_enforcement: "external",
       acr_loa_map: { mfa: 2 },
+      events_enabled: true,
+      admin_events_enabled: false,
       otp_policy: null,
       webauthn_policy: null,
       browser_flow: null,

@@ -738,6 +738,27 @@ async fn open_login(
 ) -> Result<(), Ungranted> {
     let expiry = (now + lifespan).timestamp();
 
+    // The sign-in log, where the realm switched it on. Best-effort: a login
+    // never fails on account of its own record.
+    if let Ok(Some(realm)) = store::providers::realms::of_context(transaction).await
+        && realm.events_enabled == Some(true)
+    {
+        let _ = store::providers::login_events::record(
+            transaction,
+            now.timestamp(),
+            &store::providers::login_events::LoginEventWrite {
+                kind: "signed_in",
+                user_id: Some(user_id),
+                client_id: Some(&client.client_id),
+                session_id: Some(session_id),
+                ip: seen.address.as_deref(),
+                user_agent: seen.agent.as_deref(),
+                detail: None,
+            },
+        )
+        .await;
+    }
+
     // Tenant and realm off the transaction's context, never off the request:
     // these inserts bind them from the model and RLS refuses silently.
     sessions::open(

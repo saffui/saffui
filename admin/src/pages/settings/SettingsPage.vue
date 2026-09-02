@@ -75,6 +75,7 @@ const draft = ref({
   display_name: "",
   enabled: true,
   registration_allowed: false,
+  events_enabled: false,
   register_email_as_username: false,
   verify_email: false,
   login_with_email_allowed: false,
@@ -165,6 +166,7 @@ function adopt(held: RealmSettings) {
     display_name: held.display_name,
     enabled: held.enabled,
     registration_allowed: held.registration_allowed ?? false,
+    events_enabled: held.events_enabled ?? false,
     register_email_as_username: held.register_email_as_username ?? false,
     verify_email: held.verify_email ?? false,
     login_with_email_allowed: held.login_with_email_allowed ?? false,
@@ -326,6 +328,7 @@ function changesOf(which: Group): RealmUpdate {
   }
   if (which === "security") {
     const changes: RealmUpdate = {
+      events_enabled: held.events_enabled,
       brute_force: {
         protected: held.bf_protected,
         max_failures: whole(held.bf_max_failures) ?? 10,
@@ -843,6 +846,13 @@ async function removeMail() {
                 />
               </label>
             </div>
+
+            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("signin-events-title") }} <AppHint name="signin-events-title-help" />
+            </div>
+            <AppToggle v-model="draft.events_enabled">
+              {{ say("signin-events-toggle") }} <AppHint name="signin-events-toggle-help" />
+            </AppToggle>
 
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("settings-assurance") }} <AppHint name="settings-assurance-help" />

@@ -93,6 +93,10 @@ enum Command {
         /// `SAFFUI_PROVISION_USER_PASSWORD`.
         #[arg(long)]
         user: Option<String>,
+        /// Grant the user the administrator role, which carries every admin
+        /// plane action. Without one, the provisioned console admits nobody.
+        #[arg(long, default_value_t = false)]
+        administrator: bool,
         #[arg(long, default_value = "")]
         email: String,
         #[arg(long)]
@@ -226,6 +230,7 @@ fn main() -> ExitCode {
                         backchannel_logout,
                         frontchannel_logout,
                         user,
+                        administrator,
                         email,
                         given_name,
                         family_name,
@@ -249,6 +254,7 @@ fn main() -> ExitCode {
                             backchannel_logout,
                             frontchannel_logout,
                             user,
+                            administrator,
                             email,
                             given_name,
                             family_name,
@@ -495,6 +501,7 @@ struct Wanted {
     backchannel_logout: Option<String>,
     frontchannel_logout: Option<String>,
     user: Option<String>,
+    administrator: bool,
     email: String,
     given_name: Option<String>,
     family_name: Option<String>,
@@ -661,6 +668,9 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
             println!("client {client_id} registered under the fapi2 profile");
         }
     }
+    if wanted.administrator && wanted.user.is_none() {
+        return Err("--administrator names nobody: give it a --user to grant".into());
+    }
     if let Some(user_name) = wanted.user.as_deref() {
         let password = user_password
             .as_ref()
@@ -688,6 +698,20 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
         .map_err(unreadable)?;
         if created {
             println!("user {user_name} created");
+        }
+        if wanted.administrator {
+            let role_created = provisioning::provision_realm_administration(
+                &transaction,
+                tenant,
+                realm,
+                user_name,
+            )
+            .await
+            .map_err(unreadable)?;
+            if role_created {
+                println!("administrator role created");
+            }
+            println!("user {user_name} may administer the realm");
         }
     }
     transaction.commit().await.map_err(|e| e.to_string())?;

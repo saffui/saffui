@@ -24,7 +24,10 @@ use store::error::{StoreError, StoreResult};
 use store::keyring;
 
 use crate::admin;
-use store::providers::{auth_flows, client_scopes, clients, realm_keys, realms, tenants, users};
+use models::entities::authz::{AdminAction, RoleModel};
+use store::providers::{
+    auth_flows, client_scopes, clients, realm_keys, realms, roles, tenants, users,
+};
 
 /// Who the audit trail names for rows nobody typed in.
 const PROVISIONER: &str = "provisioner";
@@ -235,6 +238,50 @@ pub async fn provision_admin_console(
     }
 
     client_scopes::attach_scope(transaction, console.client_id, console.scope, false).await
+}
+
+/// The role a provisioned administrator holds. One name on both sides: the
+/// role this creates and the grant it re-asserts.
+pub const ADMINISTRATOR_ROLE: &str = "administrator";
+
+/// Give a realm its administrator role and grant it to one user.
+///
+/// The role carries every admin plane action, because the first administrator
+/// is the one who will hand out narrower ones. Idempotent the same way the
+/// console is: a role the operator reshaped keeps its shape, and only the
+/// grant is re-asserted, which is the one thing a deployment cannot log in
+/// to fix.
+pub async fn provision_realm_administration(
+    transaction: &Transaction<'_>,
+    tenant: &str,
+    realm_id: &str,
+    user_id: &str,
+) -> StoreResult<bool> {
+    let created = match roles::load(transaction, ADMINISTRATOR_ROLE).await? {
+        Some(_) => false,
+        None => {
+            roles::create(
+                transaction,
+                &RoleModel {
+                    role_id: ADMINISTRATOR_ROLE.to_owned(),
+                    realm_id: realm_id.to_owned(),
+                    name: ADMINISTRATOR_ROLE.to_owned(),
+                    description: "Every admin plane action".to_owned(),
+                    display_name: "Administrator".to_owned(),
+                    client_id: None,
+                    admin_actions: Some(AdminAction::ALL.to_vec()),
+                    metadata: AuditableModel::from_creator(
+                        tenant.to_owned(),
+                        PROVISIONER.to_owned(),
+                    ),
+                },
+            )
+            .await?;
+            true
+        }
+    };
+    roles::grant_to_user(transaction, user_id, ADMINISTRATOR_ROLE).await?;
+    Ok(created)
 }
 
 /// A tenant, created unless it already is. Runs tenant wide, because a realm

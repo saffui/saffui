@@ -20,7 +20,8 @@ import { useSession } from "@/stores/session";
 import type { FeatureBrief } from "@/models/feature";
 import { ApiError } from "@/services/http";
 import type { MailBrief } from "@/models/mail";
-import type { RealmSettings, RealmUpdate } from "@/models/realm";
+import { OWASP_HASHING } from "@/models/realm";
+import type { PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 
 const GROUPS = [
   "general",
@@ -107,6 +108,41 @@ const attrRows = ref<{ name: string; value: string }[]>([]);
 const offeredTongues = ref<string[]>([]);
 const defaultTongue = ref("");
 
+const POLICY_NUMBERS = [
+  ["min_length", "policy-min-length"],
+  ["max_length", "policy-max-length"],
+  ["min_digits", "policy-min-digits"],
+  ["min_upper_case", "policy-min-upper"],
+  ["min_lower_case", "policy-min-lower"],
+  ["min_special_chars", "policy-min-special"],
+  ["expires_after_days", "policy-expiry"],
+  ["history_look_back", "policy-history"],
+] as const;
+const POLICY_CHECKS = [
+  ["not_email", "policy-not-email"],
+  ["not_username", "policy-not-username"],
+  ["not_birthdate", "policy-not-birthdate"],
+] as const;
+
+/// The password policy, spread into fields; the hashing block rides along
+/// untouched because the server requires it whole.
+const policy = ref({
+  min_length: "" as string | number,
+  max_length: "" as string | number,
+  min_digits: "" as string | number,
+  min_upper_case: "" as string | number,
+  min_lower_case: "" as string | number,
+  min_special_chars: "" as string | number,
+  not_email: false,
+  not_username: false,
+  not_birthdate: false,
+  blacklisted: "",
+  regex_pattern: "",
+  expires_after_days: "" as string | number,
+  history_look_back: "" as string | number,
+  hashing: { ...OWASP_HASHING },
+});
+
 function adopt(held: RealmSettings) {
   settings.value = held;
   draft.value = {
@@ -155,6 +191,23 @@ function adopt(held: RealmSettings) {
   }));
   offeredTongues.value = held.supported_locales ?? [...TONGUES];
   defaultTongue.value = held.default_locale ?? "";
+  const rules = held.password_policy;
+  policy.value = {
+    min_length: rules?.min_length ?? "",
+    max_length: rules?.max_length ?? "",
+    min_digits: rules?.min_digits ?? "",
+    min_upper_case: rules?.min_upper_case ?? "",
+    min_lower_case: rules?.min_lower_case ?? "",
+    min_special_chars: rules?.min_special_chars ?? "",
+    not_email: rules?.not_email ?? false,
+    not_username: rules?.not_username ?? false,
+    not_birthdate: rules?.not_birthdate ?? false,
+    blacklisted: (rules?.blacklisted ?? []).join("\n"),
+    regex_pattern: rules?.regex_pattern ?? "",
+    expires_after_days: rules?.expires_after_days ?? "",
+    history_look_back: rules?.history_look_back ?? "",
+    hashing: rules?.hashing ?? { ...OWASP_HASHING },
+  };
 }
 
 onMounted(async () => {
@@ -266,6 +319,27 @@ function changesOf(which: Group): RealmUpdate {
     if (row.context.trim() && Number.isFinite(level)) map[row.context.trim()] = level;
   }
   changes.acr_loa_map = map;
+  const rules = policy.value;
+  const written: PasswordPolicy = {
+    min_length: whole(rules.min_length) ?? null,
+    max_length: whole(rules.max_length) ?? null,
+    min_digits: whole(rules.min_digits) ?? null,
+    min_upper_case: whole(rules.min_upper_case) ?? null,
+    min_lower_case: whole(rules.min_lower_case) ?? null,
+    min_special_chars: whole(rules.min_special_chars) ?? null,
+    not_email: rules.not_email,
+    not_username: rules.not_username,
+    not_birthdate: rules.not_birthdate,
+    blacklisted: rules.blacklisted
+      .split(/[\n,]/)
+      .map((held) => held.trim())
+      .filter(Boolean),
+    regex_pattern: rules.regex_pattern.trim() || null,
+    expires_after_days: whole(rules.expires_after_days) ?? null,
+    history_look_back: whole(rules.history_look_back) ?? null,
+    hashing: rules.hashing,
+  };
+  changes.password_policy = written;
   return changes;
 }
 
@@ -821,15 +895,61 @@ async function removeMail() {
               </p>
             </template>
 
-            <div class="mt-2">
-              <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-                {{ say("settings-password-policy") }} <AppHint name="settings-password-policy-help" />
-              </div>
-              <pre
-                class="mt-1.5 overflow-x-auto rounded border border-border bg-surface-2 p-2 font-mono text-[10.5px]"
-                >{{ JSON.stringify(settings.password_policy ?? null, null, 2) }}</pre
-              >
+            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("settings-password-policy") }} <AppHint name="settings-password-policy-help" />
             </div>
+            <div class="grid grid-cols-3 gap-3">
+              <label
+                v-for="held in POLICY_NUMBERS"
+                :key="held[0]"
+                class="block text-[11px] font-medium text-muted"
+              >
+                {{ say(held[1]) }} <AppHint :name="held[1] + '-help'" />
+                <input
+                  v-model="policy[held[0]]"
+                  type="number"
+                  min="0"
+                  :placeholder="say('settings-unset')"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+            </div>
+            <label
+              v-for="held in POLICY_CHECKS"
+              :key="held[0]"
+              class="flex items-center gap-2 text-xs"
+            >
+              <input v-model="policy[held[0]]" type="checkbox" class="accent-(--sf-accent)" />
+              {{ say(held[1]) }} <AppHint :name="held[1] + '-help'" />
+            </label>
+            <label class="block text-[11px] font-medium text-muted">
+              {{ say("policy-regex") }} <AppHint name="policy-regex-help" />
+              <input
+                v-model="policy.regex_pattern"
+                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                spellcheck="false"
+              />
+            </label>
+            <label class="block text-[11px] font-medium text-muted">
+              {{ say("policy-blacklist") }} <AppHint name="policy-blacklist-help" />
+              <textarea
+                v-model="policy.blacklisted"
+                rows="3"
+                :placeholder="say('policy-blacklist-hint')"
+                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                spellcheck="false"
+              ></textarea>
+            </label>
+            <p class="text-[10.5px] text-faint">
+              {{
+                say("policy-hashing-line", {
+                  memory: policy.hashing.m_cost,
+                  passes: policy.hashing.t_cost,
+                  lanes: policy.hashing.p_cost,
+                })
+              }}
+              <AppHint name="policy-hashing-help" />
+            </p>
           </template>
 
           <template v-if="group === 'localization'">

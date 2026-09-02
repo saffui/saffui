@@ -326,6 +326,22 @@ pub async fn update(
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::RealmNotFound))?;
     let asked = body.into_inner();
+    // OTP bounds an authenticator app will actually honour: RFC 6238 speaks
+    // 6 to 8 digits, and a period or window outside sanity is a lockout
+    // being configured.
+    if let Some(policy) = &asked.otp_policy {
+        let sane = (6..=8).contains(&policy.digits)
+            && (15..=300).contains(&policy.period)
+            && policy.window <= 4;
+        if !sane {
+            return Err(ApiError::with_detail(
+                ErrorCode::ValidationError,
+                "an otp policy wants 6 to 8 digits, a period of 15 to 300 seconds, \
+                 and a window of at most 4 steps"
+                    .to_owned(),
+            ));
+        }
+    }
     // A binding is checked at the door, not at the first login it breaks:
     // the named flow must exist here and be one a login can start at.
     if let Some(alias) = asked

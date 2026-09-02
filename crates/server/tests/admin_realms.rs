@@ -165,6 +165,31 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     assert_eq!(read["access_token_lifespan"], 600, "{read}");
     assert_eq!(read["display_name"], "Staging ground", "{read}");
 
+    // The OTP policy is bounded by what an authenticator app will honour.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({ "otp_policy": { "digits": 9, "period": 30 } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/staging",
+        &bearer,
+        Some(serde_json::json!({
+            "otp_policy": { "digits": 8, "period": 60, "algorithm": "SHA256", "window": 2 }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+    assert_eq!(shaped["otp_policy"]["digits"], 8, "{shaped}");
+    assert_eq!(shaped["otp_policy"]["algorithm"], "SHA256", "{shaped}");
+
     // The realm's browser binding: a named flow must exist and stand top
     // level; the seeded flow does, a ghost does not, and empty clears.
     let (status, told) = asked(

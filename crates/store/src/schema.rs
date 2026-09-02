@@ -415,6 +415,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V068__realm_flow_binding.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 69,
+            name: "realm_otp_policy",
+            sql: include_str!("../migrations/V069__realm_otp_policy.sql"),
+            transactional: true,
+        }),
     ]
 }
 

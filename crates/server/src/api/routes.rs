@@ -1171,7 +1171,7 @@ mod tests {
     /// A route nobody declared is refused rather than guessed at.
     #[test]
     fn an_undeclared_route_requires_nothing_and_is_therefore_refused() {
-        assert_eq!(required(&Method::DELETE, "/admin/realms/{realm}"), None);
+        assert_eq!(required(&Method::DELETE, "/admin/realms"), None);
         assert_eq!(required(&Method::GET, "/admin/whatever"), None);
     }
 

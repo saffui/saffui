@@ -244,3 +244,44 @@ test("an organization chooser offers each name, and the pick rides the next roun
   assert.equal(page.sent[1].body.organization, "beta");
   assert.deepEqual(page.went, ["https://app.example/done"]);
 });
+
+// The enrolment challenge carries the QR alongside the URI and the text
+// secret. The page shows the image only when the server drew one, and an
+// answer without it leaves the link and the typed key standing alone.
+test("an authenticator enrolment shows the code to scan", async () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "totp-register",
+          asks: { secret: "JBSWY3DP", otpauth: "otpauth://totp/main:ada?secret=JBSWY3DP", qr: svg },
+        },
+      },
+    ],
+  });
+  await page.signIn();
+
+  const shown = page.element("qr");
+  assert.equal(shown.hidden, false, "the image stayed hidden");
+  assert.equal(shown.src, "data:image/svg+xml;utf8," + encodeURIComponent(svg));
+  assert.equal(page.element("secret").textContent, "JBSWY3DP");
+});
+
+test("an enrolment without an image keeps the image hidden", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "totp-register",
+          asks: { secret: "JBSWY3DP", otpauth: "otpauth://totp/main:ada?secret=JBSWY3DP" },
+        },
+      },
+    ],
+  });
+  await page.signIn();
+
+  assert.equal(page.element("qr").hidden, true);
+});

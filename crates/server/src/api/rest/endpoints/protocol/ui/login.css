@@ -139,6 +139,13 @@ button:focus-visible {
 }
 
 #key, #app > p { color: var(--muted); font-size: 14px; }
+#qr {
+  display: block;
+  width: 176px;
+  height: 176px;
+  margin: 8px auto;
+  border-radius: 6px;
+}
 #app code {
   display: inline-block;
   padding: 2px 6px;

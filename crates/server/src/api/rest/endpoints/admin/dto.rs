@@ -71,6 +71,8 @@ pub struct ClientBrief {
     pub name: String,
     pub enabled: bool,
     pub confidential: bool,
+    pub root_url: Option<String>,
+    pub web_origins: Vec<String>,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
 }
@@ -82,6 +84,8 @@ impl From<models::entities::client::ClientModel> for ClientBrief {
             name: client.name,
             enabled: client.enabled.unwrap_or(false),
             confidential: client.public_client != Some(true),
+            root_url: client.root_url,
+            web_origins: client.web_origins.unwrap_or_default(),
             redirect_uris: client.redirect_uris.unwrap_or_default(),
             post_logout_redirect_uris: client.post_logout_redirect_uris.unwrap_or_default(),
         }
@@ -137,6 +141,8 @@ pub struct ClientSpec {
     pub client_id: Option<String>,
     pub name: Option<String>,
     pub confidential: Option<bool>,
+    pub root_url: Option<String>,
+    pub web_origins: Option<Vec<String>>,
     pub redirect_uris: Option<Vec<String>>,
     pub post_logout_redirect_uris: Option<Vec<String>>,
     pub backchannel_logout_uri: Option<String>,

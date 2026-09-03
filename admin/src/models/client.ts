@@ -4,6 +4,8 @@ export interface ClientBrief {
   name: string;
   enabled: boolean;
   confidential: boolean;
+  root_url: string | null;
+  web_origins: string[];
   redirect_uris: string[];
   post_logout_redirect_uris: string[];
 }

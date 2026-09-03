@@ -58,13 +58,23 @@ const draft = ref({
   confidential: false,
   redirects: "",
   logouts: "",
+  root: "",
+  origins: "",
 });
 const bornSecret = ref("");
 function openMaking() {
   making.value = true;
   step.value = 1;
   bornSecret.value = "";
-  draft.value = { client_id: "", name: "", confidential: false, redirects: "", logouts: "" };
+  draft.value = {
+    client_id: "",
+    name: "",
+    confidential: false,
+    root: "",
+    origins: "",
+    redirects: "",
+    logouts: "",
+  };
 }
 function lines(held: string): string[] {
   return held
@@ -80,6 +90,8 @@ async function makeClient() {
       client_id: asked.client_id.trim(),
       name: asked.name.trim() || asked.client_id.trim(),
       confidential: asked.confidential,
+      root_url: asked.root.trim() || undefined,
+      web_origins: lines(asked.origins),
       redirect_uris: lines(asked.redirects),
       post_logout_redirect_uris: lines(asked.logouts),
     });
@@ -230,6 +242,15 @@ function finishMaking() {
 
       <form v-else-if="step === 2" class="flex flex-col gap-3 text-xs" @submit.prevent="makeClient">
         <label class="block text-[11px] font-medium text-muted">
+          {{ say("client-root") }} <AppHint name="client-root-help" />
+          <input
+            v-model="draft.root"
+            placeholder="https://app.example"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            spellcheck="false"
+          />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
           {{ say("client-redirects") }} <AppHint name="client-redirects-help" />
           <textarea
             v-model="draft.redirects"
@@ -243,6 +264,16 @@ function finishMaking() {
           {{ say("client-logouts") }} <AppHint name="client-logouts-help" />
           <textarea
             v-model="draft.logouts"
+            rows="2"
+            :placeholder="say('policy-blacklist-hint')"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            spellcheck="false"
+          ></textarea>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("client-origins") }} <AppHint name="client-origins-help" />
+          <textarea
+            v-model="draft.origins"
             rows="2"
             :placeholder="say('policy-blacklist-hint')"
             class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"

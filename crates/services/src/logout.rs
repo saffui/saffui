@@ -116,7 +116,15 @@ async fn landing(
     if !client
         .post_logout_redirect_uris
         .as_ref()
-        .is_some_and(|registered| registered.iter().any(|uri| uri == asked))
+        .is_some_and(|registered| {
+            registered.iter().any(|uri| {
+                uri == asked
+                    || (uri.starts_with('/')
+                        && client.root_url.as_deref().is_some_and(|root| {
+                            format!("{}{uri}", root.trim_end_matches('/')) == asked
+                        }))
+            })
+        })
     {
         return EndedAt::Refused;
     }

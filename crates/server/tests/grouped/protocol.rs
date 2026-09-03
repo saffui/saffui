@@ -5540,3 +5540,137 @@ async fn an_unknown_key_names_nobody() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
     assert_eq!(told["status"], "refused", "{told}");
 }
+
+/// Reshape one client at the store, for the doors the plane does not open.
+async fn reshape_client(
+    plane: &Plane,
+    client_id: &str,
+    reshape: impl FnOnce(&mut models::entities::client::ClientModel),
+) {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let mut client = store::providers::clients::load(&transaction, client_id)
+        .await
+        .expect("the clients table")
+        .expect("a planted client");
+    reshape(&mut client);
+    store::providers::clients::update(&transaction, &client)
+        .await
+        .expect("the clients table");
+    transaction.commit().await.expect("the reshape kept");
+}
+
+/// A relative registration leans on the client's own root: joined they spell
+/// exactly one address, and only that address is admitted.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_relative_redirect_leans_on_the_root() {
+    let plane = Plane::with_actions(&[]).await;
+    reshape_client(&plane, support::CONFIDENTIAL, |client| {
+        client.root_url = Some("https://app.example".into());
+        client.redirect_uris = Some(vec!["/oauth/return".into()]);
+    })
+    .await;
+
+    let mut asked = started(support::CONFIDENTIAL);
+    asked[2] = (
+        "redirect_uri",
+        "https://app.example/oauth/return".to_owned(),
+    );
+    let (status, _, _) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    assert_eq!(status, StatusCode::FOUND, "the joined address was refused");
+
+    // A different absolute address under no registration stays refused.
+    asked[2] = (
+        "redirect_uri",
+        "https://evil.example/oauth/return".to_owned(),
+    );
+    let (status, _, _) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    assert_ne!(
+        status,
+        StatusCode::FOUND,
+        "an unregistered address slipped by"
+    );
+
+    // The root gone, the relative registration matches nothing.
+    reshape_client(&plane, support::CONFIDENTIAL, |client| {
+        client.root_url = None;
+    })
+    .await;
+    asked[2] = (
+        "redirect_uri",
+        "https://app.example/oauth/return".to_owned(),
+    );
+    let (status, _, _) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    assert_ne!(
+        status,
+        StatusCode::FOUND,
+        "a rootless relative still matched"
+    );
+}
+
+/// CORS answers only what somebody registered: the preflight for a
+/// registered origin is admitted with the allow headers, any other origin is
+/// told no, and a real answer to a registered origin wears the origin back.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_browser_is_admitted_where_an_origin_was_registered() {
+    let plane = Plane::with_actions(&[]).await;
+    reshape_client(&plane, support::CONFIDENTIAL, |client| {
+        client.web_origins = Some(vec!["https://spa.example".into()]);
+    })
+    .await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+
+    let preflight = |origin: &'static str| {
+        test::TestRequest::with_uri(&format!(
+            "/realms/{}/protocol/openid-connect/token",
+            support::REALM
+        ))
+        .method(actix_web::http::Method::OPTIONS)
+        .insert_header(("origin", origin))
+        .to_request()
+    };
+    let response = test::call_service(&app, preflight("https://spa.example")).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|held| held.to_str().ok()),
+        Some("https://spa.example")
+    );
+    let response = test::call_service(&app, preflight("https://stranger.example")).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none(),
+        "a stranger was allowed"
+    );
+
+    // The real call wears the origin back, whatever the answer says inside.
+    let request = test::TestRequest::post()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/token",
+            support::REALM
+        ))
+        .insert_header(("origin", "https://spa.example"))
+        .insert_header(("content-type", "application/x-www-form-urlencoded"))
+        .set_payload("grant_type=authorization_code&code=nothing")
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    assert_eq!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|held| held.to_str().ok()),
+        Some("https://spa.example")
+    );
+}

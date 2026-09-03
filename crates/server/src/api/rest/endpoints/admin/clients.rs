@@ -125,6 +125,11 @@ pub async fn update(
         .map_err(|_| internal())?;
     let reshape = Reshape {
         name: asked.name.clone(),
+        root_url: asked
+            .root_url
+            .clone()
+            .map(|held| (!held.is_empty()).then_some(held)),
+        web_origins: asked.web_origins.clone(),
         redirect_uris: asked.redirect_uris.clone(),
         post_logout_redirect_uris: asked.post_logout_redirect_uris.clone(),
         backchannel_logout_uri: asked.backchannel_logout_uri.clone().map(Some),
@@ -184,6 +189,8 @@ fn spec_of(asked: &ClientSpec) -> Spec {
         registered: Default::default(),
         name: asked.name.clone(),
         confidential: asked.confidential.unwrap_or(true),
+        root_url: asked.root_url.clone().filter(|held| !held.is_empty()),
+        web_origins: asked.web_origins.clone().unwrap_or_default(),
         redirect_uris: asked.redirect_uris.clone().unwrap_or_default(),
         post_logout_redirect_uris: asked.post_logout_redirect_uris.clone().unwrap_or_default(),
         backchannel_logout_uri: asked.backchannel_logout_uri.clone(),

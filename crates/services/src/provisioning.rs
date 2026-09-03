@@ -597,6 +597,8 @@ pub async fn provision_client(
         return Ok(false);
     }
     let spec = admin::clients::Spec {
+        root_url: None,
+        web_origins: Vec::new(),
         name: None,
         confidential: registration.secret.is_some(),
         redirect_uris: registration.redirect_uris.clone(),
@@ -649,6 +651,8 @@ pub async fn provision_fapi_client(
         return Ok(false);
     }
     let spec = admin::clients::Spec {
+        root_url: None,
+        web_origins: Vec::new(),
         name: None,
         confidential: true,
         redirect_uris,

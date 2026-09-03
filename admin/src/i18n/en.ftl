@@ -723,3 +723,9 @@ preview-lands-both = both tokens
 
 ## Decoupled identities.
 user-rename-help = Renaming is the realm's to allow, under Login settings. The identifier underneath never moves: grants, sessions and the journal keep pointing where they pointed.
+
+## The client's own address, and the origins its scripts call from.
+client-root = Root URL
+client-root-help = The application's own base address. A redirect registered as a path, like /oauth/return, means exactly this root joined with it, and nothing else.
+client-origins = Web origins
+client-origins-help = Browser origins allowed to call the token endpoint and its kin from script, one per line: what CORS answers for this client. Write * to admit any origin, out loud.

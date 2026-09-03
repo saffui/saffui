@@ -326,3 +326,64 @@ test("an enrolment without an image keeps the image hidden", async () => {
 
   assert.equal(page.element("qr").hidden, true);
 });
+
+// The registration half: opened by its door, shaped by the realm's say, and
+// the sentence shown is the one the server's answer names.
+test("a realm registering by address hides the name and says check your mail", async () => {
+  const page = opened({
+    doors: "register register-email",
+    rounds: [{ status: 201, told: { status: "registered", verify: true } }],
+  });
+  assert.equal(page.element("signup-row").hidden, false);
+  await page.press("signup-open");
+  assert.equal(page.element("signup").hidden, false);
+  assert.equal(page.element("signup-name-row").hidden, true);
+
+  page.signupForm.signup_email.value = "ada@acme.test";
+  page.signupForm.signup_password.value = "a-password-of-decent-length";
+  page.signupForm.signup_again.value = "a-password-of-decent-length";
+  page.signupForm.fire("submit");
+  await page.settle();
+
+  assert.equal(page.sent[0].where, "/realms/main/protocol/openid-connect/signup");
+  assert.deepEqual(page.sent[0].body, {
+    email: "ada@acme.test",
+    password: "a-password-of-decent-length",
+  });
+  assert.equal(page.element("signup-verify").hidden, false);
+});
+
+test("mismatched passwords never leave the page", async () => {
+  const page = opened({ doors: "register", rounds: [] });
+  await page.press("signup-open");
+  page.signupForm.signup_email.value = "ada@acme.test";
+  page.signupForm.signup_password.value = "one-thing";
+  page.signupForm.signup_again.value = "another-thing";
+  page.signupForm.fire("submit");
+  await page.settle();
+
+  assert.equal(page.sent.length, 0, "a mismatch was posted anyway");
+  assert.equal(page.element("signup-mismatch").hidden, false);
+});
+
+test("a worded refusal is said as the server spelled it", async () => {
+  const page = opened({
+    doors: "register",
+    rounds: [{ status: 400, told: { status: "refused", reason: "this name is taken" } }],
+  });
+  await page.press("signup-open");
+  page.signupForm.signup_username.value = "ada";
+  page.signupForm.signup_email.value = "ada@acme.test";
+  page.signupForm.signup_password.value = "a-password-of-decent-length";
+  page.signupForm.signup_again.value = "a-password-of-decent-length";
+  page.signupForm.fire("submit");
+  await page.settle();
+
+  assert.equal(page.sent[0].body.username, "ada");
+  assert.equal(page.element("notice").textContent, "this name is taken");
+});
+
+test("a realm with no registration door never shows the invitation", async () => {
+  const page = opened({ rounds: [] });
+  assert.equal(page.element("signup-row").hidden, true);
+});

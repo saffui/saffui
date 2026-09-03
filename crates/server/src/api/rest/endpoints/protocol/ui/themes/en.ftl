@@ -130,3 +130,16 @@ recover-lede = Name your account and a reset link goes to its address.
 recover-send = Send the link
 recover-sent = If that account exists, mail is on its way.
 recover-back = Back to sign in
+
+## The registration half of the sign-in page.
+signup-invite = New here?
+signup-link = Create an account
+signup-title = Create your account
+signup-email = Email address
+signup-given = First name
+signup-family = Last name
+signup-again = Password, again
+signup-send = Create the account
+signup-done = Your account is ready. Sign in with it.
+signup-verify = Check your mail to continue: a verification is on its way.
+signup-mismatch = The two passwords are not the same.

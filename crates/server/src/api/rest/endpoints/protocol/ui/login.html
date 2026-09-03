@@ -53,6 +53,35 @@
     </div>
     <button type="submit" id="continue">{{action-continue}}</button>
   </form>
+  <p id="signup-row" hidden>{{signup-invite}} <a id="signup-open" href="#">{{signup-link}}</a></p>
+  <div id="signup" hidden>
+    <h2>{{signup-title}}</h2>
+    <form id="signup-form" method="post" novalidate>
+      <label id="signup-name-row">{{login-username}}
+        <input name="signup_username" autocomplete="username">
+      </label>
+      <label>{{signup-email}}
+        <input name="signup_email" type="email" autocomplete="email">
+      </label>
+      <label>{{signup-given}}
+        <input name="signup_given" autocomplete="given-name">
+      </label>
+      <label>{{signup-family}}
+        <input name="signup_family" autocomplete="family-name">
+      </label>
+      <label>{{login-password}}
+        <input name="signup_password" type="password" autocomplete="new-password">
+      </label>
+      <label>{{signup-again}}
+        <input name="signup_again" type="password" autocomplete="new-password">
+      </label>
+      <button type="submit" id="signup-send">{{signup-send}}</button>
+    </form>
+    <p id="signup-done" hidden>{{signup-done}}</p>
+    <p id="signup-verify" hidden>{{signup-verify}}</p>
+    <p id="signup-mismatch" hidden>{{signup-mismatch}}</p>
+    <p><a id="signup-back" href="#">{{recover-back}}</a></p>
+  </div>
   <div id="recover" hidden>
     <p>{{recover-lede}}</p>
     <form id="recover-form" method="post" novalidate>

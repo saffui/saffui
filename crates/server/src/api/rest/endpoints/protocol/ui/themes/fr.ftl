@@ -130,3 +130,16 @@ recover-lede = Nommez votre compte et un lien de réinitialisation part vers son
 recover-send = Envoyer le lien
 recover-sent = Si ce compte existe, le courriel est en route.
 recover-back = Retour à la connexion
+
+## La moitié inscription de la page de connexion.
+signup-invite = Première visite ?
+signup-link = Créer un compte
+signup-title = Créez votre compte
+signup-email = Adresse e-mail
+signup-given = Prénom
+signup-family = Nom
+signup-again = Mot de passe, encore
+signup-send = Créer le compte
+signup-done = Votre compte est prêt. Connectez-vous avec.
+signup-verify = Consultez votre messagerie pour continuer : une vérification est en route.
+signup-mismatch = Les deux mots de passe ne sont pas identiques.

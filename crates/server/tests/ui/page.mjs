@@ -110,6 +110,19 @@ export function opened({ rounds = [], fetching = true, doors = "" } = {}) {
   if (recoverForm) {
     recoverForm.recover = new Element("input", "recover");
   }
+  const signupForm = element("signup-form");
+  if (signupForm) {
+    for (const field of [
+      "signup_username",
+      "signup_email",
+      "signup_given",
+      "signup_family",
+      "signup_password",
+      "signup_again",
+    ]) {
+      signupForm[field] = new Element("input", field);
+    }
+  }
 
   const answers = [...rounds];
   const context = {
@@ -163,6 +176,7 @@ export function opened({ rounds = [], fetching = true, doors = "" } = {}) {
     },
     form,
     recoverForm,
+    signupForm,
     settle,
   };
 }

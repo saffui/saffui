@@ -19,6 +19,7 @@ authors.workspace = true
 # authentication without authentication calling back.
 
 [dependencies]
+qrcode = { workspace = true }
 commons = { workspace = true }
 models = { workspace = true }
 crypto = { workspace = true }

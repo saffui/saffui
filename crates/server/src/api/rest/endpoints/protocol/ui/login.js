@@ -221,6 +221,11 @@
       return;
     }
     if (told.execution === "totp-register" && told.asks) {
+      const qr = document.getElementById("qr");
+      qr.hidden = !told.asks.qr;
+      if (told.asks.qr) {
+        qr.src = "data:image/svg+xml;utf8," + encodeURIComponent(told.asks.qr);
+      }
       document.getElementById("otpauth").href = told.asks.otpauth;
       document.getElementById("secret").textContent = told.asks.secret;
       show(false, false, false, true);

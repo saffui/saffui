@@ -1166,6 +1166,52 @@ async fn reading_people_does_not_authorize_writing_them() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+/// The realm-wide listing sees the logins, and ending them empties it.
+///
+/// Half of a breach answer. The other half is the realm's cut, which refuses
+/// tokens already minted and is checked where a real token exists.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn every_login_in_the_realm_is_listed_and_can_be_ended_at_once() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead, AdminAction::UserWrite]).await;
+    let bearer = plane.token(&claims());
+    let listing = format!("/admin/realms/{REALM}/sessions");
+
+    let (status, listed) = fetched(&plane, Method::GET, &listing, &bearer).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let rows = listed["items"].as_array().expect("a page").clone();
+    assert!(
+        rows.iter().any(|row| row["login_username"] == SUBJECT),
+        "the realm listing did not name the live login: {listed}"
+    );
+    // No grants on a realm-wide row: the listing is read to find something in a
+    // realm that may hold thousands, and a query per row would make the screen
+    // somebody opens during a breach the slowest in the console.
+    assert!(
+        rows.iter().all(|row| row.get("grants").is_none()),
+        "a realm-wide row paid for its grants: {listed}"
+    );
+
+    let (status, ended) = fetched(&plane, Method::DELETE, &listing, &bearer).await;
+    assert_eq!(status, StatusCode::OK, "{ended}");
+    assert!(
+        ended["ended"].as_u64().is_some_and(|held| held > 0),
+        "{ended}"
+    );
+    // Said in the answer rather than left for somebody to discover.
+    assert_eq!(
+        ended["tokens_still_valid_until_their_span"], true,
+        "{ended}"
+    );
+
+    // Every login means every login, the operator's own included: their token
+    // is bound to a session that no longer exists, so the very next call is
+    // refused. Worth knowing before pressing it, and worth keeping true: a
+    // lever that spared whoever pulled it would not be the lever it claims.
+    let (status, refused) = fetched(&plane, Method::GET, &listing, &bearer).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
+}
+
 
 /// The grants an operator turns on, over the plane and then in the engines.
 ///

@@ -5674,6 +5674,94 @@ async fn the_browser_is_admitted_where_an_origin_was_registered() {
         Some("https://spa.example")
     );
 }
+/// The realm's cut refuses a token minted before it and admits one minted
+/// after, judged against what the token says of itself.
+///
+/// The lever a breach is answered with. The boundary is walked from both sides
+/// with one token rather than by minting two and hoping the clock separated
+/// them: a cut one second past the token refuses it, a cut one second before it
+/// does not, and lifting the cut lets it back in. A test that only ever moved
+/// the cut forward would pass just as well against a gate that refused
+/// everything.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realms_cut_refuses_every_token_minted_before_it() {
+    let plane = Plane::with_actions(&[]).await;
+    let code = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid profile", None)
+        .await;
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let token = granted["access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+    let minted_at = claims_in(&token)["iat"].as_i64().expect("an instant");
+
+    let (status, told, _) = userinfo(&plane, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    // One second past the token: refused.
+    async fn strike(plane: &Plane, at: i64) {
+        reshape_realm(plane, move |realm| {
+            realm.not_before = Some(i32::try_from(at).expect("an instant that fits"));
+        })
+        .await;
+    }
+    strike(&plane, minted_at + 1).await;
+    let (status, refused, _) = userinfo(&plane, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a token minted before the cut was still answered: {refused}"
+    );
+
+    // One second before it: admitted. The cut compares against the token's own
+    // instant rather than refusing whatever it is shown.
+    strike(&plane, minted_at - 1).await;
+    let (status, told, _) = userinfo(&plane, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the cut refused a token minted after it: {told}"
+    );
+
+    // Lifted: the cut is an instant to compare against, not a mark burned into
+    // the tokens themselves.
+    strike(&plane, minted_at + 1).await;
+    reshape_realm(&plane, |realm| {
+        realm.not_before = None;
+    })
+    .await;
+    let (status, told, _) = userinfo(&plane, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the lifted cut still refused: {told}"
+    );
+}
+
+/// The claims of a compact token, unverified: a test reading what a token says
+/// of itself, never a check.
+fn claims_in(token: &str) -> serde_json::Value {
+    let payload = token.split('.').nth(1).expect("a compact token");
+    serde_json::from_slice(
+        &data_encoding::BASE64URL_NOPAD
+            .decode(payload.as_bytes())
+            .expect("base64"),
+    )
+    .expect("a json payload")
+}
+
 
 /// The whole way back: the realm asks for a sheet, it is shown once, one code
 /// typed back keeps it, and then a code off it stands where the second factor

@@ -47,6 +47,10 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/pages/settings/KeysPage.vue"),
       },
       {
+        path: "sessions",
+        component: () => import("@/pages/settings/RealmSessionsPage.vue"),
+      },
+      {
         path: "theme",
         component: () => import("@/pages/settings/ThemePage.vue"),
       },

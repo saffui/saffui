@@ -30,6 +30,38 @@ pub async fn of_user(
     Ok(held)
 }
 
+/// Everything open in this realm, newest first, one page at a time.
+///
+/// Without the client grants: a realm's listing is read to find something, and
+/// paying a query per row to decorate a page nobody has narrowed yet is how a
+/// screen for a breach becomes the slowest one in the console. What a grant
+/// list is for is one session, and that listing already exists.
+pub async fn list_sessions_of_realm(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+    offset: i64,
+    limit: i64,
+) -> Result<Vec<UserSessionModel>, Unreachable> {
+    sessions::load_for_realm(transaction, realm_id, offset, limit)
+        .await
+        .map_err(|_| Unreachable::Unreadable)
+}
+
+/// End every login in this realm, saying how many went.
+///
+/// Half of a breach answer, and it says so: the sessions stop renewing, while
+/// the access tokens already handed out live out their span unless the realm's
+/// cut is struck too. A console that offers one without the other offers a
+/// revocation that is not one.
+pub async fn end_sessions_of_realm(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+) -> Result<u64, Unreachable> {
+    sessions::end_all_of_realm(transaction, realm_id)
+        .await
+        .map_err(|_| Unreachable::Unreadable)
+}
+
 /// End one login of this person, and everything any client got out of it.
 ///
 /// Named through the person it belongs to, so an identifier from somebody

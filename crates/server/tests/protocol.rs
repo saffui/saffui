@@ -5426,3 +5426,117 @@ async fn an_authenticator_enrolment_hands_the_scannable_code() {
         "not an SVG: {drawn}"
     );
 }
+
+/// Key alone: nobody typed, the challenge names no credentials, the answer
+/// itself names the person, and the realm door decides whether any of it
+/// happens at all.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_passkey_alone_signs_in_where_the_realm_allows_it() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::PASSKEY_FLOW)
+        .await;
+    let mut key = plane.enrol_soft_passkey().await;
+
+    // The realm has not opened the door: asking is refused, not challenged.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "webauthn_discover": true }),
+    )
+    .await;
+    assert_ne!(told["status"], "admitted", "{told}");
+    assert!(
+        told.get("asks")
+            .and_then(|asks| asks.get("publicKey"))
+            .is_none(),
+        "a closed door still issued a key challenge: {told}"
+    );
+
+    reshape_realm(&plane, |realm| {
+        realm.webauthn_passwordless = Some(true);
+    })
+    .await;
+
+    // Open: the ask is answered with a challenge that names no credentials.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "webauthn_discover": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge", "{told}");
+    let asks = told.get("asks").expect("a challenge");
+    assert!(asks.get("publicKey").is_some(), "{asks}");
+    let named = asks["publicKey"]["allowCredentials"]
+        .as_array()
+        .map(Vec::len)
+        .unwrap_or(0);
+    assert_eq!(
+        named, 0,
+        "a discoverable challenge named credentials: {asks}"
+    );
+
+    // The key answers; no name ever typed; the person is established.
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "webauthn_discover": true,
+            "webauthn": key.answer(asks, support::ORIGIN),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(admitted["status"], "admitted", "{admitted}");
+}
+
+/// A credential nobody enrolled names nobody: the answer fails like a wrong
+/// password, and which keys exist here stays unsaid.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_unknown_key_names_nobody() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::PASSKEY_FLOW)
+        .await;
+    reshape_realm(&plane, |realm| {
+        realm.webauthn_passwordless = Some(true);
+    })
+    .await;
+    // A key that exists but was never enrolled here.
+    let mut stranger = support::soft_key::SoftKey::new();
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "webauthn_discover": true }),
+    )
+    .await;
+    let asks = told.get("asks").expect("a challenge");
+
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "webauthn_discover": true,
+            "webauthn": stranger.answer(asks, support::ORIGIN),
+        }),
+    )
+    .await;
+    // The same refusal a wrong password earns; nothing says whether the key
+    // was close.
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["status"], "refused", "{told}");
+}

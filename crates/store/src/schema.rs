@@ -463,6 +463,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V076__realm_ciba_bounds.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 77,
+            name: "realm_webauthn_passwordless",
+            sql: include_str!("../migrations/V077__realm_webauthn_passwordless.sql"),
+            transactional: true,
+        }),
     ]
 }
 

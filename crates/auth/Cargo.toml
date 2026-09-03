@@ -35,7 +35,7 @@ deadpool-postgres = { workspace = true }
 thiserror = { workspace = true }
 secrecy = { workspace = true }
 data-encoding = { workspace = true }
-webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 url.workspace = true
 uuid = { version = "1", features = ["v5"] }
 async-trait = { workspace = true }

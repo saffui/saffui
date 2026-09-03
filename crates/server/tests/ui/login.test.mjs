@@ -387,3 +387,21 @@ test("a realm with no registration door never shows the invitation", async () =>
   const page = opened({ rounds: [] });
   assert.equal(page.element("signup-row").hidden, true);
 });
+
+// The passkey door: shown by its token, and the click asks for a key round
+// with the typed halves dropped.
+test("the passkey door asks for a key round with no name attached", async () => {
+  const page = opened({
+    doors: "passkey",
+    rounds: [{ told: { status: "challenge" } }],
+  });
+  assert.equal(page.element("passkey-open").hidden, false);
+  page.form.username.value = "typed-then-abandoned";
+  await page.press("passkey-open");
+  assert.deepEqual(page.sent[0].body, { webauthn_discover: true });
+});
+
+test("no passkey door without the realm's say", async () => {
+  const page = opened({ rounds: [] });
+  assert.equal(page.element("passkey-open").hidden, true);
+});

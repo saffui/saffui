@@ -153,6 +153,7 @@ pub async fn answer_step(
         tenant,
         &realm,
         &login,
+        answers,
         username,
         federations,
         now,
@@ -592,11 +593,16 @@ fn noted<'a>(notes: &'a Value, named: &str) -> Option<&'a str> {
 /// federates one, and a person it answers with is written as a shadow row
 /// marked as the directory's: the row is a mirror for the flow to run
 /// against, and the directory stays the authority on the password.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about who is answering"
+)]
 async fn named_subject(
     transaction: &Transaction<'_>,
     tenant: &TenantContext,
     realm: &models::entities::realm::RealmModel,
     login: &AuthSession,
+    answers: &[Answer],
     username: Option<&str>,
     federations: &[crate::login::directory::Named<'_>],
     now: DateTime<Utc>,
@@ -613,6 +619,23 @@ async fn named_subject(
             .filter(|held| held.enabled));
     }
     let Some(named) = username.filter(|named| !named.is_empty()) else {
+        // No name typed. Where the realm signs in by key alone, the handed
+        // credential itself names the person: the key was enrolled to exactly
+        // one account, and the verification still has to pass downstream.
+        if realm.webauthn_passwordless == Some(true)
+            && let Some(Answer::Webauthn(handed_back)) = answers
+                .iter()
+                .find(|answer| matches!(answer, Answer::Webauthn(_)))
+            && let Ok(presented) =
+                serde_json::from_str::<webauthn_rs::prelude::PublicKeyCredential>(handed_back)
+            && let Ok(Some(enrolled)) =
+                store::providers::webauthn::by_id(transaction, presented.raw_id.as_ref()).await
+        {
+            return Ok(users::load(transaction, &enrolled.user_id)
+                .await
+                .map_err(|_| Unanswerable::Unreadable)?
+                .filter(|held| held.enabled));
+        }
         return Ok(None);
     };
     if let Some(standing) = users::load_by_name(transaction, named)

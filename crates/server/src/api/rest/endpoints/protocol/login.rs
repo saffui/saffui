@@ -29,6 +29,9 @@ pub struct Answered {
     pub totp: Option<String>,
     /// What a key handed back, as the JSON the browser produced.
     pub webauthn: Option<String>,
+    /// The person asked to sign in by key alone; the step answers with a
+    /// challenge that names no credentials.
+    pub webauthn_discover: Option<bool>,
     /// The attestation for a key the realm told this user to enrol.
     pub webauthn_register: Option<String>,
     /// The code proving an authenticator app the realm told this user to set
@@ -117,6 +120,9 @@ pub async fn answer(
     }
     if let Some(handed_back) = filled(&answered.webauthn) {
         answers.push(Answer::Webauthn(handed_back));
+    }
+    if answered.webauthn_discover == Some(true) {
+        answers.push(Answer::WebauthnAsk);
     }
     if let Some(followed) = filled(&answered.magic_link) {
         answers.push(Answer::MagicLink(secrecy::SecretBox::new(Box::new(

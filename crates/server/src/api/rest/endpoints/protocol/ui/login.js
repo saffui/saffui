@@ -52,6 +52,16 @@
   document.getElementById("keep").hidden = doors.indexOf("remember") === -1;
   document.getElementById("forgot-row").hidden = doors.indexOf("reset") === -1;
   document.getElementById("signup-row").hidden = doors.indexOf("register") === -1;
+  const passkeyOpen = document.getElementById("passkey-open");
+  passkeyOpen.hidden = doors.indexOf("passkey") === -1;
+  // Key alone: the round asks for a challenge naming no credentials, and the
+  // ceremony that answers it is the one every key challenge already uses.
+  passkeyOpen.addEventListener("click", function () {
+    answered.webauthn_discover = true;
+    delete answered.username;
+    delete answered.password;
+    round();
+  });
 
   // The registration half. A realm registering by address alone never shows
   // the name field; the address is the identifier and the server knows it.

@@ -682,3 +682,10 @@ ciba-expiry = Durée de vie des requêtes backchannel
 ciba-expiry-help = Combien de secondes une requête sonnette reste répondable, 30 à 600. À la fois défaut et plafond : un client peut demander moins, jamais plus. Les requêtes déjà ouvertes gardent leur durée de naissance.
 ciba-interval = Intervalle de sondage backchannel
 ciba-interval-help = Combien de secondes un client attend entre deux sondages, 1 à 60. Les requêtes déjà ouvertes gardent leur intervalle de naissance.
+
+## Connexion sans mot de passe par passkey.
+passwordless-title = Sans mot de passe
+passwordless-title-help = Se connecter avec une passkey seule, sans identifiant demandé d'abord. La clé nomme la personne ; les réglages passkey du realm ci-dessus façonnent toujours la cérémonie.
+passwordless-enable = Connexion par passkey seule
+passwordless-enable-help = Affiche une porte « se connecter avec une passkey » sur la page de connexion. Le défi ne nomme aucune crédential ; l'authentificateur découvre la sienne, et seule une clé enrôlée ici nomme quelqu'un.
+passwordless-fixed-line = Les termes de la cérémonie sont fixés par le build : vérification utilisateur exigée, et la clé doit être découvrable. Les clés enrôlées avant ce build peuvent devoir être ré-enrôlées pour être trouvées.

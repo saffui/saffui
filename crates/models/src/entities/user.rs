@@ -28,6 +28,9 @@ str_enum! {
         VerifyEmail => "verify-email",
         ConfigureTotp => "configure-totp",
         ConfigureWebauthn => "configure-webauthn",
+        /// Draw a set of one-shot codes, the way back when the second
+        /// factor is lost.
+        ConfigureRecoveryCodes => "configure-recovery-codes",
     }
 }
 

@@ -15,6 +15,7 @@ commons = { workspace = true }
 models = { workspace = true }
 pgcore = { workspace = true }
 crypto = { workspace = true }
+data-encoding = { workspace = true }
 tokio-postgres = { workspace = true }
 deadpool-postgres = { workspace = true }
 postgres-types = { workspace = true }

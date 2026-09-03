@@ -144,3 +144,9 @@ signup-done = Your account is ready. Sign in with it.
 signup-verify = Check your mail to continue: a verification is on its way.
 signup-mismatch = The two passwords are not the same.
 login-passkey = Sign in with a passkey
+
+## Recovery codes: the way back when the second factor is gone.
+recovery-use = Use a recovery code
+recovery-code = Recovery code
+recovery-keep = Keep these somewhere safe. Each one signs you in once, and this is the only time they are shown.
+recovery-confirm = Type one of them back to confirm you kept them

@@ -43,6 +43,7 @@
   const deny = document.getElementById("deny");
   const whichOrg = document.getElementById("which-org");
   const whichOrgList = document.getElementById("which-org-list");
+  const recoveryRow = document.getElementById("recovery-row");
   const recover = document.getElementById("recover");
   const recoverForm = document.getElementById("recover-form");
   const recoverSent = document.getElementById("recover-sent");
@@ -54,6 +55,15 @@
   document.getElementById("signup-row").hidden = doors.indexOf("register") === -1;
   const passkeyOpen = document.getElementById("passkey-open");
   passkeyOpen.hidden = doors.indexOf("passkey") === -1;
+  // Whether this realm's flow has a step that takes a printed code. The link
+  // only ever appears beside a second factor, so it is hidden until then.
+  const printedCodes = doors.indexOf("recovery-code") !== -1;
+  document.getElementById("recovery-open").addEventListener("click", function (event) {
+    event.preventDefault();
+    only("recovery");
+    recoveryRow.hidden = true;
+    form.recovery_code.focus();
+  });
   // Key alone: the round asks for a challenge naming no credentials, and the
   // ceremony that answers it is the one every key challenge already uses.
   passkeyOpen.addEventListener("click", function () {
@@ -171,11 +181,15 @@
     notice.hidden = !text;
   }
 
-  function show(credentialsOn, codeOn, keyOn, appOn) {
-    credentials.hidden = !credentialsOn;
-    code.hidden = !codeOn;
-    key.hidden = !keyOn;
-    app.hidden = !appOn;
+  // The panels one round can put in front of a person, by name. Named and not
+  // positional: six booleans in a row is a call nobody reads correctly twice,
+  // and the one that gets it wrong shows a person the wrong field.
+  const PANELS = ["credentials", "code", "recovery", "key", "app", "sheet"];
+
+  function only(...wanted) {
+    PANELS.forEach(function (id) {
+      document.getElementById(id).hidden = wanted.indexOf(id) < 0;
+    });
     asking.hidden = true;
     whichOrg.hidden = true;
     button.hidden = false;
@@ -202,12 +216,8 @@
       line.textContent = scopeName(scope);
       askingScopes.appendChild(line);
     });
-    credentials.hidden = true;
-    code.hidden = true;
-    key.hidden = true;
-    app.hidden = true;
+    only();
     asking.hidden = false;
-    whichOrg.hidden = true;
     // The two buttons are the answer, so the form's own has nothing to do.
     button.hidden = true;
   }
@@ -226,11 +236,7 @@
       });
       whichOrgList.appendChild(pick);
     });
-    credentials.hidden = true;
-    code.hidden = true;
-    key.hidden = true;
-    app.hidden = true;
-    asking.hidden = true;
+    only();
     whichOrg.hidden = false;
     // The buttons are the answer, so the form's own has nothing to do.
     button.hidden = true;
@@ -242,9 +248,13 @@
     delete answered.webauthn;
     delete answered.webauthn_register;
     delete answered.totp_register;
+    delete answered.recovery_code;
+    delete answered.recovery_codes_register;
     form.password.value = "";
     form.totp.value = "";
     form.totp_register.value = "";
+    form.recovery_code.value = "";
+    form.recovery_codes_register.value = "";
   }
 
   // The page is served at the URL it posts to, so the realm is never parsed.
@@ -309,7 +319,7 @@
     }
     if (told.status === "refused") {
       forget();
-      show(true, false, false);
+      only("credentials");
       say(spoken("refused"));
       return;
     }
@@ -323,7 +333,7 @@
     }
     if (told.status === "locked-out") {
       forget();
-      show(true, false, false);
+      only("credentials");
       say(spoken("locked-out"));
       return;
     }
@@ -339,16 +349,34 @@
       }
       document.getElementById("otpauth").href = told.asks.otpauth;
       document.getElementById("secret").textContent = told.asks.secret;
-      show(false, false, false, true);
+      only("app");
       form.totp_register.focus();
+      return;
+    }
+    if (told.execution === "recovery-codes-register" && told.asks) {
+      const list = document.getElementById("sheet-codes");
+      list.replaceChildren();
+      (told.asks.codes || []).forEach(function (drawn) {
+        const line = document.createElement("li");
+        // Written as text. The codes are this server's own, and markup is
+        // still the wrong way to put anything on a page.
+        line.textContent = drawn;
+        list.appendChild(line);
+      });
+      only("sheet");
+      form.recovery_codes_register.focus();
       return;
     }
     if (told.asks) {
       return ceremony(told);
     }
-    // A step that issues nothing and still waits is a code from an app.
+    // A step that issues nothing and still waits is a code from an app. The
+    // sheet answers the same place, so its link stands beside the field rather
+    // than replacing it: whoever still has the phone should not have to spend
+    // a printed code to use it.
     if (answered.password) {
-      show(false, true, false);
+      only("code");
+      recoveryRow.hidden = !printedCodes;
       form.totp.focus();
     }
   }
@@ -360,7 +388,7 @@
       say(spoken("no-key-here"));
       return Promise.resolve();
     }
-    show(false, false, true);
+    only("key");
     const options = told.asks.publicKey;
     let asked;
     if (told.execution === "webauthn-register") {
@@ -384,7 +412,7 @@
     // The key's own refusal is answered here. A failure of the round it starts
     // is not: that one belongs to the round, which says its own piece.
     return asked.then(round, function () {
-      show(true, false, false);
+      only("credentials");
       say(spoken("key-silent"));
     });
   }
@@ -406,6 +434,10 @@
     if (form.remember && form.remember.checked) answered.remember_me = true;
     if (form.totp.value) answered.totp = form.totp.value;
     if (form.totp_register.value) answered.totp_register = form.totp_register.value;
+    if (form.recovery_code.value) answered.recovery_code = form.recovery_code.value;
+    if (form.recovery_codes_register.value) {
+      answered.recovery_codes_register = form.recovery_codes_register.value;
+    }
     round();
   });
 })();

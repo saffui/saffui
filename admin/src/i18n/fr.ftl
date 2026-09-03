@@ -729,3 +729,10 @@ client-root = URL racine
 client-root-help = L'adresse de base de l'application. Un redirect enregistré comme chemin, tel /oauth/return, signifie exactement cette racine jointe à lui, et rien d'autre.
 client-origins = Origins web
 client-origins-help = Les origins navigateur autorisées à appeler le endpoint de jetons et les siens depuis un script, une par ligne : ce que CORS répond pour ce client. Écrivez * pour tout admettre, à voix haute.
+
+## La feuille imprimée, et ce qu'il en reste.
+user-recovery-codes = Codes de récupération
+user-recovery-codes-help = Des codes que la personne imprime une fois et dépense un par un, le chemin de retour quand son téléphone a disparu. Le serveur n'en garde que des empreintes : personne ici ne peut lire la feuille, un administrateur peut seulement en demander une neuve, ce qui retire l'ancienne.
+user-recovery-left = { $count } codes restants
+user-recovery-none = Aucune feuille tirée
+user-recovery-ask = Demander une feuille neuve

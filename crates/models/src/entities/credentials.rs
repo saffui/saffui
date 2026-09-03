@@ -212,6 +212,32 @@ impl CredentialModel {
         }
     }
 
+    /// One code of a printed set.
+    ///
+    /// The secret is a digest and not the code: eighty bits of entropy need no
+    /// stretching, and a database read must not hand anybody a second factor.
+    /// One row per code, so spending one is a row leaving and the count of what
+    /// is left is a count of rows.
+    pub fn recovery_code(
+        credential_id: String,
+        realm_id: String,
+        user_id: String,
+        digest: CredentialSecret,
+        metadata: AuditableModel,
+    ) -> Self {
+        Self {
+            credential_id,
+            realm_id,
+            user_id,
+            credential_type: CredentialType::RecoveryCode,
+            user_label: None,
+            secret: digest,
+            otp: None,
+            priority: 0,
+            metadata,
+        }
+    }
+
     /// Advance a counter-based credential. Does nothing to a time-based one,
     /// which has no counter to advance.
     pub fn advance_counter(&mut self, to: u64) -> bool {

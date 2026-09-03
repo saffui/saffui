@@ -37,6 +37,10 @@ pub struct Answered {
     /// The code proving an authenticator app the realm told this user to set
     /// up was set up.
     pub totp_register: Option<String>,
+    /// One code off the printed sheet, answering a second factor.
+    pub recovery_code: Option<String>,
+    /// One code typed back off the sheet just shown, proving it was kept.
+    pub recovery_codes_register: Option<String>,
     /// What a mailed link carried, as the page it landed on posted it.
     pub magic_link: Option<String>,
     /// The same, for a link confirming an address.
@@ -118,6 +122,9 @@ pub async fn answer(
     if let Some(typed) = filled(&answered.totp) {
         answers.push(Answer::Totp(typed));
     }
+    if let Some(typed) = filled(&answered.recovery_code) {
+        answers.push(Answer::RecoveryCode(SecretBox::new(Box::new(typed))));
+    }
     if let Some(handed_back) = filled(&answered.webauthn) {
         answers.push(Answer::Webauthn(handed_back));
     }
@@ -131,6 +138,7 @@ pub async fn answer(
     }
     let attestation = filled(&answered.webauthn_register);
     let code = filled(&answered.totp_register);
+    let kept = filled(&answered.recovery_codes_register);
 
     // The desktop ticket, when the realm answers that door and the browser
     // carried one. Reduced to a principal here, at the listener, so the flow
@@ -247,6 +255,7 @@ pub async fn answer(
             attestation: attestation.as_deref(),
             code: code.as_deref(),
             verified_address: answered.verify_email.as_deref(),
+            kept: kept.as_deref(),
         },
         &read_provenance(&request),
         sealing.sender.is_some(),

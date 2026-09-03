@@ -95,6 +95,9 @@ pub const KEYED_FLOW: &str = "browser-keyed";
 
 /// A flow that is one key step: what a passwordless realm binds.
 pub const PASSKEY_FLOW: &str = "browser-passkey";
+
+/// A password, then a sheet: the two steps a recovery code stands between.
+pub const SHEET_FLOW: &str = "browser-sheet";
 pub const PASSWORD_ACR: &str = "password";
 pub const STRONG_ACR: &str = "mfa";
 /// What the browser is bound by. Named here so a test asks for the same cookie
@@ -812,6 +815,18 @@ impl Plane {
             .await
             .expect("the realms table");
         transaction.commit().await.unwrap();
+    }
+
+    /// How many codes are left on the subject's sheet.
+    #[allow(dead_code, reason = "only the protocol suite asks")]
+    pub async fn recovery_codes_left(&self) -> i64 {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::credentials::count_recovery_codes(&transaction, SUBJECT)
+            .await
+            .expect("the credentials table")
     }
 
     /// What still stands against the subject.
@@ -1843,6 +1858,37 @@ impl Plane {
         store::providers::auth_flows::create_execution(&transaction, &step)
             .await
             .unwrap();
+
+        let sheet = models::entities::auth::AuthenticationFlowMutationModel {
+            alias: SHEET_FLOW.into(),
+            provider_id: "basic-flow".into(),
+            description: String::new(),
+            top_level: Some(true),
+            built_in: Some(false),
+        }
+        .into_model(SHEET_FLOW.into(), REALM.into(), metadata());
+        store::providers::auth_flows::create_flow(&transaction, &sheet)
+            .await
+            .unwrap();
+        for (id, authenticator, priority) in [
+            ("exec-sheet-1", "password", 10),
+            ("exec-sheet-2", "recovery-code", 20),
+        ] {
+            let step = models::entities::auth::AuthenticationExecutionMutationModel {
+                alias: id.into(),
+                flow_id: SHEET_FLOW.into(),
+                priority,
+                step: models::entities::auth::ExecutionStep::Authenticator {
+                    authenticator: authenticator.into(),
+                    config_id: None,
+                },
+                requirement: models::entities::auth::AuthenticatorRequirement::Required,
+            }
+            .into_model(id.into(), REALM.into(), metadata());
+            store::providers::auth_flows::create_execution(&transaction, &step)
+                .await
+                .unwrap();
+        }
 
         let user = UserCreateModel {
             user_name: SUBJECT.into(),

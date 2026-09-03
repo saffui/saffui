@@ -32,6 +32,12 @@
         <input name="totp" inputmode="numeric" autocomplete="one-time-code">
       </label>
     </div>
+    <p id="recovery-row" hidden><a id="recovery-open" href="#">{{recovery-use}}</a></p>
+    <div id="recovery" hidden>
+      <label>{{recovery-code}}
+        <input name="recovery_code" autocomplete="one-time-code" spellcheck="false">
+      </label>
+    </div>
     <p id="key" hidden>{{passkey-waiting}}</p>
     <div id="app" hidden>
       <p>{{enroll-add}}</p>
@@ -40,6 +46,13 @@
       <p>{{enroll-secret-label}}: <code id="secret"></code></p>
       <label>{{enroll-code}}
         <input name="totp_register" inputmode="numeric" autocomplete="one-time-code">
+      </label>
+    </div>
+    <div id="sheet" hidden>
+      <p>{{recovery-keep}}</p>
+      <ul id="sheet-codes"></ul>
+      <label>{{recovery-confirm}}
+        <input name="recovery_codes_register" autocomplete="off" spellcheck="false">
       </label>
     </div>
     <div id="asking" hidden>

@@ -16,6 +16,7 @@ import {
   listMemberGroups,
   listMemberOrganizations,
   listSessions,
+  countRecoveryCodes,
   listWebAuthnKeys,
   revokeRoleFromUser,
   revokeWebAuthnKey,
@@ -48,6 +49,9 @@ const tab = ref<(typeof TABS)[number]>("overview");
 const user = ref<UserFull | null>(null);
 const lockout = ref<Lockout | null>(null);
 const keys = ref<KeyBrief[]>([]);
+/// How many codes are left on the sheet. Never the codes: the server counts
+/// them and hands nobody the set, this drawer included.
+const codesLeft = ref(0);
 const sessions = ref<SessionBrief[]>([]);
 const consents = ref<ConsentBrief[]>([]);
 const roles = ref<RoleBrief[]>([]);
@@ -89,6 +93,7 @@ const REQUIRED_ACTIONS = [
   "verify-email",
   "configure-totp",
   "configure-webauthn",
+  "configure-recovery-codes",
 ] as const;
 const askedActions = ref<string[]>([]);
 const askOpen = ref(false);
@@ -106,6 +111,7 @@ async function load() {
       user.value,
       lockout.value,
       keys.value,
+      codesLeft.value,
       sessions.value,
       consents.value,
       roles.value,
@@ -115,6 +121,7 @@ async function load() {
       getUser(props.realm, props.userId),
       getLockout(props.realm, props.userId),
       listWebAuthnKeys(props.realm, props.userId),
+      countRecoveryCodes(props.realm, props.userId),
       listSessions(props.realm, props.userId),
       listConsents(props.realm, props.userId),
       listEffectiveRoles(props.realm, props.userId),
@@ -159,6 +166,23 @@ async function saveProfile() {
 function dropAction(action: string) {
   askedActions.value = askedActions.value.filter((held) => held !== action);
 }
+/// Ask this person for a fresh sheet, and write it now.
+///
+/// Not the draft the overview saves: a button that changes something two tabs
+/// away and only when somebody remembers to press Save is a button that lies
+/// about what it did.
+async function askForRecoveryCodes() {
+  if (askedActions.value.includes("configure-recovery-codes")) return;
+  try {
+    await updateUser(props.realm, props.userId, {
+      required_actions: [...askedActions.value, "configure-recovery-codes"],
+    });
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
 function askFor(action: string) {
   if (!askedActions.value.includes(action)) askedActions.value.push(action);
   askOpen.value = false;
@@ -526,6 +550,22 @@ function instant(epoch: number | null | undefined): string {
           @click="onRevokeKey(key.credential_id)"
         >
           {{ say("user-revoke") }}
+        </button>
+      </div>
+
+      <div class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("user-recovery-codes") }} <AppHint name="user-recovery-codes-help" />
+      </div>
+      <div class="mt-2 flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-xs">
+        <span :class="codesLeft ? 'text-ink' : 'text-muted'">
+          {{ codesLeft ? say("user-recovery-left", { count: codesLeft }) : say("user-recovery-none") }}
+        </span>
+        <button
+          type="button"
+          class="ml-auto rounded-md border border-border px-2 py-1 text-[11px] hover:bg-surface-2"
+          @click="askForRecoveryCodes"
+        >
+          {{ say("user-recovery-ask") }}
         </button>
       </div>
     </div>

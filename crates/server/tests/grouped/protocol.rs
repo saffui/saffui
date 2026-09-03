@@ -5674,3 +5674,143 @@ async fn the_browser_is_admitted_where_an_origin_was_registered() {
         Some("https://spa.example")
     );
 }
+
+/// The whole way back: the realm asks for a sheet, it is shown once, one code
+/// typed back keeps it, and then a code off it stands where the second factor
+/// stood. Spent once and never again.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_printed_sheet_is_drawn_once_and_each_code_spent_once() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .require_of_subject(RequiredAction::ConfigureRecoveryCodes)
+        .await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    // The password admits the flow; the instruction runs before the login ends.
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert_eq!(told["execution"], "recovery-codes-register", "{told}");
+    let drawn: Vec<String> = told["asks"]["codes"]
+        .as_array()
+        .expect("a sheet")
+        .iter()
+        .map(|code| code.as_str().expect("a code").to_owned())
+        .collect();
+    assert_eq!(drawn.len(), 10, "{told}");
+    assert_eq!(
+        drawn.iter().collect::<std::collections::HashSet<_>>().len(),
+        drawn.len(),
+        "the sheet repeated itself: {drawn:?}"
+    );
+
+    // Nothing is kept until the sheet is confirmed: a person who closed the
+    // window has no codes rather than ten they never saw.
+    assert_eq!(plane.recovery_codes_left().await, 0);
+
+    // A code that was not on the sheet does not confirm it.
+    let (status, refused, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "recovery_codes_register": "aaaa-bbbb-cccc-dddd",
+        }),
+    )
+    .await;
+    // A refused enrolment ends the login, the way a wrong enrolment code for an
+    // authenticator app does. Nothing was kept.
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
+    assert_eq!(refused["status"], "refused", "{refused}");
+    assert_eq!(plane.recovery_codes_left().await, 0);
+
+    // One typed back, formatted the way a person would retype it: the whole
+    // set is kept and the instruction is struck.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let drawn: Vec<String> = told["asks"]["codes"]
+        .as_array()
+        .expect("a sheet")
+        .iter()
+        .map(|code| code.as_str().expect("a code").to_owned())
+        .collect();
+    let retyped = drawn[3].replace('-', " ").to_uppercase();
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "recovery_codes_register": retyped,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(admitted["status"], "admitted", "{admitted}");
+    assert_eq!(plane.subject_owes().await, vec![], "the instruction stands");
+    assert_eq!(plane.recovery_codes_left().await, 10);
+
+    // Now the sheet answers where a second factor stands.
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::SHEET_FLOW)
+        .await;
+    let spend = |code: String| {
+        let plane = &plane;
+        async move {
+            let (_, _, opened) =
+                authorize_with_cookies(plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+            let auth_session =
+                cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+            let (status, told, _) = login_step(
+                plane,
+                Some(&auth_session),
+                serde_json::json!({
+                    "username": support::SUBJECT,
+                    "password": support::PASSWORD,
+                    "recovery_code": code,
+                }),
+            )
+            .await;
+            (status, told)
+        }
+    };
+
+    let (status, told) = spend(drawn[0].clone()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+    assert_eq!(plane.recovery_codes_left().await, 9);
+
+    // The same code again is a wrong code. Spent is spent, and the sheet is
+    // not shortened twice for one line.
+    let (status, told) = spend(drawn[0].clone()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["status"], "refused", "{told}");
+    assert_eq!(plane.recovery_codes_left().await, 9);
+
+    // A code nobody drew is refused in the same words, with the same status,
+    // and takes nothing with it: which lines are still live stays unsaid.
+    let (status, told) = spend("zzzz-zzzz-zzzz-zzzz".to_owned()).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["status"], "refused", "{told}");
+    assert_eq!(plane.recovery_codes_left().await, 9);
+}

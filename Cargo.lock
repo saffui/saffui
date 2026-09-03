@@ -2883,6 +2883,7 @@ dependencies = [
  "chrono",
  "commons",
  "crypto",
+ "data-encoding",
  "deadpool-postgres",
  "models",
  "pgcore",

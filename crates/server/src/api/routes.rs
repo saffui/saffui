@@ -1074,6 +1074,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::get().to(keys::list)),
         },
         AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/recovery-codes",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(users::recovery_codes)),
+        },
+        AdminRoute {
             method: Method::DELETE,
             pattern: "/admin/realms/{realm}/users/{user}/keys/{credential}",
             action: AdminAction::UserWrite,

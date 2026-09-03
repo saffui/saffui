@@ -89,7 +89,20 @@ const required = computed(() => scopes.value.filter((held) => !held.optional));
 const offered = computed(() => scopes.value.filter((held) => held.optional));
 
 const router = useRouter();
-const draft = ref({ name: "", enabled: true, root: "", origins: "", redirects: "", logouts: "" });
+const draft = ref({
+  name: "",
+  enabled: true,
+  root: "",
+  home: "",
+  description: "",
+  origins: "",
+  redirects: "",
+  logouts: "",
+  deviceGrant: false,
+  tokenExchange: false,
+  cibaDelivery: "off",
+  cibaEndpoint: "",
+});
 function adoptClient() {
   const held = client.value;
   if (!held) return;
@@ -97,9 +110,15 @@ function adoptClient() {
     name: held.name ?? "",
     enabled: held.enabled,
     root: held.root_url ?? "",
+    home: held.client_uri ?? "",
+    description: held.description ?? "",
     origins: held.web_origins.join("\n"),
     redirects: held.redirect_uris.join("\n"),
     logouts: held.post_logout_redirect_uris.join("\n"),
+    deviceGrant: held.device_grant,
+    tokenExchange: held.token_exchange,
+    cibaDelivery: held.ciba_delivery,
+    cibaEndpoint: held.ciba_notification_endpoint ?? "",
   };
 }
 function lines(held: string): string[] {
@@ -116,6 +135,12 @@ async function saveClient() {
       web_origins: lines(draft.value.origins),
       redirect_uris: lines(draft.value.redirects),
       post_logout_redirect_uris: lines(draft.value.logouts),
+      description: draft.value.description,
+      client_uri: draft.value.home.trim(),
+      device_grant: draft.value.deviceGrant,
+      token_exchange: draft.value.tokenExchange,
+      ciba_delivery: draft.value.cibaDelivery,
+      ciba_notification_endpoint: draft.value.cibaEndpoint.trim() || undefined,
     });
     await load();
     adoptClient();
@@ -222,6 +247,23 @@ async function dropScope(name: string) {
           />
         </label>
         <label class="block text-[11px] font-medium text-muted">
+          {{ say("client-home") }} <AppHint name="client-home-help" />
+          <input
+            v-model="draft.home"
+            placeholder="https://app.example/welcome"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            spellcheck="false"
+          />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("client-description") }}
+          <textarea
+            v-model="draft.description"
+            rows="2"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          ></textarea>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
           {{ say("client-redirects") }} <AppHint name="client-redirects-help" />
           <textarea
             v-model="draft.redirects"
@@ -249,6 +291,32 @@ async function dropScope(name: string) {
             spellcheck="false"
           ></textarea>
         </label>
+        <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          {{ say("client-grants") }} <AppHint name="client-grants-help" />
+        </div>
+        <AppToggle v-model="draft.deviceGrant" :label="say('client-grant-device')" />
+        <AppToggle v-model="draft.tokenExchange" :label="say('client-grant-exchange')" />
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("client-grant-ciba") }} <AppHint name="client-grant-ciba-help" />
+          <select
+            v-model="draft.cibaDelivery"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          >
+            <option value="off">{{ say("client-ciba-off") }}</option>
+            <option value="poll">{{ say("client-ciba-poll") }}</option>
+            <option value="ping">{{ say("client-ciba-ping") }}</option>
+          </select>
+        </label>
+        <label v-if="draft.cibaDelivery === 'ping'" class="block text-[11px] font-medium text-muted">
+          {{ say("client-ciba-endpoint") }}
+          <input
+            v-model="draft.cibaEndpoint"
+            placeholder="https://app.example/ciba"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            spellcheck="false"
+          />
+        </label>
+
         <div>
           <button
             type="submit"

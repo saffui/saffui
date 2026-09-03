@@ -75,10 +75,23 @@ pub struct ClientBrief {
     pub web_origins: Vec<String>,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
+    pub description: String,
+    pub client_uri: Option<String>,
+    /// The grants held by an operator's say-so, read back off the same bag the
+    /// engines read, so a console shows what the engines will do rather than
+    /// what somebody meant to say.
+    pub device_grant: bool,
+    pub token_exchange: bool,
+    /// `off`, `poll` or `ping`.
+    pub ciba_delivery: String,
+    pub ciba_notification_endpoint: Option<String>,
 }
 
 impl From<models::entities::client::ClientModel> for ClientBrief {
     fn from(client: models::entities::client::ClientModel) -> Self {
+        // The gates are read off the bag by the same functions the engines use,
+        // so the console can never disagree with them.
+        let held = client.clone();
         ClientBrief {
             client_id: client.client_id,
             name: client.name,
@@ -88,8 +101,31 @@ impl From<models::entities::client::ClientModel> for ClientBrief {
             web_origins: client.web_origins.unwrap_or_default(),
             redirect_uris: client.redirect_uris.unwrap_or_default(),
             post_logout_redirect_uris: client.post_logout_redirect_uris.unwrap_or_default(),
+            description: client.description,
+            client_uri: client.client_uri,
+            device_grant: services::device::allows_device(&held),
+            token_exchange: matches!(
+                bag(&held, services::grant::EXCHANGE_FLAG).as_deref(),
+                Some("true")
+            ),
+            ciba_delivery: match services::ciba::delivery_of(&held) {
+                Some(services::ciba::Delivery::Poll) => "poll".to_owned(),
+                Some(services::ciba::Delivery::Ping { .. }) => "ping".to_owned(),
+                None => "off".to_owned(),
+            },
+            ciba_notification_endpoint: bag(&held, services::ciba::NOTIFICATION_ENDPOINT_FLAG),
         }
     }
+}
+
+/// One string off a client's own bag.
+fn bag(client: &models::entities::client::ClientModel, key: &str) -> Option<String> {
+    client
+        .configs
+        .as_ref()
+        .and_then(|held| held.get(key))
+        .and_then(models::entities::attributes::AttributeValue::as_str)
+        .map(str::to_owned)
 }
 
 /// A person as the plane shows them. Never a credential.
@@ -147,6 +183,17 @@ pub struct ClientSpec {
     pub post_logout_redirect_uris: Option<Vec<String>>,
     pub backchannel_logout_uri: Option<String>,
     pub frontchannel_logout_uri: Option<String>,
+    pub description: Option<String>,
+    /// The client's home page. Named `client_uri` after the registration
+    /// metadata it is, rather than after the label a console puts on it.
+    pub client_uri: Option<String>,
+    /// The grants held by an operator's say-so. Absent leaves each as it is.
+    pub device_grant: Option<bool>,
+    pub token_exchange: Option<bool>,
+    /// One of `off`, `poll`, `ping`. Anything else is refused rather than read
+    /// as the nearest thing.
+    pub ciba_delivery: Option<String>,
+    pub ciba_notification_endpoint: Option<String>,
 }
 
 /// What the plane is asked to create or reshape a person as.

@@ -736,3 +736,18 @@ user-recovery-codes-help = Des codes que la personne imprime une fois et dépens
 user-recovery-left = { $count } codes restants
 user-recovery-none = Aucune feuille tirée
 user-recovery-ask = Demander une feuille neuve
+
+## L'accueil du client, sa note, et les grants qu'un opérateur ouvre.
+client-home = URL d'accueil
+client-home-help = Où atterrit une personne qui ouvre cette application depuis une liste plutôt que depuis un lien. Métadonnée d'enregistrement, pas une redirection : rien n'y est jamais envoyé avec un code.
+client-description = Description
+client-grants = Grants détenus
+client-grants-help = Trois grants que personne n'hérite en les demandant. Chacun est lu sur la fiche du client à la porte : en fermer un le ferme aussi pour les appels déjà en vol, dès leur retour.
+client-grant-device = Grant d'autorisation par appareil
+client-grant-exchange = Échange de jetons
+client-grant-ciba = Connexion par canal arrière
+client-grant-ciba-help = Le mode de livraison EST l'inscription : un client sans mode ne se connecte pas du tout par canal arrière. Ping exige une adresse https, et une demi-inscription est refusée plutôt qu'à moitié honorée.
+client-ciba-off = Fermé
+client-ciba-poll = Interrogation
+client-ciba-ping = Notification
+client-ciba-endpoint = Adresse de notification

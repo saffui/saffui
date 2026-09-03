@@ -736,3 +736,18 @@ user-recovery-codes-help = Codes the person prints once and spends one at a time
 user-recovery-left = { $count } codes left
 user-recovery-none = No sheet drawn
 user-recovery-ask = Ask for a fresh sheet
+
+## The client's home, its note, and the grants an operator turns on.
+client-home = Home URL
+client-home-help = Where a person lands when they open this application from a list rather than from a link. Registration metadata, not a redirect: nothing is ever sent here with a code on it.
+client-description = Description
+client-grants = Grants held
+client-grants-help = Three grants nobody inherits by asking. Each is read from this client's own record at the door, so turning one off turns it off for calls already in flight as soon as they come back.
+client-grant-device = Device authorization grant
+client-grant-exchange = Token exchange
+client-grant-ciba = Backchannel sign-in
+client-grant-ciba-help = The delivery mode is the opt-in: a client with no mode is not signed in over the backchannel at all. Ping needs an https endpoint, and half an opt-in is refused rather than half honoured.
+client-ciba-off = Off
+client-ciba-poll = Poll
+client-ciba-ping = Ping
+client-ciba-endpoint = Notification endpoint

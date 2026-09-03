@@ -4,7 +4,9 @@ use commons::http::ApiError;
 use deadpool_postgres::Pool;
 use models::paging::PagingParams;
 use serde_json::json;
-use services::admin::clients::{self as registry, Reshape, Secret, Spec, Unregistrable};
+use services::admin::clients::{
+    self as registry, CibaOptIn, Gates, Reshape, Secret, Spec, Unregistrable,
+};
 use store::query::list_query::{ListQuery, SortDirection};
 use store::tenancy::{Tenancy, TenantContext};
 
@@ -81,7 +83,7 @@ pub async fn create(
         .ok_or_else(|| {
             ApiError::with_detail(ErrorCode::ValidationError, "client_id is required")
         })?;
-    let spec = spec_of(&asked);
+    let spec = spec_of(&asked)?;
 
     let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
@@ -109,6 +111,44 @@ pub async fn create(
     Ok(HttpResponse::Created().json(told))
 }
 
+/// The grants the body named, refusing a delivery mode this build does not run.
+///
+/// Refused at the door and not further in: a mode nobody honours would be
+/// written to the bag, read back as nothing, and leave an operator looking at
+/// a console that says the grant is on while every call is turned away.
+fn gates_of(asked: &ClientSpec) -> Result<Gates, ApiError> {
+    let ciba = match asked.ciba_delivery.as_deref() {
+        None => None,
+        Some("off") => Some(CibaOptIn::Off),
+        Some("poll") => Some(CibaOptIn::Poll),
+        Some("ping") => {
+            let endpoint = asked
+                .ciba_notification_endpoint
+                .as_deref()
+                .map(str::trim)
+                .filter(|held| held.starts_with("https://"))
+                .ok_or_else(|| {
+                    ApiError::with_detail(
+                        ErrorCode::ValidationError,
+                        "ping delivery needs an https notification endpoint",
+                    )
+                })?;
+            Some(CibaOptIn::Ping(endpoint.to_owned()))
+        }
+        Some(_) => {
+            return Err(ApiError::with_detail(
+                ErrorCode::ValidationError,
+                "delivery is one of off, poll, ping",
+            ));
+        }
+    };
+    Ok(Gates {
+        device: asked.device_grant,
+        token_exchange: asked.token_exchange,
+        ciba,
+    })
+}
+
 pub async fn update(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
@@ -134,6 +174,12 @@ pub async fn update(
         post_logout_redirect_uris: asked.post_logout_redirect_uris.clone(),
         backchannel_logout_uri: asked.backchannel_logout_uri.clone().map(Some),
         frontchannel_logout_uri: asked.frontchannel_logout_uri.clone().map(Some),
+        description: asked.description.clone(),
+        client_uri: asked
+            .client_uri
+            .clone()
+            .map(|held| (!held.is_empty()).then_some(held)),
+        gates: gates_of(&asked)?,
     };
     let client = registry::update(&transaction, &client_id, &reshape)
         .await
@@ -184,9 +230,17 @@ pub async fn remove(
     Ok(HttpResponse::NoContent().finish())
 }
 
-fn spec_of(asked: &ClientSpec) -> Spec {
-    Spec {
-        registered: Default::default(),
+/// The creation half. The grants a body names at birth are honoured here too,
+/// so a client can be registered with the ones it needs rather than made and
+/// then reshaped.
+fn spec_of(asked: &ClientSpec) -> Result<Spec, ApiError> {
+    Ok(Spec {
+        registered: services::admin::clients::Registered {
+            client_uri: asked.client_uri.clone().filter(|held| !held.is_empty()),
+            ..Default::default()
+        },
+        description: asked.description.clone(),
+        gates: gates_of(asked)?,
         name: asked.name.clone(),
         confidential: asked.confidential.unwrap_or(true),
         root_url: asked.root_url.clone().filter(|held| !held.is_empty()),
@@ -195,7 +249,7 @@ fn spec_of(asked: &ClientSpec) -> Spec {
         post_logout_redirect_uris: asked.post_logout_redirect_uris.clone().unwrap_or_default(),
         backchannel_logout_uri: asked.backchannel_logout_uri.clone(),
         frontchannel_logout_uri: asked.frontchannel_logout_uri.clone(),
-    }
+    })
 }
 
 fn within(admin: &Admin, realm_id: &str) -> TenantContext {

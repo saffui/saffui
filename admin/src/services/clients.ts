@@ -44,6 +44,14 @@ export interface ClientSpec {
   web_origins?: string[];
   redirect_uris?: string[];
   post_logout_redirect_uris?: string[];
+  description?: string;
+  /// The client's home page. Named after the registration metadata it is.
+  client_uri?: string;
+  device_grant?: boolean;
+  token_exchange?: boolean;
+  /// One of "off", "poll", "ping". Anything else is refused by the plane.
+  ciba_delivery?: string;
+  ciba_notification_endpoint?: string;
 }
 
 /// Creation answers the client, and for a confidential one the secret rides

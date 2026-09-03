@@ -6,6 +6,7 @@ use deadpool_postgres::Pool;
 use services::admin::keys::Unreachable;
 use store::tenancy::{Tenancy, TenantContext};
 
+use super::users::named_user;
 use crate::api::rest::endpoints::admin::dto::KeyBrief;
 use crate::middleware::admin_guard::Admin;
 
@@ -27,6 +28,7 @@ pub async fn list(
         .await
         .map_err(|_| internal())?;
 
+    let user_id = named_user(&transaction, &user_id).await?;
     let held = services::admin::keys::of_user(&transaction, &user_id)
         .await
         .map_err(refused)?;
@@ -67,6 +69,7 @@ pub async fn revoke(
 
     // Scoped to the user in the path: a caller must not reach past the user it
     // named, however it learned the identifier.
+    let user_id = named_user(&transaction, &user_id).await?;
     services::admin::keys::revoke(&transaction, &user_id, &credential_id)
         .await
         .map_err(refused)?;

@@ -197,8 +197,14 @@ pub async fn create(
         admin.context.principal.id().to_owned(),
     );
     metadata.created_at = Some(chrono::Utc::now());
+    let mut drawn = [0_u8; 16];
+    if sealing.provider.rand().fill(&mut drawn).is_err() {
+        return unavailable();
+    }
     let mut person = UserModel {
-        user_id: user_name.clone(),
+        // Drawn like every other birth; SCIM addresses the row by this id,
+        // and the provisioner renaming a person must not mint a stranger.
+        user_id: crypto::provider::uuid_from(drawn),
         realm_id: realm_id.clone(),
         user_name,
         enabled: asserted.active.unwrap_or(true),

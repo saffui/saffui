@@ -178,6 +178,7 @@ pub async fn identities_of_user(
     {
         return Err(ApiError::new(ErrorCode::UserNotFound));
     }
+    let user_id = super::users::named_user(&transaction, &user_id).await?;
     let held = store::providers::brokering::identities_of(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;

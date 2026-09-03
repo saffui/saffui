@@ -202,13 +202,10 @@ pub async fn put_grant(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    if store::providers::users::load(&transaction, user_id)
+    let user_id = &services::admin::users::identified(&transaction, user_id)
         .await
-        .map_err(|_| internal())?
-        .is_none()
-    {
-        return Err(refused("no user answers to that name"));
-    }
+        .map(|held| held.user_id)
+        .map_err(|_| refused("no user answers to that name"))?;
     if store::providers::roles::load(&transaction, role_id)
         .await
         .map_err(|_| internal())?
@@ -249,6 +246,7 @@ pub async fn grants_of(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = super::users::named_user(&transaction, &user_id).await?;
     let held = birthright::ledger_of(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;
@@ -278,6 +276,7 @@ pub async fn delete_grant(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = super::users::named_user(&transaction, &user_id).await?;
     store::providers::roles::revoke_from_user(&transaction, &user_id, &role_id)
         .await
         .map_err(|_| internal())?;

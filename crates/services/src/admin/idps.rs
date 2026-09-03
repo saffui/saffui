@@ -1,6 +1,6 @@
 use crypto::envelope::Envelope;
 use crypto::provider::CryptoProvider;
-use data_encoding::{BASE64, BASE64URL_NOPAD};
+use data_encoding::BASE64;
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::attributes::AttributeValue;
@@ -247,16 +247,16 @@ pub async fn delete_provider(transaction: &Transaction<'_>, alias: &str) -> Resu
 }
 
 fn drawn(crypto: &dyn CryptoProvider) -> Result<String, Unwritable> {
-    draw(crypto, "idp")
+    draw(crypto)
 }
 
-fn draw(crypto: &dyn CryptoProvider, prefix: &str) -> Result<String, Unwritable> {
+fn draw(crypto: &dyn CryptoProvider) -> Result<String, Unwritable> {
     let mut bytes = [0_u8; 16];
     crypto
         .rand()
         .fill(&mut bytes)
         .map_err(|_| Unwritable::Backend)?;
-    Ok(format!("{prefix}-{}", BASE64URL_NOPAD.encode(&bytes)))
+    Ok(crypto::provider::uuid_from(bytes))
 }
 
 /// The rules of one provider.
@@ -345,7 +345,7 @@ pub async fn add_mapper(
     provider_exists(transaction, alias).await?;
     check_rule(transaction, &asked).await?;
     let mapper = asked.into_model(
-        draw(provider, "idpm")?,
+        draw(provider)?,
         realm_id.to_owned(),
         alias.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),

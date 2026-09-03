@@ -77,6 +77,7 @@ const showPassword = ref(false);
 
 /// The editable half of the overview, adopted from the loaded user.
 const profile = ref({
+  user_name: "",
   email: "",
   given_name: "",
   family_name: "",
@@ -123,6 +124,7 @@ async function load() {
     const held = user.value;
     if (held) {
       profile.value = {
+        user_name: held.user_name,
         email: held.email ?? "",
         given_name: held.given_name ?? "",
         family_name: held.family_name ?? "",
@@ -140,6 +142,7 @@ onMounted(load);
 async function saveProfile() {
   try {
     await updateUser(props.realm, props.userId, {
+      user_name: profile.value.user_name.trim() || undefined,
       email: profile.value.email || undefined,
       given_name: profile.value.given_name || undefined,
       family_name: profile.value.family_name || undefined,
@@ -322,6 +325,14 @@ function instant(epoch: number | null | undefined): string {
 
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveProfile">
         <div class="grid grid-cols-2 gap-3">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("users-col-name") }} <AppHint name="user-rename-help" />
+            <input
+              v-model="profile.user_name"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              spellcheck="false"
+            />
+          </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("users-col-email") }}
             <span class="inline-flex items-center gap-1">

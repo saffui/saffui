@@ -55,6 +55,10 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/pages/authentication/FlowsPage.vue"),
       },
       {
+        path: "authentication/actions",
+        component: () => import("@/pages/authentication/RequiredActionsPage.vue"),
+      },
+      {
         path: "authentication/:flow",
         component: () => import("@/pages/authentication/FlowEditorPage.vue"),
       },

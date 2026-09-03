@@ -29,6 +29,7 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        attributes, acr_loa_map, \
                        browser_flow, otp_policy, webauthn_policy, \
                        mail_templates, device_code_lifespan, device_poll_interval, \
+                       ciba_expiry, ciba_interval, \
                        supported_locales, default_locale, \
                        created_by, created_at, updated_by, updated_at, version";
 
@@ -235,6 +236,8 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("mail_templates", &mail_templates),
             col("device_code_lifespan", &realm.device_code_lifespan),
             col("device_poll_interval", &realm.device_poll_interval),
+            col("ciba_expiry", &realm.ciba_expiry),
+            col("ciba_interval", &realm.ciba_interval),
             col("supported_locales", &supported_locales),
             col("default_locale", &realm.default_locale),
             col("updated_by", &realm.metadata.updated_by),
@@ -306,6 +309,8 @@ fn read(row: Row) -> RealmModel {
             .and_then(|held| serde_json::from_value(held).ok()),
         device_code_lifespan: row.get("device_code_lifespan"),
         device_poll_interval: row.get("device_poll_interval"),
+        ciba_expiry: row.get("ciba_expiry"),
+        ciba_interval: row.get("ciba_interval"),
         webauthn_policy: row
             .get::<_, Option<serde_json::Value>>("webauthn_policy")
             .and_then(|held| serde_json::from_value(held).ok()),

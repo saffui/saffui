@@ -214,6 +214,10 @@ pub fn read_initiation(
     login_hint_token: Option<&str>,
     binding_message: Option<&str>,
     requested_expiry: Option<&str>,
+    // The realm's lifetime for these requests, when it set one: it becomes
+    // both the default and the ceiling, so a client may ask for less, never
+    // more. Unset keeps the built default and ceiling.
+    realm_expiry: Option<i32>,
 ) -> Result<Asked, Unopened> {
     let blank = |held: Option<&str>| {
         held.map(str::trim)
@@ -247,10 +251,14 @@ pub fn read_initiation(
             detail: "the binding message is for a small screen",
         });
     }
+    let (default_expiry, ceiling) = match realm_expiry {
+        Some(held) => (i64::from(held), i64::from(held)),
+        None => (DEFAULT_EXPIRY, MAX_EXPIRY),
+    };
     let expiry = match blank(requested_expiry) {
-        None => DEFAULT_EXPIRY,
+        None => default_expiry,
         Some(asked) => match asked.parse::<i64>() {
-            Ok(seconds) if seconds >= 1 => seconds.min(MAX_EXPIRY),
+            Ok(seconds) if seconds >= 1 => seconds.min(ceiling),
             _ => return Err(Unopened::invalid("requested_expiry is a positive number")),
         },
     };
@@ -405,33 +413,56 @@ mod tests {
             None,
             Some("Virement 240"),
             Some("120"),
+            None,
         )
         .expect("a whole ask reads");
         assert_eq!(asked.hint, Hint::Named("ada@example.test".into()));
         assert_eq!(asked.expiry, Duration::seconds(120));
 
         assert!(
-            read_initiation(None, None, None, None, None, None).is_err(),
+            read_initiation(None, None, None, None, None, None, None).is_err(),
             "no hint held"
         );
         assert!(
-            read_initiation(None, Some("ada"), Some("x.y.z"), None, None, None).is_err(),
+            read_initiation(None, Some("ada"), Some("x.y.z"), None, None, None, None).is_err(),
             "two hints held"
         );
         assert_eq!(
-            read_initiation(None, None, None, Some("h.i.nt"), None, None)
+            read_initiation(None, None, None, Some("h.i.nt"), None, None, None)
                 .unwrap()
                 .hint,
             Hint::HintToken("h.i.nt".into())
         );
+        // The realm's lifetime is both the default and the ceiling.
         assert_eq!(
-            read_initiation(None, Some("ada"), None, None, Some(&"m".repeat(65)), None)
-                .unwrap_err()
-                .error,
+            read_initiation(None, Some("ada"), None, None, None, None, Some(90))
+                .unwrap()
+                .expiry,
+            Duration::seconds(90)
+        );
+        assert_eq!(
+            read_initiation(None, Some("ada"), None, None, None, Some("500"), Some(90))
+                .unwrap()
+                .expiry,
+            Duration::seconds(90),
+            "a client asked past the realm's ceiling"
+        );
+        assert_eq!(
+            read_initiation(
+                None,
+                Some("ada"),
+                None,
+                None,
+                Some(&"m".repeat(65)),
+                None,
+                None
+            )
+            .unwrap_err()
+            .error,
             "invalid_binding_message"
         );
         assert_eq!(
-            read_initiation(None, Some("ada"), None, None, None, Some("9999"))
+            read_initiation(None, Some("ada"), None, None, None, Some("9999"), None)
                 .unwrap()
                 .expiry,
             Duration::seconds(MAX_EXPIRY),

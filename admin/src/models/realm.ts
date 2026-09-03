@@ -55,6 +55,8 @@ export interface RealmSettings {
   mail_templates: Record<string, Record<string, MailTemplate>> | null;
   device_code_lifespan: number | null;
   device_poll_interval: number | null;
+  ciba_expiry: number | null;
+  ciba_interval: number | null;
   browser_flow: string | null;
   supported_locales: string[] | null;
   default_locale: string | null;
@@ -157,6 +159,8 @@ export interface RealmUpdate {
   mail_templates?: Record<string, Record<string, MailTemplate>>;
   device_code_lifespan?: number;
   device_poll_interval?: number;
+  ciba_expiry?: number;
+  ciba_interval?: number;
   browser_flow?: string;
   supported_locales?: string[];
   default_locale?: string;

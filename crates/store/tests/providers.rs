@@ -394,12 +394,14 @@ async fn a_user_is_found_by_what_a_login_arrives_with() {
     transaction.commit().await.unwrap();
 }
 
-/// An update writes what it carries and never the identifiers or the name: a
-/// realm's users are addressed by those, so moving one would be a different user
-/// wearing the same row.
+/// An update writes what it carries, the name now among it, and never the
+/// identifier: grants and sessions point at the identifier, so a rename is
+/// the same person under a new name and moving the identifier would be a
+/// different person wearing the same row. Whether a rename is allowed at all
+/// is the service layer's question, not this one's.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn an_update_never_moves_a_user() {
+async fn an_update_moves_the_name_and_never_the_identity() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
     let tenancy = Tenancy::unpinned();
@@ -431,8 +433,19 @@ async fn an_update_never_moves_a_user() {
     );
     assert_eq!(loaded.metadata.updated_by.as_deref(), Some("root"));
     assert_eq!(
-        loaded.user_name, "ada",
-        "an update renamed the user it was written over"
+        loaded.user_name, "someone-else",
+        "the rename the update carried never landed"
+    );
+    assert_eq!(
+        loaded.user_id, "ada",
+        "the update moved the identity itself"
+    );
+    assert!(
+        users::load_by_name(&transaction, "ada")
+            .await
+            .unwrap()
+            .is_none(),
+        "the old name still answers"
     );
     transaction.commit().await.unwrap();
 }

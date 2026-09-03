@@ -120,6 +120,8 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{told}");
+    // The mirror is tied by our identifier, which the realm drew for her.
+    let grace = told["user_id"].as_str().expect("an identity").to_owned();
 
     // One outbox pass, run the way the job runs it.
     server::jobs::deliver_every_realm(
@@ -135,7 +137,7 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     let (status, found) = asked(
         &plane,
         Method::GET,
-        "/realms/mirror/scim/v2/Users?filter=externalId%20eq%20%22grace%22",
+        &format!("/realms/mirror/scim/v2/Users?filter=externalId%20eq%20%22{grace}%22"),
         &bearer,
         None,
     )
@@ -152,7 +154,7 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     let (status, _) = asked(
         &plane,
         Method::PUT,
-        &format!("/admin/realms/{REALM}/users/grace"),
+        &format!("/admin/realms/{REALM}/users/{grace}"),
         &bearer,
         Some(json!({
             "user_name": "grace",
@@ -184,7 +186,7 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     let (status, _) = asked(
         &plane,
         Method::DELETE,
-        &format!("/admin/realms/{REALM}/users/grace"),
+        &format!("/admin/realms/{REALM}/users/{grace}"),
         &bearer,
         None,
     )

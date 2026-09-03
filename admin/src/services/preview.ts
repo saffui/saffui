@@ -390,6 +390,24 @@ export function previewAnswer<T>(path: string): T {
       ],
     });
   }
+  if (path.endsWith("/page-keys")) {
+    return answer({
+      keys: [
+        { name: "login-title", en: "Sign in", fr: "Connexion" },
+        { name: "login-username", en: "Username", fr: "Identifiant" },
+        { name: "signup-invite", en: "New here?", fr: "Premiere visite ?" },
+      ],
+    });
+  }
+  if (path.endsWith("/preview-token")) {
+    return answer({
+      scope: "openid profile",
+      claims: [
+        { claim: "department", value: "engineering", origin: "department", lands_in: "both" },
+        { claim: "name", value: "Ada Lovelace", origin: "full name", lands_in: "identity" },
+      ],
+    });
+  }
   if (path.endsWith("/auth/required-actions")) {
     return answer([
       {

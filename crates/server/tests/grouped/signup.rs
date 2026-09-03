@@ -64,7 +64,7 @@ async fn reshape_realm(
     transaction.commit().await.expect("the setting kept");
 }
 
-async fn person(plane: &Plane, user_id: &str) -> Option<models::entities::user::UserModel> {
+async fn person(plane: &Plane, user_name: &str) -> Option<models::entities::user::UserModel> {
     let mut connection = plane.connection().await;
     let transaction = plane
         .scoped(
@@ -72,7 +72,7 @@ async fn person(plane: &Plane, user_id: &str) -> Option<models::entities::user::
             &TenantContext::new(support::TENANT, support::REALM),
         )
         .await;
-    store::providers::users::load(&transaction, user_id)
+    store::providers::users::load_by_name(&transaction, user_name)
         .await
         .expect("the users table")
 }

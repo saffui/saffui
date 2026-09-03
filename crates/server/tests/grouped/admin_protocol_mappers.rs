@@ -289,3 +289,73 @@ async fn the_mapper_capabilities_split_where_they_should() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// The preview says who would write what, without minting anything: each
+/// claim beside the mapper that authors it and the token it lands in.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_preview_names_each_claims_author() {
+    let plane = Plane::with_actions(&[
+        AdminAction::ClientRead,
+        AdminAction::ClientWrite,
+        AdminAction::UserRead,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    planted_attribute(&plane, "department", "engineering").await;
+
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/protocol-mappers"),
+        &bearer,
+        Some(json!({
+            "name": "department",
+            "mapper_type": "oidc-usermodel-attribute-mapper",
+            "configs": {
+                "claim.name": { "Str": "department" },
+                "user.attribute": { "Str": "department" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let mapper_id = made["mapper_id"].as_str().expect("an id").to_owned();
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!(
+            "/admin/realms/{REALM}/clients/{}/mappers/{mapper_id}",
+            support::CONFIDENTIAL
+        ),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+
+    let (status, previewed) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/preview-token"),
+        &bearer,
+        Some(json!({
+            "user_id": support::SUBJECT,
+            "client_id": support::CONFIDENTIAL,
+            "scope": "openid",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{previewed}");
+    let rows = previewed["claims"].as_array().expect("a listing");
+    let found = rows
+        .iter()
+        .find(|row| row["claim"] == "department")
+        .unwrap_or_else(|| panic!("the department claim went unlisted: {previewed}"));
+    assert_eq!(found["value"], "engineering", "{found}");
+    assert_eq!(found["origin"], "department", "{found}");
+    assert!(
+        found["lands_in"] == "both" || found["lands_in"] == "access",
+        "{found}"
+    );
+}

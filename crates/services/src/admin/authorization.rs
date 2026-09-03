@@ -1,5 +1,4 @@
 use crypto::provider::CryptoProvider;
-use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::authz::{
@@ -51,13 +50,13 @@ fn carried(why: StoreError) -> Unwritable {
     }
 }
 
-fn draw(provider: &dyn CryptoProvider, prefix: &str) -> Result<String, Unwritable> {
+fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
     let mut bytes = [0_u8; 16];
     provider
         .rand()
         .fill(&mut bytes)
         .map_err(|_| Unwritable::Backend)?;
-    Ok(format!("{prefix}-{}", BASE64URL_NOPAD.encode(&bytes)))
+    Ok(crypto::provider::uuid_from(bytes))
 }
 
 /// Declare a client a protected application. The identity is the client's own,
@@ -152,7 +151,7 @@ pub async fn add_resource(
 ) -> Result<ResourceModel, Unwritable> {
     server(transaction, server_id).await?;
     let resource = asked.into_model(
-        draw(provider, "resource")?,
+        draw(provider)?,
         server_id.to_owned(),
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
@@ -195,7 +194,7 @@ pub async fn add_scope(
 ) -> Result<ScopeModel, Unwritable> {
     server(transaction, server_id).await?;
     let scope = asked.into_model(
-        draw(provider, "scope")?,
+        draw(provider)?,
         server_id.to_owned(),
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
@@ -243,7 +242,7 @@ pub async fn add_policy(
 ) -> Result<PolicyModel, Unwritable> {
     server(transaction, server_id).await?;
     let policy = terms.into_model(
-        draw(provider, "policy")?,
+        draw(provider)?,
         server_id.to_owned(),
         realm_id.to_owned(),
         org_id,

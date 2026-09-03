@@ -168,6 +168,10 @@ pub async fn update(transaction: &Transaction<'_>, user: &UserModel) -> StoreRes
     let attributes = attributes_json(user)?;
     let set = WriteSet::update(
         vec![
+            // The name travels with updates now that it is the person's and
+            // not the identity: the realm's switch upstream decides whether a
+            // caller may actually change it.
+            col("user_name", &user.user_name),
             col("email", &user.email),
             col("email_verified", &user.email_verified),
             col("phone_number", &user.phone_number),

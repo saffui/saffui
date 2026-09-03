@@ -117,3 +117,15 @@ export async function sendTestMail(realm: string, to: string): Promise<void> {
     subject: say("mail-test-subject"),
   });
 }
+
+/// Mirrors the `GET .../page-keys` answer: every hosted-page key with its
+/// built value per tongue.
+export interface PageKey {
+  name: string;
+  en: string;
+  fr: string;
+}
+
+export async function listPageKeys(realm: string): Promise<{ keys: PageKey[] }> {
+  return api<{ keys: PageKey[] }>(adminPath(realm, "page-keys"));
+}

@@ -105,3 +105,22 @@ export async function detachScope(realm: string, clientId: string, scope: string
     { method: "DELETE", subject: say("subject-scope-attach", { scope, client: clientId }) },
   );
 }
+
+/// One previewed claim: who would write it, and into which token.
+export interface PreviewedClaim {
+  claim: string;
+  value: unknown;
+  origin: string;
+  lands_in: "access" | "identity" | "both";
+}
+
+export async function previewToken(
+  realm: string,
+  body: { user_id: string; client_id: string; scope?: string },
+): Promise<{ claims: PreviewedClaim[]; scope: string }> {
+  return api<{ claims: PreviewedClaim[]; scope: string }>(adminPath(realm, "preview-token"), {
+    method: "POST",
+    json: body,
+    quiet: true,
+  });
+}

@@ -447,3 +447,99 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// A realm speaks over the pages: the accepted words reach the render, and
+/// words nothing reads are refused at the door.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_speaks_over_its_pages() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+
+    // The catalogue lists what may be spoken over.
+    let (status, keys) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{}/page-keys", support::REALM),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{keys}");
+    assert!(
+        keys["keys"]
+            .as_array()
+            .expect("a listing")
+            .iter()
+            .any(|row| row["name"] == "login-title"),
+        "{keys}"
+    );
+
+    // A key nobody reads, a tongue nobody renders: both refused in words.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        Some(serde_json::json!({ "page_overrides": { "en": { "no-such-key": "x" } } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        Some(serde_json::json!({ "page_overrides": { "eo": { "login-title": "x" } } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // Spoken, and the page wears it.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        Some(serde_json::json!({
+            "page_overrides": { "en": { "login-title": "The Acme door" } }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    use actix_web::{App, test};
+    use server::api::config::register;
+    use server::middleware::admin_policy::AdminPolicy;
+    let app = test::init_service(App::new().configure(register(&server::api::config::Plane {
+        pool: plane.pool(),
+        tenancy: plane.tenancy(),
+        policy: AdminPolicy {
+            audiences: vec![support::AUDIENCE.to_owned()],
+            parties: vec![support::PARTY.to_owned()],
+            scope: support::SCOPE.to_owned(),
+        },
+        origin: support::origin(),
+        login_ui: support::login_ui(),
+        hops: config::proxying::Proxying::none(),
+        egress: config::serving::Egress::Outward,
+        sealing: support::sealing(),
+    })))
+    .await;
+    let request = test::TestRequest::get()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/login",
+            support::REALM
+        ))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    let body = String::from_utf8(test::read_body(response).await.to_vec()).expect("a page");
+    assert!(
+        body.contains("The Acme door"),
+        "the override missed the render"
+    );
+    assert!(
+        !body.contains("{{"),
+        "the rest of the page lost its words: {body}"
+    );
+}

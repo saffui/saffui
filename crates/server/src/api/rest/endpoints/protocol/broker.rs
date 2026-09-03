@@ -187,6 +187,7 @@ pub async fn conclude(
     // admitted the same way an answered one is.
     let Ok((user_id, first_login)) = brokering::decide_link(
         &transaction,
+        sealing.provider.as_ref(),
         &context.tenant,
         &context.realm_id,
         &provider,

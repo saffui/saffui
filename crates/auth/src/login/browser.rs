@@ -150,6 +150,7 @@ pub async fn answer_step(
     // through as absent, and the flow spends the same time on it.
     let subject = named_subject(
         transaction,
+        provider,
         tenant,
         &realm,
         &login,
@@ -599,6 +600,7 @@ fn noted<'a>(notes: &'a Value, named: &str) -> Option<&'a str> {
 )]
 async fn named_subject(
     transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     realm: &models::entities::realm::RealmModel,
     login: &AuthSession,
@@ -666,7 +668,7 @@ async fn named_subject(
         let Some(person) = found else {
             continue;
         };
-        let shadow = shadow_row(tenant, held.alias, &person, now);
+        let shadow = shadow_row(provider, tenant, held.alias, &person, now)?;
         users::create(transaction, &shadow)
             .await
             .map_err(|_| Unanswerable::Unreadable)?;
@@ -680,11 +682,12 @@ async fn named_subject(
 
 /// The local mirror of a person the directory owns.
 pub fn shadow_row(
+    provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     origin: &str,
     person: &crate::login::directory::DirectoryPerson,
     now: DateTime<Utc>,
-) -> models::entities::user::UserModel {
+) -> Result<models::entities::user::UserModel, Unanswerable> {
     use models::entities::attributes::AttributeValue;
     use models::entities::user::profile;
 
@@ -706,8 +709,15 @@ pub fn shadow_row(
         "federation".to_owned(),
     );
     metadata.created_at = Some(now);
-    models::entities::user::UserModel {
-        user_id: person.username.clone(),
+    let mut bytes = [0_u8; 16];
+    provider
+        .rand()
+        .fill(&mut bytes)
+        .map_err(|_| Unanswerable::Unreadable)?;
+    Ok(models::entities::user::UserModel {
+        // Drawn like every other birth: the directory owns the name, and a
+        // renamed person upstream must not become somebody else here.
+        user_id: crypto::provider::uuid_from(bytes),
         realm_id: tenant.realm_id.clone(),
         user_name: person.username.clone(),
         enabled: true,
@@ -724,5 +734,5 @@ pub fn shadow_row(
         is_service_account: None,
         service_account_client_link: None,
         metadata,
-    }
+    })
 }

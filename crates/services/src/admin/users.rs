@@ -15,6 +15,9 @@ use store::query::list_query::ListQuery;
 /// an update; on a creation it is the absence it reads as.
 #[derive(Debug, Clone, Default)]
 pub struct Spec {
+    /// A new username, where the realm allows renaming. The identifier
+    /// underneath never moves.
+    pub user_name: Option<String>,
     pub email: Option<String>,
     pub email_verified: Option<bool>,
     pub enabled: Option<bool>,
@@ -40,6 +43,7 @@ pub enum Uncreatable {
 
 pub async fn create(
     transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
     by: &str,
@@ -74,7 +78,9 @@ pub async fn create(
         service_account_client_link: None,
     }
     .into_model(
-        user_name.to_owned(),
+        // Drawn, never the name: grants, sessions and the journal point at
+        // the identifier, and a rename must move none of them.
+        draw(provider)?,
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );
@@ -126,6 +132,29 @@ pub async fn update(
     spec: &Spec,
 ) -> Result<UserModel, Uncreatable> {
     let mut user = get(transaction, user_id).await?;
+    if let Some(renamed) = spec
+        .user_name
+        .as_deref()
+        .filter(|asked| *asked != user.user_name)
+    {
+        let allowed = store::providers::realms::of_context(transaction)
+            .await
+            .map_err(|_| Uncreatable::Unwritable)?
+            .and_then(|realm| realm.edit_user_name_allowed)
+            .unwrap_or(false);
+        if !allowed {
+            return Err(Uncreatable::Invalid("this realm does not rename accounts"));
+        }
+        check_name(renamed)?;
+        if users::load_by_name(transaction, renamed)
+            .await
+            .map_err(|_| Uncreatable::Unwritable)?
+            .is_some()
+        {
+            return Err(Uncreatable::AlreadyExists);
+        }
+        user.user_name = renamed.to_owned();
+    }
     if let Some(email) = &spec.email {
         check_mail(email)?;
         check_unclaimed(transaction, email, Some(user_id)).await?;
@@ -264,6 +293,35 @@ fn apply_attributes(user: &mut UserModel, spec: &Spec) {
         }
     }
     user.attributes = (!held.is_empty()).then_some(held);
+}
+
+/// A drawn identifier, so a rename never changes what anything points at.
+fn draw(provider: &dyn CryptoProvider) -> Result<String, Uncreatable> {
+    let mut bytes = [0_u8; 16];
+    provider
+        .rand()
+        .fill(&mut bytes)
+        .map_err(|_| Uncreatable::Unwritable)?;
+    Ok(crypto::provider::uuid_from(bytes))
+}
+
+/// One person, by identifier first and by name second: the console holds
+/// identifiers, an operator types names, and accounts born before drawn
+/// identifiers answer to both because theirs are their names.
+pub async fn identified(
+    transaction: &Transaction<'_>,
+    spelled: &str,
+) -> Result<UserModel, Uncreatable> {
+    if let Some(held) = users::load(transaction, spelled)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?
+    {
+        return Ok(held);
+    }
+    users::load_by_name(transaction, spelled)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?
+        .ok_or(Uncreatable::NotFound)
 }
 
 /// Refuse an address another account already holds, unless the realm said

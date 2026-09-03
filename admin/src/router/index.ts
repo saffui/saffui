@@ -51,6 +51,14 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/pages/settings/ThemePage.vue"),
       },
       {
+        path: "pages",
+        component: () => import("@/pages/settings/PagesPage.vue"),
+      },
+      {
+        path: "token-preview",
+        component: () => import("@/pages/clients/TokenPreviewPage.vue"),
+      },
+      {
         path: "authentication",
         component: () => import("@/pages/authentication/FlowsPage.vue"),
       },

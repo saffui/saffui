@@ -2,7 +2,6 @@ use std::str::FromStr;
 
 use auth::login::authenticator::Authenticator;
 use crypto::provider::CryptoProvider;
-use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::auth::{
@@ -45,13 +44,13 @@ pub enum Unwritable {
     Backend,
 }
 
-fn draw(provider: &dyn CryptoProvider, prefix: &str) -> Result<String, Unwritable> {
+fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
     let mut bytes = [0_u8; 16];
     provider
         .rand()
         .fill(&mut bytes)
         .map_err(|_| Unwritable::Backend)?;
-    Ok(format!("{prefix}-{}", BASE64URL_NOPAD.encode(&bytes)))
+    Ok(crypto::provider::uuid_from(bytes))
 }
 
 pub async fn flows(
@@ -98,7 +97,7 @@ pub async fn create_flow(
     // caller does not get to borrow it.
     asked.built_in = Some(false);
     let flow = asked.into_model(
-        draw(provider, "flow")?,
+        draw(provider)?,
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );
@@ -176,7 +175,7 @@ pub async fn add_execution(
     }
 
     let step = asked.into_model(
-        draw(provider, "exec")?,
+        draw(provider)?,
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );
@@ -276,7 +275,7 @@ pub async fn register_action(
         return Err(Unwritable::ActionExists);
     }
     let action = asked.into_model(
-        draw(provider, "ra")?,
+        draw(provider)?,
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );

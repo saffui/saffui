@@ -752,7 +752,7 @@ pub async fn provision_user(
         tenant,
         realm_id,
         PROVISIONER,
-        person.user_name,
+        &born.user_id,
         person.password,
     )
     .await

@@ -127,19 +127,20 @@ async fn doors_of_realm(
     pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     realm: &str,
-) -> String {
+) -> (String, Option<serde_json::Value>) {
+    let nothing = || (String::new(), None);
     let Ok(mut connection) = pool.get().await else {
-        return String::new();
+        return nothing();
     };
     let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, realm).await else {
-        return String::new();
+        return nothing();
     };
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
-        return String::new();
+        return nothing();
     };
     let Ok(Some(held)) = store::providers::realms::load(&transaction, &context.realm_id).await
     else {
-        return String::new();
+        return nothing();
     };
     let mut doors = Vec::new();
     if held.reset_password_allowed == Some(true) {
@@ -157,7 +158,7 @@ async fn doors_of_realm(
             doors.push("register-email");
         }
     }
-    doors.join(" ")
+    (doors.join(" "), held.page_overrides)
 }
 
 /// The `ui_locales` the login carried, raw: the realm decides what of it is
@@ -215,6 +216,7 @@ fn page(
     wanted: Option<&str>,
     tongues: &i18n::RealmTongues,
     doors: &str,
+    overrides: Option<&serde_json::Value>,
 ) -> HttpResponse {
     let tongue = tongues.negotiated(
         wanted,
@@ -223,6 +225,10 @@ fn page(
             .get("accept-language")
             .and_then(|value| value.to_str().ok()),
     );
+    let body = match overrides {
+        Some(spoken) => i18n::page_over(tongue, spoken),
+        None => i18n::page_in(tongue).to_owned(),
+    };
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
         .insert_header(("Content-Language", tongue))
@@ -231,7 +237,7 @@ fn page(
         .insert_header(("X-Content-Type-Options", "nosniff"))
         .insert_header(("X-Frame-Options", "DENY"))
         .insert_header(("Referrer-Policy", "no-referrer"))
-        .body(i18n::page_in(tongue).replace("{doors}", &escaped(doors)))
+        .body(body.replace("{doors}", &escaped(doors)))
 }
 
 /// What sends the form-post page on. Served rather than written into it: a
@@ -380,8 +386,14 @@ pub async fn magic_link(
         });
     let Some((named, token)) = followed else {
         let (wanted, tongues) = asked_tongue(&request, &pool, &tenancy, &realm).await;
-        let doors = doors_of_realm(&pool, &tenancy, &realm).await;
-        return page(&request, wanted.as_deref(), &tongues, &doors);
+        let (doors, overrides) = doors_of_realm(&pool, &tenancy, &realm).await;
+        return page(
+            &request,
+            wanted.as_deref(),
+            &tongues,
+            &doors,
+            overrides.as_ref(),
+        );
     };
     let body = LINK_PAGE
         .replace(
@@ -441,8 +453,8 @@ pub async fn reset_password(
         asked.user.filter(|held| !held.is_empty()),
     ) else {
         let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
-        let doors = doors_of_realm(&pool, &tenancy, &realm).await;
-        return page(&request, None, &tongues, &doors);
+        let (doors, overrides) = doors_of_realm(&pool, &tenancy, &realm).await;
+        return page(&request, None, &tongues, &doors, overrides.as_ref());
     };
     let body = RESET_PAGE
         .replace(

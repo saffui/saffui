@@ -27,6 +27,7 @@ const GROUPS: { label: string; items: { label: string; icon: any; leaf: string }
     items: [
       { label: say("nav-clients"), icon: "clients", leaf: "clients" },
       { label: say("nav-scopes"), icon: "scopes", leaf: "client-scopes" },
+      { label: say("nav-preview"), icon: "key", leaf: "token-preview" },
     ],
   },
   {
@@ -46,6 +47,7 @@ const GROUPS: { label: string; items: { label: string; icon: any; leaf: string }
       { label: say("nav-settings"), icon: "settings", leaf: "settings" },
       { label: say("nav-keys"), icon: "key", leaf: "keys" },
       { label: say("nav-theme"), icon: "scopes", leaf: "theme" },
+      { label: say("nav-pages"), icon: "events", leaf: "pages" },
     ],
   },
 ];

@@ -27,6 +27,37 @@ pub async fn list(
     Ok(HttpResponse::Ok().json(listed))
 }
 
+/// What the mappers would write for one grant, claim by claim with its
+/// author. Mints nothing; the evaluation is issuance's own.
+#[derive(serde::Deserialize)]
+pub struct PreviewAsk {
+    pub user_id: String,
+    pub client_id: String,
+    #[serde(default)]
+    pub scope: Option<String>,
+}
+
+pub async fn preview(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+    body: web::Json<PreviewAsk>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let asked = body.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let scope = asked.scope.unwrap_or_else(|| "openid".to_owned());
+    let rows = services::mappers::preview(&transaction, &asked.client_id, &asked.user_id, &scope)
+        .await
+        .map_err(|()| ApiError::new(ErrorCode::UserNotFound))?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "claims": rows, "scope": scope })))
+}
+
 pub async fn create(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,

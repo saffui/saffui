@@ -6,6 +6,7 @@ use models::entities::brokering::UserClaimSourceMutationModel;
 use services::admin::claim_sources::{self, Unwritable};
 use store::tenancy::{Tenancy, TenantContext};
 
+use super::users::named_user;
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
 
@@ -21,6 +22,7 @@ pub async fn list(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
     let held = claim_sources::sources_of(&transaction, &user_id)
         .await
         .map_err(refused)?;
@@ -41,6 +43,7 @@ pub async fn add(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
     let made = claim_sources::add(
         &transaction,
         sealing.provider.as_ref(),

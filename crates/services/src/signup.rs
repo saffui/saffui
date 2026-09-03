@@ -122,6 +122,7 @@ pub async fn register_person(
     }
 
     let spec = crate::admin::users::Spec {
+        user_name: None,
         email: Some(email.to_owned()),
         given_name: asked.given_name.map(str::to_owned),
         family_name: asked.family_name.map(str::to_owned),
@@ -130,6 +131,7 @@ pub async fn register_person(
     };
     let born = crate::admin::users::create(
         transaction,
+        provider,
         &realm.metadata.tenant,
         &realm.realm_id,
         "registration",

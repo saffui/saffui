@@ -1,5 +1,4 @@
 use crypto::provider::CryptoProvider;
-use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::client::{ProtocolMapperModel, ProtocolMapperMutationModel};
@@ -46,7 +45,7 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
         .rand()
         .fill(&mut bytes)
         .map_err(|_| Unwritable::Backend)?;
-    Ok(format!("mapper-{}", BASE64URL_NOPAD.encode(&bytes)))
+    Ok(crypto::provider::uuid_from(bytes))
 }
 
 pub async fn mappers(

@@ -323,7 +323,7 @@ settings-attr-add = Add attribute
 settings-duplicated-email = Allow duplicated email
 settings-duplicated-email-help = Two accounts may hold one address. Off, a write claiming a held address is refused in words. On, sign-in by email stops resolving shared addresses, since they name nobody in particular.
 settings-edit-username = Editable username
-settings-edit-username-help = People may change their own username afterwards. The identity underneath does not move.
+settings-edit-username-help = The account drawer's name field becomes writable: the person keeps their identifier and everything granted, and signs in under the new name from the next attempt.
 settings-refresh-sliding = Session sliding window
 settings-refresh-sliding-help = How long a signed-in session may sleep between renewals, in seconds. Empty takes the built default of 1800. Each renewal slides the window.
 settings-session-ceiling = Session absolute ceiling
@@ -648,7 +648,7 @@ subject-hand-grant = { $role } for { $user }
 paging-size = Per page
 settings-not-enforced = not enforced yet
 user-identifier = Identifier
-user-identifier-help = What grants, sessions and the journal point at. It is fixed at creation and never changes; today it is the username itself.
+user-identifier-help = What grants, sessions and the journal point at: drawn at birth, never the name, so a rename moves nothing. Accounts born before drawn identifiers answer to their name here too.
 user-born = Created
 user-born-unknown = unrecorded
 user-origin = Origin
@@ -720,3 +720,6 @@ preview-by = mapper
 preview-lands-access = access token
 preview-lands-identity = identity token
 preview-lands-both = both tokens
+
+## Decoupled identities.
+user-rename-help = Renaming is the realm's to allow, under Login settings. The identifier underneath never moves: grants, sessions and the journal keep pointing where they pointed.

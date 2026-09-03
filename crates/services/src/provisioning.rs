@@ -712,6 +712,7 @@ pub async fn provision_user(
         return Ok(false);
     }
     let spec = admin::users::Spec {
+        user_name: None,
         email: Some(person.email.to_owned()),
         email_verified: Some(true),
         enabled: Some(true),
@@ -725,8 +726,9 @@ pub async fn provision_user(
             .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
             .collect(),
     };
-    admin::users::create(
+    let born = admin::users::create(
         transaction,
+        provider,
         tenant,
         realm_id,
         PROVISIONER,
@@ -736,8 +738,9 @@ pub async fn provision_user(
     .await
     .map_err(|_| StoreError::Backend)?;
     // Provisioned numbers are the operator's own, so they count as verified.
+    // Reached by the identifier the birth answered, which a name no longer is.
     if person.phone.is_some() {
-        let mut user = users::load(transaction, person.user_name)
+        let mut user = users::load(transaction, &born.user_id)
             .await?
             .ok_or(StoreError::Backend)?;
         user.phone_number_verified = Some(true);

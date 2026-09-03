@@ -230,6 +230,7 @@ pub fn arrived(
 /// door every user creation goes through.
 pub async fn decide_link(
     transaction: &Transaction<'_>,
+    crypto: &dyn crypto::provider::CryptoProvider,
     tenant: &str,
     realm_id: &str,
     provider: &IdentityProviderModel,
@@ -265,6 +266,7 @@ pub async fn decide_link(
         .unwrap_or_else(|| format!("{}-{}", provider.provider_id, arrival.external_user_id));
     let spec = crate::admin::users::Spec {
         email: arrival.email.clone().filter(|_| trusted),
+        user_name: None,
         email_verified: Some(trusted),
         enabled: Some(true),
         given_name: None,
@@ -275,6 +277,7 @@ pub async fn decide_link(
     };
     let made = crate::admin::users::create(
         transaction,
+        crypto,
         tenant,
         realm_id,
         &format!("broker:{}", provider.provider_id),

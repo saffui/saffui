@@ -71,13 +71,17 @@ async fn planted_role(plane: &Plane, role_id: &str) {
     transaction.commit().await.unwrap();
 }
 
-async fn roles_of(plane: &Plane, user_id: &str) -> Vec<String> {
+async fn roles_of(plane: &Plane, user_name: &str) -> Vec<String> {
     use store::tenancy::TenantContext;
     let mut connection = plane.connection().await;
     let transaction = plane
         .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
         .await;
-    store::providers::roles::effective_roles(&transaction, user_id)
+    let person = store::providers::users::load_by_name(&transaction, user_name)
+        .await
+        .unwrap()
+        .expect("a person by that name");
+    store::providers::roles::effective_roles(&transaction, &person.user_id)
         .await
         .unwrap()
         .into_iter()
@@ -174,7 +178,7 @@ async fn a_whole_working_life_converges_by_itself() {
         let transaction = plane
             .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
             .await;
-        let mut person = store::providers::users::load(&transaction, "grace")
+        let mut person = store::providers::users::load_by_name(&transaction, "grace")
             .await
             .unwrap()
             .expect("grace");
@@ -202,7 +206,11 @@ async fn a_whole_working_life_converges_by_itself() {
         let transaction = plane
             .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
             .await;
-        store::providers::roles::grant_to_user(&transaction, "grace", "hand-picked")
+        let grace = store::providers::users::load_by_name(&transaction, "grace")
+            .await
+            .unwrap()
+            .expect("grace");
+        store::providers::roles::grant_to_user(&transaction, &grace.user_id, "hand-picked")
             .await
             .unwrap();
         transaction.commit().await.unwrap();
@@ -217,7 +225,7 @@ async fn a_whole_working_life_converges_by_itself() {
         let transaction = plane
             .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
             .await;
-        let mut person = store::providers::users::load(&transaction, "grace")
+        let mut person = store::providers::users::load_by_name(&transaction, "grace")
             .await
             .unwrap()
             .expect("grace");

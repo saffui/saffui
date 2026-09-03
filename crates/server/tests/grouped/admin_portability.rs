@@ -1,10 +1,9 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::Plane;
 use actix_web::http::{Method, StatusCode};
 use models::entities::authz::AdminAction;
 use serde_json::{Value, json};
-use super::support::Plane;
 
 const REALM: &str = support::REALM;
 

@@ -1,15 +1,14 @@
 //! The self-registration door: opened by the realm, shaped by the realm, and
 //! never a way to read who already exists here.
 
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::Plane;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use serde_json::Value;
 use server::api::config::register;
 use store::tenancy::TenantContext;
-use super::support::Plane;
 
 const REALM: &str = support::REALM;
 

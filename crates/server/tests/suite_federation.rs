@@ -4,17 +4,17 @@ mod support;
 
 #[path = "grouped/broker_login.rs"]
 mod broker_login;
-#[path = "grouped/scim.rs"]
-mod scim;
-#[path = "grouped/spnego_login.rs"]
-mod spnego_login;
+#[path = "grouped/caep.rs"]
+mod caep;
 #[path = "grouped/ldap_front.rs"]
 mod ldap_front;
 #[path = "grouped/ldap_login.rs"]
 mod ldap_login;
 #[path = "grouped/outbound.rs"]
 mod outbound;
-#[path = "grouped/caep.rs"]
-mod caep;
+#[path = "grouped/scim.rs"]
+mod scim;
+#[path = "grouped/spnego_login.rs"]
+mod spnego_login;
 #[path = "grouped/ssf_poll.rs"]
 mod ssf_poll;

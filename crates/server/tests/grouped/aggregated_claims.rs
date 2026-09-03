@@ -1,13 +1,12 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::{Plane, REDIRECT};
 use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test};
 use data_encoding::BASE64;
 use models::entities::authz::AdminAction;
 use serde_json::{Value, json};
 use server::api::config::{Plane as Mounted, register};
-use super::support::{Plane, REDIRECT};
 
 const REALM: &str = support::REALM;
 

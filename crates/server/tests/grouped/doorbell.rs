@@ -1,6 +1,6 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::Plane;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use data_encoding::BASE64;
@@ -8,7 +8,6 @@ use models::entities::attributes::AttributeValue;
 use serde_json::Value;
 use server::api::config::{Plane as Mounted, register};
 use store::tenancy::TenantContext;
-use super::support::Plane;
 
 const REALM: &str = support::REALM;
 const SSO_COOKIE: &str = server::api::rest::endpoints::protocol::binding::SSO_SESSION;

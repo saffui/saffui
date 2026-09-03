@@ -32,13 +32,13 @@ mod admin_user_memberships;
 mod carte;
 #[path = "grouped/cli.rs"]
 mod cli;
+#[path = "grouped/health.rs"]
+mod health;
+#[path = "grouped/housekeeping.rs"]
+mod housekeeping;
 #[path = "grouped/iga.rs"]
 mod iga;
 #[path = "grouped/iga_ttl.rs"]
 mod iga_ttl;
 #[path = "grouped/observability.rs"]
 mod observability;
-#[path = "grouped/health.rs"]
-mod health;
-#[path = "grouped/housekeeping.rs"]
-mod housekeeping;

@@ -1,12 +1,11 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::{Plane, cookie_value, urlencode};
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use serde_json::Value;
 use server::api::config::{Plane as Mounted, register};
 use store::tenancy::TenantContext;
-use super::support::{Plane, cookie_value, urlencode};
 
 const REDIRECT: &str = "https://app.example/callback";
 

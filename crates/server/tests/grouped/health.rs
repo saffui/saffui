@@ -1,11 +1,10 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::Plane;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use server::api::config::register_ops;
 use server::api::rest::endpoints::ops::health::Vitals;
-use super::support::Plane;
 
 async fn ask(vitals: &Vitals, path: &str) -> (StatusCode, String) {
     let app = test::init_service(App::new().configure(register_ops(vitals))).await;

@@ -1,6 +1,6 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::{Plane, SigningKey, cookie_value, urlencode};
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use crypto::jose::jwe::{JweHeader, RSA_OAEP_256, deserialize_compact};
@@ -8,7 +8,6 @@ use models::entities::client::JweRegistration;
 use models::entities::keys::{JweAlgorithm, JweEncryption};
 use serde_json::Value;
 use server::api::config::{Plane as Mounted, register};
-use super::support::{Plane, SigningKey, cookie_value, urlencode};
 
 const REDIRECT: &str = "https://app.example/callback";
 

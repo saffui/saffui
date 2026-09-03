@@ -1,12 +1,11 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::Plane;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use models::entities::realm::{ClientRegistration, RegistrationBounds};
 use serde_json::{Value, json};
 use server::api::config::{Plane as Mounted, register};
-use super::support::Plane;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {

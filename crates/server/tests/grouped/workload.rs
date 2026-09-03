@@ -1,12 +1,11 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::Plane;
 use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test};
 use models::entities::authz::AdminAction;
 use serde_json::{Value, json};
 use server::api::config::register;
-use super::support::Plane;
 
 const REALM: &str = support::REALM;
 const GRANT: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";

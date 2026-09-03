@@ -1,13 +1,12 @@
-
 #[allow(unused_imports)]
 use super::support;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
+use super::support::Plane;
 use actix_web::http::StatusCode;
 use actix_web::test;
 use server::api::config::{Plane as Mounted, observed, register};
-use super::support::Plane;
 use tracing_subscriber::fmt::MakeWriter;
 
 fn mounted(plane: &Plane) -> Mounted {

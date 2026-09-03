@@ -1,9 +1,8 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::Plane;
 use server::jobs::sweep_every_realm;
 use store::tenancy::{Tenancy, TenantContext};
-use super::support::Plane;
 
 /// A revocation that has already outlived the token it was for. It holds
 /// nothing but the realm, so a realm with no client and no user can still be

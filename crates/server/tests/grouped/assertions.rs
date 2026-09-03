@@ -1,6 +1,6 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::{Plane, SigningKey};
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use chrono::Utc;
@@ -11,7 +11,6 @@ use crypto::jose::jwt::{self, JwtPayload};
 use models::entities::realm::ClientRegistration;
 use serde_json::{Value, json};
 use server::api::config::{Plane as Mounted, register};
-use super::support::{Plane, SigningKey};
 
 fn mounted(plane: &Plane) -> Mounted {
     mounted_dialling(plane, Egress::Outward)

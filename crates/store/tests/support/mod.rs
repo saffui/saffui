@@ -86,6 +86,7 @@ impl Fixture {
     pub async fn empty() -> Self {
         let turn = DATABASE.lock().await;
 
+        ensured_database().await;
         let (owner, connection) = owner_config().connect(NoTls).await.expect("the owner");
         tokio::spawn(async move {
             let _ = connection.await;
@@ -141,6 +142,7 @@ impl Fixture {
     /// the application should not have.
     #[allow(dead_code, reason = "each test binary compiles this module on its own")]
     pub async fn owner(&self) -> tokio_postgres::Client {
+        ensured_database().await;
         let (client, connection) = owner_config().connect(NoTls).await.expect("the owner");
         tokio::spawn(async move {
             let _ = connection.await;

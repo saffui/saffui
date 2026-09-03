@@ -5,15 +5,14 @@
 //! `KRB5_KTNAME` naming the exported service keytab, a `kinit` for ada, and
 //! `SAFFUI_TEST_KRB5` naming the realm to say all of that stands).
 
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::Plane;
 use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test};
 use models::entities::authz::AdminAction;
 use serde_json::{Value, json};
 use server::api::config::register;
-use super::support::Plane;
 
 const REALM: &str = support::REALM;
 const SERVICE: &str = "HTTP/localhost";

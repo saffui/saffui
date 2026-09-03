@@ -1,15 +1,14 @@
-
 #[allow(unused_imports)]
 use super::support;
 use std::sync::Arc;
 
+use super::support::{Plane, SigningKey, urlencode};
 use actix_web::http::StatusCode;
 use actix_web::{App, HttpResponse, HttpServer, test, web};
 use config::serving::Egress;
 use crypto::jose::jwt::JwtPayload;
 use crypto::provider::SignAlg;
 use server::api::config::{Plane as Mounted, register};
-use super::support::{Plane, SigningKey, urlencode};
 
 const REDIRECT: &str = "https://app.example/callback";
 

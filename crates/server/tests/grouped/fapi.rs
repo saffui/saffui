@@ -1,6 +1,6 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::{Plane, SigningKey, urlencode};
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use chrono::Utc;
@@ -10,7 +10,6 @@ use data_encoding::BASE64URL_NOPAD;
 use serde_json::{Value, json};
 use server::api::config::register;
 use store::tenancy::TenantContext;
-use super::support::{Plane, SigningKey, urlencode};
 
 const REALM: &str = support::REALM;
 const FINTECH: &str = "fintech";

@@ -1,13 +1,12 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::{Plane, cookie_value};
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use data_encoding::BASE64;
 use serde_json::Value;
 use server::api::config::{Plane as Mounted, register};
 use store::tenancy::TenantContext;
-use super::support::{Plane, cookie_value};
 
 const REALM: &str = support::REALM;
 

@@ -1,15 +1,14 @@
-
 #[allow(unused_imports)]
 use super::support;
 use std::sync::Arc;
 
+use super::support::{Plane, Postbox, cookie_value, urlencode};
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use models::entities::mail::{MailCredentials, MailSettings};
 use secrecy::SecretBox;
 use server::api::config::{Plane as Mounted, register};
 use store::tenancy::TenantContext;
-use super::support::{Plane, Postbox, cookie_value, urlencode};
 
 const REDIRECT: &str = "https://app.example/callback";
 

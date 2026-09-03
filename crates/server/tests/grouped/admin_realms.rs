@@ -1,10 +1,9 @@
-
 #[allow(unused_imports)]
 use super::support;
+use super::support::Plane;
 use actix_web::http::{Method, StatusCode};
 use models::entities::authz::AdminAction;
 use serde_json::Value;
-use super::support::Plane;
 
 /// Ask the plane, with a body or without one.
 async fn asked(

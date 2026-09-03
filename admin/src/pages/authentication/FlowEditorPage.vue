@@ -258,7 +258,14 @@ function onPointerUp() {
   if (carrying.value) void release();
 }
 /// What this build can run; mirrors the engine's catalogue.
-const AUTHENTICATORS = ["password", "totp", "webauthn", "magic-link", "kerberos"] as const;
+const AUTHENTICATORS = [
+  "password",
+  "totp",
+  "webauthn",
+  "magic-link",
+  "kerberos",
+  "recovery-code",
+] as const;
 const adding = ref(false);
 /// Where the next step lands in the running order; the end when unsaid.
 const insertAt = ref<number | null>(null);

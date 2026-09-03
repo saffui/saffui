@@ -34,6 +34,41 @@ pub struct Spec {
     pub frontchannel_logout_uri: Option<String>,
     /// What the client registered about itself, OIDC Registration §2.
     pub registered: Registered,
+    /// What the operator wrote about this client, for the people who will read
+    /// the list in a year and wonder what it was for.
+    pub description: Option<String>,
+    /// Which of the grants that are opted into rather than inherited this
+    /// client holds. Nothing named is nothing changed, so a re-registration
+    /// under RFC 7592 leaves them where the operator put them.
+    pub gates: Gates,
+}
+
+/// The grants a client holds by an operator's say-so rather than by asking.
+///
+/// Three keys on the client's own bag, which is where each of the three engines
+/// already reads them. None leaves the key as it stands; the alternative would
+/// mean every write of a name or a redirect silently retuning what the client
+/// may do.
+#[derive(Debug, Clone, Default)]
+pub struct Gates {
+    /// RFC 8628, read by `services::device::allows_device`.
+    pub device: Option<bool>,
+    /// RFC 8693, read by the exchange grant.
+    pub token_exchange: Option<bool>,
+    /// CIBA, whose opt-in is the delivery mode itself: there is no separate
+    /// flag to disagree with.
+    pub ciba: Option<CibaOptIn>,
+}
+
+/// How this client is signed in over the backchannel, or not at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CibaOptIn {
+    /// The mode goes, and with it the grant.
+    Off,
+    Poll,
+    /// The endpoint the notification is posted to. An https address, checked
+    /// where it is read.
+    Ping(String),
 }
 
 /// What a client says about itself when it registers. Empty for one an
@@ -125,6 +160,11 @@ pub struct Reshape {
     /// Doubly optional: nothing named leaves it alone, `Some(None)` clears it.
     pub backchannel_logout_uri: Option<Option<String>>,
     pub frontchannel_logout_uri: Option<Option<String>>,
+    pub description: Option<String>,
+    /// The client's home page, OIDC Registration's `client_uri`. Doubly
+    /// optional like the addresses above.
+    pub client_uri: Option<Option<String>>,
+    pub gates: Gates,
 }
 
 /// Where a confidential client's secret comes from.
@@ -298,7 +338,13 @@ pub async fn update(
             .frontchannel_logout_uri
             .clone()
             .unwrap_or_else(|| client.frontchannel_logout_uri.clone()),
+        description: reshape.description.clone(),
+        gates: reshape.gates.clone(),
     };
+    let mut spec = spec;
+    if let Some(home) = &reshape.client_uri {
+        spec.registered.client_uri = home.clone();
+    }
     reshape_registered(transaction, client_id, &spec).await
 }
 
@@ -352,7 +398,61 @@ pub async fn remove(transaction: &Transaction<'_>, client_id: &str) -> Result<bo
         .map_err(|_| Unregistrable::Unwritable)
 }
 
+/// Write the named gates onto the client's bag, and only the named ones.
+///
+/// The engines read these keys as they stand; nothing here invents a second
+/// place to say the same thing. Turning one off removes the key rather than
+/// writing a false, because absent is what every reader already treats as no.
+fn apply_gates(client: &mut ClientModel, gates: &Gates) {
+    use models::entities::attributes::AttributeValue;
+
+    let mut bag = client.configs.clone().unwrap_or_default();
+    let mut said = |key: &str, on: bool| {
+        if on {
+            bag.insert(key.to_owned(), AttributeValue::Str("true".to_owned()));
+        } else {
+            bag.remove(key);
+        }
+    };
+    if let Some(on) = gates.device {
+        said(crate::device::GRANT_FLAG, on);
+    }
+    if let Some(on) = gates.token_exchange {
+        said(crate::grant::EXCHANGE_FLAG, on);
+    }
+    if let Some(mode) = &gates.ciba {
+        match mode {
+            CibaOptIn::Off => {
+                bag.remove(crate::ciba::DELIVERY_FLAG);
+                bag.remove(crate::ciba::NOTIFICATION_ENDPOINT_FLAG);
+            }
+            CibaOptIn::Poll => {
+                bag.insert(
+                    crate::ciba::DELIVERY_FLAG.to_owned(),
+                    AttributeValue::Str("poll".to_owned()),
+                );
+                bag.remove(crate::ciba::NOTIFICATION_ENDPOINT_FLAG);
+            }
+            CibaOptIn::Ping(endpoint) => {
+                bag.insert(
+                    crate::ciba::DELIVERY_FLAG.to_owned(),
+                    AttributeValue::Str("ping".to_owned()),
+                );
+                bag.insert(
+                    crate::ciba::NOTIFICATION_ENDPOINT_FLAG.to_owned(),
+                    AttributeValue::Str(endpoint.clone()),
+                );
+            }
+        }
+    }
+    client.configs = Some(bag);
+}
+
 fn apply(client: &mut ClientModel, spec: &Spec) {
+    if let Some(said) = &spec.description {
+        client.description = said.clone();
+    }
+    apply_gates(client, &spec.gates);
     client.root_url = spec
         .root_url
         .clone()

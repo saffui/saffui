@@ -158,7 +158,64 @@ async fn doors_of_realm(
             doors.push("register-email");
         }
     }
+    if offers_recovery_codes(&transaction, held.browser_flow.as_deref()).await {
+        doors.push("recovery-code");
+    }
     (doors.join(" "), held.page_overrides)
+}
+
+/// Whether this realm's browser flow has a step that takes a printed code.
+///
+/// The realm's flow and not the client's: the page is built before any client
+/// is named, so a client that overrides the binding to a flow of its own is not
+/// read here. Offering the field where no step takes it costs a person one
+/// wrong guess; hiding it where one does would cost them the way back.
+///
+/// One level deep. A sub-flow is walked, because the built browser flow keeps
+/// its second factors in one, and a step buried two flows down is a shape
+/// nothing this build provisions.
+async fn offers_recovery_codes(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    bound: Option<&str>,
+) -> bool {
+    use models::entities::auth::ExecutionStep;
+    use store::providers::auth_flows;
+
+    let Ok(Some(flow)) = auth_flows::flow_by_alias(transaction, bound.unwrap_or("browser")).await
+    else {
+        return false;
+    };
+    let Ok(steps) = auth_flows::executions_of(transaction, &flow.flow_id).await else {
+        return false;
+    };
+    for step in &steps {
+        if !step.is_enabled() {
+            continue;
+        }
+        match &step.step {
+            ExecutionStep::Authenticator { authenticator, .. } => {
+                if authenticator == "recovery-code" {
+                    return true;
+                }
+            }
+            ExecutionStep::SubFlow { flow_id } => {
+                let Ok(inner) = auth_flows::executions_of(transaction, flow_id).await else {
+                    continue;
+                };
+                if inner.iter().any(|held| {
+                    held.is_enabled()
+                        && matches!(
+                            &held.step,
+                            ExecutionStep::Authenticator { authenticator, .. }
+                                if authenticator == "recovery-code"
+                        )
+                }) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// The `ui_locales` the login carried, raw: the realm decides what of it is

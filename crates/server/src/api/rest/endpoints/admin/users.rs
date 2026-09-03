@@ -282,6 +282,26 @@ pub async fn lockout(
     }))
 }
 
+/// How many recovery codes are left on this person's sheet.
+pub async fn recovery_codes(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
+    let left = people::recovery_codes_left(&transaction, &user_id)
+        .await
+        .map_err(refused)?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "remaining": left })))
+}
+
 /// Lift a lockout and forget the count.
 pub async fn lift_lockout(
     admin: web::ReqData<Admin>,

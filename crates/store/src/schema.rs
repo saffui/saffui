@@ -475,6 +475,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V078__realm_page_overrides.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 79,
+            name: "recovery_code_action",
+            sql: include_str!("../migrations/V079__recovery_code_action.sql"),
+            transactional: true,
+        }),
     ]
 }
 

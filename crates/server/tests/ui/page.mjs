@@ -103,7 +103,15 @@ export function opened({ rounds = [], fetching = true, doors = "" } = {}) {
 
   // The form reaches its fields by name, as the script does.
   const form = element("login");
-  for (const field of ["username", "password", "totp", "totp_register", "remember"]) {
+  for (const field of [
+    "username",
+    "password",
+    "totp",
+    "totp_register",
+    "remember",
+    "recovery_code",
+    "recovery_codes_register",
+  ]) {
     form[field] = new Element("input", field);
   }
   const recoverForm = element("recover-form");

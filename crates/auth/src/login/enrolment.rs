@@ -1,5 +1,6 @@
 use config::serving::PublicOrigin;
 use crypto::otp::totp::{TotpParams, totp_verify_step};
+use crypto::otp::{find_matching_code, generate_recovery_codes};
 use crypto::provider::CryptoProvider;
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
 use deadpool_postgres::Transaction;
@@ -23,6 +24,7 @@ use crate::login::authenticator::{Challenge, redacted, relying_party};
 pub const CONFIGURE_WEBAUTHN: &str = "webauthn-register";
 pub const CONFIGURE_TOTP: &str = "totp-register";
 pub const VERIFY_EMAIL: &str = "verify-email";
+pub const CONFIGURE_RECOVERY_CODES: &str = "recovery-codes-register";
 
 /// How long a mailed verification link lasts, and how soon another may be
 /// asked for. The same reasoning as the sign-in link: without a window a
@@ -35,6 +37,10 @@ const VERIFY_COOLDOWN: i64 = 60;
 /// every app reads without being told.
 const TOTP_SECRET_BYTES: usize = 20;
 
+/// How many codes a sheet carries. Enough that losing the phone does not mean
+/// losing the account on the second mishap, few enough to be worth printing.
+const RECOVERY_CODES: usize = 10;
+
 /// What the caller sent for whichever ceremony is running.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Answers<'a> {
@@ -42,6 +48,10 @@ pub struct Answers<'a> {
     pub code: Option<&'a str>,
     /// What a mailed address-verification link carried back.
     pub verified_address: Option<&'a str>,
+    /// One code typed back off the sheet just shown, proving it was kept. Its
+    /// own field and not `code`: two ceremonies reading one answer is how a
+    /// person's authenticator code gets spent against the wrong ledger.
+    pub kept: Option<&'a str>,
 }
 
 /// Where an enrolment stands after one round.
@@ -116,6 +126,14 @@ pub async fn required(
                 finish_totp(transaction, provider, tenant, subject, typed, state).await
             }
             _ => start_totp(provider, realm, subject),
+        };
+    }
+    if pending(RequiredAction::ConfigureRecoveryCodes) {
+        return match (answers.kept, remembered.get(CONFIGURE_RECOVERY_CODES)) {
+            (Some(typed), Some(state)) => {
+                finish_recovery_codes(transaction, provider, tenant, subject, typed, state).await
+            }
+            _ => start_recovery_codes(provider),
         };
     }
     if pending(RequiredAction::VerifyEmail) {
@@ -255,6 +273,84 @@ async fn finish_totp(
     }
     match users::clear_required_action(transaction, &subject.user_id, RequiredAction::ConfigureTotp)
         .await
+    {
+        Ok(true) => Enrolment::Settled,
+        _ => Enrolment::Refused,
+    }
+}
+
+/// The start leg of a sheet: the codes drawn, shown once, and remembered.
+///
+/// Shown once is the whole contract. They are not stored as they are shown, and
+/// the round that keeps them keeps digests, so this screen is the only place the
+/// codes ever exist in a form anyone can read.
+fn start_recovery_codes(provider: &dyn CryptoProvider) -> Enrolment {
+    let Ok(codes) = generate_recovery_codes(provider.rand(), RECOVERY_CODES) else {
+        return Enrolment::Refused;
+    };
+    let codes: Vec<&str> = codes.iter().map(|code| code.as_str()).collect();
+    Enrolment::Asked {
+        named: CONFIGURE_RECOVERY_CODES,
+        challenge: Challenge {
+            shown: json!({ "codes": codes }),
+            remembered: json!({ "codes": codes }),
+        },
+        sending: None,
+    }
+}
+
+/// The finish leg: one code typed back, then the whole set kept as digests.
+///
+/// Any of them will do. All ten are on the screen the person is reading, so
+/// naming which one to type back would prove nothing further; what typing one
+/// proves is that the sheet was taken down before the screen went away.
+async fn finish_recovery_codes(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &TenantContext,
+    subject: &UserModel,
+    typed: &str,
+    state: &Value,
+) -> Enrolment {
+    let Some(codes) = state.get("codes").and_then(Value::as_array) else {
+        return Enrolment::Refused;
+    };
+    let codes: Vec<&str> = codes.iter().filter_map(Value::as_str).collect();
+    if codes.len() != RECOVERY_CODES {
+        return Enrolment::Refused;
+    }
+    if find_matching_code(typed, &codes).is_none() {
+        return Enrolment::Refused;
+    }
+
+    let mut identifiers = Vec::with_capacity(codes.len());
+    for _ in &codes {
+        let mut drawn = [0u8; 16];
+        if provider.rand().fill(&mut drawn).is_err() {
+            return Enrolment::Refused;
+        }
+        identifiers.push(HEXLOWER.encode(&drawn));
+    }
+    if credentials::replace_recovery_codes(
+        transaction,
+        provider.digest(),
+        &tenant.realm_id,
+        &subject.user_id,
+        &codes,
+        &identifiers,
+        &AuditableModel::from_creator(tenant.tenant.clone(), subject.user_id.clone()),
+    )
+    .await
+    .is_err()
+    {
+        return Enrolment::Refused;
+    }
+    match users::clear_required_action(
+        transaction,
+        &subject.user_id,
+        RequiredAction::ConfigureRecoveryCodes,
+    )
+    .await
     {
         Ok(true) => Enrolment::Settled,
         _ => Enrolment::Refused,

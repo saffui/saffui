@@ -1211,3 +1211,202 @@ async fn every_login_in_the_realm_is_listed_and_can_be_ended_at_once() {
     let (status, refused) = fetched(&plane, Method::GET, &listing, &bearer).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
 }
+
+
+/// The grants an operator turns on, over the plane and then in the engines.
+///
+/// Three keys the engines already read; what was missing was a hand on them.
+/// The proof that matters is not that the write landed but that the engine
+/// answers differently afterwards, so the device endpoint is asked both ways.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_grants_an_operator_opens_are_the_ones_the_engines_serve() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/clients");
+
+    // Born with nothing opened: a client inherits no grant by asking.
+    let (status, born) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "client_id": "kiosk",
+            "confidential": true,
+            "description": "the one in the lobby",
+            "client_uri": "https://kiosk.example/welcome",
+            "redirect_uris": ["https://kiosk.example/cb"],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let secret = born["client_secret"]
+        .as_str()
+        .expect("the secret, this once")
+        .to_owned();
+    assert_eq!(born["device_grant"], false, "{born}");
+    assert_eq!(born["token_exchange"], false, "{born}");
+    assert_eq!(born["ciba_delivery"], "off", "{born}");
+    assert_eq!(born["description"], "the one in the lobby", "{born}");
+    assert_eq!(
+        born["client_uri"], "https://kiosk.example/welcome",
+        "{born}"
+    );
+
+    let device_endpoint = format!("/realms/{REALM}/protocol/openid-connect/device-authorization");
+    async fn ask_device(plane: &Plane, uri: &str, secret: &str) -> (StatusCode, serde_json::Value) {
+        let app =
+            test::init_service(App::new().configure(register(&mounted(plane, &policy())))).await;
+        // Established the way the client would establish itself. A refusal for
+        // want of a secret looks like a refusal for want of the grant, and this
+        // test would then pass without the gate existing at all.
+        let basic = data_encoding::BASE64.encode(format!("kiosk:{secret}").as_bytes());
+        let asking = test::TestRequest::post()
+            .uri(uri)
+            .insert_header(("authorization", format!("Basic {basic}")))
+            .set_form([("scope", "openid")])
+            .to_request();
+        let response = test::call_service(&app, asking).await;
+        let status = response.status();
+        // A refusal need not be JSON, and a test that insists on it fails at
+        // the parse rather than at the thing it came to check.
+        let raw = test::read_body(response).await;
+        let told = serde_json::from_slice(&raw).unwrap_or(serde_json::Value::Null);
+        (status, told)
+    }
+
+    // Closed: the engine turns it away.
+    let (status, refused) = ask_device(&plane, &device_endpoint, &secret).await;
+    assert_ne!(status, StatusCode::OK, "a closed grant answered: {refused}");
+    assert_eq!(
+        refused["error"], "unauthorized_client",
+        "the refusal was not the grant's: {refused}"
+    );
+
+    // Opened over the plane.
+    let (status, opened) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/kiosk"),
+        &bearer,
+        serde_json::json!({ "device_grant": true, "token_exchange": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert_eq!(opened["device_grant"], true, "{opened}");
+    assert_eq!(opened["token_exchange"], true, "{opened}");
+    // Naming the grants left the rest of the registration alone.
+    assert_eq!(
+        opened["redirect_uris"],
+        serde_json::json!(["https://kiosk.example/cb"]),
+        "{opened}"
+    );
+    assert_eq!(opened["description"], "the one in the lobby", "{opened}");
+
+    // The engine now answers: the same call gets a code.
+    let (status, served) = ask_device(&plane, &device_endpoint, &secret).await;
+    assert_eq!(status, StatusCode::OK, "{served}");
+    assert!(served["device_code"].is_string(), "{served}");
+
+    // Shut again, and the engine shuts with it.
+    let (status, shut) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/kiosk"),
+        &bearer,
+        serde_json::json!({ "device_grant": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shut}");
+    assert_eq!(shut["device_grant"], false, "{shut}");
+    assert_eq!(
+        shut["token_exchange"], true,
+        "shutting one grant shut another: {shut}"
+    );
+    let (status, refused) = ask_device(&plane, &device_endpoint, &secret).await;
+    assert_ne!(status, StatusCode::OK, "a shut grant answered: {refused}");
+    assert_eq!(
+        refused["error"], "unauthorized_client",
+        "the refusal was not the grant's: {refused}"
+    );
+}
+
+/// The backchannel opt-in is the delivery mode, so half of one is refused
+/// rather than written and then read back as nothing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_ping_without_an_endpoint_is_refused_at_the_door() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/clients");
+
+    let (status, _) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "client_id": "till",
+            "confidential": true,
+            "redirect_uris": ["https://till.example/cb"],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    for asked in [
+        serde_json::json!({ "ciba_delivery": "ping" }),
+        serde_json::json!({ "ciba_delivery": "ping", "ciba_notification_endpoint": "http://till.example/ciba" }),
+        serde_json::json!({ "ciba_delivery": "carrier-pigeon" }),
+    ] {
+        let (status, told) = written(
+            &plane,
+            Method::PUT,
+            &format!("{base}/till"),
+            &bearer,
+            asked.clone(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{asked} was taken: {told}"
+        );
+    }
+
+    // The whole opt-in, and it reads back whole.
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/till"),
+        &bearer,
+        serde_json::json!({
+            "ciba_delivery": "ping",
+            "ciba_notification_endpoint": "https://till.example/ciba",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["ciba_delivery"], "ping", "{told}");
+    assert_eq!(
+        told["ciba_notification_endpoint"], "https://till.example/ciba",
+        "{told}"
+    );
+
+    // Off takes the endpoint with it: a mode without one is not a mode.
+    let (_, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/till"),
+        &bearer,
+        serde_json::json!({ "ciba_delivery": "off" }),
+    )
+    .await;
+    assert_eq!(told["ciba_delivery"], "off", "{told}");
+    assert_eq!(
+        told["ciba_notification_endpoint"],
+        serde_json::Value::Null,
+        "{told}"
+    );
+}

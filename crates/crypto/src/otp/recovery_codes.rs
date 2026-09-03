@@ -43,7 +43,11 @@ fn generate_one(rand: &dyn RandProvider) -> Result<Zeroizing<String>> {
 }
 
 /// Strip the formatting a user will not reproduce: dashes, spaces, and case.
-fn normalise(code: &str) -> Zeroizing<String> {
+///
+/// Public because whoever stores a code and whoever checks one back must agree
+/// on what a code *is* after a human has retyped it. Two normalisations that
+/// drift by one character turn every code in the set into a wrong one.
+pub fn normalise(code: &str) -> Zeroizing<String> {
     Zeroizing::new(
         code.chars()
             .filter(|c| !c.is_whitespace() && *c != '-')

@@ -405,3 +405,79 @@ test("no passkey door without the realm's say", async () => {
   const page = opened({ rounds: [] });
   assert.equal(page.element("passkey-open").hidden, true);
 });
+
+// The printed sheet: the realm's flow decides whether the way back is offered,
+// the codes are listed as text, and a code typed there travels in its own field.
+test("the sheet's link only stands where the realm's flow takes a printed code", async () => {
+  const page = opened({
+    doors: "recovery-code",
+    rounds: [{ told: { status: "challenge" } }],
+  });
+  page.form.username.value = "ada";
+  page.form.password.value = "a-password-of-decent-length";
+  page.form.fire("submit");
+  await page.settle();
+
+  assert.equal(page.element("recovery-row").hidden, false);
+  assert.equal(page.element("code").hidden, false, "the app's field went away");
+});
+
+test("no sheet link where no step takes one", async () => {
+  const page = opened({ rounds: [{ told: { status: "challenge" } }] });
+  page.form.username.value = "ada";
+  page.form.password.value = "a-password-of-decent-length";
+  page.form.fire("submit");
+  await page.settle();
+
+  assert.equal(page.element("recovery-row").hidden, true);
+});
+
+test("the sheet's link swaps the app's field for the printed one", async () => {
+  const page = opened({
+    doors: "recovery-code",
+    rounds: [{ told: { status: "challenge" } }, { told: { status: "admitted", redirect_to: "https://app.example/back" } }],
+  });
+  page.form.username.value = "ada";
+  page.form.password.value = "a-password-of-decent-length";
+  page.form.fire("submit");
+  await page.settle();
+
+  await page.press("recovery-open");
+  assert.equal(page.element("recovery").hidden, false);
+  assert.equal(page.element("code").hidden, true);
+  assert.equal(page.element("recovery-row").hidden, true, "the link stayed beside itself");
+
+  page.form.recovery_code.value = "abcd-efgh-ijkl-mnop";
+  page.form.fire("submit");
+  await page.settle();
+  assert.equal(page.sent[1].body.recovery_code, "abcd-efgh-ijkl-mnop");
+  assert.equal(page.sent[1].body.totp, undefined, "a printed code rode the app's field");
+});
+
+test("a drawn sheet is listed as text and confirmed in its own field", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "recovery-codes-register",
+          asks: { codes: ["aaaa-bbbb", "cccc-dddd"] },
+        },
+      },
+      { told: { status: "admitted", redirect_to: "https://app.example/back" } },
+    ],
+  });
+  page.form.username.value = "ada";
+  page.form.password.value = "a-password-of-decent-length";
+  page.form.fire("submit");
+  await page.settle();
+
+  assert.equal(page.element("sheet").hidden, false);
+  assert.deepEqual(page.element("sheet-codes").text, ["aaaa-bbbb", "cccc-dddd"]);
+  assert.equal(page.element("credentials").hidden, true);
+
+  page.form.recovery_codes_register.value = "aaaa-bbbb";
+  page.form.fire("submit");
+  await page.settle();
+  assert.equal(page.sent[1].body.recovery_codes_register, "aaaa-bbbb");
+});

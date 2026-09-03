@@ -635,6 +635,11 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
             )?,
             at: Some(now),
         },
+        // A registration says nothing about the description an operator wrote,
+        // and RFC 7592 replaces only what it names: the note and the grants an
+        // operator turned on are not the client's to clear by re-registering.
+        description: None,
+        gates: crate::admin::clients::Gates::default(),
     })
 }
 

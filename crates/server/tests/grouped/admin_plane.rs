@@ -1212,7 +1212,6 @@ async fn every_login_in_the_realm_is_listed_and_can_be_ended_at_once() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{refused}");
 }
 
-
 /// The grants an operator turns on, over the plane and then in the engines.
 ///
 /// Three keys the engines already read; what was missing was a hand on them.

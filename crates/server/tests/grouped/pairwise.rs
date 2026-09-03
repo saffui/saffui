@@ -543,3 +543,106 @@ async fn a_client_that_asked_for_a_signature_is_answered_with_one() {
         "a registered signature was answered without one"
     );
 }
+
+/// §2.4 and §8 together: the `sub` of a back-channel logout token is the one
+/// this client was handed, which for a pairwise client is its pseudonym.
+///
+/// Every other minting path already asked pairwise for the name; the logout one
+/// sent the account's own identifier. A client given a pseudonym on purpose was
+/// told the real one the moment anybody logged out, and could not match the
+/// notice to the session it held either.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_logout_names_the_person_the_client_was_told_about() {
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .allow_registration(ClientRegistration::Open, None)
+        .await;
+
+    let here = "https://one.example/cb";
+    let (client_id, secret) = registered(&plane, here, None).await;
+    let (pseudonym, access) = granted_to(&plane, &client_id, &secret, here).await;
+    // The login this sign-in opened, not the one the harness plants: the client
+    // took part in its own, and that is the one a logout tells about.
+    let session_id = plane.claims_of(&access).await["sid"]
+        .as_str()
+        .expect("the token names its login")
+        .to_owned();
+    assert_ne!(
+        pseudonym,
+        support::SUBJECT,
+        "the identity token already carried the account's own name"
+    );
+
+    // Registered to be told, so the logout mints a notice for it.
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let mut client = store::providers::clients::load(&transaction, &client_id)
+            .await
+            .expect("the clients table")
+            .expect("the registered client");
+        client.backchannel_logout_uri = Some("https://one.example/bye".to_owned());
+        store::providers::clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.expect("the registration kept");
+    }
+
+    let notice = {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let sealing = support::sealing();
+        let ring = store::keyring::load(
+            &transaction,
+            &sealing.envelope,
+            support::TENANT,
+            support::REALM,
+        )
+        .await
+        .expect("the realm's ring");
+        let signing = services::grant::Signing {
+            provider: sealing.provider.as_ref(),
+            ring: &ring,
+            envelope: &sealing.envelope,
+        };
+        let notices = services::logout::notices_for(
+            &transaction,
+            &signing,
+            &support::origin().issuer(support::REALM),
+            &session_id,
+            chrono::Utc::now(),
+        )
+        .await;
+        transaction.commit().await.expect("the read kept");
+        notices
+            .into_iter()
+            .find(|notice| notice.client_id == client_id)
+            .expect("a notice for the client that asked to be told")
+    };
+
+    let claims = plane.claims_of(&notice.logout_token).await;
+    assert_eq!(
+        claims["sub"], pseudonym,
+        "the logout named somebody this client has never heard of: {claims}"
+    );
+    assert_ne!(
+        claims["sub"],
+        support::SUBJECT,
+        "the account's own name was handed to a client that holds a pseudonym: {claims}"
+    );
+    // Both halves, since §2.4 wants at least one and this server has both.
+    assert_eq!(claims["sid"], session_id, "{claims}");
+}

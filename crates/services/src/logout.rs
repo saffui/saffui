@@ -257,6 +257,20 @@ pub async fn notices_for(
             tracing::warn!(%client_id, "no key to sign a logout token with");
             continue;
         };
+        // The name this client knows the person by, §2.4: the `sub` of a logout
+        // token is the `sub` that client was handed, or it names somebody it has
+        // never heard of. Every other minting path already asks pairwise for it;
+        // this one did not, so a client given a pseudonym on purpose was told
+        // the real identifier the moment anybody logged out. Refusing to tell it
+        // at all is better than telling it that: the notice is dropped and said
+        // out loud, the way an unreadable client or a missing key is.
+        let Ok(subject) =
+            crate::pairwise::subject_for(transaction, signing.provider, &client, &session.user_id)
+                .await
+        else {
+            tracing::warn!(%client_id, "no subject to name this client's person by");
+            continue;
+        };
         let mut extra = serde_json::Map::new();
         extra.insert(
             "events".into(),
@@ -271,7 +285,7 @@ pub async fn notices_for(
                 certified_by: None,
                 kind: token::issuance::Kind::Logout,
                 issuer,
-                subject: &session.user_id,
+                subject: &subject,
                 audiences: vec![client_id.clone()],
                 party: &client_id,
                 session_id,

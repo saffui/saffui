@@ -28,6 +28,9 @@ str_enum! {
         VerifyEmail => "verify-email",
         ConfigureTotp => "configure-totp",
         ConfigureWebauthn => "configure-webauthn",
+        /// Draw a set of one-shot codes, the way back when the second
+        /// factor is lost.
+        ConfigureRecoveryCodes => "configure-recovery-codes",
     }
 }
 
@@ -267,7 +270,7 @@ mod tests {
     #[test]
     fn the_catalogues_agree_with_their_own_spelling() {
         assert_eq!(UserStorage::ALL.len(), 2);
-        assert_eq!(RequiredAction::ALL.len(), 5);
+        assert_eq!(RequiredAction::ALL.len(), 6);
         assert_round_trips(UserStorage::ALL);
         assert_round_trips(RequiredAction::ALL);
     }
@@ -284,6 +287,10 @@ mod tests {
         assert_eq!(RequiredAction::UpdatePassword.as_str(), "update-password");
         assert_eq!(RequiredAction::VerifyEmail.as_str(), "verify-email");
         assert_eq!(RequiredAction::ConfigureTotp.as_str(), "configure-totp");
+        assert_eq!(
+            RequiredAction::ConfigureRecoveryCodes.as_str(),
+            "configure-recovery-codes"
+        );
         assert_eq!(
             RequiredAction::ConfigureWebauthn.as_str(),
             "configure-webauthn"

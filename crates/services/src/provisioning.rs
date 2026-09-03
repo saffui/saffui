@@ -613,6 +613,8 @@ pub async fn provision_client(
             implicit: registration.implicit,
             ..Default::default()
         },
+        description: None,
+        gates: admin::clients::Gates::default(),
     };
     let secret = match registration.secret {
         Some(given) => admin::clients::Secret::Given(given),
@@ -660,6 +662,8 @@ pub async fn provision_fapi_client(
         backchannel_logout_uri: None,
         frontchannel_logout_uri: None,
         registered: admin::clients::Registered::default(),
+        description: None,
+        gates: admin::clients::Gates::default(),
     };
     admin::clients::register(
         transaction,

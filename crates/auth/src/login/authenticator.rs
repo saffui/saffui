@@ -84,6 +84,8 @@ pub enum Authenticator {
     /// A Kerberos ticket carried by SPNEGO, accepted at the door and reduced
     /// to a principal before this crate sees it.
     Kerberos,
+    /// One code of a set the user printed, spent as it is used.
+    RecoveryCode,
 }
 
 /// A name no build knows. Refused where a flow is read, so a realm cannot be
@@ -102,6 +104,7 @@ impl FromStr for Authenticator {
             "webauthn" => Ok(Self::Webauthn),
             "magic-link" => Ok(Self::MagicLink),
             "kerberos" => Ok(Self::Kerberos),
+            "recovery-code" => Ok(Self::RecoveryCode),
             other => Err(Unknown(other.to_owned())),
         }
     }
@@ -115,6 +118,7 @@ impl Authenticator {
             Self::Webauthn => "webauthn",
             Self::MagicLink => "magic-link",
             Self::Kerberos => "kerberos",
+            Self::RecoveryCode => "recovery-code",
         }
     }
 
@@ -137,6 +141,10 @@ impl Authenticator {
             Self::MagicLink => "password",
             // A ticket proves one thing: the desktop session. One factor.
             Self::Kerberos => "password",
+            // The way back when the device is gone. It stands where the code or
+            // the key stood, so it reaches the class they reach: a printed sheet
+            // the user kept is a thing they have.
+            Self::RecoveryCode => "mfa",
         }
     }
 }
@@ -162,6 +170,9 @@ pub enum Answer {
     /// door. A principal and not a token: the GSS machinery lives with the
     /// listener, and what crosses into this crate is who it said.
     Negotiate(String),
+    /// A code off the printed sheet, as typed. Normalised where it is checked,
+    /// so the dashes and the case a person reproduces are theirs to get wrong.
+    RecoveryCode(SecretBox<String>),
 }
 
 /// Say whether an answer satisfies one authenticator.
@@ -202,6 +213,14 @@ pub async fn verify_answer(
             magic_link(transaction, provider, origin, subject, answers, posting).await
         }
         Authenticator::Kerberos => negotiate(subject, answers),
+        // No challenge issued, deliberately. A step that hands one out takes
+        // the slot the browser renders, and a flow where the sheet stands
+        // beside a key would have the sheet swallow the key's challenge. What
+        // tells the page the field exists is the realm's flow, read where the
+        // page is built.
+        Authenticator::RecoveryCode => {
+            Answered::plain(recovery_code(transaction, provider, subject, answers).await)
+        }
     }
 }
 
@@ -623,6 +642,46 @@ async fn totp(
     // presented twice, and a failure to record one hands out a login whose code
     // stays replayable for the rest of the window.
     match credentials::consume_otp_step(transaction, &credential.credential_id, step as i64).await {
+        Ok(true) => Outcome::Passed,
+        _ => Outcome::Failed,
+    }
+}
+
+/// One code off the sheet, spent as it is accepted.
+///
+/// The way back when the phone is gone. It answers where a code or a key would
+/// have, which is why it is a step of its own and not a second thing the code
+/// step will take: a realm decides whether the way back exists by putting this
+/// step in its flow beside the others, and one that leaves it out has no sheet
+/// to lose.
+///
+/// No decoy, for the reason the code step gives: nothing runs here until a first
+/// factor has said who this is.
+async fn recovery_code(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    subject: Option<&UserModel>,
+    answers: &[Answer],
+) -> Outcome {
+    let Some(Answer::RecoveryCode(typed)) =
+        of_kind(answers, |answer| matches!(answer, Answer::RecoveryCode(_)))
+    else {
+        return Outcome::Pending;
+    };
+    let Some(subject) = subject else {
+        return Outcome::Failed;
+    };
+    // Spending is the check. A code looked up and then deleted is one two
+    // logins racing can both look up, and a second factor that answers twice is
+    // a second factor once.
+    match credentials::spend_recovery_code(
+        transaction,
+        provider.digest(),
+        &subject.user_id,
+        typed.expose_secret(),
+    )
+    .await
+    {
         Ok(true) => Outcome::Passed,
         _ => Outcome::Failed,
     }

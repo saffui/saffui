@@ -59,6 +59,7 @@ const REQUIRED_ACTIONS = [
   "verify-email",
   "configure-totp",
   "configure-webauthn",
+  "configure-recovery-codes",
 ] as const;
 const born = ref({
   user_name: "",

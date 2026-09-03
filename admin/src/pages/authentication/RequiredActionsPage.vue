@@ -24,6 +24,11 @@ const CATALOGUE = [
   { action: "verify-email", provider: "mail", title: "Verify email" },
   { action: "configure-totp", provider: "totp", title: "Configure authenticator app" },
   { action: "configure-webauthn", provider: "webauthn", title: "Configure passkey" },
+  {
+    action: "configure-recovery-codes",
+    provider: "recovery-code",
+    title: "Draw recovery codes",
+  },
 ] as const;
 
 async function load() {

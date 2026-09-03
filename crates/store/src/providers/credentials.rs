@@ -1,3 +1,5 @@
+use crypto::provider::{DigestProvider, HashAlg};
+use data_encoding::HEXLOWER;
 use deadpool_postgres::Transaction;
 use models::entities::credentials::{
     CredentialModel, CredentialSecret, CredentialType, OtpCredentialData,
@@ -183,6 +185,110 @@ pub async fn consume_otp_step(
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(spent > 0)
+}
+
+/// The digest a recovery code is stored and looked up under.
+///
+/// Normalised first, because the code that comes back is one a human retyped
+/// off paper: dashes, spaces and case are the user's business and not the
+/// secret's. Sha256 and not a password hash: eighty bits of entropy have no
+/// dictionary to be walked, so what is wanted is preimage resistance and not
+/// cost, and a login that had to pay ten stretched hashes to refuse one wrong
+/// code would be a lever for anyone who wanted the server busy.
+fn recovery_digest(digest: &dyn DigestProvider, code: &str) -> StoreResult<String> {
+    digest
+        .hash(HashAlg::Sha256, crypto::otp::normalise(code).as_bytes())
+        .map(|bytes| HEXLOWER.encode(&bytes))
+        .map_err(|_| StoreError::Backend)
+}
+
+/// Replace a user's whole set of recovery codes.
+///
+/// The old set goes in the same transaction the new one arrives in. A set drawn
+/// twice must not leave both live: the point of drawing again is that the sheet
+/// somebody printed last year no longer opens anything.
+pub async fn replace_recovery_codes(
+    transaction: &Transaction<'_>,
+    digest: &dyn DigestProvider,
+    realm_id: &str,
+    user_id: &str,
+    codes: &[impl AsRef<str>],
+    identifiers: &[impl AsRef<str>],
+    metadata: &models::auditable::AuditableModel,
+) -> StoreResult<()> {
+    if codes.len() != identifiers.len() {
+        return Err(StoreError::Backend);
+    }
+    transaction
+        .execute(
+            "DELETE FROM user_credentials              WHERE user_id = $1 AND credential_type = $2",
+            &[&user_id, &CredentialType::RecoveryCode],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+
+    for (code, credential_id) in codes.iter().zip(identifiers) {
+        let credential = CredentialModel::recovery_code(
+            credential_id.as_ref().to_owned(),
+            realm_id.to_owned(),
+            user_id.to_owned(),
+            CredentialSecret::new(recovery_digest(digest, code.as_ref())?),
+            metadata.clone(),
+        );
+        create(transaction, &credential).await?;
+    }
+    Ok(())
+}
+
+/// Spend one code, saying whether it was one of this user's.
+///
+/// The row leaves as it is matched, in one statement: a code read and then
+/// deleted is a code two logins racing can both read. What the database compares
+/// is a digest against an equal digest, so no part of the answer depends on how
+/// far down the set the match sat.
+pub async fn spend_recovery_code(
+    transaction: &Transaction<'_>,
+    digest: &dyn DigestProvider,
+    user_id: &str,
+    presented: &str,
+) -> StoreResult<bool> {
+    let hash = recovery_digest(digest, presented)?;
+    let spent = transaction
+        .query(
+            "DELETE FROM user_credentials              WHERE user_id = $1 AND credential_type = $2 AND secret = $3              RETURNING credential_id",
+            &[&user_id, &CredentialType::RecoveryCode, &hash],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    if spent.is_empty() {
+        return Ok(false);
+    }
+    super::outbox::emit(
+        transaction,
+        super::outbox::CREDENTIAL_CHANGED,
+        user_id,
+        &serde_json::json!({ "credential_type": CredentialType::RecoveryCode }),
+    )
+    .await?;
+    Ok(true)
+}
+
+/// How many codes a user has left.
+///
+/// A count and not the codes: nothing that reads this is entitled to the set,
+/// and an administrator watching it fall towards zero is exactly the use.
+pub async fn count_recovery_codes(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> StoreResult<i64> {
+    let row = transaction
+        .query_one(
+            "SELECT count(*)::bigint AS held FROM user_credentials              WHERE user_id = $1 AND credential_type = $2",
+            &[&user_id, &CredentialType::RecoveryCode],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get("held"))
 }
 
 pub async fn delete(transaction: &Transaction<'_>, credential_id: &str) -> StoreResult<bool> {

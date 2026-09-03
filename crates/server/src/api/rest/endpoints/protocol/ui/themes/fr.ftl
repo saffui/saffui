@@ -144,3 +144,9 @@ signup-done = Votre compte est prêt. Connectez-vous avec.
 signup-verify = Consultez votre messagerie pour continuer : une vérification est en route.
 signup-mismatch = Les deux mots de passe ne sont pas identiques.
 login-passkey = Se connecter avec une passkey
+
+## Codes de récupération : le chemin de retour quand le second facteur a disparu.
+recovery-use = Utiliser un code de récupération
+recovery-code = Code de récupération
+recovery-keep = Gardez-les en lieu sûr. Chacun ouvre une session une fois, et c'est la seule fois qu'ils s'affichent.
+recovery-confirm = Retapez-en un pour confirmer que vous les avez gardés

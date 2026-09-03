@@ -8,6 +8,14 @@ export interface ClientBrief {
   web_origins: string[];
   redirect_uris: string[];
   post_logout_redirect_uris: string[];
+  description: string;
+  client_uri: string | null;
+  /// The grants this client holds by an operator's say-so, read back off the
+  /// same keys the engines read.
+  device_grant: boolean;
+  token_exchange: boolean;
+  ciba_delivery: string;
+  ciba_notification_endpoint: string | null;
 }
 
 /// Mirrors `models::entities::client::ClientScopeModel`, plus the

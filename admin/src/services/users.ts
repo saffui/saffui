@@ -36,6 +36,15 @@ export async function liftLockout(realm: string, userId: string): Promise<void> 
   });
 }
 
+/// How many recovery codes are left on this person's sheet. A count and never
+/// the codes: the server does not hand them out, and neither does this.
+export async function countRecoveryCodes(realm: string, userId: string): Promise<number> {
+  const held = await api<{ remaining: number }>(
+    adminPath(realm, `users/${encodeURIComponent(userId)}/recovery-codes`),
+  );
+  return held.remaining;
+}
+
 export async function listWebAuthnKeys(realm: string, userId: string): Promise<KeyBrief[]> {
   return api<KeyBrief[]>(adminPath(realm, `users/${encodeURIComponent(userId)}/keys`));
 }

@@ -386,6 +386,20 @@ pub async fn lockout(
         .map_err(|_| Uncreatable::Unwritable)
 }
 
+/// How many recovery codes this person has left.
+///
+/// A count and never the codes. What an administrator needs is to see a sheet
+/// running out so they can ask for a fresh one; handing them the codes would
+/// make the way back into somebody else's second factor.
+pub async fn recovery_codes_left(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> Result<i64, Uncreatable> {
+    store::providers::credentials::count_recovery_codes(transaction, user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)
+}
+
 /// Lift a lockout and forget the count.
 ///
 /// An administrator is the way out of a lock somebody else can cause: without

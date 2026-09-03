@@ -10,6 +10,11 @@ license      = "Apache-2.0"
 repository   = "https://github.com/saffui/saffui"
 authors      = ["Kodjo Touglo <micheltouglo@gmail.com>"]
 
+# Line tables only: backtraces keep their lines, and the fifty-odd test
+# binaries stop paying for debug info nobody steps through.
+[profile.dev]
+debug = "line-tables-only"
+
 [workspace.dependencies]
 # Internal crates: the path is declared once here; members pull them with
 # `{ workspace = true }`, so adding or moving a crate is a one-line change.

@@ -117,10 +117,52 @@ pub const KID: &str = "kid-1";
 pub const SECOND_KID: &str = "kid-2";
 
 fn owner_config() -> Config {
-    std::env::var("SAFFUI_TEST_PG")
+    let mut config: Config = std::env::var("SAFFUI_TEST_PG")
         .unwrap_or_else(|_| panic!("these tests need a database: set SAFFUI_TEST_PG"))
         .parse()
-        .expect("SAFFUI_TEST_PG is a connection string")
+        .expect("SAFFUI_TEST_PG is a connection string");
+    // One database per test binary, its name derived from the binary's own,
+    // so grouped binaries run side by side without trampling each other's
+    // schema. `ensured_database` creates it on first contact.
+    if let Some(binary) = binary_stem() {
+        let base = config.get_dbname().unwrap_or("saffui").to_owned();
+        config.dbname(format!("{base}_{binary}"));
+    }
+    config
+}
+
+/// The test binary's own name, hash suffix shorn: `suite_admin-3fe9` is
+/// `suite_admin`, and one binary is one database.
+fn binary_stem() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let stem = exe.file_stem()?.to_str()?.to_owned();
+    Some(match stem.rsplit_once('-') {
+        Some((name, _)) => name.to_owned(),
+        None => stem,
+    })
+}
+
+/// Make this binary's database exist, from the base one the variable names.
+/// Creation races between two binaries land on the duplicate error, which is
+/// the other one having won, and winning is all that was wanted.
+async fn ensured_database() {
+    let base: Config = std::env::var("SAFFUI_TEST_PG")
+        .expect("checked at owner_config")
+        .parse()
+        .expect("checked at owner_config");
+    let mine = owner_config();
+    let (Some(base_db), Some(my_db)) = (base.get_dbname(), mine.get_dbname()) else {
+        return;
+    };
+    if base_db == my_db {
+        return;
+    }
+    let my_db = my_db.to_owned();
+    let (client, connection) = base.connect(NoTls).await.expect("the base database");
+    tokio::spawn(connection);
+    let _ = client
+        .execute(&format!("CREATE DATABASE \"{my_db}\""), &[])
+        .await;
 }
 
 pub fn provider() -> OpenSslProvider {

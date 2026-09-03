@@ -32,6 +32,7 @@ const PAGES: { leaf: string; name: () => string }[] = [
   { leaf: "journal", name: () => say("nav-journal") },
   { leaf: "settings", name: () => say("nav-settings") },
   { leaf: "keys", name: () => say("nav-keys") },
+  { leaf: "sessions", name: () => say("nav-realm-sessions") },
   { leaf: "theme", name: () => say("nav-theme") },
   { leaf: "pages", name: () => say("nav-pages") },
   { leaf: "token-preview", name: () => say("nav-preview") },

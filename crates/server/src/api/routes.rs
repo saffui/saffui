@@ -1129,6 +1129,18 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/sessions",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(sessions::list_realm_sessions)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/sessions",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::delete().to(sessions::end_realm_sessions)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/users/{user}/sessions",
             action: AdminAction::UserRead,
             handler: Some(|| web::get().to(sessions::list)),

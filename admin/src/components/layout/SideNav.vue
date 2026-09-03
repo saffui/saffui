@@ -46,6 +46,7 @@ const GROUPS: { label: string; items: { label: string; icon: any; leaf: string }
     items: [
       { label: say("nav-settings"), icon: "settings", leaf: "settings" },
       { label: say("nav-keys"), icon: "key", leaf: "keys" },
+      { label: say("nav-realm-sessions"), icon: "users", leaf: "sessions" },
       { label: say("nav-theme"), icon: "scopes", leaf: "theme" },
       { label: say("nav-pages"), icon: "events", leaf: "pages" },
     ],

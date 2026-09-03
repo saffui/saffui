@@ -7,7 +7,7 @@ use services::agent::read_agent;
 use store::tenancy::{Tenancy, TenantContext};
 
 use super::users::named_user;
-use crate::api::rest::endpoints::admin::dto::{GrantBrief, SessionBrief};
+use crate::api::rest::endpoints::admin::dto::{GrantBrief, RealmSessionBrief, SessionBrief};
 use crate::middleware::admin_guard::Admin;
 
 /// What this user has open, newest first.
@@ -67,6 +67,101 @@ pub async fn list(
         });
     }
     Ok(HttpResponse::Ok().json(shown))
+}
+
+/// Everything open in this realm, newest first, a page at a time.
+///
+/// Without the grants each login handed out: this listing is read to find
+/// something in a realm that may hold thousands, and a query per row to
+/// decorate it would make the screen somebody opens during a breach the slowest
+/// one in the console. One session's grants are one session's listing away.
+pub async fn list_realm_sessions(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+    paging: web::Query<models::paging::PagingParams>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let window = paging
+        .window()
+        .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+
+    let open = services::admin::sessions::list_sessions_of_realm(
+        &transaction,
+        &realm_id,
+        window.first,
+        window.max,
+    )
+    .await
+    .map_err(refused)?;
+    let shown: Vec<_> = open
+        .into_iter()
+        .map(|session| {
+            let read = session.user_agent.as_deref().map(read_agent);
+            RealmSessionBrief {
+                session_id: session.session_id,
+                user_id: session.user_id,
+                login_username: session.login_username,
+                auth_method: session.auth_method,
+                ip_address: session.ip_address,
+                browser: read.as_ref().and_then(|read| read.browser),
+                system: read.as_ref().and_then(|read| read.system),
+                started_at: session.started_at,
+                auth_time: session.auth_time,
+                expiration: session.expiration,
+            }
+        })
+        .collect();
+    Ok(HttpResponse::Ok().json(models::paging::Page {
+        first: window.first,
+        max: window.max,
+        total: None,
+        items: shown,
+    }))
+}
+
+/// End every login in this realm, saying how many went.
+///
+/// Half of a breach answer, and the response says so. The logins stop renewing;
+/// the access tokens already handed out live out their span unless the realm's
+/// own cut is struck as well, which is a separate write on the realm itself.
+/// Offering one as though it were both would be offering a revocation that is
+/// not one.
+pub async fn end_realm_sessions(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+
+    let ended = services::admin::sessions::end_sessions_of_realm(&transaction, &realm_id)
+        .await
+        .map_err(refused)?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "ended": ended,
+        // Said plainly rather than left for somebody to discover: the tokens
+        // already out there are answered by the realm's cut, not by this.
+        "tokens_still_valid_until_their_span": true,
+    })))
 }
 
 /// End one login, and everything any client got out of it.

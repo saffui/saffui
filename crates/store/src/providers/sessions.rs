@@ -111,6 +111,47 @@ pub async fn load_for_user(
         .collect())
 }
 
+/// Every live session of this realm, newest first, one page at a time.
+///
+/// Bounded because a realm's sessions are the one listing that grows with the
+/// people using it rather than with what an operator configured. The row
+/// isolation already scopes this to the realm, and the tenant column is named
+/// anyway so a reader can see the scope without knowing the policy exists.
+pub async fn load_for_realm(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+    offset: i64,
+    limit: i64,
+) -> StoreResult<Vec<UserSessionModel>> {
+    let statement = format!(
+        "SELECT {SESSION_COLUMNS} FROM user_sessions WHERE realm_id = $1 \
+         ORDER BY started_at DESC, session_id ASC OFFSET $2 LIMIT $3"
+    );
+    Ok(transaction
+        .query(statement.as_str(), &[&realm_id, &offset, &limit])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_session)
+        .collect())
+}
+
+/// End every session of this realm, saying how many went.
+///
+/// The blunt half of a breach answer. It closes what is open; the tokens
+/// already handed out are answered by the realm's cut, and neither lever is the
+/// other's substitute: this one frees nothing already minted, and the cut ends
+/// no session that would otherwise keep renewing.
+pub async fn end_all_of_realm(transaction: &Transaction<'_>, realm_id: &str) -> StoreResult<u64> {
+    transaction
+        .execute(
+            "DELETE FROM user_sessions WHERE realm_id = $1",
+            &[&realm_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)
+}
+
 /// Record that the user authenticated again, and how strongly.
 ///
 /// The instant and the level move together. A level raised without the instant

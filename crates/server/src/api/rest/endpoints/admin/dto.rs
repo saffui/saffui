@@ -56,6 +56,27 @@ pub struct SessionBrief {
     pub grants: Vec<GrantBrief>,
 }
 
+/// A login as a realm-wide listing shows it.
+///
+/// Names who it belongs to, which the per-user listing never has to, and
+/// carries no grants: a page over every login in a realm cannot pay a query per
+/// row to decorate rows nobody has narrowed down yet.
+#[derive(Debug, Serialize)]
+pub struct RealmSessionBrief {
+    pub session_id: String,
+    pub user_id: String,
+    /// The name typed at the door, which is what an operator scanning a list
+    /// recognises. The identifier beside it is what everything else addresses.
+    pub login_username: String,
+    pub auth_method: Option<String>,
+    pub ip_address: Option<String>,
+    pub browser: Option<&'static str>,
+    pub system: Option<&'static str>,
+    pub started_at: i64,
+    pub auth_time: Option<i64>,
+    pub expiration: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GrantBrief {
     pub client_id: String,

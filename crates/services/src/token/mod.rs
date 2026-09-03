@@ -11,7 +11,7 @@ use deadpool_postgres::Transaction;
 use models::entities::keys::RealmSigningKeyView;
 use models::sessions::records::UserSessionState;
 use serde_json::Value;
-use store::providers::{oidc, sessions};
+use store::providers::{oidc, realms, sessions};
 
 /// What a token established, once it was accepted.
 ///
@@ -220,6 +220,34 @@ pub async fn verify_presented(
             return Err(Refused::Revoked);
         }
     }
+    // The realm's own cut, which is a withdrawal written once against every
+    // token at once. It answers with the same refusal as a single one, and
+    // deliberately: whether a token died alone or with everybody else's is not
+    // something the holder of a dead token gets to learn.
+    //
+    // Judged against what the token says of itself and never against the clock,
+    // so a token minted before the cut stays refused however long it is
+    // presented after. A realm that cannot be read refuses rather than admits:
+    // the alternative is a database hiccup quietly lifting a cut somebody set
+    // because they were under attack.
+    let realm = realms::of_context(transaction)
+        .await
+        .map_err(|_| Refused::Unestablished)?
+        .ok_or(Refused::Unestablished)?;
+    if let Some(cut) = realm.not_before {
+        let minted_at = verified
+            .claims
+            .get("iat")
+            .and_then(|held| {
+                held.as_i64()
+                    .or_else(|| held.as_f64().map(|seconds| seconds.trunc() as i64))
+            })
+            .ok_or(Refused::Revoked)?;
+        if minted_at < i64::from(cut) {
+            return Err(Refused::Revoked);
+        }
+    }
+
     // Bound to a login, and refused with it: a logout that left the tokens it
     // minted working would be a logout in name.
     //

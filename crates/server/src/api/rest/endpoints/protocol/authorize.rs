@@ -272,7 +272,7 @@ async fn start(
                 binding::AUTH_SESSION,
                 &auth_session_id,
                 &context.realm_id,
-                LOGIN_LIFESPAN,
+                Some(LOGIN_LIFESPAN),
             );
             uncached(&mut response)
                 .insert_header(("Location", answering))

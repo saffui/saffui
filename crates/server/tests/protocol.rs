@@ -5223,3 +5223,165 @@ async fn a_pushed_request_is_spent_once_by_the_client_that_pushed_it() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
 }
+
+/// Flip one login flag on the planted realm.
+async fn reshape_realm(
+    plane: &Plane,
+    reshape: impl FnOnce(&mut models::entities::realm::RealmModel),
+) {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let mut realm = store::providers::realms::load(&transaction, support::REALM)
+        .await
+        .expect("the realms table")
+        .expect("a planted realm");
+    reshape(&mut realm);
+    store::providers::realms::update(&transaction, &realm)
+        .await
+        .expect("the realms table");
+    transaction.commit().await.expect("the setting kept");
+}
+
+/// The address door: open, an address one account holds signs in; closed,
+/// the same answer is a name nobody has.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_signs_in_only_where_the_realm_says_so() {
+    let plane = Plane::with_actions(&[]).await;
+    let answer = |session: String| {
+        let plane = &plane;
+        async move {
+            login_step(
+                plane,
+                Some(&session),
+                serde_json::json!({
+                    "username": "ada@example.test",
+                    "password": support::PASSWORD,
+                }),
+            )
+            .await
+        }
+    };
+
+    // Closed: the address is an unknown name.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = answer(session).await;
+    assert_ne!(told["status"], "admitted", "{told}");
+
+    // Open: the same answer is the person.
+    reshape_realm(&plane, |realm| {
+        realm.login_with_email_allowed = Some(true);
+    })
+    .await;
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = answer(session).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+}
+
+/// Remember-me decides whether the session cookie outlives the window: asked
+/// for and allowed, it carries a lifetime; otherwise it is the browser's own.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn remembering_is_what_gives_the_cookie_a_lifetime() {
+    let plane = Plane::with_actions(&[]).await;
+    let sso = |set: &[String]| {
+        set.iter()
+            .find(|cookie| cookie.starts_with("saffui_session="))
+            .cloned()
+            .expect("an admission sets the session cookie")
+    };
+
+    // The realm does not offer it: a ticked box counts for nothing.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, set) = login_step(
+        &plane,
+        Some(&session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "remember_me": true,
+        }),
+    )
+    .await;
+    assert_eq!(told["status"], "admitted", "{told}");
+    assert!(
+        !sso(&set).contains("Max-Age"),
+        "an unoffered box still lengthened the cookie: {set:?}"
+    );
+
+    // Offered and ticked: the cookie carries its lifetime.
+    reshape_realm(&plane, |realm| {
+        realm.remember_me = Some(true);
+    })
+    .await;
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, set) = login_step(
+        &plane,
+        Some(&session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "remember_me": true,
+        }),
+    )
+    .await;
+    assert_eq!(told["status"], "admitted", "{told}");
+    assert!(sso(&set).contains("Max-Age"), "{set:?}");
+
+    // Offered and left unticked: the browser's own cookie.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, set) = login_step(
+        &plane,
+        Some(&session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(told["status"], "admitted", "{told}");
+    assert!(!sso(&set).contains("Max-Age"), "{set:?}");
+}
+
+/// The sign-in page wears the realm's open doors on its body, and none when
+/// the realm opens none.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_page_wears_the_doors_the_realm_opened() {
+    async fn shown(plane: &Plane) -> String {
+        let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+        let request = test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/login",
+                support::REALM
+            ))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        String::from_utf8(test::read_body(response).await.to_vec()).expect("a page")
+    }
+    let plane = Plane::with_actions(&[]).await;
+
+    let body = shown(&plane).await;
+    assert!(body.contains(r#"data-doors="""#), "{body}");
+
+    reshape_realm(&plane, |realm| {
+        realm.reset_password_allowed = Some(true);
+        realm.remember_me = Some(true);
+    })
+    .await;
+    let body = shown(&plane).await;
+    assert!(body.contains(r#"data-doors="reset remember""#), "{body}");
+}

@@ -43,6 +43,51 @@
   const deny = document.getElementById("deny");
   const whichOrg = document.getElementById("which-org");
   const whichOrgList = document.getElementById("which-org-list");
+  const recover = document.getElementById("recover");
+  const recoverForm = document.getElementById("recover-form");
+  const recoverSent = document.getElementById("recover-sent");
+
+  // Which optional doors this realm opened, written on the body at render.
+  const doors = (document.body.dataset.doors || "").split(" ");
+  document.getElementById("keep").hidden = doors.indexOf("remember") === -1;
+  document.getElementById("forgot-row").hidden = doors.indexOf("reset") === -1;
+
+  // The recovery half: the form swaps for one field, and the answer is the
+  // same whether anybody was found, because the server already says nothing.
+  document.getElementById("forgot").addEventListener("click", function (event) {
+    event.preventDefault();
+    form.hidden = true;
+    recover.hidden = false;
+    recoverForm.recover.value = form.username.value;
+    recoverForm.recover.focus();
+  });
+  document.getElementById("recover-back").addEventListener("click", function (event) {
+    event.preventDefault();
+    recover.hidden = true;
+    form.hidden = false;
+  });
+  recoverForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    const named = recoverForm.recover.value;
+    if (!named) {
+      return;
+    }
+    fetch(location.pathname.replace(/\/login$/, "/forgot-password"), {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify({ username: named }),
+    }).then(
+      function (response) {
+        recoverSent.hidden = !response.ok;
+        if (!response.ok) {
+          say(spoken("went-wrong"));
+        }
+      },
+      function () {
+        say(spoken("went-wrong"));
+      },
+    );
+  });
 
   // What the script says, it reads off the page, so the page's tongue is the
   // script's tongue too.
@@ -287,6 +332,7 @@
     event.preventDefault();
     if (form.username.value) answered.username = form.username.value;
     if (form.password.value) answered.password = form.password.value;
+    if (form.remember && form.remember.checked) answered.remember_me = true;
     if (form.totp.value) answered.totp = form.totp.value;
     if (form.totp_register.value) answered.totp_register = form.totp_register.value;
     round();

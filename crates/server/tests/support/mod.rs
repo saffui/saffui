@@ -1156,6 +1156,24 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Let two accounts hold one address, which no realm does until told to.
+    #[allow(dead_code, reason = "only the directory suite asks for it")]
+    pub async fn share_addresses(&self, allowed: bool) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.duplicated_email_allowed = Some(allowed);
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.unwrap();
+    }
+
     /// Let this client receive what the authorization endpoint mints. Off
     /// everywhere until a test says otherwise, as it is on a deployment.
     #[allow(dead_code, reason = "only the hybrid suite asks for it")]

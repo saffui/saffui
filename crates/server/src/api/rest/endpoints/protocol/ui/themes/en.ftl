@@ -123,3 +123,10 @@ flash-choice-needs-script = Choosing an organization needs scripts enabled on th
 flash-no-such-code = That code does not stand. Check it on your device and try again.
 flash-device-expired = That sign-in has run out. Start again on your device.
 flash-doorbell-signed-out = Sign in on this browser first, then come back to this page.
+
+## The optional doors of the sign-in page.
+login-remember = Keep me signed in on this browser
+recover-lede = Name your account and a reset link goes to its address.
+recover-send = Send the link
+recover-sent = If that account exists, mail is on its way.
+recover-back = Back to sign in

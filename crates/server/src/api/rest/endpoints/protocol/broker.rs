@@ -16,9 +16,7 @@ use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::hosted::{Outward, PATIENCE, fetch};
-use crate::api::rest::endpoints::protocol::login::{
-    SSO_LIFESPAN, Spoken, hand_over, told, told_landing,
-};
+use crate::api::rest::endpoints::protocol::login::{Spoken, hand_over, told, told_landing};
 
 /// Send the browser to the upstream provider.
 ///
@@ -281,12 +279,14 @@ pub async fn conclude(
     tracing::info!(session = %admitted.session_id, alias, "brokered login admitted");
     let mut response = HttpResponseBuilder::new(StatusCode::SEE_OTHER);
     binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
+    // No box was ticked on the upstream's page: the session cookie dies with
+    // the browser, like an unremembered local login.
     binding::set(
         &mut response,
         binding::SSO_SESSION,
         &admitted.session_id,
         &context.realm_id,
-        SSO_LIFESPAN,
+        None,
     );
     if let Some(state) = &admitted.browser_state {
         binding::set_browser_state(&mut response, state, &context.realm_id);

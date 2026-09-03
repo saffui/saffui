@@ -49,6 +49,7 @@ pub async fn create(
     check_name(user_name)?;
     if let Some(email) = &spec.email {
         check_mail(email)?;
+        check_unclaimed(transaction, email, None).await?;
     }
     if users::load_by_name(transaction, user_name)
         .await
@@ -127,6 +128,7 @@ pub async fn update(
     let mut user = get(transaction, user_id).await?;
     if let Some(email) = &spec.email {
         check_mail(email)?;
+        check_unclaimed(transaction, email, Some(user_id)).await?;
         user.email = email.clone();
     }
     if let Some(verified) = spec.email_verified {
@@ -262,6 +264,36 @@ fn apply_attributes(user: &mut UserModel, spec: &Spec) {
         }
     }
     user.attributes = (!held.is_empty()).then_some(held);
+}
+
+/// Refuse an address another account already holds, unless the realm said
+/// sharing is allowed. The guard lives at this door and not in the schema:
+/// the permission is per realm, and a table constraint cannot be.
+async fn check_unclaimed(
+    transaction: &Transaction<'_>,
+    email: &str,
+    but: Option<&str>,
+) -> Result<(), Uncreatable> {
+    if email.is_empty() {
+        return Ok(());
+    }
+    let sharing = store::providers::realms::of_context(transaction)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?
+        .and_then(|realm| realm.duplicated_email_allowed)
+        .unwrap_or(false);
+    if sharing {
+        return Ok(());
+    }
+    match users::load_by_email(transaction, email)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?
+    {
+        Some(held) if but != Some(held.user_id.as_str()) => {
+            Err(Uncreatable::Invalid("an account already uses this address"))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// An address is either absent or the shape of one. Emptiness is absence:

@@ -57,21 +57,24 @@ pub fn clear_browser_state(response: &mut HttpResponseBuilder, realm_id: &str) {
 /// against.
 ///
 /// The path is the realm's, so one realm's cookie is never offered to another.
+/// `seconds: None` sets a browser-session cookie, gone when the window is:
+/// the shape of a login nobody asked to be remembered past it.
 pub fn set(
     response: &mut HttpResponseBuilder,
     named: &'static str,
     value: &str,
     realm_id: &str,
-    seconds: i64,
+    seconds: Option<i64>,
 ) {
-    let cookie = Cookie::build(named, value.to_owned())
+    let mut cookie = Cookie::build(named, value.to_owned())
         .path(format!("/realms/{realm_id}"))
         .http_only(true)
         .secure(true)
-        .same_site(SameSite::Lax)
-        .max_age(Duration::seconds(seconds))
-        .finish();
-    response.cookie(cookie);
+        .same_site(SameSite::Lax);
+    if let Some(seconds) = seconds {
+        cookie = cookie.max_age(Duration::seconds(seconds));
+    }
+    response.cookie(cookie.finish());
 }
 
 /// Take one away, which is what ending a login means to a browser.

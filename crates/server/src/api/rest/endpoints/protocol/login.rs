@@ -42,6 +42,9 @@ pub struct Answered {
     pub consent: Option<String>,
     /// Which organization the chooser answered, by slug.
     pub organization: Option<String>,
+    /// Whether the person ticked remember-me. Counted only where the realm
+    /// says so; a body inventing it against a realm that does not is ignored.
+    pub remember_me: Option<bool>,
 }
 
 /// How the answer arrived, which is how the outcome is told.
@@ -253,6 +256,7 @@ pub async fn answer(
             Some("refused") => Some(false),
             _ => None,
         },
+        answered.remember_me.unwrap_or(false),
         answered.organization.as_deref(),
         &federations,
         now,
@@ -381,6 +385,7 @@ pub async fn answer(
                 Step::Admitted(admitted) => {
                     let session_id = admitted.session_id.clone();
                     let browser_state = admitted.browser_state.clone();
+                    let remembered = admitted.remember_me;
                     let landing = landed.expect("an admission was landed above");
                     tracing::info!(session = %session_id, "login admitted");
                     let mut response = HttpResponseBuilder::new(match spoken {
@@ -388,12 +393,15 @@ pub async fn answer(
                         Spoken::Form => StatusCode::SEE_OTHER,
                     });
                     binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
+                    // Remembered, the cookie survives the browser closing for
+                    // as long as the session itself may live; otherwise it is
+                    // the browser's session cookie and dies with the window.
                     binding::set(
                         &mut response,
                         binding::SSO_SESSION,
                         &session_id,
                         &context.realm_id,
-                        SSO_LIFESPAN,
+                        remembered.then_some(SSO_LIFESPAN),
                     );
                     // §4.2: read by script in a frame the relying party loads,
                     // so it is set on terms the others are not.
@@ -535,7 +543,7 @@ pub(crate) fn hand_over(response: &mut HttpResponseBuilder, realm_id: &str, tick
             binding::LANDING,
             ticket,
             realm_id,
-            LANDING_SECONDS,
+            Some(LANDING_SECONDS),
         );
     }
 }

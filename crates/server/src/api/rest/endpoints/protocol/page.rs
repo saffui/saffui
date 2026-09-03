@@ -120,6 +120,37 @@ async fn asked_tongue(
     (wanted, tongues)
 }
 
+/// Which optional doors this realm opens on the sign-in page, as the tokens
+/// the page reads off its own body. A realm that cannot be read opens none:
+/// a door shown without its mechanism behind it is a lie the page tells.
+async fn doors_of_realm(
+    pool: &deadpool_postgres::Pool,
+    tenancy: &store::tenancy::Tenancy,
+    realm: &str,
+) -> String {
+    let Ok(mut connection) = pool.get().await else {
+        return String::new();
+    };
+    let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, realm).await else {
+        return String::new();
+    };
+    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+        return String::new();
+    };
+    let Ok(Some(held)) = store::providers::realms::load(&transaction, &context.realm_id).await
+    else {
+        return String::new();
+    };
+    let mut doors = Vec::new();
+    if held.reset_password_allowed == Some(true) {
+        doors.push("reset");
+    }
+    if held.remember_me == Some(true) {
+        doors.push("remember");
+    }
+    doors.join(" ")
+}
+
 /// The `ui_locales` the login carried, raw: the realm decides what of it is
 /// honoured, not this reader.
 async fn ui_locales_of_login(
@@ -174,6 +205,7 @@ fn page(
     request: &actix_web::HttpRequest,
     wanted: Option<&str>,
     tongues: &i18n::RealmTongues,
+    doors: &str,
 ) -> HttpResponse {
     let tongue = tongues.negotiated(
         wanted,
@@ -190,7 +222,7 @@ fn page(
         .insert_header(("X-Content-Type-Options", "nosniff"))
         .insert_header(("X-Frame-Options", "DENY"))
         .insert_header(("Referrer-Policy", "no-referrer"))
-        .body(i18n::page_in(tongue))
+        .body(i18n::page_in(tongue).replace("{doors}", &escaped(doors)))
 }
 
 /// What sends the form-post page on. Served rather than written into it: a
@@ -339,7 +371,8 @@ pub async fn magic_link(
         });
     let Some((named, token)) = followed else {
         let (wanted, tongues) = asked_tongue(&request, &pool, &tenancy, &realm).await;
-        return page(&request, wanted.as_deref(), &tongues);
+        let doors = doors_of_realm(&pool, &tenancy, &realm).await;
+        return page(&request, wanted.as_deref(), &tongues, &doors);
     };
     let body = LINK_PAGE
         .replace(
@@ -399,7 +432,8 @@ pub async fn reset_password(
         asked.user.filter(|held| !held.is_empty()),
     ) else {
         let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
-        return page(&request, None, &tongues);
+        let doors = doors_of_realm(&pool, &tenancy, &realm).await;
+        return page(&request, None, &tongues, &doors);
     };
     let body = RESET_PAGE
         .replace(

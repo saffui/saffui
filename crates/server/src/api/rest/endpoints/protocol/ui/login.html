@@ -6,7 +6,7 @@
 <title>{{login-title}}</title>
 <link rel="stylesheet" href="login.css">
 </head>
-<body>
+<body data-doors="{doors}">
 <main>
   <div id="realm" hidden>
     <div id="realm-mark" aria-hidden="true"></div>
@@ -21,6 +21,10 @@
       <label>{{login-password}}
         <input name="password" type="password" autocomplete="current-password" required>
       </label>
+      <label id="keep" hidden>
+        <input type="checkbox" name="remember">{{login-remember}}
+      </label>
+      <p id="forgot-row" hidden><a id="forgot" href="#">{{login-forgot}}</a></p>
     </div>
     <div id="code" hidden>
       <label>{{totp-one-time}}
@@ -48,6 +52,17 @@
     </div>
     <button type="submit" id="continue">{{action-continue}}</button>
   </form>
+  <div id="recover" hidden>
+    <p>{{recover-lede}}</p>
+    <form id="recover-form" method="post" novalidate>
+      <label>{{login-username}}
+        <input name="recover" autocomplete="username">
+      </label>
+      <button type="submit" id="recover-send">{{recover-send}}</button>
+    </form>
+    <p id="recover-sent" hidden>{{recover-sent}}</p>
+    <p><a id="recover-back" href="#">{{recover-back}}</a></p>
+  </div>
   <p id="notice" role="alert" hidden></p>
   <!-- Without a script, the outcome arrives as a fragment and these show themselves. -->
   <p id="refused" class="flash" role="alert">{{flash-refused}}</p>

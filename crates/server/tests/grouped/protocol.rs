@@ -5677,8 +5677,7 @@ async fn the_browser_is_admitted_where_an_origin_was_registered() {
 /// The realm's cut refuses a token minted before it and admits one minted
 /// after, judged against what the token says of itself.
 ///
-/// The lever a breach is answered with, and it has been a column since the
-/// first schema with nothing reading it. The boundary is walked from both sides
+/// The lever a breach is answered with. The boundary is walked from both sides
 /// with one token rather than by minting two and hoping the clock separated
 /// them: a cut one second past the token refuses it, a cut one second before it
 /// does not, and lifting the cut lets it back in. A test that only ever moved

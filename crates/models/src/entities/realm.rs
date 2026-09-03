@@ -419,6 +419,9 @@ pub struct RealmModel {
     /// How often a device may poll, in seconds. None keeps the built default.
     pub device_poll_interval: Option<i32>,
     pub ciba_interval: Option<i32>,
+    /// Whether a passkey alone signs a person in, no name asked first. The
+    /// ceremony's own terms are the build's and not switches here.
+    pub webauthn_passwordless: Option<bool>,
     /// Which built tongues this realm offers. None offers them all.
     pub supported_locales: Option<Vec<String>>,
     /// The tongue that answers when the browser says nothing. None takes the
@@ -492,6 +495,7 @@ impl RealmCreateModel {
             device_poll_interval: None,
             ciba_expiry: None,
             ciba_interval: None,
+            webauthn_passwordless: None,
             supported_locales: None,
             default_locale: None,
             events_enabled: None,
@@ -559,6 +563,7 @@ pub struct RealmUpdateModel {
     /// How often a device may poll, in seconds.
     pub device_poll_interval: Option<i32>,
     pub ciba_interval: Option<i32>,
+    pub webauthn_passwordless: Option<bool>,
     /// Which built tongues this realm offers. None leaves it unchanged; an
     /// empty list offers them all.
     pub supported_locales: Option<Vec<String>>,
@@ -658,6 +663,7 @@ impl RealmUpdateModel {
             device_poll_interval,
             ciba_expiry,
             ciba_interval,
+            webauthn_passwordless,
             offline_session_lifespan,
             action_tokens_lifespan,
             access_code_lifespan,

@@ -139,6 +139,32 @@ button:focus-visible {
 }
 
 #key, #app > p { color: var(--muted); font-size: 14px; }
+#keep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+#keep input { width: auto; margin: 0; }
+#forgot-row, #signup-row { margin: 6px 0 0; font-size: 13px; }
+#recover label, #signup label { display: block; }
+#recover-sent, #signup-done, #signup-verify, #signup-mismatch {
+  color: var(--muted);
+  font-size: 14px;
+}
+#passkey-open {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px;
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+#passkey-open:hover { color: var(--ink); border-color: var(--muted); }
 #qr {
   display: block;
   width: 176px;

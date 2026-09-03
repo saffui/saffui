@@ -148,6 +148,9 @@ async fn doors_of_realm(
     if held.remember_me == Some(true) {
         doors.push("remember");
     }
+    if held.webauthn_passwordless == Some(true) {
+        doors.push("passkey");
+    }
     if held.registration_allowed == Some(true) {
         doors.push("register");
         if held.register_email_as_username == Some(true) {

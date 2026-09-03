@@ -92,6 +92,9 @@ pub const TOTP_SECRET: &str = "JBSWY3DPEHPK3PXP";
 pub const STRONG_FLOW: &str = "browser-strong";
 /// A flow whose second step is a key rather than a code.
 pub const KEYED_FLOW: &str = "browser-keyed";
+
+/// A flow that is one key step: what a passwordless realm binds.
+pub const PASSKEY_FLOW: &str = "browser-passkey";
 pub const PASSWORD_ACR: &str = "password";
 pub const STRONG_ACR: &str = "mfa";
 /// What the browser is bound by. Named here so a test asks for the same cookie
@@ -1743,6 +1746,32 @@ impl Plane {
                 .await
                 .unwrap();
         }
+
+        let passkey_only = models::entities::auth::AuthenticationFlowMutationModel {
+            alias: PASSKEY_FLOW.into(),
+            provider_id: "basic-flow".into(),
+            description: String::new(),
+            top_level: Some(true),
+            built_in: Some(false),
+        }
+        .into_model(PASSKEY_FLOW.into(), REALM.into(), metadata());
+        store::providers::auth_flows::create_flow(&transaction, &passkey_only)
+            .await
+            .unwrap();
+        let step = models::entities::auth::AuthenticationExecutionMutationModel {
+            alias: "exec-passkey-1".into(),
+            flow_id: PASSKEY_FLOW.into(),
+            priority: 10,
+            step: models::entities::auth::ExecutionStep::Authenticator {
+                authenticator: "webauthn".into(),
+                config_id: None,
+            },
+            requirement: models::entities::auth::AuthenticatorRequirement::Required,
+        }
+        .into_model("exec-passkey-1".into(), REALM.into(), metadata());
+        store::providers::auth_flows::create_execution(&transaction, &step)
+            .await
+            .unwrap();
 
         let user = UserCreateModel {
             user_name: SUBJECT.into(),

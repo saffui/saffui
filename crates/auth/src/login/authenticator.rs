@@ -17,7 +17,10 @@ use store::providers::{credentials, one_time_tokens};
 
 use crate::messaging::{Message, Outgoing};
 use url::Url;
-use webauthn_rs::prelude::{Passkey, PasskeyAuthentication, PublicKeyCredential};
+use webauthn_rs::prelude::{
+    DiscoverableAuthentication, DiscoverableKey, Passkey, PasskeyAuthentication,
+    PublicKeyCredential,
+};
 use webauthn_rs::{Webauthn, WebauthnBuilder};
 
 use crate::login::step::Outcome;
@@ -150,6 +153,9 @@ pub enum Answer {
     Totp(String),
     /// The credential the browser handed back, as the JSON it produced.
     Webauthn(String),
+    /// The person asked to sign in by key alone; nothing proven yet. What it
+    /// does is let the key step issue a challenge before anybody is named.
+    WebauthnAsk,
     /// The value carried by a link that was followed back here.
     MagicLink(SecretBox<String>),
     /// The principal a SPNEGO exchange established, already accepted at the
@@ -644,16 +650,45 @@ async fn webauthn(
     // relying party a caller could name is one a caller could impersonate, and a
     // credential is scoped to the party it was enrolled against for exactly that
     // reason.
-    let policy = store::providers::realms::of_context(transaction)
+    let realm = store::providers::realms::of_context(transaction)
         .await
         .ok()
-        .flatten()
-        .and_then(|realm| realm.webauthn_policy)
+        .flatten();
+    let passwordless = realm
+        .as_ref()
+        .is_some_and(|held| held.webauthn_passwordless == Some(true));
+    let policy = realm
+        .and_then(|held| held.webauthn_policy)
         .unwrap_or_default();
     let Ok(party) = relying_party(origin, &policy) else {
         return Answered::plain(Outcome::Failed);
     };
     let Some(subject) = subject else {
+        // Nobody named yet. Where the realm signs in by key alone and the
+        // person asked to, the step issues a challenge that names no
+        // credentials: the authenticator discovers its own, and the answer
+        // itself is what will name the person. Anything else stays refused.
+        if passwordless
+            && of_kind(answers, |answer| matches!(answer, Answer::WebauthnAsk)).is_some()
+            && of_kind(answers, |answer| matches!(answer, Answer::Webauthn(_))).is_none()
+        {
+            let Ok((shown, state)) = party.start_discoverable_authentication() else {
+                return Answered::plain(Outcome::Failed);
+            };
+            let (Ok(shown), Ok(state)) =
+                (serde_json::to_value(shown), serde_json::to_value(&state))
+            else {
+                return Answered::plain(Outcome::Failed);
+            };
+            return Answered {
+                sending: None,
+                outcome: Outcome::Pending,
+                asks: Some(Challenge {
+                    shown,
+                    remembered: serde_json::json!({ "discover": state }),
+                }),
+            };
+        }
         return Answered::plain(Outcome::Failed);
     };
 
@@ -689,18 +724,32 @@ async fn webauthn(
         };
     };
 
-    // No state, no answer. A round that verifies against a challenge it cannot
-    // find is one where the caller supplied both halves.
-    let Some(state) = remembered
-        .and_then(|held| serde_json::from_value::<PasskeyAuthentication>(held.clone()).ok())
-    else {
-        return Answered::plain(Outcome::Failed);
-    };
     let Ok(presented) = serde_json::from_str::<PublicKeyCredential>(handed_back) else {
         return Answered::plain(Outcome::Failed);
     };
-    let Ok(result) = party.finish_passkey_authentication(&presented, &state) else {
-        return Answered::plain(Outcome::Failed);
+    // No state, no answer. A round that verifies against a challenge it cannot
+    // find is one where the caller supplied both halves. A challenge issued
+    // before anybody was named is remembered under its own key, and finishes
+    // against the keys of whoever the credential turned out to name.
+    let result = if let Some(state) = remembered
+        .and_then(|held| held.get("discover"))
+        .and_then(|held| serde_json::from_value::<DiscoverableAuthentication>(held.clone()).ok())
+    {
+        let theirs: Vec<DiscoverableKey> = held.iter().map(DiscoverableKey::from).collect();
+        match party.finish_discoverable_authentication(&presented, state, &theirs) {
+            Ok(result) => result,
+            Err(_) => return Answered::plain(Outcome::Failed),
+        }
+    } else {
+        let Some(state) = remembered
+            .and_then(|held| serde_json::from_value::<PasskeyAuthentication>(held.clone()).ok())
+        else {
+            return Answered::plain(Outcome::Failed);
+        };
+        match party.finish_passkey_authentication(&presented, &state) {
+            Ok(result) => result,
+            Err(_) => return Answered::plain(Outcome::Failed),
+        }
     };
 
     // The counter, which is what tells a cloned authenticator from the real one.

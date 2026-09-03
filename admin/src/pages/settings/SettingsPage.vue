@@ -147,6 +147,7 @@ const otp = ref({ ...OTP_DEFAULTS });
 
 /// The key ceremony's face: shown name, subdomain reach.
 const webauthn = ref({ rp_name: "", allow_subdomains: false });
+const passwordless = ref(false);
 
 /// The password policy, spread into fields; the hashing block rides along
 /// untouched because the server requires it whole.
@@ -226,7 +227,9 @@ function adopt(held: RealmSettings) {
   webauthn.value = {
     rp_name: held.webauthn_policy?.rp_name ?? "",
     allow_subdomains: held.webauthn_policy?.allow_subdomains ?? false,
+
   };
+  passwordless.value = held.webauthn_passwordless ?? false;
   const rules = held.password_policy;
   policy.value = {
     min_length: rules?.min_length ?? "",
@@ -386,6 +389,7 @@ function changesOf(which: Group): RealmUpdate {
   };
   changes.password_policy = written;
   changes.otp_policy = { ...otp.value };
+  changes.webauthn_passwordless = passwordless.value;
   changes.webauthn_policy = {
     rp_name: webauthn.value.rp_name.trim() || null,
     allow_subdomains: webauthn.value.allow_subdomains,
@@ -1117,6 +1121,14 @@ async function removeMail() {
               </div>
             </div>
             <p class="text-[10.5px] text-faint">{{ say("webauthn-fixed-line") }}</p>
+
+            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("passwordless-title") }} <AppHint name="passwordless-title-help" />
+            </div>
+            <AppToggle v-model="passwordless">
+              {{ say("passwordless-enable") }} <AppHint name="passwordless-enable-help" />
+            </AppToggle>
+            <p class="text-[10.5px] text-faint">{{ say("passwordless-fixed-line") }}</p>
 
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("settings-password-policy") }} <AppHint name="settings-password-policy-help" />

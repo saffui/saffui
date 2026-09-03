@@ -57,6 +57,7 @@ export interface RealmSettings {
   device_poll_interval: number | null;
   ciba_expiry: number | null;
   ciba_interval: number | null;
+  webauthn_passwordless: boolean | null;
   browser_flow: string | null;
   supported_locales: string[] | null;
   default_locale: string | null;
@@ -161,6 +162,7 @@ export interface RealmUpdate {
   device_poll_interval?: number;
   ciba_expiry?: number;
   ciba_interval?: number;
+  webauthn_passwordless?: boolean;
   browser_flow?: string;
   supported_locales?: string[];
   default_locale?: string;

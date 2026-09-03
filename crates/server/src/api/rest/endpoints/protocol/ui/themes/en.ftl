@@ -143,3 +143,4 @@ signup-send = Create the account
 signup-done = Your account is ready. Sign in with it.
 signup-verify = Check your mail to continue: a verification is on its way.
 signup-mismatch = The two passwords are not the same.
+login-passkey = Sign in with a passkey

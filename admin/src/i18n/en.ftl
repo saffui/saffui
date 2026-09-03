@@ -682,3 +682,10 @@ ciba-expiry = Backchannel request lifetime
 ciba-expiry-help = How many seconds a doorbell request stays answerable, 30 to 600. It is both the default and the ceiling: a client may ask for less, never more. Requests already open keep the lifetime they were born with.
 ciba-interval = Backchannel poll interval
 ciba-interval-help = How many seconds a client waits between polls, 1 to 60. Requests already open keep their birth interval.
+
+## Passwordless sign-in with passkeys.
+passwordless-title = Passwordless
+passwordless-title-help = Signing in with a passkey alone, no username asked first. The key names the person; the realm's passkey settings above still shape the ceremony.
+passwordless-enable = Sign in by passkey alone
+passwordless-enable-help = Shows a sign-in-with-a-passkey door on the login page. The challenge names no credentials; the authenticator discovers its own, and only a key enrolled here names anyone.
+passwordless-fixed-line = The ceremony's terms are fixed by the build: user verification required, and the key must be discoverable. Keys enrolled before this build may need re-enrolling to be found.

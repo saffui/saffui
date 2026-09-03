@@ -219,17 +219,22 @@ where
     Ok(())
 }
 
-/// A read of the front's realm, tenant resolved the way the jobs resolve it.
+/// A read of the front's realm, resolved the way every other serving door
+/// resolves it.
+///
+/// Through `realm_by_id` and not through `every_realm`: the resolvers are where
+/// a disabled realm stops serving, and this door reached around them. A realm
+/// switched off went on answering binds and searches here while refusing every
+/// HTTP request, which is a realm nobody can sign into and anybody can read out
+/// of. `every_realm` is for the jobs, which sweep a disabled realm on purpose.
 async fn opened<'c>(
     connection: &'c mut deadpool_postgres::Object,
     tenancy: &Tenancy,
     front: &Front,
 ) -> Option<deadpool_postgres::Transaction<'c>> {
-    let named = resolve::every_realm(connection)
+    let named = resolve::realm_by_id(connection, &front.realm_id)
         .await
-        .ok()?
-        .into_iter()
-        .find(|context| context.realm_id == front.realm_id)?;
+        .ok()?;
     tenancy.transaction(connection, &named).await.ok()
 }
 

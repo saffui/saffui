@@ -322,6 +322,26 @@ pub async fn update(
     body: web::Json<RealmUpdateModel>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
+    // The same refusal deletion makes, for the same reason and one step
+    // earlier. A disabled realm serves nobody, and the resolvers mean that
+    // literally: `resolve_realm_by_id` filters on enabled, so the token this
+    // console runs on stops establishing the moment the switch is thrown, and
+    // the next one cannot be minted either, because minting one goes through
+    // the realm's own authorize endpoint. Turning it off from here is a door
+    // that locks from the inside with the key still in it.
+    //
+    // Refused rather than made recoverable: the way back is another realm, and
+    // demanding one to turn the realm off is what guarantees one is there to
+    // turn it on again. A separate unfiltered resolver for the admin plane
+    // would look like an answer and would not be one, since it buys only the
+    // life of the token already in hand.
+    if admin.context.tenant.realm_id == realm_id && body.enabled == Some(false) {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "a realm is not disabled from its own console: sign into another realm first"
+                .to_owned(),
+        ));
+    }
     let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
         .transaction(

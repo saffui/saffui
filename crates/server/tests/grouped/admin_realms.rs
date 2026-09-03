@@ -543,3 +543,94 @@ async fn a_realm_speaks_over_its_pages() {
         "the rest of the page lost its words: {body}"
     );
 }
+
+/// A realm is not switched off from its own console, and the one it is switched
+/// off from can switch it back on.
+///
+/// The resolvers filter on `enabled`, so a disabled realm stops establishing
+/// the very token its console runs on, and the next one cannot be minted either
+/// because minting goes through that realm's own authorize endpoint. Refusing
+/// here rather than making it recoverable is what guarantees the way back:
+/// demanding another realm to turn one off means there is one there to turn it
+/// on again.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_is_not_switched_off_from_its_own_console() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmCreate,
+        AdminAction::RealmWrite,
+        AdminAction::RealmRead,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let own = format!("/admin/realms/{}", support::REALM);
+
+    // Its own: refused, and told why rather than left to a broken console.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &own,
+        &bearer,
+        Some(serde_json::json!({ "enabled": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|said| said.contains("another realm")),
+        "the refusal did not say where to go: {told}"
+    );
+
+    // Everything else about its own realm still writes: the guard is about the
+    // one switch, not about the console being unable to edit itself.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &own,
+        &bearer,
+        Some(serde_json::json!({ "display_name": "Still editable", "enabled": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["display_name"], "Still editable", "{told}");
+
+    // Another realm: switched off, and switched back on from the same console.
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({ "name": "spare", "display_name": "Spare", "enabled": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let other = format!(
+        "/admin/realms/{}",
+        born["realm_id"].as_str().expect("an id")
+    );
+
+    let (status, off) = asked(
+        &plane,
+        Method::PUT,
+        &other,
+        &bearer,
+        Some(serde_json::json!({ "enabled": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{off}");
+    assert_eq!(off["enabled"], false, "{off}");
+
+    // The way back, from the console that turned it off. Without this the
+    // switch would be one-way and the guard above would only delay the lockout.
+    let (status, on) = asked(
+        &plane,
+        Method::PUT,
+        &other,
+        &bearer,
+        Some(serde_json::json!({ "enabled": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{on}");
+    assert_eq!(on["enabled"], true, "{on}");
+}

@@ -24,6 +24,10 @@ pub struct Sealing<'a> {
 }
 
 /// Where a login stands after one answer.
+/// The notes key holding a remember-me already asked for, so the choice
+/// made on the password round still stands when the code round answers.
+const REMEMBER_ME_NOTE: &str = "remember_me";
+
 #[derive(Debug)]
 pub enum Step {
     /// The flow wants something more from the person.
@@ -77,6 +81,9 @@ pub struct Admission {
     pub reached: Option<i32>,
     /// When the person authenticated, which is not when a token is minted.
     pub auth_time: i64,
+    /// Whether the person asked to be remembered past the browser closing,
+    /// and the realm allows it. The cookie's lifetime is the caller's call.
+    pub remember_me: bool,
 }
 
 /// Why the step could not be run.
@@ -119,6 +126,9 @@ pub async fn answer_step(
     signing: Option<&store::keyring::Signing<'_>>,
     // What the person answered to the consent screen, when they answered.
     consented: Option<bool>,
+    // Whether the person ticked remember-me on this round. Only the realm's
+    // say makes it count, and it survives later rounds through the notes.
+    remember_asked: bool,
     // Which organization the person chose, when the screen asked.
     organization: Option<&str>,
     // The directories this realm federates from, first-asked first.
@@ -138,7 +148,26 @@ pub async fn answer_step(
     // Resolved here rather than inside the flow: an authenticator says whether
     // an answer is right, not who is answering. A name nobody holds is passed
     // through as absent, and the flow spends the same time on it.
-    let subject = named_subject(transaction, tenant, &login, username, federations, now).await?;
+    let subject = named_subject(
+        transaction,
+        tenant,
+        &realm,
+        &login,
+        username,
+        federations,
+        now,
+    )
+    .await?;
+
+    // The choice is the person's once, the realm's always, and the notes'
+    // afterwards: a flow that pauses for a second factor must not forget it.
+    let remembering = realm.remember_me == Some(true)
+        && (remember_asked
+            || login
+                .notes
+                .get(REMEMBER_ME_NOTE)
+                .and_then(Value::as_bool)
+                .unwrap_or(false));
 
     // Read before the flow rather than inside a step: a step that reached for
     // the realm's keyring would be one every other step pays for.
@@ -178,8 +207,11 @@ pub async fn answer_step(
         Progress::Waiting {
             execution_id,
             asks,
-            remember,
+            mut remember,
         } => {
+            if remembering {
+                remember.insert(REMEMBER_ME_NOTE.to_owned(), Value::Bool(true));
+            }
             // Written before the answer is asked for, so a login resumed on
             // another connection knows which step it is on.
             // What the step issued goes down with where the flow stands. The
@@ -235,6 +267,9 @@ pub async fn answer_step(
                 } => {
                     let mut remember = serde_json::Map::new();
                     remember.insert(named.to_owned(), challenge.remembered);
+                    if remembering {
+                        remember.insert(REMEMBER_ME_NOTE.to_owned(), Value::Bool(true));
+                    }
                     login::record_step(
                         transaction,
                         auth_session_id,
@@ -372,6 +407,7 @@ pub async fn answer_step(
                 seen,
                 now,
                 Way::Browser,
+                remembering,
             )
             .await
             .map(|admitted| Step::Admitted(Box::new(admitted)))
@@ -428,6 +464,9 @@ pub async fn admit_federated(
             provider_alias: provider_alias.to_owned(),
             external_user_id: external_user_id.to_owned(),
         },
+        // No box was ticked on an upstream's page; a brokered login lives
+        // as long as the browser stays open.
+        false,
     )
     .await
     .map(|admitted| Step::Admitted(Box::new(admitted)))
@@ -473,6 +512,7 @@ async fn admit(
     seen: &crate::provenance::Provenance,
     now: DateTime<Utc>,
     way: Way,
+    remembering: bool,
 ) -> Result<Admission, Unanswerable> {
     let (auth_method, broker_alias, broker_subject) = match way {
         Way::Browser => ("browser".to_owned(), None, None),
@@ -512,7 +552,7 @@ async fn admit(
             loa: reached,
             expiration: Some((now + Duration::seconds(SSO_LIFESPAN)).timestamp()),
             state: UserSessionState::LoggedIn,
-            remember_me: Some(false),
+            remember_me: Some(remembering),
             last_session_refresh: None,
             is_offline: Some(false),
             notes: None,
@@ -537,6 +577,7 @@ async fn admit(
         browser_state,
         reached,
         auth_time: now.timestamp(),
+        remember_me: remembering,
     })
 }
 
@@ -554,6 +595,7 @@ fn noted<'a>(notes: &'a Value, named: &str) -> Option<&'a str> {
 async fn named_subject(
     transaction: &Transaction<'_>,
     tenant: &TenantContext,
+    realm: &models::entities::realm::RealmModel,
     login: &AuthSession,
     username: Option<&str>,
     federations: &[crate::login::directory::Named<'_>],
@@ -579,6 +621,18 @@ async fn named_subject(
     {
         return Ok(Some(standing).filter(|held| held.enabled));
     }
+    // The address door, when the realm opened it. Only an address exactly one
+    // account holds answers: two sharing it name neither, and saying which
+    // existed would say more than an unknown name does.
+    if realm.login_with_email_allowed == Some(true)
+        && named.contains('@')
+        && let Some(standing) = users::sole_by_email(transaction, named)
+            .await
+            .map_err(|_| Unanswerable::Unreadable)?
+    {
+        return Ok(Some(standing).filter(|held| held.enabled));
+    }
+
     // Each directory in turn; one unreachable answers like an unknown name
     // there and the walk moves on, so which names exist stays unsaid and
     // one dead cable does not shut the doors behind it.

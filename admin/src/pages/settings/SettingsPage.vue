@@ -48,11 +48,11 @@ const LOGIN_TOGGLES = [
   ["registration_allowed", "settings-self-registration", false],
   ["register_email_as_username", "settings-email-as-username", false],
   ["verify_email", "settings-verify-email", false],
-  ["login_with_email_allowed", "settings-login-with-email", false],
-  ["duplicated_email_allowed", "settings-duplicated-email", false],
+  ["login_with_email_allowed", "settings-login-with-email", true],
+  ["duplicated_email_allowed", "settings-duplicated-email", true],
   ["edit_user_name_allowed", "settings-edit-username", false],
   ["reset_password_allowed", "settings-reset-password", true],
-  ["remember_me", "settings-remember-me", false],
+  ["remember_me", "settings-remember-me", true],
 ] as const;
 
 const route = useRoute();

@@ -880,3 +880,56 @@ async fn an_address_that_is_not_one_is_refused() {
     .await;
     assert_eq!(status, StatusCode::OK, "{told}");
 }
+
+/// An address one account holds is refused to a second, until the realm says
+/// sharing is allowed; the holder may keep re-stating their own.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_is_one_accounts_until_the_realm_shares_it() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead, AdminAction::UserWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/users");
+
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({ "user_name": "first", "email": "shared@acme.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({ "user_name": "second", "email": "shared@acme.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // The holder repeating their own address is not a collision.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/first"),
+        &bearer,
+        Some(serde_json::json!({ "email": "shared@acme.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    // The realm opens sharing, and the second account is let in.
+    plane.share_addresses(true).await;
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({ "user_name": "second", "email": "shared@acme.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+}

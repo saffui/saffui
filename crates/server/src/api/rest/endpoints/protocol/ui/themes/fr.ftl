@@ -123,3 +123,10 @@ flash-choice-needs-script = Choisir une organisation nécessite les scripts sur 
 flash-no-such-code = Ce code n'est pas valable. Vérifiez-le sur votre appareil et réessayez.
 flash-device-expired = Cette connexion a expiré. Recommencez sur votre appareil.
 flash-doorbell-signed-out = Connectez-vous d'abord dans ce navigateur, puis revenez sur cette page.
+
+## Les portes optionnelles de la page de connexion.
+login-remember = Rester connecté sur ce navigateur
+recover-lede = Nommez votre compte et un lien de réinitialisation part vers son adresse.
+recover-send = Envoyer le lien
+recover-sent = Si ce compte existe, le courriel est en route.
+recover-back = Retour à la connexion

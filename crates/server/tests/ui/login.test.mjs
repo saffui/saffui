@@ -245,6 +245,47 @@ test("an organization chooser offers each name, and the pick rides the next roun
   assert.deepEqual(page.went, ["https://app.example/done"]);
 });
 
+// The optional doors: the server writes them on the body, the page opens
+// only those, and the ticked box rides in the round like any other answer.
+test("a realm that remembers shows the box and the answer carries it", async () => {
+  const page = opened({
+    doors: "remember reset",
+    rounds: [{ told: { status: "challenge" } }],
+  });
+  assert.equal(page.element("keep").hidden, false);
+  assert.equal(page.element("forgot-row").hidden, false);
+
+  page.form.remember.checked = true;
+  await page.signIn();
+  assert.equal(page.sent[0].body.remember_me, true);
+});
+
+test("a realm with no doors keeps both rows hidden", async () => {
+  const page = opened({ rounds: [{ told: { status: "challenge" } }] });
+  assert.equal(page.element("keep").hidden, true);
+  assert.equal(page.element("forgot-row").hidden, true);
+  await page.signIn();
+  assert.equal("remember_me" in page.sent[0].body, false);
+});
+
+test("the recovery form posts the name and says the same thing either way", async () => {
+  const page = opened({ doors: "reset", rounds: [{ told: {} }] });
+  await page.press("forgot");
+  assert.equal(page.element("recover").hidden, false);
+  assert.equal(page.element("login").hidden, true);
+
+  page.recoverForm.recover.value = "ada";
+  page.recoverForm.fire("submit");
+  await page.settle();
+
+  assert.equal(page.sent[0].where, "/realms/main/protocol/openid-connect/forgot-password");
+  assert.deepEqual(page.sent[0].body, { username: "ada" });
+  assert.equal(page.element("recover-sent").hidden, false);
+
+  await page.press("recover-back");
+  assert.equal(page.element("login").hidden, false);
+});
+
 // The enrolment challenge carries the QR alongside the URI and the text
 // secret. The page shows the image only when the server drew one, and an
 // answer without it leaves the link and the typed key standing alone.

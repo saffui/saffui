@@ -81,6 +81,25 @@ pub async fn load_by_email(
     one(transaction, "email = $1", email).await
 }
 
+/// The one user holding this address, or nothing when nobody or several do.
+///
+/// The login resolver's read: an address two accounts share names neither,
+/// and saying which existed would say more than an unknown name does.
+pub async fn sole_by_email(
+    transaction: &Transaction<'_>,
+    email: &str,
+) -> StoreResult<Option<UserModel>> {
+    let statement = format!("SELECT {COLUMNS} FROM users WHERE email = $1 LIMIT 2");
+    let mut rows = transaction
+        .query(statement.as_str(), &[&email])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    if rows.len() != 1 {
+        return Ok(None);
+    }
+    Ok(Some(read(rows.remove(0))))
+}
+
 /// One user by phone number, which is a login identifier where it is used.
 pub async fn load_by_phone(
     transaction: &Transaction<'_>,

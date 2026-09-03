@@ -44,12 +44,15 @@ class Element {
     this.id = id;
     this.hidden = false;
     this.disabled = false;
+    this.checked = false;
     this.textContent = "";
     this.value = "";
     this.href = "";
     this.children = [];
     this.listeners = {};
   }
+
+  focus() {}
 
   addEventListener(named, run) {
     (this.listeners[named] ||= []).push(run);
@@ -82,7 +85,7 @@ function namedOnThePage() {
 ///
 /// `rounds` is read in order, one per post. Whatever the script sends is kept
 /// in `sent`, and wherever it navigates to in `went`.
-export function opened({ rounds = [], fetching = true } = {}) {
+export function opened({ rounds = [], fetching = true, doors = "" } = {}) {
   const named = namedOnThePage();
   const elements = new Map();
   const sent = [];
@@ -100,8 +103,12 @@ export function opened({ rounds = [], fetching = true } = {}) {
 
   // The form reaches its fields by name, as the script does.
   const form = element("login");
-  for (const field of ["username", "password", "totp", "totp_register"]) {
+  for (const field of ["username", "password", "totp", "totp_register", "remember"]) {
     form[field] = new Element("input", field);
+  }
+  const recoverForm = element("recover-form");
+  if (recoverForm) {
+    recoverForm.recover = new Element("input", "recover");
   }
 
   const answers = [...rounds];
@@ -109,6 +116,8 @@ export function opened({ rounds = [], fetching = true } = {}) {
     document: {
       getElementById: element,
       createElement: (tag) => new Element(tag, null),
+      // What the server writes on the body at render: which doors are open.
+      body: { dataset: { doors } },
     },
     location: {
       pathname: "/realms/main/protocol/openid-connect/login",
@@ -124,6 +133,7 @@ export function opened({ rounds = [], fetching = true } = {}) {
           const answer = answers.shift() || { status: 500, told: {} };
           return Promise.resolve({
             status: answer.status ?? 200,
+            ok: (answer.status ?? 200) < 400,
             json: () => Promise.resolve(answer.told ?? {}),
           });
         }
@@ -151,6 +161,8 @@ export function opened({ rounds = [], fetching = true } = {}) {
       element(id).fire("click");
       await settle();
     },
+    form,
+    recoverForm,
     settle,
   };
 }

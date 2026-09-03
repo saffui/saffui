@@ -5762,7 +5762,6 @@ fn claims_in(token: &str) -> serde_json::Value {
     .expect("a json payload")
 }
 
-
 /// The whole way back: the realm asks for a sheet, it is shown once, one code
 /// typed back keeps it, and then a code off it stands where the second factor
 /// stood. Spent once and never again.

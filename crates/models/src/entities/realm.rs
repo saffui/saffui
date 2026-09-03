@@ -413,8 +413,12 @@ pub struct RealmModel {
         Option<std::collections::HashMap<String, std::collections::HashMap<String, MailTemplate>>>,
     /// How long a device code lives, RFC 8628. None keeps the built default.
     pub device_code_lifespan: Option<i32>,
+    /// How long a backchannel (CIBA) request lives; NULL keeps the built
+    /// default, and a client may ask for less, never more.
+    pub ciba_expiry: Option<i32>,
     /// How often a device may poll, in seconds. None keeps the built default.
     pub device_poll_interval: Option<i32>,
+    pub ciba_interval: Option<i32>,
     /// Which built tongues this realm offers. None offers them all.
     pub supported_locales: Option<Vec<String>>,
     /// The tongue that answers when the browser says nothing. None takes the
@@ -486,6 +490,8 @@ impl RealmCreateModel {
             mail_templates: None,
             device_code_lifespan: None,
             device_poll_interval: None,
+            ciba_expiry: None,
+            ciba_interval: None,
             supported_locales: None,
             default_locale: None,
             events_enabled: None,
@@ -547,8 +553,12 @@ pub struct RealmUpdateModel {
         Option<std::collections::HashMap<String, std::collections::HashMap<String, MailTemplate>>>,
     /// How long a device code lives, in seconds.
     pub device_code_lifespan: Option<i32>,
+    /// How long a backchannel (CIBA) request lives; NULL keeps the built
+    /// default, and a client may ask for less, never more.
+    pub ciba_expiry: Option<i32>,
     /// How often a device may poll, in seconds.
     pub device_poll_interval: Option<i32>,
+    pub ciba_interval: Option<i32>,
     /// Which built tongues this realm offers. None leaves it unchanged; an
     /// empty list offers them all.
     pub supported_locales: Option<Vec<String>>,
@@ -646,6 +656,8 @@ impl RealmUpdateModel {
             mail_templates,
             device_code_lifespan,
             device_poll_interval,
+            ciba_expiry,
+            ciba_interval,
             offline_session_lifespan,
             action_tokens_lifespan,
             access_code_lifespan,

@@ -388,6 +388,23 @@ pub async fn update(
                 .to_owned(),
         ));
     }
+    // Backchannel pacing with the same footing: a request shorter than half
+    // a minute expires before a phone is picked up, and a poll faster than a
+    // second is a client hammering its own server.
+    if asked
+        .ciba_expiry
+        .is_some_and(|held| !(30..=600).contains(&held))
+        || asked
+            .ciba_interval
+            .is_some_and(|held| !(1..=60).contains(&held))
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "backchannel pacing wants a request lifetime of 30 to 600 seconds \
+             and a poll interval of 1 to 60"
+                .to_owned(),
+        ));
+    }
     // A shown name a browser dialog can actually render.
     if asked
         .webauthn_policy

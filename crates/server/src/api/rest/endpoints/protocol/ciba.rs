@@ -179,6 +179,17 @@ pub async fn open(
     };
 
     let user_code = asked.user_code.clone();
+    // The realm's pacing where it set one; like the device flow, the row
+    // keeps its birth interval, so a later retune never reshapes a request
+    // already in someone's hand.
+    let (realm_expiry, poll_interval) =
+        match store::providers::realms::of_context(&transaction).await {
+            Ok(Some(realm)) => (
+                realm.ciba_expiry,
+                realm.ciba_interval.unwrap_or(ciba::POLL_INTERVAL),
+            ),
+            _ => (None, ciba::POLL_INTERVAL),
+        };
     let asked = match ciba::read_initiation(
         asked.scope.as_deref(),
         asked.login_hint.as_deref(),
@@ -186,6 +197,7 @@ pub async fn open(
         asked.login_hint_token.as_deref(),
         asked.binding_message.as_deref(),
         asked.requested_expiry.as_deref(),
+        realm_expiry,
     ) {
         Ok(asked) => asked,
         Err(refused) => return told(StatusCode::BAD_REQUEST, refused.error, refused.detail),
@@ -374,7 +386,7 @@ pub async fn open(
             delivery: delivery.as_str().to_owned(),
             notification_token,
             sealed_request,
-            interval_secs: ciba::POLL_INTERVAL,
+            interval_secs: poll_interval,
             last_polled_at: None,
             approved_at: None,
             expires_at: now + asked.expiry,
@@ -393,7 +405,7 @@ pub async fn open(
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(json!({
         "auth_req_id": auth_req_id,
         "expires_in": asked.expiry.num_seconds(),
-        "interval": i64::from(ciba::POLL_INTERVAL),
+        "interval": i64::from(poll_interval),
     }))
 }
 

@@ -602,3 +602,55 @@ async fn a_person_with_a_code_rings_only_for_who_knows_it() {
     .await;
     assert_eq!(status, StatusCode::OK, "{minted}");
 }
+
+/// The realm's pacing reaches the wire: its lifetime is both default and
+/// ceiling, and its interval is the one the client is told to keep.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realms_pacing_reaches_the_wire() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, support::REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.ciba_expiry = Some(120);
+        realm.ciba_interval = Some(9);
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.expect("the setting kept");
+    }
+
+    let (status, opened) = posted(
+        &plane,
+        "/bc-authorize",
+        &[("scope", "openid"), ("login_hint", support::SUBJECT)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert_eq!(opened["expires_in"], 120, "{opened}");
+    assert_eq!(opened["interval"], 9, "{opened}");
+
+    // Asking past the realm's ceiling is quietly held to it.
+    let (status, opened) = posted(
+        &plane,
+        "/bc-authorize",
+        &[
+            ("scope", "openid"),
+            ("login_hint", support::SUBJECT),
+            ("requested_expiry", "500"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert_eq!(opened["expires_in"], 120, "{opened}");
+}

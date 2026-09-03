@@ -676,3 +676,9 @@ actions-register = Register
 actions-register-help = Writes the row this realm turns; until then the action exists only in the build.
 actions-unregistered = not registered here
 subject-action = the { $action } action
+
+## Backchannel (CIBA) pacing.
+ciba-expiry = Backchannel request lifetime
+ciba-expiry-help = How many seconds a doorbell request stays answerable, 30 to 600. It is both the default and the ceiling: a client may ask for less, never more. Requests already open keep the lifetime they were born with.
+ciba-interval = Backchannel poll interval
+ciba-interval-help = How many seconds a client waits between polls, 1 to 60. Requests already open keep their birth interval.

@@ -676,3 +676,9 @@ actions-register = Déclarer
 actions-register-help = Écrit la ligne que ce realm règle ; jusque-là l'action n'existe que dans le build.
 actions-unregistered = non déclarée ici
 subject-action = l'action { $action }
+
+## Cadence du backchannel (CIBA).
+ciba-expiry = Durée de vie des requêtes backchannel
+ciba-expiry-help = Combien de secondes une requête sonnette reste répondable, 30 à 600. À la fois défaut et plafond : un client peut demander moins, jamais plus. Les requêtes déjà ouvertes gardent leur durée de naissance.
+ciba-interval = Intervalle de sondage backchannel
+ciba-interval-help = Combien de secondes un client attend entre deux sondages, 1 à 60. Les requêtes déjà ouvertes gardent leur intervalle de naissance.

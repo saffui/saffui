@@ -457,6 +457,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V075__group_parents.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 76,
+            name: "realm_ciba_bounds",
+            sql: include_str!("../migrations/V076__realm_ciba_bounds.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -101,6 +101,8 @@ const draft = ref({
   not_before: "" as string | number,
   device_code_lifespan: "" as string | number,
   device_poll_interval: "" as string | number,
+  ciba_expiry: "" as string | number,
+  ciba_interval: "" as string | number,
   revoke_refresh_token: false,
   refresh_token_max_reuse: "" as string | number,
   offline_session_lifespan: "" as string | number,
@@ -194,6 +196,8 @@ function adopt(held: RealmSettings) {
     not_before: held.not_before ?? "",
     device_code_lifespan: held.device_code_lifespan ?? "",
     device_poll_interval: held.device_poll_interval ?? "",
+    ciba_expiry: held.ciba_expiry ?? "",
+    ciba_interval: held.ciba_interval ?? "",
     revoke_refresh_token: held.revoke_refresh_token ?? false,
     refresh_token_max_reuse: held.refresh_token_max_reuse ?? "",
     offline_session_lifespan: held.offline_session_lifespan ?? "",
@@ -318,6 +322,8 @@ function changesOf(which: Group): RealmUpdate {
       action_tokens_lifespan: whole(held.action_tokens_lifespan),
       device_code_lifespan: whole(held.device_code_lifespan),
       device_poll_interval: whole(held.device_poll_interval),
+      ciba_expiry: whole(held.ciba_expiry),
+      ciba_interval: whole(held.ciba_interval),
       revoke_refresh_token: held.revoke_refresh_token,
       refresh_token_max_reuse: whole(held.refresh_token_max_reuse),
       offline_session_lifespan: whole(held.offline_session_lifespan),
@@ -860,6 +866,28 @@ async function removeMail() {
                 {{ say("device-interval") }} <AppHint name="device-interval-help" />
                 <input
                   v-model="draft.device_poll_interval"
+                  type="number"
+                  min="1"
+                  max="60"
+                  placeholder="5"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("ciba-expiry") }} <AppHint name="ciba-expiry-help" />
+                <input
+                  v-model="draft.ciba_expiry"
+                  type="number"
+                  min="30"
+                  max="600"
+                  placeholder="300"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("ciba-interval") }} <AppHint name="ciba-interval-help" />
+                <input
+                  v-model="draft.ciba_interval"
                   type="number"
                   min="1"
                   max="60"

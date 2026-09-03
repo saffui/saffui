@@ -1,11 +1,11 @@
-#[allow(unused_imports)]
-use super::support;
 //! The LDAP front, driven by a real directory client.
 //!
 //! The front is a second door to the same people: everything asserted here is
 //! read back against what the HTTP world planted, and nothing here writes.
 
 
+#[allow(unused_imports)]
+use super::support;
 use ldap3::exop::{WhoAmI, WhoAmIResp};
 use ldap3::{Ldap, LdapConnAsync, Scope, SearchEntry};
 use super::support::Plane;

@@ -1,6 +1,6 @@
+
 #[allow(unused_imports)]
 use super::support;
-
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use models::entities::realm::ClientRegistration;

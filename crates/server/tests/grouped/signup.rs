@@ -1,9 +1,9 @@
-#[allow(unused_imports)]
-use super::support;
 //! The self-registration door: opened by the realm, shaped by the realm, and
 //! never a way to read who already exists here.
 
 
+#[allow(unused_imports)]
+use super::support;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
 use serde_json::Value;

@@ -1,5 +1,3 @@
-#[allow(unused_imports)]
-use super::support;
 //! The desktop-ticket door, driven with a real ticket from a real KDC.
 //!
 //! Needs a database and a Kerberos world: `deploy/krb5/up.sh` brings the KDC
@@ -8,6 +6,8 @@ use super::support;
 //! `SAFFUI_TEST_KRB5` naming the realm to say all of that stands).
 
 
+#[allow(unused_imports)]
+use super::support;
 use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test};
 use models::entities::authz::AdminAction;

@@ -1,6 +1,6 @@
+
 #[allow(unused_imports)]
 use super::support;
-
 use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test};
 use models::entities::authz::AdminAction;

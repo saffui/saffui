@@ -657,3 +657,9 @@ user-idp-none = ce realm seulement
 user-attributes = Attributs
 user-attributes-help = Les attributs libres du compte, au-delà des champs de profil ci-dessus. Ils nourrissent les politiques et les revendications des jetons.
 user-password-reveal = Montrer ou cacher le mot de passe
+
+## L'honnêteté du catalogue de flux et les portes de l'éditeur.
+flows-signs-browser = connecte le navigateur
+flows-hooks-note = La connexion navigateur est le seul crochet auquel ce build lie un flux. Pas de flux « direct grant » : pas de password grant ici, OAuth 2.1 l'a retiré et ce serveur ne l'a jamais implémenté.
+subject-flow-order = l'ordre d'exécution
+flow-insert-here = Ajouter une étape ici

@@ -657,3 +657,9 @@ user-idp-none = this realm only
 user-attributes = Attributes
 user-attributes-help = The account's custom attributes, beyond the profile fields above. They feed policies and token claims.
 user-password-reveal = Show or hide the password
+
+## The flow catalogue's honesty and the editor's doors.
+flows-signs-browser = signs the browser in
+flows-hooks-note = Browser sign-in is the one hook this build binds a flow to. There is no direct-grant flow because there is no password grant here: OAuth 2.1 retired it, and this server never implemented it.
+subject-flow-order = the running order
+flow-insert-here = Add a step here

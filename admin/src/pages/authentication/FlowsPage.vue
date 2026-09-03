@@ -79,6 +79,7 @@ function open(flow: FlowRow) {
         {{ say("settings-save") }}
       </button>
     </form>
+    <p class="mt-2 max-w-xl text-[10.5px] text-faint">{{ say("flows-hooks-note") }}</p>
 
     <div class="mt-4 overflow-x-auto rounded-lg border border-border bg-surface">
       <table class="w-full text-left text-xs">
@@ -109,6 +110,11 @@ function open(flow: FlowRow) {
                   v-if="flow.built_in"
                   class="rounded border border-accent/40 px-1.5 py-0.5 text-[10px] text-accent-strong"
                   >{{ say("flows-built-in") }}</span
+                >
+                <span
+                  v-if="flow.alias === browserFlow"
+                  class="rounded border border-ok/40 px-1.5 py-0.5 text-[10px] text-ok"
+                  >{{ say("flows-signs-browser") }}</span
                 >
               </span>
             </td>

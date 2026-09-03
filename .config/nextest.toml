@@ -1,0 +1,35 @@
+# cargo-nextest, for the machines that have it. Each grouped binary owns one
+# database (the harness derives the name from the binary), so binaries run in
+# parallel while the tests inside one stay serial: every suite walks its
+# schema, and two walkers in one database would trample each other.
+[test-groups.db-admin]
+max-threads = 1
+[test-groups.db-login]
+max-threads = 1
+[test-groups.db-devices]
+max-threads = 1
+[test-groups.db-federation]
+max-threads = 1
+[test-groups.db-tokens]
+max-threads = 1
+[test-groups.db-store]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'binary(suite_admin)'
+test-group = "db-admin"
+[[profile.default.overrides]]
+filter = 'binary(suite_login)'
+test-group = "db-login"
+[[profile.default.overrides]]
+filter = 'binary(suite_devices)'
+test-group = "db-devices"
+[[profile.default.overrides]]
+filter = 'binary(suite_federation)'
+test-group = "db-federation"
+[[profile.default.overrides]]
+filter = 'binary(suite_tokens)'
+test-group = "db-tokens"
+[[profile.default.overrides]]
+filter = 'package(store)'
+test-group = "db-store"

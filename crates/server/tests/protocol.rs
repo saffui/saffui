@@ -5385,3 +5385,44 @@ async fn the_page_wears_the_doors_the_realm_opened() {
     let body = shown(&plane).await;
     assert!(body.contains(r#"data-doors="reset remember""#), "{body}");
 }
+
+/// The enrolment challenge hands everything a person needs to add the app:
+/// the image to scan, the URI behind it, and the key to type by hand.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_authenticator_enrolment_hands_the_scannable_code() {
+    use models::entities::user::RequiredAction;
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .require_of_subject(RequiredAction::ConfigureTotp)
+        .await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert_eq!(told["execution"], "totp-register", "{told}");
+    let asks = told.get("asks").expect("an enrolment issues a challenge");
+    let secret = asks["secret"].as_str().expect("a key to type by hand");
+    assert!(!secret.is_empty());
+    assert!(
+        asks["otpauth"]
+            .as_str()
+            .expect("a URI for the app")
+            .starts_with("otpauth://totp/"),
+        "{asks}"
+    );
+    let drawn = asks["qr"].as_str().expect("an image to scan");
+    assert!(
+        drawn.starts_with("<?xml") || drawn.starts_with("<svg"),
+        "not an SVG: {drawn}"
+    );
+}

@@ -292,6 +292,7 @@ fn authz_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
 /// unauthenticated caller may make the server read.
 fn protocol_scope() -> impl HttpServiceFactory + 'static {
     web::scope("/realms/{realm}/protocol/openid-connect")
+        .wrap(crate::middleware::cors::BrowserCalls)
         .app_data(web::FormConfig::default().limit(PROTOCOL_BODY))
         .service(
             web::resource("/auth")

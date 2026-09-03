@@ -720,3 +720,9 @@ preview-by = mapper
 preview-lands-access = jeton d'accès
 preview-lands-identity = jeton d'identité
 preview-lands-both = les deux jetons
+
+## L'adresse propre du client, et les origins d'où ses scripts appellent.
+client-root = URL racine
+client-root-help = L'adresse de base de l'application. Un redirect enregistré comme chemin, tel /oauth/return, signifie exactement cette racine jointe à lui, et rien d'autre.
+client-origins = Origins web
+client-origins-help = Les origins navigateur autorisées à appeler le endpoint de jetons et les siens depuis un script, une par ligne : ce que CORS répond pour ce client. Écrivez * pour tout admettre, à voix haute.

@@ -316,6 +316,21 @@ pub async fn rotate_secret(
 }
 
 /// Remove a client, and say whether there was one to remove.
+/// Whether any client of this realm admits the origin for browser calls:
+/// what CORS answers with. The wildcard "*" is a registration like any
+/// other, so an operator who wrote it said it out loud.
+pub async fn origin_admitted(transaction: &Transaction<'_>, origin: &str) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM clients \
+             WHERE web_origins && ARRAY[$1, '*']::text[])",
+            &[&origin],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get::<_, bool>(0))
+}
+
 pub async fn delete(transaction: &Transaction<'_>, client_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM clients WHERE client_id = $1", &[&client_id])

@@ -641,9 +641,29 @@ fn registered_redirect<'a>(
     client
         .redirect_uris
         .as_ref()
-        .is_some_and(|registered| registered.iter().any(|uri| uri == asked))
+        .is_some_and(|registered| {
+            registered
+                .iter()
+                .any(|uri| redirect_matches(client, uri, asked))
+        })
         .then_some(asked)
         .ok_or(Refusal::Unshowable("invalid_request"))
+}
+
+/// Exact, or a relative registration joined onto the client's own root:
+/// `/callback` under a root of `https://app.example` spells exactly one
+/// address, and only that address is admitted.
+fn redirect_matches(client: &ClientModel, registered: &str, asked: &str) -> bool {
+    if registered == asked {
+        return true;
+    }
+    registered.starts_with('/')
+        && client.root_url.as_deref().is_some_and(|root| {
+            let mut joined = String::with_capacity(root.len() + registered.len());
+            joined.push_str(root.trim_end_matches('/'));
+            joined.push_str(registered);
+            joined == asked
+        })
 }
 
 /// A public client authenticates with nothing, so the challenge is the whole of

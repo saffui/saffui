@@ -18,6 +18,12 @@ use crate::provisioning::{STANDARD_SCOPES, provision_standard_scopes};
 pub struct Spec {
     pub name: Option<String>,
     pub confidential: bool,
+    /// The application's own base address. A relative redirect registration
+    /// leans on it, and the console shows it as the client's home.
+    pub root_url: Option<String>,
+    /// The browser origins allowed to call the protocol endpoints from
+    /// script: what CORS answers for this client. "*" admits any.
+    pub web_origins: Vec<String>,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
     /// Where a logout token is posted when a login this client took part in
@@ -111,6 +117,9 @@ impl Registered {
 #[derive(Debug, Clone, Default)]
 pub struct Reshape {
     pub name: Option<String>,
+    /// Doubly optional, like the logout addresses: `Some(None)` clears it.
+    pub root_url: Option<Option<String>>,
+    pub web_origins: Option<Vec<String>>,
     pub redirect_uris: Option<Vec<String>>,
     pub post_logout_redirect_uris: Option<Vec<String>>,
     /// Doubly optional: nothing named leaves it alone, `Some(None)` clears it.
@@ -262,6 +271,15 @@ pub async fn update(
         registered: Registered::of(&client),
         name: reshape.name.clone(),
         confidential: client.public_client != Some(true),
+        root_url: reshape
+            .root_url
+            .clone()
+            .unwrap_or_else(|| client.root_url.clone()),
+        web_origins: reshape
+            .web_origins
+            .clone()
+            .or_else(|| client.web_origins.clone())
+            .unwrap_or_default(),
         redirect_uris: reshape
             .redirect_uris
             .clone()
@@ -335,6 +353,12 @@ pub async fn remove(transaction: &Transaction<'_>, client_id: &str) -> Result<bo
 }
 
 fn apply(client: &mut ClientModel, spec: &Spec) {
+    client.root_url = spec
+        .root_url
+        .clone()
+        .filter(|held| !held.is_empty())
+        .map(|held| held.trim_end_matches('/').to_owned());
+    client.web_origins = (!spec.web_origins.is_empty()).then(|| spec.web_origins.clone());
     let registered = &spec.registered;
     client.response_types = registered.response_types.clone();
     client.jwks = registered.jwks.clone();

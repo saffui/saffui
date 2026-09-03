@@ -62,13 +62,13 @@ const PEOPLE: UserBrief[] = [
 ];
 
 const CLIENTS = [
-  { client_id: "web-dashboard", name: "Web dashboard", enabled: true, confidential: true,
+  { client_id: "web-dashboard", name: "Web dashboard", enabled: true, confidential: true, root_url: null, web_origins: [],
     redirect_uris: ["https://app.acme.example/callback"], post_logout_redirect_uris: ["https://app.acme.example/"] },
-  { client_id: "kiosk-tv", name: "Lobby kiosk", enabled: true, confidential: false,
+  { client_id: "kiosk-tv", name: "Lobby kiosk", enabled: true, confidential: false, root_url: null, web_origins: [],
     redirect_uris: [], post_logout_redirect_uris: [] },
-  { client_id: "payments-api", name: "Payments API", enabled: true, confidential: true,
+  { client_id: "payments-api", name: "Payments API", enabled: true, confidential: true, root_url: null, web_origins: [],
     redirect_uris: ["https://payments.acme.example/oauth/return"], post_logout_redirect_uris: [] },
-  { client_id: "counter-desk", name: "Counter desk", enabled: false, confidential: true,
+  { client_id: "counter-desk", name: "Counter desk", enabled: false, confidential: true, root_url: null, web_origins: [],
     redirect_uris: ["https://counter.beta.example/back"], post_logout_redirect_uris: [] },
 ];
 

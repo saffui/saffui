@@ -89,13 +89,15 @@ const required = computed(() => scopes.value.filter((held) => !held.optional));
 const offered = computed(() => scopes.value.filter((held) => held.optional));
 
 const router = useRouter();
-const draft = ref({ name: "", enabled: true, redirects: "", logouts: "" });
+const draft = ref({ name: "", enabled: true, root: "", origins: "", redirects: "", logouts: "" });
 function adoptClient() {
   const held = client.value;
   if (!held) return;
   draft.value = {
     name: held.name ?? "",
     enabled: held.enabled,
+    root: held.root_url ?? "",
+    origins: held.web_origins.join("\n"),
     redirects: held.redirect_uris.join("\n"),
     logouts: held.post_logout_redirect_uris.join("\n"),
   };
@@ -110,6 +112,8 @@ async function saveClient() {
   try {
     await updateClient(props.realm, props.clientId, {
       name: draft.value.name || undefined,
+      root_url: draft.value.root.trim(),
+      web_origins: lines(draft.value.origins),
       redirect_uris: lines(draft.value.redirects),
       post_logout_redirect_uris: lines(draft.value.logouts),
     });
@@ -209,6 +213,15 @@ async function dropScope(name: string) {
           />
         </label>
         <label class="block text-[11px] font-medium text-muted">
+          {{ say("client-root") }} <AppHint name="client-root-help" />
+          <input
+            v-model="draft.root"
+            placeholder="https://app.example"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            spellcheck="false"
+          />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
           {{ say("client-redirects") }} <AppHint name="client-redirects-help" />
           <textarea
             v-model="draft.redirects"
@@ -223,6 +236,16 @@ async function dropScope(name: string) {
             v-model="draft.logouts"
             rows="2"
             class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-[10.5px] text-ink"
+            spellcheck="false"
+          ></textarea>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("client-origins") }} <AppHint name="client-origins-help" />
+          <textarea
+            v-model="draft.origins"
+            rows="2"
+            :placeholder="say('policy-blacklist-hint')"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
             spellcheck="false"
           ></textarea>
         </label>

@@ -594,6 +594,8 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
     )?;
 
     Ok(Spec {
+        root_url: None,
+        web_origins: Vec::new(),
         name: metadata.client_name.clone(),
         confidential,
         redirect_uris: metadata.redirect_uris.clone(),

@@ -40,6 +40,8 @@ export interface ClientSpec {
   client_id?: string;
   name?: string;
   confidential?: boolean;
+  root_url?: string;
+  web_origins?: string[];
   redirect_uris?: string[];
   post_logout_redirect_uris?: string[];
 }

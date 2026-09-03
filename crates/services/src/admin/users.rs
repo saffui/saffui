@@ -205,10 +205,62 @@ pub async fn set_password(
     .await
 }
 
+/// Refuse a password the realm's policy will not have, in the realm's words.
+///
+/// The person is loaded because the policy asks about them: a rule that refuses
+/// a password containing the username cannot fire without the username, and the
+/// one about a birth date could never fire at all, since both callers that
+/// checked passed `None` for it and the profile has held it all along.
+///
+/// A realm with no policy takes anything, which is what no policy means. A
+/// realm that cannot be read refuses: a password written past a policy nobody
+/// could fetch is exactly the write this whole function exists to stop.
+pub async fn refuse_password_against_policy(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+    user_id: &str,
+    password: &SecretBox<String>,
+) -> Result<(), Uncreatable> {
+    let realm = store::providers::realms::load(transaction, realm_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?
+        .ok_or(Uncreatable::Unwritable)?;
+    let Some(policy) = realm.password_policy.as_ref() else {
+        return Ok(());
+    };
+    let person = get(transaction, user_id).await?;
+    let birthdate = person
+        .attributes
+        .as_ref()
+        .and_then(|bag| bag.get(models::entities::user::profile::BIRTH_DATE))
+        .and_then(models::entities::attributes::AttributeValue::as_str);
+    if let Some(why) = policy.refuses(
+        secrecy::ExposeSecret::expose_secret(password),
+        models::entities::realm::About {
+            username: Some(&person.user_name),
+            email: Some(&person.email),
+            birthdate,
+        },
+    ) {
+        return Err(Uncreatable::Invalid(crate::recovery::refused_as(why)));
+    }
+    Ok(())
+}
+
 /// Write a password, replacing the one held or writing the first.
 ///
 /// The cost is the caller's, because a realm that chose one means it to apply
 /// wherever a password is written and not only where an administrator writes.
+/// The policy is read here for the same reason, and it was not: a realm could
+/// declare a shape and a length and then take anything at all through the admin
+/// surface, through SCIM, and through provisioning, because the two callers
+/// that checked were the two a person walks through themselves.
+///
+/// The realm is read by the identifier this call already carries rather than
+/// off the transaction's context. A policy fetched from the ambient context is
+/// one that quietly becomes no policy wherever the context is not what the
+/// caller assumed, and this function is called from four places with four
+/// different assumptions.
 #[allow(
     clippy::too_many_arguments,
     reason = "each is a distinct fact about one password"
@@ -223,6 +275,8 @@ pub async fn keep_password(
     user_id: &str,
     password: &SecretBox<String>,
 ) -> Result<(), Uncreatable> {
+    refuse_password_against_policy(transaction, realm_id, user_id, password).await?;
+
     let StoredPassword::Argon2id { encoded } =
         StoredPassword::hash_argon2id(provider, cost, password)
             .map_err(|_| Uncreatable::Unwritable)?

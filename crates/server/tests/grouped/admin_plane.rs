@@ -1409,3 +1409,129 @@ async fn a_ping_without_an_endpoint_is_refused_at_the_door() {
         "{told}"
     );
 }
+
+/// The realm's password policy applies wherever a password enters, not only
+/// where a person walks in themselves.
+///
+/// It was read at self-service signup and at a mailed reset, and nowhere else.
+/// An administrator, and a directory pushing over SCIM, could plant anything a
+/// realm had declared it would not have, while the realm went on refusing the
+/// same password to the person who owns the account.
+///
+/// The rule about a birth date is checked here too, because it could never
+/// refuse anything before: both callers that consulted the policy passed no
+/// birth date, though the profile has held one all along.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_password_policy_is_read_at_every_door_a_password_enters_by() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead, AdminAction::UserWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/users");
+
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.password_policy = Some(models::entities::realm::PasswordPolicy {
+            min_length: Some(12),
+            not_username: Some(true),
+            not_birthdate: Some(true),
+            ..Default::default()
+        });
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.expect("the policy kept");
+    }
+
+    // Creation: refused in the realm's own words, not flattened into a 500.
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "user_name": "grace",
+            "email": "grace@example.test",
+            "password": "short",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|said| said.contains("too short")),
+        "the refusal did not say which rule: {told}"
+    );
+
+    let (status, born) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "user_name": "grace",
+            "email": "grace@example.test",
+            "password": "a-fresh-password-of-decent-length",
+            "attributes": { "user.profile.birthdate": "1906-12-09" },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    // Setting one afterwards: the same policy, the same words.
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/grace/password"),
+        &bearer,
+        serde_json::json!({ "password": "short" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // The person's own name, which needs the person to be loaded to refuse.
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/grace/password"),
+        &bearer,
+        serde_json::json!({ "password": "grace" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // The birth date off the profile. This rule was unreachable until now: the
+    // two callers that read the policy passed no birth date at all.
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/grace/password"),
+        &bearer,
+        serde_json::json!({ "password": "1906-12-09" }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a password that is the person's birth date was taken: {told}"
+    );
+
+    // And one the policy has nothing against still lands.
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/grace/password"),
+        &bearer,
+        serde_json::json!({ "password": "another-decent-length-one" }),
+    )
+    .await;
+    assert!(status.is_success(), "{told}");
+}

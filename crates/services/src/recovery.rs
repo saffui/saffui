@@ -208,7 +208,12 @@ pub async fn set_from_link(
 }
 
 /// What the caller is told. The reason is the policy's, never the password's.
-fn refused_as(why: models::entities::realm::PasswordRefused) -> &'static str {
+/// The words a refused password is told in.
+///
+/// Public because every door a password enters by refuses in the same words.
+/// Two vocabularies for one policy would tell a person their password was too
+/// short in one place and unacceptable in another, for the same password.
+pub fn refused_as(why: models::entities::realm::PasswordRefused) -> &'static str {
     match why {
         models::entities::realm::PasswordRefused::TooShort => "the password is too short",
         models::entities::realm::PasswordRefused::TooLong => "the password is too long",

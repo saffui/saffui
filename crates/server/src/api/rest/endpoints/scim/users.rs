@@ -233,8 +233,8 @@ pub async fn create(
     {
         return unavailable();
     }
-    if let Some(password) = &asserted.password
-        && planted_password(
+    if let Some(password) = &asserted.password {
+        match planted_password(
             &transaction,
             &sealing,
             &admin.context.tenant.tenant,
@@ -243,9 +243,12 @@ pub async fn create(
             password,
         )
         .await
-        .is_err()
-    {
-        return refused(&Refusal::invalid("the password could not be kept"));
+        {
+            Ok(()) => {}
+            // The realm's own words. A directory told only that the password
+            // could not be kept retries the same password forever.
+            Err(said) => return refused(&Refusal::invalid(said)),
+        }
     }
 
     let body = match shown(&transaction, &base, &person).await {
@@ -307,8 +310,8 @@ pub async fn replace(
     if users::update(&transaction, &person).await.is_err() {
         return unavailable();
     }
-    if let Some(password) = &asserted.password
-        && planted_password(
+    if let Some(password) = &asserted.password {
+        match planted_password(
             &transaction,
             &sealing,
             &admin.context.tenant.tenant,
@@ -317,9 +320,12 @@ pub async fn replace(
             password,
         )
         .await
-        .is_err()
-    {
-        return refused(&Refusal::invalid("the password could not be kept"));
+        {
+            Ok(()) => {}
+            // The realm's own words. A directory told only that the password
+            // could not be kept retries the same password forever.
+            Err(said) => return refused(&Refusal::invalid(said)),
+        }
     }
     let shown = match users::load(&transaction, &user_id).await {
         Ok(Some(fresh)) => match shown(&transaction, &base, &fresh).await {
@@ -411,8 +417,8 @@ pub async fn patch(
     if users::update(&transaction, &person).await.is_err() {
         return unavailable();
     }
-    if let Some(password) = &password
-        && planted_password(
+    if let Some(password) = &password {
+        match planted_password(
             &transaction,
             &sealing,
             &admin.context.tenant.tenant,
@@ -421,9 +427,12 @@ pub async fn patch(
             password,
         )
         .await
-        .is_err()
-    {
-        return refused(&Refusal::invalid("the password could not be kept"));
+        {
+            Ok(()) => {}
+            // The realm's own words. A directory told only that the password
+            // could not be kept retries the same password forever.
+            Err(said) => return refused(&Refusal::invalid(said)),
+        }
     }
     let shown = match users::load(&transaction, &user_id).await {
         Ok(Some(fresh)) => match shown(&transaction, &base, &fresh).await {
@@ -467,6 +476,12 @@ pub async fn delete(
 }
 
 /// The same argon2 the login checks, replacing whatever password stood.
+///
+/// Under the realm's policy, which this door went around: a provisioning client
+/// could plant anything a realm had declared it would not have, and the realm
+/// went on refusing the same password to the person who owns the account. The
+/// refusal is handed back in the realm's own words rather than flattened, so a
+/// directory that pushes a password too short is told which rule it broke.
 async fn planted_password(
     transaction: &Transaction<'_>,
     sealing: &Sealing,
@@ -474,24 +489,33 @@ async fn planted_password(
     realm_id: &str,
     user_id: &str,
     password: &str,
-) -> Result<(), ()> {
-    let StoredPassword::Argon2id { encoded } = StoredPassword::hash_argon2id(
-        sealing.provider.as_ref(),
-        Argon2Params::default(),
-        &SecretBox::new(Box::new(password.to_owned())),
-    )
-    .map_err(|_| ())?
+) -> Result<(), &'static str> {
+    let secret = SecretBox::new(Box::new(password.to_owned()));
+    if let Err(services::admin::users::Uncreatable::Invalid(said)) =
+        services::admin::users::refuse_password_against_policy(
+            transaction,
+            realm_id,
+            user_id,
+            &secret,
+        )
+        .await
+    {
+        return Err(said);
+    }
+    let StoredPassword::Argon2id { encoded } =
+        StoredPassword::hash_argon2id(sealing.provider.as_ref(), Argon2Params::default(), &secret)
+            .map_err(|_| "the password could not be kept")?
     else {
-        return Err(());
+        return Err("the password could not be kept");
     };
     let standing =
         credentials::load_for_user_of_type(transaction, user_id, CredentialType::Password)
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| "the password could not be kept")?;
     for held in &standing {
         credentials::delete(transaction, &held.credential_id)
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| "the password could not be kept")?;
     }
     credentials::create(
         transaction,
@@ -511,5 +535,5 @@ async fn planted_password(
         },
     )
     .await
-    .map_err(|_| ())
+    .map_err(|_| "the password could not be kept")
 }

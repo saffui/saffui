@@ -33,6 +33,8 @@ const PAGES: { leaf: string; name: () => string }[] = [
   { leaf: "settings", name: () => say("nav-settings") },
   { leaf: "keys", name: () => say("nav-keys") },
   { leaf: "theme", name: () => say("nav-theme") },
+  { leaf: "pages", name: () => say("nav-pages") },
+  { leaf: "token-preview", name: () => say("nav-preview") },
 ];
 
 interface Hit {

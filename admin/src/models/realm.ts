@@ -58,6 +58,7 @@ export interface RealmSettings {
   ciba_expiry: number | null;
   ciba_interval: number | null;
   webauthn_passwordless: boolean | null;
+  page_overrides: Record<string, Record<string, string>> | null;
   browser_flow: string | null;
   supported_locales: string[] | null;
   default_locale: string | null;
@@ -163,6 +164,7 @@ export interface RealmUpdate {
   ciba_expiry?: number;
   ciba_interval?: number;
   webauthn_passwordless?: boolean;
+  page_overrides?: Record<string, Record<string, string>> | null;
   browser_flow?: string;
   supported_locales?: string[];
   default_locale?: string;

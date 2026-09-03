@@ -171,6 +171,69 @@ fn take_audiences(claims: &mut Map<String, Value>) -> Vec<String> {
     }
 }
 
+/// One claim as the preview screen shows it: name, value, which mapper put
+/// it there, and which token it lands in.
+#[derive(Debug, serde::Serialize)]
+pub struct PreviewedClaim {
+    pub claim: String,
+    pub value: Value,
+    /// The mapper that wrote it, by name; the reader's chip.
+    pub origin: String,
+    /// `access`, `identity`, or `both`.
+    pub lands_in: &'static str,
+}
+
+/// What the mappers would write for this grant, claim by claim with its
+/// author. This mints nothing: it runs the same evaluation issuance runs and
+/// reports who said what instead of saying it into a token.
+pub async fn preview(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    user_id: &str,
+    scope: &str,
+) -> Result<Vec<PreviewedClaim>, ()> {
+    let resolved = resolve(transaction, client_id, user_id, scope).await?;
+    let Some(user) = users::load(transaction, user_id).await.map_err(|_| ())? else {
+        return Err(());
+    };
+    let mut rows = Vec::new();
+    for mapper in &resolved.mappers {
+        let mut one = Resolved {
+            mappers: vec![mapper.clone()],
+            realm_roles: resolved.realm_roles.clone(),
+            client_roles: resolved.client_roles.clone(),
+        };
+        let access = evaluate(Target::AccessToken, &one, &user);
+        one.mappers = vec![mapper.clone()];
+        let identity = evaluate(Target::IdToken, &one, &user);
+        for (claim, value) in &access {
+            let lands_in = if identity.get(claim) == Some(value) {
+                "both"
+            } else {
+                "access"
+            };
+            rows.push(PreviewedClaim {
+                claim: claim.clone(),
+                value: value.clone(),
+                origin: mapper.name.clone(),
+                lands_in,
+            });
+        }
+        for (claim, value) in identity {
+            if access.contains_key(&claim) && access.get(&claim) == Some(&value) {
+                continue;
+            }
+            rows.push(PreviewedClaim {
+                claim,
+                value,
+                origin: mapper.name.clone(),
+                lands_in: "identity",
+            });
+        }
+    }
+    Ok(rows)
+}
+
 /// Add what the mappers said, where the flow said nothing. A mapper extends a
 /// token; it never displaces a claim the flow wrote, because a rule from a
 /// registration must not rewrite what an authentication established.

@@ -127,6 +127,82 @@ impl RealmTongues {
     }
 }
 
+/// Every key the pages speak, with the built value per tongue. Parsed off
+/// the same sources the bundles are built from; the values in these files
+/// are single-line by construction, which is what the parse leans on.
+pub static CATALOGUE: LazyLock<Vec<(String, [String; 2])>> = LazyLock::new(|| {
+    let read = |source: &str| -> std::collections::BTreeMap<String, String> {
+        source
+            .lines()
+            .filter_map(|line| {
+                let (name, value) = line.split_once(" = ")?;
+                let shaped = name
+                    .chars()
+                    .all(|held| held.is_ascii_lowercase() || held.is_ascii_digit() || held == '-');
+                (shaped && !name.is_empty()).then(|| (name.to_owned(), value.to_owned()))
+            })
+            .collect()
+    };
+    let (en, fr) = (read(STRINGS[0]), read(STRINGS[1]));
+    en.iter()
+        .map(|(name, value)| {
+            (
+                name.clone(),
+                [
+                    value.clone(),
+                    fr.get(name).cloned().unwrap_or_else(|| value.clone()),
+                ],
+            )
+        })
+        .collect()
+});
+
+/// Whether the build speaks this key at all, which is what a realm override
+/// is checked against: a realm cannot invent a string no page reads.
+pub fn knows_key(name: &str) -> bool {
+    CATALOGUE.iter().any(|(held, _)| held == name)
+}
+
+/// The sign-in page with a realm's words layered over the build's: the same
+/// walk the startup render does, asking the overrides first. Rendered per
+/// request, and only for the rare realm that says anything.
+pub fn page_over(tongue: &str, overrides: &serde_json::Value) -> String {
+    rendered_over(TEMPLATE, tongue, overrides)
+}
+
+fn rendered_over(template: &str, tongue: &str, overrides: &serde_json::Value) -> String {
+    let at = TONGUES.iter().position(|held| *held == tongue).unwrap_or(0);
+    let spoken = overrides.get(TONGUES[at]);
+    let mut page = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(found) = rest.find("{{") {
+        page.push_str(&rest[..found]);
+        rest = &rest[found + 2..];
+        let end = rest.find("}}").expect("an unterminated marker");
+        let name = &rest[..end];
+        rest = &rest[end + 2..];
+        if name == "lang" {
+            page.push_str(TONGUES[at]);
+            continue;
+        }
+        if let Some(said) = spoken
+            .and_then(|held| held.get(name))
+            .and_then(serde_json::Value::as_str)
+        {
+            page.push_str(&super::page::escaped(said));
+            continue;
+        }
+        let built = CATALOGUE
+            .iter()
+            .find(|(held, _)| held == name)
+            .map(|(_, values)| values[at].as_str())
+            .unwrap_or("");
+        page.push_str(&super::page::escaped(built));
+    }
+    page.push_str(rest);
+    page
+}
+
 /// The rendered sign-in page in the given tongue; anything unspoken gets the
 /// first.
 pub fn page_in(tongue: &str) -> &'static str {

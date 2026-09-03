@@ -96,6 +96,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::post().to(realms::rotate_registration_secret)),
         },
         AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/page-keys",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(realms::page_keys)),
+        },
+        AdminRoute {
             method: Method::DELETE,
             pattern: "/admin/realms/{realm}/registration-secret",
             action: AdminAction::RealmWrite,
@@ -250,6 +256,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/protocol-mappers",
             action: AdminAction::ClientRead,
             handler: Some(|| web::get().to(protocol_mappers::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/preview-token",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::post().to(protocol_mappers::preview)),
         },
         AdminRoute {
             method: Method::POST,

@@ -422,6 +422,9 @@ pub struct RealmModel {
     /// Whether a passkey alone signs a person in, no name asked first. The
     /// ceremony's own terms are the build's and not switches here.
     pub webauthn_passwordless: Option<bool>,
+    /// What this realm says over the hosted pages' own words: tongue to
+    /// key to text. Only built tongues and built keys are accepted.
+    pub page_overrides: Option<serde_json::Value>,
     /// Which built tongues this realm offers. None offers them all.
     pub supported_locales: Option<Vec<String>>,
     /// The tongue that answers when the browser says nothing. None takes the
@@ -496,6 +499,7 @@ impl RealmCreateModel {
             ciba_expiry: None,
             ciba_interval: None,
             webauthn_passwordless: None,
+            page_overrides: None,
             supported_locales: None,
             default_locale: None,
             events_enabled: None,
@@ -564,6 +568,9 @@ pub struct RealmUpdateModel {
     pub device_poll_interval: Option<i32>,
     pub ciba_interval: Option<i32>,
     pub webauthn_passwordless: Option<bool>,
+    /// What this realm says over the hosted pages' own words: tongue to
+    /// key to text. Only built tongues and built keys are accepted.
+    pub page_overrides: Option<serde_json::Value>,
     /// Which built tongues this realm offers. None leaves it unchanged; an
     /// empty list offers them all.
     pub supported_locales: Option<Vec<String>>,
@@ -664,6 +671,7 @@ impl RealmUpdateModel {
             ciba_expiry,
             ciba_interval,
             webauthn_passwordless,
+            page_overrides,
             offline_session_lifespan,
             action_tokens_lifespan,
             access_code_lifespan,

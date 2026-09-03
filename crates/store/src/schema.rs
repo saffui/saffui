@@ -469,6 +469,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V077__realm_webauthn_passwordless.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 78,
+            name: "realm_page_overrides",
+            sql: include_str!("../migrations/V078__realm_page_overrides.sql"),
+            transactional: true,
+        }),
     ]
 }
 

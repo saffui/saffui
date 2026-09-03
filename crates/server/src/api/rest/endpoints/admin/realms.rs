@@ -97,6 +97,16 @@ fn brief(realm: models::entities::realm::RealmModel) -> RealmBrief {
     }
 }
 
+/// Every key the hosted pages read, with the built value per tongue: what
+/// the override editor lists, and the whole of what a realm may speak over.
+pub async fn page_keys(_admin: web::ReqData<Admin>) -> HttpResponse {
+    let listed: Vec<_> = crate::api::rest::endpoints::protocol::i18n::CATALOGUE
+        .iter()
+        .map(|(name, values)| serde_json::json!({ "name": name, "en": values[0], "fr": values[1] }))
+        .collect();
+    HttpResponse::Ok().json(serde_json::json!({ "keys": listed }))
+}
+
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
 }
@@ -404,6 +414,47 @@ pub async fn update(
              and a poll interval of 1 to 60"
                 .to_owned(),
         ));
+    }
+    // A realm speaks over the pages only in tongues the build renders and
+    // over keys a page actually reads: an override nothing reads is a typo
+    // kept, and refusing it now is the only moment anybody hears about it.
+    if let Some(overrides) = asked.page_overrides.as_ref()
+        && overrides != &serde_json::Value::Null
+    {
+        let Some(spoken) = overrides.as_object() else {
+            return Err(ApiError::with_detail(
+                ErrorCode::ValidationError,
+                "page overrides are an object of tongue to key to text".to_owned(),
+            ));
+        };
+        for (tongue, words) in spoken {
+            if !crate::api::rest::endpoints::protocol::i18n::TONGUES.contains(&tongue.as_str()) {
+                return Err(ApiError::with_detail(
+                    ErrorCode::ValidationError,
+                    format!("the build does not render pages in `{tongue}`"),
+                ));
+            }
+            let Some(words) = words.as_object() else {
+                return Err(ApiError::with_detail(
+                    ErrorCode::ValidationError,
+                    "each tongue holds an object of key to text".to_owned(),
+                ));
+            };
+            for (name, value) in words {
+                if !crate::api::rest::endpoints::protocol::i18n::knows_key(name) {
+                    return Err(ApiError::with_detail(
+                        ErrorCode::ValidationError,
+                        format!("no page reads `{name}`"),
+                    ));
+                }
+                if !value.is_string() {
+                    return Err(ApiError::with_detail(
+                        ErrorCode::ValidationError,
+                        format!("the override for `{name}` is plain text"),
+                    ));
+                }
+            }
+        }
     }
     // A shown name a browser dialog can actually render.
     if asked

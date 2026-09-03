@@ -390,6 +390,22 @@ export function previewAnswer<T>(path: string): T {
       ],
     });
   }
+  if (path.endsWith("/auth/required-actions")) {
+    return answer([
+      {
+        action_id: "ra-1",
+        provider_id: "totp",
+        action: "configure-totp",
+        name: "configure-totp",
+        display_name: "Configure authenticator app",
+        description: "",
+        enabled: true,
+        default_action: false,
+        on_time_action: null,
+        priority: 10,
+      },
+    ]);
+  }
   if (path.endsWith("/auth/flows")) {
     return answer([
       { flow_id: "f-browser", alias: "browser", description: "The realm's own sign-in", top_level: true, built_in: true },

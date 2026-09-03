@@ -663,3 +663,16 @@ flows-signs-browser = signs the browser in
 flows-hooks-note = Browser sign-in is the one hook this build binds a flow to. There is no direct-grant flow because there is no password grant here: OAuth 2.1 retired it, and this server never implemented it.
 subject-flow-order = the running order
 flow-insert-here = Add a step here
+
+## The required-actions catalogue.
+actions-title = Required actions
+actions-lede = What a realm may ask of a person before a sign-in completes. The catalogue is the build's own: rows can be registered and turned, never invented, and an action a user already carries keeps asking even when turned off here for the next one.
+actions-col-what = Action
+actions-col-enabled = Offered
+actions-enabled-help = Whether this action may be asked of anyone in this realm at all.
+actions-col-birth = On at birth
+actions-birth-help = New accounts are born owing it, whichever door they arrive through.
+actions-register = Register
+actions-register-help = Writes the row this realm turns; until then the action exists only in the build.
+actions-unregistered = not registered here
+subject-action = the { $action } action

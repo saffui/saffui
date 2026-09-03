@@ -663,3 +663,16 @@ flows-signs-browser = connecte le navigateur
 flows-hooks-note = La connexion navigateur est le seul crochet auquel ce build lie un flux. Pas de flux « direct grant » : pas de password grant ici, OAuth 2.1 l'a retiré et ce serveur ne l'a jamais implémenté.
 subject-flow-order = l'ordre d'exécution
 flow-insert-here = Ajouter une étape ici
+
+## Le catalogue des actions requises.
+actions-title = Actions requises
+actions-lede = Ce qu'un realm peut exiger d'une personne avant qu'une connexion aboutisse. Le catalogue est celui du build : les lignes se déclarent et se règlent, jamais ne s'inventent, et une action déjà portée par un compte continue de se poser même éteinte ici pour les suivants.
+actions-col-what = Action
+actions-col-enabled = Offerte
+actions-enabled-help = Si cette action peut être exigée de quiconque dans ce realm.
+actions-col-birth = À la naissance
+actions-birth-help = Les nouveaux comptes naissent en la devant, quelle que soit la porte d'arrivée.
+actions-register = Déclarer
+actions-register-help = Écrit la ligne que ce realm règle ; jusque-là l'action n'existe que dans le build.
+actions-unregistered = non déclarée ici
+subject-action = l'action { $action }

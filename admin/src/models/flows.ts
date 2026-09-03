@@ -29,3 +29,17 @@ export interface FlowDetail {
   flow: FlowRow;
   executions: ExecutionRow[];
 }
+
+/// Mirrors `models::entities::auth::RequiredActionModel`.
+export interface RequiredActionRow {
+  action_id: string;
+  provider_id: string;
+  action: string;
+  name: string;
+  display_name: string;
+  description: string;
+  enabled: boolean | null;
+  default_action: boolean | null;
+  on_time_action: boolean | null;
+  priority: number | null;
+}

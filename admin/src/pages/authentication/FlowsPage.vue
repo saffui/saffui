@@ -50,6 +50,12 @@ function open(flow: FlowRow) {
   <div>
     <div class="flex items-center justify-between">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("flows-title") }}</h1>
+      <router-link
+        :to="`/${realm}/authentication/actions`"
+        class="ml-auto rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2"
+      >
+        {{ say("actions-title") }}
+      </router-link>
       <span v-if="flows.length" class="font-mono text-[11px] text-faint">{{ flows.length }}</span>
     </div>
     <p class="mt-1 text-xs text-muted">{{ say("flows-lede") }}</p>

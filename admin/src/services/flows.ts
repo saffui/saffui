@@ -1,6 +1,6 @@
 import { adminPath, api } from "@/services/http";
 import { say } from "@/i18n";
-import type { FlowDetail, FlowRow, Requirement } from "@/models/flows";
+import type { FlowDetail, FlowRow, Requirement, RequiredActionRow } from "@/models/flows";
 
 export async function listFlows(realm: string): Promise<FlowRow[]> {
   return api<FlowRow[]>(adminPath(realm, "auth/flows"));
@@ -58,5 +58,32 @@ export async function removeExecution(realm: string, executionId: string): Promi
   await api<void>(adminPath(realm, `auth/executions/${encodeURIComponent(executionId)}`), {
     method: "DELETE",
     subject: say("subject-execution", { step: executionId }),
+  });
+}
+
+export async function listActions(realm: string): Promise<RequiredActionRow[]> {
+  return api<RequiredActionRow[]>(adminPath(realm, "auth/required-actions"));
+}
+
+export async function registerAction(
+  realm: string,
+  body: Omit<RequiredActionRow, "action_id">,
+): Promise<RequiredActionRow> {
+  return api<RequiredActionRow>(adminPath(realm, "auth/required-actions"), {
+    method: "POST",
+    json: body,
+    subject: say("subject-action", { action: body.action }),
+  });
+}
+
+export async function reworkAction(
+  realm: string,
+  action: string,
+  body: Omit<RequiredActionRow, "action_id">,
+): Promise<void> {
+  await api<unknown>(adminPath(realm, `auth/required-actions/${encodeURIComponent(action)}`), {
+    method: "PUT",
+    json: body,
+    subject: say("subject-action", { action }),
   });
 }

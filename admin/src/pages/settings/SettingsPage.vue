@@ -45,9 +45,9 @@ type Group = (typeof GROUPS)[number];
 /// the server stores but nothing enforces yet wears it plainly, instead of
 /// promising behaviour the build does not have.
 const LOGIN_TOGGLES = [
-  ["registration_allowed", "settings-self-registration", false],
-  ["register_email_as_username", "settings-email-as-username", false],
-  ["verify_email", "settings-verify-email", false],
+  ["registration_allowed", "settings-self-registration", true],
+  ["register_email_as_username", "settings-email-as-username", true],
+  ["verify_email", "settings-verify-email", true],
   ["login_with_email_allowed", "settings-login-with-email", true],
   ["duplicated_email_allowed", "settings-duplicated-email", true],
   ["edit_user_name_allowed", "settings-edit-username", false],

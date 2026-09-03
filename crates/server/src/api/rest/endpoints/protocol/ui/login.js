@@ -51,6 +51,62 @@
   const doors = (document.body.dataset.doors || "").split(" ");
   document.getElementById("keep").hidden = doors.indexOf("remember") === -1;
   document.getElementById("forgot-row").hidden = doors.indexOf("reset") === -1;
+  document.getElementById("signup-row").hidden = doors.indexOf("register") === -1;
+
+  // The registration half. A realm registering by address alone never shows
+  // the name field; the address is the identifier and the server knows it.
+  const signup = document.getElementById("signup");
+  const signupForm = document.getElementById("signup-form");
+  const byAddress = doors.indexOf("register-email") !== -1;
+  document.getElementById("signup-name-row").hidden = byAddress;
+  document.getElementById("signup-open").addEventListener("click", function (event) {
+    event.preventDefault();
+    form.hidden = true;
+    document.getElementById("signup-row").hidden = true;
+    signup.hidden = false;
+  });
+  document.getElementById("signup-back").addEventListener("click", function (event) {
+    event.preventDefault();
+    signup.hidden = true;
+    form.hidden = false;
+    document.getElementById("signup-row").hidden = doors.indexOf("register") === -1;
+  });
+  signupForm.addEventListener("submit", function (event) {
+    event.preventDefault();
+    const mismatch = document.getElementById("signup-mismatch");
+    mismatch.hidden = true;
+    if (signupForm.signup_password.value !== signupForm.signup_again.value) {
+      mismatch.hidden = false;
+      return;
+    }
+    const body = {
+      email: signupForm.signup_email.value,
+      password: signupForm.signup_password.value,
+    };
+    if (!byAddress) body.username = signupForm.signup_username.value;
+    if (signupForm.signup_given.value) body.given_name = signupForm.signup_given.value;
+    if (signupForm.signup_family.value) body.family_name = signupForm.signup_family.value;
+    fetch(location.pathname.replace(/\/login$/, "/signup"), {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(body),
+    })
+      .then(function (response) {
+        return response.json().then(function (answered) {
+          if (response.ok && answered.status === "registered") {
+            signupForm.hidden = true;
+            document.getElementById(answered.verify ? "signup-verify" : "signup-done").hidden =
+              false;
+            return;
+          }
+          // The server refuses in words where words cannot enumerate.
+          say(answered.reason || spoken("went-wrong"));
+        });
+      })
+      .catch(function () {
+        say(spoken("went-wrong"));
+      });
+  });
 
   // The recovery half: the form swaps for one field, and the answer is the
   // same whether anybody was found, because the server already says nothing.

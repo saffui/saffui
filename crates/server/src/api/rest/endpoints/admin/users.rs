@@ -56,11 +56,13 @@ pub async fn get(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    let found = people::get(&transaction, &user_id).await.map_err(refused)?;
+    let found = services::admin::users::identified(&transaction, &user_id)
+        .await
+        .map_err(refused)?;
     // The single read carries what the listing keeps to itself: the whole
     // attribute bag, and which identity providers this account is bound to.
     let attributes = found.attributes.clone();
-    let links = store::providers::brokering::links_of(&transaction, &user_id)
+    let links = store::providers::brokering::links_of(&transaction, &found.user_id)
         .await
         .map_err(|_| internal())?;
     let mut answer = serde_json::to_value(UserBrief::from(found)).map_err(|_| internal())?;
@@ -104,9 +106,17 @@ pub async fn create(
         .map_err(|_| internal())?;
     let tenant = admin.context.tenant.tenant.clone();
     let by = admin.context.principal.id().to_owned();
-    let user = people::create(&transaction, &tenant, &realm_id, &by, &user_name, &spec)
-        .await
-        .map_err(refused)?;
+    let user = people::create(
+        &transaction,
+        sealing.provider.as_ref(),
+        &tenant,
+        &realm_id,
+        &by,
+        &user_name,
+        &spec,
+    )
+    .await
+    .map_err(refused)?;
     if let Some(password) = asked.password.filter(|given| !given.is_empty()) {
         people::set_password(
             &transaction,
@@ -138,6 +148,7 @@ pub async fn update(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
     let user = people::update(&transaction, &user_id, &spec)
         .await
         .map_err(refused)?;
@@ -166,6 +177,7 @@ pub async fn set_password(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
     people::set_password(
         &transaction,
         sealing.provider.as_ref(),
@@ -193,6 +205,7 @@ pub async fn remove(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
     if !people::remove(&transaction, &user_id)
         .await
         .map_err(refused)?
@@ -205,6 +218,7 @@ pub async fn remove(
 
 fn spec_of(asked: &UserSpec) -> Spec {
     Spec {
+        user_name: asked.user_name.clone(),
         email: asked.email.clone(),
         email_verified: asked.email_verified,
         enabled: asked.enabled,
@@ -251,6 +265,7 @@ pub async fn lockout(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
     let held = people::lockout(&transaction, &user_id)
         .await
         .map_err(refused)?;
@@ -280,6 +295,7 @@ pub async fn lift_lockout(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
     people::lift_lockout(&transaction, &user_id)
         .await
         .map_err(refused)?;
@@ -300,6 +316,7 @@ pub async fn messages(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
     let held = store::providers::deliveries::of_user(&transaction, &user_id, 50)
         .await
         .map_err(|_| internal())?;
@@ -319,6 +336,7 @@ pub async fn consents(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
     let held = store::providers::consents::of_user(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;
@@ -350,6 +368,7 @@ pub async fn withdraw_consent(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
     if !store::providers::consents::withdraw(&transaction, &user_id, &client_id)
         .await
         .map_err(|_| internal())?
@@ -374,7 +393,7 @@ pub async fn effective_roles(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    named_user(&transaction, &user_id).await?;
+    let user_id = named_user(&transaction, &user_id).await?;
     let held = store::providers::roles::effective_roles(&transaction, &user_id)
         .await
         .map_err(|_| internal())?;
@@ -405,7 +424,7 @@ pub async fn member_groups(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    named_user(&transaction, &user_id).await?;
+    let user_id = named_user(&transaction, &user_id).await?;
     let mut groups = Vec::new();
     // Joined memberships only: each row here backs a remove control, and a
     // group reached through a parent has no membership row to remove.
@@ -438,7 +457,7 @@ pub async fn member_organizations(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    named_user(&transaction, &user_id).await?;
+    let user_id = named_user(&transaction, &user_id).await?;
     let mut organizations = Vec::new();
     for org_id in store::providers::organizations::of_member(&transaction, &user_id)
         .await
@@ -457,13 +476,15 @@ pub async fn member_organizations(
 }
 
 /// The user the path names, or the not-found the whole file answers with.
-async fn named_user(
+/// The person a path names, by identifier first and by name second: the
+/// console holds identifiers, an operator types names, and rows born before
+/// drawn identifiers answer to both because theirs are their names.
+pub(crate) async fn named_user(
     transaction: &deadpool_postgres::Transaction<'_>,
-    user_id: &str,
-) -> Result<(), ApiError> {
-    store::providers::users::load(transaction, user_id)
+    spelled: &str,
+) -> Result<String, ApiError> {
+    services::admin::users::identified(transaction, spelled)
         .await
-        .map_err(|_| internal())?
-        .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;
-    Ok(())
+        .map(|held| held.user_id)
+        .map_err(|_| ApiError::new(ErrorCode::UserNotFound))
 }

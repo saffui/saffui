@@ -323,7 +323,7 @@ settings-attr-add = Ajouter un attribut
 settings-duplicated-email = Autoriser l'email dupliqué
 settings-duplicated-email-help = Deux comptes peuvent tenir une même adresse. Désactivé, une écriture revendiquant une adresse tenue est refusée en mots. Activé, la connexion par e-mail cesse de résoudre les adresses partagées, qui ne nomment personne en particulier.
 settings-edit-username = Identifiant modifiable
-settings-edit-username-help = Chacun peut changer son identifiant ensuite. L'identité dessous ne bouge pas.
+settings-edit-username-help = Le champ nom du tiroir de compte devient inscriptible : la personne garde son identifiant et tout ce qui lui est octroyé, et se connecte sous le nouveau nom dès l'essai suivant.
 settings-refresh-sliding = Fenêtre glissante de session
 settings-refresh-sliding-help = Combien de temps une session connectée peut dormir entre deux renouvellements, en secondes. Vide prend le défaut compilé de 1800. Chaque renouvellement fait glisser la fenêtre.
 settings-session-ceiling = Plafond absolu de session
@@ -648,7 +648,7 @@ subject-hand-grant = { $role } pour { $user }
 paging-size = Par page
 settings-not-enforced = pas encore appliqué
 user-identifier = Identifiant
-user-identifier-help = Ce que les octrois, les sessions et le journal pointent. Fixé à la création, il ne change jamais ; c'est aujourd'hui le nom d'utilisateur lui-même.
+user-identifier-help = Ce que les octrois, les sessions et le journal pointent : tiré à la naissance, jamais le nom, donc un renommage ne déplace rien. Les comptes nés avant les identifiants tirés répondent aussi à leur nom ici.
 user-born = Créé
 user-born-unknown = non consigné
 user-origin = Origine
@@ -720,3 +720,6 @@ preview-by = mapper
 preview-lands-access = jeton d'accès
 preview-lands-identity = jeton d'identité
 preview-lands-both = les deux jetons
+
+## Identités découplées.
+user-rename-help = Renommer relève du realm, dans les réglages de connexion. L'identifiant dessous ne bouge jamais : octrois, sessions et journal pointent où ils pointaient.

@@ -1,5 +1,4 @@
 use crypto::provider::CryptoProvider;
-use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::authz::{GroupModel, GroupMutationModel, RoleModel, RoleMutationModel};
@@ -45,13 +44,13 @@ fn check_name(name: &str) -> Result<(), Unwritable> {
 }
 
 /// A drawn identifier, so a rename never changes what grants point at.
-fn draw(provider: &dyn CryptoProvider, prefix: &str) -> Result<String, Unwritable> {
+fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
     let mut bytes = [0_u8; 16];
     provider
         .rand()
         .fill(&mut bytes)
         .map_err(|_| Unwritable::Backend)?;
-    Ok(format!("{prefix}-{}", BASE64URL_NOPAD.encode(&bytes)))
+    Ok(crypto::provider::uuid_from(bytes))
 }
 
 pub async fn create_role(
@@ -71,7 +70,7 @@ pub async fn create_role(
         return Err(Unwritable::AlreadyExists);
     }
     let role = asked.into_model(
-        draw(provider, "role")?,
+        draw(provider)?,
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );
@@ -199,7 +198,7 @@ pub async fn create_group(
     }
     check_parent(transaction, &asked.parent_id, None).await?;
     let group = asked.into_model(
-        draw(provider, "group")?,
+        draw(provider)?,
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );
@@ -297,7 +296,7 @@ pub async fn create_organization(
         return Err(Unwritable::AlreadyExists);
     }
     let org = asked.into_model(
-        draw(provider, "org")?,
+        draw(provider)?,
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );
@@ -431,12 +430,13 @@ pub async fn delete_organization(
 /// The two ends of a grant have to exist before the join is written: the
 /// insert swallows conflicts and the foreign key would turn an unknown end
 /// into a backend error, so each end is refused in its own vocabulary first.
-async fn user_exists(transaction: &Transaction<'_>, user_id: &str) -> Result<(), Unwritable> {
-    store::providers::users::load(transaction, user_id)
+/// The person a caller spelled, by identifier first and by name second, so
+/// an operator's typed name and the console's held identifier both land.
+async fn user_named(transaction: &Transaction<'_>, spelled: &str) -> Result<String, Unwritable> {
+    crate::admin::users::identified(transaction, spelled)
         .await
-        .map_err(|_| Unwritable::Backend)?
-        .map(|_| ())
-        .ok_or(Unwritable::NoSuchUser)
+        .map(|held| held.user_id)
+        .map_err(|_| Unwritable::NoSuchUser)
 }
 
 pub async fn grant_role_to_user(
@@ -445,8 +445,8 @@ pub async fn grant_role_to_user(
     user_id: &str,
 ) -> Result<(), Unwritable> {
     get_role(transaction, role_id).await?;
-    user_exists(transaction, user_id).await?;
-    roles::grant_to_user(transaction, user_id, role_id)
+    let user_id = user_named(transaction, user_id).await?;
+    roles::grant_to_user(transaction, &user_id, role_id)
         .await
         .map_err(|_| Unwritable::Backend)
 }
@@ -456,6 +456,7 @@ pub async fn revoke_role_from_user(
     role_id: &str,
     user_id: &str,
 ) -> Result<(), Unwritable> {
+    let user_id = &user_named(transaction, user_id).await?;
     roles::revoke_from_user(transaction, user_id, role_id)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -480,7 +481,7 @@ pub async fn add_user_to_group(
     user_id: &str,
 ) -> Result<(), Unwritable> {
     get_group(transaction, group_id).await?;
-    user_exists(transaction, user_id).await?;
+    let user_id = &user_named(transaction, user_id).await?;
     roles::add_to_group(transaction, user_id, group_id)
         .await
         .map_err(|_| Unwritable::Backend)
@@ -491,6 +492,7 @@ pub async fn remove_user_from_group(
     group_id: &str,
     user_id: &str,
 ) -> Result<(), Unwritable> {
+    let user_id = &user_named(transaction, user_id).await?;
     roles::remove_from_group(transaction, user_id, group_id)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -542,7 +544,7 @@ pub async fn add_organization_member(
     user_id: &str,
 ) -> Result<(), Unwritable> {
     get_organization(transaction, org_id).await?;
-    user_exists(transaction, user_id).await?;
+    let user_id = &user_named(transaction, user_id).await?;
     organizations::add_member(
         transaction,
         &models::entities::organization::OrganizationMemberModel {

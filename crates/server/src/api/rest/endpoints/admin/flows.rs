@@ -318,6 +318,7 @@ pub async fn require_of_user(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = super::users::named_user(&transaction, &user_id).await?;
     flows::require_of_user(&transaction, &user_id, action)
         .await
         .map_err(refused)?;
@@ -338,6 +339,7 @@ pub async fn release_user(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
+    let user_id = super::users::named_user(&transaction, &user_id).await?;
     flows::release_user(&transaction, &user_id, action)
         .await
         .map_err(refused)?;

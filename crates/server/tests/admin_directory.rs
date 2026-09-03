@@ -933,3 +933,100 @@ async fn an_address_is_one_accounts_until_the_realm_shares_it() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{told}");
 }
+
+/// An account is born with a drawn identity apart from its name, answers to
+/// both, and is renamed only where the realm allows it; the identity and
+/// everything pointing at it never move.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_name_is_the_persons_and_the_identity_is_the_realms() {
+    let plane = Plane::with_actions(&[
+        AdminAction::UserRead,
+        AdminAction::UserWrite,
+        AdminAction::RealmRead,
+        AdminAction::RealmWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/users");
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({ "user_name": "grace", "email": "grace@acme.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let drawn = born["user_id"].as_str().expect("an identity").to_owned();
+    assert_ne!(drawn, "grace", "the identity is still the name");
+    assert_eq!(drawn.len(), 36, "not a UUID: {drawn}");
+    assert_eq!(drawn.matches('-').count(), 4, "not a UUID: {drawn}");
+
+    // Both handles answer, and they answer the same person.
+    let (status, by_name) =
+        asked(&plane, Method::GET, &format!("{base}/grace"), &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{by_name}");
+    assert_eq!(by_name["user_id"], drawn.as_str());
+    let (status, by_id) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}/{drawn}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{by_id}");
+
+    // Renaming is the realm's to allow.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{drawn}"),
+        &bearer,
+        Some(serde_json::json!({ "user_name": "grace-hopper" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}"),
+        &bearer,
+        Some(serde_json::json!({ "edit_user_name_allowed": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, renamed) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{drawn}"),
+        &bearer,
+        Some(serde_json::json!({ "user_name": "grace-hopper" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(
+        renamed["user_id"],
+        drawn.as_str(),
+        "the rename moved the identity"
+    );
+    assert_eq!(renamed["user_name"], "grace-hopper");
+
+    // The new name answers; the old one is nobody.
+    let (status, told) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}/grace-hopper"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["user_id"], drawn.as_str());
+    let (status, _) = asked(&plane, Method::GET, &format!("{base}/grace"), &bearer, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

@@ -255,7 +255,7 @@ async fn what_happens_here_is_signalled_there() {
 
     // A new person is nothing at all: provisioning is the connectors'
     // traffic, not a security signal.
-    let (status, _) = asked(
+    let (status, born) = asked(
         &plane,
         Method::POST,
         &format!("/admin/realms/{REALM}/users"),
@@ -268,6 +268,9 @@ async fn what_happens_here_is_signalled_there() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
+    // The signalled subject is the identity, drawn apart from the name and
+    // stable across renames, the same sub a receiver saw in tokens.
+    let grace = born["user_id"].as_str().expect("an identity").to_owned();
     walked(&plane).await;
     assert!(heard.try_recv().is_err(), "grace's arrival became a signal");
 
@@ -293,7 +296,7 @@ async fn what_happens_here_is_signalled_there() {
         claims["events"][ACCOUNT_DISABLED].is_object(),
         "disabling said something else: {claims}"
     );
-    assert_eq!(claims["sub_id"]["sub"], "grace", "{claims}");
+    assert_eq!(claims["sub_id"]["sub"], grace.as_str(), "{claims}");
 
     // Deletion is an account-purged.
     let (status, _) = asked(

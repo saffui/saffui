@@ -6,6 +6,7 @@ use services::admin::sessions::Unreachable;
 use services::agent::read_agent;
 use store::tenancy::{Tenancy, TenantContext};
 
+use super::users::named_user;
 use crate::api::rest::endpoints::admin::dto::{GrantBrief, SessionBrief};
 use crate::middleware::admin_guard::Admin;
 
@@ -33,6 +34,7 @@ pub async fn list(
         .map_err(|_| internal())?;
 
     // The user first, so an empty list means "no logins" and never "no user".
+    let user_id = named_user(&transaction, &user_id).await?;
     services::admin::users::get(&transaction, &user_id)
         .await
         .map_err(|_| ApiError::new(ErrorCode::UserNotFound))?;
@@ -84,6 +86,7 @@ pub async fn close(
         .await
         .map_err(|_| internal())?;
 
+    let user_id = named_user(&transaction, &user_id).await?;
     // Named by the user it belongs to, so an identifier from another user's
     // listing ends nothing here.
     services::admin::sessions::close(&transaction, &user_id, &session_id)
@@ -112,6 +115,7 @@ pub async fn revoke(
         .await
         .map_err(|_| internal())?;
 
+    let user_id = named_user(&transaction, &user_id).await?;
     services::admin::sessions::revoke_grant(&transaction, &user_id, &session_id, &client_id)
         .await
         .map_err(refused)?;

@@ -407,6 +407,7 @@ pub struct Imported {
 /// the sync refreshes them. Local people keep their names.
 pub async fn import_everyone(
     transaction: &deadpool_postgres::Transaction<'_>,
+    provider: &dyn crypto::provider::CryptoProvider,
     context: &store::tenancy::TenantContext,
     alias: &str,
     directory: &LdapDirectory,
@@ -426,7 +427,9 @@ pub async fn import_everyone(
             .map_err(|_| ())?;
         match standing {
             None => {
-                let shadow = auth::login::browser::shadow_row(context, alias, &person, now);
+                let shadow =
+                    auth::login::browser::shadow_row(provider, context, alias, &person, now)
+                        .map_err(|_| ())?;
                 store::providers::users::create(transaction, &shadow)
                     .await
                     .map_err(|_| ())?;

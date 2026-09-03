@@ -50,7 +50,7 @@ const LOGIN_TOGGLES = [
   ["verify_email", "settings-verify-email", true],
   ["login_with_email_allowed", "settings-login-with-email", true],
   ["duplicated_email_allowed", "settings-duplicated-email", true],
-  ["edit_user_name_allowed", "settings-edit-username", false],
+  ["edit_user_name_allowed", "settings-edit-username", true],
   ["reset_password_allowed", "settings-reset-password", true],
   ["remember_me", "settings-remember-me", true],
 ] as const;

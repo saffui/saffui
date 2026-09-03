@@ -396,7 +396,7 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
         let transaction = plane
             .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
             .await;
-        let shadow = store::providers::users::load(&transaction, "fedora")
+        let shadow = store::providers::users::load_by_name(&transaction, "fedora")
             .await
             .unwrap()
             .expect("the shadow stands");
@@ -454,7 +454,7 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
         let transaction = plane
             .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
             .await;
-        let shadow = store::providers::users::load(&transaction, "fedora")
+        let shadow = store::providers::users::load_by_name(&transaction, "fedora")
             .await
             .unwrap()
             .expect("the shadow stands");

@@ -143,6 +143,24 @@ impl AeadAlg {
 /// The rename on each variant is the same spelling [`SignAlg::name`] returns, so
 /// a stored document, a token header and this enum cannot disagree about which
 /// algorithm a record names. A test holds the two in step.
+/// Sixteen random bytes as an RFC 4122 v4 UUID string: the one shape every
+/// drawn identifier wears, carrying no family and no meaning. The version
+/// and variant bits are stamped here so the string is a real UUID and not
+/// merely something UUID-shaped.
+pub fn uuid_from(mut bytes: [u8; 16]) -> String {
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex = |held: &[u8]| held.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    format!(
+        "{}-{}-{}-{}-{}",
+        hex(&bytes[0..4]),
+        hex(&bytes[4..6]),
+        hex(&bytes[6..8]),
+        hex(&bytes[8..10]),
+        hex(&bytes[10..16]),
+    )
+}
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 pub enum SignAlg {
     #[serde(rename = "RS256")]

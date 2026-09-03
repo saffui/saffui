@@ -41,6 +41,19 @@ export async function addExecution(
   });
 }
 
+/// Rewrite the whole running order in one breath, the way a drag ends.
+export async function reorderFlow(
+  realm: string,
+  flowId: string,
+  order: { execution_id: string; priority: number }[],
+): Promise<void> {
+  await api<unknown>(adminPath(realm, `auth/flows/${encodeURIComponent(flowId)}/order`), {
+    method: "PUT",
+    json: { order },
+    subject: say("subject-flow-order"),
+  });
+}
+
 export async function removeExecution(realm: string, executionId: string): Promise<void> {
   await api<void>(adminPath(realm, `auth/executions/${encodeURIComponent(executionId)}`), {
     method: "DELETE",

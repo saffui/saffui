@@ -145,6 +145,54 @@ fn binary_stem() -> Option<String> {
     })
 }
 
+/// What the session holding the cross-process turn calls itself, so the
+/// backend-terminating sweep below can tell it from a straggler and spare it.
+const TURN_HOLDER: &str = "saffui-test-turn";
+
+/// Wait until no other run of this binary is using its database.
+///
+/// One binary is one database, and every plane drops that database's schema and
+/// terminates every other backend on it before migrating. Both of those are
+/// correct against this binary's own past and catastrophic against its own
+/// present: two `cargo test` processes on the same binary will drop each
+/// other's schema mid-test and kill each other's live connections. The failure
+/// lands wherever the loser happened to be, so it reads as a flaky test rather
+/// than as two runs fighting.
+///
+/// The turn is a session-level advisory lock, which Postgres gives back when
+/// the session ends. Returning the client hands the caller something to hold:
+/// the turn lasts exactly as long as the plane does.
+///
+/// Taken on the database the variable names rather than on this binary's own,
+/// so the lock lives somewhere the terminating sweep does not reach even before
+/// that sweep learns to spare it. Keyed by the binary's name, so two different
+/// binaries never wait on each other.
+async fn one_run_of_this_binary_at_a_time() -> tokio_postgres::Client {
+    let mut base: Config = std::env::var("SAFFUI_TEST_PG")
+        .expect("checked at owner_config")
+        .parse()
+        .expect("checked at owner_config");
+    base.application_name(TURN_HOLDER);
+    let (client, connection) = base.connect(NoTls).await.expect("the base database");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+
+    // FNV-1a over the binary's name. Any stable number would do; what matters
+    // is that one binary always asks for the same one and two binaries almost
+    // never ask for the same one.
+    let mut key: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in binary_stem().unwrap_or_default().as_bytes() {
+        key ^= u64::from(*byte);
+        key = key.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    client
+        .execute("SELECT pg_advisory_lock($1)", &[&(key as i64)])
+        .await
+        .expect("the turn");
+    client
+}
+
 /// Make this binary's database exist, from the base one the variable names.
 /// Creation races between two binaries land on the duplicate error, which is
 /// the other one having won, and winning is all that was wanted.
@@ -485,6 +533,10 @@ pub fn claims() -> JwtPayload {
 pub struct Plane {
     pool: Pool,
     _turn: MutexGuard<'static, ()>,
+    /// The same turn, taken against every other process rather than every
+    /// other test in this one. Held by an open session, so it is given back
+    /// when this plane is dropped and the connection closes.
+    _across_processes: tokio_postgres::Client,
     tenancy: Tenancy,
     /// The key the realm published, private half included so a token can be
     /// signed with it.
@@ -1363,19 +1415,24 @@ impl Plane {
         let turn = DATABASE.lock().await;
 
         ensured_database().await;
+        let across_processes = one_run_of_this_binary_at_a_time().await;
         let (owner, connection) = owner_config().connect(NoTls).await.expect("the owner");
         tokio::spawn(async move {
             let _ = connection.await;
         });
         // A finished test's pool dies with its runtime, and its sockets close
         // a beat later; a straggler mid-close can still hold the lock the
-        // schema drop wants. This database is this binary's alone, so ending
-        // every other backend is ending only our own past.
+        // schema drop wants. Every other backend on this database is our own
+        // past, since the turn above means no other run of this binary is
+        // live. Every other backend except the one holding that turn, which is
+        // named so it can be spared: ending it would hand the turn to somebody
+        // else in the middle of this test.
         let _ = owner
             .execute(
                 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
-                 WHERE datname = current_database() AND pid <> pg_backend_pid()",
-                &[],
+                 WHERE datname = current_database() AND pid <> pg_backend_pid() \
+                   AND application_name <> $1",
+                &[&TURN_HOLDER],
             )
             .await;
         // Terminate returns before the backend is gone; the drop below wants
@@ -1426,6 +1483,7 @@ impl Plane {
         let plane = Plane {
             pool,
             _turn: turn,
+            _across_processes: across_processes,
             tenancy: Tenancy::unpinned(),
             key: SigningKey::generate(KID),
             second: SigningKey::anonymous(SECOND_KID),

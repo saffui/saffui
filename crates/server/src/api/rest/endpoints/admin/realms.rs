@@ -372,6 +372,19 @@ pub async fn update(
             ));
         }
     }
+    // A policy no password can satisfy is a realm where every registration
+    // fails and the person is told only that their password is invalid. The
+    // function that reads this back has existed since the policy did, with
+    // nothing calling it, so the contradiction it catches could always be
+    // written.
+    if let Some(policy) = &asked.password_policy
+        && let Some(clash) = policy.conflict()
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            clash.to_string(),
+        ));
+    }
     // A reworded mail still has to work: the body carries the link or the
     // mail does nothing, and the words stay mail-sized.
     if let Some(templates) = &asked.mail_templates {

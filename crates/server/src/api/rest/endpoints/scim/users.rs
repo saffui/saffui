@@ -494,6 +494,7 @@ async fn planted_password(
     if let Err(services::admin::users::Uncreatable::Invalid(said)) =
         services::admin::users::refuse_password_against_policy(
             transaction,
+            sealing.provider.as_ref(),
             realm_id,
             user_id,
             &secret,

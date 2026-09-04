@@ -217,6 +217,7 @@ pub async fn set_password(
 /// could fetch is exactly the write this whole function exists to stop.
 pub async fn refuse_password_against_policy(
     transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
     realm_id: &str,
     user_id: &str,
     password: &SecretBox<String>,
@@ -243,6 +244,116 @@ pub async fn refuse_password_against_policy(
         },
     ) {
         return Err(Uncreatable::Invalid(crate::recovery::refused_as(why)));
+    }
+    refuse_a_password_used_before(transaction, provider, policy, user_id, password).await
+}
+
+/// Refuse a password this account has already worn, as deep as the realm asks.
+///
+/// The credential type has existed since the third migration with nothing ever
+/// writing one, so a realm could ask for a history of ten and get none at all.
+///
+/// The standing password counts as the first remembered: refusing the last ten
+/// and taking the current one back would be a rule with a hole the width of the
+/// password most likely to be typed. Compared one hash at a time, oldest last,
+/// which is why how deep this goes is bounded where the policy is read back.
+async fn refuse_a_password_used_before(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    policy: &models::entities::realm::PasswordPolicy,
+    user_id: &str,
+    password: &SecretBox<String>,
+) -> Result<(), Uncreatable> {
+    let Some(deep) = policy.history_look_back.filter(|deep| *deep > 0) else {
+        return Ok(());
+    };
+    let mut worn =
+        credentials::load_for_user_of_type(transaction, user_id, CredentialType::Password)
+            .await
+            .map_err(|_| Uncreatable::Unwritable)?;
+    worn.extend(
+        credentials::load_for_user_of_type(transaction, user_id, CredentialType::PasswordHistory)
+            .await
+            .map_err(|_| Uncreatable::Unwritable)?,
+    );
+    for held in worn.iter().take(deep as usize) {
+        let Ok(stored) = StoredPassword::Argon2id {
+            encoded: held.secret.expose().to_owned(),
+        }
+        .to_legacy_hash() else {
+            // A row in a shape this build does not read is not a match and not
+            // a reason to refuse a password over.
+            continue;
+        };
+        if crypto::password::migration::verify_and_plan(provider, password, &stored)
+            .is_ok_and(|plan| plan.valid)
+        {
+            return Err(Uncreatable::Invalid(crate::recovery::refused_as(
+                models::entities::realm::PasswordRefused::Reused,
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Keep the password being replaced, and forget the ones nobody asks about.
+///
+/// Written whether or not a policy asks for a history today: a realm that turns
+/// the rule on next month wants it to mean something then, and a history that
+/// starts empty on the day it is switched on takes as many changes to fill as
+/// the rule asks for. What is kept is the stored hash and nothing else, so
+/// remembering costs what the password already cost.
+///
+/// Trimmed to the deepest a policy may ask rather than to what this realm asks
+/// now. Trimming to the current depth would throw away exactly the rows a
+/// realm needs the moment somebody deepens the rule.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one password"
+)]
+async fn remember_the_password_it_replaces(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &str,
+    realm_id: &str,
+    by: &str,
+    user_id: &str,
+    replaced: &CredentialModel,
+) -> Result<(), Uncreatable> {
+    let mut drawn = [0u8; 16];
+    // A stable identifier would collide with the row kept on the previous
+    // change, and this one is only ever read as part of a set. Drawn through
+    // the provider, like every other identifier this deployment mints.
+    provider
+        .rand()
+        .fill(&mut drawn)
+        .map_err(|_| Uncreatable::Unwritable)?;
+    let kept = CredentialModel {
+        credential_id: data_encoding::HEXLOWER.encode(&drawn),
+        realm_id: realm_id.to_owned(),
+        user_id: user_id.to_owned(),
+        credential_type: CredentialType::PasswordHistory,
+        user_label: None,
+        secret: CredentialSecret::new(replaced.secret.expose().to_owned()),
+        otp: None,
+        priority: 0,
+        metadata: models::auditable::AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
+    };
+    credentials::create_quietly(transaction, &kept)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?;
+
+    let worn =
+        credentials::load_for_user_of_type(transaction, user_id, CredentialType::PasswordHistory)
+            .await
+            .map_err(|_| Uncreatable::Unwritable)?;
+    for stale in worn
+        .iter()
+        .skip(models::entities::realm::MOST_REMEMBERED as usize)
+    {
+        credentials::delete_quietly(transaction, &stale.credential_id)
+            .await
+            .map_err(|_| Uncreatable::Unwritable)?;
     }
     Ok(())
 }
@@ -275,7 +386,7 @@ pub async fn keep_password(
     user_id: &str,
     password: &SecretBox<String>,
 ) -> Result<(), Uncreatable> {
-    refuse_password_against_policy(transaction, realm_id, user_id, password).await?;
+    refuse_password_against_policy(transaction, provider, realm_id, user_id, password).await?;
 
     let StoredPassword::Argon2id { encoded } =
         StoredPassword::hash_argon2id(provider, cost, password)
@@ -287,6 +398,19 @@ pub async fn keep_password(
         .await
         .map_err(|_| Uncreatable::Unwritable)?;
     if let Some(existing) = held.first() {
+        // The one it replaces, kept where the rule that refuses a password
+        // twice can find it. Written before the replacement, since the
+        // replacement is what makes the old secret unreachable.
+        remember_the_password_it_replaces(
+            transaction,
+            provider,
+            tenant,
+            realm_id,
+            by,
+            user_id,
+            existing,
+        )
+        .await?;
         credentials::replace_secret(
             transaction,
             &existing.credential_id,

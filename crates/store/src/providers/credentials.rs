@@ -14,11 +14,40 @@ const COLUMNS: &str = "tenant, realm_id, credential_id, user_id, credential_type
                        secret, otp, priority, created_by, created_at, updated_by, updated_at, \
                        version";
 
-/// Record a credential.
+/// Record a credential, and say so.
+///
+/// A credential arriving is a security signal: a receiver is told, because a
+/// second factor appearing on an account is a thing somebody may need to know
+/// about within the minute.
 pub async fn create(
     transaction: &Transaction<'_>,
     credential: &CredentialModel,
 ) -> StoreResult<()> {
+    write(transaction, credential).await?;
+    super::outbox::emit(
+        transaction,
+        super::outbox::CREDENTIAL_CHANGED,
+        &credential.user_id,
+        &serde_json::json!({ "credential_type": credential.credential_type }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Record a credential and say nothing.
+///
+/// For the rows that are bookkeeping rather than something a person holds. A
+/// retired password kept so the next one can be compared against it has not
+/// been enrolled by anybody, and announcing it would tell every receiver that a
+/// credential of a type nobody carries had changed, once per password change.
+pub async fn create_quietly(
+    transaction: &Transaction<'_>,
+    credential: &CredentialModel,
+) -> StoreResult<()> {
+    write(transaction, credential).await
+}
+
+async fn write(transaction: &Transaction<'_>, credential: &CredentialModel) -> StoreResult<()> {
     let secret = credential.secret.expose();
     let otp = otp_json(credential)?;
     let set = WriteSet::insert(vec![
@@ -41,13 +70,6 @@ pub async fn create(
         )
         .await
         .map_err(|_| StoreError::Backend)?;
-    super::outbox::emit(
-        transaction,
-        super::outbox::CREDENTIAL_CHANGED,
-        &credential.user_id,
-        &serde_json::json!({ "credential_type": credential.credential_type }),
-    )
-    .await?;
     Ok(())
 }
 
@@ -289,6 +311,23 @@ pub async fn count_recovery_codes(
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(row.get("held"))
+}
+
+/// Take a bookkeeping row away and say nothing, for the same reason
+/// [`create_quietly`] writes one that way: a retired password falling off the
+/// end of the remembered set is not a credential anybody lost.
+pub async fn delete_quietly(
+    transaction: &Transaction<'_>,
+    credential_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM user_credentials WHERE credential_id = $1",
+            &[&credential_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
 }
 
 pub async fn delete(transaction: &Transaction<'_>, credential_id: &str) -> StoreResult<bool> {

@@ -1535,3 +1535,121 @@ async fn a_password_policy_is_read_at_every_door_a_password_enters_by() {
     .await;
     assert!(status.is_success(), "{told}");
 }
+
+/// A realm that asks for a password history gets one, and a policy no password
+/// can satisfy is refused at the door rather than at every registration.
+///
+/// The PasswordHistory credential type has existed since the third migration
+/// with nothing ever writing one, so the setting could be turned on and the
+/// history stayed empty for ever. The standing password counts as the first
+/// remembered: refusing the last few and taking the current one back would be a
+/// rule with a hole the width of the likeliest password.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_password_this_account_wore_before_is_refused() {
+    let plane = Plane::with_actions(&[
+        AdminAction::UserRead,
+        AdminAction::UserWrite,
+        AdminAction::RealmRead,
+        AdminAction::RealmWrite,
+    ])
+    .await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/users");
+    let realm = format!("/admin/realms/{REALM}");
+
+    // A history deeper than anybody remembers is more hashing than a password
+    // change can pay for, and it is refused where the policy is written.
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &realm,
+        &bearer,
+        serde_json::json!({ "password_policy": { "history_look_back": 100 } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // So is one no password at all can satisfy. This was writable until now:
+    // the function that reads it back had no caller.
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &realm,
+        &bearer,
+        serde_json::json!({ "password_policy": { "min_length": 20, "max_length": 8 } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &realm,
+        &bearer,
+        serde_json::json!({ "password_policy": { "min_length": 12, "history_look_back": 3 } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let (status, born) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "user_name": "grace",
+            "email": "grace@example.test",
+            "password": "the-first-one-of-decent-length",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    let set = |password: &'static str| {
+        let plane = &plane;
+        let bearer = bearer.clone();
+        let base = base.clone();
+        async move {
+            written(
+                plane,
+                Method::PUT,
+                &format!("{base}/grace/password"),
+                &bearer,
+                serde_json::json!({ "password": password }),
+            )
+            .await
+        }
+    };
+
+    // The standing one is the first remembered.
+    let (status, told) = set("the-first-one-of-decent-length").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|said| said.contains("used before")),
+        "{told}"
+    );
+
+    // Change twice, and both are remembered.
+    for password in [
+        "the-second-one-of-decent-length",
+        "the-third-one-of-decent-length",
+    ] {
+        let (status, told) = set(password).await;
+        assert!(status.is_success(), "{password}: {told}");
+    }
+    for worn in [
+        "the-first-one-of-decent-length",
+        "the-second-one-of-decent-length",
+        "the-third-one-of-decent-length",
+    ] {
+        let (status, told) = set(worn).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{worn}: {told}");
+    }
+
+    // One nobody has worn still lands.
+    let (status, told) = set("a-fourth-one-of-decent-length").await;
+    assert!(status.is_success(), "{told}");
+}

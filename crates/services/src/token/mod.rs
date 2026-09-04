@@ -230,6 +230,11 @@ pub async fn verify_presented(
     // presented after. A realm that cannot be read refuses rather than admits:
     // the alternative is a database hiccup quietly lifting a cut somebody set
     // because they were under attack.
+    //
+    // Read off the transaction's own realm, which means this verification only
+    // works inside a realm scoped transaction. Every caller opens one today,
+    // and a tenant wide one would read no realm and refuse every token, which
+    // is loud enough to find but worth knowing before opening one here.
     let realm = realms::of_context(transaction)
         .await
         .map_err(|_| Refused::Unestablished)?

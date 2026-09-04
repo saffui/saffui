@@ -83,7 +83,11 @@ str_enum! {
 /// text with a count beside it. A count of iterations belongs to one algorithm,
 /// and naming a different one describes a way of minting passwords that does not
 /// exist here.
+/// Read from whatever the caller named, since a policy is written a rule at a
+/// time from a screen with a dozen switches on it and an absent one means the
+/// rule is off rather than the document malformed.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PasswordPolicy {
     pub min_length: Option<i64>,
     pub max_length: Option<i64>,
@@ -192,6 +196,8 @@ pub enum PasswordRefused {
     Blacklisted,
     #[error("the password does not match the shape this realm requires")]
     Shape,
+    #[error("the password is one this account used before")]
+    Reused,
 }
 
 /// A policy that cannot be satisfied by any password.
@@ -201,16 +207,14 @@ pub enum PasswordPolicyConflict {
     LengthRange,
     #[error("the character classes required add up to more than the longest password allowed")]
     ClassesExceedLength,
+    #[error("a password history deeper than 24 is more hashing than a password change can pay for")]
+    HistoryTooDeep,
 }
 
+/// How many previous passwords a realm may ask to be remembered.
+pub const MOST_REMEMBERED: u32 = 24;
+
 impl PasswordPolicy {
-    /// Whether the policy can be satisfied at all.
-    ///
-    /// A range with its ends the wrong way round, or required character classes
-    /// adding up past the longest password allowed, is a realm where no
-    /// registration succeeds and the message says only that the password is
-    /// invalid. Reading it back is what lets that be caught when the policy is
-    /// written.
     /// Why this password is refused, or nothing when the policy admits it.
     ///
     /// Counted in characters and not in bytes: a password of eight accented
@@ -294,6 +298,13 @@ impl PasswordPolicy {
         None
     }
 
+    /// Whether the policy can be satisfied at all.
+    ///
+    /// A range with its ends the wrong way round, or required character classes
+    /// adding up past the longest password allowed, is a realm where no
+    /// registration succeeds and the message says only that the password is
+    /// invalid. Reading it back is what lets that be caught when the policy is
+    /// written.
     pub fn conflict(&self) -> Option<PasswordPolicyConflict> {
         if let (Some(min), Some(max)) = (self.min_length, self.max_length)
             && min > max
@@ -309,6 +320,18 @@ impl PasswordPolicy {
             if max < 0 || required > max.unsigned_abs() {
                 return Some(PasswordPolicyConflict::ClassesExceedLength);
             }
+        }
+
+        // Every remembered password costs a hash to compare against, and they
+        // are compared one after another on a change. Two years of monthly
+        // rotation is already more than anybody remembers; past that the rule
+        // stops being a rule and becomes a way to make a password change slow
+        // enough to be worth asking for repeatedly.
+        if self
+            .history_look_back
+            .is_some_and(|deep| deep > MOST_REMEMBERED)
+        {
+            return Some(PasswordPolicyConflict::HistoryTooDeep);
         }
 
         None

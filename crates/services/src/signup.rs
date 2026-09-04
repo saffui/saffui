@@ -85,7 +85,7 @@ pub async fn register_person(
             },
         )
     {
-        return Err(Unregistrable::Refused(refused_as(why)));
+        return Err(Unregistrable::Refused(crate::recovery::refused_as(why)));
     }
 
     // A held address, where the realm verifies addresses, is answered exactly
@@ -163,20 +163,4 @@ pub async fn register_person(
     .map_err(|_| Unregistrable::Unwritable)?;
 
     Ok(Registered { verify: verifying })
-}
-
-/// What the caller is told. The reason is the policy's, never the password's.
-fn refused_as(why: models::entities::realm::PasswordRefused) -> &'static str {
-    use models::entities::realm::PasswordRefused;
-    match why {
-        PasswordRefused::TooShort => "the password is too short",
-        PasswordRefused::TooLong => "the password is too long",
-        PasswordRefused::Digits => "the password needs more digits",
-        PasswordRefused::UpperCase => "the password needs more capitals",
-        PasswordRefused::LowerCase => "the password needs more small letters",
-        PasswordRefused::SpecialChars => "the password needs more punctuation",
-        PasswordRefused::AboutYou => "the password is something about you",
-        PasswordRefused::Blacklisted => "the password is one this realm refuses",
-        PasswordRefused::Shape => "the password does not match the shape this realm requires",
-    }
 }

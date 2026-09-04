@@ -215,6 +215,9 @@ pub async fn set_from_link(
 /// short in one place and unacceptable in another, for the same password.
 pub fn refused_as(why: models::entities::realm::PasswordRefused) -> &'static str {
     match why {
+        models::entities::realm::PasswordRefused::Reused => {
+            "the password is one this account used before"
+        }
         models::entities::realm::PasswordRefused::TooShort => "the password is too short",
         models::entities::realm::PasswordRefused::TooLong => "the password is too long",
         models::entities::realm::PasswordRefused::Digits => "the password needs more digits",

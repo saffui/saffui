@@ -5901,3 +5901,119 @@ async fn a_printed_sheet_is_drawn_once_and_each_code_spent_once() {
     assert_eq!(told["status"], "refused", "{told}");
     assert_eq!(plane.recovery_codes_left().await, 9);
 }
+
+/// The realm's word on plain connections, kept at the door.
+///
+/// The setting has been a column since the first schema, settable and read by
+/// nothing. Now: a request the named proxy vouches for as https passes; a
+/// plain one is turned away where the realm says `all`; `external` spares the
+/// private addresses; a realm that says nothing is untouched; and an unknown
+/// realm answers exactly as it did before, so this gate is not a new way to
+/// tell which realms exist.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_that_insists_on_https_turns_the_plain_door_away() {
+    let plane = Plane::with_actions(&[]).await;
+    // One proxy, dialling from loopback, vouching for the scheme in this
+    // header. The bench plays the proxy by setting the peer address itself.
+    let behind_proxy = || {
+        let mut told = mounted(&plane);
+        told.hops = config::proxying::Proxying::behind_peers(
+            1,
+            config::proxying::ProxyHeader::XForwardedFor,
+            vec![config::proxying::Peer::parse("127.0.0.1").expect("an address")],
+        )
+        .saying_the_scheme_in("x-forwarded-proto");
+        told
+    };
+    let discovery = format!(
+        "/realms/{}/.well-known/openid-configuration",
+        support::REALM
+    );
+    let keys = format!("/realms/{}/protocol/openid-connect/certs", support::REALM);
+    let proxied = std::net::SocketAddr::from(([127, 0, 0, 1], 34567));
+
+    let asked = |uri: &str, scheme: Option<&'static str>| {
+        let mut request = test::TestRequest::get().uri(uri).peer_addr(proxied);
+        if let Some(scheme) = scheme {
+            request = request.insert_header(("x-forwarded-proto", scheme));
+        }
+        request.to_request()
+    };
+
+    // Before the realm says anything, plain is answered.
+    let app = test::init_service(App::new().configure(register(&behind_proxy()))).await;
+    let response = test::call_service(&app, asked(&keys, None)).await;
+    assert_eq!(response.status(), StatusCode::OK, "a silent realm refused");
+
+    reshape_realm(&plane, |realm| {
+        realm.ssl_enforcement = Some(models::entities::realm::SslEnforcement::Always);
+    })
+    .await;
+
+    // Vouched https: answered. Plain: turned away, in words.
+    let response = test::call_service(&app, asked(&keys, Some("https"))).await;
+    assert_eq!(response.status(), StatusCode::OK, "https was refused");
+    let response = test::call_service(&app, asked(&keys, None)).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN, "plain passed");
+    let told: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(told["error"], "invalid_request", "{told}");
+    // A scheme the caller wrote itself, with no proxy peer behind it, is not a
+    // vouching: the same header from an unnamed address counts for nothing.
+    let unproxied = test::TestRequest::get()
+        .uri(&keys)
+        .peer_addr(std::net::SocketAddr::from(([203, 0, 113, 9], 44555)))
+        .insert_header(("x-forwarded-proto", "https"))
+        .to_request();
+    let response = test::call_service(&app, unproxied).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a self-claimed scheme was believed"
+    );
+
+    // The discovery document lives outside the protocol scope and stays
+    // answerable: it is how a peer learns the https addresses to use.
+    let response = test::call_service(&app, asked(&discovery, None)).await;
+    assert_eq!(response.status(), StatusCode::OK, "discovery was refused");
+
+    // External-only: loopback is spared, a public caller is not.
+    reshape_realm(&plane, |realm| {
+        realm.ssl_enforcement = Some(models::entities::realm::SslEnforcement::ExternalOnly);
+    })
+    .await;
+    let response = test::call_service(&app, asked(&keys, None)).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a private caller was refused under external"
+    );
+    let from_outside = test::TestRequest::get()
+        .uri(&keys)
+        .peer_addr(proxied)
+        .insert_header(("x-forwarded-for", "198.51.100.7"))
+        .to_request();
+    let response = test::call_service(&app, from_outside).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "a public caller passed under external"
+    );
+
+    // An unknown realm answers as it always did: not found, never forbidden.
+    let elsewhere = test::TestRequest::get()
+        .uri("/realms/nowhere/protocol/openid-connect/certs")
+        .peer_addr(proxied)
+        .to_request();
+    let response = test::call_service(&app, elsewhere).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::NOT_FOUND,
+        "the gate told an unknown realm apart"
+    );
+
+    reshape_realm(&plane, |realm| {
+        realm.ssl_enforcement = None;
+    })
+    .await;
+}

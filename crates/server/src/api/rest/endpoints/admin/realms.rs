@@ -318,6 +318,7 @@ pub async fn update(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
+    hops: web::Data<config::proxying::Proxying>,
     path: web::Path<String>,
     body: web::Json<RealmUpdateModel>,
 ) -> Result<HttpResponse, ApiError> {
@@ -371,6 +372,27 @@ pub async fn update(
                     .to_owned(),
             ));
         }
+    }
+    // Insisting on https is refused where nothing could ever check it. This
+    // server never terminates TLS on its HTTP listener, so a request's scheme
+    // is a fact only a named proxy can state; a deployment that named no
+    // scheme header and no peers would store the setting, show it, and never
+    // once consult it, which is the exact shape of lie this column spent
+    // seventy-eight migrations being. The message names what to configure.
+    if matches!(
+        asked.ssl_enforcement,
+        Some(
+            models::entities::realm::SslEnforcement::Always
+                | models::entities::realm::SslEnforcement::ExternalOnly
+        )
+    ) && !hops.can_learn_the_scheme()
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "insisting on https needs a proxy this deployment trusts to say the scheme: \
+             set SAFFUI_PROXY_SCHEME_HEADER and SAFFUI_PROXY_PEERS first"
+                .to_owned(),
+        ));
     }
     // A policy no password can satisfy is a realm where every registration
     // fails and the person is told only that their password is invalid. The

@@ -48,6 +48,16 @@
         <input name="totp_register" inputmode="numeric" autocomplete="one-time-code">
       </label>
     </div>
+    <div id="renew" hidden>
+      <p>{{renew-lede}}</p>
+      <label>{{renew-password}}
+        <input name="new_password" type="password" autocomplete="new-password">
+      </label>
+      <label>{{renew-again}}
+        <input name="new_password_again" type="password" autocomplete="new-password">
+      </label>
+      <p id="renew-mismatch" hidden>{{signup-mismatch}}</p>
+    </div>
     <div id="sheet" hidden>
       <p>{{recovery-keep}}</p>
       <ul id="sheet-codes"></ul>

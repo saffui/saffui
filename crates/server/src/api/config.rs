@@ -234,6 +234,7 @@ fn admin_scope(
     // The provisioning door: the same guard, its own root, and a JSON reader
     // that accepts the protocol's own content type.
     let mut scim = web::scope("/realms/{realm}/scim/v2")
+        .wrap(crate::middleware::transport::SecuredTransport)
         .app_data(
             web::JsonConfig::default()
                 .limit(ADMIN_BODY)
@@ -293,6 +294,7 @@ fn authz_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
 fn protocol_scope() -> impl HttpServiceFactory + 'static {
     web::scope("/realms/{realm}/protocol/openid-connect")
         .wrap(crate::middleware::cors::BrowserCalls)
+        .wrap(crate::middleware::transport::SecuredTransport)
         .app_data(web::FormConfig::default().limit(PROTOCOL_BODY))
         .service(
             web::resource("/auth")

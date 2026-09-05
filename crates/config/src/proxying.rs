@@ -6,6 +6,7 @@ const HOPS: &str = "PROXY_HOPS";
 const PEERS: &str = "PROXY_PEERS";
 const HEADER: &str = "PROXY_HEADER";
 const CERTIFICATE: &str = "PROXY_CLIENT_CERTIFICATE_HEADER";
+const SCHEME: &str = "PROXY_SCHEME_HEADER";
 
 /// Which header the proxies in front write.
 ///
@@ -85,6 +86,11 @@ pub struct Proxying {
     /// into. Absent reads none, which is what a deployment that terminates its
     /// own TLS, or does no mutual TLS, gets.
     certificate: Option<String>,
+    /// Which header the terminating proxy writes the scheme the client spoke
+    /// into, `https` or `http`. Absent reads none. This server never terminates
+    /// TLS on its HTTP listener, so a request's scheme is a fact only the
+    /// proxy in front can state, and only a named one is believed.
+    scheme: Option<String>,
     /// Where the proxies dial from. Empty believes the header from whoever
     /// dialled, which is what a deployment that names none of them gets.
     peers: Vec<Peer>,
@@ -126,6 +132,9 @@ impl Proxying {
             certificate: crate::optional(CERTIFICATE)
                 .map(|named| named.trim().to_ascii_lowercase())
                 .filter(|named| !named.is_empty()),
+            scheme: crate::optional(SCHEME)
+                .map(|named| named.trim().to_ascii_lowercase())
+                .filter(|named| !named.is_empty()),
             peers,
         })
     }
@@ -141,6 +150,7 @@ impl Proxying {
             hops,
             header,
             certificate: None,
+            scheme: None,
             peers: Vec::new(),
         }
     }
@@ -151,6 +161,7 @@ impl Proxying {
             hops,
             header,
             certificate: None,
+            scheme: None,
             peers,
         }
     }
@@ -165,8 +176,19 @@ impl Proxying {
             hops: 1,
             header,
             certificate: Some(certificate.to_ascii_lowercase()),
+            scheme: None,
             peers,
         }
+    }
+
+    /// The same deployment, with the scheme read from this header.
+    ///
+    /// For the benches and for callers that assemble a `Proxying` in code; the
+    /// environment door is `from_env`, which reads the same fact from
+    /// `SAFFUI_PROXY_SCHEME_HEADER`.
+    pub fn saying_the_scheme_in(mut self, header: &str) -> Self {
+        self.scheme = Some(header.to_ascii_lowercase());
+        self
     }
 
     /// The client's certificate, as the proxy in front wrote it down.
@@ -195,6 +217,42 @@ impl Proxying {
     /// Which header carries it, for the transport to look up.
     pub fn certificate_header(&self) -> Option<&str> {
         self.certificate.as_deref()
+    }
+
+    /// The scheme the client actually spoke, as the proxy in front wrote it
+    /// down.
+    ///
+    /// Read only from a peer this deployment named, under the rule
+    /// [`client_certificate`](Self::client_certificate) states: a scheme
+    /// believed from anybody is a scheme anybody may claim, and `https` is
+    /// exactly the claim an attacker on the plain port would make. A
+    /// deployment that named no peers reads no scheme rather than everyone's.
+    pub fn forwarded_scheme<'a>(
+        &self,
+        peer: Option<&str>,
+        carried: Option<&'a str>,
+    ) -> Option<&'a str> {
+        self.scheme.as_ref()?;
+        let dialled = peer
+            .and_then(|named| named.parse::<IpAddr>().ok())
+            .is_some_and(|address| self.peers.iter().any(|held| held.holds(address)));
+        dialled.then_some(carried).flatten()
+    }
+
+    /// Which header carries the scheme, for whoever holds the request.
+    pub fn scheme_header(&self) -> Option<&str> {
+        self.scheme.as_deref()
+    }
+
+    /// Whether this deployment has any trusted way to learn a request's
+    /// scheme: a named header and at least one named peer to believe it from.
+    ///
+    /// Read where a realm asks for `ssl_enforcement`, so the ask can be
+    /// refused when nothing could ever check it. A setting accepted there
+    /// would be written, shown, and never once consulted, which is the exact
+    /// shape of lie this codebase keeps finding in itself.
+    pub fn can_learn_the_scheme(&self) -> bool {
+        self.scheme.is_some() && !self.peers.is_empty()
     }
 
     /// The header to read, or nothing when no proxy stands in front and none

@@ -13,6 +13,26 @@ async fn asked(
     bearer: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
+    asked_under(
+        plane,
+        config::proxying::Proxying::none(),
+        method,
+        path,
+        bearer,
+        body,
+    )
+    .await
+}
+
+/// The same, on a plane that stands behind the given proxies.
+async fn asked_under(
+    plane: &Plane,
+    hops: config::proxying::Proxying,
+    method: Method,
+    path: &str,
+    bearer: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
     use actix_web::{App, test};
     use server::api::config::register;
     use server::middleware::admin_policy::AdminPolicy;
@@ -26,7 +46,7 @@ async fn asked(
         },
         origin: support::origin(),
         login_ui: support::login_ui(),
-        hops: config::proxying::Proxying::none(),
+        hops,
         egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
     })))
@@ -633,4 +653,67 @@ async fn a_realm_is_not_switched_off_from_its_own_console() {
     .await;
     assert_eq!(status, StatusCode::OK, "{on}");
     assert_eq!(on["enabled"], true, "{on}");
+}
+
+/// Insisting on https is refused where nothing could ever check it.
+///
+/// This server never terminates TLS on its HTTP listener, so a request's
+/// scheme is a fact only a named proxy can state. A deployment that named no
+/// scheme header and no peers would store the setting, show it, and never
+/// once consult it. The refusal names what to configure; a deployment that
+/// configured it is taken at its word.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn insisting_on_https_needs_a_proxy_that_can_say_the_scheme() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let own = format!("/admin/realms/{}", support::REALM);
+
+    // Nothing configured: the ask is refused and the answer says what to set.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &own,
+        &bearer,
+        Some(serde_json::json!({ "ssl_enforcement": "all" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|said| said.contains("SAFFUI_PROXY_SCHEME_HEADER")),
+        "the refusal did not name the configuration: {told}"
+    );
+
+    // Configured: the same ask is taken, and turning it back off never needs
+    // the proxy at all.
+    let behind = config::proxying::Proxying::behind_peers(
+        1,
+        config::proxying::ProxyHeader::XForwardedFor,
+        vec![config::proxying::Peer::parse("127.0.0.1").expect("an address")],
+    )
+    .saying_the_scheme_in("x-forwarded-proto");
+    let (status, told) = asked_under(
+        &plane,
+        behind,
+        Method::PUT,
+        &own,
+        &bearer,
+        Some(serde_json::json!({ "ssl_enforcement": "all" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["ssl_enforcement"], "all", "{told}");
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &own,
+        &bearer,
+        Some(serde_json::json!({ "ssl_enforcement": "none" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["ssl_enforcement"], "none", "{told}");
 }

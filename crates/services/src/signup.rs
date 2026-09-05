@@ -85,7 +85,7 @@ pub async fn register_person(
             },
         )
     {
-        return Err(Unregistrable::Refused(crate::recovery::refused_as(why)));
+        return Err(Unregistrable::Refused(why.spoken()));
     }
 
     // A held address, where the realm verifies addresses, is answered exactly

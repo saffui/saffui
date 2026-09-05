@@ -25,6 +25,7 @@ pub const CONFIGURE_WEBAUTHN: &str = "webauthn-register";
 pub const CONFIGURE_TOTP: &str = "totp-register";
 pub const VERIFY_EMAIL: &str = "verify-email";
 pub const CONFIGURE_RECOVERY_CODES: &str = "recovery-codes-register";
+pub const UPDATE_PASSWORD: &str = "update-password";
 
 /// How long a mailed verification link lasts, and how soon another may be
 /// asked for. The same reasoning as the sign-in link: without a window a
@@ -52,6 +53,8 @@ pub struct Answers<'a> {
     /// own field and not `code`: two ceremonies reading one answer is how a
     /// person's authenticator code gets spent against the wrong ledger.
     pub kept: Option<&'a str>,
+    /// The replacement, when the realm told this person to change theirs.
+    pub new_password: Option<&'a SecretBox<String>>,
 }
 
 /// Where an enrolment stands after one round.
@@ -96,13 +99,35 @@ pub async fn required(
     // What a mailed ceremony needs. Absent where the realm requires none.
     posting: Option<crate::login::authenticator::Posting<'_>>,
 ) -> Enrolment {
-    let pending = |action: RequiredAction| {
-        subject
-            .required_actions
-            .as_deref()
-            .unwrap_or_default()
-            .contains(&action)
-    };
+    // Read fresh rather than off the model the login loaded at its start: a
+    // step of this same login may have attached an instruction since, the
+    // password step does exactly that for a stale password, and a ceremony
+    // reading the opening snapshot would honour it one login late.
+    let standing = users::load(transaction, &subject.user_id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|fresh| fresh.required_actions)
+        .unwrap_or_default();
+    let pending = |action: RequiredAction| standing.contains(&action);
+    // First, before any new factor is enrolled: the person just proved the
+    // old password, and when the realm has said to replace it, everything
+    // else waits behind the replacement. Two instructions, one ceremony:
+    // recovery clears both together, and neither has ever meant anything
+    // else at a login.
+    if pending(RequiredAction::UpdatePassword) || pending(RequiredAction::ResetPassword) {
+        return match answers.new_password {
+            Some(offered) => update_password(transaction, provider, tenant, subject, offered).await,
+            None => Enrolment::Asked {
+                named: UPDATE_PASSWORD,
+                challenge: Challenge {
+                    shown: serde_json::json!({}),
+                    remembered: serde_json::json!({}),
+                },
+                sending: None,
+            },
+        };
+    }
     if pending(RequiredAction::ConfigureWebauthn) {
         let Ok(party) = relying_party(origin, &realm.webauthn_policy.clone().unwrap_or_default())
         else {
@@ -277,6 +302,59 @@ async fn finish_totp(
         Ok(true) => Enrolment::Settled,
         _ => Enrolment::Refused,
     }
+}
+
+/// The replacement the realm demanded, written under its policy.
+///
+/// One leg, unlike the app and the key: there is nothing to prove back, only a
+/// password to take under the same rules every other door applies. A refusal
+/// is spoken and the ceremony asks again rather than failing the login: the
+/// person has already proved who they are, and a policy refusal is theirs to
+/// correct, not a wrong answer to be thrown out over.
+async fn update_password(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &TenantContext,
+    subject: &UserModel,
+    offered: &SecretBox<String>,
+) -> Enrolment {
+    if let Err(why) = crate::password::keep(
+        transaction,
+        provider,
+        crypto::provider::Argon2Params::default(),
+        &tenant.tenant,
+        &tenant.realm_id,
+        &subject.user_id,
+        &subject.user_id,
+        offered,
+    )
+    .await
+    {
+        let said = match why {
+            crate::password::Unkept::Refused(said) => said.spoken(),
+            _ => return Enrolment::Refused,
+        };
+        return Enrolment::Asked {
+            named: UPDATE_PASSWORD,
+            challenge: Challenge {
+                shown: serde_json::json!({ "refused": said }),
+                remembered: serde_json::json!({}),
+            },
+            sending: None,
+        };
+    }
+    for done in [
+        RequiredAction::UpdatePassword,
+        RequiredAction::ResetPassword,
+    ] {
+        if users::clear_required_action(transaction, &subject.user_id, done)
+            .await
+            .is_err()
+        {
+            return Enrolment::Refused;
+        }
+    }
+    Enrolment::Settled
 }
 
 /// The start leg of a sheet: the codes drawn, shown once, and remembered.

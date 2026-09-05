@@ -1,14 +1,12 @@
-use crypto::password::storage::StoredPassword;
 use crypto::provider::{Argon2Params, CryptoProvider};
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::attributes::AttributeValue;
-use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
 use models::entities::user::{RequiredAction, UserCreateModel, UserModel, profile};
 use models::paging::Page;
 use models::sessions::login_failure::UserLoginFailure;
 use secrecy::SecretBox;
-use store::providers::{auth_flows, credentials, login, users};
+use store::providers::{auth_flows, login, users};
 use store::query::list_query::ListQuery;
 
 /// What a person is created or reshaped as. `None` leaves a field alone on
@@ -205,16 +203,20 @@ pub async fn set_password(
     .await
 }
 
-/// Refuse a password the realm's policy will not have, in the realm's words.
+/// The shared writer's refusal, worn as this module's error.
 ///
-/// The person is loaded because the policy asks about them: a rule that refuses
-/// a password containing the username cannot fire without the username, and the
-/// one about a birth date could never fire at all, since both callers that
-/// checked passed `None` for it and the profile has held it all along.
-///
-/// A realm with no policy takes anything, which is what no policy means. A
-/// realm that cannot be read refuses: a password written past a policy nobody
-/// could fetch is exactly the write this whole function exists to stop.
+/// The policy, the history, and the bookkeeping all live in `auth::password`,
+/// under every door at once; this module only translates the refusal into the
+/// error its callers already map to a spoken 422.
+fn unkept(why: auth::password::Unkept) -> Uncreatable {
+    match why {
+        auth::password::Unkept::Refused(said) => Uncreatable::Invalid(said.spoken()),
+        auth::password::Unkept::NoSuchPerson => Uncreatable::NotFound,
+        auth::password::Unkept::Unwritable => Uncreatable::Unwritable,
+    }
+}
+
+/// Refuse a password the realm will not have, without writing anything.
 pub async fn refuse_password_against_policy(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
@@ -222,156 +224,15 @@ pub async fn refuse_password_against_policy(
     user_id: &str,
     password: &SecretBox<String>,
 ) -> Result<(), Uncreatable> {
-    let realm = store::providers::realms::load(transaction, realm_id)
+    auth::password::refused_by_the_realm(transaction, provider, realm_id, user_id, password)
         .await
-        .map_err(|_| Uncreatable::Unwritable)?
-        .ok_or(Uncreatable::Unwritable)?;
-    let Some(policy) = realm.password_policy.as_ref() else {
-        return Ok(());
-    };
-    let person = get(transaction, user_id).await?;
-    let birthdate = person
-        .attributes
-        .as_ref()
-        .and_then(|bag| bag.get(models::entities::user::profile::BIRTH_DATE))
-        .and_then(models::entities::attributes::AttributeValue::as_str);
-    if let Some(why) = policy.refuses(
-        secrecy::ExposeSecret::expose_secret(password),
-        models::entities::realm::About {
-            username: Some(&person.user_name),
-            email: Some(&person.email),
-            birthdate,
-        },
-    ) {
-        return Err(Uncreatable::Invalid(crate::recovery::refused_as(why)));
-    }
-    refuse_a_password_used_before(transaction, provider, policy, user_id, password).await
-}
-
-/// Refuse a password this account has already worn, as deep as the realm asks.
-///
-/// The credential type has existed since the third migration with nothing ever
-/// writing one, so a realm could ask for a history of ten and get none at all.
-///
-/// The standing password counts as the first remembered: refusing the last ten
-/// and taking the current one back would be a rule with a hole the width of the
-/// password most likely to be typed. Compared one hash at a time, oldest last,
-/// which is why how deep this goes is bounded where the policy is read back.
-async fn refuse_a_password_used_before(
-    transaction: &Transaction<'_>,
-    provider: &dyn CryptoProvider,
-    policy: &models::entities::realm::PasswordPolicy,
-    user_id: &str,
-    password: &SecretBox<String>,
-) -> Result<(), Uncreatable> {
-    let Some(deep) = policy.history_look_back.filter(|deep| *deep > 0) else {
-        return Ok(());
-    };
-    let mut worn =
-        credentials::load_for_user_of_type(transaction, user_id, CredentialType::Password)
-            .await
-            .map_err(|_| Uncreatable::Unwritable)?;
-    worn.extend(
-        credentials::load_for_user_of_type(transaction, user_id, CredentialType::PasswordHistory)
-            .await
-            .map_err(|_| Uncreatable::Unwritable)?,
-    );
-    for held in worn.iter().take(deep as usize) {
-        let Ok(stored) = StoredPassword::Argon2id {
-            encoded: held.secret.expose().to_owned(),
-        }
-        .to_legacy_hash() else {
-            // A row in a shape this build does not read is not a match and not
-            // a reason to refuse a password over.
-            continue;
-        };
-        if crypto::password::migration::verify_and_plan(provider, password, &stored)
-            .is_ok_and(|plan| plan.valid)
-        {
-            return Err(Uncreatable::Invalid(crate::recovery::refused_as(
-                models::entities::realm::PasswordRefused::Reused,
-            )));
-        }
-    }
-    Ok(())
-}
-
-/// Keep the password being replaced, and forget the ones nobody asks about.
-///
-/// Written whether or not a policy asks for a history today: a realm that turns
-/// the rule on next month wants it to mean something then, and a history that
-/// starts empty on the day it is switched on takes as many changes to fill as
-/// the rule asks for. What is kept is the stored hash and nothing else, so
-/// remembering costs what the password already cost.
-///
-/// Trimmed to the deepest a policy may ask rather than to what this realm asks
-/// now. Trimming to the current depth would throw away exactly the rows a
-/// realm needs the moment somebody deepens the rule.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each is a distinct fact about one password"
-)]
-async fn remember_the_password_it_replaces(
-    transaction: &Transaction<'_>,
-    provider: &dyn CryptoProvider,
-    tenant: &str,
-    realm_id: &str,
-    by: &str,
-    user_id: &str,
-    replaced: &CredentialModel,
-) -> Result<(), Uncreatable> {
-    let mut drawn = [0u8; 16];
-    // A stable identifier would collide with the row kept on the previous
-    // change, and this one is only ever read as part of a set. Drawn through
-    // the provider, like every other identifier this deployment mints.
-    provider
-        .rand()
-        .fill(&mut drawn)
-        .map_err(|_| Uncreatable::Unwritable)?;
-    let kept = CredentialModel {
-        credential_id: data_encoding::HEXLOWER.encode(&drawn),
-        realm_id: realm_id.to_owned(),
-        user_id: user_id.to_owned(),
-        credential_type: CredentialType::PasswordHistory,
-        user_label: None,
-        secret: CredentialSecret::new(replaced.secret.expose().to_owned()),
-        otp: None,
-        priority: 0,
-        metadata: models::auditable::AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
-    };
-    credentials::create_quietly(transaction, &kept)
-        .await
-        .map_err(|_| Uncreatable::Unwritable)?;
-
-    let worn =
-        credentials::load_for_user_of_type(transaction, user_id, CredentialType::PasswordHistory)
-            .await
-            .map_err(|_| Uncreatable::Unwritable)?;
-    for stale in worn
-        .iter()
-        .skip(models::entities::realm::MOST_REMEMBERED as usize)
-    {
-        credentials::delete_quietly(transaction, &stale.credential_id)
-            .await
-            .map_err(|_| Uncreatable::Unwritable)?;
-    }
-    Ok(())
+        .map_err(unkept)
 }
 
 /// Write a password, replacing the one held or writing the first.
 ///
-/// The cost is the caller's, because a realm that chose one means it to apply
-/// wherever a password is written and not only where an administrator writes.
-/// The policy is read here for the same reason, and it was not: a realm could
-/// declare a shape and a length and then take anything at all through the admin
-/// surface, through SCIM, and through provisioning, because the two callers
-/// that checked were the two a person walks through themselves.
-///
-/// The realm is read by the identifier this call already carries rather than
-/// off the transaction's context. A policy fetched from the ambient context is
-/// one that quietly becomes no policy wherever the context is not what the
-/// caller assumed, and this function is called from four places with four
-/// different assumptions.
+/// The whole of it lives in `auth::password::keep`, where the login-time
+/// change reads the same policy and records the same history as this door.
 #[allow(
     clippy::too_many_arguments,
     reason = "each is a distinct fact about one password"
@@ -386,59 +247,18 @@ pub async fn keep_password(
     user_id: &str,
     password: &SecretBox<String>,
 ) -> Result<(), Uncreatable> {
-    refuse_password_against_policy(transaction, provider, realm_id, user_id, password).await?;
-
-    let StoredPassword::Argon2id { encoded } =
-        StoredPassword::hash_argon2id(provider, cost, password)
-            .map_err(|_| Uncreatable::Unwritable)?
-    else {
-        return Err(Uncreatable::Unwritable);
-    };
-    let held = credentials::load_for_user_of_type(transaction, user_id, CredentialType::Password)
-        .await
-        .map_err(|_| Uncreatable::Unwritable)?;
-    if let Some(existing) = held.first() {
-        // The one it replaces, kept where the rule that refuses a password
-        // twice can find it. Written before the replacement, since the
-        // replacement is what makes the old secret unreachable.
-        remember_the_password_it_replaces(
-            transaction,
-            provider,
-            tenant,
-            realm_id,
-            by,
-            user_id,
-            existing,
-        )
-        .await?;
-        credentials::replace_secret(
-            transaction,
-            &existing.credential_id,
-            &CredentialSecret::new(encoded),
-            None,
-            by,
-        )
-        .await
-        .map_err(|_| Uncreatable::Unwritable)?;
-        return Ok(());
-    }
-    credentials::create(
+    auth::password::keep(
         transaction,
-        &CredentialModel {
-            credential_id: format!("{user_id}-password"),
-            realm_id: realm_id.to_owned(),
-            user_id: user_id.to_owned(),
-            credential_type: CredentialType::Password,
-            secret: CredentialSecret::new(encoded),
-            user_label: None,
-            otp: None,
-            priority: 0,
-            metadata: AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
-        },
+        provider,
+        cost,
+        tenant,
+        realm_id,
+        by,
+        user_id,
+        password,
     )
     .await
-    .map_err(|_| Uncreatable::Unwritable)?;
-    Ok(())
+    .map_err(unkept)
 }
 
 pub async fn remove(transaction: &Transaction<'_>, user_id: &str) -> Result<bool, Uncreatable> {

@@ -184,7 +184,7 @@
   // The panels one round can put in front of a person, by name. Named and not
   // positional: six booleans in a row is a call nobody reads correctly twice,
   // and the one that gets it wrong shows a person the wrong field.
-  const PANELS = ["credentials", "code", "recovery", "key", "app", "sheet"];
+  const PANELS = ["credentials", "code", "recovery", "key", "app", "sheet", "renew"];
 
   function only(...wanted) {
     PANELS.forEach(function (id) {
@@ -250,11 +250,14 @@
     delete answered.totp_register;
     delete answered.recovery_code;
     delete answered.recovery_codes_register;
+    delete answered.new_password;
     form.password.value = "";
     form.totp.value = "";
     form.totp_register.value = "";
     form.recovery_code.value = "";
     form.recovery_codes_register.value = "";
+    form.new_password.value = "";
+    form.new_password_again.value = "";
   }
 
   // The page is served at the URL it posts to, so the realm is never parsed.
@@ -353,6 +356,14 @@
       form.totp_register.focus();
       return;
     }
+    if (told.execution === "update-password") {
+      // A spoken refusal is the policy's, shown beside the fields; the person
+      // has already proved who they are and the panel simply asks again.
+      say(told.asks && told.asks.refused ? told.asks.refused : "");
+      only("renew");
+      form.new_password.focus();
+      return;
+    }
     if (told.execution === "recovery-codes-register" && told.asks) {
       const list = document.getElementById("sheet-codes");
       list.replaceChildren();
@@ -437,6 +448,12 @@
     if (form.recovery_code.value) answered.recovery_code = form.recovery_code.value;
     if (form.recovery_codes_register.value) {
       answered.recovery_codes_register = form.recovery_codes_register.value;
+    }
+    if (form.new_password.value) {
+      const mismatch = document.getElementById("renew-mismatch");
+      mismatch.hidden = form.new_password.value === form.new_password_again.value;
+      if (!mismatch.hidden) return;
+      answered.new_password = form.new_password.value;
     }
     round();
   });

@@ -41,6 +41,8 @@ pub struct Answered {
     pub recovery_code: Option<String>,
     /// One code typed back off the sheet just shown, proving it was kept.
     pub recovery_codes_register: Option<String>,
+    /// The replacement, when the realm told this person to change theirs.
+    pub new_password: Option<String>,
     /// What a mailed link carried, as the page it landed on posted it.
     pub magic_link: Option<String>,
     /// The same, for a link confirming an address.
@@ -139,6 +141,7 @@ pub async fn answer(
     let attestation = filled(&answered.webauthn_register);
     let code = filled(&answered.totp_register);
     let kept = filled(&answered.recovery_codes_register);
+    let renewed = filled(&answered.new_password).map(|held| SecretBox::new(Box::new(held)));
 
     // The desktop ticket, when the realm answers that door and the browser
     // carried one. Reduced to a principal here, at the listener, so the flow
@@ -256,6 +259,7 @@ pub async fn answer(
             code: code.as_deref(),
             verified_address: answered.verify_email.as_deref(),
             kept: kept.as_deref(),
+            new_password: renewed.as_ref(),
         },
         &read_provenance(&request),
         sealing.sender.is_some(),

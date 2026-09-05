@@ -6017,3 +6017,172 @@ async fn a_realm_that_insists_on_https_turns_the_plain_door_away() {
     })
     .await;
 }
+
+/// The instruction to change a password finally instructs, and a stale one
+/// attaches it by itself.
+///
+/// Until now the two password actions were theatre: settable from the console,
+/// cleared by a mailed reset, and read by nothing at a login. Now the ceremony
+/// runs first, before any other enrolment, under the same policy and history
+/// as every other door; and a password older than the realm's span attaches
+/// the instruction on the one path where a password was actually used, so an
+/// account signing in by key or by directory never hears from it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_demanded_password_change_happens_at_the_login_and_a_stale_one_demands_it() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    reshape_realm(&plane, |realm| {
+        realm.password_policy = Some(models::entities::realm::PasswordPolicy {
+            min_length: Some(12),
+            history_look_back: Some(2),
+            ..Default::default()
+        });
+    })
+    .await;
+    plane
+        .require_of_subject(RequiredAction::UpdatePassword)
+        .await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    // The password admits the flow; the ceremony asks before anything ends.
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert_eq!(told["execution"], "update-password", "{told}");
+
+    // A refused replacement is spoken and asked again, not thrown out: the
+    // person has already proved who they are.
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "new_password": "short",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["execution"], "update-password", "{told}");
+    assert_eq!(
+        told["asks"]["refused"], "the password is too short",
+        "{told}"
+    );
+
+    // The old one again: the history the last slice built refuses it here too.
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "new_password": support::PASSWORD,
+        }),
+    )
+    .await;
+    assert_eq!(
+        told["asks"]["refused"], "the password is one this account used before",
+        "{told}"
+    );
+
+    // A replacement the realm has nothing against lands, and the login ends.
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "new_password": "a-replacement-of-decent-length",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+    assert_eq!(plane.subject_owes().await, vec![], "the instruction stands");
+
+    // The new password signs in; the old one no longer does.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "the old password still signs in: {told}"
+    );
+    let _ = status;
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": "a-replacement-of-decent-length",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+
+    // Expiry: a span of thirty days, a credential written long before it.
+    reshape_realm(&plane, |realm| {
+        realm.password_policy = Some(models::entities::realm::PasswordPolicy {
+            expires_after_days: Some(30),
+            ..Default::default()
+        });
+    })
+    .await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        transaction
+            .execute(
+                "UPDATE user_credentials \
+                 SET created_at = now() - interval '90 days', updated_at = NULL \
+                 WHERE user_id = $1 AND credential_type = 'password'",
+                &[&support::SUBJECT],
+            )
+            .await
+            .expect("the credential ages");
+        transaction.commit().await.expect("the ageing kept");
+    }
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": "a-replacement-of-decent-length",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        told["execution"], "update-password",
+        "a stale password went on signing in: {told}"
+    );
+}

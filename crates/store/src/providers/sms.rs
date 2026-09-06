@@ -121,3 +121,66 @@ pub async fn record_send(transaction: &Transaction<'_>, now: i64) -> StoreResult
         .map_err(|_| StoreError::Backend)?;
     Ok(())
 }
+
+/// How many texts went to this number in the hour holding `now`.
+pub async fn sent_to_number_this_hour(
+    transaction: &Transaction<'_>,
+    recipient: &str,
+    now: i64,
+) -> StoreResult<i32> {
+    Ok(transaction
+        .query_opt(
+            "SELECT sent FROM sms_velocity \
+             WHERE tenant = current_setting('saffui.current_tenant', true) \
+               AND realm_id = current_setting('saffui.current_realm', true) \
+               AND recipient = $1 \
+               AND hour = date_trunc('hour', to_timestamp($2::bigint))",
+            &[&recipient, &now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map_or(0, |row| row.get(0)))
+}
+
+/// Count one text against this number's hour, in the minting transaction.
+pub async fn record_send_to_number(
+    transaction: &Transaction<'_>,
+    recipient: &str,
+    now: i64,
+) -> StoreResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO sms_velocity (tenant, realm_id, recipient, hour, sent) \
+             SELECT current_setting('saffui.current_tenant', true), \
+                    current_setting('saffui.current_realm', true), \
+                    $1, date_trunc('hour', to_timestamp($2::bigint)), 1 \
+             ON CONFLICT (tenant, realm_id, recipient, hour) \
+             DO UPDATE SET sent = sms_velocity.sent + 1",
+            &[&recipient, &now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// Drop velocity hours nothing will ever ask about again, and old day
+/// totals, and say how many rows went.
+pub async fn drop_stale_counters(transaction: &Transaction<'_>, now: i64) -> StoreResult<u64> {
+    let hours = transaction
+        .execute(
+            "DELETE FROM sms_velocity \
+             WHERE hour < date_trunc('hour', to_timestamp($1::bigint)) - interval '2 days'",
+            &[&now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let days = transaction
+        .execute(
+            "DELETE FROM sms_spend \
+             WHERE day < to_timestamp($1::bigint)::date - interval '400 days'",
+            &[&now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(hours + days)
+}

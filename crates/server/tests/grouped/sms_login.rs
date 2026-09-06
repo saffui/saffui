@@ -453,3 +453,163 @@ async fn a_person_is_walked_through_proving_a_phone() {
         "the instruction outlived the ceremony that satisfied it"
     );
 }
+
+/// Reshape the realm's texting brakes the way an administrator would.
+async fn reshape(plane: &Plane, change: impl FnOnce(&mut models::entities::realm::RealmModel)) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    let mut realm = store::providers::realms::load(&transaction, support::REALM)
+        .await
+        .expect("the realms table")
+        .expect("a planted realm");
+    change(&mut realm);
+    store::providers::realms::update(&transaction, &realm)
+        .await
+        .expect("the realms table");
+    transaction.commit().await.expect("the setting kept");
+}
+
+/// The throttle rows the realm's sign-in log holds, brake by brake.
+async fn throttles(plane: &Plane) -> Vec<String> {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    transaction
+        .query(
+            "SELECT detail->>'brake' FROM login_events WHERE kind = 'sms_throttled' \
+             ORDER BY recorded_at, id",
+            &[],
+        )
+        .await
+        .expect("the sign-in log")
+        .into_iter()
+        .map(|row| row.get::<_, Option<String>>(0).unwrap_or_default())
+        .collect()
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_blocked_prefix_is_never_texted_and_the_throttle_is_on_the_record() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane, true).await;
+    require_sms_otp(&plane).await;
+    reshape(&plane, |realm| {
+        realm.sms_blocked_prefixes = Some(vec!["+22890".to_owned()]);
+    })
+    .await;
+    let textbox = Textbox::default();
+
+    let binding = open(&plane, &textbox).await;
+    let (status, told) = answer(
+        &plane,
+        &textbox,
+        &binding,
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert!(
+        textbox.held().is_empty(),
+        "a text went out at a range the realm never texts"
+    );
+    assert_eq!(
+        throttles(&plane).await,
+        vec!["blocked-prefix"],
+        "the throttle left no record"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn one_number_only_takes_so_many_in_an_hour() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane, true).await;
+    require_sms_otp(&plane).await;
+    reshape(&plane, |realm| {
+        realm.sms_per_number_cap = Some(1);
+    })
+    .await;
+    let textbox = Textbox::default();
+
+    let binding = open(&plane, &textbox).await;
+    let credentials =
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD });
+    answer(&plane, &textbox, &binding, credentials.clone()).await;
+    assert_eq!(textbox.held().len(), 1);
+
+    // Past the cooldown the login may ask again; the number's hour says no.
+    age_past_cooldown(&plane, "sms-otp").await;
+    let (_, told) = answer(&plane, &textbox, &binding, credentials.clone()).await;
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert_eq!(
+        textbox.held().len(),
+        1,
+        "one number took more than its hour's cap"
+    );
+    assert_eq!(throttles(&plane).await, vec!["number-velocity"]);
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_day_cap_of_zero_stops_the_sending() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane, true).await;
+    require_sms_otp(&plane).await;
+    reshape(&plane, |realm| {
+        realm.sms_daily_cap = Some(0);
+    })
+    .await;
+    let textbox = Textbox::default();
+
+    let binding = open(&plane, &textbox).await;
+    let (status, _) = answer(
+        &plane,
+        &textbox,
+        &binding,
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(textbox.held().is_empty(), "a shut day still sent");
+    assert_eq!(throttles(&plane).await, vec!["day-budget"]);
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realms_own_words_ride_the_text() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane, true).await;
+    require_sms_otp(&plane).await;
+    reshape(&plane, |realm| {
+        realm.default_locale = Some("fr".to_owned());
+        realm.sms_templates = Some(
+            [(
+                "sms_otp".to_owned(),
+                [("fr".to_owned(), "Acme: {{code}} pour entrer".to_owned())]
+                    .into_iter()
+                    .collect(),
+            )]
+            .into_iter()
+            .collect(),
+        );
+    })
+    .await;
+    let textbox = Textbox::default();
+
+    let binding = open(&plane, &textbox).await;
+    answer(
+        &plane,
+        &textbox,
+        &binding,
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let held = textbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    let code = held[0].body.split(' ').nth(1).expect("a worded code");
+    assert_eq!(
+        held[0].body,
+        format!("Acme: {code} pour entrer"),
+        "the realm's wording did not carry"
+    );
+    assert_eq!(code.len(), 6, "the code did not land in the words");
+}

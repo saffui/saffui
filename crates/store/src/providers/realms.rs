@@ -29,6 +29,7 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        attributes, acr_loa_map, \
                        browser_flow, otp_policy, webauthn_policy, \
                        mail_templates, device_code_lifespan, device_poll_interval, \
+                       sms_daily_cap, sms_per_number_cap, sms_blocked_prefixes, sms_templates, \
                        ciba_expiry, ciba_interval, webauthn_passwordless, page_overrides, \
                        dsar_jurisdiction, dsar_response_days, \
                        supported_locales, default_locale, \
@@ -160,6 +161,7 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
     let otp_policy = as_document(realm.otp_policy.as_ref().map(serde_json::to_value))?;
     let webauthn_policy = as_document(realm.webauthn_policy.as_ref().map(serde_json::to_value))?;
     let mail_templates = as_document(realm.mail_templates.as_ref().map(serde_json::to_value))?;
+    let sms_templates = as_document(realm.sms_templates.as_ref().map(serde_json::to_value))?;
     let policy = realm.client_registration.as_str();
 
     let set = WriteSet::update(
@@ -235,6 +237,10 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("otp_policy", &otp_policy),
             col("webauthn_policy", &webauthn_policy),
             col("mail_templates", &mail_templates),
+            col("sms_daily_cap", &realm.sms_daily_cap),
+            col("sms_per_number_cap", &realm.sms_per_number_cap),
+            col("sms_blocked_prefixes", &realm.sms_blocked_prefixes),
+            col("sms_templates", &sms_templates),
             col("device_code_lifespan", &realm.device_code_lifespan),
             col("device_poll_interval", &realm.device_poll_interval),
             col("ciba_expiry", &realm.ciba_expiry),
@@ -311,6 +317,12 @@ fn read(row: Row) -> RealmModel {
             .and_then(|held| serde_json::from_value(held).ok()),
         mail_templates: row
             .get::<_, Option<serde_json::Value>>("mail_templates")
+            .and_then(|held| serde_json::from_value(held).ok()),
+        sms_daily_cap: row.get("sms_daily_cap"),
+        sms_per_number_cap: row.get("sms_per_number_cap"),
+        sms_blocked_prefixes: row.get("sms_blocked_prefixes"),
+        sms_templates: row
+            .get::<_, Option<serde_json::Value>>("sms_templates")
             .and_then(|held| serde_json::from_value(held).ok()),
         device_code_lifespan: row.get("device_code_lifespan"),
         device_poll_interval: row.get("device_poll_interval"),

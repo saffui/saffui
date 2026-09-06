@@ -234,6 +234,13 @@ function adopt(held: RealmSettings) {
   }));
   offeredTongues.value = held.supported_locales ?? [...TONGUES];
   templates.value = JSON.parse(JSON.stringify(held.mail_templates ?? {}));
+  smsTemplates.value = JSON.parse(JSON.stringify(held.sms_templates ?? {}));
+  adoptSmsTemplate();
+  smsBrakes.value = {
+    daily: held.sms_daily_cap ?? "",
+    perNumber: held.sms_per_number_cap ?? "",
+    prefixes: (held.sms_blocked_prefixes ?? []).join("\n"),
+  };
   defaultTongue.value = held.default_locale ?? "";
   otp.value = { ...(held.otp_policy ?? OTP_DEFAULTS) };
   webauthn.value = {
@@ -604,6 +611,60 @@ async function testSms() {
 async function removeSms() {
   await forgetSms(realm.value);
   sms.value = null;
+}
+
+/// The realm's brakes on texting. A cap left blank keeps whatever is held;
+/// returning to the built default means typing it.
+const smsBrakes = ref({ daily: "" as string | number, perNumber: "" as string | number, prefixes: "" });
+
+async function saveSmsBrakes() {
+  const changes: RealmUpdate = {
+    sms_blocked_prefixes: smsBrakes.value.prefixes
+      .split(/[\n,]/)
+      .map((held) => held.trim())
+      .filter(Boolean),
+  };
+  const daily = whole(smsBrakes.value.daily);
+  if (daily !== undefined && daily !== null) changes.sms_daily_cap = daily;
+  const perNumber = whole(smsBrakes.value.perNumber);
+  if (perNumber !== undefined && perNumber !== null) changes.sms_per_number_cap = perNumber;
+  try {
+    adopt(await reshapeRealm(realm.value, changes, say("sms-brakes-title")));
+  } catch {
+    // The toast already said.
+  }
+}
+
+const SMS_KINDS = ["sms_otp", "verify_phone"] as const;
+const smsTemplates = ref<Record<string, Record<string, string>>>({});
+const smsTplKind = ref<string>("sms_otp");
+const smsTplTongue = ref("en");
+const smsTplBody = ref("");
+
+function adoptSmsTemplate() {
+  smsTplBody.value = smsTemplates.value[smsTplKind.value]?.[smsTplTongue.value] ?? "";
+}
+watch([smsTplKind, smsTplTongue], adoptSmsTemplate);
+
+async function saveSmsTemplate() {
+  const next = JSON.parse(JSON.stringify(smsTemplates.value)) as typeof smsTemplates.value;
+  if (smsTplBody.value.trim()) {
+    next[smsTplKind.value] = {
+      ...next[smsTplKind.value],
+      [smsTplTongue.value]: smsTplBody.value,
+    };
+  } else {
+    delete next[smsTplKind.value]?.[smsTplTongue.value];
+    if (next[smsTplKind.value] && !Object.keys(next[smsTplKind.value]).length) {
+      delete next[smsTplKind.value];
+    }
+  }
+  try {
+    adopt(await reshapeRealm(realm.value, { sms_templates: next }, say("sms-templates-title")));
+    adoptSmsTemplate();
+  } catch {
+    // The toast already said.
+  }
 }
 </script>
 
@@ -1585,6 +1646,97 @@ async function removeSms() {
               <span v-if="smsTestPassed" class="pb-1.5 text-[11px] text-ok">{{
                 say("sms-test-passed")
               }}</span>
+            </form>
+          </div>
+
+          <div class="mt-6">
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("sms-brakes-title") }} <AppHint name="sms-brakes-help" />
+            </div>
+            <form class="mt-2 flex flex-col gap-3 text-xs" @submit.prevent="saveSmsBrakes">
+              <div class="grid grid-cols-2 gap-3">
+                <label class="block text-[11px] font-medium text-muted">
+                  {{ say("sms-daily-cap") }} <AppHint name="sms-daily-cap-help" />
+                  <input
+                    v-model="smsBrakes.daily"
+                    type="number"
+                    min="0"
+                    max="1000000"
+                    class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  />
+                </label>
+                <label class="block text-[11px] font-medium text-muted">
+                  {{ say("sms-per-number-cap") }} <AppHint name="sms-per-number-cap-help" />
+                  <input
+                    v-model="smsBrakes.perNumber"
+                    type="number"
+                    min="1"
+                    max="1000"
+                    class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  />
+                </label>
+              </div>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("sms-blocked-prefixes") }} <AppHint name="sms-blocked-prefixes-help" />
+                <textarea
+                  v-model="smsBrakes.prefixes"
+                  rows="3"
+                  placeholder="+88213&#10;+979"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  spellcheck="false"
+                ></textarea>
+              </label>
+              <button
+                type="submit"
+                class="w-fit rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+              >
+                {{ say("settings-save") }}
+              </button>
+            </form>
+          </div>
+
+          <div class="mt-6">
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("sms-templates-title") }} <AppHint name="sms-templates-help" />
+            </div>
+            <form class="mt-2 flex flex-col gap-3 text-xs" @submit.prevent="saveSmsTemplate">
+              <div class="grid grid-cols-2 gap-3">
+                <label class="block text-[11px] font-medium text-muted">
+                  {{ say("sms-template-kind") }}
+                  <select
+                    v-model="smsTplKind"
+                    class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                  >
+                    <option v-for="held in SMS_KINDS" :key="held" :value="held">{{ held }}</option>
+                  </select>
+                </label>
+                <label class="block text-[11px] font-medium text-muted">
+                  {{ say("sms-template-tongue") }}
+                  <select
+                    v-model="smsTplTongue"
+                    class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                  >
+                    <option v-for="held in TONGUES" :key="held" :value="held">{{ held }}</option>
+                  </select>
+                </label>
+              </div>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("sms-template-body") }} <AppHint name="sms-template-body-help" />
+                <textarea
+                  v-model="smsTplBody"
+                  rows="3"
+                  maxlength="160"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  spellcheck="false"
+                ></textarea>
+                <span class="text-[10px] text-faint">{{ smsTplBody.length }}/160</span>
+              </label>
+              <button
+                type="submit"
+                class="w-fit rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+              >
+                {{ say("settings-save") }}
+              </button>
             </form>
           </div>
         </div>

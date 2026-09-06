@@ -685,6 +685,20 @@ sms-test-to = À (forme internationale)
 sms-test-send = Envoyer
 sms-test-passed = Remis à la passerelle
 sms-test-subject = le test de la passerelle SMS
+sms-brakes-title = Freins d'envoi
+sms-brakes-help = Un SMS est une action facturée qu'un attaquant peut déclencher. Ces trois freins sont vérifiés avant chaque envoi ; un frein déclenché atterrit dans les événements de connexion comme sms_throttled.
+sms-daily-cap = SMS par jour
+sms-daily-cap-help = La journée entière du royaume, tous numéros confondus. Zéro coupe l'envoi ; vide garde ce qui est tenu ; le défaut du build est 250.
+sms-per-number-cap = Par numéro, par heure
+sms-per-number-cap-help = Une rafale vers un numéro est la forme que prend le trafic gonflé. Le défaut du build est 5.
+sms-blocked-prefixes = Préfixes bloqués
+sms-blocked-prefixes-help = Préfixes internationaux jamais textés, un par ligne : plages surtaxées, plages de pompage connues. Une liste vide l'efface.
+sms-templates-title = Formulation des SMS
+sms-templates-help = Les mots du royaume autour du code. Le corps doit porter {"{{code}}"} et tenir en 160 caractères, un segment SMS.
+sms-template-kind = SMS
+sms-template-tongue = Langue
+sms-template-body = Corps
+sms-template-body-help = {"{{code}}"} devient les six chiffres. Vide revient aux mots du build.
 
 ## Les portes d'écriture des écrans bonus : rôles, scopes, organisations,
 ## politiques, relations, étapes de flux, gouvernance, rôles client, sous-groupes.

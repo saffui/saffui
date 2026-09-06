@@ -106,6 +106,8 @@ pub struct ClientBrief {
     /// `off`, `poll` or `ping`.
     pub ciba_delivery: String,
     pub ciba_notification_endpoint: Option<String>,
+    /// The client-wide cut: tokens minted before this instant are refused.
+    pub not_before: Option<i32>,
 }
 
 impl From<models::entities::client::ClientModel> for ClientBrief {
@@ -117,6 +119,7 @@ impl From<models::entities::client::ClientModel> for ClientBrief {
             client_id: client.client_id,
             name: client.name,
             enabled: client.enabled.unwrap_or(false),
+            not_before: client.not_before,
             confidential: client.public_client != Some(true),
             root_url: client.root_url,
             web_origins: client.web_origins.unwrap_or_default(),
@@ -215,6 +218,9 @@ pub struct ClientSpec {
     /// as the nearest thing.
     pub ciba_delivery: Option<String>,
     pub ciba_notification_endpoint: Option<String>,
+    /// Cut every token this client was minted before this instant; 0 lifts
+    /// the cut, absent leaves it alone. The future is refused at the door.
+    pub not_before: Option<i32>,
 }
 
 /// What the plane is asked to create or reshape a person as.

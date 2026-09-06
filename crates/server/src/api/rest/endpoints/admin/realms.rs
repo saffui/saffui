@@ -379,6 +379,10 @@ pub async fn update(
     // scheme header and no peers would store the setting, show it, and never
     // once consult it, which is the exact shape of lie this column spent
     // seventy-eight migrations being. The message names what to configure.
+    // The realm-wide cut under the same rule as the client one: not_before
+    // revokes the past, and a cut in the future would refuse every token the
+    // realm will ever mint again, the console's own included.
+    super::clients::refuse_a_cut_in_the_future(asked.not_before)?;
     if matches!(
         asked.ssl_enforcement,
         Some(

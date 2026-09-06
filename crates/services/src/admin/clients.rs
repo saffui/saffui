@@ -165,6 +165,10 @@ pub struct Reshape {
     /// optional like the addresses above.
     pub client_uri: Option<Option<String>>,
     pub gates: Gates,
+    /// The client-wide cut, the realm's `not_before` one client narrower:
+    /// named, every token this client was minted before it is refused at the
+    /// gate. Unnamed leaves the standing cut alone; 0 lifts it.
+    pub not_before: Option<i32>,
 }
 
 /// Where a confidential client's secret comes from.
@@ -345,7 +349,14 @@ pub async fn update(
     if let Some(home) = &reshape.client_uri {
         spec.registered.client_uri = home.clone();
     }
-    reshape_registered(transaction, client_id, &spec).await
+    let mut client = reshape_registered(transaction, client_id, &spec).await?;
+    if let Some(at) = reshape.not_before {
+        client.not_before = (at != 0).then_some(at);
+        clients::update(transaction, &client)
+            .await
+            .map_err(|_| Unregistrable::Unwritable)?;
+    }
+    Ok(client)
 }
 
 /// The same, from a whole spec rather than from what a reshape named. RFC 7592

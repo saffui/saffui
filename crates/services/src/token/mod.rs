@@ -11,7 +11,7 @@ use deadpool_postgres::Transaction;
 use models::entities::keys::RealmSigningKeyView;
 use models::sessions::records::UserSessionState;
 use serde_json::Value;
-use store::providers::{oidc, realms, sessions};
+use store::providers::{clients, oidc, realms, sessions};
 
 /// What a token established, once it was accepted.
 ///
@@ -239,18 +239,41 @@ pub async fn verify_presented(
         .await
         .map_err(|_| Refused::Unestablished)?
         .ok_or(Refused::Unestablished)?;
-    if let Some(cut) = realm.not_before {
-        let minted_at = verified
+    let minted_before = |cut: i32| {
+        verified
             .claims
             .get("iat")
             .and_then(|held| {
                 held.as_i64()
                     .or_else(|| held.as_f64().map(|seconds| seconds.trunc() as i64))
             })
-            .ok_or(Refused::Revoked)?;
-        if minted_at < i64::from(cut) {
-            return Err(Refused::Revoked);
-        }
+            .is_none_or(|minted_at| minted_at < i64::from(cut))
+    };
+    if let Some(cut) = realm.not_before
+        && minted_before(cut)
+    {
+        return Err(Refused::Revoked);
+    }
+
+    // The same instrument one client narrower: the cut an operator answers a
+    // single leaked client with, sparing the rest of the realm. It rides the
+    // token's own azp, so it also stops at every path that presents one here,
+    // the refresh and exchange doors included. A client row that cannot be
+    // read refuses for the same reason the realm's does; a token naming no
+    // client, or naming one this realm no longer holds, has nothing the cut
+    // was written against.
+    if let Some(party) = verified
+        .claims
+        .get("azp")
+        .and_then(Value::as_str)
+        .filter(|held| !held.is_empty())
+        && let Some(cut) = clients::load(transaction, party)
+            .await
+            .map_err(|_| Refused::Unestablished)?
+            .and_then(|client| client.not_before)
+        && minted_before(cut)
+    {
+        return Err(Refused::Revoked);
     }
 
     // Bound to a login, and refused with it: a logout that left the tokens it

@@ -698,7 +698,7 @@ sms-templates-help = Les mots du royaume autour du code. Le corps doit porter {"
 sms-template-kind = SMS
 sms-template-tongue = Langue
 sms-template-body = Corps
-sms-template-body-help = {"{{code}}"} devient les six chiffres. Vide revient aux mots du build.
+sms-template-body-help = {"{{code}}"} devient les six chiffres ; le texto de sonnette porte {"{{link}}"} à la place. Vide revient aux mots du build.
 
 ## Les portes d'écriture des écrans bonus : rôles, scopes, organisations,
 ## politiques, relations, étapes de flux, gouvernance, rôles client, sous-groupes.

@@ -654,3 +654,223 @@ async fn the_realms_pacing_reaches_the_wire() {
     assert_eq!(status, StatusCode::OK, "{opened}");
     assert_eq!(opened["expires_in"], 120, "{opened}");
 }
+
+/// The realm can text and Ada's phone is proven, or not, as the test needs.
+async fn texting_arranged(plane: &Plane, phone_verified: bool) {
+    use store::tenancy::TenantContext;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let sealing = support::sealing();
+    let ring = store::keyring::load(&transaction, &sealing.envelope, support::TENANT, REALM)
+        .await
+        .expect("a keyring");
+    store::providers::sms::keep(
+        &transaction,
+        &ring,
+        &sealing.envelope,
+        &models::entities::sms::SmsSettings {
+            url: "https://gateway.example/send".to_owned(),
+            sender: "saffui".to_owned(),
+            token: None,
+        },
+    )
+    .await
+    .expect("the settings kept");
+    store::providers::users::set_phone(
+        &transaction,
+        support::SUBJECT,
+        Some("+22890123456"),
+        phone_verified,
+    )
+    .await
+    .expect("the phone kept");
+    transaction.commit().await.expect("the arrangement kept");
+}
+
+async fn posted_texting(
+    plane: &Plane,
+    textbox: &super::support::Textbox,
+    path: &str,
+    form: &[(&str, &str)],
+) -> (StatusCode, Value) {
+    use std::sync::Arc;
+    let mut plane_mounted = mounted(plane);
+    plane_mounted.sealing = support::sealing_carrying(
+        None,
+        Some(Arc::new(textbox.clone()) as Arc<dyn auth::messaging::Texter>),
+    );
+    let app = test::init_service(App::new().configure(register(&plane_mounted))).await;
+    let encoded =
+        BASE64.encode(format!("{}:{}", support::CONFIDENTIAL, support::CLIENT_SECRET).as_bytes());
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect{path}"))
+            .insert_header(("authorization", format!("Basic {encoded}")))
+            .set_form(form)
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    let body = test::read_body(response).await;
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn opening_a_request_rings_the_persons_phone() {
+    let plane = Plane::with_actions(&[]).await;
+    opted_in(&plane).await;
+    texting_arranged(&plane, true).await;
+    let textbox = super::support::Textbox::default();
+
+    let (status, opened) = posted_texting(
+        &plane,
+        &textbox,
+        "/bc-authorize",
+        &[("login_hint", support::SUBJECT), ("scope", "openid")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let held = textbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].to, "+22890123456");
+    assert!(
+        held[0].body.contains("/protocol/openid-connect/requests"),
+        "the text does not lead to the doorbell: {}",
+        held[0].body
+    );
+
+    // The request itself stands, waiting on the doorbell.
+    let auth_req_id = opened["auth_req_id"].as_str().expect("an id");
+    let (_, pending) = posted(
+        &plane,
+        "/token",
+        &[("grant_type", GRANT), ("auth_req_id", auth_req_id)],
+    )
+    .await;
+    assert_eq!(pending["error"], "authorization_pending", "{pending}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_silent_phone_never_costs_the_request() {
+    let plane = Plane::with_actions(&[]).await;
+    opted_in(&plane).await;
+
+    // Unproven number: the request opens, nothing rings.
+    texting_arranged(&plane, false).await;
+    let textbox = super::support::Textbox::default();
+    let (status, opened) = posted_texting(
+        &plane,
+        &textbox,
+        "/bc-authorize",
+        &[("login_hint", support::SUBJECT), ("scope", "openid")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert!(textbox.held().is_empty(), "an unproven number was texted");
+
+    // Proven, but the realm's day is shut: the request opens, the brake is
+    // on the record, and nothing rings.
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::users::set_phone(
+            &transaction,
+            support::SUBJECT,
+            Some("+22890123456"),
+            true,
+        )
+        .await
+        .expect("the phone proven");
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.sms_daily_cap = Some(0);
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.expect("the day shut");
+    }
+    let (status, opened) = posted_texting(
+        &plane,
+        &textbox,
+        "/bc-authorize",
+        &[("login_hint", support::SUBJECT), ("scope", "openid")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert!(textbox.held().is_empty(), "a shut day still rang a phone");
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let throttled: i64 = transaction
+            .query_one(
+                "SELECT count(*) FROM login_events WHERE kind = 'sms_throttled'",
+                &[],
+            )
+            .await
+            .expect("the sign-in log")
+            .get(0);
+        assert_eq!(throttled, 1, "the held doorbell left no record");
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realms_own_doorbell_words_ride() {
+    use store::tenancy::TenantContext;
+    let plane = Plane::with_actions(&[]).await;
+    opted_in(&plane).await;
+    texting_arranged(&plane, true).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.default_locale = Some("fr".to_owned());
+        realm.sms_templates = Some(
+            [(
+                "ciba_doorbell".to_owned(),
+                [("fr".to_owned(), "Acme sonne : {{link}}".to_owned())]
+                    .into_iter()
+                    .collect(),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.expect("the words kept");
+    }
+    let textbox = super::support::Textbox::default();
+    posted_texting(
+        &plane,
+        &textbox,
+        "/bc-authorize",
+        &[("login_hint", support::SUBJECT), ("scope", "openid")],
+    )
+    .await;
+    let held = textbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert!(
+        held[0].body.starts_with("Acme sonne : https://"),
+        "the realm's wording did not carry: {}",
+        held[0].body
+    );
+}

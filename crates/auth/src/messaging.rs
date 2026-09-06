@@ -1,4 +1,6 @@
+use deadpool_postgres::Transaction;
 use models::entities::mail::MailSettings;
+use models::entities::realm::RealmModel;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
@@ -217,5 +219,170 @@ mod wording {
         let other_kind = realm_with(Some("fr"), &[("verify_email", "fr", "V", "{{link}}")]);
         let (subject, _) = worded(&other_kind, "magic_link", "https://l", "Built", "{{link}}");
         assert_eq!(subject, "Built", "another kind's words leaked");
+    }
+}
+
+/// How many texts any one realm sends in a day, until the realm says
+/// otherwise: the brake on a billable action an attacker can trigger.
+pub const TEXTS_PER_REALM_PER_DAY: i32 = 250;
+
+/// How many texts one number may receive in one hour, until the realm says
+/// otherwise: a burst at one number is the shape inflated traffic takes.
+pub const TEXTS_PER_NUMBER_PER_HOUR: i32 = 5;
+
+/// Why a text was held back. Said to the sign-in log, never to the caller:
+/// what a throttle answers must not say which brake it tripped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Held {
+    BlockedPrefix,
+    NumberVelocity,
+    DayBudget,
+}
+
+impl Held {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::BlockedPrefix => "blocked-prefix",
+            Self::NumberVelocity => "number-velocity",
+            Self::DayBudget => "day-budget",
+        }
+    }
+}
+
+/// The realm's brakes on one send: a range it never texts, this number's
+/// hour, and the realm's day. Checked in the minting transaction, and a
+/// throttle is recorded where a failed sign-in is, because a throttle
+/// tripping is the fact an operator hunting inflated traffic reads.
+pub async fn text_brakes(
+    transaction: &Transaction<'_>,
+    realm: &RealmModel,
+    user_id: &str,
+    recipient: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<Held>, ()> {
+    let held = brakes_say(transaction, realm, recipient, now).await?;
+    if let Some(held) = held {
+        tracing::warn!(brake = held.as_str(), "a text was held back");
+        let _ = store::providers::login_events::record(
+            transaction,
+            now.timestamp(),
+            &store::providers::login_events::LoginEventWrite {
+                kind: "sms_throttled",
+                user_id: Some(user_id),
+                detail: Some(serde_json::json!({
+                    "brake": held.as_str(),
+                    "to": recipient,
+                })),
+                ..Default::default()
+            },
+        )
+        .await;
+    }
+    Ok(held)
+}
+
+async fn brakes_say(
+    transaction: &Transaction<'_>,
+    realm: &RealmModel,
+    recipient: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Option<Held>, ()> {
+    if realm
+        .sms_blocked_prefixes
+        .iter()
+        .flatten()
+        .any(|prefix| recipient.starts_with(prefix.as_str()))
+    {
+        return Ok(Some(Held::BlockedPrefix));
+    }
+    let to_number =
+        store::providers::sms::sent_to_number_this_hour(transaction, recipient, now.timestamp())
+            .await
+            .map_err(|_| ())?;
+    if to_number
+        >= realm
+            .sms_per_number_cap
+            .unwrap_or(TEXTS_PER_NUMBER_PER_HOUR)
+    {
+        return Ok(Some(Held::NumberVelocity));
+    }
+    let today = store::providers::sms::spent_today(transaction, now.timestamp())
+        .await
+        .map_err(|_| ())?;
+    if today >= realm.sms_daily_cap.unwrap_or(TEXTS_PER_REALM_PER_DAY) {
+        return Ok(Some(Held::DayBudget));
+    }
+    Ok(None)
+}
+
+/// Count one send everywhere a brake reads: the realm's day and this
+/// number's hour, in the same transaction that minted the code.
+pub async fn record_text(
+    transaction: &Transaction<'_>,
+    recipient: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), ()> {
+    store::providers::sms::record_send(transaction, now.timestamp())
+        .await
+        .map_err(|_| ())?;
+    store::providers::sms::record_send_to_number(transaction, recipient, now.timestamp())
+        .await
+        .map_err(|_| ())
+}
+
+/// The words around a code: the realm's rewording where it wrote one, held
+/// to a length at the door, and the built words otherwise. Short on purpose:
+/// an SMS is billed and truncated by length.
+pub fn texted_words(realm: &RealmModel, kind: &str, code: &str) -> String {
+    let spoken = realm
+        .sms_templates
+        .as_ref()
+        .and_then(|held| held.get(kind))
+        .and_then(|tongues| {
+            realm
+                .default_locale
+                .as_deref()
+                .and_then(|tongue| tongues.get(tongue))
+                .or_else(|| tongues.get("en"))
+                .or_else(|| tongues.values().next())
+        });
+    match spoken {
+        Some(body) => body.replace("{{code}}", code),
+        None => match (kind, realm.default_locale.as_deref()) {
+            ("verify_phone", Some("fr")) => {
+                format!("{code} est votre code de vérification. Il expire dans 5 minutes.")
+            }
+            ("verify_phone", _) => {
+                format!("{code} is your verification code. It expires in 5 minutes.")
+            }
+            (_, Some("fr")) => {
+                format!("{code} est votre code de connexion. Il expire dans 5 minutes.")
+            }
+            (_, _) => format!("{code} is your sign-in code. It expires in 5 minutes."),
+        },
+    }
+}
+
+/// The words around a doorbell link, the same way: the realm's rewording
+/// where it wrote one, the built words otherwise, with `{{link}}` resolved.
+pub fn texted_link(realm: &models::entities::realm::RealmModel, kind: &str, link: &str) -> String {
+    let spoken = realm
+        .sms_templates
+        .as_ref()
+        .and_then(|held| held.get(kind))
+        .and_then(|tongues| {
+            realm
+                .default_locale
+                .as_deref()
+                .and_then(|tongue| tongues.get(tongue))
+                .or_else(|| tongues.get("en"))
+                .or_else(|| tongues.values().next())
+        });
+    match spoken {
+        Some(body) => body.replace("{{link}}", link),
+        None => match realm.default_locale.as_deref() {
+            Some("fr") => format!("Une demande de connexion vous attend : {link}"),
+            _ => format!("A sign-in request awaits you: {link}"),
+        },
     }
 }

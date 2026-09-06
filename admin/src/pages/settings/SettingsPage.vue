@@ -635,7 +635,7 @@ async function saveSmsBrakes() {
   }
 }
 
-const SMS_KINDS = ["sms_otp", "verify_phone"] as const;
+const SMS_KINDS = ["sms_otp", "verify_phone", "ciba_doorbell"] as const;
 const smsTemplates = ref<Record<string, Record<string, string>>>({});
 const smsTplKind = ref<string>("sms_otp");
 const smsTplTongue = ref("en");

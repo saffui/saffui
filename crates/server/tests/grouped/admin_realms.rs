@@ -852,6 +852,7 @@ async fn the_texting_brakes_hold_their_shapes() {
         serde_json::json!({ "sms_blocked_prefixes": ["+abc"] }),
         serde_json::json!({ "sms_templates": { "ussd": { "en": "{{code}}" } } }),
         serde_json::json!({ "sms_templates": { "sms_otp": { "en": "a code with no place for it" } } }),
+        serde_json::json!({ "sms_templates": { "ciba_doorbell": { "en": "a doorbell with no way there {{code}}" } } }),
         serde_json::json!({ "sms_templates": { "sms_otp": { "en": format!("{}{}", "x".repeat(155), "{{code}}") } } }),
     ] {
         let (status, told) = asked(
@@ -878,7 +879,10 @@ async fn the_texting_brakes_hold_their_shapes() {
             "sms_daily_cap": 100,
             "sms_per_number_cap": 3,
             "sms_blocked_prefixes": ["+88213", "+979"],
-            "sms_templates": { "sms_otp": { "fr": "Votre code: {{code}}" } },
+            "sms_templates": {
+                "sms_otp": { "fr": "Votre code: {{code}}" },
+                "ciba_doorbell": { "fr": "On sonne : {{link}}" },
+            },
         })),
     )
     .await;

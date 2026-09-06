@@ -666,6 +666,19 @@ async fn named_subject(
     {
         return Ok(Some(standing).filter(|held| held.enabled));
     }
+    // The phone door. Open wherever a number was proven, because proving it
+    // is what made it an identifier: only a number exactly one account has
+    // proven answers, spelled with whatever spacing the person types.
+    let compact: String = named.chars().filter(|held| !held.is_whitespace()).collect();
+    if compact.starts_with('+')
+        && compact[1..].chars().all(|held| held.is_ascii_digit())
+        && let Some(standing) = users::sole_by_proven_phone(transaction, &compact)
+            .await
+            .map_err(|_| Unanswerable::Unreadable)?
+    {
+        return Ok(Some(standing).filter(|held| held.enabled));
+    }
+
     // The address door, when the realm opened it. Only an address exactly one
     // account holds answers: two sharing it name neither, and saying which
     // existed would say more than an unknown name does.

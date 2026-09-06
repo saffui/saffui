@@ -1,8 +1,47 @@
 import { adminPath, api } from "@/services/http";
-import type { DirectoryRow, IdpRow, IgaGrant, IgaRule } from "@/models/federation";
+import type {
+  DeliveryProof,
+  DirectoryRow,
+  IdpMutation,
+  IdpRow,
+  IgaGrant,
+  IgaRule,
+} from "@/models/federation";
 
 export async function listIdps(realm: string): Promise<IdpRow[]> {
   return api<IdpRow[]>(adminPath(realm, "identity-providers"));
+}
+
+export async function createIdp(realm: string, body: IdpMutation): Promise<IdpRow> {
+  return api<IdpRow>(adminPath(realm, "identity-providers"), {
+    method: "POST",
+    json: body,
+    subject: body.provider_id,
+  });
+}
+
+export async function updateIdp(realm: string, alias: string, body: IdpMutation): Promise<IdpRow> {
+  return api<IdpRow>(adminPath(realm, `identity-providers/${encodeURIComponent(alias)}`), {
+    method: "PUT",
+    json: body,
+    subject: alias,
+  });
+}
+
+export async function deleteIdp(realm: string, alias: string): Promise<void> {
+  return api<void>(adminPath(realm, `identity-providers/${encodeURIComponent(alias)}`), {
+    method: "DELETE",
+    subject: alias,
+  });
+}
+
+/// Ask the server to exercise one connector's pipe, now, and answer what
+/// the far side said. Quiet: the proof itself is the message.
+export async function proveDelivery(realm: string, alias: string): Promise<DeliveryProof> {
+  return api<DeliveryProof>(
+    adminPath(realm, `identity-providers/${encodeURIComponent(alias)}/prove`),
+    { method: "POST", quiet: true },
+  );
 }
 
 export async function listDirectories(realm: string): Promise<DirectoryRow[]> {

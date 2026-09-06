@@ -13,6 +13,9 @@ pub const ACCOUNT_DISABLED: &str =
     "https://schemas.openid.net/secevent/risc/event-type/account-disabled";
 pub const ACCOUNT_PURGED: &str =
     "https://schemas.openid.net/secevent/risc/event-type/account-purged";
+/// The Shared Signals verification event: sent on request to prove the
+/// pipe between transmitter and receiver, carrying nothing but a state.
+pub const VERIFICATION: &str = "https://schemas.openid.net/secevent/ssf/event-type/verification";
 
 #[derive(Debug, thiserror::Error)]
 pub enum Unusable {
@@ -207,6 +210,45 @@ pub async fn minted_set(
             scope: "",
             // Long enough for a collector that comes by on its own schedule;
             // a pushed one is verified the moment it lands.
+            lifespan: chrono::Duration::hours(24),
+            now,
+            extra,
+        },
+    )
+    .map_err(|_| crate::grant::Ungranted::Unmintable)
+}
+
+/// The verification Security Event Token for one receiver: minted when an
+/// operator asks the pipe to prove itself, signed exactly like every other
+/// event so the far side verifies the real thing. No person is its subject;
+/// it speaks about the subscription, named by the receiver's alias.
+pub async fn verification_set(
+    transaction: &Transaction<'_>,
+    signing: &crate::grant::Signing<'_>,
+    issuer: &str,
+    receiver: &Receiver,
+    alias: &str,
+    state: &str,
+    now: DateTime<Utc>,
+) -> Result<crate::token::issuance::Minted, crate::grant::Ungranted> {
+    let key =
+        crate::grant::preferred_key(transaction, signing, crypto::provider::SignAlg::Rs256).await?;
+    let mut extra = serde_json::Map::new();
+    extra.insert("sub_id".into(), json!({ "format": "opaque", "id": alias }));
+    extra.insert("events".into(), json!({ VERIFICATION: { "state": state } }));
+    crate::token::issuance::mint_token(
+        signing.provider,
+        &key,
+        crate::token::issuance::Minting {
+            bound_to: None,
+            certified_by: None,
+            kind: crate::token::issuance::Kind::SecurityEvent,
+            issuer,
+            subject: alias,
+            audiences: vec![receiver.audience.clone()],
+            party: "",
+            session_id: "",
+            scope: "",
             lifespan: chrono::Duration::hours(24),
             now,
             extra,

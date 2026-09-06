@@ -314,6 +314,14 @@ export function previewAnswer<T>(path: string): T {
   if (path.endsWith("/theme")) {
     return answer(null);
   }
+  if (/\/identity-providers\/[^/]+\/prove$/.test(path)) {
+    return answer({
+      proven: true,
+      how: "answered",
+      status: 200,
+      said: "the SCIM root answered as itself",
+    });
+  }
   if (path.endsWith("/identity-providers")) {
     return answer([
       { internal_id: "i-1", provider_id: "corp-okta", name: "corp-okta", display_name: "Corp Okta", description: "", enabled: true, trust_email: true, configs: null },

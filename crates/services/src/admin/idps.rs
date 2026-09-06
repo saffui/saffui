@@ -64,12 +64,20 @@ pub async fn get_provider(
 /// even sealed they are nobody's to read back over the plane.
 fn conceal(provider: &mut IdentityProviderModel) {
     if let Some(bag) = provider.configs.as_mut() {
-        bag.remove(CLEAR_SECRET);
-        if bag.remove(SEALED_SECRET).is_some() {
-            bag.insert(
-                CLEAR_SECRET.to_owned(),
-                AttributeValue::Str("**********".to_owned()),
-            );
+        for (clear_key, sealed_key) in [
+            (CLEAR_SECRET, SEALED_SECRET),
+            (
+                crate::outbound::CLEAR_BEARER,
+                crate::outbound::SEALED_BEARER,
+            ),
+        ] {
+            bag.remove(clear_key);
+            if bag.remove(sealed_key).is_some() {
+                bag.insert(
+                    clear_key.to_owned(),
+                    AttributeValue::Str("**********".to_owned()),
+                );
+            }
         }
     }
 }
@@ -190,21 +198,37 @@ pub async fn update_provider(
         standing.metadata.clone(),
     );
     rewritten.metadata.updated_by = Some(by.to_owned());
-    // A rewrite that says nothing about the secret keeps the sealed one.
-    let says_secret = rewritten
-        .configs
-        .as_ref()
-        .is_some_and(|bag| bag.contains_key(CLEAR_SECRET));
-    if !says_secret
-        && let Some(kept) = standing
+    // A rewrite that says nothing about a sealed value keeps the standing
+    // one, and the mask an answer wears means the same: it is this plane's
+    // own word, echoed back, never something an operator typed.
+    for (clear_key, sealed_key) in [
+        (CLEAR_SECRET, SEALED_SECRET),
+        (
+            crate::outbound::CLEAR_BEARER,
+            crate::outbound::SEALED_BEARER,
+        ),
+    ] {
+        let echoed_mask = rewritten.configs.as_ref().is_some_and(|bag| {
+            bag.get(clear_key).and_then(AttributeValue::as_str) == Some("**********")
+        });
+        if echoed_mask && let Some(bag) = rewritten.configs.as_mut() {
+            bag.remove(clear_key);
+        }
+        let says_new = rewritten
             .configs
             .as_ref()
-            .and_then(|bag| bag.get(SEALED_SECRET))
-    {
-        rewritten
-            .configs
-            .get_or_insert_with(Default::default)
-            .insert(SEALED_SECRET.to_owned(), kept.clone());
+            .is_some_and(|bag| bag.contains_key(clear_key));
+        if !says_new
+            && let Some(kept) = standing
+                .configs
+                .as_ref()
+                .and_then(|bag| bag.get(sealed_key))
+        {
+            rewritten
+                .configs
+                .get_or_insert_with(Default::default)
+                .insert(sealed_key.to_owned(), kept.clone());
+        }
     }
     if crate::workload::is_workload(&rewritten) {
         crate::workload::Trusted::parse(&rewritten)

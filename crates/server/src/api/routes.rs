@@ -456,6 +456,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::delete().to(idps::delete)),
         },
         AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/identity-providers/{alias}/prove",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::post().to(idps::prove)),
+        },
+        AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms/{realm}/identity-providers/{alias}/mappers",
             action: AdminAction::IdpRead,

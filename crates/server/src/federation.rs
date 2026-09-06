@@ -679,6 +679,22 @@ pub(crate) async fn opened_bearer(
     String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()
 }
 
+/// The agent every ask to a far side rides: a short global timeout, no
+/// redirects followed, the platform's own roots trusted.
+fn far_side_agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(10)))
+        .max_redirects(0)
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::NativeTls)
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
+        .build()
+        .new_agent()
+}
+
 /// Hand one Security Event Token to one receiver, RFC 8935: a POST whose
 /// body is the token, acknowledged with a bare success.
 async fn push_set(receiver: &services::caep::Receiver, bearer: Option<&str>, set: &str) -> bool {
@@ -688,17 +704,7 @@ async fn push_set(receiver: &services::caep::Receiver, bearer: Option<&str>, set
     let bearer = bearer.map(str::to_owned);
     let set = set.to_owned();
     tokio::task::spawn_blocking(move || {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .max_redirects(0)
-            .tls_config(
-                ureq::tls::TlsConfig::builder()
-                    .provider(ureq::tls::TlsProvider::NativeTls)
-                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                    .build(),
-            )
-            .build()
-            .new_agent();
+        let agent = far_side_agent();
         let mut asked = agent
             .post(&endpoint)
             .header("content-type", "application/secevent+jwt")
@@ -724,17 +730,7 @@ async fn push_one(
     let bearer = bearer.unwrap_or_default().to_owned();
     let event = event.clone();
     tokio::task::spawn_blocking(move || {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(10)))
-            .max_redirects(0)
-            .tls_config(
-                ureq::tls::TlsConfig::builder()
-                    .provider(ureq::tls::TlsProvider::NativeTls)
-                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                    .build(),
-            )
-            .build()
-            .new_agent();
+        let agent = far_side_agent();
         let authorization = format!("Bearer {bearer}");
         let found: Option<String> = agent
             .get(&format!(
@@ -794,4 +790,242 @@ async fn push_one(
     })
     .await
     .unwrap_or(false)
+}
+
+/// What one prove answered: whether the pipe held, how it was exercised,
+/// and what the far side said, in a status and words an operator can act on.
+#[derive(Debug)]
+pub struct Proof {
+    pub proven: bool,
+    /// "answered", "pushed", "queued" or "unreachable": the shape the
+    /// exercise took, so the console can say the right sentence.
+    pub how: &'static str,
+    pub status: Option<u16>,
+    pub said: String,
+}
+
+/// Why no prove could even be attempted.
+#[derive(Debug)]
+pub enum Unprovable {
+    NoSuchProvider,
+    Disabled,
+    NotProvable(String),
+    Backend,
+}
+
+/// Exercise one connector's pipe because an operator asked, and answer what
+/// the far side said. A SCIM connector is asked for its
+/// ServiceProviderConfig; a push receiver is handed a freshly signed
+/// verification event; a collector has one queued to take on its next poll.
+pub async fn prove_delivery(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &crate::api::config::Sealing,
+    origin: &config::serving::PublicOrigin,
+    context: &store::tenancy::TenantContext,
+    alias: &str,
+) -> Result<Proof, Unprovable> {
+    let row = store::providers::brokering::provider_by_alias(transaction, alias)
+        .await
+        .map_err(|_| Unprovable::Backend)?
+        .ok_or(Unprovable::NoSuchProvider)?;
+    if row.enabled == Some(false) {
+        return Err(Unprovable::Disabled);
+    }
+    if services::outbound::is_outbound(&row) {
+        let connector = services::outbound::Connector::parse(&row)
+            .map_err(|why| Unprovable::NotProvable(why.to_string()))?;
+        let bearer = opened_bearer(transaction, sealing, context, &row).await;
+        return Ok(ask_scim_root(&connector, bearer.as_deref()).await);
+    }
+    if services::caep::is_receiver(&row) {
+        let receiver = services::caep::Receiver::parse(&row)
+            .map_err(|why| Unprovable::NotProvable(why.to_string()))?;
+        let ring = store::keyring::load(
+            transaction,
+            &sealing.envelope,
+            &context.tenant,
+            &context.realm_id,
+        )
+        .await
+        .map_err(|_| Unprovable::Backend)?;
+        let mut drawn = [0u8; 8];
+        sealing
+            .provider
+            .rand()
+            .fill(&mut drawn)
+            .map_err(|_| Unprovable::Backend)?;
+        let state = data_encoding::HEXLOWER.encode(&drawn);
+        let set = services::caep::verification_set(
+            transaction,
+            &services::grant::Signing {
+                provider: sealing.provider.as_ref(),
+                ring: &ring,
+                envelope: &sealing.envelope,
+            },
+            &origin.issuer(&context.realm_id),
+            &receiver,
+            alias,
+            &state,
+            chrono::Utc::now(),
+        )
+        .await
+        .map_err(|_| {
+            Unprovable::NotProvable("the realm holds no key to sign the event".to_owned())
+        })?;
+        return Ok(match receiver.delivery {
+            services::caep::Delivery::Push => {
+                let bearer = opened_bearer(transaction, sealing, context, &row).await;
+                push_verification(&receiver, bearer.as_deref(), &set.token).await
+            }
+            services::caep::Delivery::Poll => {
+                store::providers::caep_queue::queue(
+                    transaction,
+                    &row.internal_id,
+                    &set.token_id,
+                    &set.token,
+                    set.expires_at,
+                )
+                .await
+                .map_err(|_| Unprovable::Backend)?;
+                Proof {
+                    proven: true,
+                    how: "queued",
+                    status: None,
+                    said: "the verification event waits for the collector's next poll".to_owned(),
+                }
+            }
+        });
+    }
+    Err(Unprovable::NotProvable(
+        "this provider is neither an outbound connector nor an event receiver".to_owned(),
+    ))
+}
+
+/// Ask the SCIM root who it is, the way RFC 7644 lets anybody ask: GET
+/// ServiceProviderConfig with the bearer attached. Answering 2xx with a
+/// document naming its schemas proves the root and the bearer in one trip.
+async fn ask_scim_root(connector: &services::outbound::Connector, bearer: Option<&str>) -> Proof {
+    let asked = format!("{}/ServiceProviderConfig", connector.base_url);
+    let authorization = bearer.map(|held| format!("Bearer {held}"));
+    let answered = tokio::task::spawn_blocking(move || {
+        let agent = far_side_agent();
+        let mut asking = agent.get(&asked).header("accept", "application/scim+json");
+        if let Some(authorization) = &authorization {
+            asking = asking.header("authorization", authorization);
+        }
+        match asking.call() {
+            Ok(mut answer) => {
+                let status = answer.status().as_u16();
+                let body = answer.body_mut().read_to_string().unwrap_or_default();
+                Ok((status, body))
+            }
+            Err(ureq::Error::StatusCode(code)) => Ok((code, String::new())),
+            Err(why) => Err(why.to_string()),
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("the ask never came back".to_owned()));
+    match answered {
+        Ok((status, body)) if (200..300).contains(&status) => {
+            let spoke_scim = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .is_some_and(|told| told.get("schemas").is_some());
+            if spoke_scim {
+                Proof {
+                    proven: true,
+                    how: "answered",
+                    status: Some(status),
+                    said: "the SCIM root answered as itself".to_owned(),
+                }
+            } else {
+                Proof {
+                    proven: false,
+                    how: "answered",
+                    status: Some(status),
+                    said: "something answered, but not with a ServiceProviderConfig".to_owned(),
+                }
+            }
+        }
+        Ok((status @ (401 | 403), _)) => Proof {
+            proven: false,
+            how: "answered",
+            status: Some(status),
+            said: "the root refused the bearer".to_owned(),
+        },
+        Ok((status, _)) => Proof {
+            proven: false,
+            how: "answered",
+            status: Some(status),
+            said: format!("the root answered {status}"),
+        },
+        Err(why) => Proof {
+            proven: false,
+            how: "unreachable",
+            status: None,
+            said: why,
+        },
+    }
+}
+
+/// Hand the verification event to a push receiver and answer what it said;
+/// the delivery loop's own push only wants a yes or no, an operator wants
+/// the status and the words.
+async fn push_verification(
+    receiver: &services::caep::Receiver,
+    bearer: Option<&str>,
+    set: &str,
+) -> Proof {
+    let Some(endpoint) = receiver.endpoint.clone() else {
+        return Proof {
+            proven: false,
+            how: "unreachable",
+            status: None,
+            said: "the receiver names no endpoint".to_owned(),
+        };
+    };
+    let authorization = bearer.map(|held| format!("Bearer {held}"));
+    let set = set.to_owned();
+    let answered = tokio::task::spawn_blocking(move || {
+        let agent = far_side_agent();
+        let mut asking = agent
+            .post(&endpoint)
+            .header("content-type", "application/secevent+jwt")
+            .header("accept", "application/json");
+        if let Some(authorization) = &authorization {
+            asking = asking.header("authorization", authorization);
+        }
+        match asking.send(set.as_str()) {
+            Ok(answer) => Ok(answer.status().as_u16()),
+            Err(ureq::Error::StatusCode(code)) => Ok(code),
+            Err(why) => Err(why.to_string()),
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("the ask never came back".to_owned()));
+    match answered {
+        Ok(status) if (200..300).contains(&status) => Proof {
+            proven: true,
+            how: "pushed",
+            status: Some(status),
+            said: "the receiver took the verification event".to_owned(),
+        },
+        Ok(status @ (401 | 403)) => Proof {
+            proven: false,
+            how: "pushed",
+            status: Some(status),
+            said: "the receiver refused the bearer".to_owned(),
+        },
+        Ok(status) => Proof {
+            proven: false,
+            how: "pushed",
+            status: Some(status),
+            said: format!("the receiver answered {status}"),
+        },
+        Err(why) => Proof {
+            proven: false,
+            how: "unreachable",
+            status: None,
+            said: why,
+        },
+    }
 }

@@ -185,6 +185,50 @@ pub async fn identities_of_user(
     Ok(HttpResponse::Ok().json(held))
 }
 
+/// Exercise the pipe of one outbound connector or event receiver, now, and
+/// answer what the far side said. The one admin call that leaves the house:
+/// the round-trip is the point.
+pub async fn prove(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<config::serving::PublicOrigin>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, alias) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let context = within(&admin, &realm_id);
+    let transaction = tenancy
+        .transaction(&mut connection, &context)
+        .await
+        .map_err(|_| internal())?;
+    let proof =
+        crate::federation::prove_delivery(&transaction, &sealing, &origin, &context, &alias)
+            .await
+            .map_err(|why| match why {
+                crate::federation::Unprovable::NoSuchProvider => {
+                    ApiError::new(ErrorCode::IdentityProviderNotFound)
+                }
+                crate::federation::Unprovable::Disabled => ApiError::with_detail(
+                    ErrorCode::ValidationError,
+                    "the connector is disabled".to_owned(),
+                ),
+                crate::federation::Unprovable::NotProvable(what) => {
+                    ApiError::with_detail(ErrorCode::ValidationError, what)
+                }
+                crate::federation::Unprovable::Backend => internal(),
+            })?;
+    // A collector's proof is a queued row; the ask is only kept if this lands.
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "proven": proof.proven,
+        "how": proof.how,
+        "status": proof.status,
+        "said": proof.said,
+    })))
+}
+
 fn within(admin: &Admin, realm_id: &str) -> TenantContext {
     TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }

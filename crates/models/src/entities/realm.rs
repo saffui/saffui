@@ -452,7 +452,7 @@ pub struct RealmModel {
     /// How this realm presents itself to a browser's key ceremony.
     pub webauthn_policy: Option<WebauthnPolicy>,
     /// The realm's rewording of its mails: kind, then tongue, then the
-    /// words. Kinds are magic_link, verify_email and reset_password.
+    /// words. Kinds: magic_link, verify_email, reset_password, subject_request.
     pub mail_templates:
         Option<std::collections::HashMap<String, std::collections::HashMap<String, MailTemplate>>>,
     /// How long a device code lives, RFC 8628. None keeps the built default.
@@ -469,6 +469,12 @@ pub struct RealmModel {
     /// What this realm says over the hosted pages' own words: tongue to
     /// key to text. Only built tongues and built keys are accepted.
     pub page_overrides: Option<serde_json::Value>,
+    /// The law a self-lodged subject request runs on. None keeps the
+    /// realm's privacy door closed.
+    pub dsar_jurisdiction: Option<crate::compliance::subject_request::Jurisdiction>,
+    /// The realm's own response window, in days. Required where the law
+    /// fixes none, welcome where the controller answers faster.
+    pub dsar_response_days: Option<i32>,
     /// Which built tongues this realm offers. None offers them all.
     pub supported_locales: Option<Vec<String>>,
     /// The tongue that answers when the browser says nothing. None takes the
@@ -544,6 +550,8 @@ impl RealmCreateModel {
             ciba_interval: None,
             webauthn_passwordless: None,
             page_overrides: None,
+            dsar_jurisdiction: None,
+            dsar_response_days: None,
             supported_locales: None,
             default_locale: None,
             events_enabled: None,
@@ -615,6 +623,11 @@ pub struct RealmUpdateModel {
     /// What this realm says over the hosted pages' own words: tongue to
     /// key to text. Only built tongues and built keys are accepted.
     pub page_overrides: Option<serde_json::Value>,
+    /// The law a self-lodged subject request runs on. Empty closes the
+    /// realm's privacy door.
+    pub dsar_jurisdiction: Option<String>,
+    /// The realm's own response window, in days. Zero clears.
+    pub dsar_response_days: Option<i32>,
     /// Which built tongues this realm offers. None leaves it unchanged; an
     /// empty list offers them all.
     pub supported_locales: Option<Vec<String>>,
@@ -692,6 +705,15 @@ impl RealmUpdateModel {
         }
         if let Some(default_locale) = self.default_locale {
             realm.default_locale = (!default_locale.is_empty()).then_some(default_locale);
+        }
+        // Parsed, not trusted: a caller has already refused the unknown, and
+        // what an unrefused unknown would do here is close the door, never
+        // open it under a law nobody named.
+        if let Some(dsar_jurisdiction) = self.dsar_jurisdiction {
+            realm.dsar_jurisdiction = dsar_jurisdiction.parse().ok();
+        }
+        if let Some(dsar_response_days) = self.dsar_response_days {
+            realm.dsar_response_days = (dsar_response_days != 0).then_some(dsar_response_days);
         }
 
         set!(

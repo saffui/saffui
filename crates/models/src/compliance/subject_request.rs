@@ -96,6 +96,7 @@ pub enum DeadlineSource {
 }
 
 str_enum! {
+    #[postgres(name = "dsar_jurisdiction")]
     /// The jurisdictions whose law has been read.
     ///
     /// Only what was actually found is here. Several are listed with no deadline,

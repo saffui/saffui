@@ -717,3 +717,109 @@ async fn insisting_on_https_needs_a_proxy_that_can_say_the_scheme() {
     assert_eq!(status, StatusCode::OK, "{told}");
     assert_eq!(told["ssl_enforcement"], "none", "{told}");
 }
+/// The privacy door only opens on terms the register can honour.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_privacy_door_refuses_terms_it_cannot_honour() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmCreate,
+        AdminAction::RealmRead,
+        AdminAction::RealmWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({ "name": "doored", "display_name": "Doored", "enabled": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    // A law nobody named cannot be the clock.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/doored",
+        &bearer,
+        Some(serde_json::json!({ "dsar_jurisdiction": "atlantis" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // A law that fixes no window needs the realm to fix one.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/doored",
+        &bearer,
+        Some(serde_json::json!({ "dsar_jurisdiction": "ng" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/doored",
+        &bearer,
+        Some(serde_json::json!({ "dsar_jurisdiction": "ng", "dsar_response_days": 10 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+    assert_eq!(shaped["dsar_jurisdiction"], "ng", "{shaped}");
+    assert_eq!(shaped["dsar_response_days"], 10, "{shaped}");
+
+    // Clearing the window from under a windowless law is the same lie told
+    // in a second step, and is refused the same way.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/doored",
+        &bearer,
+        Some(serde_json::json!({ "dsar_response_days": 0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // The confirmation mail is a realm's to reword, like its siblings.
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/doored",
+        &bearer,
+        Some(serde_json::json!({
+            "mail_templates": {
+                "subject_request": { "fr": { "subject": "Confirmez", "body": "Suivez : {{link}}" } }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+
+    // A law with its own clock needs nothing more, and an empty name
+    // closes the door.
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/doored",
+        &bearer,
+        Some(serde_json::json!({ "dsar_jurisdiction": "eu", "dsar_response_days": 0 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+    assert_eq!(shaped["dsar_jurisdiction"], "eu", "{shaped}");
+    assert!(shaped["dsar_response_days"].is_null(), "{shaped}");
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/doored",
+        &bearer,
+        Some(serde_json::json!({ "dsar_jurisdiction": "" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+    assert!(shaped["dsar_jurisdiction"].is_null(), "{shaped}");
+}

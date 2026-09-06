@@ -29,6 +29,7 @@ pub mod negotiation;
 pub mod outbound;
 pub mod pairwise;
 pub mod pdp;
+pub mod privacy;
 pub mod provisioning;
 pub mod pushed;
 pub mod realm;

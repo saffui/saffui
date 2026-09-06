@@ -36,5 +36,7 @@ mod require_par;
 mod session_management;
 #[path = "grouped/signup.rs"]
 mod signup;
+#[path = "grouped/subject_door.rs"]
+mod subject_door;
 #[path = "grouped/ui_theme.rs"]
 mod ui_theme;

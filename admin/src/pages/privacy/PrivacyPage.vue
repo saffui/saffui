@@ -7,7 +7,7 @@ import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
 import GovernanceTabs from "@/pages/governance/GovernanceTabs.vue";
-import {
+import { JURISDICTIONS,
   advanceBreach,
   assembleEvidencePack,
   breachNotificationDraft,
@@ -41,7 +41,6 @@ async function load() {
 onMounted(load);
 
 const KINDS = ["access", "rectification", "erasure", "objection", "portability"];
-const JURISDICTIONS = ["eu", "ke", "ng", "za", "gh", "tg", "bj", "ci", "bf", "ga", "cm", "other"];
 
 const lodging = ref(false);
 const form = ref({ identifier: "", kind: "access", jurisdiction: "eu", due: "" });

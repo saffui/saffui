@@ -101,9 +101,10 @@ async fn a_change_here_lands_in_the_provisioned_app() {
         None,
     )
     .await;
+    assert_eq!(kept["configs"]["bearer"]["Str"], "**********", "{kept}");
     assert!(
-        kept["configs"].get("bearer").is_none(),
-        "the bearer rode back out: {kept}"
+        kept["configs"].get("bearer_sealed").is_none(),
+        "the sealed bearer rode back out: {kept}"
     );
 
     // A person appears here, by any door; the admin one will do.
@@ -219,4 +220,99 @@ async fn a_change_here_lands_in_the_provisioned_app() {
         1,
     )
     .await;
+}
+
+/// The prove button's whole journey for a connector: the SCIM root it names
+/// is asked for its ServiceProviderConfig, bearer attached, and the far
+/// side's answer comes back as a status and words. A bearer the root
+/// refuses is a proof that fails saying which side refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_prove_button_asks_the_scim_root_itself() {
+    let plane = Plane::with_actions(&[
+        AdminAction::IdpRead,
+        AdminAction::IdpWrite,
+        AdminAction::ScimRead,
+        AdminAction::ScimWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+
+    // The far side is this very server at another realm, over a real socket:
+    // its guarded SCIM door proves root and bearer together.
+    let served = mounted(&plane);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().unwrap().port();
+    let upstream = actix_web::HttpServer::new(move || App::new().configure(register(&served)))
+        .listen(listener)
+        .expect("a listener")
+        .workers(1)
+        .disable_signals()
+        .run();
+    tokio::spawn(upstream);
+    plane.plant_realm("mirror").await;
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "the-mirror",
+            "name": "the-mirror",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "scim-outbound" },
+                "base_url": { "Str": format!("http://127.0.0.1:{port}/realms/mirror/scim/v2") },
+                "bearer": { "Str": bearer },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+
+    let (status, proof) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers/the-mirror/prove"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{proof}");
+    assert_eq!(proof["proven"], true, "{proof}");
+    assert_eq!(proof["how"], "answered", "{proof}");
+    assert_eq!(proof["status"], 200, "{proof}");
+
+    // The same root behind a bearer it refuses.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "the-wrong-key",
+            "name": "the-wrong-key",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "scim-outbound" },
+                "base_url": { "Str": format!("http://127.0.0.1:{port}/realms/mirror/scim/v2") },
+                "bearer": { "Str": "not-a-bearer" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let (status, proof) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers/the-wrong-key/prove"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{proof}");
+    assert_eq!(proof["proven"], false, "{proof}");
+    assert_eq!(proof["status"], 401, "{proof}");
+    assert_eq!(proof["said"], "the root refused the bearer", "{proof}");
 }

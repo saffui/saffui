@@ -1,13 +1,23 @@
 <script setup lang="ts">
 // Security-event receivers and outbound connectors are provider rows wearing
-// a kind; this page reads them apart from the sign-in brokers.
+// a kind; this page reads them apart from the sign-in brokers, writes them,
+// and lets an operator prove a pipe against the real far side.
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
+import AppDrawer from "@/components/AppDrawer.vue";
 import AppPaging from "@/components/AppPaging.vue";
-import { kindOf, listIdps } from "@/services/federation";
+import AppToggle from "@/components/AppToggle.vue";
+import {
+  createIdp,
+  deleteIdp,
+  kindOf,
+  listIdps,
+  proveDelivery,
+  updateIdp,
+} from "@/services/federation";
 import { getRealmSettings, listSignInEvents } from "@/services/settings";
-import type { IdpRow } from "@/models/federation";
+import type { DeliveryProof, IdpRow } from "@/models/federation";
 import type { SignInEvent } from "@/models/events";
 import type { Page } from "@/models/paging";
 
@@ -61,6 +71,138 @@ function bagText(row: IdpRow, key: string): string {
   if (held === undefined) return "";
   if (typeof held === "string") return held;
   return held.Str ?? "";
+}
+
+/// The four events this transmitter emits, short name to full URI.
+const KNOWN_EVENTS: [string, string][] = [
+  ["session-revoked", "https://schemas.openid.net/secevent/caep/event-type/session-revoked"],
+  ["credential-change", "https://schemas.openid.net/secevent/caep/event-type/credential-change"],
+  ["account-disabled", "https://schemas.openid.net/secevent/risc/event-type/account-disabled"],
+  ["account-purged", "https://schemas.openid.net/secevent/risc/event-type/account-purged"],
+];
+
+type ConnectorKind = "caep-push" | "scim-outbound";
+const editing = ref<null | { kind: ConnectorKind; alias: string | null }>(null);
+const form = ref({
+  alias: "",
+  displayName: "",
+  enabled: true,
+  delivery: "push",
+  endpoint: "",
+  audience: "",
+  events: [] as string[],
+  baseUrl: "",
+  bearer: "",
+});
+const bearerOnFile = ref(false);
+const saving = ref(false);
+const doomName = ref("");
+
+function openCreate(kind: ConnectorKind) {
+  editing.value = { kind, alias: null };
+  form.value = {
+    alias: "",
+    displayName: "",
+    enabled: true,
+    delivery: "push",
+    endpoint: "",
+    audience: "",
+    events: [],
+    baseUrl: "",
+    bearer: "",
+  };
+  bearerOnFile.value = false;
+  doomName.value = "";
+}
+
+function openEdit(row: IdpRow) {
+  const kind: ConnectorKind = kindOf(row) === "scim-outbound" ? "scim-outbound" : "caep-push";
+  editing.value = { kind, alias: row.provider_id };
+  form.value = {
+    alias: row.provider_id,
+    displayName: row.display_name,
+    enabled: row.enabled !== false,
+    delivery: bagText(row, "delivery") || "push",
+    endpoint: bagText(row, "endpoint"),
+    audience: bagText(row, "audience"),
+    events: bagText(row, "events").split(/\s+/).filter(Boolean),
+    baseUrl: bagText(row, "base_url"),
+    bearer: "",
+  };
+  bearerOnFile.value = bagText(row, "bearer") === "**********";
+  doomName.value = "";
+}
+
+/// The bag as the server reads it: only the keys the kind knows, and the
+/// bearer only when the operator typed a new one.
+function bagged(kind: ConnectorKind): Record<string, { Str: string }> {
+  const bag: Record<string, { Str: string }> = { kind: { Str: kind } };
+  if (kind === "scim-outbound") {
+    bag.base_url = { Str: form.value.baseUrl.trim() };
+  } else {
+    bag.delivery = { Str: form.value.delivery };
+    if (form.value.delivery === "push") bag.endpoint = { Str: form.value.endpoint.trim() };
+    if (form.value.audience.trim()) bag.audience = { Str: form.value.audience.trim() };
+    if (form.value.events.length) bag.events = { Str: form.value.events.join(" ") };
+  }
+  const bearer = form.value.bearer.trim();
+  if (bearer && bearer !== "**********") bag.bearer = { Str: bearer };
+  return bag;
+}
+
+async function save() {
+  if (!editing.value) return;
+  saving.value = true;
+  try {
+    const alias = editing.value.alias ?? form.value.alias.trim();
+    const body = {
+      provider_id: alias,
+      name: alias,
+      display_name: form.value.displayName.trim(),
+      description: "",
+      enabled: form.value.enabled,
+      trust_email: false,
+      configs: bagged(editing.value.kind),
+    };
+    if (editing.value.alias) await updateIdp(realm.value, editing.value.alias, body);
+    else await createIdp(realm.value, body);
+    editing.value = null;
+    idps.value = await listIdps(realm.value);
+  } catch {
+    // The toast already said.
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function drop() {
+  if (!editing.value?.alias) return;
+  try {
+    await deleteIdp(realm.value, editing.value.alias);
+    editing.value = null;
+    idps.value = await listIdps(realm.value);
+  } catch {
+    // The toast already said.
+  }
+}
+
+/// One proof per row, kept where its row shows it; asking again replaces it.
+const proofs = ref<Record<string, DeliveryProof>>({});
+const proving = ref("");
+async function prove(row: IdpRow) {
+  proving.value = row.provider_id;
+  try {
+    proofs.value[row.provider_id] = await proveDelivery(realm.value, row.provider_id);
+  } catch (refused) {
+    proofs.value[row.provider_id] = {
+      proven: false,
+      how: "refused",
+      status: null,
+      said: refused instanceof Error ? refused.message : String(refused),
+    };
+  } finally {
+    proving.value = "";
+  }
 }
 </script>
 
@@ -132,9 +274,18 @@ function bagText(row: IdpRow, key: string): string {
       @update:size="resize"
     />
 
-    <h2 class="mt-6 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-      {{ say("events-receivers") }}
-    </h2>
+    <div class="mt-6 flex max-w-3xl items-center">
+      <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("events-receivers") }}
+      </h2>
+      <button
+        type="button"
+        class="ml-auto rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:bg-surface-2 hover:text-ink"
+        @click="openCreate('caep-push')"
+      >
+        {{ say("events-add-receiver") }}
+      </button>
+    </div>
     <p v-if="!receivers.length" class="mt-2 text-xs text-muted">
       {{ say("events-no-receivers") }}
     </p>
@@ -145,7 +296,13 @@ function bagText(row: IdpRow, key: string): string {
         class="rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
       >
         <div class="flex items-center gap-2">
-          <span class="font-medium">{{ row.display_name || row.name }}</span>
+          <button
+            type="button"
+            class="font-medium hover:text-accent"
+            @click="openEdit(row)"
+          >
+            {{ row.display_name || row.name }}
+          </button>
           <span class="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted">
             {{ bagText(row, "delivery") || "push" }}
           </span>
@@ -155,16 +312,45 @@ function bagText(row: IdpRow, key: string): string {
           >
             {{ row.enabled === false ? say("users-disabled") : say("users-active") }}
           </span>
+          <button
+            type="button"
+            class="rounded-md border border-border px-2 py-0.5 text-[10.5px] text-muted hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+            :disabled="proving === row.provider_id"
+            @click="prove(row)"
+          >
+            {{ proving === row.provider_id ? say("connector-proving") : say("connector-prove") }}
+          </button>
         </div>
         <div class="mt-1 font-mono text-[10.5px] text-faint">
           {{ bagText(row, "endpoint") || bagText(row, "audience") }}
         </div>
+        <p
+          v-if="proofs[row.provider_id]"
+          class="mt-1.5 text-[10.5px]"
+          :class="proofs[row.provider_id].proven ? 'text-ok' : 'text-danger'"
+          role="status"
+        >
+          {{ proofs[row.provider_id].proven ? say("connector-proven") : say("connector-unproven") }}
+          {{ proofs[row.provider_id].said
+          }}<template v-if="proofs[row.provider_id].status !== null">
+            ({{ proofs[row.provider_id].status }})</template
+          >
+        </p>
       </div>
     </div>
 
-    <h2 class="mt-6 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-      {{ say("events-connectors") }}
-    </h2>
+    <div class="mt-6 flex max-w-3xl items-center">
+      <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("events-connectors") }}
+      </h2>
+      <button
+        type="button"
+        class="ml-auto rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:bg-surface-2 hover:text-ink"
+        @click="openCreate('scim-outbound')"
+      >
+        {{ say("events-add-connector") }}
+      </button>
+    </div>
     <p v-if="!connectors.length" class="mt-2 text-xs text-muted">
       {{ say("events-no-connectors") }}
     </p>
@@ -172,17 +358,183 @@ function bagText(row: IdpRow, key: string): string {
       <div
         v-for="row in connectors"
         :key="row.internal_id"
-        class="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+        class="rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
       >
-        <span class="font-medium">{{ row.display_name || row.name }}</span>
-        <span class="font-mono text-[10.5px] text-faint">{{ bagText(row, "base_url") }}</span>
-        <span
-          class="ml-auto text-[10.5px]"
-          :class="row.enabled === false ? 'text-danger' : 'text-faint'"
+        <div class="flex items-center gap-3">
+          <button
+            type="button"
+            class="font-medium hover:text-accent"
+            @click="openEdit(row)"
+          >
+            {{ row.display_name || row.name }}
+          </button>
+          <span class="font-mono text-[10.5px] text-faint">{{ bagText(row, "base_url") }}</span>
+          <span
+            class="ml-auto text-[10.5px]"
+            :class="row.enabled === false ? 'text-danger' : 'text-faint'"
+          >
+            {{ row.enabled === false ? say("users-disabled") : say("users-active") }}
+          </span>
+          <button
+            type="button"
+            class="rounded-md border border-border px-2 py-0.5 text-[10.5px] text-muted hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+            :disabled="proving === row.provider_id"
+            @click="prove(row)"
+          >
+            {{ proving === row.provider_id ? say("connector-proving") : say("connector-prove") }}
+          </button>
+        </div>
+        <p
+          v-if="proofs[row.provider_id]"
+          class="mt-1.5 text-[10.5px]"
+          :class="proofs[row.provider_id].proven ? 'text-ok' : 'text-danger'"
+          role="status"
         >
-          {{ row.enabled === false ? say("users-disabled") : say("users-active") }}
-        </span>
+          {{ proofs[row.provider_id].proven ? say("connector-proven") : say("connector-unproven") }}
+          {{ proofs[row.provider_id].said
+          }}<template v-if="proofs[row.provider_id].status !== null">
+            ({{ proofs[row.provider_id].status }})</template
+          >
+        </p>
       </div>
     </div>
+
+    <AppDrawer
+      v-if="editing"
+      :title="
+        editing.alias ??
+        say(editing.kind === 'scim-outbound' ? 'events-new-connector' : 'events-new-receiver')
+      "
+      :subtitle="editing.kind"
+      @close="editing = null"
+    >
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="save">
+        <label v-if="!editing.alias" class="block text-[11px] font-medium text-muted">
+          {{ say("connector-alias") }}
+          <input
+            v-model="form.alias"
+            required
+            spellcheck="false"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("connector-display") }}
+          <input
+            v-model="form.displayName"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          />
+        </label>
+        <AppToggle v-model="form.enabled">{{ say("connector-enabled") }}</AppToggle>
+
+        <template v-if="editing.kind === 'scim-outbound'">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("connector-base-url") }}
+            <input
+              v-model="form.baseUrl"
+              required
+              spellcheck="false"
+              placeholder="https://app.example/scim/v2"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            />
+          </label>
+        </template>
+        <template v-else>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("connector-delivery") }}
+            <select
+              v-model="form.delivery"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            >
+              <option value="push">{{ say("connector-delivery-push") }}</option>
+              <option value="poll">{{ say("connector-delivery-poll") }}</option>
+            </select>
+          </label>
+          <label v-if="form.delivery === 'push'" class="block text-[11px] font-medium text-muted">
+            {{ say("connector-endpoint") }}
+            <input
+              v-model="form.endpoint"
+              required
+              spellcheck="false"
+              placeholder="https://soc.example/events"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("connector-audience") }}
+            <input
+              v-model="form.audience"
+              spellcheck="false"
+              :required="form.delivery === 'poll'"
+              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            />
+            <span v-if="form.delivery === 'push'" class="mt-0.5 block font-normal text-faint">
+              {{ say("connector-audience-hint") }}
+            </span>
+          </label>
+          <fieldset class="block text-[11px] font-medium text-muted">
+            <legend>{{ say("connector-events") }}</legend>
+            <div class="mt-1 grid gap-1">
+              <label
+                v-for="[short, uri] in KNOWN_EVENTS"
+                :key="uri"
+                class="flex cursor-pointer items-center gap-2 font-normal"
+              >
+                <input v-model="form.events" type="checkbox" :value="uri" class="accent-current" />
+                <span class="font-mono text-[10.5px]">{{ short }}</span>
+              </label>
+            </div>
+            <span class="mt-0.5 block font-normal text-faint">
+              {{ say("connector-events-hint") }}
+            </span>
+          </fieldset>
+        </template>
+
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("connector-bearer") }}
+          <input
+            v-model="form.bearer"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          />
+          <span v-if="bearerOnFile" class="mt-0.5 block font-normal text-faint">
+            {{ say("connector-bearer-kept") }}
+          </span>
+        </label>
+
+        <button
+          type="submit"
+          :disabled="saving"
+          class="self-start rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink disabled:opacity-40"
+        >
+          {{ say("settings-save") }}
+        </button>
+
+        <div v-if="editing.alias" class="mt-2 rounded-lg border border-danger/40 p-3">
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">
+            {{ say("settings-danger") }}
+          </div>
+          <p class="mt-1 text-[11px] text-muted">{{ say("connector-delete-lede") }}</p>
+          <div class="mt-2 flex items-center gap-2">
+            <input
+              v-model="doomName"
+              :placeholder="editing.alias"
+              spellcheck="false"
+              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            />
+            <button
+              type="button"
+              class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              :disabled="doomName !== editing.alias"
+              @click="drop"
+            >
+              {{ say("connector-delete") }}
+            </button>
+          </div>
+        </div>
+      </form>
+    </AppDrawer>
   </div>
 </template>

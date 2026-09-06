@@ -10,6 +10,26 @@ export interface IdpRow {
   configs: Record<string, { Str?: string } | string> | null;
 }
 
+/// What a provider write carries, `models::entities::authz::IdentityProviderMutationModel`.
+export interface IdpMutation {
+  provider_id: string;
+  name: string;
+  display_name: string;
+  description: string;
+  enabled: boolean;
+  trust_email: boolean;
+  configs: Record<string, { Str: string }>;
+}
+
+/// What `POST .../identity-providers/{alias}/prove` answers: whether the
+/// pipe held, how it was exercised, and the far side's words.
+export interface DeliveryProof {
+  proven: boolean;
+  how: string;
+  status: number | null;
+  said: string;
+}
+
 /// Partial mirror of `models::entities::brokering::UserFederationModel`.
 export interface DirectoryRow {
   alias: string;

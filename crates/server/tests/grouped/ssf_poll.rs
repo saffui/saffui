@@ -224,3 +224,80 @@ async fn a_collector_takes_its_events_and_acknowledges_them() {
         "{told}"
     );
 }
+
+/// The prove button's journey for a collector: nothing is pushed, because
+/// nothing can be; the signed verification event is queued where the
+/// collector already takes delivery, and its next poll is the proof.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_prove_button_leaves_a_verification_event_for_the_collector() {
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    walked(&plane).await;
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "the-collector",
+            "name": "the-collector",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "caep-push" },
+                "delivery": { "Str": "poll" },
+                "audience": { "Str": "https://collector.example" },
+                "bearer": { "Str": "collector-secret" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+
+    let (status, proof) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers/the-collector/prove"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{proof}");
+    assert_eq!(proof["proven"], true, "{proof}");
+    assert_eq!(proof["how"], "queued", "{proof}");
+
+    // The collector's next visit finds the verification event, verified
+    // against the realm's own keys, and acknowledges it away.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/realms/{REALM}/ssf/poll"),
+        "collector-secret",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let sets = told["sets"].as_object().expect("a sets object");
+    assert_eq!(sets.len(), 1, "{told}");
+    let (jti, set) = sets.iter().next().expect("one set");
+    let claims = plane.claims_of(set.as_str().expect("a token")).await;
+    assert_eq!(claims["aud"], "https://collector.example", "{claims}");
+    let event =
+        &claims["events"]["https://schemas.openid.net/secevent/ssf/event-type/verification"];
+    assert!(event["state"].is_string(), "{claims}");
+    let (status, emptied) = asked(
+        &plane,
+        Method::POST,
+        &format!("/realms/{REALM}/ssf/poll"),
+        "collector-secret",
+        Some(json!({ "ack": [jti] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{emptied}");
+    assert_eq!(
+        emptied["sets"].as_object().map(serde_json::Map::len),
+        Some(0),
+        "{emptied}"
+    );
+}

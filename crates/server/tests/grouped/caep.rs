@@ -161,9 +161,10 @@ async fn what_happens_here_is_signalled_there() {
         None,
     )
     .await;
+    assert_eq!(kept["configs"]["bearer"]["Str"], "**********", "{kept}");
     assert!(
-        kept["configs"].get("bearer").is_none(),
-        "the bearer rode back out: {kept}"
+        kept["configs"].get("bearer_sealed").is_none(),
+        "the sealed bearer rode back out: {kept}"
     );
 
     // A second login for ada, so the one revoked is not the one the admin
@@ -342,4 +343,163 @@ async fn what_happens_here_is_signalled_there() {
             .is_some_and(|held| held.ends_with("/protocol/openid-connect/certs")),
         "{told}"
     );
+}
+
+/// The prove button's journey for a push receiver, and the sealed bearer's
+/// whole life on the plane: masked in every answer, kept across a rewrite
+/// that only echoes the mask back, and spoken on the wire when the signed
+/// verification event is handed over. A plain broker has no pipe to prove.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_prove_button_hands_the_receiver_a_verification_event() {
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (heard_tx, mut heard) = tokio::sync::mpsc::unbounded_channel::<(String, String, String)>();
+    let ear = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let ear_port = ear.local_addr().unwrap().port();
+    let listening = actix_web::HttpServer::new(move || {
+        let heard_tx = heard_tx.clone();
+        actix_web::App::new().route(
+            "/events",
+            actix_web::web::post().to(
+                move |request: actix_web::HttpRequest, body: actix_web::web::Bytes| {
+                    let told = (
+                        request
+                            .headers()
+                            .get("authorization")
+                            .and_then(|held| held.to_str().ok())
+                            .unwrap_or_default()
+                            .to_owned(),
+                        request
+                            .headers()
+                            .get("content-type")
+                            .and_then(|held| held.to_str().ok())
+                            .unwrap_or_default()
+                            .to_owned(),
+                        String::from_utf8_lossy(&body).into_owned(),
+                    );
+                    let _ = heard_tx.send(told);
+                    async { actix_web::HttpResponse::Accepted().finish() }
+                },
+            ),
+        )
+    })
+    .listen(ear)
+    .expect("a listener")
+    .workers(1)
+    .disable_signals()
+    .run();
+    tokio::spawn(listening);
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "the-proven",
+            "name": "the-proven",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "caep-push" },
+                "endpoint": { "Str": format!("http://127.0.0.1:{ear_port}/events") },
+                "audience": { "Str": "https://watcher.example" },
+                "bearer": { "Str": "watcher-secret" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+
+    // Every answer wears the mask and never the sealed bytes.
+    let (_, kept) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/identity-providers/the-proven"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(kept["configs"]["bearer"]["Str"], "**********", "{kept}");
+    assert!(
+        kept["configs"].get("bearer_sealed").is_none(),
+        "the sealed bearer rode back out: {kept}"
+    );
+
+    // A rewrite that only echoes the answer keeps the bearer: the mask is
+    // this plane's own word, never a new secret.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/identity-providers/the-proven"),
+        &bearer,
+        Some(json!({
+            "provider_id": "the-proven",
+            "name": "the-proven",
+            "display_name": "", "description": "", "trust_email": false,
+            "enabled": true,
+            "configs": {
+                "kind": { "Str": "caep-push" },
+                "endpoint": { "Str": format!("http://127.0.0.1:{ear_port}/events") },
+                "audience": { "Str": "https://watcher.example" },
+                "bearer": { "Str": "**********" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let (status, proof) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers/the-proven/prove"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{proof}");
+    assert_eq!(proof["proven"], true, "{proof}");
+    assert_eq!(proof["how"], "pushed", "{proof}");
+
+    let (authorization, content_type, body) = heard.recv().await.expect("the ear heard");
+    assert_eq!(authorization, "Bearer watcher-secret");
+    assert_eq!(content_type, "application/secevent+jwt");
+    let claims = plane.claims_of(&body).await;
+    assert_eq!(claims["aud"], "https://watcher.example", "{claims}");
+    let event =
+        &claims["events"]["https://schemas.openid.net/secevent/ssf/event-type/verification"];
+    assert!(event["state"].is_string(), "{claims}");
+
+    // A plain broker has no pipe to prove.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "corp-okta",
+            "name": "corp-okta",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "issuer": { "Str": "https://op.example/realms/main" },
+                "authorization_endpoint": { "Str": "https://op.example/auth" },
+                "token_endpoint": { "Str": "https://op.example/token" },
+                "jwks_uri": { "Str": "https://op.example/certs" },
+                "client_id": { "Str": "saffui-at-op" },
+                "client_secret": { "Str": "a-shared-secret" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let (status, refusal) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers/corp-okta/prove"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refusal}");
 }

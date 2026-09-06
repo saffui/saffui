@@ -18,3 +18,5 @@ mod scim;
 mod spnego_login;
 #[path = "grouped/ssf_poll.rs"]
 mod ssf_poll;
+#[path = "grouped/two_writers.rs"]
+mod two_writers;

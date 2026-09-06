@@ -1,0 +1,130 @@
+# Two instances of one deployment: one database, one issuer, two saffui
+# processes, and an ear that plays the provisioned application they deliver
+# into. This is the rig `harness.mjs` drives; nothing here is a secret worth
+# keeping. The two instances share every setting, most of all the public
+# origin: they are one deployment to every token they mint, reached on two
+# host ports only so the harness can choose who serves each request.
+
+name: saffui-ha
+
+x-saffui: &saffui
+  image: saffui:local
+  pull_policy: never
+  environment: &saffui-env
+    SAFFUI_DATABASE_URL: host=postgres user=saffui_app password=saffui_app dbname=saffui
+    SAFFUI_PUBLIC_ORIGIN: http://localhost:18080
+    SAFFUI_ADMIN_AUDIENCES: saffui-console
+    SAFFUI_ADMIN_PARTIES: saffui-console
+    SAFFUI_CRYPTO_KEK: a-development-wrapping-key-of-decent-length
+    SAFFUI_LOG: ${SAFFUI_LOG:-info}
+    SAFFUI_LOG_FORMAT: ${SAFFUI_LOG_FORMAT:-text}
+    # Short ticks, so the harness watches passes rather than waits for them.
+    SAFFUI_SWEEP_SECONDS: "5"
+    SAFFUI_OUTBOX_SECONDS: "2"
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: saffui
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d saffui"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    <<: *saffui
+    command: ["migrate"]
+    environment:
+      <<: *saffui-env
+      SAFFUI_DATABASE_URL: host=postgres user=postgres password=postgres dbname=saffui
+      SAFFUI_APP_ROLE_PASSWORD: saffui_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # The console client answers to both host ports, so a login served by
+  # either instance lands: the registered redirect is checked against this
+  # list, not against whoever happened to answer.
+  provision:
+    <<: *saffui
+    command:
+      - provision
+      - --tenant=local
+      - --realm=main
+      - --console-redirect=http://localhost:18080/console/login/return
+      - --console-redirect=http://localhost:28080/console/login/return
+      - --user=ada
+      - --administrator
+      - --email=ada@example.test
+      - --given-name=Ada
+      - --family-name=Lovelace
+    environment:
+      <<: *saffui-env
+      SAFFUI_PROVISION_USER_PASSWORD: ${SAFFUI_USER_PASSWORD:-a-password-of-decent-length}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  saffui-a:
+    <<: *saffui
+    container_name: saffui-ha-a
+    ports:
+      - "18080:8080"
+      - "18081:8081"
+    # Longer than the drain, so a stop is heard as SIGTERM and answered,
+    # never escalated to SIGKILL while requests are still in flight.
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
+  saffui-b:
+    <<: *saffui
+    container_name: saffui-ha-b
+    ports:
+      - "28080:8080"
+      - "28081:8081"
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+
+  # The far side the outbox delivers into: a SCIM-shaped counter. It answers
+  # slowly on purpose, so a delivery pass is wide enough to be killed in the
+  # middle of, and it remembers every call so the harness can count.
+  ear:
+    image: node:22-bookworm-slim
+    container_name: saffui-ha-ear
+    command: ["node", "/rig/ear.mjs"]
+    environment:
+      EAR_BEARER: an-ear-bearer-of-decent-length-for-the-rig
+      EAR_DELAY_MS: "200"
+    volumes:
+      - ./ear.mjs:/rig/ear.mjs:ro
+    ports:
+      - "19999:9999"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:9999/tally').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 30

@@ -350,9 +350,13 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     };
 
     // Bound before anything is announced, and before the probes say started.
+    // Neither server hears signals itself: the framework's own handler would
+    // stop accepting the moment one lands, ahead of the drain below that
+    // fails readiness first and gives an orchestrator time to route away.
     let probes = {
         let vitals = vitals.clone();
         HttpServer::new(move || App::new().configure(register_ops(&vitals)))
+            .disable_signals()
             .bind(ops)
             .map_err(|reason| format!("cannot listen on {ops}: {reason}"))?
             .run()
@@ -361,6 +365,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     // Bound before anything is announced, so a port already taken fails here
     // rather than after the log line says it is serving.
     let plane = HttpServer::new(move || observed().configure(register(&plane)))
+        .disable_signals()
         .bind(bind)
         .map_err(|reason| format!("cannot listen on {bind}: {reason}"))?
         .run();
@@ -393,7 +398,26 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     let plane_handle = plane.handle();
     let probes_handle = probes.handle();
     tokio::spawn(async move {
-        if signal::ctrl_c().await.is_err() {
+        // An orchestrator says SIGTERM where a terminal says SIGINT, and both
+        // mean the same drain. Listening for SIGINT alone would have a
+        // `docker stop` or a pod eviction kill this process outright, in the
+        // middle of whatever it was answering.
+        let interrupted = signal::ctrl_c();
+        let terminated = async {
+            match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+                Ok(mut termination) => {
+                    termination.recv().await;
+                }
+                // A listener that cannot be installed is a signal this
+                // process will never hear; the other one still is.
+                Err(_) => std::future::pending().await,
+            }
+        };
+        let heard = tokio::select! {
+            outcome = interrupted => outcome.is_ok(),
+            () = terminated => true,
+        };
+        if !heard {
             return;
         }
         // Readiness fails first, and only then is anything stopped. Stopping

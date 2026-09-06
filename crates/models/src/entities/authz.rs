@@ -66,6 +66,8 @@ str_enum! {
         IgaWrite => "iga:write",
         JournalRead => "journal:read",
         JournalWrite => "journal:write",
+        DsarRead => "dsar:read",
+        DsarWrite => "dsar:write",
     }
 }
 
@@ -956,7 +958,7 @@ mod tests {
 
     #[test]
     fn the_vocabulary_agrees_with_its_own_spelling() {
-        assert_eq!(AdminAction::ALL.len(), 43);
+        assert_eq!(AdminAction::ALL.len(), 45);
         assert_round_trips(AdminAction::ALL);
     }
 

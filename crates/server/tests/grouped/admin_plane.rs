@@ -1730,3 +1730,182 @@ async fn a_cut_is_struck_in_the_past_and_never_in_the_future() {
         );
     }
 }
+
+/// The subject-request register, end to end: the clock is counted from the
+/// statute and answers with its citation, a jurisdiction that fixes no
+/// window demands a date, the lifecycle refuses what the law refuses, and
+/// lodging against an unknown identifier answers exactly like a known one,
+/// so the register is not a way to ask which addresses hold accounts.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_subject_request_walks_its_lifecycle_and_the_clock_is_cited() {
+    let plane = Plane::with_actions(&[AdminAction::DsarRead, AdminAction::DsarWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/subject-requests");
+
+    // Kenya's seven days, counted and cited.
+    let (status, lodged) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "subject_identifier": "ada",
+            "kind": "erasure",
+            "jurisdiction": "ke",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{lodged}");
+    assert_eq!(lodged["stage"], "received", "{lodged}");
+    assert_eq!(
+        lodged["due_at"].as_i64(),
+        lodged["received_at"].as_i64().map(|at| at + 7 * 86_400),
+        "{lodged}"
+    );
+    assert!(
+        lodged["deadline_source"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("seven days"),
+        "{lodged}"
+    );
+    assert_eq!(lodged["user_id"], "ada", "{lodged}");
+    let request_id = lodged["request_id"].as_str().expect("an id").to_owned();
+
+    // An identifier nobody answers to is lodged in exactly the same shape.
+    let (status, stranger) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "subject_identifier": "nobody@example.test",
+            "kind": "access",
+            "jurisdiction": "ke",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{stranger}");
+    assert!(stranger["user_id"].is_null(), "{stranger}");
+    let keys = |told: &serde_json::Value| {
+        let mut named: Vec<String> = told
+            .as_object()
+            .expect("an object")
+            .keys()
+            .cloned()
+            .collect();
+        named.sort();
+        named
+    };
+    assert_eq!(
+        keys(&lodged),
+        keys(&stranger),
+        "the two answers differ in shape"
+    );
+
+    // A jurisdiction that fixes no window refuses to invent one.
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "subject_identifier": "ada",
+            "kind": "access",
+            "jurisdiction": "ng",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("fixes no window"),
+        "{told}"
+    );
+    let (status, dated) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "subject_identifier": "ada",
+            "kind": "access",
+            "jurisdiction": "ng",
+            "due_at": 4_102_444_800i64,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{dated}");
+    assert_eq!(dated["due_at"], 4_102_444_800i64, "{dated}");
+
+    // The register reads back, tightest clock first.
+    let (status, listed) = fetched(&plane, Method::GET, &base, &bearer).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert_eq!(listed.as_array().map(Vec::len), Some(3), "{listed}");
+    assert!(
+        listed[0]["due_at"].as_i64() <= listed[1]["due_at"].as_i64()
+            && listed[1]["due_at"].as_i64() <= listed[2]["due_at"].as_i64(),
+        "{listed}"
+    );
+    assert_eq!(listed[2]["jurisdiction"], "ng", "{listed}");
+
+    // The lifecycle: proven, not provable twice, then closed with a reason.
+    let (status, verified) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{request_id}/verify"),
+        &bearer,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{verified}");
+    assert_eq!(verified["stage"], "verified", "{verified}");
+    let (status, again) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{request_id}/verify"),
+        &bearer,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{again}");
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{request_id}/refuse"),
+        &bearer,
+        serde_json::json!({ "reason": "  " }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    let (status, refused) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{request_id}/refuse"),
+        &bearer,
+        serde_json::json!({ "reason": "legal hold" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{refused}");
+    assert_eq!(refused["stage"], "refused", "{refused}");
+    assert_eq!(refused["reason"], "legal hold", "{refused}");
+
+    // Another realm's register is another realm's: the rows do not cross.
+    plane.plant_realm("mirror").await;
+    let (status, elsewhere) = fetched(
+        &plane,
+        Method::GET,
+        "/admin/realms/mirror/subject-requests",
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{elsewhere}");
+    assert_eq!(elsewhere.as_array().map(Vec::len), Some(0), "{elsewhere}");
+
+    // An id nobody holds answers as absent, not as an error to tell apart.
+    let (status, told) = fetched(&plane, Method::GET, &format!("{base}/unknown"), &bearer).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+}

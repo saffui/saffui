@@ -12,6 +12,7 @@ import {
   updateRule,
 } from "@/services/governance";
 import AppHint from "@/components/AppHint.vue";
+import GovernanceTabs from "./GovernanceTabs.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import type { IgaGrant, IgaRule } from "@/models/federation";
 
@@ -139,6 +140,7 @@ function until(grant: IgaGrant): string {
 
 <template>
   <div>
+    <GovernanceTabs />
     <h1 class="text-lg font-semibold tracking-tight">{{ say("iga-title") }}</h1>
     <p class="mt-1 text-xs text-muted">{{ say("iga-lede") }}</p>
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>

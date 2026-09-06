@@ -7,6 +7,7 @@ pub mod brokering;
 pub mod caep_queue;
 pub mod client_scopes;
 pub mod clients;
+pub mod compliance;
 pub mod consents;
 pub mod credentials;
 pub mod deliveries;

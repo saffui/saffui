@@ -100,6 +100,7 @@ catalogue! {
     ScopeAlreadyExists = 951, 409, "scope.already_exists", "an authorization scope with this name already exists";
     PolicyNotFound = 960, 404, "policy.not_found", "authorization policy not found";
     PolicyAlreadyExists = 961, 409, "policy.already_exists", "an authorization policy with this name already exists";
+    SubjectRequestNotFound = 990, 404, "subject_request.not_found", "subject request not found";
 }
 
 #[cfg(test)]
@@ -176,7 +177,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 56);
+        assert_eq!(ErrorCode::ALL.len(), 57);
     }
 
     /// A message never restates the slug, and never carries a value.

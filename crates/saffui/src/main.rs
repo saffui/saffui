@@ -112,6 +112,10 @@ enum Command {
         /// a login costs then includes whoever can read the mailbox.
         #[arg(long = "magic-link", default_value_t = false)]
         magic_link: bool,
+        /// Offer a texted one-time code as an alternative to the password.
+        /// What a login costs then includes whoever holds the phone.
+        #[arg(long = "texted-login", default_value_t = false)]
+        texted_login: bool,
         /// Let the registered clients receive what the authorization endpoint
         /// mints, rather than only a code to exchange.
         #[arg(long = "implicit", default_value_t = false)]
@@ -237,6 +241,7 @@ fn main() -> ExitCode {
                         phone,
                         attributes,
                         magic_link,
+                        texted_login,
                         implicit,
                         open_registration,
                         registration_max_clients,
@@ -261,6 +266,7 @@ fn main() -> ExitCode {
                             phone,
                             attributes,
                             magic_link,
+                            texted_login,
                             implicit,
                             open_registration,
                             registration_max_clients,
@@ -508,6 +514,7 @@ struct Wanted {
     phone: Option<String>,
     attributes: Vec<String>,
     magic_link: bool,
+    texted_login: bool,
     implicit: bool,
     open_registration: bool,
     registration_max_clients: Option<i32>,
@@ -601,6 +608,13 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
             .map_err(unreadable)?
     {
         println!("mailed sign-in offered");
+    }
+    if wanted.texted_login
+        && provisioning::provision_texted_login(&transaction, tenant, realm)
+            .await
+            .map_err(unreadable)?
+    {
+        println!("texted sign-in offered");
     }
     if provisioning::provision_levels(&transaction, realm)
         .await

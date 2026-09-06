@@ -100,6 +100,29 @@ pub async fn sole_by_email(
     Ok(Some(read(rows.remove(0))))
 }
 
+/// The one account this proven number names, or nothing.
+///
+/// Proven only, and sole only: a number nobody proved identifies nobody,
+/// and one two accounts share names neither, for the reason an address
+/// does not.
+pub async fn sole_by_proven_phone(
+    transaction: &Transaction<'_>,
+    phone_number: &str,
+) -> StoreResult<Option<UserModel>> {
+    let statement = format!(
+        "SELECT {COLUMNS} FROM users \
+         WHERE phone_number = $1 AND phone_number_verified = true LIMIT 2"
+    );
+    let mut rows = transaction
+        .query(statement.as_str(), &[&phone_number])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    if rows.len() != 1 {
+        return Ok(None);
+    }
+    Ok(Some(read(rows.remove(0))))
+}
+
 /// One user by phone number, which is a login identifier where it is used.
 pub async fn load_by_phone(
     transaction: &Transaction<'_>,

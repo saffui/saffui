@@ -613,3 +613,114 @@ async fn the_realms_own_words_ride_the_text() {
     );
     assert_eq!(code.len(), 6, "the code did not land in the words");
 }
+
+/// Offer the texted code beside the password, the way a deployment would.
+async fn offer_texted_login(plane: &Plane) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    assert!(
+        services::provisioning::provision_texted_login(
+            &transaction,
+            support::TENANT,
+            support::REALM
+        )
+        .await
+        .expect("the flow reshaped"),
+        "the texted alternative was not added"
+    );
+    transaction.commit().await.expect("the flow kept");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_proven_phone_alone_signs_a_person_in() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane, true).await;
+    offer_texted_login(&plane).await;
+    let textbox = Textbox::default();
+
+    // The number is the name, spelled with the spaces a person types, and
+    // no password rides the round.
+    let binding = open(&plane, &textbox).await;
+    let (status, told) = answer(
+        &plane,
+        &textbox,
+        &binding,
+        serde_json::json!({ "username": "+228 90 12 34 56" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert_eq!(told["asks"]["code_sent_to"], "\u{2026}56", "{told}");
+    let held = textbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    let code = code_in(&held[0].body);
+
+    let (status, told) = answer(
+        &plane,
+        &textbox,
+        &binding,
+        serde_json::json!({ "username": "+228 90 12 34 56", "sms_otp": code }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_unproven_or_shared_number_names_nobody() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane, false).await;
+    offer_texted_login(&plane).await;
+    let textbox = Textbox::default();
+
+    // Answered the way any unknown name is: the login stands unadmitted,
+    // no code is named on the screen, and nothing is texted.
+    let binding = open(&plane, &textbox).await;
+    let (status, told) = answer(
+        &plane,
+        &textbox,
+        &binding,
+        serde_json::json!({ "username": "+22890123456" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert!(told["asks"].get("code_sent_to").is_none(), "{told}");
+    assert!(textbox.held().is_empty(), "an unproven number was texted");
+
+    // Proven on two accounts, the number names neither.
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &within()).await;
+        store::providers::users::set_phone(
+            &transaction,
+            support::SUBJECT,
+            Some("+22890123456"),
+            true,
+        )
+        .await
+        .expect("the phone proven");
+        let other = format!("service-account-{}", support::CONFIDENTIAL);
+        store::providers::users::set_phone(&transaction, &other, Some("+22890123456"), true)
+            .await
+            .expect("the second phone proven");
+        transaction.commit().await.expect("the pair kept");
+    }
+    let binding = open(&plane, &textbox).await;
+    let (status, told) = answer(
+        &plane,
+        &textbox,
+        &binding,
+        serde_json::json!({ "username": "+22890123456" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert!(told["asks"].get("code_sent_to").is_none(), "{told}");
+    assert!(
+        textbox.held().is_empty(),
+        "a number two accounts share still rang one of them"
+    );
+}

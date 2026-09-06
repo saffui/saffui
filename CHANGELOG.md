@@ -10,6 +10,11 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- A two-instance rig (`deploy/ha/`): compose file, a SCIM-shaped counting
+  far side, and a harness that logs in through both instances and across
+  them, mutates people through both at once, kills one mid-delivery, and
+  asserts the journal verifies whole and no outbox event is lost or lands
+  twice. Runbook stubs for rolling restarts and instance loss ride along.
 - Registered client defaults (`default_max_age`, `default_acr_values`) now
   instruct the authorization endpoint when the request is silent.
 - The consent screen offers the client's registered privacy policy and terms
@@ -24,6 +29,9 @@ first release is cut.
   re-migrating and re-provisioning for every test.
 
 ### Fixed
+- The server drains on SIGTERM as it always did on SIGINT: readiness fails
+  first, in-flight requests finish, and only then does it stop. A `docker
+  stop` or a pod eviction used to kill it outright.
 - A one-time token bound to no login is spendable from whichever login of
   that person follows it.
 - Test rigs stop their local servers abruptly on cleanup, so a keep-alive

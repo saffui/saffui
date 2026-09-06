@@ -719,7 +719,30 @@ async fn recovery_code(
     )
     .await
     {
-        Ok(true) => Outcome::Passed,
+        Ok(true) => {
+            // Down to the last line, the sheet demands its successor, and the
+            // demand is served by this very login. One line has to stay
+            // spendable: the ceremony only runs once the flow has passed, so
+            // finishing it costs one more code, and a sheet allowed to reach
+            // zero would leave a flow no answer can pass. Zero still counts,
+            // for the sheets that get there anyway, so the demand stands
+            // where an operator or an alternative step can answer it.
+            let drained = credentials::count_recovery_codes(transaction, &subject.user_id)
+                .await
+                .is_ok_and(|left| left <= 1);
+            if drained
+                && users::require_action(
+                    transaction,
+                    &subject.user_id,
+                    models::entities::user::RequiredAction::ConfigureRecoveryCodes,
+                )
+                .await
+                .is_err()
+            {
+                return Outcome::Failed;
+            }
+            Outcome::Passed
+        }
         _ => Outcome::Failed,
     }
 }

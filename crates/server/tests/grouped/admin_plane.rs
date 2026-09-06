@@ -1653,3 +1653,80 @@ async fn a_password_this_account_wore_before_is_refused() {
     let (status, told) = set("a-fourth-one-of-decent-length").await;
     assert!(status.is_success(), "{told}");
 }
+
+/// The not-before doors, client and realm alike, take the past and refuse the
+/// future: a cut is an answer to a leak that already happened, and a future
+/// instant would refuse every token still to be minted, the console's own
+/// included. Striking, reading back, and lifting all ride the ordinary
+/// update; nothing new to learn under pressure.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_cut_is_struck_in_the_past_and_never_in_the_future() {
+    let plane = Plane::with_actions(&[
+        AdminAction::ClientRead,
+        AdminAction::ClientWrite,
+        AdminAction::RealmRead,
+        AdminAction::RealmWrite,
+    ])
+    .await;
+    let bearer = plane.token(&claims());
+    let clients = format!("/admin/realms/{REALM}/clients");
+    let realm = format!("/admin/realms/{REALM}");
+
+    let now = chrono::Utc::now().timestamp();
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("{clients}/{}", support::CONFIDENTIAL),
+        &bearer,
+        serde_json::json!({ "not_before": now }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (_, read) = fetched(
+        &plane,
+        Method::GET,
+        &format!("{clients}/{}", support::CONFIDENTIAL),
+        &bearer,
+    )
+    .await;
+    assert_eq!(read["not_before"], now, "{read}");
+
+    // 0 lifts it, and a rewrite naming nothing leaves it alone.
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("{clients}/{}", support::CONFIDENTIAL),
+        &bearer,
+        serde_json::json!({ "not_before": 0 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (_, read) = fetched(
+        &plane,
+        Method::GET,
+        &format!("{clients}/{}", support::CONFIDENTIAL),
+        &bearer,
+    )
+    .await;
+    assert!(read["not_before"].is_null(), "{read}");
+
+    // The future is refused at both doors, in words naming why.
+    for (path, body) in [
+        (
+            format!("{clients}/{}", support::CONFIDENTIAL),
+            serde_json::json!({ "not_before": now + 3600 }),
+        ),
+        (realm, serde_json::json!({ "not_before": now + 3600 })),
+    ] {
+        let (status, told) = written(&plane, Method::PUT, &path, &bearer, body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+        assert!(
+            told["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("revokes the past"),
+            "{told}"
+        );
+    }
+}

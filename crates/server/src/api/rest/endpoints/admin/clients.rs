@@ -158,6 +158,7 @@ pub async fn update(
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, client_id) = path.into_inner();
     let asked = body.into_inner();
+    refuse_a_cut_in_the_future(asked.not_before)?;
     let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
         .transaction(&mut connection, &within(&admin, &realm_id))
@@ -180,12 +181,31 @@ pub async fn update(
             .clone()
             .map(|held| (!held.is_empty()).then_some(held)),
         gates: gates_of(&asked)?,
+        not_before: asked.not_before,
     };
     let client = registry::update(&transaction, &client_id, &reshape)
         .await
         .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(ClientBrief::from(client)))
+}
+
+/// A not-before cut revokes the past. A cut in the future would refuse every
+/// token the client will ever mint, fresh sign-ins included, which on the
+/// console's own client is a door locking from the inside; five minutes of
+/// skew is the whole allowance.
+pub(super) fn refuse_a_cut_in_the_future(asked: Option<i32>) -> Result<(), ApiError> {
+    const SKEW_SECONDS: i64 = 300;
+    if let Some(at) = asked
+        && i64::from(at) > chrono::Utc::now().timestamp() + SKEW_SECONDS
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "not_before revokes the past: a cut in the future would refuse every              token still to be minted"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 pub async fn rotate_secret(

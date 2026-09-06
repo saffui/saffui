@@ -16,6 +16,8 @@ export interface ClientBrief {
   token_exchange: boolean;
   ciba_delivery: string;
   ciba_notification_endpoint: string | null;
+  /// The client-wide cut: tokens minted before this instant are refused.
+  not_before: number | null;
 }
 
 /// Mirrors `models::entities::client::ClientScopeModel`, plus the

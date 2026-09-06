@@ -165,6 +165,36 @@ async function copyFreshSecret() {
   }
 }
 
+/// The client-wide cut, struck at now and lifted with 0; the plane refuses
+/// a future instant, so now is the only cut this button can strike.
+const doomCut = ref("");
+async function refuseTokensMintedSoFar() {
+  try {
+    await updateClient(props.realm, props.clientId, {
+      not_before: Math.floor(Date.now() / 1000),
+    });
+    doomCut.value = "";
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+async function liftTheCut() {
+  try {
+    await updateClient(props.realm, props.clientId, { not_before: 0 });
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+function instant(epoch: number | null | undefined): string {
+  if (!epoch) return "";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(epoch * 1000));
+}
+
 const doomName = ref("");
 async function dropClient() {
   try {
@@ -359,7 +389,35 @@ async function dropScope(name: string) {
           <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">
             {{ say("settings-danger") }}
           </div>
-          <p class="mt-1 text-[11px] text-muted">{{ say("client-delete-lede") }}</p>
+          <p class="mt-1 text-[11px] text-muted">{{ say("client-cut-lede") }}</p>
+          <p v-if="client?.not_before" class="mt-1 text-[11px]">
+            {{ say("client-cut-standing") }}
+            <span class="font-mono">{{ instant(client.not_before) }}</span>
+            <button
+              type="button"
+              class="ml-2 rounded-md border border-border px-2 py-1 text-[11px] hover:bg-surface-2"
+              @click="liftTheCut"
+            >
+              {{ say("realm-cut-lift") }}
+            </button>
+          </p>
+          <div class="mt-2 flex items-center gap-2">
+            <input
+              v-model="doomCut"
+              :placeholder="props.clientId"
+              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              spellcheck="false"
+            />
+            <button
+              type="button"
+              class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              :disabled="doomCut !== props.clientId"
+              @click="refuseTokensMintedSoFar"
+            >
+              {{ say("realm-cut-strike") }}
+            </button>
+          </div>
+          <p class="mt-4 text-[11px] text-muted">{{ say("client-delete-lede") }}</p>
           <div class="mt-2 flex items-center gap-2">
             <input
               v-model="doomName"

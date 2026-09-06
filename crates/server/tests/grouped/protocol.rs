@@ -6186,3 +6186,109 @@ async fn a_demanded_password_change_happens_at_the_login_and_a_stale_one_demands
         "a stale password went on signing in: {told}"
     );
 }
+
+/// The realm's lever one client narrower. The boundary is walked with one
+/// token exactly as the realm's cut is, and two things the realm's test
+/// cannot say are said here: the neighbour client's token lives through the
+/// cut, and the refresh door refuses the cut client's grant too, because a
+/// cut that spared refreshing would only be an inconvenience.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_clients_cut_refuses_its_tokens_and_spares_its_neighbours() {
+    let plane = Plane::with_actions(&[]).await;
+    async fn granted_to(plane: &Plane, client_id: &str) -> serde_json::Value {
+        let code = plane
+            .mint_code(client_id, REDIRECT, "openid profile", None)
+            .await;
+        let (_, granted) = asking(
+            plane,
+            support::REALM,
+            &[
+                ("grant_type", "authorization_code"),
+                ("code", &code),
+                ("redirect_uri", REDIRECT),
+            ],
+            Some((client_id, support::CLIENT_SECRET)),
+        )
+        .await;
+        granted
+    }
+    let granted = granted_to(&plane, support::CONFIDENTIAL).await;
+    let token = granted["access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+    let refresh = granted["refresh_token"]
+        .as_str()
+        .expect("a refresh token")
+        .to_owned();
+    let neighbour = granted_to(&plane, support::OTHER).await["access_token"]
+        .as_str()
+        .expect("the neighbour's token")
+        .to_owned();
+    let minted_at = claims_in(&token)["iat"].as_i64().expect("an instant");
+
+    let (status, told, _) = userinfo(&plane, Some(&token)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    async fn strike(plane: &Plane, client_id: &str, at: Option<i64>) {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let mut client = store::providers::clients::load(&transaction, client_id)
+            .await
+            .unwrap()
+            .expect("the client");
+        client.not_before = at.map(|held| i32::try_from(held).expect("an instant that fits"));
+        store::providers::clients::update(&transaction, &client)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    // One second past the token: refused, and only for its own client.
+    strike(&plane, support::CONFIDENTIAL, Some(minted_at + 1)).await;
+    let (status, refused, _) = userinfo(&plane, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::UNAUTHORIZED,
+        "a token minted before the client's cut was still answered: {refused}"
+    );
+    let (status, told, _) = userinfo(&plane, Some(&neighbour)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the cut crossed to a neighbour client: {told}"
+    );
+
+    // The refresh door stands behind the same gate: the cut client's grant
+    // stops renewing, not just presenting.
+    let (_, renewed) = renew(&plane, &refresh).await;
+    assert_eq!(
+        renewed["error"], "invalid_grant",
+        "the cut client's refresh token still renewed: {renewed}"
+    );
+
+    // One second before it: admitted. The cut reads the token's own instant.
+    strike(&plane, support::CONFIDENTIAL, Some(minted_at - 1)).await;
+    let (status, told, _) = userinfo(&plane, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the cut refused a token minted after it: {told}"
+    );
+
+    // Lifted: an instant to compare against, not a mark on the tokens.
+    strike(&plane, support::CONFIDENTIAL, Some(minted_at + 1)).await;
+    strike(&plane, support::CONFIDENTIAL, None).await;
+    let (status, told, _) = userinfo(&plane, Some(&token)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the lifted cut still refused: {told}"
+    );
+}

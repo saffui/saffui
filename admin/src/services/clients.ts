@@ -52,6 +52,9 @@ export interface ClientSpec {
   /// One of "off", "poll", "ping". Anything else is refused by the plane.
   ciba_delivery?: string;
   ciba_notification_endpoint?: string;
+  /// Cut tokens minted before this instant; 0 lifts the cut, absent leaves
+  /// it alone. The plane refuses a cut in the future.
+  not_before?: number;
 }
 
 /// Creation answers the client, and for a confidential one the secret rides

@@ -141,7 +141,7 @@ async fn a_hosted_object_is_read_where_it_was_registered() {
         "an unregistered place was fetched"
     );
 
-    hosting.handle.stop(true).await;
+    hosting.handle.stop(false).await;
 }
 
 /// Where a deployment dials is its own choice, and the default is outward: an
@@ -166,7 +166,7 @@ async fn the_deployment_decides_where_it_will_dial() {
         StatusCode::FOUND,
         "a loopback address was dialled by a deployment that dials outward"
     );
-    hosting.handle.stop(true).await;
+    hosting.handle.stop(false).await;
 }
 
 /// Nothing is read that is not there, and nothing is read over a connection
@@ -190,5 +190,5 @@ async fn what_is_not_there_is_not_a_request() {
     let (status, _) = asking(&plane, Egress::Anywhere, &missing).await;
     assert_ne!(status, StatusCode::FOUND);
 
-    hosting.handle.stop(true).await;
+    hosting.handle.stop(false).await;
 }

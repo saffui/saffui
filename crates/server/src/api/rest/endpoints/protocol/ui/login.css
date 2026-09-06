@@ -227,3 +227,21 @@ a { color: var(--ink); }
   color: var(--ink);
   border-color: var(--border);
 }
+
+#signup-policy {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.85em;
+}
+#signup-policy li::before {
+  content: "\2022  ";
+  opacity: 0.5;
+}
+#signup-policy li.met {
+  opacity: 0.65;
+}
+#signup-policy li.met::before {
+  content: "\2713  ";
+  opacity: 1;
+}

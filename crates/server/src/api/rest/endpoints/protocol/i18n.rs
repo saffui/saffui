@@ -222,6 +222,91 @@ pub fn requests_page_in(tongue: &str) -> &'static str {
     &REQUESTS_PAGES[at]
 }
 
+/// The realm's password rules a signup page can check while the person
+/// types, as list items the script ticks off. Only the rules a browser can
+/// judge are here: the blacklist and the pattern stay the server's secret,
+/// and the birth date is nothing the form ever holds.
+pub fn policy_checklist(tongue: &str, policy: &models::entities::realm::PasswordPolicy) -> String {
+    let locale: LanguageIdentifier = tongue.parse().expect("a language tag");
+    let mut bundle = FluentBundle::new(vec![locale]);
+    bundle.set_use_isolating(false);
+    let resource = FluentResource::try_new(strings_in(tongue).to_owned())
+        .unwrap_or_else(|_| panic!("the {tongue} strings do not parse"));
+    bundle
+        .add_resource(resource)
+        .unwrap_or_else(|_| panic!("the {tongue} strings repeat a name"));
+    let spoken = |name: &str, n: Option<u32>| {
+        let message = bundle
+            .get_message(name)
+            .unwrap_or_else(|| panic!("`{name}` is not among the {tongue} strings"));
+        let pattern = message
+            .value()
+            .unwrap_or_else(|| panic!("`{name}` has no value"));
+        let mut args = fluent_bundle::FluentArgs::new();
+        if let Some(n) = n {
+            args.set("n", n);
+        }
+        let mut errors = Vec::new();
+        let value = bundle.format_pattern(pattern, Some(&args), &mut errors);
+        assert!(errors.is_empty(), "`{name}` did not format: {errors:?}");
+        super::page::escaped(&value)
+    };
+
+    let number = |held: Option<i64>| held.and_then(|n| u32::try_from(n).ok()).filter(|n| *n > 0);
+    let mut items = String::new();
+    for (rule, asked, key) in [
+        ("min-length", number(policy.min_length), "policy-min-length"),
+        ("max-length", number(policy.max_length), "policy-max-length"),
+        (
+            "digits",
+            policy.min_digits.filter(|n| *n > 0),
+            "policy-digits",
+        ),
+        (
+            "upper",
+            policy.min_upper_case.filter(|n| *n > 0),
+            "policy-upper",
+        ),
+        (
+            "lower",
+            policy.min_lower_case.filter(|n| *n > 0),
+            "policy-lower",
+        ),
+        (
+            "special",
+            policy.min_special_chars.filter(|n| *n > 0),
+            "policy-special",
+        ),
+    ] {
+        if let Some(n) = asked {
+            items.push_str(&format!(
+                "<li data-rule=\"{rule}\" data-n=\"{n}\">{}</li>",
+                spoken(key, Some(n))
+            ));
+        }
+    }
+    for (rule, asked, key) in [
+        ("not-username", policy.not_username, "policy-not-username"),
+        ("not-email", policy.not_email, "policy-not-email"),
+    ] {
+        if asked == Some(true) {
+            items.push_str(&format!(
+                "<li data-rule=\"{rule}\">{}</li>",
+                spoken(key, None)
+            ));
+        }
+    }
+    items
+}
+
+/// That tongue's raw strings, the same source `rendered` compiles.
+fn strings_in(tongue: &str) -> &'static str {
+    match tongue {
+        "fr" => STRINGS[1],
+        _ => STRINGS[0],
+    }
+}
+
 /// The template with every `{{name}}` replaced by that tongue's string,
 /// escaped on the way in: the strings are prose, and prose holds no markup.
 fn rendered(template: &str, tongue: &str, strings: &str) -> String {

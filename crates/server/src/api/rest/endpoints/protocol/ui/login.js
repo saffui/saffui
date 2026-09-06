@@ -94,6 +94,58 @@
     form.hidden = false;
     document.getElementById("signup-row").hidden = doors.indexOf("register") === -1;
   });
+  // The realm's password rules, rendered by the server into the list; the
+  // script only ticks them as the person types. The server still judges.
+  const policyList = document.getElementById("signup-policy");
+  const policyItems = policyList ? [].slice.call(policyList.children) : [];
+  function tickPolicy() {
+    if (!policyItems.length) {
+      return;
+    }
+    const password = signupForm.signup_password.value;
+    const folded = password.toLowerCase();
+    const count = function (kept) {
+      return password.split("").filter(kept).length;
+    };
+    policyItems.forEach(function (item) {
+      const n = Number(item.dataset.n || "0");
+      let met = false;
+      switch (item.dataset.rule) {
+        case "min-length":
+          met = password.length >= n;
+          break;
+        case "max-length":
+          met = password.length <= n;
+          break;
+        case "digits":
+          met = count(function (c) { return c >= "0" && c <= "9"; }) >= n;
+          break;
+        case "upper":
+          met = count(function (c) { return c !== c.toLowerCase(); }) >= n;
+          break;
+        case "lower":
+          met = count(function (c) { return c !== c.toUpperCase(); }) >= n;
+          break;
+        case "special":
+          met = count(function (c) {
+            return !/[\p{L}\p{N}]/u.test(c) && !/\s/.test(c);
+          }) >= n;
+          break;
+        case "not-username":
+          met = password !== "" && folded !== signupForm.signup_username.value.toLowerCase();
+          break;
+        case "not-email":
+          met = password !== "" && folded !== signupForm.signup_email.value.toLowerCase();
+          break;
+      }
+      item.className = met ? "met" : "";
+    });
+    policyList.hidden = false;
+  }
+  ["signup_password", "signup_username", "signup_email"].forEach(function (named) {
+    signupForm[named].addEventListener("input", tickPolicy);
+  });
+
   signupForm.addEventListener("submit", function (event) {
     event.preventDefault();
     const mismatch = document.getElementById("signup-mismatch");

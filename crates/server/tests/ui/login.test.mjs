@@ -570,3 +570,32 @@ test("a client that registered no pages shows no link row", async () => {
   assert.equal(page.element("asking-policy").hidden, true);
   assert.equal(page.element("asking-terms").hidden, true);
 });
+
+test("the policy checklist ticks while the person types", async () => {
+  const page = opened({
+    doors: "register",
+    policy: [
+      { rule: "min-length", n: 8 },
+      { rule: "digits", n: 1 },
+      { rule: "not-username" },
+    ],
+  });
+  const rows = page.element("signup-policy").children;
+  const met = () => rows.map((row) => row.className);
+
+  page.signupForm.signup_username.value = "ada";
+  page.signupForm.signup_password.value = "short";
+  page.signupForm.signup_password.fire("input");
+  assert.deepEqual(met(), ["", "", "met"], "a short password ticked length or digits");
+
+  page.signupForm.signup_password.value = "long-enough-4";
+  page.signupForm.signup_password.fire("input");
+  assert.deepEqual(met(), ["met", "met", "met"]);
+  assert.equal(page.element("signup-policy").hidden, false, "the list stayed hidden");
+
+  // The password that is the username, capitals notwithstanding, unticks the
+  // rule the moment the username field says so.
+  page.signupForm.signup_password.value = "Ada";
+  page.signupForm.signup_password.fire("input");
+  assert.deepEqual(met(), ["", "", ""], "the username with one capital passed");
+});

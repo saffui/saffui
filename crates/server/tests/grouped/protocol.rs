@@ -6491,3 +6491,55 @@ async fn a_clients_registered_defaults_speak_when_the_request_is_silent() {
         "the default overrode a request that spoke: {spoken}"
     );
 }
+
+/// The signup panel carries the realm's password rules, rendered by the
+/// server in the page's own tongue with the numbers already in the words,
+/// so the script has nothing to compose and nothing to get wrong. A realm
+/// with no policy renders no rows, and the blacklist never rides out.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_signup_panel_wears_the_realms_password_rules() {
+    async fn shown(plane: &Plane) -> String {
+        let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+        let request = test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/login",
+                support::REALM
+            ))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        String::from_utf8(test::read_body(response).await.to_vec()).expect("a page")
+    }
+    let plane = Plane::with_actions(&[]).await;
+
+    let body = shown(&plane).await;
+    assert!(!body.contains("data-rule"), "rules with no policy: {body}");
+
+    reshape_realm(&plane, |realm| {
+        realm.password_policy = Some(models::entities::realm::PasswordPolicy {
+            min_length: Some(12),
+            min_digits: Some(2),
+            not_username: Some(true),
+            blacklisted: Some(vec!["hunter2".into()]),
+            ..Default::default()
+        });
+    })
+    .await;
+    let body = shown(&plane).await;
+    assert!(
+        body.contains(r#"<li data-rule="min-length" data-n="12">At least 12 characters</li>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<li data-rule="digits" data-n="2">At least 2 digits</li>"#),
+        "{body}"
+    );
+    assert!(
+        body.contains(r#"<li data-rule="not-username">Not your username</li>"#),
+        "{body}"
+    );
+    assert!(
+        !body.contains("hunter2"),
+        "the blacklist rode onto the page: {body}"
+    );
+}

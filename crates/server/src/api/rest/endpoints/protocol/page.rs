@@ -127,8 +127,12 @@ async fn doors_of_realm(
     pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     realm: &str,
-) -> (String, Option<serde_json::Value>) {
-    let nothing = || (String::new(), None);
+) -> (
+    String,
+    Option<serde_json::Value>,
+    Option<models::entities::realm::PasswordPolicy>,
+) {
+    let nothing = || (String::new(), None, None);
     let Ok(mut connection) = pool.get().await else {
         return nothing();
     };
@@ -161,7 +165,7 @@ async fn doors_of_realm(
     if offers_recovery_codes(&transaction, held.browser_flow.as_deref()).await {
         doors.push("recovery-code");
     }
-    (doors.join(" "), held.page_overrides)
+    (doors.join(" "), held.page_overrides, held.password_policy)
 }
 
 /// Whether this realm's browser flow has a step that takes a printed code.
@@ -274,6 +278,7 @@ fn page(
     tongues: &i18n::RealmTongues,
     doors: &str,
     overrides: Option<&serde_json::Value>,
+    policy: Option<&models::entities::realm::PasswordPolicy>,
 ) -> HttpResponse {
     let tongue = tongues.negotiated(
         wanted,
@@ -294,7 +299,14 @@ fn page(
         .insert_header(("X-Content-Type-Options", "nosniff"))
         .insert_header(("X-Frame-Options", "DENY"))
         .insert_header(("Referrer-Policy", "no-referrer"))
-        .body(body.replace("{doors}", &escaped(doors)))
+        .body(
+            body.replace("{doors}", &escaped(doors)).replace(
+                "{policy}",
+                &policy
+                    .map(|held| i18n::policy_checklist(tongue, held))
+                    .unwrap_or_default(),
+            ),
+        )
 }
 
 /// What sends the form-post page on. Served rather than written into it: a
@@ -443,13 +455,14 @@ pub async fn magic_link(
         });
     let Some((named, token)) = followed else {
         let (wanted, tongues) = asked_tongue(&request, &pool, &tenancy, &realm).await;
-        let (doors, overrides) = doors_of_realm(&pool, &tenancy, &realm).await;
+        let (doors, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
         return page(
             &request,
             wanted.as_deref(),
             &tongues,
             &doors,
             overrides.as_ref(),
+            policy.as_ref(),
         );
     };
     let body = LINK_PAGE
@@ -510,8 +523,15 @@ pub async fn reset_password(
         asked.user.filter(|held| !held.is_empty()),
     ) else {
         let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
-        let (doors, overrides) = doors_of_realm(&pool, &tenancy, &realm).await;
-        return page(&request, None, &tongues, &doors, overrides.as_ref());
+        let (doors, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
+        return page(
+            &request,
+            None,
+            &tongues,
+            &doors,
+            overrides.as_ref(),
+            policy.as_ref(),
+        );
     };
     let body = RESET_PAGE
         .replace(

@@ -85,7 +85,7 @@ function namedOnThePage() {
 ///
 /// `rounds` is read in order, one per post. Whatever the script sends is kept
 /// in `sent`, and wherever it navigates to in `went`.
-export function opened({ rounds = [], fetching = true, doors = "" } = {}) {
+export function opened({ rounds = [], fetching = true, doors = "", policy = [] } = {}) {
   const named = namedOnThePage();
   const elements = new Map();
   const sent = [];
@@ -132,6 +132,16 @@ export function opened({ rounds = [], fetching = true, doors = "" } = {}) {
     ]) {
       signupForm[field] = new Element("input", field);
     }
+  }
+
+  // What the server would have rendered into the checklist: rule rows the
+  // script only ticks.
+  const policyList = element("signup-policy");
+  if (policyList && policy.length) {
+    policyList.children = policy.map((rule) => ({
+      dataset: { rule: rule.rule, n: rule.n === undefined ? "" : String(rule.n) },
+      className: "",
+    }));
   }
 
   const answers = [...rounds];

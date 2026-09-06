@@ -6405,3 +6405,89 @@ async fn the_next_to_last_code_demands_a_fresh_sheet_the_last_one_pays_for() {
     assert_eq!(told["status"], "admitted", "{told}");
     assert_eq!(plane.recovery_codes_left().await, 9);
 }
+
+/// The defaults a client registered finally instruct the door. Both are
+/// OIDC Registration §2 words with one meaning: apply exactly when the
+/// request is silent, never over a request that spoke. Until now they were
+/// stored, echoed back, and consulted by nothing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_clients_registered_defaults_speak_when_the_request_is_silent() {
+    let plane = Plane::with_actions(&[]).await;
+    async fn reshape_client(
+        plane: &Plane,
+        change: impl FnOnce(&mut models::entities::client::ClientModel),
+    ) {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        change(&mut client);
+        store::providers::clients::update(&transaction, &client)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    // The registered level, asked for by nobody: a password session does not
+    // reach the strong level, so a silent request goes back to authenticate.
+    reshape_client(&plane, |client| {
+        client.default_acr_values = Some(vec![support::STRONG_ACR.to_owned()]);
+    })
+    .await;
+    let session = signed_in_once(&plane).await;
+    let (_, silent) = authorize_signed_in(&plane, &asking_for(&[]), &session).await;
+    assert_eq!(
+        silent, "https://login.test",
+        "the registered level went unconsulted on a silent request"
+    );
+    let (_, spoken) = authorize_signed_in(
+        &plane,
+        &asking_for(&[("acr_values", support::PASSWORD_ACR)]),
+        &session,
+    )
+    .await;
+    assert!(
+        spoken.starts_with(REDIRECT),
+        "the default overrode a request that named its own level: {spoken}"
+    );
+    // A default the session satisfies passes exactly as the request's own
+    // word would: a hint, served, not an obstacle.
+    reshape_client(&plane, |client| {
+        client.default_acr_values = Some(vec![support::PASSWORD_ACR.to_owned()]);
+    })
+    .await;
+    let (_, satisfied) = authorize_signed_in(&plane, &asking_for(&[]), &session).await;
+    assert!(
+        satisfied.starts_with(REDIRECT),
+        "a satisfied default still bounced the login: {satisfied}"
+    );
+
+    // An hour-old authentication against a registered one-minute window. The
+    // backdate also forgets the session's level, so the level default has to
+    // be gone before freshness is what is being measured.
+    reshape_client(&plane, |client| {
+        client.default_acr_values = None;
+        client.default_max_age = Some(60);
+    })
+    .await;
+    plane.backdate_authentication(&session, 3_600).await;
+    let (_, silent) = authorize_signed_in(&plane, &asking_for(&[]), &session).await;
+    assert_eq!(
+        silent, "https://login.test",
+        "the registered window went unconsulted on a silent request"
+    );
+    let (_, spoken) =
+        authorize_signed_in(&plane, &asking_for(&[("max_age", "7200")]), &session).await;
+    assert!(
+        spoken.starts_with(REDIRECT),
+        "the default overrode a request that spoke: {spoken}"
+    );
+}

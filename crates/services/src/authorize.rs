@@ -270,20 +270,25 @@ pub async fn begin(
                 .collect(),
             AcrRequirement::Voluntary,
         ),
+        // A request naming nothing falls back to what the client registered
+        // as its default, OIDC Registration §2: registered to apply exactly
+        // when the request is silent, and never to override one that spoke.
         None => (
-            requested
+            match requested
                 .acr_values
-                .unwrap_or_default()
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect(),
+                .map(str::trim)
+                .filter(|held| !held.is_empty())
+            {
+                Some(spoken) => spoken.split_whitespace().map(str::to_owned).collect(),
+                None => client.default_acr_values.clone().unwrap_or_default(),
+            },
             AcrRequirement::Voluntary,
         ),
     };
     let asked = AuthContextRequest {
         acr_values,
         requirement,
-        max_age: requested.max_age,
+        max_age: requested.max_age.or(client.default_max_age.map(i64::from)),
         prompt_login: prompt.login,
     };
     let realm = realms::load(transaction, &tenant.realm_id)

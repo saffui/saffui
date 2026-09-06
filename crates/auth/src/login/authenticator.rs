@@ -479,111 +479,6 @@ async fn magic_link(
 const CODE_LIFESPAN: i64 = 300;
 const CODE_COOLDOWN: i64 = 60;
 const CODE_SENDS_PER_LOGIN: i64 = 3;
-pub(crate) const TEXTS_PER_REALM_PER_DAY: i32 = 250;
-
-/// How many texts one number may receive in one hour, until the realm says
-/// otherwise: a burst at one number is the shape inflated traffic takes.
-pub(crate) const TEXTS_PER_NUMBER_PER_HOUR: i32 = 5;
-
-/// Why a text was held back. Said to the sign-in log, never to the caller:
-/// what a throttle answers must not say which brake it tripped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Held {
-    BlockedPrefix,
-    NumberVelocity,
-    DayBudget,
-}
-
-impl Held {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::BlockedPrefix => "blocked-prefix",
-            Self::NumberVelocity => "number-velocity",
-            Self::DayBudget => "day-budget",
-        }
-    }
-}
-
-/// The realm's brakes on one send: a range it never texts, this number's
-/// hour, and the realm's day. Checked in the minting transaction, and a
-/// throttle is recorded where a failed sign-in is, because a throttle
-/// tripping is the fact an operator hunting inflated traffic reads.
-pub(crate) async fn text_brakes(
-    transaction: &Transaction<'_>,
-    realm: &RealmModel,
-    user_id: &str,
-    recipient: &str,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<Option<Held>, ()> {
-    let held = brakes_say(transaction, realm, recipient, now).await?;
-    if let Some(held) = held {
-        tracing::warn!(brake = held.as_str(), "a text was held back");
-        let _ = store::providers::login_events::record(
-            transaction,
-            now.timestamp(),
-            &store::providers::login_events::LoginEventWrite {
-                kind: "sms_throttled",
-                user_id: Some(user_id),
-                detail: Some(serde_json::json!({
-                    "brake": held.as_str(),
-                    "to": recipient,
-                })),
-                ..Default::default()
-            },
-        )
-        .await;
-    }
-    Ok(held)
-}
-
-async fn brakes_say(
-    transaction: &Transaction<'_>,
-    realm: &RealmModel,
-    recipient: &str,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<Option<Held>, ()> {
-    if realm
-        .sms_blocked_prefixes
-        .iter()
-        .flatten()
-        .any(|prefix| recipient.starts_with(prefix.as_str()))
-    {
-        return Ok(Some(Held::BlockedPrefix));
-    }
-    let to_number =
-        store::providers::sms::sent_to_number_this_hour(transaction, recipient, now.timestamp())
-            .await
-            .map_err(|_| ())?;
-    if to_number
-        >= realm
-            .sms_per_number_cap
-            .unwrap_or(TEXTS_PER_NUMBER_PER_HOUR)
-    {
-        return Ok(Some(Held::NumberVelocity));
-    }
-    let today = store::providers::sms::spent_today(transaction, now.timestamp())
-        .await
-        .map_err(|_| ())?;
-    if today >= realm.sms_daily_cap.unwrap_or(TEXTS_PER_REALM_PER_DAY) {
-        return Ok(Some(Held::DayBudget));
-    }
-    Ok(None)
-}
-
-/// Count one send everywhere a brake reads: the realm's day and this
-/// number's hour, in the same transaction that minted the code.
-pub(crate) async fn record_text(
-    transaction: &Transaction<'_>,
-    recipient: &str,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Result<(), ()> {
-    store::providers::sms::record_send(transaction, now.timestamp())
-        .await
-        .map_err(|_| ())?;
-    store::providers::sms::record_send_to_number(transaction, recipient, now.timestamp())
-        .await
-        .map_err(|_| ())
-}
 
 const SMS_OTP: &str = "sms-otp";
 /// The template kind, spelled the way a settings map keys it.
@@ -685,7 +580,9 @@ async fn sms_otp(
     // a code still in flight re-challenges, because that code can still
     // finish this login; with nothing in flight the step fails plainly, and
     // whatever alternative the flow holds stands in.
-    match text_brakes(transaction, realm, &subject.user_id, &phone, posting.now).await {
+    match crate::messaging::text_brakes(transaction, realm, &subject.user_id, &phone, posting.now)
+        .await
+    {
         Ok(None) => {}
         Ok(Some(_)) => {
             let in_flight =
@@ -723,7 +620,10 @@ async fn sms_otp(
     {
         return Answered::plain(Outcome::Failed);
     }
-    if record_text(transaction, &phone, posting.now).await.is_err() {
+    if crate::messaging::record_text(transaction, &phone, posting.now)
+        .await
+        .is_err()
+    {
         return Answered::plain(Outcome::Failed);
     }
 
@@ -738,7 +638,7 @@ async fn sms_otp(
                 settings: settings.duplicate(),
                 text: crate::messaging::Text {
                     to: phone,
-                    body: texted_words(realm, SMS_OTP_TEMPLATE, &code),
+                    body: crate::messaging::texted_words(realm, SMS_OTP_TEMPLATE, &code),
                 },
                 about: crate::messaging::About {
                     user_id: subject.user_id.clone(),
@@ -761,39 +661,6 @@ pub(crate) fn drawn_code(provider: &dyn CryptoProvider) -> Option<String> {
         }
     }
     None
-}
-
-/// The words around a code: the realm's rewording where it wrote one, held
-/// to a length at the door, and the built words otherwise. Short on purpose:
-/// an SMS is billed and truncated by length.
-pub(crate) fn texted_words(realm: &RealmModel, kind: &str, code: &str) -> String {
-    let spoken = realm
-        .sms_templates
-        .as_ref()
-        .and_then(|held| held.get(kind))
-        .and_then(|tongues| {
-            realm
-                .default_locale
-                .as_deref()
-                .and_then(|tongue| tongues.get(tongue))
-                .or_else(|| tongues.get("en"))
-                .or_else(|| tongues.values().next())
-        });
-    match spoken {
-        Some(body) => body.replace("{{code}}", code),
-        None => match (kind, realm.default_locale.as_deref()) {
-            ("verify_phone", Some("fr")) => {
-                format!("{code} est votre code de vérification. Il expire dans 5 minutes.")
-            }
-            ("verify_phone", _) => {
-                format!("{code} is your verification code. It expires in 5 minutes.")
-            }
-            (_, Some("fr")) => {
-                format!("{code} est votre code de connexion. Il expire dans 5 minutes.")
-            }
-            (_, _) => format!("{code} is your sign-in code. It expires in 5 minutes."),
-        },
-    }
 }
 
 /// Enough of a number for the person to recognise their own phone, and not

@@ -698,7 +698,7 @@ sms-templates-help = The realm's own words around the code. The body must carry 
 sms-template-kind = Text
 sms-template-tongue = Tongue
 sms-template-body = Body
-sms-template-body-help = {"{{code}}"} becomes the six digits. Leave empty to return to the built words.
+sms-template-body-help = {"{{code}}"} becomes the six digits; the doorbell text carries {"{{link}}"} instead. Leave empty to return to the built words.
 
 ## The writing doors of the bonus screens: roles, scopes, organizations,
 ## policies, relations, flow steps, governance, client roles, sub-groups.

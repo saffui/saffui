@@ -182,14 +182,17 @@ pub async fn open(
     // The realm's pacing where it set one; like the device flow, the row
     // keeps its birth interval, so a later retune never reshapes a request
     // already in someone's hand.
-    let (realm_expiry, poll_interval) =
-        match store::providers::realms::of_context(&transaction).await {
-            Ok(Some(realm)) => (
-                realm.ciba_expiry,
-                realm.ciba_interval.unwrap_or(ciba::POLL_INTERVAL),
-            ),
-            _ => (None, ciba::POLL_INTERVAL),
-        };
+    let realm_row = store::providers::realms::of_context(&transaction)
+        .await
+        .ok()
+        .flatten();
+    let (realm_expiry, poll_interval) = match &realm_row {
+        Some(realm) => (
+            realm.ciba_expiry,
+            realm.ciba_interval.unwrap_or(ciba::POLL_INTERVAL),
+        ),
+        None => (None, ciba::POLL_INTERVAL),
+    };
     let asked = match ciba::read_initiation(
         asked.scope.as_deref(),
         asked.login_hint.as_deref(),
@@ -371,6 +374,21 @@ pub async fn open(
             }
         }
     };
+    // The person's phone rings only when everything lines up: the realm can
+    // text, the number is proven, and the brakes say yes. A request nobody
+    // was told about still stands, because the doorbell page answers it
+    // either way; what a held brake costs is only the message.
+    let texting = doorbell_text(
+        &transaction,
+        &sealing,
+        &context,
+        &origin,
+        realm_row.as_ref(),
+        named.as_ref(),
+        now,
+    )
+    .await;
+
     let opened = store::providers::backchannel::open(
         &transaction,
         sealing.provider.digest(),
@@ -400,6 +418,9 @@ pub async fn open(
             "invalid_request",
             "the request could not be opened",
         );
+    }
+    if let Some(outgoing) = texting {
+        super::texting::deliver_text(&sealing, &pool, &tenancy, &context, outgoing).await;
     }
 
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(json!({
@@ -778,3 +799,60 @@ pub async fn doorbell_script() -> HttpResponse {
 }
 
 const REQUESTS_SCRIPT: &str = include_str!("ui/requests.js");
+
+/// The doorbell, texted: the words and the settings for one message telling
+/// this person a request awaits them, or nothing when the realm cannot text,
+/// the number is unproven, or a brake held it back. Counted where it is
+/// decided, in the same transaction that opens the request.
+async fn doorbell_text(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &Sealing,
+    context: &store::tenancy::TenantContext,
+    origin: &PublicOrigin,
+    realm: Option<&models::entities::realm::RealmModel>,
+    named: Option<&models::entities::user::UserModel>,
+    now: chrono::DateTime<Utc>,
+) -> Option<auth::messaging::OutgoingText> {
+    let realm = realm?;
+    let person = named?;
+    let phone = person.phone_number.as_deref().unwrap_or("").trim();
+    if phone.is_empty() || person.phone_number_verified != Some(true) || sealing.texter.is_none() {
+        return None;
+    }
+    let ring = store::keyring::load(
+        transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    .ok()?;
+    let settings = store::providers::sms::load(transaction, &ring, &sealing.envelope)
+        .await
+        .ok()
+        .flatten()?;
+    match auth::messaging::text_brakes(transaction, realm, &person.user_id, phone, now).await {
+        Ok(None) => {}
+        Ok(Some(_)) | Err(()) => return None,
+    }
+    auth::messaging::record_text(transaction, phone, now)
+        .await
+        .ok()?;
+
+    let link = format!(
+        "{}/realms/{}/protocol/openid-connect/requests",
+        origin.as_str(),
+        realm.name,
+    );
+    Some(auth::messaging::OutgoingText {
+        settings,
+        text: auth::messaging::Text {
+            to: phone.to_owned(),
+            body: auth::messaging::texted_link(realm, "ciba_doorbell", &link),
+        },
+        about: auth::messaging::About {
+            user_id: person.user_id.clone(),
+            purpose: "ciba-doorbell".to_owned(),
+        },
+    })
+}

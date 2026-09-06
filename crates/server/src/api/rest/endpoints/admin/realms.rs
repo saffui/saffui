@@ -550,20 +550,26 @@ pub async fn update(
     }
     if let Some(templates) = asked.sms_templates.as_ref() {
         for (kind, tongues) in templates {
-            if !matches!(kind.as_str(), "sms_otp" | "verify_phone") {
-                return Err(ApiError::with_detail(
-                    ErrorCode::ValidationError,
-                    format!("{kind} is not a text this server sends"),
-                ));
-            }
+            // Each kind carries the one thing its message exists to deliver:
+            // the code kinds their code, the doorbell its link.
+            let carried = match kind.as_str() {
+                "sms_otp" | "verify_phone" => "{{code}}",
+                "ciba_doorbell" => "{{link}}",
+                _ => {
+                    return Err(ApiError::with_detail(
+                        ErrorCode::ValidationError,
+                        format!("{kind} is not a text this server sends"),
+                    ));
+                }
+            };
             for body in tongues.values() {
                 let sound = !body.trim().is_empty()
                     && body.chars().count() <= 160
-                    && body.contains("{{code}}");
+                    && body.contains(carried);
                 if !sound {
                     return Err(ApiError::with_detail(
                         ErrorCode::ValidationError,
-                        "a text template carries {{code}} and fits in 160 characters".to_owned(),
+                        format!("a text template carries {carried} and fits in 160 characters"),
                     ));
                 }
             }

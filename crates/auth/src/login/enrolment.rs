@@ -846,7 +846,7 @@ async fn verify_phone_round(
     if sent_before >= PHONE_CODES_PER_LOGIN {
         return standing(sent_before);
     }
-    match crate::login::authenticator::text_brakes(
+    match crate::messaging::text_brakes(
         transaction,
         realm,
         &subject.user_id,
@@ -884,7 +884,7 @@ async fn verify_phone_round(
     {
         return Enrolment::Refused;
     }
-    if crate::login::authenticator::record_text(transaction, &texting_to, posting.now)
+    if crate::messaging::record_text(transaction, &texting_to, posting.now)
         .await
         .is_err()
     {
@@ -902,7 +902,7 @@ async fn verify_phone_round(
                 settings: settings.duplicate(),
                 text: crate::messaging::Text {
                     to: texting_to,
-                    body: crate::login::authenticator::texted_words(realm, "verify_phone", &code),
+                    body: crate::messaging::texted_words(realm, "verify_phone", &code),
                 },
                 about: crate::messaging::About {
                     user_id: subject.user_id.clone(),

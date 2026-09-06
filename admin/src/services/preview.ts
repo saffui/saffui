@@ -322,6 +322,19 @@ export function previewAnswer<T>(path: string): T {
       said: "the SCIM root answered as itself",
     });
   }
+  if (path.endsWith("/subject-requests")) {
+    return answer([
+      { request_id: "d-1", user_id: "ada", subject_identifier: "ada", kind: "erasure", stage: "received",
+        jurisdiction: "ke", received_at: 1788700000, due_at: 1788700000 - 86400, verified_at: null, closed_at: null,
+        deadline_source: "Data Protection (General) Regulations 2021, reg. 9(4), seven days." },
+      { request_id: "d-2", user_id: null, subject_identifier: "gone@example.test", kind: "access", stage: "verified",
+        jurisdiction: "eu", received_at: 1788700000, due_at: 1788700000 + 2000000, verified_at: 1788700000, closed_at: null,
+        deadline_source: "GDPR art. 12(3), one month, extendable by two" },
+      { request_id: "d-3", user_id: "linus", subject_identifier: "linus", kind: "objection", stage: "refused",
+        reason: "duplicate of d-1", jurisdiction: "eu", received_at: 1788700000, due_at: 1788700000 + 2000000,
+        verified_at: null, closed_at: 1788700000, deadline_source: "GDPR art. 12(3), one month, extendable by two" },
+    ]);
+  }
   if (path.endsWith("/identity-providers")) {
     return answer([
       { internal_id: "i-1", provider_id: "corp-okta", name: "corp-okta", display_name: "Corp Okta", description: "", enabled: true, trust_email: true, configs: null },

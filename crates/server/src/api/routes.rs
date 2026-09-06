@@ -4,9 +4,9 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, claim_sources, client_scopes, clients, directory, events, features, federation,
-    flows, idps, iga, journal, keys, mail, negotiation, portability, protocol_mappers, realm_keys,
-    realms, rebac, sessions, users,
+    authorization, claim_sources, client_scopes, clients, compliance, directory, events, features,
+    federation, flows, idps, iga, journal, keys, mail, negotiation, portability, protocol_mappers,
+    realm_keys, realms, rebac, sessions, users,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -424,6 +424,36 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/users/{user}/claim-sources/{source}",
             action: AdminAction::UserWrite,
             handler: Some(|| web::delete().to(claim_sources::remove)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/subject-requests",
+            action: AdminAction::DsarRead,
+            handler: Some(|| web::get().to(compliance::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/subject-requests",
+            action: AdminAction::DsarWrite,
+            handler: Some(|| web::post().to(compliance::lodge)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/subject-requests/{request}",
+            action: AdminAction::DsarRead,
+            handler: Some(|| web::get().to(compliance::get)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/subject-requests/{request}/verify",
+            action: AdminAction::DsarWrite,
+            handler: Some(|| web::post().to(compliance::verify)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/subject-requests/{request}/refuse",
+            action: AdminAction::DsarWrite,
+            handler: Some(|| web::post().to(compliance::refuse)),
         },
         AdminRoute {
             method: Method::GET,

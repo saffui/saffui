@@ -846,14 +846,20 @@ async fn verify_phone_round(
     if sent_before >= PHONE_CODES_PER_LOGIN {
         return standing(sent_before);
     }
-    let Ok(spent_today) =
-        store::providers::sms::spent_today(transaction, posting.now.timestamp()).await
-    else {
-        return Enrolment::Refused;
-    };
-    if spent_today >= crate::login::authenticator::TEXTS_PER_REALM_PER_DAY {
-        tracing::warn!("a realm reached its daily text budget and a proving code was not sent");
-        return Enrolment::Settled;
+    match crate::login::authenticator::text_brakes(
+        transaction,
+        realm,
+        &subject.user_id,
+        &texting_to,
+        posting.now,
+    )
+    .await
+    {
+        Ok(None) => {}
+        // Held like a ceremony this build cannot run: the debt stays
+        // recorded, and the person is not locked out over a brake.
+        Ok(Some(_)) => return Enrolment::Settled,
+        Err(()) => return Enrolment::Refused,
     }
 
     let Some(code) = crate::login::authenticator::drawn_code(provider) else {
@@ -878,7 +884,7 @@ async fn verify_phone_round(
     {
         return Enrolment::Refused;
     }
-    if store::providers::sms::record_send(transaction, posting.now.timestamp())
+    if crate::login::authenticator::record_text(transaction, &texting_to, posting.now)
         .await
         .is_err()
     {
@@ -896,7 +902,7 @@ async fn verify_phone_round(
                 settings: settings.duplicate(),
                 text: crate::messaging::Text {
                     to: texting_to,
-                    body: crate::login::authenticator::texted_code(realm, &code),
+                    body: crate::login::authenticator::texted_words(realm, "verify_phone", &code),
                 },
                 about: crate::messaging::About {
                     user_id: subject.user_id.clone(),

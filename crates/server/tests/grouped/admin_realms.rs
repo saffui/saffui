@@ -823,3 +823,71 @@ async fn the_privacy_door_refuses_terms_it_cannot_honour() {
     assert_eq!(status, StatusCode::OK, "{shaped}");
     assert!(shaped["dsar_jurisdiction"].is_null(), "{shaped}");
 }
+
+/// The texting brakes only take shapes the send gate can hold.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_texting_brakes_hold_their_shapes() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmCreate,
+        AdminAction::RealmRead,
+        AdminAction::RealmWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({ "name": "texted", "display_name": "Texted", "enabled": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    for refused in [
+        serde_json::json!({ "sms_daily_cap": -1 }),
+        serde_json::json!({ "sms_per_number_cap": 0 }),
+        serde_json::json!({ "sms_blocked_prefixes": ["22890"] }),
+        serde_json::json!({ "sms_blocked_prefixes": ["+abc"] }),
+        serde_json::json!({ "sms_templates": { "ussd": { "en": "{{code}}" } } }),
+        serde_json::json!({ "sms_templates": { "sms_otp": { "en": "a code with no place for it" } } }),
+        serde_json::json!({ "sms_templates": { "sms_otp": { "en": format!("{}{}", "x".repeat(155), "{{code}}") } } }),
+    ] {
+        let (status, told) = asked(
+            &plane,
+            Method::PUT,
+            "/admin/realms/texted",
+            &bearer,
+            Some(refused.clone()),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "accepted: {refused} -> {told}"
+        );
+    }
+
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        "/admin/realms/texted",
+        &bearer,
+        Some(serde_json::json!({
+            "sms_daily_cap": 100,
+            "sms_per_number_cap": 3,
+            "sms_blocked_prefixes": ["+88213", "+979"],
+            "sms_templates": { "sms_otp": { "fr": "Votre code: {{code}}" } },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+    assert_eq!(shaped["sms_daily_cap"], 100, "{shaped}");
+    assert_eq!(shaped["sms_per_number_cap"], 3, "{shaped}");
+    assert_eq!(shaped["sms_blocked_prefixes"][1], "+979", "{shaped}");
+    assert_eq!(
+        shaped["sms_templates"]["sms_otp"]["fr"], "Votre code: {{code}}",
+        "{shaped}"
+    );
+}

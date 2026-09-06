@@ -57,6 +57,10 @@ export interface RealmSettings {
   device_poll_interval: number | null;
   ciba_expiry: number | null;
   ciba_interval: number | null;
+  sms_daily_cap: number | null;
+  sms_per_number_cap: number | null;
+  sms_blocked_prefixes: string[] | null;
+  sms_templates: Record<string, Record<string, string>> | null;
   dsar_jurisdiction: string | null;
   dsar_response_days: number | null;
   webauthn_passwordless: boolean | null;
@@ -165,6 +169,10 @@ export interface RealmUpdate {
   device_poll_interval?: number;
   ciba_expiry?: number;
   ciba_interval?: number;
+  sms_daily_cap?: number;
+  sms_per_number_cap?: number;
+  sms_blocked_prefixes?: string[];
+  sms_templates?: Record<string, Record<string, string>>;
   dsar_jurisdiction?: string;
   dsar_response_days?: number;
   webauthn_passwordless?: boolean;

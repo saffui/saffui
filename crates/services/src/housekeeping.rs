@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use store::providers::{
     backchannel, caep_queue, deliveries, devices, dpop, form_post, login, oidc, one_time_tokens,
-    pushed, replay, sessions,
+    pushed, replay, sessions, sms,
 };
 
 /// How long a receipt is kept. One nobody looked at for a month is one nobody
@@ -26,6 +26,7 @@ pub struct Swept {
     pub assertions: u64,
     pub logins_in_progress: u64,
     pub one_time_tokens: u64,
+    pub sms_counters: u64,
     pub replayed: u64,
     pub delivery_receipts: u64,
     pub pushed_requests: u64,
@@ -46,6 +47,7 @@ impl Swept {
             + self.assertions
             + self.logins_in_progress
             + self.one_time_tokens
+            + self.sms_counters
             + self.replayed
             + self.delivery_receipts
             + self.pushed_requests
@@ -101,6 +103,9 @@ pub async fn drop_expired_rows(
             .await
             .map_err(|_| Unswept)?,
         one_time_tokens: one_time_tokens::drop_expired(transaction, now)
+            .await
+            .map_err(failed)?,
+        sms_counters: sms::drop_stale_counters(transaction, now.timestamp())
             .await
             .map_err(failed)?,
         // A receipt is a record of a send, and one nobody looked at for a

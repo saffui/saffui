@@ -512,6 +512,63 @@ pub async fn update(
             ),
         ));
     }
+    // The texting brakes only take shapes the send gate can hold: caps in
+    // range, prefixes a number could actually start with, and a rewording
+    // that still carries the code and still fits one message.
+    if asked
+        .sms_daily_cap
+        .is_some_and(|held| !(0..=1_000_000).contains(&held))
+        || asked
+            .sms_per_number_cap
+            .is_some_and(|held| !(1..=1_000).contains(&held))
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "texting wants a daily cap of 0 to 1000000 and a per-number cap of 1 to 1000"
+                .to_owned(),
+        ));
+    }
+    if let Some(prefixes) = asked.sms_blocked_prefixes.as_ref() {
+        if prefixes.len() > 200 {
+            return Err(ApiError::with_detail(
+                ErrorCode::ValidationError,
+                "a blocklist holds at most 200 prefixes".to_owned(),
+            ));
+        }
+        for prefix in prefixes {
+            let digits = prefix.strip_prefix('+').unwrap_or("");
+            if digits.is_empty()
+                || digits.len() > 15
+                || !digits.chars().all(|held| held.is_ascii_digit())
+            {
+                return Err(ApiError::with_detail(
+                    ErrorCode::ValidationError,
+                    format!("`{prefix}` is not a number prefix: + then one to fifteen digits"),
+                ));
+            }
+        }
+    }
+    if let Some(templates) = asked.sms_templates.as_ref() {
+        for (kind, tongues) in templates {
+            if !matches!(kind.as_str(), "sms_otp" | "verify_phone") {
+                return Err(ApiError::with_detail(
+                    ErrorCode::ValidationError,
+                    format!("{kind} is not a text this server sends"),
+                ));
+            }
+            for body in tongues.values() {
+                let sound = !body.trim().is_empty()
+                    && body.chars().count() <= 160
+                    && body.contains("{{code}}");
+                if !sound {
+                    return Err(ApiError::with_detail(
+                        ErrorCode::ValidationError,
+                        "a text template carries {{code}} and fits in 160 characters".to_owned(),
+                    ));
+                }
+            }
+        }
+    }
     // A realm speaks over the pages only in tongues the build renders and
     // over keys a page actually reads: an override nothing reads is a typo
     // kept, and refusing it now is the only moment anybody hears about it.

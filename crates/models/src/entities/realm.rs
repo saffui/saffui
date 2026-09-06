@@ -469,6 +469,16 @@ pub struct RealmModel {
     /// What this realm says over the hosted pages' own words: tongue to
     /// key to text. Only built tongues and built keys are accepted.
     pub page_overrides: Option<serde_json::Value>,
+    /// How many texts this realm sends a day; None keeps the built default.
+    pub sms_daily_cap: Option<i32>,
+    /// How many texts one number may receive in one hour; None the default.
+    pub sms_per_number_cap: Option<i32>,
+    /// Number prefixes never texted, in international form.
+    pub sms_blocked_prefixes: Option<Vec<String>>,
+    /// The realm's rewording of its texts: kind, then tongue, then the one
+    /// body. Kinds: sms_otp, verify_phone.
+    pub sms_templates:
+        Option<std::collections::HashMap<String, std::collections::HashMap<String, String>>>,
     /// The law a self-lodged subject request runs on. None keeps the
     /// realm's privacy door closed.
     pub dsar_jurisdiction: Option<crate::compliance::subject_request::Jurisdiction>,
@@ -550,6 +560,10 @@ impl RealmCreateModel {
             ciba_interval: None,
             webauthn_passwordless: None,
             page_overrides: None,
+            sms_daily_cap: None,
+            sms_per_number_cap: None,
+            sms_blocked_prefixes: None,
+            sms_templates: None,
             dsar_jurisdiction: None,
             dsar_response_days: None,
             supported_locales: None,
@@ -623,6 +637,15 @@ pub struct RealmUpdateModel {
     /// What this realm says over the hosted pages' own words: tongue to
     /// key to text. Only built tongues and built keys are accepted.
     pub page_overrides: Option<serde_json::Value>,
+    /// How many texts a day; zero closes the sending, absent leaves it.
+    pub sms_daily_cap: Option<i32>,
+    /// How many texts one number may receive in one hour.
+    pub sms_per_number_cap: Option<i32>,
+    /// Number prefixes never texted; an empty list clears the blocklist.
+    pub sms_blocked_prefixes: Option<Vec<String>>,
+    /// The realm's rewording of its texts, replacing the held map whole.
+    pub sms_templates:
+        Option<std::collections::HashMap<String, std::collections::HashMap<String, String>>>,
     /// The law a self-lodged subject request runs on. Empty closes the
     /// realm's privacy door.
     pub dsar_jurisdiction: Option<String>,
@@ -709,6 +732,13 @@ impl RealmUpdateModel {
         // Parsed, not trusted: a caller has already refused the unknown, and
         // what an unrefused unknown would do here is close the door, never
         // open it under a law nobody named.
+        if let Some(sms_blocked_prefixes) = self.sms_blocked_prefixes {
+            realm.sms_blocked_prefixes =
+                (!sms_blocked_prefixes.is_empty()).then_some(sms_blocked_prefixes);
+        }
+        if let Some(sms_templates) = self.sms_templates {
+            realm.sms_templates = (!sms_templates.is_empty()).then_some(sms_templates);
+        }
         if let Some(dsar_jurisdiction) = self.dsar_jurisdiction {
             realm.dsar_jurisdiction = dsar_jurisdiction.parse().ok();
         }
@@ -717,6 +747,8 @@ impl RealmUpdateModel {
         }
 
         set!(
+            sms_daily_cap,
+            sms_per_number_cap,
             registration_allowed,
             register_email_as_username,
             verify_email,

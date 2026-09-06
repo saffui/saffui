@@ -685,6 +685,20 @@ sms-test-to = To (international form)
 sms-test-send = Send
 sms-test-passed = Delivered to the gateway
 sms-test-subject = the SMS gateway test
+sms-brakes-title = Texting brakes
+sms-brakes-help = A text is a billable action an attacker can trigger. These three brakes are checked before every send; a tripped brake lands in the sign-in events as sms_throttled.
+sms-daily-cap = Texts per day
+sms-daily-cap-help = The realm's whole day, all numbers together. Zero stops sending; blank keeps what is held; the built default is 250.
+sms-per-number-cap = Per number, per hour
+sms-per-number-cap-help = A burst at one number is the shape inflated traffic takes. The built default is 5.
+sms-blocked-prefixes = Blocked prefixes
+sms-blocked-prefixes-help = International prefixes never texted, one per line: premium ranges, known pumping ranges. An empty list clears it.
+sms-templates-title = Text wording
+sms-templates-help = The realm's own words around the code. The body must carry {"{{code}}"} and fit in 160 characters, one SMS segment.
+sms-template-kind = Text
+sms-template-tongue = Tongue
+sms-template-body = Body
+sms-template-body-help = {"{{code}}"} becomes the six digits. Leave empty to return to the built words.
 
 ## The writing doors of the bonus screens: roles, scopes, organizations,
 ## policies, relations, flow steps, governance, client roles, sub-groups.

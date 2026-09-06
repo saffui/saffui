@@ -273,3 +273,112 @@ async fn a_refusal_is_recorded_under_its_request() {
         "the state reached the log"
     );
 }
+
+/// One line of the exposition, read back as a number. The families are
+/// process-wide and other tests in this binary serve requests too, so
+/// every count is compared to its own before, never to zero.
+fn counted(rendered: &str, family: &str, wanted: &[&str]) -> f64 {
+    rendered
+        .lines()
+        .filter(|line| line.starts_with(family))
+        .filter(|line| wanted.iter().all(|needle| line.contains(needle)))
+        .filter_map(|line| line.rsplit(' ').next()?.parse::<f64>().ok())
+        .sum()
+}
+
+/// The families count what was served: the route label is the matched
+/// template, never the raw path, and a concluded login lands under its
+/// outcome. Measured through the same application a binary mounts.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_served_request_lands_in_the_families_by_template() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(
+        server::api::config::observed_with(true).configure(register(&mounted(&plane))),
+    )
+    .await;
+
+    let certs_template = "route=\"/realms/{realm}/protocol/openid-connect/certs\"";
+    let before = server::metrics::render();
+    let certs_before = counted(&before, "saffui_http_requests_total", &[certs_template]);
+    let refused_before = counted(&before, "saffui_logins_total", &["outcome=\"refused\""]);
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/certs",
+                support::REALM
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // A whole refused login, so the outcome counter moves for the reason a
+    // dashboard believes it does.
+    let opened = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/auth?client_id={}&redirect_uri={}\
+                 &response_type=code&scope=openid&state=s",
+                support::REALM,
+                support::CONFIDENTIAL,
+                support::urlencode("https://app.example/callback"),
+            ))
+            .to_request(),
+    )
+    .await;
+    let cookies: Vec<String> = opened
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    let binding =
+        support::cookie_value(&cookies, support::AUTH_SESSION_COOKIE).expect("a login opened");
+    let answered = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/login",
+                support::REALM
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+            ))
+            .set_json(serde_json::json!({
+                "username": support::SUBJECT,
+                "password": "not-the-password",
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(answered.status(), StatusCode::UNAUTHORIZED);
+
+    let after = server::metrics::render();
+    assert!(
+        counted(&after, "saffui_http_requests_total", &[certs_template]) > certs_before,
+        "the certs request was not counted under its template:\n{after}"
+    );
+    assert!(
+        counted(
+            &after,
+            "saffui_http_request_duration_seconds_count",
+            &[certs_template]
+        ) > 0.0,
+        "no duration was observed for the certs route"
+    );
+    assert!(
+        counted(&after, "saffui_logins_total", &["outcome=\"refused\""]) > refused_before,
+        "the refused login was not counted:\n{after}"
+    );
+    // The label set stays as bounded as the route table: the raw path, with
+    // the realm's name in it, never appears as a route.
+    assert!(
+        !after.contains("route=\"/realms/main/"),
+        "a raw path reached the route label:\n{after}"
+    );
+}

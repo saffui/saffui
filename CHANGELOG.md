@@ -10,6 +10,13 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- Request metrics in the Prometheus text form, scraped at `/metrics` on the
+  operations port: requests, duration and in-progress by method and route
+  template (never the raw path, never a realm), plus concluded logins by
+  outcome. Switchable on two layers: the `metrics` cargo feature decides
+  whether the machinery is linked at all, and `SAFFUI_FEATURES=-metrics`
+  turns a carrying build off at runtime. The features endpoint now answers
+  the set the process was actually started under.
 - A two-instance rig (`deploy/ha/`): compose file, a SCIM-shaped counting
   far side, and a harness that logs in through both instances and across
   them, mutates people through both at once, kills one mid-delivery, and

@@ -455,10 +455,12 @@ pub async fn answer(
                     } else {
                         "admitted"
                     };
+                    crate::metrics::login_counted(outcome);
                     told_landing(&mut response, spoken, outcome, &landing, &origin, &realm)
                 }
                 Step::Refused => {
                     tracing::warn!("login refused");
+                    crate::metrics::login_counted("refused");
                     tell(StatusCode::UNAUTHORIZED, "refused")
                 }
                 // Nothing was tried, so the answer is not what is wrong. Said
@@ -513,6 +515,7 @@ pub async fn answer(
                 // cookie goes; no session replaces it.
                 Step::SentBack { error, .. } => {
                     tracing::warn!(error, "login sent back");
+                    crate::metrics::login_counted("sent_back");
                     let landing = landed.expect("a refusal was landed above");
                     let mut response = HttpResponseBuilder::new(match spoken {
                         Spoken::Json => StatusCode::OK,

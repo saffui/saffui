@@ -10,7 +10,7 @@ use crypto::provider::openssl::OpenSslProvider;
 use deadpool_postgres::{Manager, Pool};
 use models::entities::realm::RegistrationBounds;
 use secrecy::ExposeSecret;
-use server::api::config::{Plane, Sealing, observed, register, register_ops};
+use server::api::config::{Plane, Sealing, observed_with, register, register_ops};
 use server::api::rest::endpoints::ops::health::Vitals;
 use server::middleware::admin_policy::AdminPolicy;
 use services::provisioning;
@@ -295,6 +295,17 @@ fn main() -> ExitCode {
 }
 
 async fn serve(bind: &str, ops: &str) -> Result<(), String> {
+    // First, so a capability asked for and not carried refuses the whole
+    // start in words, rather than serving without it.
+    let features = commons::feature::FeatureSet::resolve(&config::features(), |feature| {
+        crypto::compiled_features().contains(&feature.slug())
+            || commons::feature::locally_compiled(feature)
+            || server::metrics::compiled(feature)
+    })
+    .map_err(|reason| format!("SAFFUI_FEATURES could not be honoured: {reason}"))?;
+    let measured = features.status(commons::feature::Feature::Metrics).enabled;
+    server::api::config::install_features(features);
+
     let plane = plane()?;
 
     // What this build reads. A pod whose database has migrated past it cannot
@@ -355,7 +366,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     // fails readiness first and gives an orchestrator time to route away.
     let probes = {
         let vitals = vitals.clone();
-        HttpServer::new(move || App::new().configure(register_ops(&vitals)))
+        HttpServer::new(move || App::new().configure(register_ops(&vitals, measured)))
             .disable_signals()
             .bind(ops)
             .map_err(|reason| format!("cannot listen on {ops}: {reason}"))?
@@ -364,7 +375,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
 
     // Bound before anything is announced, so a port already taken fails here
     // rather than after the log line says it is serving.
-    let plane = HttpServer::new(move || observed().configure(register(&plane)))
+    let plane = HttpServer::new(move || observed_with(measured).configure(register(&plane)))
         .disable_signals()
         .bind(bind)
         .map_err(|reason| format!("cannot listen on {bind}: {reason}"))?

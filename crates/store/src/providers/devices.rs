@@ -189,3 +189,15 @@ fn read(row: Row) -> DeviceCodeModel {
         created_at: row.get("created_at"),
     }
 }
+
+/// Fell every row this person left here: an erasure walks where no cascade
+/// reaches.
+pub async fn erase_for_user(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<u64> {
+    transaction
+        .execute(
+            "DELETE FROM oidc_device_codes WHERE user_id = $1",
+            &[&user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)
+}

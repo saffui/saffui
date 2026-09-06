@@ -8,6 +8,7 @@ import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
 import GovernanceTabs from "@/pages/governance/GovernanceTabs.vue";
 import {
+  fulfilSubjectRequest,
   lodgeSubjectRequest,
   listSubjectRequests,
   refuseSubjectRequest,
@@ -57,6 +58,15 @@ async function prove() {
   if (!opened.value) return;
   try {
     opened.value = await verifySubjectRequest(realm.value, opened.value.request_id);
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+async function fulfil() {
+  if (!opened.value) return;
+  try {
+    opened.value = await fulfilSubjectRequest(realm.value, opened.value.request_id);
     await load();
   } catch {
     // The toast already said.
@@ -213,6 +223,8 @@ function instant(epoch: number | null): string {
           </span>
           <span v-if="opened.reason" class="text-muted">{{ say("privacy-reason") }}</span>
           <span v-if="opened.reason">{{ opened.reason }}</span>
+          <span v-if="opened.outcome" class="text-muted">{{ say("privacy-outcome") }}</span>
+          <span v-if="opened.outcome">{{ opened.outcome }}</span>
         </div>
         <p class="text-[10.5px] text-faint">{{ opened.deadline_source }}</p>
 
@@ -225,6 +237,19 @@ function instant(epoch: number | null): string {
           >
             {{ say("privacy-verify") }}
           </button>
+          <div
+            v-if="opened.stage === 'verified' && opened.kind === 'erasure'"
+            class="rounded-lg border border-danger/40 p-3"
+          >
+            <p class="text-[11px] text-muted">{{ say("privacy-fulfil-lede") }}</p>
+            <button
+              type="button"
+              class="mt-2 rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white"
+              @click="fulfil"
+            >
+              {{ say("privacy-fulfil") }}
+            </button>
+          </div>
           <div class="mt-2 rounded-lg border border-danger/40 p-3">
             <p class="text-[11px] text-muted">{{ say("privacy-refuse-lede") }}</p>
             <div class="mt-2 flex items-center gap-2">

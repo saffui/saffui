@@ -315,6 +315,9 @@ privacy-reason = Reason
 privacy-verify = Mark identity proven
 privacy-refuse = Refuse
 privacy-refuse-lede = Refusing closes the request; the reason is owed to the subject.
+privacy-outcome = Outcome
+privacy-fulfil = Erase the account
+privacy-fulfil-lede = Executes the erasure now: the account and everything held with it go, and the connected applications are told. Irreversible.
 subject-dsar = the subject request
 
 journal-title = Journal

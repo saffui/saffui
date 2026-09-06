@@ -152,6 +152,32 @@ pub async fn refuse(
     Ok(HttpResponse::Ok().json(presentable(held)))
 }
 
+/// Execute what a verified request asks and close it. Only erasure has an
+/// execution today; the other kinds say so instead of pretending.
+pub async fn fulfil(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, request_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let held = compliance::fulfil_erasure(
+        &transaction,
+        &request_id,
+        admin.context.principal.id(),
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .map_err(refused)?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(presentable(held)))
+}
+
 /// The row as the plane answers it, the clock's provenance included: an
 /// operator defending a deadline needs the citation, not only the number.
 fn presentable(request: DsarRequest) -> serde_json::Value {

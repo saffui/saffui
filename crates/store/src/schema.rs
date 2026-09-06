@@ -523,6 +523,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V086__sms_abuse_settings.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 87,
+            name: "ussd",
+            sql: include_str!("../migrations/V087__ussd.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -699,6 +699,11 @@ sms-template-kind = Text
 sms-template-tongue = Tongue
 sms-template-body = Body
 sms-template-body-help = {"{{code}}"} becomes the six digits; the doorbell text carries {"{{link}}"} instead. Leave empty to return to the built words.
+ussd-title = USSD doorbell
+ussd-help = A dial-code way to answer sign-in requests from any phone. The realm's gateway posts each screen here and proves itself with the secret.
+ussd-callback = Callback URL for your gateway:
+ussd-secret = Gateway secret
+ussd-secret-help = Presented by the gateway as a bearer on every callback. At least sixteen characters; typing replaces the held one.
 
 ## The writing doors of the bonus screens: roles, scopes, organizations,
 ## policies, relations, flow steps, governance, client roles, sub-groups.

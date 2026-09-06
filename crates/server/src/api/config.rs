@@ -17,7 +17,7 @@ use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::rest::endpoints::protocol::{
     answering, authorize, broker, ciba, device, discovery, introspect, keys, login, logout, page,
-    par, privacy, recovery, registration, revoke, signup, ssf, token, userinfo,
+    par, privacy, recovery, registration, revoke, signup, ssf, token, userinfo, ussd,
 };
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
@@ -127,6 +127,13 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             )
             // Where a collecting receiver comes for its events, RFC 8936.
             .service(web::resource("/realms/{realm}/ssf/poll").route(web::post().to(ssf::poll)))
+            // Where a USSD gateway's callback lands: the person is the
+            // dialling number, the gateway proves itself with the realm's
+            // secret, and the answer is a CON or END screen.
+            .service(
+                web::resource("/realms/{realm}/ussd/callback")
+                    .route(web::post().to(ussd::callback)),
+            )
             // The same document at the name RFC 8414 §3.1 gives it: the
             // well-known segment goes after the host and the issuer's path
             // after that, so a client that reads OAuth metadata and one that

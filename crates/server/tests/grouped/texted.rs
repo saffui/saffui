@@ -348,3 +348,72 @@ async fn an_outward_deployment_keeps_the_dial_outside() {
         "a connection reached an address inside the deployment"
     );
 }
+
+/// The gateway secret: sealed at rest, never answered with, and too short
+/// to guess is refused in words.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_ussd_secret_is_sealed_and_short_ones_are_refused() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let app = test::init_service(
+        App::new().configure(register(&mounted(&plane, config::serving::Egress::Outward))),
+    )
+    .await;
+    let asked = |method: actix_web::http::Method, body: Option<serde_json::Value>| {
+        let mut asking = test::TestRequest::default()
+            .method(method)
+            .uri(&format!("/admin/realms/{}/ussd", support::REALM))
+            .insert_header(("authorization", format!("Bearer {bearer}")));
+        if let Some(body) = body {
+            asking = asking.set_json(body);
+        }
+        asking.to_request()
+    };
+
+    let response = test::call_service(&app, asked(actix_web::http::Method::GET, None)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let shown = String::from_utf8_lossy(&test::read_body(response).await).into_owned();
+    assert!(shown.contains("\"has_secret\":false"), "{shown}");
+
+    let response = test::call_service(
+        &app,
+        asked(
+            actix_web::http::Method::PUT,
+            Some(serde_json::json!({ "secret": "short" })),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+    let response = test::call_service(
+        &app,
+        asked(
+            actix_web::http::Method::PUT,
+            Some(serde_json::json!({ "secret": "a-gateway-secret-of-length" })),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    let held: Vec<u8> = transaction
+        .query_one("SELECT sealed_secret FROM realm_ussd", &[])
+        .await
+        .expect("the settings")
+        .get(0);
+    assert!(
+        !String::from_utf8_lossy(&held).contains("a-gateway-secret-of-length"),
+        "the secret is readable in the column"
+    );
+    drop(transaction);
+    drop(connection);
+
+    let response = test::call_service(&app, asked(actix_web::http::Method::GET, None)).await;
+    let shown = String::from_utf8_lossy(&test::read_body(response).await).into_owned();
+    assert!(
+        shown.contains("\"has_secret\":true") && !shown.contains("gateway-secret"),
+        "{shown}"
+    );
+}

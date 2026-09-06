@@ -16,3 +16,4 @@ pub mod realm_keys;
 pub mod sessions;
 pub mod sms;
 pub mod users;
+pub mod ussd;

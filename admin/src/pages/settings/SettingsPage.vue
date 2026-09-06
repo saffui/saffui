@@ -8,9 +8,11 @@ import { useRouter } from "vue-router";
 import {
   forgetMail,
   forgetSms,
+  forgetUssd,
   forgetRegistrationSecret,
   getMail,
   getSms,
+  getUssd,
   getRealmSettings,
   listFeatures,
   reshapeRealm,
@@ -19,6 +21,7 @@ import {
   sendTestSms,
   writeMail,
   writeSms,
+  writeUssd,
 } from "@/services/settings";
 import { deleteRealm } from "@/services/realms";
 import { toastOk } from "@/services/toasts";
@@ -79,6 +82,7 @@ function markDirty() {
 const settings = ref<RealmSettings | null>(null);
 const mail = ref<MailBrief | null>(null);
 const sms = ref<SmsBrief | null>(null);
+const ussdHeld = ref(false);
 const failed = ref("");
 
 /// The editable copy the forms bind to; adopting a settings document resets
@@ -282,6 +286,11 @@ onMounted(async () => {
         password: "",
         implicit_tls: mail.value.implicit_tls,
       };
+    } catch (refused) {
+      if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
+    }
+    try {
+      ussdHeld.value = (await getUssd(realm.value)).has_secret;
     } catch (refused) {
       if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
     }
@@ -612,6 +621,24 @@ async function removeSms() {
   await forgetSms(realm.value);
   sms.value = null;
 }
+
+const ussdSecret = ref("");
+
+async function saveUssd() {
+  await writeUssd(realm.value, ussdSecret.value);
+  ussdSecret.value = "";
+  ussdHeld.value = true;
+}
+
+async function removeUssd() {
+  await forgetUssd(realm.value);
+  ussdHeld.value = false;
+}
+
+/// Where the realm's gateway posts its callbacks, spelled for copying.
+const ussdCallback = computed(
+  () => `${window.location.origin}/realms/${encodeURIComponent(realm.value)}/ussd/callback`,
+);
 
 /// The realm's brakes on texting. A cap left blank keeps whatever is held;
 /// returning to the built default means typing it.
@@ -1736,6 +1763,43 @@ async function saveSmsTemplate() {
                 class="w-fit rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
               >
                 {{ say("settings-save") }}
+              </button>
+            </form>
+          </div>
+
+          <div class="mt-6">
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("ussd-title") }} <AppHint name="ussd-help" />
+            </div>
+            <p class="mt-1 text-[11px] text-muted">
+              {{ say("ussd-callback") }}
+              <code class="font-mono text-[10.5px]">{{ ussdCallback }}</code>
+            </p>
+            <form class="mt-2 flex items-end gap-2 text-xs" @submit.prevent="saveUssd">
+              <label class="flex-1 text-[11px] font-medium text-muted">
+                {{ say("ussd-secret") }} <AppHint name="ussd-secret-help" />
+                <input
+                  v-model="ussdSecret"
+                  type="password"
+                  minlength="16"
+                  :placeholder="ussdHeld ? say('sms-token-kept') : ''"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                  autocomplete="new-password"
+                />
+              </label>
+              <button
+                type="submit"
+                class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+              >
+                {{ say("settings-save") }}
+              </button>
+              <button
+                v-if="ussdHeld"
+                type="button"
+                class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface-2"
+                @click="removeUssd"
+              >
+                {{ say("sms-forget") }}
               </button>
             </form>
           </div>

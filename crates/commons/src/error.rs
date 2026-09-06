@@ -54,6 +54,7 @@ catalogue! {
     RealmNotFound = 100, 404, "realm.not_found", "unknown realm";
     MailSettingsNotFound = 102, 404, "realm.mail.not_found", "this realm has no mail settings";
     SmsSettingsNotFound = 103, 404, "realm.sms.not_found", "this realm has no SMS settings";
+    UssdSettingsNotFound = 104, 404, "realm.ussd.not_found", "this realm has no USSD gateway";
     RealmAlreadyExists = 101, 409, "realm.already_exists", "a realm with this identifier already exists";
     KeyNotFound = 110, 404, "realm.key.not_found", "this realm holds no such key";
     KeyStillActive = 111, 409, "realm.key.still_active", "this key is still in service; rotate its algorithm first";
@@ -178,7 +179,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 58);
+        assert_eq!(ErrorCode::ALL.len(), 59);
     }
 
     /// A message never restates the slug, and never carries a value.

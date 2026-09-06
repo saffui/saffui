@@ -34,7 +34,7 @@ pub enum Step {
     Challenge {
         execution_id: String,
         asks: Option<serde_json::Value>,
-        sending: Option<Box<crate::messaging::Outgoing>>,
+        sending: Option<Box<crate::messaging::Outbound>>,
     },
     /// The client asks for what the person has not agreed to.
     Consent {
@@ -123,6 +123,8 @@ pub async fn answer_step(
     seen: &crate::provenance::Provenance,
     // Whether anything carries a message out of this deployment.
     sends: bool,
+    // Whether anything at all carries a text out of this deployment.
+    texts: bool,
     // What it takes to open this realm's sealed values. Absent where a caller
     // has no step that needs one, which is every flow but a mailed one.
     sealing: Option<Sealing<'_>>,
@@ -177,11 +179,16 @@ pub async fn answer_step(
 
     // Read before the flow rather than inside a step: a step that reached for
     // the realm's keyring would be one every other step pays for.
-    let mail = match sealing {
-        None => None,
-        Some(sealing) => store::providers::mail::load(transaction, sealing.ring, sealing.envelope)
-            .await
-            .map_err(|_| Unanswerable::Unreadable)?,
+    let (mail, sms) = match sealing {
+        None => (None, None),
+        Some(sealing) => (
+            store::providers::mail::load(transaction, sealing.ring, sealing.envelope)
+                .await
+                .map_err(|_| Unanswerable::Unreadable)?,
+            store::providers::sms::load(transaction, sealing.ring, sealing.envelope)
+                .await
+                .map_err(|_| Unanswerable::Unreadable)?,
+        ),
     };
 
     let (progress, sending) = run_flow(
@@ -200,6 +207,8 @@ pub async fn answer_step(
             realm_name: &realm.name,
             mail: mail.as_ref(),
             can_send: sends,
+            sms: sms.as_ref(),
+            can_text: texts,
             now,
         }),
         federations,
@@ -259,6 +268,8 @@ pub async fn answer_step(
                     realm_name: &realm.name,
                     mail: mail.as_ref(),
                     can_send: sends,
+                    sms: sms.as_ref(),
+                    can_text: texts,
                     now,
                 }),
             )

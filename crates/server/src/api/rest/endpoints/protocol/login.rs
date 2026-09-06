@@ -14,7 +14,6 @@ use store::tenancy::{Tenancy, resolve};
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::dto::uncached;
-use crate::api::rest::endpoints::protocol::mail::deliver;
 use crate::api::rest::endpoints::protocol::{answering, binding};
 
 /// What the caller answers with.
@@ -45,6 +44,12 @@ pub struct Answered {
     pub new_password: Option<String>,
     /// What a mailed link carried, as the page it landed on posted it.
     pub magic_link: Option<String>,
+    /// The texted code, answering a second factor.
+    pub sms_otp: Option<String>,
+    /// The number a person offered the phone ceremony, international form.
+    pub phone: Option<String>,
+    /// The texted code proving that number, typed back.
+    pub phone_register: Option<String>,
     /// The same, for a link confirming an address.
     pub verify_email: Option<String>,
     /// What the consent screen answered: `granted` or `refused`.
@@ -137,6 +142,9 @@ pub async fn answer(
         answers.push(Answer::MagicLink(secrecy::SecretBox::new(Box::new(
             followed,
         ))));
+    }
+    if let Some(typed) = filled(&answered.sms_otp) {
+        answers.push(Answer::SmsOtp(typed));
     }
     let attestation = filled(&answered.webauthn_register);
     let code = filled(&answered.totp_register);
@@ -258,11 +266,17 @@ pub async fn answer(
             attestation: attestation.as_deref(),
             code: code.as_deref(),
             verified_address: answered.verify_email.as_deref(),
+            phone: answered.phone.as_deref().filter(|held| !held.is_empty()),
+            phone_code: answered
+                .phone_register
+                .as_deref()
+                .filter(|held| !held.is_empty()),
             kept: kept.as_deref(),
             new_password: renewed.as_ref(),
         },
         &read_provenance(&request),
         sealing.sender.is_some(),
+        sealing.texter.is_some(),
         ring.as_ref().map(|ring| browser::Sealing {
             ring,
             envelope: &sealing.envelope,
@@ -345,8 +359,11 @@ pub async fn answer(
                     asks,
                     sending,
                 } => {
-                    if let Some(outgoing) = sending {
-                        deliver(&sealing, &pool, &tenancy, &context, *outgoing).await;
+                    if let Some(outbound) = sending {
+                        super::texting::deliver_outbound(
+                            &sealing, &pool, &tenancy, &context, *outbound,
+                        )
+                        .await;
                     }
                     match spoken {
                         Spoken::Json => {
@@ -391,6 +408,8 @@ pub async fn answer(
                                 Some(asks) if asks.get("wrong_browser").is_some() => {
                                     "wrong-browser"
                                 }
+                                Some(asks) if asks.get("code_sent_to").is_some() => "texted",
+                                Some(asks) if asks.get("ask_phone").is_some() => "phone",
                                 Some(_) => "key-needs-script",
                                 None => "code",
                             },

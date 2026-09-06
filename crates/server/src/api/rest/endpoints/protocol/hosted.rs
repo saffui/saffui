@@ -80,7 +80,7 @@ fn reaches_outward(address: IpAddr) -> bool {
 /// contents do: a request object carries what the person is being asked about.
 /// A deployment reaching outward sends that across the open internet or not at
 /// all; one dialling its own network has already said the network is its own.
-fn may_dial(uri: &str, egress: Egress) -> bool {
+pub(crate) fn may_dial(uri: &str, egress: Egress) -> bool {
     uri.starts_with("https://") || (egress == Egress::Anywhere && uri.starts_with("http://"))
 }
 

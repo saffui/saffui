@@ -239,7 +239,7 @@
   // The panels one round can put in front of a person, by name. Named and not
   // positional: six booleans in a row is a call nobody reads correctly twice,
   // and the one that gets it wrong shows a person the wrong field.
-  const PANELS = ["credentials", "code", "recovery", "key", "app", "sheet", "renew"];
+  const PANELS = ["credentials", "code", "recovery", "key", "app", "sheet", "renew", "texted", "phone", "phone-code"];
 
   function only(...wanted) {
     PANELS.forEach(function (id) {
@@ -427,6 +427,25 @@
       say(told.asks && told.asks.refused ? told.asks.refused : "");
       only("renew");
       form.new_password.focus();
+      return;
+    }
+    if (told.execution === "verify-phone" && told.asks) {
+      if (told.asks.ask_phone) {
+        document.getElementById("phone-bad").hidden = !told.asks.bad_number;
+        only("phone");
+        form.phone.focus();
+        return;
+      }
+      // Written as text: the number is this server's own redaction of it.
+      document.getElementById("phone-code-note").textContent = told.asks.code_sent_to || "";
+      only("phone-code");
+      form.phone_register.focus();
+      return;
+    }
+    if (told.asks && told.asks.code_sent_to) {
+      document.getElementById("texted-note").textContent = told.asks.code_sent_to;
+      only("texted");
+      form.sms_otp.focus();
       return;
     }
     if (told.execution === "recovery-codes-register" && told.asks) {

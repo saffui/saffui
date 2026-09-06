@@ -39,6 +39,25 @@
       </label>
     </div>
     <p id="key" hidden>{{passkey-waiting}}</p>
+    <div id="texted" hidden>
+      <p><span id="texted-note"></span>{{sms-sent}}</p>
+      <label>{{sms-code}}
+        <input name="sms_otp" inputmode="numeric" autocomplete="one-time-code">
+      </label>
+    </div>
+    <div id="phone" hidden>
+      <p>{{phone-ask}}</p>
+      <p id="phone-bad" hidden>{{phone-bad}}</p>
+      <label>{{phone-number}}
+        <input name="phone" inputmode="tel" autocomplete="tel" placeholder="+22890123456" spellcheck="false">
+      </label>
+    </div>
+    <div id="phone-code" hidden>
+      <p><span id="phone-code-note"></span>{{sms-sent}}</p>
+      <label>{{sms-code}}
+        <input name="phone_register" inputmode="numeric" autocomplete="one-time-code">
+      </label>
+    </div>
     <div id="app" hidden>
       <p>{{enroll-add}}</p>
       <img id="qr" alt="{{enroll-title}}" hidden>

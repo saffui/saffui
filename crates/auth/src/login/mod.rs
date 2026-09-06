@@ -16,7 +16,7 @@ use store::providers::auth_flows;
 
 use crate::login::authenticator::{Answer, Authenticator, Posting};
 use crate::login::step::{Decided, Outcome, Step};
-use crate::messaging::Outgoing;
+use crate::messaging::Outbound;
 
 /// Where a login stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,7 +89,7 @@ pub async fn run_flow(
     // Where this pass came from, recorded against a failure, and when it is.
     from: Option<&str>,
     now: DateTime<Utc>,
-) -> Result<(Progress, Option<Box<Outgoing>>), Unrunnable> {
+) -> Result<(Progress, Option<Box<Outbound>>), Unrunnable> {
     let executions = auth_flows::executions_of(transaction, flow_id)
         .await
         .map_err(|_| Unrunnable::Unreadable)?;

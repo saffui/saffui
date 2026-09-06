@@ -1,6 +1,10 @@
 use std::time::Duration;
 
 use auth::messaging::{Deliver, Message, Text, Texter, Undelivered};
+use config::serving::Egress;
+use ureq::unversioned::resolver::DefaultResolver;
+
+use crate::api::rest::endpoints::protocol::hosted::{Outward, may_dial};
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
@@ -156,32 +160,55 @@ impl Deliver for Logged {
 /// `{"to": "<E.164>", "from": "<sender>", "text": "<body>"}`. Any 2xx is
 /// taken as accepted; anything else is a refusal. A provider that speaks
 /// another shape is fronted by a deployment's own adapter.
-pub struct HttpTexter;
+///
+/// The URL is a realm administrator's word, not the operator's, so the dial
+/// wears the same guardrails as every outbound call this server makes on
+/// somebody else's say-so: the egress policy decides the scheme, the
+/// resolver refuses addresses inside the deployment at resolution time, and
+/// no redirect is followed out of the checked answer.
+pub struct HttpTexter {
+    egress: Egress,
+}
+
+impl HttpTexter {
+    pub fn new(egress: Egress) -> Self {
+        HttpTexter { egress }
+    }
+}
 
 #[async_trait::async_trait]
 impl Texter for HttpTexter {
     async fn text(&self, settings: &SmsSettings, text: &Text) -> Result<(), Undelivered> {
+        if !may_dial(&settings.url, self.egress) {
+            tracing::warn!("an sms gateway url is not one this egress policy dials");
+            return Err(Undelivered::Refused);
+        }
         let body = serde_json::json!({
             "to": text.to,
             "from": settings.sender,
             "text": text.body,
         });
         let url = settings.url.clone();
+        let egress = self.egress;
         let bearer = settings
             .token
             .as_ref()
             .map(|held| secrecy::ExposeSecret::expose_secret(held).clone());
         tokio::task::spawn_blocking(move || {
-            let agent = ureq::Agent::config_builder()
-                .timeout_global(Some(PATIENCE))
-                .tls_config(
-                    ureq::tls::TlsConfig::builder()
-                        .provider(ureq::tls::TlsProvider::NativeTls)
-                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                        .build(),
-                )
-                .build()
-                .new_agent();
+            let agent = ureq::Agent::with_parts(
+                ureq::Agent::config_builder()
+                    .timeout_global(Some(PATIENCE))
+                    .max_redirects(0)
+                    .tls_config(
+                        ureq::tls::TlsConfig::builder()
+                            .provider(ureq::tls::TlsProvider::NativeTls)
+                            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                            .build(),
+                    )
+                    .build(),
+                ureq::unversioned::transport::DefaultConnector::new(),
+                Outward(DefaultResolver::default(), egress),
+            );
             let mut posting = agent.post(&url);
             if let Some(bearer) = &bearer {
                 posting = posting.header("authorization", &format!("Bearer {bearer}"));

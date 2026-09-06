@@ -9,6 +9,7 @@ import AppDrawer from "@/components/AppDrawer.vue";
 import GovernanceTabs from "@/pages/governance/GovernanceTabs.vue";
 import {
   advanceBreach,
+  assembleEvidencePack,
   breachNotificationDraft,
   discoverBreach,
   listBreaches,
@@ -118,6 +119,26 @@ async function refuse() {
     );
     reason.value = "";
     await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
+const packPeriod = ref({ from: "", to: "" });
+const packVerdict = ref("");
+async function drawEvidencePack() {
+  const from = Math.floor(new Date(packPeriod.value.from).getTime() / 1000);
+  const to = Math.floor(new Date(packPeriod.value.to).getTime() / 1000);
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return;
+  try {
+    const pack = await assembleEvidencePack(realm.value, from, to);
+    packVerdict.value = String(pack.verdict ?? "");
+    const held = new Blob([JSON.stringify(pack, null, 2)], { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(held);
+    link.download = `evidence-pack-${realm.value}-${from}-${to}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
   } catch {
     // The toast already said.
   }
@@ -446,6 +467,24 @@ function instant(epoch: number | null): string {
         >{{ JSON.stringify(notificationDraft, null, 2) }}</pre>
       </div>
     </AppDrawer>
+
+    <div class="mt-8 max-w-4xl rounded-lg border border-border bg-surface px-4 py-3">
+      <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("evidence-title") }}
+      </h2>
+      <p class="mt-1 text-xs text-muted">{{ say("evidence-lede") }}</p>
+      <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
+        <input v-model="packPeriod.from" type="datetime-local" class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+        <span class="text-faint">→</span>
+        <input v-model="packPeriod.to" type="datetime-local" class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+        <button type="button" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong" @click="drawEvidencePack">
+          {{ say("evidence-draw") }}
+        </button>
+        <span v-if="packVerdict" class="rounded border px-1.5 py-0.5 font-mono text-[10px]" :class="packVerdict === 'sound' ? 'border-border text-ok' : 'border-danger/40 text-danger'">
+          {{ packVerdict }}
+        </span>
+      </div>
+    </div>
 
     <AppDrawer v-if="lodging" :title="say('privacy-lodge')" @close="lodging = false">
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="lodge">

@@ -509,3 +509,51 @@ fn presentable_breach(held: (BreachRecord, Jurisdiction)) -> serde_json::Value {
     told["jurisdiction"] = serde_json::Value::String(jurisdiction.as_str().to_owned());
     told
 }
+
+#[derive(Debug, Deserialize)]
+pub struct PackPeriod {
+    pub from: i64,
+    pub to: i64,
+}
+
+/// Assemble and answer the evidence pack for a period. Drawn fresh each
+/// time and never stored; the verdict and the named gaps ride the answer so
+/// a reader weighs the rest before reading it.
+pub async fn evidence_pack(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    path: web::Path<String>,
+    period: web::Query<PackPeriod>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    if period.from > period.to {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "a period runs forward: from is not after to".to_owned(),
+        ));
+    }
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let pack = compliance::assemble_evidence_pack(
+        &transaction,
+        sealing.provider.digest(),
+        &admin.context.tenant.tenant,
+        &realm_id,
+        period.from,
+        period.to,
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .map_err(refused)?;
+    let verdict = pack.verdict();
+    let gaps = pack.gaps();
+    let mut told = serde_json::to_value(&pack).expect("a pack serialises");
+    told["verdict"] = serde_json::to_value(verdict).expect("a verdict serialises");
+    told["gaps"] = serde_json::to_value(gaps).expect("gaps serialise");
+    Ok(HttpResponse::Ok().json(told))
+}

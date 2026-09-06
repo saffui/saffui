@@ -2626,3 +2626,173 @@ async fn a_breach_runs_its_clock_and_its_paper_trail() {
         "{draft}"
     );
 }
+
+/// The evidence pack accounts for a period with the chain leading, because
+/// the chain is the reason to believe the sections under it. Its verdict is
+/// read before its contents, what falls outside the period stays out, an
+/// empty register reads as a clean period and not as a failure, and the
+/// retention in force rides along in the controller's own words.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_evidence_pack_accounts_for_its_period_with_the_chain_leading() {
+    let plane = Plane::with_actions(&[
+        AdminAction::EvidenceRead,
+        AdminAction::DsarRead,
+        AdminAction::DsarWrite,
+        AdminAction::BreachRead,
+        AdminAction::BreachWrite,
+    ])
+    .await;
+    let bearer = plane.token(&claims());
+    let now = chrono::Utc::now().timestamp();
+
+    // One of each register inside the period, and a consent stamped before
+    // it, which must stay out.
+    let (_, lodged) = written(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/subject-requests"),
+        &bearer,
+        serde_json::json!({
+            "subject_identifier": "ada",
+            "kind": "access",
+            "jurisdiction": "eu",
+        }),
+    )
+    .await;
+    assert_eq!(lodged["stage"], "received", "{lodged}");
+    let (_, found) = written(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/breaches"),
+        &bearer,
+        serde_json::json!({
+            "description": "a misdirected export",
+            "severity": "low",
+            "jurisdiction": "eu",
+        }),
+    )
+    .await;
+    assert_eq!(found["status"], "discovered", "{found}");
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::consents::keep(
+            &transaction,
+            support::SUBJECT,
+            support::CONFIDENTIAL,
+            &["openid".to_owned()],
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+        transaction
+            .execute(
+                "UPDATE user_consents SET granted_at = to_timestamp($1::bigint) WHERE user_id = $2",
+                &[&(now - 10_000), &support::SUBJECT],
+            )
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    let (status, pack) = fetched(
+        &plane,
+        Method::GET,
+        &format!(
+            "/admin/realms/{REALM}/evidence-pack?from={}&to={}",
+            now - 300,
+            now + 300
+        ),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pack}");
+    assert_eq!(pack["chain"]["result"], "verified", "{pack}");
+    assert_eq!(pack["verdict"], "sound", "{pack}");
+    assert_eq!(pack["gaps"], serde_json::json!([]), "{pack}");
+    assert_eq!(
+        pack["dsar_requests"]["items"].as_array().map(Vec::len),
+        Some(1),
+        "{pack}"
+    );
+    assert_eq!(
+        pack["breaches"]["items"].as_array().map(Vec::len),
+        Some(1),
+        "{pack}"
+    );
+    // The consent granted before the period stays out, and the section still
+    // reads as a complete account of the period.
+    assert_eq!(
+        pack["consent_receipts"]["items"].as_array().map(Vec::len),
+        Some(0),
+        "{pack}"
+    );
+    assert_eq!(
+        pack["consent_receipts"]["completeness"], "complete",
+        "{pack}"
+    );
+    assert!(
+        pack["registrations"]["items"]
+            .as_array()
+            .map(Vec::len)
+            .unwrap_or_default()
+            >= 1,
+        "the accounts the plant registered are in the period: {pack}"
+    );
+    let retention = pack["retention"].to_string();
+    assert!(retention.contains("sign_in_log"), "{pack}");
+
+    // A period that runs backwards is refused before anything is drawn.
+    let (status, told) = fetched(
+        &plane,
+        Method::GET,
+        &format!(
+            "/admin/realms/{REALM}/evidence-pack?from={}&to={}",
+            now + 300,
+            now - 300
+        ),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // A chain with a tampered entry settles the verdict, whatever else
+    // holds. The app role cannot write history, which is its own guarantee,
+    // so the tampering has to be done as the table's owner.
+    {
+        let (owner, connection) = support::owner()
+            .connect(tokio_postgres::NoTls)
+            .await
+            .expect("the owner");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        owner
+            .execute(
+                "UPDATE audit_events SET envelope = envelope || '{\"tampered\": true}'::jsonb \
+                 WHERE seq = (SELECT min(seq) FROM audit_events)",
+                &[],
+            )
+            .await
+            .unwrap();
+    }
+    let (status, pack) = fetched(
+        &plane,
+        Method::GET,
+        &format!(
+            "/admin/realms/{REALM}/evidence-pack?from={}&to={}",
+            now - 300,
+            now + 300
+        ),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pack}");
+    assert_eq!(pack["chain"]["result"], "broken", "{pack}");
+    assert_eq!(pack["verdict"], "chain-unverified", "{pack}");
+    assert!(pack["chain"]["at"].is_i64(), "{pack}");
+}

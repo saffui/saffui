@@ -134,6 +134,15 @@ fn owner_config() -> Config {
     config
 }
 
+/// Where this binary's template lives: the migrated, provisioned world every
+/// test clones its database from. One per binary, like the database itself.
+fn template_config() -> Config {
+    let mut config = owner_config();
+    let name = config.get_dbname().unwrap_or("saffui").to_owned();
+    config.dbname(format!("{name}_tpl"));
+    config
+}
+
 /// The test binary's own name, hash suffix shorn: `suite_admin-3fe9` is
 /// `suite_admin`, and one binary is one database.
 fn binary_stem() -> Option<String> {
@@ -193,26 +202,100 @@ async fn one_run_of_this_binary_at_a_time() -> tokio_postgres::Client {
     client
 }
 
-/// Make this binary's database exist, from the base one the variable names.
-/// Creation races between two binaries land on the duplicate error, which is
-/// the other one having won, and winning is all that was wanted.
-async fn ensured_database() {
-    let base: Config = std::env::var("SAFFUI_TEST_PG")
-        .expect("checked at owner_config")
-        .parse()
-        .expect("checked at owner_config");
-    let mine = owner_config();
-    let (Some(base_db), Some(my_db)) = (base.get_dbname(), mine.get_dbname()) else {
-        return;
-    };
-    if base_db == my_db {
-        return;
-    }
-    let my_db = my_db.to_owned();
-    let (client, connection) = base.connect(NoTls).await.expect("the base database");
-    tokio::spawn(connection);
-    let _ = client
-        .execute(&format!("CREATE DATABASE \"{my_db}\""), &[])
+/// Build this binary's template database: migrated and holding the common
+/// world every test shares, so a test's own database is a file-level copy
+/// rather than seventy-nine migrations and a re-provisioning.
+///
+/// Built once per process, from scratch, so it can never be stale against the
+/// code that is about to run. Two processes of one binary rebuild it in turn,
+/// which is safe because the caller holds the cross-process turn: nobody
+/// clones from it while it is being replaced, and both processes carry the
+/// same code, so either's build serves the other. What differs per process,
+/// the signing keys, is deliberately not in here.
+async fn the_template_stands() {
+    static BUILT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    BUILT
+        .get_or_init(|| async {
+            let mut base: Config = std::env::var("SAFFUI_TEST_PG")
+                .expect("checked at owner_config")
+                .parse()
+                .expect("checked at owner_config");
+            base.application_name(TURN_HOLDER);
+            let (client, connection) = base.connect(NoTls).await.expect("the base database");
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            let template = template_config()
+                .get_dbname()
+                .expect("a template name")
+                .to_owned();
+            client
+                .execute(
+                    &format!("DROP DATABASE IF EXISTS \"{template}\" WITH (FORCE)"),
+                    &[],
+                )
+                .await
+                .expect("the stale template goes");
+            client
+                .execute(&format!("CREATE DATABASE \"{template}\""), &[])
+                .await
+                .expect("the template database");
+
+            MigrationRunner::new(migrations())
+                .run(
+                    &template_config(),
+                    &PgConnector::disabled(),
+                    provider().digest(),
+                )
+                .await
+                .expect("the schema applies");
+            // Cluster-wide, not per database, but somebody has to say it once.
+            let (owner, connection) = template_config()
+                .connect(NoTls)
+                .await
+                .expect("the template owner");
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            owner
+                .batch_execute("ALTER ROLE saffui_app LOGIN PASSWORD 'saffui_app_test'")
+                .await
+                .expect("the role gets a password");
+            drop(owner);
+
+            let mut app = template_config();
+            app.user("saffui_app").password("saffui_app_test");
+            let pool = Pool::builder(Manager::new(app, NoTls))
+                .max_size(2)
+                .build()
+                .expect("a template pool");
+            plant_the_common_world(&pool, &Tenancy::unpinned()).await;
+            drop(pool);
+
+            // A pool's sockets close a beat after it drops, and CREATE
+            // DATABASE refuses a template anybody is still on. Sweep and wait
+            // the way the old schema drop did.
+            let _ = client
+                .execute(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1",
+                    &[&template],
+                )
+                .await;
+            for _ in 0..40 {
+                let left: i64 = client
+                    .query_one(
+                        "SELECT count(*) FROM pg_stat_activity WHERE datname = $1",
+                        &[&template],
+                    )
+                    .await
+                    .map(|row| row.get(0))
+                    .unwrap_or(0);
+                if left == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
         .await;
 }
 
@@ -482,6 +565,22 @@ fn shared_encryption_key() -> &'static SigningKey {
     KEY.get_or_init(|| SigningKey::generate_encryption("realm-encrypting"))
 }
 
+/// The signing pair every plane of this process publishes. One per process
+/// rather than one per plane for the same reason as the encryption key, and
+/// published per test rather than baked into the template: another process
+/// running this binary holds different ones, and the world a test clones must
+/// verify the tokens this process signs.
+fn shared_signing_key() -> &'static SigningKey {
+    static KEY: std::sync::OnceLock<SigningKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| SigningKey::generate(KID))
+}
+
+/// The passive second key, same lifetime and same reasoning.
+fn shared_second_key() -> &'static SigningKey {
+    static KEY: std::sync::OnceLock<SigningKey> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| SigningKey::anonymous(SECOND_KID))
+}
+
 /// The claims a token carries, before anything is signed.
 ///
 /// Built complete and then edited, so a test that wants a token missing one
@@ -539,10 +638,10 @@ pub struct Plane {
     _across_processes: tokio_postgres::Client,
     tenancy: Tenancy,
     /// The key the realm published, private half included so a token can be
-    /// signed with it.
-    pub key: SigningKey,
+    /// signed with it. One per process, like the encryption key below.
+    pub key: &'static SigningKey,
     /// A second key the realm also published, whose private half names nothing.
-    pub second: SigningKey,
+    pub second: &'static SigningKey,
     /// The key this realm publishes to be encrypted to.
     ///
     /// Shared by every plane rather than drawn per plane: it is RSA, which
@@ -1413,65 +1512,35 @@ impl Plane {
     /// user holding it.
     pub async fn with_actions(held: &[AdminAction]) -> Self {
         let turn = DATABASE.lock().await;
-
-        ensured_database().await;
         let across_processes = one_run_of_this_binary_at_a_time().await;
-        let (owner, connection) = owner_config().connect(NoTls).await.expect("the owner");
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        // A finished test's pool dies with its runtime, and its sockets close
-        // a beat later; a straggler mid-close can still hold the lock the
-        // schema drop wants. Every other backend on this database is our own
-        // past, since the turn above means no other run of this binary is
-        // live. Every other backend except the one holding that turn, which is
-        // named so it can be spared: ending it would hand the turn to somebody
-        // else in the middle of this test.
-        let _ = owner
-            .execute(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
-                 WHERE datname = current_database() AND pid <> pg_backend_pid() \
-                   AND application_name <> $1",
-                &[&TURN_HOLDER],
-            )
-            .await;
-        // Terminate returns before the backend is gone; the drop below wants
-        // the database actually quiet, so wait it out, briefly and bounded.
-        for _ in 0..40 {
-            let left: i64 = owner
-                .query_one(
-                    "SELECT count(*) FROM pg_stat_activity \
-                     WHERE datname = current_database() AND pid <> pg_backend_pid()",
-                    &[],
-                )
-                .await
-                .map(|row| row.get(0))
-                .unwrap_or(0);
-            if left == 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-        owner
-            .batch_execute(
-                "DROP SCHEMA public CASCADE; CREATE SCHEMA public; \
-                 GRANT ALL ON SCHEMA public TO CURRENT_USER;",
-            )
-            .await
-            .expect("the database resets");
+        the_template_stands().await;
 
-        MigrationRunner::new(migrations())
-            .run(
-                &owner_config(),
-                &PgConnector::disabled(),
-                provider().digest(),
+        // The test's own database is a file-level copy of the template,
+        // replacing whatever the previous test left. FORCE covers the
+        // finished test's pool whose sockets close a beat late; the turn's
+        // own session lives on the base database, out of its reach.
+        let mine = owner_config()
+            .get_dbname()
+            .expect("a database name")
+            .to_owned();
+        let template = template_config()
+            .get_dbname()
+            .expect("a template name")
+            .to_owned();
+        across_processes
+            .execute(
+                &format!("DROP DATABASE IF EXISTS \"{mine}\" WITH (FORCE)"),
+                &[],
             )
             .await
-            .expect("the schema applies");
-        owner
-            .batch_execute("ALTER ROLE saffui_app LOGIN PASSWORD 'saffui_app_test'")
+            .expect("the old world goes");
+        across_processes
+            .execute(
+                &format!("CREATE DATABASE \"{mine}\" TEMPLATE \"{template}\""),
+                &[],
+            )
             .await
-            .expect("the role gets a password");
+            .expect("the world clones");
 
         let mut app = owner_config();
         app.user("saffui_app").password("saffui_app_test");
@@ -1485,8 +1554,8 @@ impl Plane {
             _turn: turn,
             _across_processes: across_processes,
             tenancy: Tenancy::unpinned(),
-            key: SigningKey::generate(KID),
-            second: SigningKey::anonymous(SECOND_KID),
+            key: shared_signing_key(),
+            second: shared_second_key(),
             encrypting: shared_encryption_key(),
         };
         plane.plant(held).await;
@@ -1569,55 +1638,17 @@ impl Plane {
         self.key.sign(payload, &self.key.kid)
     }
 
+    /// What no template can hold: this process's published keys, sealed
+    /// with the realm's own ring; a login opened now rather than when the
+    /// template was built; and the role carrying exactly the actions this
+    /// test asked for.
     async fn plant(&self, held: &[AdminAction]) {
         let metadata = || AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned());
-
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::tenant_wide(TENANT))
-            .await;
-
-        let tenant: models::entities::tenant::TenantModel = TenantCreateModel {
-            tenant_id: TENANT.into(),
-            display_name: "Acme".into(),
-            region: None,
-            limits: None,
-            created_by: Some("root".into()),
-        }
-        .into();
-        tenants::create(&transaction, &tenant).await.unwrap();
-
-        let realm = RealmCreateModel {
-            name: REALM.into(),
-            display_name: "Main".into(),
-            enabled: true,
-        }
-        .into_model(REALM.into(), metadata());
-        realms::create(&transaction, &realm).await.unwrap();
-
-        // What this realm calls its levels. Without a map nothing can be asked
-        // for and nothing can be attested, so `acr` would be absent everywhere
-        // and every test about it would pass for the wrong reason.
-        let mut settings = realms::load(&transaction, REALM).await.unwrap().unwrap();
-        settings.acr_loa_map = Some(models::entities::acr::AcrLoaMap::from_pairs([
-            (PASSWORD_ACR, 1),
-            (STRONG_ACR, 2),
-        ]));
-        realms::update(&transaction, &settings).await.unwrap();
-        transaction.commit().await.unwrap();
-        drop(connection);
-
         let mut connection = self.connection().await;
         let transaction = self
             .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
             .await;
-
-        // The realm's own ring first: a signing key is stored sealed under it,
-        // so there is nowhere to write one until it exists.
         let envelope = envelope();
-        keyring::provision(&transaction, &envelope, TENANT, REALM)
-            .await
-            .unwrap();
         let ring = keyring::load(&transaction, &envelope, TENANT, REALM)
             .await
             .unwrap();
@@ -1673,353 +1704,6 @@ impl Plane {
         .await
         .unwrap();
 
-        for (client_id, secret, public, account_enabled) in [
-            (CONFIDENTIAL, Some(CLIENT_SECRET), false, true),
-            (OTHER, Some(CLIENT_SECRET), false, true),
-            (PUBLIC, None, true, true),
-            (OFFBOARDED, Some(CLIENT_SECRET), false, false),
-        ] {
-            let mut client = ClientCreateModel {
-                name: client_id.into(),
-                display_name: client_id.into(),
-                description: String::new(),
-                enabled: Some(true),
-            }
-            .into_model(client_id.to_owned(), REALM.into(), metadata());
-            clients::create(&transaction, &client).await.unwrap();
-            if let Some(secret) = secret {
-                let StoredPassword::Argon2id { encoded } = StoredPassword::hash_argon2id(
-                    &provider(),
-                    Argon2Params::default(),
-                    &SecretBox::new(Box::new(secret.to_owned())),
-                )
-                .expect("a hashed secret") else {
-                    unreachable!("hash_argon2id returns the argon2id shape")
-                };
-                clients::rotate_secret(&transaction, client_id, &encoded, None)
-                    .await
-                    .unwrap();
-            }
-
-            // Neither `public_client` nor `service_account_enabled` is on the
-            // create payload: one decides whether a secret is expected at all,
-            // the other whether this client may act for itself.
-            client.public_client = Some(public);
-            client.redirect_uris = Some(vec![REDIRECT.to_owned()]);
-            // Its own list. A logout landing page is usually not a callback, and
-            // one set would make every logout destination a place to deliver a
-            // code.
-            client.post_logout_redirect_uris = Some(vec![AFTER_LOGOUT.to_owned()]);
-            client.standard_flow_enabled = Some(true);
-            // Both, including the public one. An operator can tick a service
-            // account on a public client, and what refuses that has to be the
-            // rule about public clients rather than the tick being absent.
-            client.service_account_enabled = Some(true);
-            clients::update(&transaction, &client).await.unwrap();
-
-            // Every one of them, the public client included. If the public one
-            // had no account, the lookup would be what refuses it and the rule
-            // about public clients would never be reached.
-            //
-            // Reached by the link and not by a name built from the client id, so
-            // renaming it does not silently point the client at somebody else.
-            let mut account = UserCreateModel {
-                user_name: format!("service-account-{client_id}"),
-                enabled: account_enabled,
-                email: String::new(),
-                email_verified: None,
-                phone_number: None,
-                phone_number_verified: None,
-                required_actions: None,
-                not_before: None,
-                user_storage: None,
-                attributes: None,
-                is_service_account: Some(true),
-                service_account_client_link: Some(client_id.to_owned()),
-            }
-            .into_model(
-                format!("service-account-{client_id}"),
-                REALM.into(),
-                metadata(),
-            );
-            account.email = format!("service-account-{client_id}@example.test");
-            users::create(&transaction, &account).await.unwrap();
-        }
-
-        // The scopes a realm gets, planted the way a deployment plants them. Only
-        // `profile` is attached below: the gate is exercised only when a client
-        // asks for something nothing attached to it.
-        services::provisioning::provision_standard_scopes(&transaction, TENANT, REALM)
-            .await
-            .unwrap();
-        for client_id in [CONFIDENTIAL, OTHER, PUBLIC] {
-            store::providers::client_scopes::attach_scope(
-                &transaction,
-                client_id,
-                "profile",
-                false,
-            )
-            .await
-            .unwrap();
-        }
-        // Optional, so a test has to ask for it: what exercises a scope that
-        // is granted only by name.
-        store::providers::client_scopes::attach_scope(&transaction, CONFIDENTIAL, "address", true)
-            .await
-            .unwrap();
-        store::providers::client_scopes::attach_scope(
-            &transaction,
-            CONFIDENTIAL,
-            "offline_access",
-            true,
-        )
-        .await
-        .unwrap();
-
-        // The console and the scope the admin plane requires, planted the way a
-        // deployment plants them rather than by hand. The suite that mounts the
-        // plane then reaches it the way a console does, and a change that made
-        // the scope unobtainable would fail here instead of passing against a
-        // token no protocol could have minted.
-        services::provisioning::provision_admin_console(
-            &transaction,
-            TENANT,
-            REALM,
-            &services::provisioning::AdminConsole {
-                client_id: PARTY,
-                scope: SCOPE,
-                redirect_uris: vec![CONSOLE_REDIRECT.to_owned()],
-            },
-        )
-        .await
-        .unwrap();
-
-        // The flow a browser login runs. `/authorize` refuses a realm that has
-        // none rather than opening a login nothing can advance.
-        let flow = models::entities::auth::AuthenticationFlowMutationModel {
-            alias: "browser".into(),
-            provider_id: "basic-flow".into(),
-            description: String::new(),
-            top_level: Some(true),
-            built_in: Some(false),
-        }
-        .into_model("browser".into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_flow(&transaction, &flow)
-            .await
-            .unwrap();
-
-        // One required password step, which is the smallest flow that can admit
-        // anybody and the one the end to end suite answers.
-        let execution = models::entities::auth::AuthenticationExecutionMutationModel {
-            alias: "the-password".into(),
-            flow_id: "browser".into(),
-            priority: 10,
-            step: models::entities::auth::ExecutionStep::Authenticator {
-                authenticator: "password".into(),
-                config_id: None,
-            },
-            requirement: models::entities::auth::AuthenticatorRequirement::Required,
-        }
-        .into_model("exec-1".into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_execution(&transaction, &execution)
-            .await
-            .unwrap();
-
-        // A flow whose second step is a key. What exercises a challenge the
-        // server issues and has to remember, which a code never needed.
-        let keyed = models::entities::auth::AuthenticationFlowMutationModel {
-            alias: KEYED_FLOW.into(),
-            provider_id: "basic-flow".into(),
-            description: String::new(),
-            top_level: Some(true),
-            built_in: Some(false),
-        }
-        .into_model(KEYED_FLOW.into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_flow(&transaction, &keyed)
-            .await
-            .unwrap();
-        for (id, authenticator, priority) in [
-            ("exec-keyed-1", "password", 10),
-            ("exec-keyed-2", "webauthn", 20),
-        ] {
-            let step = models::entities::auth::AuthenticationExecutionMutationModel {
-                alias: id.into(),
-                flow_id: KEYED_FLOW.into(),
-                priority,
-                step: models::entities::auth::ExecutionStep::Authenticator {
-                    authenticator: authenticator.into(),
-                    config_id: None,
-                },
-                requirement: models::entities::auth::AuthenticatorRequirement::Required,
-            }
-            .into_model(id.into(), REALM.into(), metadata());
-            store::providers::auth_flows::create_execution(&transaction, &step)
-                .await
-                .unwrap();
-        }
-
-        // A second flow, password then a code. What lets a test reach a level
-        // the first flow cannot, which is what `acr_values` asks about.
-        let strong = models::entities::auth::AuthenticationFlowMutationModel {
-            alias: STRONG_FLOW.into(),
-            provider_id: "basic-flow".into(),
-            description: String::new(),
-            top_level: Some(true),
-            built_in: Some(false),
-        }
-        .into_model(STRONG_FLOW.into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_flow(&transaction, &strong)
-            .await
-            .unwrap();
-        for (id, authenticator, priority) in [
-            ("exec-strong-1", "password", 10),
-            ("exec-strong-2", "totp", 20),
-        ] {
-            let step = models::entities::auth::AuthenticationExecutionMutationModel {
-                alias: id.into(),
-                flow_id: STRONG_FLOW.into(),
-                priority,
-                step: models::entities::auth::ExecutionStep::Authenticator {
-                    authenticator: authenticator.into(),
-                    config_id: None,
-                },
-                requirement: models::entities::auth::AuthenticatorRequirement::Required,
-            }
-            .into_model(id.into(), REALM.into(), metadata());
-            store::providers::auth_flows::create_execution(&transaction, &step)
-                .await
-                .unwrap();
-        }
-
-        let passkey_only = models::entities::auth::AuthenticationFlowMutationModel {
-            alias: PASSKEY_FLOW.into(),
-            provider_id: "basic-flow".into(),
-            description: String::new(),
-            top_level: Some(true),
-            built_in: Some(false),
-        }
-        .into_model(PASSKEY_FLOW.into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_flow(&transaction, &passkey_only)
-            .await
-            .unwrap();
-        let step = models::entities::auth::AuthenticationExecutionMutationModel {
-            alias: "exec-passkey-1".into(),
-            flow_id: PASSKEY_FLOW.into(),
-            priority: 10,
-            step: models::entities::auth::ExecutionStep::Authenticator {
-                authenticator: "webauthn".into(),
-                config_id: None,
-            },
-            requirement: models::entities::auth::AuthenticatorRequirement::Required,
-        }
-        .into_model("exec-passkey-1".into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_execution(&transaction, &step)
-            .await
-            .unwrap();
-
-        let sheet = models::entities::auth::AuthenticationFlowMutationModel {
-            alias: SHEET_FLOW.into(),
-            provider_id: "basic-flow".into(),
-            description: String::new(),
-            top_level: Some(true),
-            built_in: Some(false),
-        }
-        .into_model(SHEET_FLOW.into(), REALM.into(), metadata());
-        store::providers::auth_flows::create_flow(&transaction, &sheet)
-            .await
-            .unwrap();
-        for (id, authenticator, priority) in [
-            ("exec-sheet-1", "password", 10),
-            ("exec-sheet-2", "recovery-code", 20),
-        ] {
-            let step = models::entities::auth::AuthenticationExecutionMutationModel {
-                alias: id.into(),
-                flow_id: SHEET_FLOW.into(),
-                priority,
-                step: models::entities::auth::ExecutionStep::Authenticator {
-                    authenticator: authenticator.into(),
-                    config_id: None,
-                },
-                requirement: models::entities::auth::AuthenticatorRequirement::Required,
-            }
-            .into_model(id.into(), REALM.into(), metadata());
-            store::providers::auth_flows::create_execution(&transaction, &step)
-                .await
-                .unwrap();
-        }
-
-        let user = UserCreateModel {
-            user_name: SUBJECT.into(),
-            enabled: true,
-            email: "ada@example.test".into(),
-            email_verified: Some(true),
-            phone_number: None,
-            phone_number_verified: None,
-            required_actions: None,
-            not_before: None,
-            user_storage: None,
-            // What the `profile` scope releases. Held as attributes because that
-            // is where the realm keeps them, so the claim set is composed rather
-            // than read off columns that do not exist.
-            attributes: Some(std::collections::HashMap::from([
-                (
-                    models::entities::user::profile::FIRST_NAME.to_owned(),
-                    models::entities::attributes::AttributeValue::Str(GIVEN_NAME.into()),
-                ),
-                (
-                    models::entities::user::profile::LAST_NAME.to_owned(),
-                    models::entities::attributes::AttributeValue::Str(FAMILY_NAME.into()),
-                ),
-            ])),
-            is_service_account: None,
-            service_account_client_link: None,
-        }
-        .into_model(SUBJECT.into(), REALM.into(), metadata());
-        users::create(&transaction, &user).await.unwrap();
-
-        let StoredPassword::Argon2id { encoded } = StoredPassword::hash_argon2id(
-            &provider(),
-            Argon2Params::default(),
-            &SecretBox::new(Box::new(PASSWORD.to_owned())),
-        )
-        .expect("a hashed password") else {
-            unreachable!("hash_argon2id returns the argon2id shape")
-        };
-        store::providers::credentials::create(
-            &transaction,
-            &models::entities::credentials::CredentialModel {
-                credential_id: "cred-1".into(),
-                realm_id: REALM.into(),
-                user_id: SUBJECT.into(),
-                credential_type: models::entities::credentials::CredentialType::Password,
-                secret: models::entities::credentials::CredentialSecret::new(encoded),
-                user_label: None,
-                otp: None,
-                priority: 0,
-                metadata: metadata(),
-            },
-        )
-        .await
-        .unwrap();
-
-        // A second factor for the subject. The secret is base32 because that is
-        // what an authenticator app is handed and what the store keeps.
-        store::providers::credentials::create(
-            &transaction,
-            &models::entities::credentials::CredentialModel::otp(
-                "cred-totp".into(),
-                REALM.into(),
-                SUBJECT.into(),
-                models::entities::credentials::CredentialSecret::new(TOTP_SECRET.to_owned()),
-                models::entities::credentials::OtpAlgorithm::Sha1,
-                models::entities::credentials::OtpParameters::totp(6, 30)
-                    .expect("a usable time step"),
-                metadata(),
-            ),
-        )
-        .await
-        .unwrap();
-
         // The login the tokens are bound to. The plane refuses a token whose
         // login it cannot find, so without this every test here refuses for a
         // reason none of them is about.
@@ -2069,6 +1753,407 @@ impl Plane {
 
         transaction.commit().await.unwrap();
     }
+}
+
+/// The world every test of this binary shares, planted once into the
+/// template database: tenant and realm, clients and their hashed secrets,
+/// scopes, flows, the console, and ada herself. Everything here is
+/// action-independent and survives copying; what cannot survive copying
+/// stays in `Plane::plant`.
+async fn plant_the_common_world(pool: &Pool, tenancy: &Tenancy) {
+    let metadata = || AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned());
+
+    let mut connection = pool.get().await.expect("a connection");
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::tenant_wide(TENANT))
+        .await
+        .expect("a scoped transaction");
+
+    let tenant: models::entities::tenant::TenantModel = TenantCreateModel {
+        tenant_id: TENANT.into(),
+        display_name: "Acme".into(),
+        region: None,
+        limits: None,
+        created_by: Some("root".into()),
+    }
+    .into();
+    tenants::create(&transaction, &tenant).await.unwrap();
+
+    let realm = RealmCreateModel {
+        name: REALM.into(),
+        display_name: "Main".into(),
+        enabled: true,
+    }
+    .into_model(REALM.into(), metadata());
+    realms::create(&transaction, &realm).await.unwrap();
+
+    // What this realm calls its levels. Without a map nothing can be asked
+    // for and nothing can be attested, so `acr` would be absent everywhere
+    // and every test about it would pass for the wrong reason.
+    let mut settings = realms::load(&transaction, REALM).await.unwrap().unwrap();
+    settings.acr_loa_map = Some(models::entities::acr::AcrLoaMap::from_pairs([
+        (PASSWORD_ACR, 1),
+        (STRONG_ACR, 2),
+    ]));
+    realms::update(&transaction, &settings).await.unwrap();
+    transaction.commit().await.unwrap();
+    drop(connection);
+
+    let mut connection = pool.get().await.expect("a connection");
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new(TENANT, REALM))
+        .await
+        .expect("a scoped transaction");
+
+    // The realm's own ring first: a signing key is stored sealed under it,
+    // so there is nowhere to write one until it exists.
+    let envelope = envelope();
+    keyring::provision(&transaction, &envelope, TENANT, REALM)
+        .await
+        .unwrap();
+
+    for (client_id, secret, public, account_enabled) in [
+        (CONFIDENTIAL, Some(CLIENT_SECRET), false, true),
+        (OTHER, Some(CLIENT_SECRET), false, true),
+        (PUBLIC, None, true, true),
+        (OFFBOARDED, Some(CLIENT_SECRET), false, false),
+    ] {
+        let mut client = ClientCreateModel {
+            name: client_id.into(),
+            display_name: client_id.into(),
+            description: String::new(),
+            enabled: Some(true),
+        }
+        .into_model(client_id.to_owned(), REALM.into(), metadata());
+        clients::create(&transaction, &client).await.unwrap();
+        if let Some(secret) = secret {
+            let StoredPassword::Argon2id { encoded } = StoredPassword::hash_argon2id(
+                &provider(),
+                Argon2Params::default(),
+                &SecretBox::new(Box::new(secret.to_owned())),
+            )
+            .expect("a hashed secret") else {
+                unreachable!("hash_argon2id returns the argon2id shape")
+            };
+            clients::rotate_secret(&transaction, client_id, &encoded, None)
+                .await
+                .unwrap();
+        }
+
+        // Neither `public_client` nor `service_account_enabled` is on the
+        // create payload: one decides whether a secret is expected at all,
+        // the other whether this client may act for itself.
+        client.public_client = Some(public);
+        client.redirect_uris = Some(vec![REDIRECT.to_owned()]);
+        // Its own list. A logout landing page is usually not a callback, and
+        // one set would make every logout destination a place to deliver a
+        // code.
+        client.post_logout_redirect_uris = Some(vec![AFTER_LOGOUT.to_owned()]);
+        client.standard_flow_enabled = Some(true);
+        // Both, including the public one. An operator can tick a service
+        // account on a public client, and what refuses that has to be the
+        // rule about public clients rather than the tick being absent.
+        client.service_account_enabled = Some(true);
+        clients::update(&transaction, &client).await.unwrap();
+
+        // Every one of them, the public client included. If the public one
+        // had no account, the lookup would be what refuses it and the rule
+        // about public clients would never be reached.
+        //
+        // Reached by the link and not by a name built from the client id, so
+        // renaming it does not silently point the client at somebody else.
+        let mut account = UserCreateModel {
+            user_name: format!("service-account-{client_id}"),
+            enabled: account_enabled,
+            email: String::new(),
+            email_verified: None,
+            phone_number: None,
+            phone_number_verified: None,
+            required_actions: None,
+            not_before: None,
+            user_storage: None,
+            attributes: None,
+            is_service_account: Some(true),
+            service_account_client_link: Some(client_id.to_owned()),
+        }
+        .into_model(
+            format!("service-account-{client_id}"),
+            REALM.into(),
+            metadata(),
+        );
+        account.email = format!("service-account-{client_id}@example.test");
+        users::create(&transaction, &account).await.unwrap();
+    }
+
+    // The scopes a realm gets, planted the way a deployment plants them. Only
+    // `profile` is attached below: the gate is exercised only when a client
+    // asks for something nothing attached to it.
+    services::provisioning::provision_standard_scopes(&transaction, TENANT, REALM)
+        .await
+        .unwrap();
+    for client_id in [CONFIDENTIAL, OTHER, PUBLIC] {
+        store::providers::client_scopes::attach_scope(&transaction, client_id, "profile", false)
+            .await
+            .unwrap();
+    }
+    // Optional, so a test has to ask for it: what exercises a scope that
+    // is granted only by name.
+    store::providers::client_scopes::attach_scope(&transaction, CONFIDENTIAL, "address", true)
+        .await
+        .unwrap();
+    store::providers::client_scopes::attach_scope(
+        &transaction,
+        CONFIDENTIAL,
+        "offline_access",
+        true,
+    )
+    .await
+    .unwrap();
+
+    // The console and the scope the admin plane requires, planted the way a
+    // deployment plants them rather than by hand. The suite that mounts the
+    // plane then reaches it the way a console does, and a change that made
+    // the scope unobtainable would fail here instead of passing against a
+    // token no protocol could have minted.
+    services::provisioning::provision_admin_console(
+        &transaction,
+        TENANT,
+        REALM,
+        &services::provisioning::AdminConsole {
+            client_id: PARTY,
+            scope: SCOPE,
+            redirect_uris: vec![CONSOLE_REDIRECT.to_owned()],
+        },
+    )
+    .await
+    .unwrap();
+
+    // The flow a browser login runs. `/authorize` refuses a realm that has
+    // none rather than opening a login nothing can advance.
+    let flow = models::entities::auth::AuthenticationFlowMutationModel {
+        alias: "browser".into(),
+        provider_id: "basic-flow".into(),
+        description: String::new(),
+        top_level: Some(true),
+        built_in: Some(false),
+    }
+    .into_model("browser".into(), REALM.into(), metadata());
+    store::providers::auth_flows::create_flow(&transaction, &flow)
+        .await
+        .unwrap();
+
+    // One required password step, which is the smallest flow that can admit
+    // anybody and the one the end to end suite answers.
+    let execution = models::entities::auth::AuthenticationExecutionMutationModel {
+        alias: "the-password".into(),
+        flow_id: "browser".into(),
+        priority: 10,
+        step: models::entities::auth::ExecutionStep::Authenticator {
+            authenticator: "password".into(),
+            config_id: None,
+        },
+        requirement: models::entities::auth::AuthenticatorRequirement::Required,
+    }
+    .into_model("exec-1".into(), REALM.into(), metadata());
+    store::providers::auth_flows::create_execution(&transaction, &execution)
+        .await
+        .unwrap();
+
+    // A flow whose second step is a key. What exercises a challenge the
+    // server issues and has to remember, which a code never needed.
+    let keyed = models::entities::auth::AuthenticationFlowMutationModel {
+        alias: KEYED_FLOW.into(),
+        provider_id: "basic-flow".into(),
+        description: String::new(),
+        top_level: Some(true),
+        built_in: Some(false),
+    }
+    .into_model(KEYED_FLOW.into(), REALM.into(), metadata());
+    store::providers::auth_flows::create_flow(&transaction, &keyed)
+        .await
+        .unwrap();
+    for (id, authenticator, priority) in [
+        ("exec-keyed-1", "password", 10),
+        ("exec-keyed-2", "webauthn", 20),
+    ] {
+        let step = models::entities::auth::AuthenticationExecutionMutationModel {
+            alias: id.into(),
+            flow_id: KEYED_FLOW.into(),
+            priority,
+            step: models::entities::auth::ExecutionStep::Authenticator {
+                authenticator: authenticator.into(),
+                config_id: None,
+            },
+            requirement: models::entities::auth::AuthenticatorRequirement::Required,
+        }
+        .into_model(id.into(), REALM.into(), metadata());
+        store::providers::auth_flows::create_execution(&transaction, &step)
+            .await
+            .unwrap();
+    }
+
+    // A second flow, password then a code. What lets a test reach a level
+    // the first flow cannot, which is what `acr_values` asks about.
+    let strong = models::entities::auth::AuthenticationFlowMutationModel {
+        alias: STRONG_FLOW.into(),
+        provider_id: "basic-flow".into(),
+        description: String::new(),
+        top_level: Some(true),
+        built_in: Some(false),
+    }
+    .into_model(STRONG_FLOW.into(), REALM.into(), metadata());
+    store::providers::auth_flows::create_flow(&transaction, &strong)
+        .await
+        .unwrap();
+    for (id, authenticator, priority) in [
+        ("exec-strong-1", "password", 10),
+        ("exec-strong-2", "totp", 20),
+    ] {
+        let step = models::entities::auth::AuthenticationExecutionMutationModel {
+            alias: id.into(),
+            flow_id: STRONG_FLOW.into(),
+            priority,
+            step: models::entities::auth::ExecutionStep::Authenticator {
+                authenticator: authenticator.into(),
+                config_id: None,
+            },
+            requirement: models::entities::auth::AuthenticatorRequirement::Required,
+        }
+        .into_model(id.into(), REALM.into(), metadata());
+        store::providers::auth_flows::create_execution(&transaction, &step)
+            .await
+            .unwrap();
+    }
+
+    let passkey_only = models::entities::auth::AuthenticationFlowMutationModel {
+        alias: PASSKEY_FLOW.into(),
+        provider_id: "basic-flow".into(),
+        description: String::new(),
+        top_level: Some(true),
+        built_in: Some(false),
+    }
+    .into_model(PASSKEY_FLOW.into(), REALM.into(), metadata());
+    store::providers::auth_flows::create_flow(&transaction, &passkey_only)
+        .await
+        .unwrap();
+    let step = models::entities::auth::AuthenticationExecutionMutationModel {
+        alias: "exec-passkey-1".into(),
+        flow_id: PASSKEY_FLOW.into(),
+        priority: 10,
+        step: models::entities::auth::ExecutionStep::Authenticator {
+            authenticator: "webauthn".into(),
+            config_id: None,
+        },
+        requirement: models::entities::auth::AuthenticatorRequirement::Required,
+    }
+    .into_model("exec-passkey-1".into(), REALM.into(), metadata());
+    store::providers::auth_flows::create_execution(&transaction, &step)
+        .await
+        .unwrap();
+
+    let sheet = models::entities::auth::AuthenticationFlowMutationModel {
+        alias: SHEET_FLOW.into(),
+        provider_id: "basic-flow".into(),
+        description: String::new(),
+        top_level: Some(true),
+        built_in: Some(false),
+    }
+    .into_model(SHEET_FLOW.into(), REALM.into(), metadata());
+    store::providers::auth_flows::create_flow(&transaction, &sheet)
+        .await
+        .unwrap();
+    for (id, authenticator, priority) in [
+        ("exec-sheet-1", "password", 10),
+        ("exec-sheet-2", "recovery-code", 20),
+    ] {
+        let step = models::entities::auth::AuthenticationExecutionMutationModel {
+            alias: id.into(),
+            flow_id: SHEET_FLOW.into(),
+            priority,
+            step: models::entities::auth::ExecutionStep::Authenticator {
+                authenticator: authenticator.into(),
+                config_id: None,
+            },
+            requirement: models::entities::auth::AuthenticatorRequirement::Required,
+        }
+        .into_model(id.into(), REALM.into(), metadata());
+        store::providers::auth_flows::create_execution(&transaction, &step)
+            .await
+            .unwrap();
+    }
+
+    let user = UserCreateModel {
+        user_name: SUBJECT.into(),
+        enabled: true,
+        email: "ada@example.test".into(),
+        email_verified: Some(true),
+        phone_number: None,
+        phone_number_verified: None,
+        required_actions: None,
+        not_before: None,
+        user_storage: None,
+        // What the `profile` scope releases. Held as attributes because that
+        // is where the realm keeps them, so the claim set is composed rather
+        // than read off columns that do not exist.
+        attributes: Some(std::collections::HashMap::from([
+            (
+                models::entities::user::profile::FIRST_NAME.to_owned(),
+                models::entities::attributes::AttributeValue::Str(GIVEN_NAME.into()),
+            ),
+            (
+                models::entities::user::profile::LAST_NAME.to_owned(),
+                models::entities::attributes::AttributeValue::Str(FAMILY_NAME.into()),
+            ),
+        ])),
+        is_service_account: None,
+        service_account_client_link: None,
+    }
+    .into_model(SUBJECT.into(), REALM.into(), metadata());
+    users::create(&transaction, &user).await.unwrap();
+
+    let StoredPassword::Argon2id { encoded } = StoredPassword::hash_argon2id(
+        &provider(),
+        Argon2Params::default(),
+        &SecretBox::new(Box::new(PASSWORD.to_owned())),
+    )
+    .expect("a hashed password") else {
+        unreachable!("hash_argon2id returns the argon2id shape")
+    };
+    store::providers::credentials::create(
+        &transaction,
+        &models::entities::credentials::CredentialModel {
+            credential_id: "cred-1".into(),
+            realm_id: REALM.into(),
+            user_id: SUBJECT.into(),
+            credential_type: models::entities::credentials::CredentialType::Password,
+            secret: models::entities::credentials::CredentialSecret::new(encoded),
+            user_label: None,
+            otp: None,
+            priority: 0,
+            metadata: metadata(),
+        },
+    )
+    .await
+    .unwrap();
+
+    // A second factor for the subject. The secret is base32 because that is
+    // what an authenticator app is handed and what the store keeps.
+    store::providers::credentials::create(
+        &transaction,
+        &models::entities::credentials::CredentialModel::otp(
+            "cred-totp".into(),
+            REALM.into(),
+            SUBJECT.into(),
+            models::entities::credentials::CredentialSecret::new(TOTP_SECRET.to_owned()),
+            models::entities::credentials::OtpAlgorithm::Sha1,
+            models::entities::credentials::OtpParameters::totp(6, 30).expect("a usable time step"),
+            metadata(),
+        ),
+    )
+    .await
+    .unwrap();
+
+    transaction.commit().await.unwrap();
 }
 
 /// Percent encode a query value.

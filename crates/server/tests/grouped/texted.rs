@@ -7,7 +7,7 @@ use models::entities::authz::AdminAction;
 use server::api::config::{Plane as Mounted, register};
 use store::tenancy::TenantContext;
 
-fn mounted(plane: &Plane) -> Mounted {
+fn mounted(plane: &Plane, egress: config::serving::Egress) -> Mounted {
     Mounted {
         pool: plane.pool(),
         tenancy: plane.tenancy(),
@@ -19,7 +19,7 @@ fn mounted(plane: &Plane) -> Mounted {
         origin: support::origin(),
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
-        egress: config::serving::Egress::Outward,
+        egress,
         sealing: support::sealing(),
     }
 }
@@ -33,7 +33,10 @@ async fn put_settings(
     bearer: &str,
     body: serde_json::Value,
 ) -> (StatusCode, String) {
-    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let app = test::init_service(
+        App::new().configure(register(&mounted(plane, config::serving::Egress::Outward))),
+    )
+    .await;
     let response = test::call_service(
         &app,
         test::TestRequest::put()
@@ -97,7 +100,10 @@ async fn an_sms_token_is_sealed_and_never_answered_with() {
     drop(transaction);
     drop(connection);
 
-    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let app = test::init_service(
+        App::new().configure(register(&mounted(&plane, config::serving::Egress::Outward))),
+    )
+    .await;
     let response = test::call_service(
         &app,
         test::TestRequest::get()
@@ -184,7 +190,10 @@ async fn a_gateway_that_is_not_http_is_refused() {
 async fn forgetting_removes_the_settings_and_absence_says_so() {
     let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
     let bearer = plane.token(&support::claims());
-    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let app = test::init_service(
+        App::new().configure(register(&mounted(&plane, config::serving::Egress::Outward))),
+    )
+    .await;
 
     let response = test::call_service(
         &app,
@@ -234,7 +243,10 @@ async fn forgetting_removes_the_settings_and_absence_says_so() {
 async fn a_test_text_wants_a_number_and_speaks_the_gateways_refusal() {
     let plane = Plane::with_actions(&[AdminAction::RealmWrite]).await;
     let bearer = plane.token(&support::claims());
-    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let app = test::init_service(
+        App::new().configure(register(&mounted(&plane, config::serving::Egress::Outward))),
+    )
+    .await;
 
     let asked = |to: &str| {
         test::TestRequest::post()
@@ -259,14 +271,80 @@ async fn a_test_text_wants_a_number_and_speaks_the_gateways_refusal() {
     );
 
     // A gateway nothing listens on: the refusal is immediate and spoken.
-    put_settings(
+    // Dialled under the anywhere policy, since the address is the point.
+    let anywhere = test::init_service(App::new().configure(register(&mounted(
         &plane,
-        &bearer,
-        serde_json::json!({ "url": "http://127.0.0.1:9/send", "sender": "saffui" }),
+        config::serving::Egress::Anywhere,
+    ))))
+    .await;
+    let response = test::call_service(
+        &anywhere,
+        test::TestRequest::put()
+            .uri(&format!("/admin/realms/{}/sms", support::REALM))
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .set_json(serde_json::json!({ "url": "http://127.0.0.1:9/send", "sender": "saffui" }))
+            .to_request(),
     )
     .await;
-    let response = test::call_service(&app, asked("+22890123456")).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = test::call_service(&anywhere, asked("+22890123456")).await;
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let told = String::from_utf8_lossy(&test::read_body(response).await).into_owned();
     assert!(told.contains("gateway refused"), "{told}");
+}
+
+/// An outward deployment neither writes a cleartext gateway nor dials its
+/// own network, and the second refusal is the resolver's: the address is
+/// judged when the name is resolved, not when it was written.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_outward_deployment_keeps_the_dial_outside() {
+    let plane = Plane::with_actions(&[AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, told) = put_settings(
+        &plane,
+        &bearer,
+        serde_json::json!({ "url": "http://gateway.example/send", "sender": "saffui" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(told.contains("only over https"), "{told}");
+
+    // The write takes the name; the dial refuses where it points. A live
+    // listener tells refusal-at-resolution apart from a failed connection:
+    // the address must be turned away before a single packet reaches it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a local ear");
+    listener.set_nonblocking(true).expect("a patient ear");
+    let port = listener.local_addr().expect("an address").port();
+    let (status, told) = put_settings(
+        &plane,
+        &bearer,
+        serde_json::json!({ "url": format!("https://127.0.0.1:{port}/send"), "sender": "saffui" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+
+    let app = test::init_service(
+        App::new().configure(register(&mounted(&plane, config::serving::Egress::Outward))),
+    )
+    .await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/admin/realms/{}/sms/test", support::REALM))
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .set_json(serde_json::json!({ "to": "+22890123456" }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a dial reached inside the deployment"
+    );
+    assert!(
+        matches!(listener.accept(), Err(why) if why.kind() == std::io::ErrorKind::WouldBlock),
+        "a connection reached an address inside the deployment"
+    );
 }

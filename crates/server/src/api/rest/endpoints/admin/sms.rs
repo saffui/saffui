@@ -43,6 +43,7 @@ pub async fn send_test(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
+    egress: web::Data<config::serving::Egress>,
     path: web::Path<String>,
     body: web::Json<TestAsked>,
 ) -> Result<HttpResponse, ApiError> {
@@ -84,7 +85,7 @@ pub async fn send_test(
     // logged sink would print the text and prove nothing about the gateway.
     // A green answer means the settings on screen actually carry texts.
     use auth::messaging::Texter;
-    crate::messaging::HttpTexter
+    crate::messaging::HttpTexter::new(**egress)
         .text(&settings, &text)
         .await
         .map_err(|_| {
@@ -139,10 +140,21 @@ pub async fn write(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
+    egress: web::Data<config::serving::Egress>,
     path: web::Path<String>,
     asked: web::Json<SmsWrite>,
 ) -> Result<HttpResponse, ApiError> {
     let asked = asked.into_inner();
+    // What the dial will always refuse is refused now, in words. The
+    // addresses behind the name are not judged here: names change after
+    // they are written, so the resolver at each dial is what stands
+    // between this URL and the deployment's own network.
+    if *egress.get_ref() == config::serving::Egress::Outward && !asked.url.starts_with("https://") {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "an outward deployment posts to its gateway only over https".to_owned(),
+        ));
+    }
     let realm_id = path.as_str();
     let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy

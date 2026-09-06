@@ -784,6 +784,7 @@ fn plane() -> Result<Plane, String> {
         .build()
         .map_err(|reason| format!("cannot build a pool: {reason}"))?;
 
+    let egress = config::serving::Egress::from_env().map_err(|e| e.to_string())?;
     Ok(Plane {
         pool,
         tenancy: match region {
@@ -798,7 +799,7 @@ fn plane() -> Result<Plane, String> {
         origin,
         login_ui,
         hops: config::proxying::Proxying::from_env().map_err(|e| e.to_string())?,
-        egress: config::serving::Egress::from_env().map_err(|e| e.to_string())?,
+        egress,
         sealing: Sealing {
             sender: match config::messaging::Sink::from_env().map_err(|e| e.to_string())? {
                 config::messaging::Sink::None => None,
@@ -810,7 +811,9 @@ fn plane() -> Result<Plane, String> {
             },
             texter: match config::messaging::TextSink::from_env().map_err(|e| e.to_string())? {
                 config::messaging::TextSink::None => None,
-                config::messaging::TextSink::Http => Some(Arc::new(server::messaging::HttpTexter)),
+                config::messaging::TextSink::Http => {
+                    Some(Arc::new(server::messaging::HttpTexter::new(egress)))
+                }
                 config::messaging::TextSink::Logged => {
                     Some(Arc::new(server::messaging::LoggedTexter))
                 }

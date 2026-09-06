@@ -41,6 +41,10 @@ pub enum Step {
         client_id: String,
         client_name: String,
         scopes: Vec<String>,
+        /// The client's registered policy and terms pages, kept only when
+        /// https: a consent screen must not hand the person a plain link.
+        policy_uri: Option<String>,
+        tos_uri: Option<String>,
     },
     /// Several organizations could answer for this person and nothing picks
     /// one, so the person is asked which they are signing in as.
@@ -330,10 +334,15 @@ pub async fn answer_step(
                 match consented {
                     // Not answered yet: show what is being asked for.
                     None => {
+                        let https_only = |uri: &Option<String>| {
+                            uri.clone().filter(|held| held.starts_with("https://"))
+                        };
                         return Ok(Step::Consent {
                             client_id: client.client_id.clone(),
                             client_name: client.name.clone(),
                             scopes: scope.split_whitespace().map(str::to_owned).collect(),
+                            policy_uri: https_only(&client.policy_uri),
+                            tos_uri: https_only(&client.tos_uri),
                         });
                     }
                     Some(true) => {

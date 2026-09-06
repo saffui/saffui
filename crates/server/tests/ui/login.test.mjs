@@ -534,3 +534,39 @@ test("a refused replacement is spoken beside the fields and asked again", async 
   assert.equal(page.element("renew").hidden, false);
   assert.equal(page.element("notice").textContent, "the password is too short");
 });
+
+test("the registered pages ride the consent screen as links", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "consent",
+          client_name: "an application",
+          scopes: ["openid"],
+          policy_uri: "https://app.example/privacy",
+          tos_uri: "https://app.example/terms",
+        },
+      },
+    ],
+  });
+  await page.signIn();
+
+  assert.equal(page.element("asking-links").hidden, false, "the links stayed hidden");
+  assert.equal(page.element("asking-policy").hidden, false);
+  assert.equal(page.element("asking-policy").href, "https://app.example/privacy");
+  assert.equal(page.element("asking-terms").hidden, false);
+  assert.equal(page.element("asking-terms").href, "https://app.example/terms");
+});
+
+test("a client that registered no pages shows no link row", async () => {
+  const page = opened({
+    rounds: [
+      { told: { status: "consent", client_name: "an application", scopes: ["openid"] } },
+    ],
+  });
+  await page.signIn();
+
+  assert.equal(page.element("asking-links").hidden, true, "an empty link row was shown");
+  assert.equal(page.element("asking-policy").hidden, true);
+  assert.equal(page.element("asking-terms").hidden, true);
+});

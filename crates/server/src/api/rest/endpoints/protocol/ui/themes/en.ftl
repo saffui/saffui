@@ -68,6 +68,8 @@ consent-scope-email = Your email address
 consent-scope-offline = Access while you are away
 consent-account = Signed in as { $account }
 consent-switch = Switch account
+consent-policy = Privacy policy
+consent-terms = Terms of service
 consent-accept = Allow
 consent-decline = Deny
 

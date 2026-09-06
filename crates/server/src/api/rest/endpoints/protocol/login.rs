@@ -449,6 +449,8 @@ pub async fn answer(
                     client_id,
                     client_name,
                     scopes,
+                    policy_uri,
+                    tos_uri,
                 } => match spoken {
                     Spoken::Json => uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(
                         serde_json::json!({
@@ -456,6 +458,8 @@ pub async fn answer(
                             "client_id": client_id,
                             "client_name": client_name,
                             "scopes": scopes,
+                            "policy_uri": policy_uri,
+                            "tos_uri": tos_uri,
                         }),
                     ),
                     Spoken::Form => shown(&page, "consent"),

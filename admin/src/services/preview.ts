@@ -329,6 +329,11 @@ export function previewAnswer<T>(path: string): T {
         configs: { kind: { Str: "caep-push" }, delivery: { Str: "poll" }, audience: { Str: "https://soc.example" } } },
       { internal_id: "i-3", provider_id: "crm-webhook", name: "crm-webhook", display_name: "CRM provisioning", description: "", enabled: true, trust_email: false,
         configs: { kind: { Str: "scim-outbound" }, base_url: { Str: "https://crm.example/scim/v2" } } },
+      { internal_id: "i-4", provider_id: "github-actions", name: "github-actions", display_name: "GitHub Actions", description: "", enabled: true, trust_email: false,
+        configs: { kind: { Str: "workload" }, issuer: { Str: "https://token.actions.githubusercontent.com" },
+          jwks_uri: { Str: "https://token.actions.githubusercontent.com/.well-known/jwks" },
+          audience: { Str: "https://id.acme.example" }, subject_patterns: { Str: "repo:acme/deploy:* repo:acme/api:ref:refs/heads/main" },
+          client_id: { Str: "ci-deployer" } } },
     ]);
   }
   if (path.endsWith("/federations")) {

@@ -10,3 +10,5 @@ mod ciba_signed;
 mod device_flow;
 #[path = "grouped/doorbell.rs"]
 mod doorbell;
+#[path = "grouped/ussd.rs"]
+mod ussd;

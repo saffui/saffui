@@ -159,3 +159,26 @@ export async function sendTestSms(realm: string, to: string): Promise<void> {
     subject: say("sms-test-subject"),
   });
 }
+
+export interface UssdBrief {
+  has_secret: boolean;
+}
+
+export async function getUssd(realm: string): Promise<UssdBrief> {
+  return api<UssdBrief>(adminPath(realm, "ussd"));
+}
+
+export async function writeUssd(realm: string, secret: string): Promise<void> {
+  await api<unknown>(adminPath(realm, "ussd"), {
+    method: "PUT",
+    json: { secret },
+    subject: say("ussd-title"),
+  });
+}
+
+export async function forgetUssd(realm: string): Promise<void> {
+  await api<void>(adminPath(realm, "ussd"), {
+    method: "DELETE",
+    subject: say("ussd-title"),
+  });
+}

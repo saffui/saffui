@@ -32,4 +32,5 @@ pub mod sessions;
 pub mod sms;
 pub mod tenants;
 pub mod users;
+pub mod ussd;
 pub mod webauthn;

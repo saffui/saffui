@@ -690,7 +690,7 @@ pub async fn decide(
 
 /// What a ping needs, opened from the decided row: the client's registered
 /// endpoint, the bearer it handed in, and the request id out of its seal.
-async fn ping_of(
+pub(crate) async fn ping_of(
     transaction: &deadpool_postgres::Transaction<'_>,
     sealing: &Sealing,
     context: &store::tenancy::TenantContext,
@@ -729,7 +729,7 @@ async fn ping_of(
 /// it handed in, saying only which request. Fire and forget: the poll grant
 /// stays the source of truth, so a lost ping costs latency, never
 /// correctness.
-async fn deliver_ping(endpoint: String, bearer: String, auth_req_id: String) {
+pub(crate) async fn deliver_ping(endpoint: String, bearer: String, auth_req_id: String) {
     let _ = tokio::task::spawn_blocking(move || {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(5)))

@@ -27,3 +27,4 @@ pub mod ssf;
 pub mod texting;
 pub mod token;
 pub mod userinfo;
+pub mod ussd;

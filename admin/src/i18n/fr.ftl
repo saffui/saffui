@@ -699,6 +699,11 @@ sms-template-kind = SMS
 sms-template-tongue = Langue
 sms-template-body = Corps
 sms-template-body-help = {"{{code}}"} devient les six chiffres ; le texto de sonnette porte {"{{link}}"} à la place. Vide revient aux mots du build.
+ussd-title = Sonnette USSD
+ussd-help = Une réponse aux demandes de connexion par code composé, depuis n'importe quel téléphone. La passerelle du royaume poste chaque écran ici et se prouve avec le secret.
+ussd-callback = URL de callback pour votre passerelle :
+ussd-secret = Secret de la passerelle
+ussd-secret-help = Présenté par la passerelle en bearer à chaque callback. Seize caractères minimum ; taper remplace celui détenu.
 
 ## Les portes d'écriture des écrans bonus : rôles, scopes, organisations,
 ## politiques, relations, étapes de flux, gouvernance, rôles client, sous-groupes.

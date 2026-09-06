@@ -487,6 +487,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V080__subject_requests.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 81,
+            name: "breach_register",
+            sql: include_str!("../migrations/V081__breach_register.sql"),
+            transactional: true,
+        }),
     ]
 }
 

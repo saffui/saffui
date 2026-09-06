@@ -68,6 +68,8 @@ str_enum! {
         JournalWrite => "journal:write",
         DsarRead => "dsar:read",
         DsarWrite => "dsar:write",
+        BreachRead => "breach:read",
+        BreachWrite => "breach:write",
     }
 }
 
@@ -958,7 +960,7 @@ mod tests {
 
     #[test]
     fn the_vocabulary_agrees_with_its_own_spelling() {
-        assert_eq!(AdminAction::ALL.len(), 45);
+        assert_eq!(AdminAction::ALL.len(), 47);
         assert_round_trips(AdminAction::ALL);
     }
 

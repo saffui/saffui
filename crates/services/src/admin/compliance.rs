@@ -1,6 +1,7 @@
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
 use deadpool_postgres::Transaction;
+use models::compliance::breach::{BreachDiscovery, BreachRecord, BreachSeverity};
 use models::compliance::subject_request::{DsarKind, DsarLodgement, DsarRequest, Jurisdiction};
 use store::providers::{compliance, users};
 
@@ -568,4 +569,111 @@ async fn resolved_subject(
         .await
         .map_err(|_| Unactionable::Backend)?
         .map(|person| person.user_id))
+}
+
+/// What an operator records when a breach is found.
+pub struct Discovery<'a> {
+    pub description: &'a str,
+    pub data_categories: Vec<String>,
+    pub severity: BreachSeverity,
+    pub jurisdiction: Jurisdiction,
+    pub occurred_at: Option<i64>,
+}
+
+/// Record a found breach; the notification clock is settled here, under the
+/// law as it stands, and stays absent where no source fixes one.
+pub async fn record_breach_discovery(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &str,
+    realm_id: &str,
+    found: Discovery<'_>,
+    discovered_at: i64,
+) -> Result<(BreachRecord, Jurisdiction), Unactionable> {
+    let mut drawn = [0u8; 16];
+    provider
+        .rand()
+        .fill(&mut drawn)
+        .map_err(|_| Unactionable::Backend)?;
+    let breach = BreachRecord::discover(
+        BreachDiscovery {
+            breach_id: HEXLOWER.encode(&drawn),
+            tenant: tenant.to_owned(),
+            realm_id: realm_id.to_owned(),
+            description: found.description.to_owned(),
+            data_categories: found.data_categories,
+            severity: found.severity,
+            jurisdiction: found.jurisdiction,
+            occurred_at: found.occurred_at,
+        },
+        discovered_at,
+    )
+    .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+    compliance::record_breach(transaction, &breach, found.jurisdiction)
+        .await
+        .map_err(|_| Unactionable::Backend)?;
+    Ok((breach, found.jurisdiction))
+}
+
+pub async fn list_breaches(
+    transaction: &Transaction<'_>,
+) -> Result<Vec<(BreachRecord, Jurisdiction)>, Unactionable> {
+    compliance::list_breaches(transaction)
+        .await
+        .map_err(|_| Unactionable::Backend)
+}
+
+pub async fn get_breach(
+    transaction: &Transaction<'_>,
+    breach_id: &str,
+) -> Result<(BreachRecord, Jurisdiction), Unactionable> {
+    compliance::load_breach(transaction, breach_id)
+        .await
+        .map_err(|_| Unactionable::Backend)?
+        .ok_or(Unactionable::NotFound)
+}
+
+/// Move a breach through its handling; every rule is the model's own, and
+/// its refusals are answered in its words.
+pub async fn advance_breach(
+    transaction: &Transaction<'_>,
+    breach_id: &str,
+    step: BreachStep<'_>,
+    now: i64,
+) -> Result<(BreachRecord, Jurisdiction), Unactionable> {
+    let (mut breach, jurisdiction) = get_breach(transaction, breach_id).await?;
+    match step {
+        BreachStep::Assess {
+            severity,
+            subjects_affected,
+        } => breach.assess(severity, subjects_affected),
+        BreachStep::RecordFiling {
+            notified_to,
+            filed_by,
+        } => breach.record_filing(notified_to, filed_by, now),
+        BreachStep::RecordNotNotifiable => breach.record_not_notifiable(),
+        BreachStep::Close => breach.close(),
+    }
+    .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+    if !compliance::save_breach(transaction, &breach)
+        .await
+        .map_err(|_| Unactionable::Backend)?
+    {
+        return Err(Unactionable::NotFound);
+    }
+    Ok((breach, jurisdiction))
+}
+
+/// One step of a breach's handling, named as the model names them.
+pub enum BreachStep<'a> {
+    Assess {
+        severity: BreachSeverity,
+        subjects_affected: Option<i64>,
+    },
+    RecordFiling {
+        notified_to: &'a str,
+        filed_by: &'a str,
+    },
+    RecordNotNotifiable,
+    Close,
 }

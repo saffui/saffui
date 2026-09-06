@@ -1,4 +1,5 @@
 use deadpool_postgres::Transaction;
+use models::compliance::breach::{BreachRecord, BreachSeverity, BreachStatus};
 use models::compliance::subject_request::{DsarKind, DsarRequest, DsarStatus, Jurisdiction};
 use tokio_postgres::Row;
 
@@ -135,4 +136,132 @@ fn read(row: Row) -> StoreResult<DsarRequest> {
         verified_at: row.get("verified_at"),
         closed_at: row.get("closed_at"),
     })
+}
+
+const BREACH_COLUMNS: &str = "breach_id, tenant, realm_id, description, data_categories, \
+                              subjects_affected, severity, status, jurisdiction, occurred_at, \
+                              discovered_at, notify_by, notified_at, notified_to, filed_by";
+
+/// Keep a freshly discovered breach, with the jurisdiction its filing draft
+/// will be shaped for.
+pub async fn record_breach(
+    transaction: &Transaction<'_>,
+    breach: &BreachRecord,
+    jurisdiction: Jurisdiction,
+) -> StoreResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO breaches \
+             (breach_id, tenant, realm_id, description, data_categories, \
+              subjects_affected, severity, status, jurisdiction, occurred_at, \
+              discovered_at, notify_by, notified_at, notified_to, filed_by) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+            &[
+                &breach.breach_id,
+                &breach.tenant,
+                &breach.realm_id,
+                &breach.description,
+                &breach.data_categories,
+                &breach.subjects_affected,
+                &breach.severity.as_str(),
+                &breach.status.as_str(),
+                &jurisdiction.as_str(),
+                &breach.occurred_at,
+                &breach.discovered_at,
+                &breach.notify_by,
+                &breach.notified_at,
+                &breach.notified_to,
+                &breach.filed_by,
+            ],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+pub async fn load_breach(
+    transaction: &Transaction<'_>,
+    breach_id: &str,
+) -> StoreResult<Option<(BreachRecord, Jurisdiction)>> {
+    let statement = format!("SELECT {BREACH_COLUMNS} FROM breaches WHERE breach_id = $1");
+    transaction
+        .query_opt(statement.as_str(), &[&breach_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map(read_breach)
+        .transpose()
+}
+
+/// The register, the ticking clocks first: what awaits a filing on top,
+/// tightest deadline leading.
+pub async fn list_breaches(
+    transaction: &Transaction<'_>,
+) -> StoreResult<Vec<(BreachRecord, Jurisdiction)>> {
+    let statement = format!(
+        "SELECT {BREACH_COLUMNS} FROM breaches \
+         ORDER BY (status IN ('closed', 'not-notifiable')), \
+                  notify_by NULLS LAST, discovered_at, breach_id"
+    );
+    transaction
+        .query(statement.as_str(), &[])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_breach)
+        .collect()
+}
+
+/// Write a breach back whole, as its handling moved it.
+pub async fn save_breach(
+    transaction: &Transaction<'_>,
+    breach: &BreachRecord,
+) -> StoreResult<bool> {
+    let written = transaction
+        .execute(
+            "UPDATE breaches SET subjects_affected = $2, severity = $3, status = $4, \
+             notified_at = $5, notified_to = $6, filed_by = $7 WHERE breach_id = $1",
+            &[
+                &breach.breach_id,
+                &breach.subjects_affected,
+                &breach.severity.as_str(),
+                &breach.status.as_str(),
+                &breach.notified_at,
+                &breach.notified_to,
+                &breach.filed_by,
+            ],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(written > 0)
+}
+
+fn read_breach(row: Row) -> StoreResult<(BreachRecord, Jurisdiction)> {
+    let severity: String = row.get("severity");
+    let status: String = row.get("status");
+    let jurisdiction: String = row.get("jurisdiction");
+    Ok((
+        BreachRecord {
+            breach_id: row.get("breach_id"),
+            tenant: row.get("tenant"),
+            realm_id: row.get("realm_id"),
+            description: row.get("description"),
+            data_categories: row.get("data_categories"),
+            subjects_affected: row.get("subjects_affected"),
+            severity: severity
+                .parse::<BreachSeverity>()
+                .map_err(|_| StoreError::Backend)?,
+            status: status
+                .parse::<BreachStatus>()
+                .map_err(|_| StoreError::Backend)?,
+            occurred_at: row.get("occurred_at"),
+            discovered_at: row.get("discovered_at"),
+            notify_by: row.get("notify_by"),
+            notified_at: row.get("notified_at"),
+            notified_to: row.get("notified_to"),
+            filed_by: row.get("filed_by"),
+        },
+        jurisdiction
+            .parse::<Jurisdiction>()
+            .map_err(|_| StoreError::Backend)?,
+    ))
 }

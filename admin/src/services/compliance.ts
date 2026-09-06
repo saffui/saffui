@@ -81,3 +81,61 @@ export async function fulfilSubjectRequest(
     { method: "POST", json: spec, subject: say("subject-dsar") },
   );
 }
+
+/// Mirrors the plane's breach answer.
+export interface BreachRecord {
+  breach_id: string;
+  description: string;
+  data_categories: string[];
+  subjects_affected: number | null;
+  severity: string;
+  status: string;
+  jurisdiction: string;
+  occurred_at: number | null;
+  discovered_at: number;
+  notify_by: number | null;
+  notified_at: number | null;
+  notified_to: string | null;
+  filed_by: string | null;
+}
+
+export interface DiscoverSpec {
+  description: string;
+  data_categories: string[];
+  severity: string;
+  jurisdiction: string;
+  occurred_at?: number;
+}
+
+export async function listBreaches(realm: string): Promise<BreachRecord[]> {
+  return api<BreachRecord[]>(adminPath(realm, "breaches"));
+}
+
+export async function discoverBreach(realm: string, spec: DiscoverSpec): Promise<BreachRecord> {
+  return api<BreachRecord>(adminPath(realm, "breaches"), {
+    method: "POST",
+    json: spec,
+    subject: say("subject-breach"),
+  });
+}
+
+export async function advanceBreach(
+  realm: string,
+  breachId: string,
+  step: "assess" | "filing" | "not-notifiable" | "close",
+  body: Record<string, unknown> = {},
+): Promise<BreachRecord> {
+  return api<BreachRecord>(
+    adminPath(realm, `breaches/${encodeURIComponent(breachId)}/${step}`),
+    { method: "POST", json: body, subject: say("subject-breach") },
+  );
+}
+
+export async function breachNotificationDraft(
+  realm: string,
+  breachId: string,
+): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>(
+    adminPath(realm, `breaches/${encodeURIComponent(breachId)}/notification-draft`),
+  );
+}

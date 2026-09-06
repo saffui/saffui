@@ -2,6 +2,7 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use deadpool_postgres::Pool;
+use models::compliance::breach::{BreachRecord, BreachSeverity};
 use models::compliance::subject_request::{DsarKind, DsarRequest, Jurisdiction};
 use serde::Deserialize;
 use services::admin::compliance::{self, Lodging, Unactionable};
@@ -273,4 +274,238 @@ fn refused(why: Unactionable) -> ApiError {
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
+}
+
+/// What the plane is asked to record as found.
+#[derive(Debug, Deserialize)]
+pub struct DiscoverSpec {
+    pub description: String,
+    #[serde(default)]
+    pub data_categories: Vec<String>,
+    pub severity: String,
+    pub jurisdiction: String,
+    pub occurred_at: Option<i64>,
+}
+
+/// One step of a breach's handling; exactly one verb per call.
+#[derive(Debug, Deserialize)]
+pub struct BreachStepSpec {
+    pub severity: Option<String>,
+    pub subjects_affected: Option<i64>,
+    pub notified_to: Option<String>,
+    pub filed_by: Option<String>,
+}
+
+pub async fn discover_breach(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    path: web::Path<String>,
+    body: web::Json<DiscoverSpec>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let asked = body.into_inner();
+    let severity: BreachSeverity = asked.severity.parse().map_err(|_| {
+        ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "severity is one of low, medium, high, critical".to_owned(),
+        )
+    })?;
+    let jurisdiction: Jurisdiction = asked.jurisdiction.parse().map_err(|_| {
+        ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "jurisdiction is a code this register knows".to_owned(),
+        )
+    })?;
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let found = compliance::record_breach_discovery(
+        &transaction,
+        sealing.provider.as_ref(),
+        &admin.context.tenant.tenant,
+        &realm_id,
+        compliance::Discovery {
+            description: asked.description.trim(),
+            data_categories: asked.data_categories,
+            severity,
+            jurisdiction,
+            occurred_at: asked.occurred_at,
+        },
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .map_err(refused)?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Created().json(presentable_breach(found)))
+}
+
+pub async fn list_breaches(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let held = compliance::list_breaches(&transaction)
+        .await
+        .map_err(refused)?;
+    Ok(HttpResponse::Ok().json(held.into_iter().map(presentable_breach).collect::<Vec<_>>()))
+}
+
+pub async fn get_breach(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, breach_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let held = compliance::get_breach(&transaction, &breach_id)
+        .await
+        .map_err(refused)?;
+    Ok(HttpResponse::Ok().json(presentable_breach(held)))
+}
+
+/// The draft an authority's portal is filled from: never ready as drawn,
+/// and it says what is outstanding rather than omitting it.
+pub async fn breach_notification_draft(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, breach_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let (breach, jurisdiction) = compliance::get_breach(&transaction, &breach_id)
+        .await
+        .map_err(refused)?;
+    Ok(HttpResponse::Ok().json(breach.draft_notification(jurisdiction)))
+}
+
+async fn advanced_breach(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+    step: compliance::BreachStep<'_>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, breach_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let held = compliance::advance_breach(
+        &transaction,
+        &breach_id,
+        step,
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .map_err(refused)?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(presentable_breach(held)))
+}
+
+pub async fn assess_breach(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+    body: web::Json<BreachStepSpec>,
+) -> Result<HttpResponse, ApiError> {
+    let asked = body.into_inner();
+    let severity: BreachSeverity = asked
+        .severity
+        .as_deref()
+        .unwrap_or_default()
+        .parse()
+        .map_err(|_| {
+            ApiError::with_detail(
+                ErrorCode::ValidationError,
+                "an assessment names a severity: low, medium, high, critical".to_owned(),
+            )
+        })?;
+    advanced_breach(
+        admin,
+        pool,
+        tenancy,
+        path,
+        compliance::BreachStep::Assess {
+            severity,
+            subjects_affected: asked.subjects_affected,
+        },
+    )
+    .await
+}
+
+pub async fn record_breach_filing(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+    body: web::Json<BreachStepSpec>,
+) -> Result<HttpResponse, ApiError> {
+    let asked = body.into_inner();
+    advanced_breach(
+        admin,
+        pool,
+        tenancy,
+        path,
+        compliance::BreachStep::RecordFiling {
+            notified_to: asked.notified_to.as_deref().unwrap_or_default(),
+            filed_by: asked.filed_by.as_deref().unwrap_or_default(),
+        },
+    )
+    .await
+}
+
+pub async fn record_breach_not_notifiable(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    advanced_breach(
+        admin,
+        pool,
+        tenancy,
+        path,
+        compliance::BreachStep::RecordNotNotifiable,
+    )
+    .await
+}
+
+pub async fn close_breach(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    advanced_breach(admin, pool, tenancy, path, compliance::BreachStep::Close).await
+}
+
+/// The record as the plane answers it, its jurisdiction beside it.
+fn presentable_breach(held: (BreachRecord, Jurisdiction)) -> serde_json::Value {
+    let (breach, jurisdiction) = held;
+    let mut told = serde_json::to_value(&breach).expect("a breach serialises");
+    told["jurisdiction"] = serde_json::Value::String(jurisdiction.as_str().to_owned());
+    told
 }

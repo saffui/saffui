@@ -6292,3 +6292,116 @@ async fn the_clients_cut_refuses_its_tokens_and_spares_its_neighbours() {
         "the lifted cut still refused: {told}"
     );
 }
+
+/// Down to its last line, the sheet demands its successor inside the very
+/// login that got it there, and the last line pays for the ceremony's own
+/// round. Any later is too late: the ceremony only runs once the flow has
+/// passed, so a sheet allowed to reach zero leaves a flow no answer can pass
+/// and a person locked out at exactly the moment the codes were for.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_next_to_last_code_demands_a_fresh_sheet_the_last_one_pays_for() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .require_of_subject(RequiredAction::ConfigureRecoveryCodes)
+        .await;
+
+    // Draw and confirm the sheet.
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    let drawn: Vec<String> = told["asks"]["codes"]
+        .as_array()
+        .expect("a sheet")
+        .iter()
+        .map(|code| code.as_str().expect("a code").to_owned())
+        .collect();
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "recovery_codes_register": drawn[0],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(plane.recovery_codes_left().await, 10);
+
+    // The sheet stands where the second factor stands, and is spent down.
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::SHEET_FLOW)
+        .await;
+    let spend = |body: serde_json::Value| {
+        let plane = &plane;
+        async move {
+            let (_, _, opened) =
+                authorize_with_cookies(plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+            let auth_session =
+                cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+            let (status, told, _) = login_step(plane, Some(&auth_session), body).await;
+            (status, told, auth_session)
+        }
+    };
+    let spending = |code: &str| {
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "recovery_code": code,
+        })
+    };
+    for code in drawn.iter().take(8) {
+        let (status, told, _) = spend(spending(code)).await;
+        assert_eq!(status, StatusCode::OK, "{told}");
+        assert_eq!(told["status"], "admitted", "{told}");
+    }
+    assert_eq!(plane.recovery_codes_left().await, 2);
+
+    // The ninth admits the login and, in the same breath, asks for the next
+    // sheet: the answer is the ceremony, not a quiet "admitted".
+    let (status, told, auth_session) = spend(spending(&drawn[8])).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge", "{told}");
+    assert_eq!(told["execution"], "recovery-codes-register", "{told}");
+    let fresh: Vec<String> = told["asks"]["codes"]
+        .as_array()
+        .expect("a fresh sheet")
+        .iter()
+        .map(|code| code.as_str().expect("a code").to_owned())
+        .collect();
+    assert_eq!(plane.recovery_codes_left().await, 1);
+
+    // The last line pays for the confirmation round: the flow runs again and
+    // is answered with it, the fresh sheet is confirmed in the same post, and
+    // the shelf holds ten new lines with the demand struck.
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "recovery_code": drawn[9],
+            "recovery_codes_register": fresh[0],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(admitted["status"], "admitted", "{admitted}");
+    assert_eq!(plane.recovery_codes_left().await, 10);
+    assert_eq!(plane.subject_owes().await, vec![], "the demand stands");
+
+    // And the fresh sheet spends like any other.
+    let (status, told, _) = spend(spending(&fresh[1])).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+    assert_eq!(plane.recovery_codes_left().await, 9);
+}

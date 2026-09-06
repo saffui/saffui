@@ -66,7 +66,20 @@ async function prove() {
 async function fulfil() {
   if (!opened.value) return;
   try {
-    opened.value = await fulfilSubjectRequest(realm.value, opened.value.request_id);
+    const done = await fulfilSubjectRequest(realm.value, opened.value.request_id);
+    // The copy rides this one answer and is never stored: hand it to the
+    // operator as a file the moment it exists.
+    if (done.bundle !== undefined) {
+      const held = new Blob([JSON.stringify(done.bundle, null, 2)], {
+        type: "application/json",
+      });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(held);
+      link.download = `subject-${done.kind}-${done.request_id}.json`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+    }
+    opened.value = done;
     await load();
   } catch {
     // The toast already said.
@@ -250,6 +263,17 @@ function instant(epoch: number | null): string {
               {{ say("privacy-fulfil") }}
             </button>
           </div>
+          <button
+            v-if="
+              opened.stage === 'verified' &&
+              (opened.kind === 'access' || opened.kind === 'portability')
+            "
+            type="button"
+            class="self-start rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+            @click="fulfil"
+          >
+            {{ say("privacy-produce") }}
+          </button>
           <div class="mt-2 rounded-lg border border-danger/40 p-3">
             <p class="text-[11px] text-muted">{{ say("privacy-refuse-lede") }}</p>
             <div class="mt-2 flex items-center gap-2">

@@ -2041,9 +2041,9 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
     );
 
     // A kind whose execution has not shipped says so.
-    let access = lodge("access", "grace").await;
-    advance(access.clone(), "verify").await;
-    let (status, told) = advance(access, "fulfil").await;
+    let pending = lodge("rectification", "grace").await;
+    advance(pending.clone(), "verify").await;
+    let (status, told) = advance(pending, "fulfil").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
     assert!(
         told["message"]
@@ -2128,5 +2128,142 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
             .unwrap_or_default()
             .contains("nothing to erase"),
         "{done}"
+    );
+}
+
+/// The copy an access request hands over: everything the realm holds about
+/// the person, drawn once into the fulfilling answer and never stored, with
+/// the one thing that is nobody's to receive kept out of it entirely: the
+/// hashes that verify credentials. Portability draws the narrower copy, only
+/// what the person provided; and a copy is not readable back later, because
+/// producing another is fulfilling again, which the lifecycle refuses.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_access_copy_holds_everything_and_no_secret_rides_it() {
+    let plane = Plane::with_actions(&[AdminAction::DsarRead, AdminAction::DsarWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/subject-requests");
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::consents::keep(
+            &transaction,
+            support::SUBJECT,
+            support::CONFIDENTIAL,
+            &["openid".to_owned(), "profile".to_owned()],
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+    }
+    let walk = |kind: &'static str| {
+        let plane = &plane;
+        let bearer = &bearer;
+        let base = &base;
+        async move {
+            let (status, told) = written(
+                plane,
+                Method::POST,
+                base,
+                bearer,
+                serde_json::json!({
+                    "subject_identifier": "ada",
+                    "kind": kind,
+                    "jurisdiction": "eu",
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{told}");
+            let id = told["request_id"].as_str().expect("an id").to_owned();
+            written(
+                plane,
+                Method::POST,
+                &format!("{base}/{id}/verify"),
+                bearer,
+                serde_json::json!({}),
+            )
+            .await;
+            let (status, told) = written(
+                plane,
+                Method::POST,
+                &format!("{base}/{id}/fulfil"),
+                bearer,
+                serde_json::json!({}),
+            )
+            .await;
+            (status, told, id)
+        }
+    };
+
+    let (status, copied, access_id) = walk("access").await;
+    assert_eq!(status, StatusCode::OK, "{copied}");
+    let bundle = &copied["bundle"];
+    assert_eq!(bundle["held"], true, "{copied}");
+    assert_eq!(bundle["account"]["user_name"], "ada", "{copied}");
+    let credential_kinds: Vec<String> = bundle["credentials"]
+        .as_array()
+        .expect("credentials")
+        .iter()
+        .map(|held| held["kind"].as_str().unwrap_or_default().to_owned())
+        .collect();
+    assert!(
+        credential_kinds.contains(&"password".to_owned()),
+        "{copied}"
+    );
+    assert!(
+        !bundle["sessions"].as_array().expect("sessions").is_empty(),
+        "{copied}"
+    );
+    assert_eq!(
+        bundle["consents"][0]["client_id"],
+        support::CONFIDENTIAL,
+        "{copied}"
+    );
+    // The whole answer, byte for byte: no hash, no secret, ever.
+    let whole = copied.to_string();
+    assert!(
+        !whole.contains("argon2") && !whole.contains("secret"),
+        "a secret rode the copy: {whole}"
+    );
+
+    // The copy rode that one answer; the register keeps only the fact.
+    let (status, read_back) =
+        fetched(&plane, Method::GET, &format!("{base}/{access_id}"), &bearer).await;
+    assert_eq!(status, StatusCode::OK, "{read_back}");
+    assert!(read_back.get("bundle").is_none(), "{read_back}");
+    assert!(
+        read_back["outcome"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("handed over"),
+        "{read_back}"
+    );
+
+    // Portability draws only what the person provided.
+    let (status, carried, _) = walk("portability").await;
+    assert_eq!(status, StatusCode::OK, "{carried}");
+    assert_eq!(
+        carried["bundle"]["account"]["user_name"], "ada",
+        "{carried}"
+    );
+    assert!(
+        carried["bundle"].get("sessions").is_none()
+            && carried["bundle"].get("credentials").is_none(),
+        "the realm's own records rode the portable copy: {carried}"
+    );
+
+    // The kinds whose execution has not shipped still say so.
+    let (status, told, _) = walk("rectification").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("has not shipped"),
+        "{told}"
     );
 }

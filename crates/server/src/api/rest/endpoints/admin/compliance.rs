@@ -166,16 +166,50 @@ pub async fn fulfil(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    let held = compliance::fulfil_erasure(
-        &transaction,
-        &request_id,
-        admin.context.principal.id(),
-        chrono::Utc::now().timestamp(),
-    )
-    .await
-    .map_err(refused)?;
+    let now = chrono::Utc::now().timestamp();
+    let kind = compliance::get(&transaction, &request_id)
+        .await
+        .map_err(refused)?
+        .kind;
+    let answered = match kind {
+        DsarKind::Erasure => {
+            let held = compliance::fulfil_erasure(
+                &transaction,
+                &request_id,
+                admin.context.principal.id(),
+                now,
+            )
+            .await
+            .map_err(refused)?;
+            presentable(held)
+        }
+        // The copy rides this one answer and is never stored: producing a
+        // second one is fulfilling again, which the lifecycle refuses.
+        DsarKind::Access => {
+            let (held, bundle) = compliance::fulfil_access(&transaction, &request_id, now)
+                .await
+                .map_err(refused)?;
+            let mut told = presentable(held);
+            told["bundle"] = bundle;
+            told
+        }
+        DsarKind::Portability => {
+            let (held, bundle) = compliance::fulfil_portability(&transaction, &request_id, now)
+                .await
+                .map_err(refused)?;
+            let mut told = presentable(held);
+            told["bundle"] = bundle;
+            told
+        }
+        DsarKind::Rectification | DsarKind::Objection => {
+            return Err(ApiError::with_detail(
+                ErrorCode::ValidationError,
+                format!("the execution of {kind} has not shipped"),
+            ));
+        }
+    };
     transaction.commit().await.map_err(|_| internal())?;
-    Ok(HttpResponse::Ok().json(presentable(held)))
+    Ok(HttpResponse::Ok().json(answered))
 }
 
 /// The row as the plane answers it, the clock's provenance included: an

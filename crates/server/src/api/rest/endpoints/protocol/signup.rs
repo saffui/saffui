@@ -35,6 +35,7 @@ pub async fn register(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
+    origin: web::Data<config::serving::PublicOrigin>,
 ) -> HttpResponse {
     let asked = match asked {
         Some(web::Either::Left(json)) => json.into_inner(),
@@ -60,11 +61,29 @@ pub async fn register(
     let Ok(Some(held)) = services::realm::named(&transaction, &context.realm_id).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR);
     };
+    // The settings ride sealed; a realm with none simply mails nothing,
+    // which the ceremony at first sign-in already knows how to say.
+    let mail = match store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    {
+        Ok(ring) => store::providers::mail::load(&transaction, &ring, &sealing.envelope)
+            .await
+            .ok()
+            .flatten(),
+        Err(_) => None,
+    };
 
     let outcome = signup::register_person(
         &transaction,
         sealing.provider.as_ref(),
         &held,
+        mail.as_ref().filter(|_| sealing.sender.is_some()),
+        origin.as_str(),
         signup::Asked {
             username: asked.username.as_deref(),
             email: &email,
@@ -79,6 +98,9 @@ pub async fn register(
         Ok(registered) => {
             if transaction.commit().await.is_err() {
                 return told(StatusCode::INTERNAL_SERVER_ERROR);
+            }
+            if let Some(outgoing) = registered.sending {
+                super::mail::deliver(&sealing, &pool, &tenancy, &context, *outgoing).await;
             }
             uncached(&mut HttpResponseBuilder::new(StatusCode::CREATED))
                 .json(serde_json::json!({ "status": "registered", "verify": registered.verify }))

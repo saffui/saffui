@@ -31,7 +31,7 @@ pub const UPDATE_PASSWORD: &str = "update-password";
 /// asked for. The same reasoning as the sign-in link: without a window a
 /// caller loops the login and this server floods a mailbox on somebody's
 /// behalf.
-const VERIFY_LIFESPAN: i64 = 900;
+pub const VERIFY_LIFESPAN: i64 = 900;
 const VERIFY_COOLDOWN: i64 = 60;
 
 /// What a fresh authenticator app is enrolled with: RFC 6238's defaults, which

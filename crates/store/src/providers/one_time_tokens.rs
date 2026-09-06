@@ -91,8 +91,10 @@ pub async fn spend(
     user_id: &str,
     purpose: Purpose<'_>,
     presented: &str,
-    // The login presenting it. A token bound to another is not spendable here,
-    // whoever holds it.
+    // The login presenting it. A token bound to another is not spendable
+    // here, whoever holds it; one bound to nobody, like the verification a
+    // registration mails before any login exists, is spendable from
+    // whichever of this person's logins follows the link.
     bound_to: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<Spent> {
@@ -104,7 +106,7 @@ pub async fn spend(
         .execute(
             "DELETE FROM one_time_tokens \
              WHERE user_id = $1 AND purpose = $2 AND token_hash = $3 AND expires_at > $4 \
-               AND bound_to IS NOT DISTINCT FROM $5",
+               AND (bound_to IS NOT DISTINCT FROM $5 OR bound_to IS NULL)",
             &[&user_id, &purpose, &hash, &now, &bound_to],
         )
         .await

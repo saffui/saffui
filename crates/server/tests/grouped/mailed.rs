@@ -859,3 +859,109 @@ async fn a_link_nobody_issued_is_still_a_plain_refusal() {
     );
     assert_eq!(status, StatusCode::OK, "{told}");
 }
+
+/// The page has said "a verification is on its way" since the signup door
+/// opened, and nothing was ever on its way: the mail only left at the first
+/// sign-in's ceremony. Now the registration mails it, bound to no login
+/// because none exists yet, and whichever login follows the link spends it.
+/// The ceremony's cooldown keeps that first sign-in from mailing a second.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_registration_mails_the_verification_its_page_promises() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange(&plane).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, support::REALM)
+            .await
+            .expect("the realms table")
+            .expect("the realm");
+        realm.registration_allowed = Some(true);
+        realm.verify_email = Some(true);
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.expect("the door opened");
+    }
+    let postbox = Postbox::default();
+
+    let app =
+        test::init_service(App::new().configure(register(&mounted(&plane, Some(&postbox))))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/signup",
+                support::REALM
+            ))
+            .set_json(serde_json::json!({
+                "username": "grace",
+                "email": "grace@example.test",
+                "password": "a-password-of-decent-length",
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let told: serde_json::Value = test::read_body_json(response).await;
+    assert_eq!(told["verify"], true, "{told}");
+
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "the promise went unmailed");
+    assert_eq!(held[0].to, "grace@example.test");
+    let token = held[0]
+        .body
+        .rsplit_once("verify_email=")
+        .map(|(_, token)| token.trim().to_owned())
+        .expect("a link with a token");
+
+    // The first sign-in follows the link: the unbound token is spent by the
+    // login it lands in, the instruction comes off, and the address stands
+    // verified.
+    let binding = open(&plane, &postbox).await;
+    let (status, told) = answer(
+        &plane,
+        &postbox,
+        &binding,
+        serde_json::json!({
+            "username": "grace",
+            "password": "a-password-of-decent-length",
+            "verify_email": token,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "{told}");
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let person = store::providers::users::load_by_name(&transaction, "grace")
+            .await
+            .expect("the users table")
+            .expect("the newcomer");
+        assert_eq!(
+            person.email_verified,
+            Some(true),
+            "the address stands unproven"
+        );
+        assert_eq!(
+            person.required_actions.unwrap_or_default(),
+            vec![],
+            "the instruction stands"
+        );
+    }
+    // And the ceremony mailed nothing on top: the registration's own is the
+    // one that counts.
+    assert_eq!(postbox.held().len(), 1, "a second verification went out");
+}

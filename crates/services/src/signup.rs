@@ -27,6 +27,10 @@ pub struct Asked<'a> {
 /// that quietly did nothing says the same thing as one that did.
 pub struct Registered {
     pub verify: bool,
+    /// The verification mail, when the realm demands proven addresses and can
+    /// send: composed here, carried out by the caller after its commit, so
+    /// the page's "a verification is on its way" is finally true.
+    pub sending: Option<Box<auth::messaging::Outgoing>>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq, thiserror::Error)]
@@ -48,10 +52,13 @@ pub enum Unregistrable {
     Unwritable,
 }
 
+#[allow(clippy::too_many_arguments, reason = "each is a distinct fact")]
 pub async fn register_person(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
+    mail: Option<&models::entities::mail::MailSettings>,
+    origin: &str,
     asked: Asked<'_>,
 ) -> Result<Registered, Unregistrable> {
     if realm.registration_allowed != Some(true) {
@@ -104,7 +111,10 @@ pub async fn register_person(
                 .as_ref()
                 .map_or_else(Default::default, |policy| policy.hashing);
             let _ = StoredPassword::hash_argon2id(provider, cost, asked.password);
-            return Ok(Registered { verify: true });
+            return Ok(Registered {
+                verify: true,
+                sending: None,
+            });
         }
         return Err(Unregistrable::AddressHeld);
     }
@@ -162,5 +172,66 @@ pub async fn register_person(
     .await
     .map_err(|_| Unregistrable::Unwritable)?;
 
-    Ok(Registered { verify: verifying })
+    // The verification leaves with the registration, bound to no login
+    // because none exists yet: the address was just given, this is the
+    // moment to prove it, and the widened spend admits the link from
+    // whichever login follows it. The ceremony's own cooldown then keeps
+    // the first sign-in from mailing a second one.
+    let sending = match mail.filter(|_| verifying) {
+        None => None,
+        Some(settings) => {
+            let mut drawn = [0u8; 32];
+            provider
+                .rand()
+                .fill(&mut drawn)
+                .map_err(|_| Unregistrable::Unwritable)?;
+            let token = data_encoding::BASE64URL_NOPAD.encode(&drawn);
+            store::providers::one_time_tokens::mint(
+                transaction,
+                provider.digest(),
+                store::providers::one_time_tokens::Owner {
+                    tenant: &realm.metadata.tenant,
+                    realm_id: &realm.realm_id,
+                    user_id: &born.user_id,
+                    purpose: auth::login::enrolment::VERIFY_EMAIL,
+                },
+                &token,
+                None,
+                chrono::Utc::now()
+                    + chrono::Duration::seconds(auth::login::enrolment::VERIFY_LIFESPAN),
+                chrono::Utc::now(),
+            )
+            .await
+            .map_err(|_| Unregistrable::Unwritable)?;
+            let link = format!(
+                "{origin}/realms/{}/protocol/openid-connect/login?verify_email={token}",
+                realm.name,
+            );
+            let (worded_subject, worded_body) = auth::messaging::worded(
+                realm,
+                auth::login::enrolment::VERIFY_EMAIL,
+                &link,
+                "Confirm your address",
+                "Confirm this address to finish creating your account. The link works \
+                 once.\n\n{{link}}\n",
+            );
+            Some(Box::new(auth::messaging::Outgoing {
+                settings: settings.duplicate(),
+                message: auth::messaging::Message {
+                    to: email.to_owned(),
+                    subject: worded_subject,
+                    body: worded_body,
+                },
+                about: auth::messaging::About {
+                    user_id: born.user_id.clone(),
+                    purpose: auth::login::enrolment::VERIFY_EMAIL.to_owned(),
+                },
+            }))
+        }
+    };
+
+    Ok(Registered {
+        verify: verifying,
+        sending,
+    })
 }

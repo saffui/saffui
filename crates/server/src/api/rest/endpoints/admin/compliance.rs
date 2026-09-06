@@ -28,6 +28,17 @@ pub struct RefuseSpec {
     pub reason: String,
 }
 
+/// What a fulfilment may carry: the corrections a rectification applies,
+/// or the client an objection names. Erasure and the copies take nothing.
+#[derive(Debug, Default, Deserialize)]
+pub struct FulfilSpec {
+    pub email: Option<String>,
+    pub given_name: Option<String>,
+    pub family_name: Option<String>,
+    pub phone_number: Option<String>,
+    pub client_id: Option<String>,
+}
+
 pub async fn lodge(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
@@ -159,8 +170,10 @@ pub async fn fulfil(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
+    body: Option<web::Json<FulfilSpec>>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, request_id) = path.into_inner();
+    let asked = body.map(web::Json::into_inner).unwrap_or_default();
     let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
         .transaction(&mut connection, &within(&admin, &realm_id))
@@ -201,11 +214,32 @@ pub async fn fulfil(
             told["bundle"] = bundle;
             told
         }
-        DsarKind::Rectification | DsarKind::Objection => {
-            return Err(ApiError::with_detail(
-                ErrorCode::ValidationError,
-                format!("the execution of {kind} has not shipped"),
-            ));
+        DsarKind::Rectification => {
+            let held = compliance::fulfil_rectification(
+                &transaction,
+                &request_id,
+                compliance::Corrections {
+                    email: asked.email,
+                    given_name: asked.given_name,
+                    family_name: asked.family_name,
+                    phone_number: asked.phone_number,
+                },
+                now,
+            )
+            .await
+            .map_err(refused)?;
+            presentable(held)
+        }
+        DsarKind::Objection => {
+            let held = compliance::fulfil_objection(
+                &transaction,
+                &request_id,
+                asked.client_id.as_deref(),
+                now,
+            )
+            .await
+            .map_err(refused)?;
+            presentable(held)
         }
     };
     transaction.commit().await.map_err(|_| internal())?;

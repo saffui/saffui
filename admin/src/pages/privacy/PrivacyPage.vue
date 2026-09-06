@@ -54,6 +54,8 @@ async function lodge() {
 
 const opened = ref<SubjectRequest | null>(null);
 const reason = ref("");
+const correction = ref({ email: "", given_name: "", family_name: "", phone_number: "" });
+const objectedClient = ref("");
 async function prove() {
   if (!opened.value) return;
   try {
@@ -66,7 +68,19 @@ async function prove() {
 async function fulfil() {
   if (!opened.value) return;
   try {
-    const done = await fulfilSubjectRequest(realm.value, opened.value.request_id);
+    const held = correction.value;
+    const spec =
+      opened.value.kind === "rectification"
+        ? {
+            email: held.email.trim() || undefined,
+            given_name: held.given_name.trim() || undefined,
+            family_name: held.family_name.trim() || undefined,
+            phone_number: held.phone_number.trim() || undefined,
+          }
+        : opened.value.kind === "objection"
+          ? { client_id: objectedClient.value.trim() || undefined }
+          : {};
+    const done = await fulfilSubjectRequest(realm.value, opened.value.request_id, spec);
     // The copy rides this one answer and is never stored: hand it to the
     // operator as a file the moment it exists.
     if (done.bundle !== undefined) {
@@ -261,6 +275,46 @@ function instant(epoch: number | null): string {
               @click="fulfil"
             >
               {{ say("privacy-fulfil") }}
+            </button>
+          </div>
+          <div
+            v-if="opened.stage === 'verified' && opened.kind === 'rectification'"
+            class="flex flex-col gap-2 rounded-lg border border-border p-3"
+          >
+            <p class="text-[11px] text-muted">{{ say("privacy-correct-lede") }}</p>
+            <input
+              v-for="field in (['email', 'given_name', 'family_name', 'phone_number'] as const)"
+              :key="field"
+              v-model="correction[field]"
+              :placeholder="say(`privacy-correct-${field}`)"
+              spellcheck="false"
+              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            />
+            <button
+              type="button"
+              class="self-start rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink"
+              @click="fulfil"
+            >
+              {{ say("privacy-correct") }}
+            </button>
+          </div>
+          <div
+            v-if="opened.stage === 'verified' && opened.kind === 'objection'"
+            class="flex flex-col gap-2 rounded-lg border border-border p-3"
+          >
+            <p class="text-[11px] text-muted">{{ say("privacy-object-lede") }}</p>
+            <input
+              v-model="objectedClient"
+              :placeholder="say('privacy-object-client')"
+              spellcheck="false"
+              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            />
+            <button
+              type="button"
+              class="self-start rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink"
+              @click="fulfil"
+            >
+              {{ say("privacy-object") }}
             </button>
           </div>
           <button

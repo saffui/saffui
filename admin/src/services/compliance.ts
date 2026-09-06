@@ -63,12 +63,21 @@ export async function refuseSubjectRequest(
 
 /// Execute a verified erasure and close it. Only erasure has an execution
 /// today; the plane says so for the other kinds.
+export interface FulfilSpec {
+  email?: string;
+  given_name?: string;
+  family_name?: string;
+  phone_number?: string;
+  client_id?: string;
+}
+
 export async function fulfilSubjectRequest(
   realm: string,
   requestId: string,
+  spec: FulfilSpec = {},
 ): Promise<SubjectRequest & { bundle?: unknown }> {
   return api<SubjectRequest & { bundle?: unknown }>(
     adminPath(realm, `subject-requests/${encodeURIComponent(requestId)}/fulfil`),
-    { method: "POST", json: {}, subject: say("subject-dsar") },
+    { method: "POST", json: spec, subject: say("subject-dsar") },
   );
 }

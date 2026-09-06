@@ -2040,7 +2040,8 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
         "{told}"
     );
 
-    // A kind whose execution has not shipped says so.
+    // Every kind executes now; what still refuses is an execution asked
+    // with nothing to do.
     let pending = lodge("rectification", "grace").await;
     advance(pending.clone(), "verify").await;
     let (status, told) = advance(pending, "fulfil").await;
@@ -2049,7 +2050,7 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
         told["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("has not shipped"),
+            .contains("names what to correct"),
         "{told}"
     );
 
@@ -2256,14 +2257,181 @@ async fn an_access_copy_holds_everything_and_no_secret_rides_it() {
         "the realm's own records rode the portable copy: {carried}"
     );
 
-    // The kinds whose execution has not shipped still say so.
+    // Every kind executes now; an empty rectification still refuses in words.
     let (status, told, _) = walk("rectification").await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
     assert!(
         told["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("has not shipped"),
+            .contains("names what to correct"),
         "{told}"
+    );
+}
+
+/// The last two kinds become true. A rectification moves exactly the fields
+/// the subject named, through the same user update every door uses, and the
+/// register records the names of what moved and nothing of what it moved
+/// to; a corrected address stops being a proven one. An objection stops
+/// what this server can stop per person: the standing consents, one
+/// client's or all of them, and says plainly when nothing stood.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_rectification_moves_named_fields_and_an_objection_withdraws_consents() {
+    let plane = Plane::with_actions(&[AdminAction::DsarRead, AdminAction::DsarWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/subject-requests");
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::consents::keep(
+            &transaction,
+            support::SUBJECT,
+            support::CONFIDENTIAL,
+            &["openid".to_owned()],
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+    }
+    let opened = |kind: &'static str| {
+        let plane = &plane;
+        let bearer = &bearer;
+        let base = &base;
+        async move {
+            let (status, told) = written(
+                plane,
+                Method::POST,
+                base,
+                bearer,
+                serde_json::json!({
+                    "subject_identifier": "ada",
+                    "kind": kind,
+                    "jurisdiction": "eu",
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{told}");
+            let id = told["request_id"].as_str().expect("an id").to_owned();
+            written(
+                plane,
+                Method::POST,
+                &format!("{base}/{id}/verify"),
+                bearer,
+                serde_json::json!({}),
+            )
+            .await;
+            id
+        }
+    };
+
+    // Naming nothing to correct is refused before anything runs.
+    let rectify = opened("rectification").await;
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{rectify}/fulfil"),
+        &bearer,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("names what to correct"),
+        "{told}"
+    );
+
+    // The named fields move; their values stay out of the register.
+    let (status, done) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{rectify}/fulfil"),
+        &bearer,
+        serde_json::json!({
+            "email": "ada@corrected.example",
+            "family_name": "Byron",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    let outcome = done["outcome"].as_str().unwrap_or_default();
+    assert!(
+        outcome.contains("email") && outcome.contains("family_name"),
+        "{done}"
+    );
+    assert!(
+        !outcome.contains("corrected.example") && !outcome.contains("Byron"),
+        "a corrected value rode the register: {done}"
+    );
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let person = store::providers::users::load(&transaction, support::SUBJECT)
+            .await
+            .unwrap()
+            .expect("ada stands");
+        assert_eq!(person.email, "ada@corrected.example");
+        assert_eq!(
+            person.email_verified,
+            Some(false),
+            "a corrected address stayed proven"
+        );
+    }
+
+    // The named client's consent goes; asked again, nothing stands.
+    let object = opened("objection").await;
+    let (status, done) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{object}/fulfil"),
+        &bearer,
+        serde_json::json!({ "client_id": support::CONFIDENTIAL }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert!(
+        done["outcome"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("was withdrawn"),
+        "{done}"
+    );
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let standing = store::providers::consents::of_user(&transaction, support::SUBJECT)
+            .await
+            .unwrap();
+        assert!(standing.is_empty(), "the consent survived the objection");
+    }
+    let again = opened("objection").await;
+    let (status, done) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{again}/fulfil"),
+        &bearer,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert!(
+        done["outcome"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("nothing to stop"),
+        "{done}"
     );
 }

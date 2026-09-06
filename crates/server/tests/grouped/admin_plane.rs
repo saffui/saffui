@@ -1909,3 +1909,224 @@ async fn a_subject_request_walks_its_lifecycle_and_the_clock_is_cited() {
     let (status, told) = fetched(&plane, Method::GET, &format!("{base}/unknown"), &bearer).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
 }
+
+/// The one verb the register withheld arrives with the execution that makes
+/// it true. An erasure fells what no cascade reaches, deletes the account
+/// with everything keyed to it, and leaves exactly one thing behind on its
+/// way out: the event the connectors and receivers de-provision by. The
+/// other kinds say their execution has not shipped instead of pretending;
+/// an identifier nobody holds fulfils as "nothing to erase"; and the account
+/// whose own session is asking is refused, because the erasure would end
+/// that session mid-walk and lock its holder out.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
+    let plane = Plane::with_actions(&[AdminAction::DsarRead, AdminAction::DsarWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/subject-requests");
+
+    // The subject is a third person, seeded with everything an account
+    // gathers, the rows no cascade reaches included.
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let grace = models::entities::user::UserCreateModel {
+            user_name: "grace".into(),
+            enabled: true,
+            email: "grace@example.test".into(),
+            email_verified: Some(true),
+            phone_number: None,
+            phone_number_verified: None,
+            required_actions: None,
+            not_before: None,
+            user_storage: None,
+            attributes: None,
+            is_service_account: None,
+            service_account_client_link: None,
+        }
+        .into_model(
+            "grace".into(),
+            REALM.into(),
+            models::auditable::AuditableModel::from_creator(
+                support::TENANT.to_owned(),
+                "root".to_owned(),
+            ),
+        );
+        store::providers::users::create(&transaction, &grace)
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO backchannel_requests \
+                 (tenant, realm_id, request_digest, client_id, user_id, scope, \
+                  interval_secs, expires_at) \
+                 VALUES ($1, $2, decode(repeat('ab', 32), 'hex'), $3, 'grace', 'openid', 5, \
+                         now() + interval '1 hour')",
+                &[&support::TENANT, &REALM, &support::CONFIDENTIAL],
+            )
+            .await
+            .unwrap();
+        transaction
+            .execute(
+                "INSERT INTO oidc_device_codes \
+                 (tenant, realm_id, device_digest, user_code, client_id, scope, \
+                  user_id, interval_secs, expires_at) \
+                 VALUES ($1, $2, decode(repeat('cd', 32), 'hex'), 'BCDF-GHJK', $3, 'openid', \
+                         'grace', 5, now() + interval '1 hour')",
+                &[&support::TENANT, &REALM, &support::CONFIDENTIAL],
+            )
+            .await
+            .unwrap();
+        store::providers::outbox::emit(
+            &transaction,
+            store::providers::outbox::USER_UPDATED,
+            "grace",
+            &serde_json::json!({ "email": "grace@example.test" }),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    let lodge = |kind: &'static str, identifier: &'static str| {
+        let plane = &plane;
+        let bearer = &bearer;
+        let base = &base;
+        async move {
+            let (status, told) = written(
+                plane,
+                Method::POST,
+                base,
+                bearer,
+                serde_json::json!({
+                    "subject_identifier": identifier,
+                    "kind": kind,
+                    "jurisdiction": "eu",
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::CREATED, "{told}");
+            told["request_id"].as_str().expect("an id").to_owned()
+        }
+    };
+    let advance = |request_id: String, step: &'static str| {
+        let plane = &plane;
+        let bearer = &bearer;
+        let base = &base;
+        async move {
+            written(
+                plane,
+                Method::POST,
+                &format!("{base}/{request_id}/{step}"),
+                bearer,
+                serde_json::json!({}),
+            )
+            .await
+        }
+    };
+
+    // Unproven, nothing irreversible runs.
+    let erasure = lodge("erasure", "grace").await;
+    let (status, told) = advance(erasure.clone(), "fulfil").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must not be executed before"),
+        "{told}"
+    );
+
+    // A kind whose execution has not shipped says so.
+    let access = lodge("access", "grace").await;
+    advance(access.clone(), "verify").await;
+    let (status, told) = advance(access, "fulfil").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("has not shipped"),
+        "{told}"
+    );
+
+    // The account whose own session is asking is refused in words.
+    let own = lodge("erasure", "ada").await;
+    advance(own.clone(), "verify").await;
+    let (status, told) = advance(own, "fulfil").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("its own session"),
+        "{told}"
+    );
+
+    // Proven, the erasure runs whole.
+    advance(erasure.clone(), "verify").await;
+    let (status, done) = advance(erasure, "fulfil").await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert_eq!(done["stage"], "fulfilled", "{done}");
+    assert!(
+        done["outcome"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("were erased"),
+        "{done}"
+    );
+
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        assert!(
+            store::providers::users::load(&transaction, "grace")
+                .await
+                .unwrap()
+                .is_none(),
+            "the account survived its erasure"
+        );
+        let orphans: i64 = transaction
+            .query_one(
+                "SELECT (SELECT count(*) FROM backchannel_requests WHERE user_id = 'grace') \
+                      + (SELECT count(*) FROM oidc_device_codes WHERE user_id = 'grace') \
+                      + (SELECT count(*) FROM user_credentials WHERE user_id = 'grace') \
+                      + (SELECT count(*) FROM user_sessions WHERE user_id = 'grace')",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(orphans, 0, "rows outlived the erasure");
+        // Exactly one thing leaves on the way out, and it is not the profile.
+        let outgoing = transaction
+            .query("SELECT kind FROM event_outbox WHERE user_id = 'grace'", &[])
+            .await
+            .unwrap();
+        let kinds: Vec<String> = outgoing.iter().map(|row| row.get(0)).collect();
+        assert_eq!(
+            kinds,
+            vec![store::providers::outbox::USER_DELETED.to_owned()],
+            "the outbox holds more than the parting word"
+        );
+    }
+
+    // An identifier nobody holds fulfils honestly: nothing to erase.
+    let ghost = lodge("erasure", "nobody@example.test").await;
+    advance(ghost.clone(), "verify").await;
+    let (status, done) = advance(ghost, "fulfil").await;
+    assert_eq!(status, StatusCode::OK, "{done}");
+    assert!(
+        done["outcome"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("nothing to erase"),
+        "{done}"
+    );
+}

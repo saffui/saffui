@@ -109,3 +109,16 @@ pub async fn drop_delivered(
         .await
         .map_err(|_| StoreError::Backend)
 }
+
+/// Fell this person's queued events, before the one that says the account
+/// is gone is emitted: telling the world about somebody being erased must
+/// not first deliver their profile.
+pub async fn erase_pending_for_user(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> StoreResult<u64> {
+    transaction
+        .execute("DELETE FROM event_outbox WHERE user_id = $1", &[&user_id])
+        .await
+        .map_err(|_| StoreError::Backend)
+}

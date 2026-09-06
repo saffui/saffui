@@ -109,6 +109,81 @@ pub async fn refuse(
     saved(transaction, request).await
 }
 
+/// Execute an erasure and close its request, in that order and atomically:
+/// the same transaction holds the felling, the deletion, the outgoing word,
+/// and the closing, so a fulfilment cannot outrun what it claims.
+///
+/// The walk: rows no cascade reaches are felled first (pending backchannel
+/// asks, device approvals, the person's queued outbox events, so telling the
+/// world about the erasure does not first deliver their profile); then the
+/// account goes, taking everything keyed to it; the deletion itself emits
+/// the event the connectors and receivers de-provision by. The register's
+/// own row survives on its own legal ground, as the record of compliance.
+pub async fn fulfil_erasure(
+    transaction: &Transaction<'_>,
+    request_id: &str,
+    by: &str,
+    now: i64,
+) -> Result<DsarRequest, Unactionable> {
+    let mut request = get(transaction, request_id).await?;
+    if request.kind != DsarKind::Erasure {
+        return Err(Unactionable::Invalid(format!(
+            "only an erasure is executed here; the execution of {} has not shipped",
+            request.kind
+        )));
+    }
+    // The lifecycle's own rules, asked on a copy before anything irreversible
+    // happens: an execution must not run and then fail to close.
+    let mut probe = request.clone();
+    probe
+        .fulfil("probe", now)
+        .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+
+    // A late match still counts: the account may have appeared since lodging.
+    let subject = match request.user_id.clone() {
+        Some(held) => Some(held),
+        None => resolved_subject(transaction, &request.subject_identifier).await?,
+    };
+    // Erasing the account whose session is executing the erasure would end
+    // that session mid-walk and lock its holder out, the way disabling a
+    // realm from its own console would. Another administrator executes it.
+    if subject.as_deref() == Some(by) {
+        return Err(Unactionable::Invalid(
+            "an account is not erased by its own session: have another administrator \
+             execute this request"
+                .to_owned(),
+        ));
+    }
+    let outcome = match subject {
+        None => "no account was held for the identifier; there was nothing to erase".to_owned(),
+        Some(user_id) => {
+            store::providers::backchannel::erase_for_user(transaction, &user_id)
+                .await
+                .map_err(|_| Unactionable::Backend)?;
+            store::providers::devices::erase_for_user(transaction, &user_id)
+                .await
+                .map_err(|_| Unactionable::Backend)?;
+            store::providers::outbox::erase_pending_for_user(transaction, &user_id)
+                .await
+                .map_err(|_| Unactionable::Backend)?;
+            if !users::delete(transaction, &user_id)
+                .await
+                .map_err(|_| Unactionable::Backend)?
+            {
+                return Err(Unactionable::Backend);
+            }
+            request.user_id = Some(user_id);
+            "the account and everything held with it were erased; the provisioned \
+             applications and event receivers are being told"
+                .to_owned()
+        }
+    };
+    request
+        .fulfil(outcome, now)
+        .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+    saved(transaction, request).await
+}
+
 async fn saved(
     transaction: &Transaction<'_>,
     request: DsarRequest,

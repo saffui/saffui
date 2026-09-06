@@ -60,3 +60,15 @@ export async function refuseSubjectRequest(
     { method: "POST", json: { reason }, subject: say("subject-dsar") },
   );
 }
+
+/// Execute a verified erasure and close it. Only erasure has an execution
+/// today; the plane says so for the other kinds.
+export async function fulfilSubjectRequest(
+  realm: string,
+  requestId: string,
+): Promise<SubjectRequest> {
+  return api<SubjectRequest>(
+    adminPath(realm, `subject-requests/${encodeURIComponent(requestId)}/fulfil`),
+    { method: "POST", json: {}, subject: say("subject-dsar") },
+  );
+}

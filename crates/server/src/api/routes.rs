@@ -456,6 +456,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::post().to(compliance::refuse)),
         },
         AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/subject-requests/{request}/fulfil",
+            action: AdminAction::DsarWrite,
+            handler: Some(|| web::post().to(compliance::fulfil)),
+        },
+        AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms/{realm}/identity-providers",
             action: AdminAction::IdpRead,

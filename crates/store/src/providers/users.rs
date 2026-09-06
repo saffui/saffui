@@ -216,6 +216,26 @@ pub async fn set_email_verified(
     Ok(changed > 0)
 }
 
+/// Put an instruction on a person, once: an action already standing is not
+/// stacked twice, so a login that keeps finding the same stale password does
+/// not grow the list on every round.
+pub async fn require_action(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    action: RequiredAction,
+) -> StoreResult<bool> {
+    let written = transaction
+        .execute(
+            "UPDATE users SET required_actions = \
+                 array_append(coalesce(required_actions, '{}'), $2) \
+             WHERE user_id = $1 AND NOT ($2 = ANY(coalesce(required_actions, '{}')))",
+            &[&user_id, &action],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(written > 0)
+}
+
 pub async fn clear_required_action(
     transaction: &Transaction<'_>,
     user_id: &str,

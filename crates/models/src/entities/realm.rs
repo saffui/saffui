@@ -176,29 +176,50 @@ pub struct About<'a> {
 
 /// Why a password is refused. One reason, the first one found, because a list
 /// of everything wrong with a password is a list of what to avoid guessing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasswordRefused {
-    #[error("the password is too short")]
     TooShort,
-    #[error("the password is too long")]
     TooLong,
-    #[error("the password needs more digits")]
     Digits,
-    #[error("the password needs more capitals")]
     UpperCase,
-    #[error("the password needs more small letters")]
     LowerCase,
-    #[error("the password needs more punctuation")]
     SpecialChars,
-    #[error("the password is something about you")]
     AboutYou,
-    #[error("the password is one this realm refuses")]
     Blacklisted,
-    #[error("the password does not match the shape this realm requires")]
     Shape,
-    #[error("the password is one this account used before")]
     Reused,
 }
+
+impl PasswordRefused {
+    /// The words a refused password is told in, and the only copy of them.
+    ///
+    /// Every door a password enters by refuses in these words: the pages, the
+    /// admin plane, SCIM, and the login-time change all read this one match.
+    /// Two copies of it have already been found and deleted, one in signup and
+    /// one in recovery, each a word-for-word twin waiting to drift.
+    pub fn spoken(self) -> &'static str {
+        match self {
+            Self::TooShort => "the password is too short",
+            Self::TooLong => "the password is too long",
+            Self::Digits => "the password needs more digits",
+            Self::UpperCase => "the password needs more capitals",
+            Self::LowerCase => "the password needs more small letters",
+            Self::SpecialChars => "the password needs more punctuation",
+            Self::AboutYou => "the password is something about you",
+            Self::Blacklisted => "the password is one this realm refuses",
+            Self::Shape => "the password does not match the shape this realm requires",
+            Self::Reused => "the password is one this account used before",
+        }
+    }
+}
+
+impl std::fmt::Display for PasswordRefused {
+    fn fmt(&self, held: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        held.write_str(self.spoken())
+    }
+}
+
+impl std::error::Error for PasswordRefused {}
 
 /// A policy that cannot be satisfied by any password.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]

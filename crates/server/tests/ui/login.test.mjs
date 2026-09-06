@@ -481,3 +481,56 @@ test("a drawn sheet is listed as text and confirmed in its own field", async () 
   await page.settle();
   assert.equal(page.sent[1].body.recovery_codes_register, "aaaa-bbbb");
 });
+
+// The demanded replacement: its own panel, the client-side match guard, and
+// the refusal spoken beside the fields.
+test("a demanded password change swaps the form for the renew panel", async () => {
+  const page = opened({
+    rounds: [
+      { told: { status: "challenge", execution: "update-password" } },
+      { told: { status: "admitted", redirect_to: "https://app.example/back" } },
+    ],
+  });
+  page.form.username.value = "ada";
+  page.form.password.value = "a-password-of-decent-length";
+  page.form.fire("submit");
+  await page.settle();
+
+  assert.equal(page.element("renew").hidden, false);
+  assert.equal(page.element("credentials").hidden, true);
+
+  // Two halves that disagree never leave the browser.
+  page.form.new_password.value = "a-replacement-of-decent-length";
+  page.form.new_password_again.value = "something-else-entirely";
+  page.form.fire("submit");
+  await page.settle();
+  assert.equal(page.element("renew-mismatch").hidden, false);
+  assert.equal(page.sent.length, 1, "a mismatched pair was posted");
+
+  page.form.new_password_again.value = "a-replacement-of-decent-length";
+  page.form.fire("submit");
+  await page.settle();
+  assert.equal(page.sent[1].body.new_password, "a-replacement-of-decent-length");
+  assert.equal(page.went[0], "https://app.example/back");
+});
+
+test("a refused replacement is spoken beside the fields and asked again", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "update-password",
+          asks: { refused: "the password is too short" },
+        },
+      },
+    ],
+  });
+  page.form.username.value = "ada";
+  page.form.password.value = "a-password-of-decent-length";
+  page.form.fire("submit");
+  await page.settle();
+
+  assert.equal(page.element("renew").hidden, false);
+  assert.equal(page.element("notice").textContent, "the password is too short");
+});

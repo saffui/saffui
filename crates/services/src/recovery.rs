@@ -154,7 +154,7 @@ pub async fn set_from_link(
             },
         )
     {
-        return Err(Unrecoverable::Refused(refused_as(why)));
+        return Err(Unrecoverable::Refused(why.spoken()));
     }
 
     let spent = one_time_tokens::spend(
@@ -208,36 +208,6 @@ pub async fn set_from_link(
 }
 
 /// What the caller is told. The reason is the policy's, never the password's.
-/// The words a refused password is told in.
-///
-/// Public because every door a password enters by refuses in the same words.
-/// Two vocabularies for one policy would tell a person their password was too
-/// short in one place and unacceptable in another, for the same password.
-pub fn refused_as(why: models::entities::realm::PasswordRefused) -> &'static str {
-    match why {
-        models::entities::realm::PasswordRefused::Reused => {
-            "the password is one this account used before"
-        }
-        models::entities::realm::PasswordRefused::TooShort => "the password is too short",
-        models::entities::realm::PasswordRefused::TooLong => "the password is too long",
-        models::entities::realm::PasswordRefused::Digits => "the password needs more digits",
-        models::entities::realm::PasswordRefused::UpperCase => "the password needs more capitals",
-        models::entities::realm::PasswordRefused::LowerCase => {
-            "the password needs more small letters"
-        }
-        models::entities::realm::PasswordRefused::SpecialChars => {
-            "the password needs more punctuation"
-        }
-        models::entities::realm::PasswordRefused::AboutYou => "the password is something about you",
-        models::entities::realm::PasswordRefused::Blacklisted => {
-            "the password is one this realm refuses"
-        }
-        models::entities::realm::PasswordRefused::Shape => {
-            "the password does not match the shape this realm requires"
-        }
-    }
-}
-
 /// By username, or by address where the realm lets a person sign in with one.
 async fn found(
     transaction: &Transaction<'_>,

@@ -150,3 +150,8 @@ recovery-use = Utiliser un code de récupération
 recovery-code = Code de récupération
 recovery-keep = Gardez-les en lieu sûr. Chacun ouvre une session une fois, et c'est la seule fois qu'ils s'affichent.
 recovery-confirm = Retapez-en un pour confirmer que vous les avez gardés
+
+## Le remplacement que le realm exige.
+renew-lede = Ce realm vous demande un nouveau mot de passe avant de continuer.
+renew-password = Nouveau mot de passe
+renew-again = Nouveau mot de passe, encore

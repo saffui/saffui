@@ -13,7 +13,7 @@ use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
 use secrecy::{ExposeSecret, SecretBox};
-use store::providers::{credentials, one_time_tokens};
+use store::providers::{credentials, one_time_tokens, users};
 
 use crate::messaging::{Message, Outgoing};
 use url::Url;
@@ -545,7 +545,44 @@ async fn password(
     };
 
     match verify_and_plan(provider, offered, &stored) {
-        Ok(plan) if plan.valid => Outcome::Passed,
+        Ok(plan) if plan.valid => {
+            // The password just proved its owner, and the realm may still say
+            // it is too old to go on doing so. The instruction is attached
+            // here, on the one path where a password was actually used: an
+            // account signing in by key, by directory or by broker never had
+            // a local password age to speak of, and never hears from this.
+            // Attaching is idempotent, so a login retried against a stale
+            // password does not grow the list; and the ceremony that reads
+            // the instruction runs later in this same login.
+            let expired = realm
+                .password_policy
+                .as_ref()
+                .and_then(|policy| policy.expires_after_days)
+                .filter(|days| *days > 0)
+                .zip(
+                    credential
+                        .metadata
+                        .updated_at
+                        .or(credential.metadata.created_at),
+                )
+                .is_some_and(|(days, written_at)| {
+                    chrono::Utc::now() - written_at > chrono::Duration::days(days)
+                });
+            if expired
+                && users::require_action(
+                    transaction,
+                    &subject.user_id,
+                    models::entities::user::RequiredAction::UpdatePassword,
+                )
+                .await
+                .is_err()
+            {
+                // A password past its span with no way to demand a new one is
+                // a login this realm said must not go on as it is.
+                return Outcome::Failed;
+            }
+            Outcome::Passed
+        }
         _ => Outcome::Failed,
     }
 }

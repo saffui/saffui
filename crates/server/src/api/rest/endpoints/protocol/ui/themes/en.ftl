@@ -150,3 +150,8 @@ recovery-use = Use a recovery code
 recovery-code = Recovery code
 recovery-keep = Keep these somewhere safe. Each one signs you in once, and this is the only time they are shown.
 recovery-confirm = Type one of them back to confirm you kept them
+
+## The replacement the realm demanded.
+renew-lede = This realm asks you to set a new password before going on.
+renew-password = New password
+renew-again = New password, again

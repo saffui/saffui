@@ -17,7 +17,7 @@ use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::rest::endpoints::protocol::{
     answering, authorize, broker, ciba, device, discovery, introspect, keys, login, logout, page,
-    par, recovery, registration, revoke, signup, ssf, token, userinfo,
+    par, privacy, recovery, registration, revoke, signup, ssf, token, userinfo,
 };
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
@@ -336,6 +336,12 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/requests.js").route(web::get().to(ciba::doorbell_script)))
         .service(web::resource("/par").route(web::post().to(par::keep)))
         .service(web::resource("/forgot-password").route(web::post().to(recovery::ask_for_link)))
+        .service(web::resource("/privacy-request").route(web::post().to(privacy::ask_for_link)))
+        .service(
+            web::resource("/privacy-confirm")
+                .route(web::get().to(privacy::confirmation_page))
+                .route(web::post().to(privacy::confirm_request)),
+        )
         .service(web::resource("/signup").route(web::post().to(signup::register)))
         .service(
             web::resource("/reset-password")

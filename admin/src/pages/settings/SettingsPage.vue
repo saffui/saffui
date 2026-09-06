@@ -24,6 +24,7 @@ import { ApiError } from "@/services/http";
 import type { MailBrief } from "@/models/mail";
 import { OTP_DEFAULTS, OWASP_HASHING } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
+import { JURISDICTIONS } from "@/services/compliance";
 
 const GROUPS = [
   "general",
@@ -103,6 +104,8 @@ const draft = ref({
   device_poll_interval: "" as string | number,
   ciba_expiry: "" as string | number,
   ciba_interval: "" as string | number,
+  dsar_jurisdiction: "",
+  dsar_response_days: "" as string | number,
   revoke_refresh_token: false,
   refresh_token_max_reuse: "" as string | number,
   offline_session_lifespan: "" as string | number,
@@ -199,6 +202,8 @@ function adopt(held: RealmSettings) {
     device_poll_interval: held.device_poll_interval ?? "",
     ciba_expiry: held.ciba_expiry ?? "",
     ciba_interval: held.ciba_interval ?? "",
+    dsar_jurisdiction: held.dsar_jurisdiction ?? "",
+    dsar_response_days: held.dsar_response_days ?? "",
     revoke_refresh_token: held.revoke_refresh_token ?? false,
     refresh_token_max_reuse: held.refresh_token_max_reuse ?? "",
     offline_session_lifespan: held.offline_session_lifespan ?? "",
@@ -358,6 +363,8 @@ function changesOf(which: Group): RealmUpdate {
       },
     };
     if (held.ssl_enforcement) changes.ssl_enforcement = held.ssl_enforcement;
+    changes.dsar_jurisdiction = held.dsar_jurisdiction;
+    changes.dsar_response_days = whole(held.dsar_response_days) ?? 0;
     const map: Record<string, number> = {};
     for (const row of acrRows.value) {
       const level = Number(row.level);
@@ -467,7 +474,7 @@ function openGroup(which: Group) {
 }
 
 /// The realm's rewording of its mails, kept whole and saved whole.
-const MAIL_KINDS = ["magic_link", "verify_email", "reset_password"] as const;
+const MAIL_KINDS = ["magic_link", "verify_email", "reset_password", "subject_request"] as const;
 const templates = ref<Record<string, Record<string, MailTemplate>>>({});
 const templateKind = ref<string>("magic_link");
 const templateTongue = ref("en");
@@ -976,6 +983,32 @@ async function removeMail() {
             <AppToggle v-model="draft.events_enabled">
               {{ say("signin-events-toggle") }} <AppHint name="signin-events-toggle-help" />
             </AppToggle>
+
+            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("settings-privacy-door") }} <AppHint name="settings-privacy-door-help" />
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-dsar-jurisdiction") }}
+                <select
+                  v-model="draft.dsar_jurisdiction"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                >
+                  <option value="">{{ say("settings-dsar-closed") }}</option>
+                  <option v-for="held in JURISDICTIONS" :key="held" :value="held">{{ held }}</option>
+                </select>
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-dsar-days") }} <AppHint name="settings-dsar-days-help" />
+                <input
+                  v-model="draft.dsar_response_days"
+                  type="number"
+                  min="0"
+                  max="3650"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                />
+              </label>
+            </div>
 
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("settings-assurance") }} <AppHint name="settings-assurance-help" />

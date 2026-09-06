@@ -57,6 +57,8 @@ export interface RealmSettings {
   device_poll_interval: number | null;
   ciba_expiry: number | null;
   ciba_interval: number | null;
+  dsar_jurisdiction: string | null;
+  dsar_response_days: number | null;
   webauthn_passwordless: boolean | null;
   page_overrides: Record<string, Record<string, string>> | null;
   browser_flow: string | null;
@@ -163,6 +165,8 @@ export interface RealmUpdate {
   device_poll_interval?: number;
   ciba_expiry?: number;
   ciba_interval?: number;
+  dsar_jurisdiction?: string;
+  dsar_response_days?: number;
   webauthn_passwordless?: boolean;
   page_overrides?: Record<string, Record<string, string>> | null;
   browser_flow?: string;

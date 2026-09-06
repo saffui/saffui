@@ -3,6 +3,7 @@ use commons::error::ErrorCode;
 use commons::http::ApiError;
 use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
+use models::compliance::subject_request::Jurisdiction;
 use models::entities::realm::{RealmCreateModel, RealmUpdateModel};
 use models::paging::PagingParams;
 use models::representation::RepresentationParams;
@@ -417,7 +418,7 @@ pub async fn update(
         for (kind, tongues) in templates {
             if !matches!(
                 kind.as_str(),
-                "magic_link" | "verify_email" | "reset_password"
+                "magic_link" | "verify_email" | "reset_password" | "subject_request"
             ) {
                 return Err(ApiError::with_detail(
                     ErrorCode::ValidationError,
@@ -472,6 +473,43 @@ pub async fn update(
             "backchannel pacing wants a request lifetime of 30 to 600 seconds \
              and a poll interval of 1 to 60"
                 .to_owned(),
+        ));
+    }
+    // The privacy door only opens on terms it can honour: an unknown
+    // jurisdiction is refused rather than quietly closing it, and one whose
+    // law fixes no response window needs the realm to fix one, or the
+    // register would refuse the first request through the door.
+    let dsar_jurisdiction_after = match asked.dsar_jurisdiction.as_deref() {
+        Some("") => None,
+        Some(named) => Some(named.parse::<Jurisdiction>().map_err(|_| {
+            ApiError::with_detail(
+                ErrorCode::ValidationError,
+                format!("no jurisdiction is known as `{named}`"),
+            )
+        })?),
+        None => held.dsar_jurisdiction,
+    };
+    let dsar_response_days_after = match asked.dsar_response_days {
+        Some(0) => None,
+        Some(days) if !(1..=3650).contains(&days) => {
+            return Err(ApiError::with_detail(
+                ErrorCode::ValidationError,
+                "a response window runs from 1 to 3650 days; zero clears it".to_owned(),
+            ));
+        }
+        Some(days) => Some(days),
+        None => held.dsar_response_days,
+    };
+    if let Some(jurisdiction) = dsar_jurisdiction_after
+        && jurisdiction.response_days().is_none()
+        && dsar_response_days_after.is_none()
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            format!(
+                "the law of `{}` fixes no response window: give dsar_response_days",
+                jurisdiction.as_str()
+            ),
         ));
     }
     // A realm speaks over the pages only in tongues the build renders and

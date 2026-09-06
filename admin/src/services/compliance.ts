@@ -1,3 +1,6 @@
+/// The laws the register can run a clock on; mirrors the server's catalogue.
+export const JURISDICTIONS = ["eu", "ke", "ng", "za", "gh", "tg", "bj", "ci", "bf", "ga", "cm", "other"];
+
 import { adminPath, api } from "@/services/http";
 import { say } from "@/i18n";
 

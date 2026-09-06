@@ -50,13 +50,21 @@ pub async fn due(
 ) -> StoreResult<Vec<OutboxEvent>> {
     Ok(transaction
         .query(
-            "UPDATE event_outbox SET attempts = attempts + 1, \
-                    next_attempt_at = $3 + make_interval(secs => $2::float8 * (attempts + 1)) \
-             WHERE (tenant, realm_id, event_id) IN ( \
+            // The pick is materialised so it runs exactly once: an IN-subquery
+            // with SKIP LOCKED may be re-evaluated per candidate row, and each
+            // evaluation skips what the last one locked, which quietly hands
+            // out more rows than the ceiling names.
+            "WITH picked AS MATERIALIZED ( \
                  SELECT tenant, realm_id, event_id FROM event_outbox \
                  WHERE state = 'pending' AND next_attempt_at <= $3 \
                  ORDER BY event_id ASC LIMIT $1 FOR UPDATE SKIP LOCKED) \
-             RETURNING realm_id, event_id, kind, user_id, payload, attempts",
+             UPDATE event_outbox held SET attempts = held.attempts + 1, \
+                    next_attempt_at = $3 + make_interval(secs => $2::float8 * (held.attempts + 1)) \
+             FROM picked \
+             WHERE held.tenant = picked.tenant AND held.realm_id = picked.realm_id \
+               AND held.event_id = picked.event_id \
+             RETURNING held.realm_id, held.event_id, held.kind, held.user_id, \
+                       held.payload, held.attempts",
             &[&ceiling, &(backoff_seconds as f64), &now],
         )
         .await

@@ -184,6 +184,158 @@ pub async fn fulfil_erasure(
     saved(transaction, request).await
 }
 
+/// What a rectification corrects, as the subject asked it: only the fields
+/// named move, and the register will record their names, never their values.
+#[derive(Default)]
+pub struct Corrections {
+    pub email: Option<String>,
+    pub given_name: Option<String>,
+    pub family_name: Option<String>,
+    pub phone_number: Option<String>,
+}
+
+impl Corrections {
+    fn named_fields(&self) -> Vec<&'static str> {
+        [
+            ("email", self.email.is_some()),
+            ("given_name", self.given_name.is_some()),
+            ("family_name", self.family_name.is_some()),
+            ("phone_number", self.phone_number.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(name, asked)| asked.then_some(name))
+        .collect()
+    }
+}
+
+/// Fulfil a rectification: apply the corrections through the same user
+/// update every other door uses, so its checks are inherited rather than
+/// reinvented. A corrected address is no longer a proven one, so the
+/// verified flag comes off with it and the realm's own ceremony re-proves
+/// it. The outcome names the fields that moved and nothing they moved to.
+pub async fn fulfil_rectification(
+    transaction: &Transaction<'_>,
+    request_id: &str,
+    corrections: Corrections,
+    now: i64,
+) -> Result<DsarRequest, Unactionable> {
+    let mut request = get(transaction, request_id).await?;
+    if request.kind != DsarKind::Rectification {
+        return Err(Unactionable::Invalid(format!(
+            "this request asks for {}, not rectification",
+            request.kind
+        )));
+    }
+    let named = corrections.named_fields();
+    if named.is_empty() {
+        return Err(Unactionable::Invalid(
+            "a rectification names what to correct".to_owned(),
+        ));
+    }
+    let mut probe = request.clone();
+    probe
+        .fulfil("probe", now)
+        .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+
+    let subject = match request.user_id.clone() {
+        Some(held) => Some(held),
+        None => resolved_subject(transaction, &request.subject_identifier).await?,
+    };
+    let outcome = match subject {
+        None => "no account was held for the identifier; there was nothing to correct".to_owned(),
+        Some(user_id) => {
+            let spec = super::users::Spec {
+                email: corrections.email.clone(),
+                email_verified: corrections.email.is_some().then_some(false),
+                given_name: corrections.given_name.clone(),
+                family_name: corrections.family_name.clone(),
+                phone: corrections.phone_number.clone(),
+                ..Default::default()
+            };
+            super::users::update(transaction, &user_id, &spec)
+                .await
+                .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+            request.user_id = Some(user_id);
+            format!("corrected as the subject asked: {}", named.join(", "))
+        }
+    };
+    request
+        .fulfil(outcome, now)
+        .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+    saved(transaction, request).await
+}
+
+/// Fulfil an objection by stopping what this server can stop per person:
+/// the standing consents that release their data to clients. A named client
+/// loses its consent alone; unnamed, every consent goes. What consent never
+/// governed is not stopped here, and refusing with the legal ground is the
+/// register's other verb for that.
+pub async fn fulfil_objection(
+    transaction: &Transaction<'_>,
+    request_id: &str,
+    client_id: Option<&str>,
+    now: i64,
+) -> Result<DsarRequest, Unactionable> {
+    let mut request = get(transaction, request_id).await?;
+    if request.kind != DsarKind::Objection {
+        return Err(Unactionable::Invalid(format!(
+            "this request asks for {}, not objection",
+            request.kind
+        )));
+    }
+    let mut probe = request.clone();
+    probe
+        .fulfil("probe", now)
+        .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+
+    let subject = match request.user_id.clone() {
+        Some(held) => Some(held),
+        None => resolved_subject(transaction, &request.subject_identifier).await?,
+    };
+    let outcome = match subject {
+        None => "no account was held for the identifier; nothing was being processed".to_owned(),
+        Some(user_id) => {
+            let told = match client_id {
+                Some(named) => {
+                    let withdrawn =
+                        store::providers::consents::withdraw(transaction, &user_id, named)
+                            .await
+                            .map_err(|_| Unactionable::Backend)?;
+                    if withdrawn {
+                        format!("the consent releasing data to {named} was withdrawn")
+                    } else {
+                        format!("no consent stood for {named}; there was nothing to stop")
+                    }
+                }
+                None => {
+                    let standing = store::providers::consents::of_user(transaction, &user_id)
+                        .await
+                        .map_err(|_| Unactionable::Backend)?;
+                    for held in &standing {
+                        store::providers::consents::withdraw(
+                            transaction,
+                            &user_id,
+                            &held.client_id,
+                        )
+                        .await
+                        .map_err(|_| Unactionable::Backend)?;
+                    }
+                    match standing.len() {
+                        0 => "no consent stood; there was nothing to stop".to_owned(),
+                        felled => format!("every standing consent was withdrawn ({felled})"),
+                    }
+                }
+            };
+            request.user_id = Some(user_id);
+            told
+        }
+    };
+    request
+        .fulfil(outcome, now)
+        .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+    saved(transaction, request).await
+}
+
 /// The scope a copy is drawn at: everything this realm holds about the
 /// person (access, art. 15), or only what the person themselves provided,
 /// in a shape they can carry elsewhere (portability, art. 20).

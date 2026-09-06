@@ -668,6 +668,23 @@ mail-test-to = Send the test to
 mail-test-send = Send a test mail
 mail-test-passed = Delivered. The relay works.
 mail-test-subject = the mail relay test
+settings-group-phone = Phone
+settings-group-phone-desc = The gateway that carries the codes
+sms-intro = Each realm names its own SMS gateway: one URL the server posts to, a sender name, and a bearer token when the gateway wants one. The wire is three JSON fields, to, from and text; front any other provider with your own adapter.
+sms-url = Gateway URL
+sms-url-help = Where the server posts each text: JSON with to, from and text, plus your bearer token. Any 2xx counts as accepted.
+sms-sender = Sender
+sms-sender-help = The name or number texts go out under. What a gateway accepts here varies by country.
+sms-token = Bearer token
+sms-token-help = Sent as Authorization: Bearer on every post. Leave blank to keep the held one; type to replace it.
+sms-token-kept = kept
+sms-forget = Forget these settings
+sms-test-title = Send a test text
+sms-test-help = One real text through the gateway with the settings on this screen. Green means they actually carry texts.
+sms-test-to = To (international form)
+sms-test-send = Send
+sms-test-passed = Delivered to the gateway
+sms-test-subject = the SMS gateway test
 
 ## The writing doors of the bonus screens: roles, scopes, organizations,
 ## policies, relations, flow steps, governance, client roles, sub-groups.

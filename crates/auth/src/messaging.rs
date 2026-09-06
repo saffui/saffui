@@ -10,7 +10,7 @@ pub struct Message {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Undelivered {
     /// The realm names no way to send, so nothing was attempted.
-    #[error("this realm has no mail settings")]
+    #[error("this realm names no way to send")]
     NoWayToSend,
     #[error("the message could not be sent")]
     Refused,
@@ -52,6 +52,28 @@ impl std::fmt::Debug for Outgoing {
 #[async_trait::async_trait]
 pub trait Deliver: Send + Sync {
     async fn send(&self, settings: &MailSettings, message: &Message) -> Result<(), Undelivered>;
+}
+
+/// A message for a phone: one body, no subject, and a destination that is a
+/// number rather than an address.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Text {
+    pub to: String,
+    pub body: String,
+}
+
+/// What carries a text out, the way `Deliver` carries mail.
+///
+/// A separate trait rather than a channel flag on one: mail and SMS take
+/// different settings, and a sender handed the wrong kind should fail to
+/// compile rather than fail to send.
+#[async_trait::async_trait]
+pub trait Texter: Send + Sync {
+    async fn text(
+        &self,
+        settings: &models::entities::sms::SmsSettings,
+        text: &Text,
+    ) -> Result<(), Undelivered>;
 }
 
 /// The words a mail speaks: the realm's rewording where it wrote one, the

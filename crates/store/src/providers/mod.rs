@@ -29,6 +29,7 @@ pub mod rebac;
 pub mod replay;
 pub mod roles;
 pub mod sessions;
+pub mod sms;
 pub mod tenants;
 pub mod users;
 pub mod webauthn;

@@ -1766,8 +1766,6 @@ async function saveSmsTemplate() {
               </button>
             </form>
           </div>
-        
-          </div>
 
           <div class="mt-6">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">

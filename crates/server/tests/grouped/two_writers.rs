@@ -146,6 +146,16 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
             .await
             .expect("an emission");
         }
+        // Due since the epoch, said in the database's own clock: the runner
+        // and the database do not share one in CI, and a seed timed on the
+        // wrong side of the skew is a seed the claim never sees.
+        transaction
+            .execute(
+                "UPDATE event_outbox SET next_attempt_at = to_timestamp(0)",
+                &[],
+            )
+            .await
+            .expect("the seed backdated");
         transaction.commit().await.expect("the seed kept");
     }
 

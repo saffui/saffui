@@ -255,7 +255,7 @@ pub async fn provision_realm_administration(
     transaction: &Transaction<'_>,
     tenant: &str,
     realm_id: &str,
-    user_id: &str,
+    user_name: &str,
 ) -> StoreResult<bool> {
     let created = match roles::load(transaction, ADMINISTRATOR_ROLE).await? {
         Some(mut held) => {
@@ -298,7 +298,15 @@ pub async fn provision_realm_administration(
             true
         }
     };
-    roles::grant_to_user(transaction, user_id, ADMINISTRATOR_ROLE).await?;
+    // The command line names the person; the grant wants the identity, which
+    // has been the realm's own draw since the two came apart. Resolving here
+    // is also what lets a re-run find the person a first run created.
+    let Some(person) = users::load_by_name(transaction, user_name).await? else {
+        return Err(store::error::StoreError::NotFound {
+            asked: user_name.to_owned(),
+        });
+    };
+    roles::grant_to_user(transaction, &person.user_id, ADMINISTRATOR_ROLE).await?;
     Ok(created)
 }
 

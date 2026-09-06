@@ -257,8 +257,8 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
     use models::entities::keys::KeyUse;
     use secrecy::SecretBox;
     use services::provisioning::{
-        Person, Registration, provision_browser_flow, provision_client, provision_signing_key,
-        provision_tenant, provision_user,
+        Person, Registration, provision_browser_flow, provision_client,
+        provision_realm_administration, provision_signing_key, provision_tenant, provision_user,
     };
     use std::sync::Arc;
     use store::providers::{auth_flows, clients, credentials, realm_keys, users};
@@ -458,6 +458,23 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
             .expect("a verification")
             .valid,
         "the provisioned password does not verify"
+    );
+
+    // The flag on the command line names the person; the identity under the
+    // grant is the realm's own draw. Granting administration by name must
+    // land on that drawn identity, or the first administrator of a fresh
+    // deployment holds nothing.
+    assert_ne!(user.user_id, "ada", "the identity is the name again");
+    provision_realm_administration(&transaction, "local", "main", "ada")
+        .await
+        .unwrap();
+    let held = services::authorization::admin_actions(&transaction, &user.user_id, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        held.len(),
+        AdminAction::ALL.len(),
+        "the administration grant did not land on the drawn identity"
     );
     transaction.commit().await.unwrap();
 }

@@ -668,6 +668,23 @@ mail-test-to = Envoyer le test à
 mail-test-send = Envoyer un mail de test
 mail-test-passed = Remis. Le relais marche.
 mail-test-subject = le test du relais mail
+settings-group-phone = Téléphone
+settings-group-phone-desc = La passerelle qui porte les codes
+sms-intro = Chaque royaume nomme sa propre passerelle SMS : une URL où le serveur poste, un nom d'expéditeur, et un jeton bearer si la passerelle en veut un. Le fil, c'est trois champs JSON, to, from et text ; tout autre fournisseur se met derrière votre propre adaptateur.
+sms-url = URL de la passerelle
+sms-url-help = Où le serveur poste chaque texto : JSON avec to, from et text, plus votre jeton bearer. Tout 2xx vaut acceptation.
+sms-sender = Expéditeur
+sms-sender-help = Le nom ou le numéro sous lequel partent les textos. Ce qu'une passerelle accepte ici varie selon le pays.
+sms-token = Jeton bearer
+sms-token-help = Envoyé en Authorization: Bearer à chaque envoi. Vide garde celui détenu ; tapé le remplace.
+sms-token-kept = conservé
+sms-forget = Oublier ces réglages
+sms-test-title = Envoyer un texto d'essai
+sms-test-help = Un vrai texto par la passerelle avec les réglages de cet écran. Vert veut dire qu'ils portent réellement des textos.
+sms-test-to = À (forme internationale)
+sms-test-send = Envoyer
+sms-test-passed = Remis à la passerelle
+sms-test-subject = le test de la passerelle SMS
 
 ## Les portes d'écriture des écrans bonus : rôles, scopes, organisations,
 ## politiques, relations, étapes de flux, gouvernance, rôles client, sous-groupes.

@@ -808,6 +808,13 @@ fn plane() -> Result<Plane, String> {
                     server::messaging::Webhook::new(url, config::optional("MESSAGE_WEBHOOK_TOKEN")),
                 )),
             },
+            texter: match config::messaging::TextSink::from_env().map_err(|e| e.to_string())? {
+                config::messaging::TextSink::None => None,
+                config::messaging::TextSink::Http => Some(Arc::new(server::messaging::HttpTexter)),
+                config::messaging::TextSink::Logged => {
+                    Some(Arc::new(server::messaging::LoggedTexter))
+                }
+            },
             provider,
             envelope: Arc::new(envelope),
         },

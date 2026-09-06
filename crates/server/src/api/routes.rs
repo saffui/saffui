@@ -6,7 +6,7 @@ use models::entities::authz::AdminAction;
 use crate::api::rest::endpoints::admin::{
     authorization, claim_sources, client_scopes, clients, compliance, directory, events, features,
     federation, flows, idps, iga, journal, keys, mail, negotiation, portability, protocol_mappers,
-    realm_keys, realms, rebac, sessions, users,
+    realm_keys, realms, rebac, sessions, sms, users,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -130,6 +130,30 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/mail",
             action: AdminAction::RealmWrite,
             handler: Some(|| web::delete().to(mail::forget)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/sms/test",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::post().to(sms::send_test)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/sms",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(sms::read)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/sms",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::put().to(sms::write)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/sms",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::delete().to(sms::forget)),
         },
         AdminRoute {
             method: Method::GET,

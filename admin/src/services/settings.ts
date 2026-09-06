@@ -1,6 +1,7 @@
 import { adminPath, api } from "@/services/http";
 import { say } from "@/i18n";
 import type { MailBrief, MailWrite } from "@/models/mail";
+import type { SmsBrief, SmsWrite } from "@/models/sms";
 import type { RealmKeys } from "@/models/keys";
 import type { RealmSettings, RealmTheme, RealmUpdate } from "@/models/realm";
 
@@ -128,4 +129,33 @@ export interface PageKey {
 
 export async function listPageKeys(realm: string): Promise<{ keys: PageKey[] }> {
   return api<{ keys: PageKey[] }>(adminPath(realm, "page-keys"));
+}
+
+export async function getSms(realm: string): Promise<SmsBrief> {
+  return api<SmsBrief>(adminPath(realm, "sms"));
+}
+
+export async function writeSms(realm: string, asked: SmsWrite): Promise<void> {
+  await api<unknown>(adminPath(realm, "sms"), {
+    method: "PUT",
+    json: asked,
+    subject: say("settings-group-phone"),
+  });
+}
+
+export async function forgetSms(realm: string): Promise<void> {
+  await api<void>(adminPath(realm, "sms"), {
+    method: "DELETE",
+    subject: say("settings-group-phone"),
+  });
+}
+
+/// Drive the gateway end to end: one real text to the given number. Green
+/// means the settings on screen actually carry texts.
+export async function sendTestSms(realm: string, to: string): Promise<void> {
+  await api<void>(adminPath(realm, "sms/test"), {
+    method: "POST",
+    json: { to },
+    subject: say("sms-test-subject"),
+  });
 }

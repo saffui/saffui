@@ -79,6 +79,8 @@ pub struct Sealing {
     /// What carries a message out, when this deployment has said how. Absent
     /// refuses to send rather than choosing a way nobody asked for.
     pub sender: Option<std::sync::Arc<dyn auth::messaging::Deliver>>,
+    /// What carries a text out, under the same rule.
+    pub texter: Option<std::sync::Arc<dyn auth::messaging::Texter>>,
     pub provider: Arc<dyn CryptoProvider>,
     pub envelope: Arc<Envelope>,
 }

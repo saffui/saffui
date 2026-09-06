@@ -7,14 +7,18 @@ import AppToggle from "@/components/AppToggle.vue";
 import { useRouter } from "vue-router";
 import {
   forgetMail,
+  forgetSms,
   forgetRegistrationSecret,
   getMail,
+  getSms,
   getRealmSettings,
   listFeatures,
   reshapeRealm,
   rotateRegistrationSecret,
   sendTestMail,
+  sendTestSms,
   writeMail,
+  writeSms,
 } from "@/services/settings";
 import { deleteRealm } from "@/services/realms";
 import { toastOk } from "@/services/toasts";
@@ -22,6 +26,7 @@ import { useSession } from "@/stores/session";
 import type { FeatureBrief } from "@/models/feature";
 import { ApiError } from "@/services/http";
 import type { MailBrief } from "@/models/mail";
+import type { SmsBrief } from "@/models/sms";
 import { OTP_DEFAULTS, OWASP_HASHING } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 import { JURISDICTIONS } from "@/services/compliance";
@@ -34,6 +39,7 @@ const GROUPS = [
   "credentials",
   "localization",
   "email",
+  "phone",
   "features",
 ] as const;
 
@@ -72,6 +78,7 @@ function markDirty() {
 }
 const settings = ref<RealmSettings | null>(null);
 const mail = ref<MailBrief | null>(null);
+const sms = ref<SmsBrief | null>(null);
 const failed = ref("");
 
 /// The editable copy the forms bind to; adopting a settings document resets
@@ -267,6 +274,16 @@ onMounted(async () => {
         username: mail.value.username ?? "",
         password: "",
         implicit_tls: mail.value.implicit_tls,
+      };
+    } catch (refused) {
+      if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
+    }
+    try {
+      sms.value = await getSms(realm.value);
+      smsForm.value = {
+        url: sms.value.url,
+        sender: sms.value.sender,
+        token: "",
       };
     } catch (refused) {
       if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
@@ -555,6 +572,38 @@ async function testMail() {
 async function removeMail() {
   await forgetMail(realm.value);
   mail.value = null;
+}
+
+const smsForm = ref({ url: "", sender: "", token: "" });
+
+async function saveSms() {
+  const asked = smsForm.value;
+  await writeSms(realm.value, {
+    url: asked.url.trim(),
+    sender: asked.sender.trim(),
+    // Blank keeps the held token; typed replaces it.
+    token: asked.token || null,
+  });
+  sms.value = await getSms(realm.value);
+}
+
+/// One real text through the gateway. Green means the settings on screen
+/// actually carry texts.
+const smsTestTo = ref("");
+const smsTestPassed = ref(false);
+async function testSms() {
+  smsTestPassed.value = false;
+  try {
+    await sendTestSms(realm.value, smsTestTo.value.trim());
+    smsTestPassed.value = true;
+  } catch {
+    // The toast carries the server's refusal.
+  }
+}
+
+async function removeSms() {
+  await forgetSms(realm.value);
+  sms.value = null;
 }
 </script>
 
@@ -1456,6 +1505,85 @@ async function removeMail() {
               </button>
               <span v-if="testPassed" class="pb-1.5 text-[11px] text-ok">{{
                 say("mail-test-passed")
+              }}</span>
+            </form>
+          </div>
+        </div>
+
+        <div v-if="group === 'phone'" class="mt-4 max-w-lg">
+          <p class="text-[11px] text-muted">
+            {{ say("sms-intro") }}
+          </p>
+          <form class="mt-3 flex flex-col gap-3 text-xs" @submit.prevent="saveSms">
+            <label class="block text-[11px] font-medium text-muted">
+              {{ say("sms-url") }} <AppHint name="sms-url-help" />
+              <input
+                v-model="smsForm.url"
+                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                spellcheck="false"
+                placeholder="https://gateway.example/send"
+              />
+            </label>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("sms-sender") }} <AppHint name="sms-sender-help" />
+                <input
+                  v-model="smsForm.sender"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  spellcheck="false"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("sms-token") }} <AppHint name="sms-token-help" />
+                <input
+                  v-model="smsForm.token"
+                  type="password"
+                  :placeholder="sms?.has_token ? say('sms-token-kept') : ''"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                  autocomplete="new-password"
+                />
+              </label>
+            </div>
+            <div class="mt-1 flex items-center gap-2">
+              <button
+                type="submit"
+                class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+              >
+                {{ say("settings-save") }}
+              </button>
+              <button
+                v-if="sms"
+                type="button"
+                class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface-2"
+                @click="removeSms"
+              >
+                {{ say("sms-forget") }}
+              </button>
+            </div>
+          </form>
+
+          <div v-if="sms" class="mt-4">
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("sms-test-title") }} <AppHint name="sms-test-help" />
+            </div>
+            <form class="mt-2 flex items-end gap-2 text-xs" @submit.prevent="testSms">
+              <label class="flex-1 text-[11px] font-medium text-muted">
+                {{ say("sms-test-to") }}
+                <input
+                  v-model="smsTestTo"
+                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  spellcheck="false"
+                  placeholder="+22890123456"
+                />
+              </label>
+              <button
+                type="submit"
+                class="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2"
+              >
+                {{ say("sms-test-send") }}
+              </button>
+              <span v-if="smsTestPassed" class="pb-1.5 text-[11px] text-ok">{{
+                say("sms-test-passed")
               }}</span>
             </form>
           </div>

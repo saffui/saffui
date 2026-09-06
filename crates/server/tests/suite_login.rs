@@ -38,5 +38,7 @@ mod session_management;
 mod signup;
 #[path = "grouped/subject_door.rs"]
 mod subject_door;
+#[path = "grouped/texted.rs"]
+mod texted;
 #[path = "grouped/ui_theme.rs"]
 mod ui_theme;

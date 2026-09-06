@@ -324,9 +324,19 @@ pub fn sealing() -> server::api::config::Sealing {
 pub fn sealing_sending(
     sender: Option<Arc<dyn auth::messaging::Deliver>>,
 ) -> server::api::config::Sealing {
+    sealing_carrying(sender, None)
+}
+
+/// The same, with something to carry both a message and a text out.
+#[allow(dead_code, reason = "only the sending suites use it")]
+pub fn sealing_carrying(
+    sender: Option<Arc<dyn auth::messaging::Deliver>>,
+    texter: Option<Arc<dyn auth::messaging::Texter>>,
+) -> server::api::config::Sealing {
     let shared: Arc<dyn CryptoProvider> = Arc::new(provider());
     server::api::config::Sealing {
         sender,
+        texter,
         envelope: Arc::new(Envelope::new(Arc::clone(&shared), KEK).expect("an envelope")),
         provider: shared,
     }
@@ -368,6 +378,45 @@ impl auth::messaging::Deliver for Postbox {
             return Err(auth::messaging::Undelivered::Refused);
         }
         self.held.lock().expect("the postbox").push(message.clone());
+        Ok(())
+    }
+}
+
+/// Keeps every text instead of sending it, the Postbox's phone-shaped twin.
+#[derive(Default, Clone)]
+#[allow(dead_code, reason = "only the texting suites send")]
+pub struct Textbox {
+    held: Arc<std::sync::Mutex<Vec<auth::messaging::Text>>>,
+    refuses: bool,
+}
+
+#[allow(dead_code, reason = "only the texting suites send")]
+impl Textbox {
+    pub fn held(&self) -> Vec<auth::messaging::Text> {
+        self.held.lock().expect("the textbox").clone()
+    }
+
+    /// One that takes the text and refuses it, which is a gateway that
+    /// answers and says no.
+    pub fn refusing() -> Self {
+        Textbox {
+            held: Arc::default(),
+            refuses: true,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl auth::messaging::Texter for Textbox {
+    async fn text(
+        &self,
+        _settings: &models::entities::sms::SmsSettings,
+        text: &auth::messaging::Text,
+    ) -> Result<(), auth::messaging::Undelivered> {
+        if self.refuses {
+            return Err(auth::messaging::Undelivered::Refused);
+        }
+        self.held.lock().expect("the textbox").push(text.clone());
         Ok(())
     }
 }

@@ -1,12 +1,13 @@
 use std::time::Duration;
 
-use auth::messaging::{Deliver, Message, Undelivered};
+use auth::messaging::{Deliver, Message, Text, Texter, Undelivered};
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Message as Letter, SmtpTransport, Transport};
 use models::entities::mail::MailSettings;
+use models::entities::sms::SmsSettings;
 use secrecy::ExposeSecret;
 
 /// How long a server gets to take a message.
@@ -142,6 +143,77 @@ impl Deliver for Logged {
             subject = message.subject,
             body = message.body,
             "a message was written to the log and not sent"
+        );
+        Ok(())
+    }
+}
+
+/// The realm's own SMS gateway, told over HTTP.
+///
+/// This is the wire a third-party sender implements to carry saffui's texts:
+/// a POST to the realm's configured URL, `Authorization: Bearer <token>` when
+/// the realm holds one, and a JSON body of exactly three fields,
+/// `{"to": "<E.164>", "from": "<sender>", "text": "<body>"}`. Any 2xx is
+/// taken as accepted; anything else is a refusal. A provider that speaks
+/// another shape is fronted by a deployment's own adapter.
+pub struct HttpTexter;
+
+#[async_trait::async_trait]
+impl Texter for HttpTexter {
+    async fn text(&self, settings: &SmsSettings, text: &Text) -> Result<(), Undelivered> {
+        let body = serde_json::json!({
+            "to": text.to,
+            "from": settings.sender,
+            "text": text.body,
+        });
+        let url = settings.url.clone();
+        let bearer = settings
+            .token
+            .as_ref()
+            .map(|held| secrecy::ExposeSecret::expose_secret(held).clone());
+        tokio::task::spawn_blocking(move || {
+            let agent = ureq::Agent::config_builder()
+                .timeout_global(Some(PATIENCE))
+                .tls_config(
+                    ureq::tls::TlsConfig::builder()
+                        .provider(ureq::tls::TlsProvider::NativeTls)
+                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                        .build(),
+                )
+                .build()
+                .new_agent();
+            let mut posting = agent.post(&url);
+            if let Some(bearer) = &bearer {
+                posting = posting.header("authorization", &format!("Bearer {bearer}"));
+            }
+            posting
+                .header("content-type", "application/json")
+                .send(body.to_string())
+                .map(|_| ())
+                .map_err(|why| {
+                    tracing::warn!(why = %why, "a text was not sent");
+                    Undelivered::Refused
+                })
+        })
+        .await
+        .map_err(|_| Undelivered::Refused)?
+    }
+}
+
+/// Writes the text to the log instead of sending it.
+///
+/// For a deployment being built, and named as such where it is chosen. It
+/// prints the whole body, one-time code included, which is why it is never
+/// what a deployment gets by not choosing.
+pub struct LoggedTexter;
+
+#[async_trait::async_trait]
+impl Texter for LoggedTexter {
+    async fn text(&self, _settings: &SmsSettings, text: &Text) -> Result<(), Undelivered> {
+        tracing::warn!(
+            to = text.to,
+            body = text.body,
+            "a text was written to the log and not sent"
         );
         Ok(())
     }

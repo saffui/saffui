@@ -24,5 +24,6 @@ pub mod registration;
 pub mod revoke;
 pub mod signup;
 pub mod ssf;
+pub mod texting;
 pub mod token;
 pub mod userinfo;

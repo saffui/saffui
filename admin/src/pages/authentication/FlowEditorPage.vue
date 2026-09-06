@@ -265,6 +265,7 @@ const AUTHENTICATORS = [
   "magic-link",
   "kerberos",
   "recovery-code",
+  "sms-otp",
 ] as const;
 const adding = ref(false);
 /// Where the next step lands in the running order; the end when unsaid.

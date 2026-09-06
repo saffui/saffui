@@ -36,6 +36,8 @@ mod require_par;
 mod session_management;
 #[path = "grouped/signup.rs"]
 mod signup;
+#[path = "grouped/sms_login.rs"]
+mod sms_login;
 #[path = "grouped/subject_door.rs"]
 mod subject_door;
 #[path = "grouped/texted.rs"]

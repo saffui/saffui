@@ -89,3 +89,35 @@ pub async fn forget(transaction: &Transaction<'_>) -> StoreResult<bool> {
         .map_err(|_| StoreError::Backend)?;
     Ok(removed > 0)
 }
+
+/// How many texts this realm has sent in the UTC day holding `now`.
+pub async fn spent_today(transaction: &Transaction<'_>, now: i64) -> StoreResult<i32> {
+    Ok(transaction
+        .query_opt(
+            "SELECT sent FROM sms_spend \
+             WHERE tenant = current_setting('saffui.current_tenant', true) \
+               AND realm_id = current_setting('saffui.current_realm', true) \
+               AND day = to_timestamp($1::bigint)::date",
+            &[&now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .map_or(0, |row| row.get(0)))
+}
+
+/// Count one text against today, in the same transaction that minted its
+/// code: a counter written after the send is one a failure forgets.
+pub async fn record_send(transaction: &Transaction<'_>, now: i64) -> StoreResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO sms_spend (tenant, realm_id, day, sent) \
+             SELECT current_setting('saffui.current_tenant', true), \
+                    current_setting('saffui.current_realm', true), \
+                    to_timestamp($1::bigint)::date, 1 \
+             ON CONFLICT (tenant, realm_id, day) DO UPDATE SET sent = sms_spend.sent + 1",
+            &[&now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}

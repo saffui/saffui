@@ -216,6 +216,27 @@ pub async fn set_email_verified(
     Ok(changed > 0)
 }
 
+/// Write the phone this account holds, and whether it is proven.
+///
+/// One statement for both facts, because they move together: a fresh number
+/// is unproven by definition, and proving one must not race an edit that
+/// swapped it for another.
+pub async fn set_phone(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    phone_number: Option<&str>,
+    verified: bool,
+) -> StoreResult<bool> {
+    let written = transaction
+        .execute(
+            "UPDATE users SET phone_number = $2, phone_number_verified = $3 WHERE user_id = $1",
+            &[&user_id, &phone_number, &verified],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(written > 0)
+}
+
 /// Put an instruction on a person, once: an action already standing is not
 /// stacked twice, so a login that keeps finding the same stale password does
 /// not grow the list on every round.

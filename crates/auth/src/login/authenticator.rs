@@ -40,9 +40,9 @@ pub struct Answered {
     pub asks: Option<Challenge>,
     /// A message the step produced, to be sent once the caller has committed.
     /// Never sent here: a transaction held open across a conversation with
-    /// somebody else's mail server is a pooled connection taken from every
-    /// other request.
-    pub sending: Option<Outgoing>,
+    /// somebody else's server is a pooled connection taken from every other
+    /// request.
+    pub sending: Option<crate::messaging::Outbound>,
 }
 
 impl Answered {
@@ -86,6 +86,8 @@ pub enum Authenticator {
     Kerberos,
     /// One code of a set the user printed, spent as it is used.
     RecoveryCode,
+    /// A code texted to the phone this account has proven, typed back.
+    SmsOtp,
 }
 
 /// A name no build knows. Refused where a flow is read, so a realm cannot be
@@ -105,6 +107,7 @@ impl FromStr for Authenticator {
             "magic-link" => Ok(Self::MagicLink),
             "kerberos" => Ok(Self::Kerberos),
             "recovery-code" => Ok(Self::RecoveryCode),
+            "sms-otp" => Ok(Self::SmsOtp),
             other => Err(Unknown(other.to_owned())),
         }
     }
@@ -119,6 +122,7 @@ impl Authenticator {
             Self::MagicLink => "magic-link",
             Self::Kerberos => "kerberos",
             Self::RecoveryCode => "recovery-code",
+            Self::SmsOtp => "sms-otp",
         }
     }
 
@@ -145,6 +149,8 @@ impl Authenticator {
             // the key stood, so it reaches the class they reach: a printed sheet
             // the user kept is a thing they have.
             Self::RecoveryCode => "mfa",
+            // A code on the phone is a thing the person has, like the app's.
+            Self::SmsOtp => "mfa",
         }
     }
 }
@@ -173,6 +179,9 @@ pub enum Answer {
     /// A code off the printed sheet, as typed. Normalised where it is checked,
     /// so the dashes and the case a person reproduces are theirs to get wrong.
     RecoveryCode(SecretBox<String>),
+    /// The texted code, as typed. Normalised where it is checked, so the
+    /// spaces a person copies between the digits are theirs to get wrong.
+    SmsOtp(String),
 }
 
 /// Say whether an answer satisfies one authenticator.
@@ -220,6 +229,18 @@ pub async fn verify_answer(
         // page is built.
         Authenticator::RecoveryCode => {
             Answered::plain(recovery_code(transaction, provider, subject, answers).await)
+        }
+        Authenticator::SmsOtp => {
+            sms_otp(
+                transaction,
+                provider,
+                realm,
+                subject,
+                answers,
+                remembered,
+                posting,
+            )
+            .await
         }
     }
 }
@@ -269,6 +290,10 @@ pub struct Posting<'a> {
     /// from the settings: a realm can name a server while the deployment has
     /// chosen no way to reach one.
     pub can_send: bool,
+    /// The same pair for texts: the realm's gateway, and whether the
+    /// deployment carries any.
+    pub sms: Option<&'a models::entities::sms::SmsSettings>,
+    pub can_text: bool,
     pub now: DateTime<Utc>,
 }
 
@@ -409,7 +434,7 @@ async fn magic_link(
             shown: serde_json::json!({ "sent_to": redacted(&subject.email) }),
             remembered: serde_json::Value::Null,
         }),
-        sending: Some(Outgoing {
+        sending: Some(crate::messaging::Outbound::Mail(Outgoing {
             settings: settings.duplicate(),
             message: {
                 let realm_row = store::providers::realms::of_context(transaction)
@@ -443,8 +468,206 @@ async fn magic_link(
                 user_id: subject.user_id.clone(),
                 purpose: MAGIC_LINK.to_owned(),
             },
-        }),
+        })),
     }
+}
+
+/// How long a texted code stays good, how soon another may go out, how many
+/// one login may cause, and how many texts any one realm may send in a day.
+/// Fixed until the realm anti-abuse policy is a setting; the day cap is the
+/// realm's brake on a billable action an attacker can trigger.
+const CODE_LIFESPAN: i64 = 300;
+const CODE_COOLDOWN: i64 = 60;
+const CODE_SENDS_PER_LOGIN: i64 = 3;
+pub(crate) const TEXTS_PER_REALM_PER_DAY: i32 = 250;
+
+const SMS_OTP: &str = "sms-otp";
+
+/// Text a code to the phone this account has proven, or spend one typed back.
+///
+/// The code is bound to this login, so one read off a phone cannot finish a
+/// login somebody else started. Every send is counted twice before it goes:
+/// against this login, so one attempt cannot fan out codes, and against the
+/// realm's day, because a text is a billable action an attacker can trigger.
+async fn sms_otp(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    realm: &RealmModel,
+    subject: Option<&UserModel>,
+    answers: &[Answer],
+    remembered: Option<&serde_json::Value>,
+    posting: Option<Posting<'_>>,
+) -> Answered {
+    let Some(posting) = posting else {
+        return Answered::plain(Outcome::Failed);
+    };
+    let Some(subject) = subject else {
+        return Answered::plain(Outcome::Failed);
+    };
+
+    if let Some(Answer::SmsOtp(typed)) =
+        of_kind(answers, |answer| matches!(answer, Answer::SmsOtp(_)))
+    {
+        let normalized: String = typed.chars().filter(char::is_ascii_digit).collect();
+        if normalized.is_empty() {
+            return Answered::plain(Outcome::Failed);
+        }
+        let spent = one_time_tokens::spend(
+            transaction,
+            provider.digest(),
+            &subject.user_id,
+            SMS_OTP,
+            &normalized,
+            Some(posting.auth_session_id),
+            posting.now,
+        )
+        .await;
+        return match spent {
+            Ok(one_time_tokens::Spent::Yes) => Answered::plain(Outcome::Passed),
+            _ => Answered::plain(Outcome::Failed),
+        };
+    }
+
+    let Some(settings) = posting.sms.filter(|_| posting.can_text) else {
+        tracing::warn!("a login asked for a texted code and nothing here can send one");
+        return Answered::plain(Outcome::Failed);
+    };
+    let phone = subject
+        .phone_number
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    // Proven or nothing: a login code texted to a number nobody proved is a
+    // second factor a typo hands to a stranger.
+    if phone.is_empty() || subject.phone_number_verified != Some(true) {
+        return Answered::plain(Outcome::Failed);
+    }
+
+    let sent_before = remembered
+        .and_then(|held| held.get("sent"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    let standing = |sent: i64| Answered {
+        outcome: Outcome::Pending,
+        asks: Some(Challenge {
+            shown: serde_json::json!({ "code_sent_to": redacted_phone(&phone) }),
+            remembered: serde_json::json!({ "sent": sent }),
+        }),
+        sending: None,
+    };
+
+    // One in flight is enough, and a login only causes so many: both answered
+    // the way a fresh send is, so nothing is told apart by whether one went.
+    // A store that cannot answer holds the message, or the guard is flooded
+    // through by making the read fail.
+    let Ok(recent) =
+        one_time_tokens::minted_at(transaction, &subject.user_id, SMS_OTP, posting.now).await
+    else {
+        return Answered::plain(Outcome::Failed);
+    };
+    if let Some(sent) = recent
+        && posting.now - sent < chrono::Duration::seconds(CODE_COOLDOWN)
+    {
+        return standing(sent_before);
+    }
+    if sent_before >= CODE_SENDS_PER_LOGIN {
+        return standing(sent_before);
+    }
+
+    // The realm's own day is spent before anything is drawn: past the cap the
+    // step fails plainly, and whatever alternative the flow holds stands in.
+    let Ok(spent_today) =
+        store::providers::sms::spent_today(transaction, posting.now.timestamp()).await
+    else {
+        return Answered::plain(Outcome::Failed);
+    };
+    if spent_today >= TEXTS_PER_REALM_PER_DAY {
+        tracing::warn!("a realm reached its daily text budget and a login code was not sent");
+        return Answered::plain(Outcome::Failed);
+    }
+
+    let Some(code) = drawn_code(provider) else {
+        return Answered::plain(Outcome::Failed);
+    };
+    if one_time_tokens::mint(
+        transaction,
+        provider.digest(),
+        one_time_tokens::Owner {
+            tenant: &subject.metadata.tenant,
+            realm_id: &subject.realm_id,
+            user_id: &subject.user_id,
+            purpose: SMS_OTP,
+        },
+        &code,
+        Some(posting.auth_session_id),
+        posting.now + chrono::Duration::seconds(CODE_LIFESPAN),
+        posting.now,
+    )
+    .await
+    .is_err()
+    {
+        return Answered::plain(Outcome::Failed);
+    }
+    if store::providers::sms::record_send(transaction, posting.now.timestamp())
+        .await
+        .is_err()
+    {
+        return Answered::plain(Outcome::Failed);
+    }
+
+    Answered {
+        outcome: Outcome::Pending,
+        asks: Some(Challenge {
+            shown: serde_json::json!({ "code_sent_to": redacted_phone(&phone) }),
+            remembered: serde_json::json!({ "sent": sent_before + 1 }),
+        }),
+        sending: Some(crate::messaging::Outbound::Text(
+            crate::messaging::OutgoingText {
+                settings: settings.duplicate(),
+                text: crate::messaging::Text {
+                    to: phone,
+                    body: texted_code(realm, &code),
+                },
+                about: crate::messaging::About {
+                    user_id: subject.user_id.clone(),
+                    purpose: SMS_OTP.to_owned(),
+                },
+            },
+        )),
+    }
+}
+
+/// Six digits, drawn without bias: values past the largest multiple of a
+/// million are thrown back rather than folded onto the low codes.
+pub(crate) fn drawn_code(provider: &dyn CryptoProvider) -> Option<String> {
+    for _ in 0..16 {
+        let mut drawn = [0u8; 4];
+        provider.rand().fill(&mut drawn).ok()?;
+        let value = u32::from_be_bytes(drawn);
+        if value < 4_294_000_000 {
+            return Some(format!("{:06}", value % 1_000_000));
+        }
+    }
+    None
+}
+
+/// The words around a code, in the realm's own tongue. Short on purpose: an
+/// SMS is billed and truncated by length, and the realm's rewording of it is
+/// a later setting with a length check of its own.
+pub(crate) fn texted_code(realm: &RealmModel, code: &str) -> String {
+    match realm.default_locale.as_deref() {
+        Some("fr") => format!("{code} est votre code de connexion. Il expire dans 5 minutes."),
+        _ => format!("{code} is your sign-in code. It expires in 5 minutes."),
+    }
+}
+
+/// Enough of a number for the person to recognise their own phone, and not
+/// enough for whoever else is looking at the screen to dial it.
+pub(crate) fn redacted_phone(phone: &str) -> String {
+    let digits: Vec<char> = phone.chars().collect();
+    let kept: String = digits[digits.len().saturating_sub(2)..].iter().collect();
+    format!("\u{2026}{kept}")
 }
 
 /// Enough of an address for the person to recognise their own, and not enough

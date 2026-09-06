@@ -24,6 +24,7 @@ use crate::login::authenticator::{Challenge, redacted, relying_party};
 pub const CONFIGURE_WEBAUTHN: &str = "webauthn-register";
 pub const CONFIGURE_TOTP: &str = "totp-register";
 pub const VERIFY_EMAIL: &str = "verify-email";
+pub const VERIFY_PHONE: &str = "verify-phone";
 pub const CONFIGURE_RECOVERY_CODES: &str = "recovery-codes-register";
 pub const UPDATE_PASSWORD: &str = "update-password";
 
@@ -32,6 +33,10 @@ pub const UPDATE_PASSWORD: &str = "update-password";
 /// caller loops the login and this server floods a mailbox on somebody's
 /// behalf.
 pub const VERIFY_LIFESPAN: i64 = 900;
+/// A texted proving code: shorter-lived than a mailed link, and a login only
+/// causes so many.
+const PHONE_CODE_LIFESPAN: i64 = 300;
+const PHONE_CODES_PER_LOGIN: i64 = 3;
 const VERIFY_COOLDOWN: i64 = 60;
 
 /// What a fresh authenticator app is enrolled with: RFC 6238's defaults, which
@@ -49,6 +54,11 @@ pub struct Answers<'a> {
     pub code: Option<&'a str>,
     /// What a mailed address-verification link carried back.
     pub verified_address: Option<&'a str>,
+    /// The number a person offered the phone ceremony, international form.
+    pub phone: Option<&'a str>,
+    /// The texted proving code, typed back. Its own field and not `code`,
+    /// for the reason `kept` is.
+    pub phone_code: Option<&'a str>,
     /// One code typed back off the sheet just shown, proving it was kept. Its
     /// own field and not `code`: two ceremonies reading one answer is how a
     /// person's authenticator code gets spent against the wrong ledger.
@@ -68,7 +78,7 @@ pub enum Enrolment {
         named: &'static str,
         challenge: Challenge,
         /// A message this round produced, sent once the caller has committed.
-        sending: Option<Box<crate::messaging::Outgoing>>,
+        sending: Option<Box<crate::messaging::Outbound>>,
     },
     /// The answer did not verify. The login fails with it: an admitted login
     /// that shrugged off its realm's instruction would admit the very state
@@ -178,6 +188,18 @@ pub async fn required(
             }
             None => start_verify(transaction, provider, origin, realm, subject, posting).await,
         };
+    }
+    if pending(RequiredAction::VerifyPhone) {
+        return verify_phone_round(
+            transaction,
+            provider,
+            realm,
+            subject,
+            answers,
+            remembered,
+            posting,
+        )
+        .await;
     }
     Enrolment::Settled
 }
@@ -618,28 +640,30 @@ async fn start_verify(
             shown,
             remembered: Value::Null,
         },
-        sending: Some(Box::new(crate::messaging::Outgoing {
-            settings: settings.duplicate(),
-            message: {
-                let (worded_subject, worded_body) = crate::messaging::worded(
-                    realm,
-                    VERIFY_EMAIL,
-                    &link,
-                    "Confirm your address",
-                    "Confirm this address to finish signing in. The link works once, and \
+        sending: Some(Box::new(crate::messaging::Outbound::Mail(
+            crate::messaging::Outgoing {
+                settings: settings.duplicate(),
+                message: {
+                    let (worded_subject, worded_body) = crate::messaging::worded(
+                        realm,
+                        VERIFY_EMAIL,
+                        &link,
+                        "Confirm your address",
+                        "Confirm this address to finish signing in. The link works once, and \
                      only in the browser you started from.\n\n{{link}}\n",
-                );
-                crate::messaging::Message {
-                    to: subject.email.clone(),
-                    subject: worded_subject,
-                    body: worded_body,
-                }
+                    );
+                    crate::messaging::Message {
+                        to: subject.email.clone(),
+                        subject: worded_subject,
+                        body: worded_body,
+                    }
+                },
+                about: crate::messaging::About {
+                    user_id: subject.user_id.clone(),
+                    purpose: VERIFY_EMAIL.to_owned(),
+                },
             },
-            about: crate::messaging::About {
-                user_id: subject.user_id.clone(),
-                purpose: VERIFY_EMAIL.to_owned(),
-            },
-        })),
+        ))),
     }
 }
 
@@ -692,6 +716,207 @@ async fn finish_verify(
         Ok(_) => Enrolment::Settled,
         Err(_) => Enrolment::Refused,
     }
+}
+
+/// One round of proving a phone: ask for a number when the account holds
+/// none, text a code at it, and mark the number proven when the code comes
+/// back. The code is bound to this login, and the number it went to rides
+/// the notes, so proving it cannot bless a number swapped in behind it.
+async fn verify_phone_round(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    realm: &RealmModel,
+    subject: &UserModel,
+    answers: Answers<'_>,
+    remembered: &Value,
+    posting: Option<crate::login::authenticator::Posting<'_>>,
+) -> Enrolment {
+    // Nothing to send with is a ceremony that cannot run, left standing like
+    // any other this build cannot perform.
+    let Some(posting) = posting else {
+        return Enrolment::Settled;
+    };
+    let Some(settings) = posting.sms.filter(|_| posting.can_text) else {
+        return Enrolment::Settled;
+    };
+    let state = remembered.get(VERIFY_PHONE);
+
+    if let (Some(typed), Some(state)) = (answers.phone_code, state) {
+        let normalized: String = typed.chars().filter(char::is_ascii_digit).collect();
+        match one_time_tokens::spend(
+            transaction,
+            provider.digest(),
+            &subject.user_id,
+            VERIFY_PHONE,
+            &normalized,
+            Some(posting.auth_session_id),
+            posting.now,
+        )
+        .await
+        {
+            Ok(one_time_tokens::Spent::Yes) => {}
+            _ => return Enrolment::Refused,
+        }
+        // The number the code actually went to, and only if it is still the
+        // account's: proven is a statement about this pair, not a flag.
+        let Some(texted_to) = state.get("to").and_then(Value::as_str) else {
+            return Enrolment::Refused;
+        };
+        if users::set_phone(transaction, &subject.user_id, Some(texted_to), true)
+            .await
+            .is_err()
+        {
+            return Enrolment::Refused;
+        }
+        return match users::clear_required_action(
+            transaction,
+            &subject.user_id,
+            RequiredAction::VerifyPhone,
+        )
+        .await
+        {
+            Ok(_) => Enrolment::Settled,
+            Err(_) => Enrolment::Refused,
+        };
+    }
+
+    // A number offered this round replaces whatever stood, unproven by
+    // definition; otherwise the account's own is texted at.
+    let texting_to = match answers.phone {
+        Some(offered) => {
+            let Some(normalized) = e164(offered) else {
+                return Enrolment::Asked {
+                    named: VERIFY_PHONE,
+                    challenge: Challenge {
+                        shown: json!({ "ask_phone": true, "bad_number": true }),
+                        remembered: Value::Null,
+                    },
+                    sending: None,
+                };
+            };
+            if users::set_phone(transaction, &subject.user_id, Some(&normalized), false)
+                .await
+                .is_err()
+            {
+                return Enrolment::Refused;
+            }
+            normalized
+        }
+        None => match subject.phone_number.as_deref().map(str::trim) {
+            Some(held) if !held.is_empty() => held.to_owned(),
+            _ => {
+                return Enrolment::Asked {
+                    named: VERIFY_PHONE,
+                    challenge: Challenge {
+                        shown: json!({ "ask_phone": true }),
+                        remembered: Value::Null,
+                    },
+                    sending: None,
+                };
+            }
+        },
+    };
+
+    let shown = json!({
+        "code_sent_to": crate::login::authenticator::redacted_phone(&texting_to)
+    });
+    let sent_before = state
+        .and_then(|held| held.get("sent"))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let standing = |sent: i64| Enrolment::Asked {
+        named: VERIFY_PHONE,
+        challenge: Challenge {
+            shown: shown.clone(),
+            remembered: json!({ "to": texting_to, "sent": sent }),
+        },
+        sending: None,
+    };
+
+    // The same three brakes the login code wears: one in flight, only so
+    // many per login, and the realm's own day.
+    let Ok(recent) =
+        one_time_tokens::minted_at(transaction, &subject.user_id, VERIFY_PHONE, posting.now).await
+    else {
+        return Enrolment::Refused;
+    };
+    if recent.is_some_and(|sent| posting.now - sent < chrono::Duration::seconds(VERIFY_COOLDOWN)) {
+        return standing(sent_before);
+    }
+    if sent_before >= PHONE_CODES_PER_LOGIN {
+        return standing(sent_before);
+    }
+    let Ok(spent_today) =
+        store::providers::sms::spent_today(transaction, posting.now.timestamp()).await
+    else {
+        return Enrolment::Refused;
+    };
+    if spent_today >= crate::login::authenticator::TEXTS_PER_REALM_PER_DAY {
+        tracing::warn!("a realm reached its daily text budget and a proving code was not sent");
+        return Enrolment::Settled;
+    }
+
+    let Some(code) = crate::login::authenticator::drawn_code(provider) else {
+        return Enrolment::Refused;
+    };
+    if one_time_tokens::mint(
+        transaction,
+        provider.digest(),
+        one_time_tokens::Owner {
+            tenant: &subject.metadata.tenant,
+            realm_id: &subject.realm_id,
+            user_id: &subject.user_id,
+            purpose: VERIFY_PHONE,
+        },
+        &code,
+        Some(posting.auth_session_id),
+        posting.now + chrono::Duration::seconds(PHONE_CODE_LIFESPAN),
+        posting.now,
+    )
+    .await
+    .is_err()
+    {
+        return Enrolment::Refused;
+    }
+    if store::providers::sms::record_send(transaction, posting.now.timestamp())
+        .await
+        .is_err()
+    {
+        return Enrolment::Refused;
+    }
+
+    Enrolment::Asked {
+        named: VERIFY_PHONE,
+        challenge: Challenge {
+            shown,
+            remembered: json!({ "to": texting_to, "sent": sent_before + 1 }),
+        },
+        sending: Some(Box::new(crate::messaging::Outbound::Text(
+            crate::messaging::OutgoingText {
+                settings: settings.duplicate(),
+                text: crate::messaging::Text {
+                    to: texting_to,
+                    body: crate::login::authenticator::texted_code(realm, &code),
+                },
+                about: crate::messaging::About {
+                    user_id: subject.user_id.clone(),
+                    purpose: VERIFY_PHONE.to_owned(),
+                },
+            },
+        ))),
+    }
+}
+
+/// A number in international form, kept as typed apart from spacing: a plus
+/// and eight to fifteen digits, the shape a gateway dials.
+fn e164(offered: &str) -> Option<String> {
+    let compact: String = offered
+        .chars()
+        .filter(|held| !held.is_whitespace())
+        .collect();
+    let digits = compact.strip_prefix('+')?;
+    ((8..=15).contains(&digits.len()) && digits.chars().all(|held| held.is_ascii_digit()))
+        .then_some(compact)
 }
 
 #[cfg(test)]

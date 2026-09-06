@@ -45,6 +45,36 @@ impl std::fmt::Debug for Outgoing {
     }
 }
 
+/// A text and the settings it goes out under, the way `Outgoing` carries a
+/// mail: apart from the sending, so nothing holds a transaction open across
+/// a conversation with a gateway.
+pub struct OutgoingText {
+    pub settings: models::entities::sms::SmsSettings,
+    pub text: Text,
+    /// Who it is for and what it is for, so the attempt can be recorded
+    /// against them. Never the body.
+    pub about: About,
+}
+
+impl std::fmt::Debug for OutgoingText {
+    /// Named and not shown. The settings hold a token and the body holds a
+    /// one-time code.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OutgoingText(to {})", self.text.to)
+    }
+}
+
+/// Whatever one step produced for sending, whichever wire it takes.
+///
+/// One channel out of the flow rather than one field per medium: a step
+/// produces at most one message, and the caller delivers it after commit
+/// without caring which kind it was until the moment it sends.
+#[derive(Debug)]
+pub enum Outbound {
+    Mail(Outgoing),
+    Text(OutgoingText),
+}
+
 /// What carries a message out.
 ///
 /// The settings are handed in per call rather than held: they belong to a realm

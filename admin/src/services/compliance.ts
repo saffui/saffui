@@ -139,3 +139,14 @@ export async function breachNotificationDraft(
     adminPath(realm, `breaches/${encodeURIComponent(breachId)}/notification-draft`),
   );
 }
+
+/// Assemble the period's evidence pack; drawn fresh, never stored.
+export async function assembleEvidencePack(
+  realm: string,
+  from: number,
+  to: number,
+): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>(
+    adminPath(realm, `evidence-pack?from=${from}&to=${to}`),
+  );
+}

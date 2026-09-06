@@ -119,6 +119,13 @@ pub const KID: &str = "kid-1";
 #[allow(dead_code, reason = "not every suite mounts the admin plane")]
 pub const SECOND_KID: &str = "kid-2";
 
+/// The owner's connection settings, for a test that has to do what the app
+/// role rightly cannot, like tampering with history to prove it shows.
+#[allow(dead_code, reason = "only the evidence suite rewrites history")]
+pub fn owner() -> Config {
+    owner_config()
+}
+
 fn owner_config() -> Config {
     let mut config: Config = std::env::var("SAFFUI_TEST_PG")
         .unwrap_or_else(|_| panic!("these tests need a database: set SAFFUI_TEST_PG"))

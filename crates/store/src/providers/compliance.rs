@@ -265,3 +265,79 @@ fn read_breach(row: Row) -> StoreResult<(BreachRecord, Jurisdiction)> {
             .map_err(|_| StoreError::Backend)?,
     ))
 }
+
+/// The consents granted inside a period, oldest first, capped, with the
+/// period's true total beside them so a cut section says it was cut.
+pub async fn consents_granted_in_period(
+    transaction: &Transaction<'_>,
+    from: i64,
+    to: i64,
+    cap: i64,
+) -> StoreResult<(Vec<(String, String, Vec<String>, i64)>, u64)> {
+    let rows = transaction
+        .query(
+            "SELECT user_id, client_id, scopes, extract(epoch FROM granted_at)::bigint AS at \
+             FROM user_consents \
+             WHERE extract(epoch FROM granted_at) BETWEEN $1::bigint AND $2::bigint \
+             ORDER BY granted_at, user_id LIMIT $3",
+            &[&from, &to, &cap],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let total: i64 = transaction
+        .query_one(
+            "SELECT count(*) FROM user_consents \
+             WHERE extract(epoch FROM granted_at) BETWEEN $1::bigint AND $2::bigint",
+            &[&from, &to],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .get(0);
+    Ok((
+        rows.iter()
+            .map(|row| {
+                (
+                    row.get("user_id"),
+                    row.get("client_id"),
+                    row.get("scopes"),
+                    row.get("at"),
+                )
+            })
+            .collect(),
+        total as u64,
+    ))
+}
+
+/// The accounts created inside a period, capped the same way. Identifiers
+/// and instants only: a pack for a regulator carries no addresses.
+pub async fn registrations_in_period(
+    transaction: &Transaction<'_>,
+    from: i64,
+    to: i64,
+    cap: i64,
+) -> StoreResult<(Vec<(String, i64)>, u64)> {
+    let rows = transaction
+        .query(
+            "SELECT user_id, extract(epoch FROM created_at)::bigint AS at FROM users \
+             WHERE extract(epoch FROM created_at) BETWEEN $1::bigint AND $2::bigint \
+             ORDER BY created_at, user_id LIMIT $3",
+            &[&from, &to, &cap],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let total: i64 = transaction
+        .query_one(
+            "SELECT count(*) FROM users \
+             WHERE extract(epoch FROM created_at) BETWEEN $1::bigint AND $2::bigint",
+            &[&from, &to],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .get(0);
+    Ok((
+        rows.iter()
+            .map(|row| (row.get("user_id"), row.get("at")))
+            .collect(),
+        total as u64,
+    ))
+}

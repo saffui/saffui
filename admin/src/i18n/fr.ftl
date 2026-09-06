@@ -354,6 +354,9 @@ breach-file = Consigner la déclaration
 breach-not-notifiable = Non notifiable
 breach-close = Clore la violation
 breach-draft = Voir le brouillon de notification
+evidence-title = Pack d'évidence
+evidence-lede = Un document qui rend compte d'une période : la chaîne d'audit d'abord, puis les registres avec leur complétude dite honnêtement. Tiré à la demande, jamais stocké.
+evidence-draw = Assembler et télécharger
 subject-breach = la violation
 subject-dsar = la demande du sujet
 

@@ -354,6 +354,9 @@ breach-file = Record the filing
 breach-not-notifiable = Not notifiable
 breach-close = Close the breach
 breach-draft = Show the notification draft
+evidence-title = Evidence pack
+evidence-lede = One document accounting for a period: the audit chain first, then the registers with their completeness said honestly. Drawn fresh, never stored.
+evidence-draw = Assemble and download
 subject-breach = the breach record
 subject-dsar = the subject request
 

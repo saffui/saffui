@@ -1,7 +1,11 @@
 use crypto::provider::CryptoProvider;
+use crypto::provider::DigestProvider;
 use data_encoding::HEXLOWER;
 use deadpool_postgres::Transaction;
 use models::compliance::breach::{BreachDiscovery, BreachRecord, BreachSeverity};
+use models::compliance::evidence_pack::{
+    ChainAttestation, ChainVerification, EvidencePack, PackSection,
+};
 use models::compliance::subject_request::{DsarKind, DsarLodgement, DsarRequest, Jurisdiction};
 use store::providers::{compliance, users};
 
@@ -676,4 +680,148 @@ pub enum BreachStep<'a> {
     },
     RecordNotNotifiable,
     Close,
+}
+
+/// How much of a large register one pack carries before saying it was cut.
+const PACK_SECTION_CAP: i64 = 500;
+
+/// The pack as this plane assembles it, its section item shapes settled here.
+pub type AssembledEvidencePack =
+    EvidencePack<serde_json::Value, serde_json::Value, serde_json::Value, serde_json::Value>;
+
+/// Assemble the evidence pack for a period: the chain first, because it is
+/// the reason to believe everything under it, then each register drawn for
+/// the period with its completeness said honestly. A section that cannot be
+/// read says so instead of looking empty, and the pack is never stored.
+pub async fn assemble_evidence_pack(
+    transaction: &Transaction<'_>,
+    digest: &dyn DigestProvider,
+    tenant: &str,
+    realm_id: &str,
+    period_from: i64,
+    period_to: i64,
+    now: i64,
+) -> Result<AssembledEvidencePack, Unactionable> {
+    let chain = match store::audit::verify(transaction, digest).await {
+        Ok(verified) => ChainAttestation {
+            realm_id: realm_id.to_owned(),
+            events: verified.entries as u64,
+            verification: match verified.broken_at {
+                None => ChainVerification::Verified,
+                Some(at) => ChainVerification::Broken {
+                    at,
+                    reason: "the recomputed link does not match what is stored".to_owned(),
+                },
+            },
+        },
+        // Nothing has been written yet: an empty record is a whole one.
+        Err(store::error::StoreError::NoChain) => ChainAttestation {
+            realm_id: realm_id.to_owned(),
+            events: 0,
+            verification: ChainVerification::Verified,
+        },
+        Err(_) => return Err(Unactionable::Backend),
+    };
+
+    let dsar_requests = match compliance::list(transaction).await {
+        Ok(all) => PackSection::complete(
+            all.into_iter()
+                .filter(|held| (period_from..=period_to).contains(&held.received_at))
+                .map(|held| {
+                    serde_json::json!({
+                        "request_id": held.request_id,
+                        "kind": held.kind,
+                        "stage": held.status.stage(),
+                        "received_at": held.received_at,
+                        "due_at": held.due_at,
+                        "closed_at": held.closed_at,
+                    })
+                })
+                .collect(),
+        ),
+        Err(_) => PackSection::unavailable("the subject-request register could not be read"),
+    };
+    let breaches = match compliance::list_breaches(transaction).await {
+        Ok(all) => PackSection::complete(
+            all.into_iter()
+                .filter(|(held, _)| (period_from..=period_to).contains(&held.discovered_at))
+                .map(|(held, jurisdiction)| {
+                    serde_json::json!({
+                        "breach_id": held.breach_id,
+                        "severity": held.severity,
+                        "status": held.status,
+                        "jurisdiction": jurisdiction,
+                        "discovered_at": held.discovered_at,
+                        "notify_by": held.notify_by,
+                        "notified_at": held.notified_at,
+                    })
+                })
+                .collect(),
+        ),
+        Err(_) => PackSection::unavailable("the breach register could not be read"),
+    };
+    let consent_receipts = match compliance::consents_granted_in_period(
+        transaction,
+        period_from,
+        period_to,
+        PACK_SECTION_CAP,
+    )
+    .await
+    {
+        Ok((held, total)) => PackSection::capped(
+            held.into_iter()
+                .map(|(user_id, client_id, scopes, granted_at)| {
+                    serde_json::json!({
+                        "user_id": user_id,
+                        "client_id": client_id,
+                        "scopes": scopes,
+                        "granted_at": granted_at,
+                    })
+                })
+                .collect(),
+            total,
+        ),
+        Err(_) => PackSection::unavailable("the consent register could not be read"),
+    };
+    let registrations = match compliance::registrations_in_period(
+        transaction,
+        period_from,
+        period_to,
+        PACK_SECTION_CAP,
+    )
+    .await
+    {
+        Ok((held, total)) => PackSection::capped(
+            held.into_iter()
+                .map(|(user_id, created_at)| {
+                    serde_json::json!({ "user_id": user_id, "created_at": created_at })
+                })
+                .collect(),
+            total,
+        ),
+        Err(_) => PackSection::unavailable("the account registry could not be read"),
+    };
+
+    Ok(EvidencePack {
+        tenant: tenant.to_owned(),
+        realm_id: realm_id.to_owned(),
+        period_from,
+        period_to,
+        generated_at: now,
+        chain,
+        consent_receipts,
+        dsar_requests,
+        breaches,
+        registrations,
+        retention: vec![
+            (
+                "sign_in_log".to_owned(),
+                format!("{} days", crate::housekeeping::LOGIN_EVENTS_KEPT_DAYS),
+            ),
+            (
+                "delivery_receipts".to_owned(),
+                format!("{} days", crate::housekeeping::RECEIPTS_KEPT_DAYS),
+            ),
+        ],
+    })
 }

@@ -10,9 +10,9 @@ use store::providers::{
 /// How long the sign-in log looks back. A window, not an archive: long
 /// enough to answer "who signed in this month", short enough that enabling
 /// the log is not enabling a dossier.
-const LOGIN_EVENTS_KEPT_DAYS: i64 = 30;
+pub const LOGIN_EVENTS_KEPT_DAYS: i64 = 30;
 
-const RECEIPTS_KEPT_DAYS: i64 = 30;
+pub const RECEIPTS_KEPT_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the sweep could not run")]

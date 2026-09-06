@@ -463,6 +463,12 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/evidence-pack",
+            action: AdminAction::EvidenceRead,
+            handler: Some(|| web::get().to(compliance::evidence_pack)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/breaches",
             action: AdminAction::BreachRead,
             handler: Some(|| web::get().to(compliance::list_breaches)),

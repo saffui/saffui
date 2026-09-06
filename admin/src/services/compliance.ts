@@ -66,8 +66,8 @@ export async function refuseSubjectRequest(
 export async function fulfilSubjectRequest(
   realm: string,
   requestId: string,
-): Promise<SubjectRequest> {
-  return api<SubjectRequest>(
+): Promise<SubjectRequest & { bundle?: unknown }> {
+  return api<SubjectRequest & { bundle?: unknown }>(
     adminPath(realm, `subject-requests/${encodeURIComponent(requestId)}/fulfil`),
     { method: "POST", json: {}, subject: say("subject-dsar") },
   );

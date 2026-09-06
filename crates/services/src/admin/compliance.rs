@@ -184,6 +184,211 @@ pub async fn fulfil_erasure(
     saved(transaction, request).await
 }
 
+/// The scope a copy is drawn at: everything this realm holds about the
+/// person (access, art. 15), or only what the person themselves provided,
+/// in a shape they can carry elsewhere (portability, art. 20).
+enum BundleScope {
+    EverythingHeld,
+    WhatTheyProvided,
+}
+
+/// Fulfil an access request: the copy of everything held is drawn and
+/// answered once, and the register records that it was handed over. The
+/// copy is never stored: producing a second one is running this again.
+pub async fn fulfil_access(
+    transaction: &Transaction<'_>,
+    request_id: &str,
+    now: i64,
+) -> Result<(DsarRequest, serde_json::Value), Unactionable> {
+    fulfil_with_a_copy(
+        transaction,
+        request_id,
+        DsarKind::Access,
+        BundleScope::EverythingHeld,
+        "a copy of everything held about the subject was produced and handed over",
+        now,
+    )
+    .await
+}
+
+/// Fulfil a portability request: the machine-readable copy of what the
+/// subject provided, and nothing the realm derived on its own.
+pub async fn fulfil_portability(
+    transaction: &Transaction<'_>,
+    request_id: &str,
+    now: i64,
+) -> Result<(DsarRequest, serde_json::Value), Unactionable> {
+    fulfil_with_a_copy(
+        transaction,
+        request_id,
+        DsarKind::Portability,
+        BundleScope::WhatTheyProvided,
+        "a machine-readable copy of what the subject provided was produced and handed over",
+        now,
+    )
+    .await
+}
+
+async fn fulfil_with_a_copy(
+    transaction: &Transaction<'_>,
+    request_id: &str,
+    kind: DsarKind,
+    scope: BundleScope,
+    outcome: &str,
+    now: i64,
+) -> Result<(DsarRequest, serde_json::Value), Unactionable> {
+    let mut request = get(transaction, request_id).await?;
+    if request.kind != kind {
+        return Err(Unactionable::Invalid(format!(
+            "this request asks for {}, not {kind}",
+            request.kind
+        )));
+    }
+    let mut probe = request.clone();
+    probe
+        .fulfil("probe", now)
+        .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+
+    let subject = match request.user_id.clone() {
+        Some(held) => Some(held),
+        None => resolved_subject(transaction, &request.subject_identifier).await?,
+    };
+    let (bundle, closing) = match subject {
+        None => (
+            serde_json::json!({ "held": false }),
+            "no account was held for the identifier; the copy says so".to_owned(),
+        ),
+        Some(user_id) => {
+            request.user_id = Some(user_id.clone());
+            (
+                drawn_subject_bundle(transaction, &user_id, scope).await?,
+                outcome.to_owned(),
+            )
+        }
+    };
+    request
+        .fulfil(closing, now)
+        .map_err(|why| Unactionable::Invalid(why.to_string()))?;
+    let request = saved(transaction, request).await?;
+    Ok((request, bundle))
+}
+
+/// Draw the subject's data as one document. Secrets never ride: a stored
+/// credential appears as its kind and dates, and the hash that verifies it
+/// is nobody's data to receive, the subject included.
+async fn drawn_subject_bundle(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    scope: BundleScope,
+) -> Result<serde_json::Value, Unactionable> {
+    let person = users::load(transaction, user_id)
+        .await
+        .map_err(|_| Unactionable::Backend)?
+        .ok_or(Unactionable::NotFound)?;
+    let mut bundle = serde_json::json!({
+        "held": true,
+        "account": {
+            "user_id": person.user_id,
+            "user_name": person.user_name,
+            "email": person.email,
+            "email_verified": person.email_verified,
+            "phone_number": person.phone_number,
+            "enabled": person.enabled,
+            "created_at": person.metadata.created_at,
+            "attributes": person.attributes,
+        },
+    });
+    if matches!(scope, BundleScope::WhatTheyProvided) {
+        return Ok(bundle);
+    }
+
+    let credentials = store::providers::credentials::load_for_user(transaction, user_id)
+        .await
+        .map_err(|_| Unactionable::Backend)?
+        .into_iter()
+        .map(|held| {
+            serde_json::json!({
+                "kind": held.credential_type,
+                "label": held.user_label,
+                "created_at": held.metadata.created_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let sessions = store::providers::sessions::load_for_user(transaction, user_id)
+        .await
+        .map_err(|_| Unactionable::Backend)?
+        .into_iter()
+        .map(|held| {
+            serde_json::json!({
+                "started_at": held.started_at,
+                "state": held.state,
+                "ip_address": held.ip_address,
+                "user_agent": held.user_agent,
+            })
+        })
+        .collect::<Vec<_>>();
+    let consents = store::providers::consents::of_user(transaction, user_id)
+        .await
+        .map_err(|_| Unactionable::Backend)?
+        .into_iter()
+        .map(|held| {
+            serde_json::json!({
+                "client_id": held.client_id,
+                "scopes": held.scopes,
+                "granted_at": held.granted_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let identities = store::providers::brokering::identities_of(transaction, user_id)
+        .await
+        .map_err(|_| Unactionable::Backend)?
+        .into_iter()
+        .map(|held| {
+            serde_json::json!({
+                "provider": held.provider_alias,
+                "external_username": held.external_username,
+                "since": held.created_at,
+            })
+        })
+        .collect::<Vec<_>>();
+    let grants = store::providers::birthright::ledger_of(transaction, user_id)
+        .await
+        .map_err(|_| Unactionable::Backend)?
+        .into_iter()
+        .map(|(role, rule, until)| {
+            serde_json::json!({ "role": role, "by_rule": rule, "until": until })
+        })
+        .collect::<Vec<_>>();
+    let requests = compliance::list(transaction)
+        .await
+        .map_err(|_| Unactionable::Backend)?
+        .into_iter()
+        .filter(|held| held.user_id.as_deref() == Some(user_id))
+        .map(|held| {
+            serde_json::json!({
+                "kind": held.kind,
+                "stage": held.status.stage(),
+                "received_at": held.received_at,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let told = bundle.as_object_mut().expect("a bundle object");
+    told.insert("credentials".into(), serde_json::Value::Array(credentials));
+    told.insert("sessions".into(), serde_json::Value::Array(sessions));
+    told.insert("consents".into(), serde_json::Value::Array(consents));
+    told.insert(
+        "federated_identities".into(),
+        serde_json::Value::Array(identities),
+    );
+    told.insert("granted_roles".into(), serde_json::Value::Array(grants));
+    told.insert(
+        "subject_requests".into(),
+        serde_json::Value::Array(requests),
+    );
+    Ok(bundle)
+}
+
 async fn saved(
     transaction: &Transaction<'_>,
     request: DsarRequest,

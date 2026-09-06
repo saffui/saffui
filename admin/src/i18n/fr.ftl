@@ -316,6 +316,7 @@ privacy-verify = Marquer l'identité prouvée
 privacy-refuse = Refuser
 privacy-refuse-lede = Refuser clôt la demande ; le motif est dû à la personne.
 privacy-outcome = Résultat
+privacy-produce = Produire la copie et clore
 privacy-fulfil = Effacer le compte
 privacy-fulfil-lede = Exécute l'effacement maintenant : le compte et tout ce qui s'y rattache disparaissent, et les applications connectées sont prévenues. Irréversible.
 subject-dsar = la demande du sujet

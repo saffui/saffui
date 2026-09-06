@@ -211,3 +211,42 @@ async fn a_client_that_asks_for_nothing_is_never_asked_about() {
     assert_eq!(admitted["status"].as_str(), Some("admitted"), "{admitted}");
     assert_eq!(agreed_scopes(&plane).await, None);
 }
+
+/// The consent screen names the client's registered policy and terms pages,
+/// and only over https: a plain-http link on a consent screen is an
+/// invitation this server does not extend, so it is kept quiet rather than
+/// shown.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_screen_offers_the_registered_pages_and_only_over_https() {
+    let plane = Plane::with_actions(&[]).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &within()).await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .expect("the clients table")
+            .expect("a planted client");
+        client.consent_required = Some(true);
+        client.policy_uri = Some("https://app.example/privacy".into());
+        client.tos_uri = Some("http://app.example/terms".into());
+        store::providers::clients::update(&transaction, &client)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.expect("the setting kept");
+    }
+
+    let binding = opened(&plane, "openid profile").await;
+    let (status, shown) = answered(&plane, &binding, credentials()).await;
+    assert_eq!(status, StatusCode::OK, "{shown}");
+    assert_eq!(shown["status"].as_str(), Some("consent"), "{shown}");
+    assert_eq!(
+        shown["policy_uri"].as_str(),
+        Some("https://app.example/privacy"),
+        "{shown}"
+    );
+    assert!(
+        shown["tos_uri"].is_null(),
+        "a plain-http page rode onto the consent screen: {shown}"
+    );
+}

@@ -38,6 +38,9 @@
   const asking = document.getElementById("asking");
   const askingClient = document.getElementById("asking-client");
   const askingScopes = document.getElementById("asking-scopes");
+  const askingLinks = document.getElementById("asking-links");
+  const askingPolicy = document.getElementById("asking-policy");
+  const askingTerms = document.getElementById("asking-terms");
   const button = document.getElementById("continue");
   const allow = document.getElementById("allow");
   const deny = document.getElementById("deny");
@@ -216,6 +219,16 @@
       line.textContent = scopeName(scope);
       askingScopes.appendChild(line);
     });
+    // The pages the client registered, shown only as the server spoke them:
+    // it already kept anything but https off this answer.
+    [
+      [askingPolicy, told.policy_uri],
+      [askingTerms, told.tos_uri],
+    ].forEach(function (pair) {
+      pair[0].hidden = !pair[1];
+      pair[0].href = pair[1] || "#";
+    });
+    askingLinks.hidden = !(told.policy_uri || told.tos_uri);
     only();
     asking.hidden = false;
     // The two buttons are the answer, so the form's own has nothing to do.

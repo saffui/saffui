@@ -2435,3 +2435,194 @@ async fn a_rectification_moves_named_fields_and_an_objection_withdraws_consents(
         "{done}"
     );
 }
+
+/// The breach register keeps what a regulator asks for: the clock hangs on
+/// discovery and only where a law actually fixes one, a filing is recorded
+/// with who filed and with whom or not at all, deciding not to notify is
+/// itself a recorded decision, and the draft a portal is filled from is
+/// never ready as drawn: it says what a person still owes it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_breach_runs_its_clock_and_its_paper_trail() {
+    let plane = Plane::with_actions(&[AdminAction::BreachRead, AdminAction::BreachWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/breaches");
+
+    // A breach discovered before it happened is refused.
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "description": "a laptop went missing",
+            "severity": "high",
+            "jurisdiction": "eu",
+            "occurred_at": 9_999_999_999i64,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("before it happened"),
+        "{told}"
+    );
+
+    // The EU clock: seventy-two hours from discovery, settled at discovery.
+    let (status, found) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "description": "a laptop went missing",
+            "data_categories": ["emails"],
+            "severity": "high",
+            "jurisdiction": "eu",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{found}");
+    assert_eq!(found["status"], "discovered", "{found}");
+    assert_eq!(
+        found["notify_by"].as_i64(),
+        found["discovered_at"].as_i64().map(|at| at + 72 * 3_600),
+        "{found}"
+    );
+    let eu_breach = found["breach_id"].as_str().expect("an id").to_owned();
+
+    // A jurisdiction whose law fixes no window gets no invented one, and its
+    // draft says to confirm the deadline rather than omitting the question.
+    let (status, found) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "description": "a misdirected export",
+            "severity": "medium",
+            "jurisdiction": "ke",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{found}");
+    assert!(found["notify_by"].is_null(), "{found}");
+    let ke_breach = found["breach_id"].as_str().expect("an id").to_owned();
+
+    // Closing straight from discovery is not a path.
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{eu_breach}/close"),
+        &bearer,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // Assessed, then a filing that names nobody is refused whole.
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{eu_breach}/assess"),
+        &bearer,
+        serde_json::json!({ "severity": "critical", "subjects_affected": 1200 }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "assessed", "{told}");
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{eu_breach}/filing"),
+        &bearer,
+        serde_json::json!({ "notified_to": "CNIL" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("who filed it and with whom"),
+        "{told}"
+    );
+
+    // The draft before filing: the narrative fields are a person's account,
+    // so they start empty and are named as outstanding.
+    let (status, draft) = fetched(
+        &plane,
+        Method::GET,
+        &format!("{base}/{eu_breach}/notification-draft"),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{draft}");
+    assert_eq!(draft["approximate_subjects_affected"], 1200, "{draft}");
+    assert_eq!(draft["subject_notice_likely_required"], true, "{draft}");
+    let outstanding = draft["outstanding"].to_string();
+    assert!(
+        outstanding.contains("likely_consequences") && outstanding.contains("measures_taken"),
+        "{draft}"
+    );
+
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{eu_breach}/filing"),
+        &bearer,
+        serde_json::json!({ "notified_to": "CNIL", "filed_by": "ada" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "notified", "{told}");
+    assert_eq!(told["filed_by"], "ada", "{told}");
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{eu_breach}/close"),
+        &bearer,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "closed", "{told}");
+
+    // The other lawful exit: assessed as under the threshold, recorded as a
+    // decision rather than left to stop moving, and its draft still warns
+    // that no window was read for this law.
+    let (_, _) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{ke_breach}/assess"),
+        &bearer,
+        serde_json::json!({ "severity": "low" }),
+    )
+    .await;
+    let (status, told) = written(
+        &plane,
+        Method::POST,
+        &format!("{base}/{ke_breach}/not-notifiable"),
+        &bearer,
+        serde_json::json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "not-notifiable", "{told}");
+    let (_, draft) = fetched(
+        &plane,
+        Method::GET,
+        &format!("{base}/{ke_breach}/notification-draft"),
+        &bearer,
+    )
+    .await;
+    assert!(
+        draft["outstanding"]
+            .to_string()
+            .contains("no window was read"),
+        "{draft}"
+    );
+}

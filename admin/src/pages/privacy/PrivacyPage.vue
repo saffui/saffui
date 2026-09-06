@@ -8,6 +8,11 @@ import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
 import GovernanceTabs from "@/pages/governance/GovernanceTabs.vue";
 import {
+  advanceBreach,
+  breachNotificationDraft,
+  discoverBreach,
+  listBreaches,
+  type BreachRecord,
   fulfilSubjectRequest,
   lodgeSubjectRequest,
   listSubjectRequests,
@@ -21,9 +26,13 @@ const realm = computed(() => String(route.params.realm));
 const rows = ref<SubjectRequest[]>([]);
 const failed = ref("");
 
+const breaches = ref<BreachRecord[]>([]);
 async function load() {
   try {
-    rows.value = await listSubjectRequests(realm.value);
+    [rows.value, breaches.value] = await Promise.all([
+      listSubjectRequests(realm.value),
+      listBreaches(realm.value),
+    ]);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -114,6 +123,81 @@ async function refuse() {
   }
 }
 
+const SEVERITIES = ["low", "medium", "high", "critical"];
+const finding = ref(false);
+const breachDraft = ref({
+  description: "",
+  categories: "",
+  severity: "medium",
+  jurisdiction: "eu",
+});
+async function recordFound() {
+  try {
+    await discoverBreach(realm.value, {
+      description: breachDraft.value.description.trim(),
+      data_categories: breachDraft.value.categories
+        .split(",")
+        .map((held) => held.trim())
+        .filter(Boolean),
+      severity: breachDraft.value.severity,
+      jurisdiction: breachDraft.value.jurisdiction,
+    });
+    finding.value = false;
+    breachDraft.value = { description: "", categories: "", severity: "medium", jurisdiction: "eu" };
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
+const openedBreach = ref<BreachRecord | null>(null);
+const assessment = ref({ severity: "high", subjects: "" });
+const filing = ref({ notified_to: "", filed_by: "" });
+const notificationDraft = ref<Record<string, unknown> | null>(null);
+async function stepBreach(step: "assess" | "filing" | "not-notifiable" | "close") {
+  if (!openedBreach.value) return;
+  try {
+    const body =
+      step === "assess"
+        ? {
+            severity: assessment.value.severity,
+            subjects_affected: assessment.value.subjects
+              ? Number(assessment.value.subjects)
+              : undefined,
+          }
+        : step === "filing"
+          ? { notified_to: filing.value.notified_to.trim(), filed_by: filing.value.filed_by.trim() }
+          : {};
+    openedBreach.value = await advanceBreach(
+      realm.value,
+      openedBreach.value.breach_id,
+      step,
+      body,
+    );
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+async function showNotificationDraft() {
+  if (!openedBreach.value) return;
+  try {
+    notificationDraft.value = await breachNotificationDraft(
+      realm.value,
+      openedBreach.value.breach_id,
+    );
+  } catch {
+    // The toast already said.
+  }
+}
+function breachOverdue(held: BreachRecord): boolean {
+  return (
+    (held.status === "discovered" || held.status === "assessed") &&
+    held.notify_by !== null &&
+    held.notify_by < now
+  );
+}
+
 const now = Math.floor(Date.now() / 1000);
 function overdue(row: SubjectRequest): boolean {
   return row.closed_at === null && row.due_at < now;
@@ -188,6 +272,180 @@ function instant(epoch: number | null): string {
         </tbody>
       </table>
     </div>
+
+    <div class="mt-8 flex max-w-4xl items-center">
+      <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("breach-title") }}
+      </h2>
+      <button
+        type="button"
+        class="ml-auto rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:bg-surface-2 hover:text-ink"
+        @click="finding = true"
+      >
+        {{ say("breach-record") }}
+      </button>
+    </div>
+    <div class="mt-2 max-w-4xl overflow-x-auto rounded-lg border border-border bg-surface">
+      <table class="w-full text-left text-xs">
+        <thead>
+          <tr class="border-b border-border text-[11px] text-muted">
+            <th class="px-3 py-2 font-medium">{{ say("breach-col-what") }}</th>
+            <th class="px-3 py-2 font-medium">{{ say("breach-col-severity") }}</th>
+            <th class="px-3 py-2 font-medium">{{ say("privacy-col-stage") }}</th>
+            <th class="px-3 py-2 text-right font-medium">{{ say("breach-col-notify-by") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="held in breaches"
+            :key="held.breach_id"
+            class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2"
+            @click="openedBreach = held; notificationDraft = null"
+          >
+            <td class="px-3 py-2">{{ held.description }}</td>
+            <td class="px-3 py-2">
+              <span
+                class="rounded border px-1.5 py-0.5 font-mono text-[10px]"
+                :class="
+                  held.severity === 'critical' || held.severity === 'high'
+                    ? 'border-danger/40 text-danger'
+                    : 'border-border text-muted'
+                "
+              >
+                {{ held.severity }}
+              </span>
+            </td>
+            <td class="px-3 py-2 text-[10.5px]">{{ say(`breach-status-${held.status}`) }}</td>
+            <td
+              class="px-3 py-2 text-right font-mono text-[10.5px]"
+              :class="breachOverdue(held) ? 'text-danger' : 'text-faint'"
+            >
+              {{ held.notify_by ? instant(held.notify_by) : say("breach-no-window") }}
+              <span
+                v-if="breachOverdue(held)"
+                class="ml-1 rounded border border-danger/40 px-1 text-[9.5px] uppercase"
+              >
+                {{ say("privacy-overdue") }}
+              </span>
+            </td>
+          </tr>
+          <tr v-if="!breaches.length">
+            <td colspan="4" class="px-3 py-3 text-muted">{{ say("breach-none") }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <AppDrawer v-if="finding" :title="say('breach-record')" @close="finding = false">
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="recordFound">
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("breach-col-what") }}
+          <textarea
+            v-model="breachDraft.description"
+            required
+            rows="3"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          ></textarea>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("breach-categories") }}
+          <input
+            v-model="breachDraft.categories"
+            spellcheck="false"
+            :placeholder="say('breach-categories-hint')"
+            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("breach-col-severity") }}
+          <select v-model="breachDraft.severity" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink">
+            <option v-for="held in SEVERITIES" :key="held" :value="held">{{ held }}</option>
+          </select>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("privacy-col-jurisdiction") }}
+          <select v-model="breachDraft.jurisdiction" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink">
+            <option v-for="held in JURISDICTIONS" :key="held" :value="held">{{ held }}</option>
+          </select>
+        </label>
+        <button type="submit" class="self-start rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink">
+          {{ say("settings-save") }}
+        </button>
+      </form>
+    </AppDrawer>
+
+    <AppDrawer
+      v-if="openedBreach"
+      :title="openedBreach.description"
+      :subtitle="openedBreach.breach_id"
+      @close="openedBreach = null"
+    >
+      <div class="flex flex-col gap-3 text-xs">
+        <div class="grid grid-cols-[140px_1fr] items-baseline gap-y-2">
+          <span class="text-muted">{{ say("privacy-col-stage") }}</span>
+          <span>{{ say(`breach-status-${openedBreach.status}`) }}</span>
+          <span class="text-muted">{{ say("breach-col-severity") }}</span>
+          <span class="font-mono">{{ openedBreach.severity }}</span>
+          <span class="text-muted">{{ say("breach-discovered") }}</span>
+          <span class="font-mono text-[11px]">{{ instant(openedBreach.discovered_at) }}</span>
+          <span class="text-muted">{{ say("breach-col-notify-by") }}</span>
+          <span class="font-mono text-[11px]" :class="breachOverdue(openedBreach) ? 'text-danger' : ''">
+            {{ openedBreach.notify_by ? instant(openedBreach.notify_by) : say("breach-no-window") }}
+          </span>
+          <span v-if="openedBreach.filed_by" class="text-muted">{{ say("breach-filed") }}</span>
+          <span v-if="openedBreach.filed_by">
+            {{ openedBreach.filed_by }} → {{ openedBreach.notified_to }}
+          </span>
+        </div>
+
+        <div v-if="openedBreach.status === 'discovered'" class="flex flex-col gap-2 rounded-lg border border-border p-3">
+          <p class="text-[11px] text-muted">{{ say("breach-assess-lede") }}</p>
+          <select v-model="assessment.severity" class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink">
+            <option v-for="held in SEVERITIES" :key="held" :value="held">{{ held }}</option>
+          </select>
+          <input
+            v-model="assessment.subjects"
+            type="number"
+            :placeholder="say('breach-subjects')"
+            class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          />
+          <button type="button" class="self-start rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink" @click="stepBreach('assess')">
+            {{ say("breach-assess") }}
+          </button>
+        </div>
+
+        <div v-if="openedBreach.status === 'assessed'" class="flex flex-col gap-2 rounded-lg border border-border p-3">
+          <p class="text-[11px] text-muted">{{ say("breach-filing-lede") }}</p>
+          <input v-model="filing.notified_to" :placeholder="say('breach-notified-to')" class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+          <input v-model="filing.filed_by" :placeholder="say('breach-filed-by')" class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+          <div class="flex gap-2">
+            <button type="button" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink" @click="stepBreach('filing')">
+              {{ say("breach-file") }}
+            </button>
+            <button type="button" class="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2" @click="stepBreach('not-notifiable')">
+              {{ say("breach-not-notifiable") }}
+            </button>
+          </div>
+        </div>
+
+        <button
+          v-if="openedBreach.status === 'notified' || openedBreach.status === 'not-notifiable'"
+          type="button"
+          class="self-start rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2"
+          @click="stepBreach('close')"
+        >
+          {{ say("breach-close") }}
+        </button>
+
+        <button type="button" class="self-start rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2" @click="showNotificationDraft">
+          {{ say("breach-draft") }}
+        </button>
+        <pre
+          v-if="notificationDraft"
+          class="overflow-x-auto rounded-lg border border-border bg-surface-2 p-3 font-mono text-[10.5px]"
+        >{{ JSON.stringify(notificationDraft, null, 2) }}</pre>
+      </div>
+    </AppDrawer>
 
     <AppDrawer v-if="lodging" :title="say('privacy-lodge')" @close="lodging = false">
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="lodge">

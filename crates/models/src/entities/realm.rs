@@ -460,6 +460,9 @@ pub struct RealmModel {
     /// How long a backchannel (CIBA) request lives; NULL keeps the built
     /// default, and a client may ask for less, never more.
     pub ciba_expiry: Option<i32>,
+    /// Whether this realm mints capability tokens for agents. Absent
+    /// is off: each realm opts in by hand.
+    pub agent_exchange_enabled: Option<bool>,
     /// How often a device may poll, in seconds. None keeps the built default.
     pub device_poll_interval: Option<i32>,
     pub ciba_interval: Option<i32>,
@@ -557,6 +560,7 @@ impl RealmCreateModel {
             device_code_lifespan: None,
             device_poll_interval: None,
             ciba_expiry: None,
+            agent_exchange_enabled: None,
             ciba_interval: None,
             webauthn_passwordless: None,
             page_overrides: None,
@@ -630,6 +634,7 @@ pub struct RealmUpdateModel {
     /// How long a backchannel (CIBA) request lives; NULL keeps the built
     /// default, and a client may ask for less, never more.
     pub ciba_expiry: Option<i32>,
+    pub agent_exchange_enabled: Option<bool>,
     /// How often a device may poll, in seconds.
     pub device_poll_interval: Option<i32>,
     pub ciba_interval: Option<i32>,
@@ -767,6 +772,7 @@ impl RealmUpdateModel {
             device_code_lifespan,
             device_poll_interval,
             ciba_expiry,
+            agent_exchange_enabled,
             ciba_interval,
             webauthn_passwordless,
             page_overrides,

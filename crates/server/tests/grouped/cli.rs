@@ -64,6 +64,8 @@ async fn the_plane_is_operated_from_a_terminal() {
         AdminAction::RealmImport,
         AdminAction::RealmKeysRead,
         AdminAction::RealmKeysWrite,
+        AdminAction::RealmRead,
+        AdminAction::RealmWrite,
         AdminAction::FeatureRead,
         AdminAction::ClientRead,
     ])
@@ -200,6 +202,32 @@ async fn the_plane_is_operated_from_a_terminal() {
     let (code, told) = answered(AdminCmd::Features).await.unwrap();
     assert_eq!(code, ExitCode::SUCCESS);
     assert_eq!(told.as_array().expect("a registry").len(), 7);
+
+    // The agent switch, from a terminal: asked, turned, asked again, turned
+    // back. One fact either way.
+    let (code, told) = answered(AdminCmd::Agents { turned: None }).await.unwrap();
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert_eq!(told["agent_exchange_enabled"], false, "{told}");
+    let (code, told) = answered(AdminCmd::Agents {
+        turned: Some("on".to_owned()),
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert_eq!(told["agent_exchange_enabled"], true, "{told}");
+    let (code, told) = answered(AdminCmd::Agents { turned: None }).await.unwrap();
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert_eq!(
+        told["agent_exchange_enabled"], true,
+        "the turn did not hold"
+    );
+    let (code, told) = answered(AdminCmd::Agents {
+        turned: Some("off".to_owned()),
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert_eq!(told["agent_exchange_enabled"], false, "{told}");
 
     // The same answer as a table: a header a person scans, one line per
     // capability, and nothing a JSON parser would want.

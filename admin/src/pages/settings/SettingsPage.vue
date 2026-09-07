@@ -90,6 +90,7 @@ const failed = ref("");
 const draft = ref({
   display_name: "",
   enabled: true,
+  agent_exchange_enabled: false,
   registration_allowed: false,
   events_enabled: false,
   register_email_as_username: false,
@@ -188,6 +189,7 @@ function adopt(held: RealmSettings) {
   draft.value = {
     display_name: held.display_name,
     enabled: held.enabled,
+    agent_exchange_enabled: held.agent_exchange_enabled ?? false,
     registration_allowed: held.registration_allowed ?? false,
     events_enabled: held.events_enabled ?? false,
     register_email_as_username: held.register_email_as_username ?? false,
@@ -387,6 +389,7 @@ function changesOf(which: Group): RealmUpdate {
   if (which === "security") {
     const changes: RealmUpdate = {
       events_enabled: held.events_enabled,
+      agent_exchange_enabled: held.agent_exchange_enabled,
       brute_force: {
         protected: held.bf_protected,
         max_failures: whole(held.bf_max_failures) ?? 10,
@@ -1050,7 +1053,10 @@ async function saveSmsTemplate() {
           </template>
 
           <template v-if="group === 'security'">
-            <label class="block text-[11px] font-medium text-muted">
+            <AppToggle v-model="draft.agent_exchange_enabled">
+              {{ say("settings-agents") }} <AppHint name="settings-agents-help" />
+            </AppToggle>
+            <label class="mt-2 block text-[11px] font-medium text-muted">
               {{ say("settings-ssl") }} <AppHint name="settings-ssl-help" />
               <select
                 v-model="draft.ssl_enforcement"

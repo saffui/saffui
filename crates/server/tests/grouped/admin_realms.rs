@@ -895,3 +895,33 @@ async fn the_texting_brakes_hold_their_shapes() {
         "{shaped}"
     );
 }
+
+/// The agent switch round-trips through the plane: turned on, read back on.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_agent_switch_round_trips() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        Some(serde_json::json!({ "agent_exchange_enabled": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["agent_exchange_enabled"], true, "echo: {told}");
+
+    let (status, held) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{}?briefRepresentation=false", support::REALM),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert_eq!(held["agent_exchange_enabled"], true, "read back: {held}");
+}

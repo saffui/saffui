@@ -76,7 +76,7 @@ pub async fn introspect(
         told.insert("token_type".into(), json!("Bearer"));
     }
     for named in [
-        "scope", "sub", "aud", "iss", "exp", "iat", "nbf", "jti", "sid",
+        "scope", "sub", "aud", "iss", "exp", "iat", "nbf", "jti", "sid", "act", "cap",
     ] {
         if let Some(value) = verified.claims.get(named) {
             told.insert(named.into(), value.clone());

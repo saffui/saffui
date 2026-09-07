@@ -91,6 +91,23 @@ async fn opted_in(plane: &Plane, client_id: &str) {
     transaction.commit().await.unwrap();
 }
 
+/// Turn the realm's agent surface, the way the console or the CLI does.
+async fn agents_turned(plane: &Plane, on: bool) {
+    use store::tenancy::TenantContext;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    transaction
+        .execute(
+            "UPDATE realms SET agent_exchange_enabled = $1",
+            &[&Some(on)],
+        )
+        .await
+        .expect("the switch turned");
+    transaction.commit().await.expect("the switch kept");
+}
+
 /// A user's token is exchanged for one that acts on their behalf: the
 /// subject stays, the actor is named, the scope only narrows, and nothing
 /// renewable comes back. Off by default, per client, and never for a
@@ -524,6 +541,26 @@ async fn an_agents_exchange_narrows_capabilities_and_never_widens() {
     let subject = subject_tokens(&plane, "openid profile").await;
     let subject_token = subject["access_token"].as_str().expect("a subject token");
 
+    // The realm has not opted in yet: the surface answers in its own words,
+    // naming the door an operator has to open, not the client's standing.
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+            ("capabilities", "github.create_issue"),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(
+        told["error_description"], "this realm does not mint capability tokens",
+        "{told}"
+    );
+    agents_turned(&plane, true).await;
+
     // The straight mint: cap carried, short-lived, act named.
     let (status, minted) = asking(
         &plane,
@@ -545,6 +582,37 @@ async fn an_agents_exchange_narrows_capabilities_and_never_widens() {
         "{claims}"
     );
     assert_eq!(minted["expires_in"], 120, "not the agent's own span");
+
+    // A resource server asking about the token is told its powers: the
+    // introspection carries `cap` and `act` beside the standard claims.
+    let introspected = {
+        let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+        let request = test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/introspect"
+            ))
+            .insert_header((
+                "authorization",
+                format!(
+                    "Basic {}",
+                    BASE64.encode(
+                        format!("{}:{}", support::CONFIDENTIAL, support::CLIENT_SECRET).as_bytes()
+                    )
+                ),
+            ))
+            .set_form([("token", capability)])
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        test::read_body_json::<Value, _>(response).await
+    };
+    assert_eq!(introspected["active"], true, "{introspected}");
+    assert_eq!(
+        introspected["cap"],
+        serde_json::json!(["saffui.user.read", "github.create_issue"]),
+        "{introspected}"
+    );
+    assert!(introspected["act"].is_object(), "{introspected}");
 
     // And the realm's lifespan stays the ceiling: an agent registered past
     // it is clamped to it, never granted past it.
@@ -639,6 +707,27 @@ async fn an_agents_exchange_narrows_capabilities_and_never_widens() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
     assert_eq!(told["error"], "unauthorized_client", "{told}");
 
+    // Turned back off, the same ask refuses again: the switch is enforced,
+    // not stored and shown.
+    agents_turned(&plane, false).await;
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+            ("capabilities", "github.create_issue"),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(
+        told["error_description"], "this realm does not mint capability tokens",
+        "{told}"
+    );
+    agents_turned(&plane, true).await;
+
     // Asking nothing mints what it always did: no cap, the realm's span.
     let (status, plain) = asking(
         &plane,
@@ -669,6 +758,7 @@ fn plain_realm_lifespan(answer: &Value) -> i64 {
 async fn a_client_without_a_root_cannot_ask_for_capabilities() {
     let plane = Plane::with_actions(&[]).await;
     opted_in(&plane, support::CONFIDENTIAL).await;
+    agents_turned(&plane, true).await;
     let subject = subject_tokens(&plane, "openid").await;
 
     let (status, told) = asking(

@@ -150,6 +150,12 @@ pub enum AdminCmd {
     Clients,
     /// One page of the realm's people.
     Users,
+    /// Whether this realm mints capability tokens for agents; `on` or
+    /// `off` turns it, nothing asks.
+    Agents {
+        #[arg(value_parser = ["on", "off"])]
+        turned: Option<String>,
+    },
 }
 
 /// Run one command and say how it went, in the exit code and nothing else:
@@ -237,6 +243,7 @@ fn told(status: u16, body: &Value) -> Trouble {
 enum Call<'a> {
     Get(String),
     Post(String, Value),
+    Put(String, Value),
     Delete(String),
     PostRaw(String, &'a str),
 }
@@ -258,6 +265,13 @@ fn asked(
         Call::Post(path, body) => (
             agent
                 .post(&format!("{}{path}", plane.server))
+                .header("authorization", &format!("Bearer {token}"))
+                .send_json(body),
+            true,
+        ),
+        Call::Put(path, body) => (
+            agent
+                .put(&format!("{}{path}", plane.server))
                 .header("authorization", &format!("Bearer {token}"))
                 .send_json(body),
             true,
@@ -444,6 +458,35 @@ fn answer(plane: &Resolved, command: &AdminCmd, out: &mut dyn Write) -> Result<(
                 Call::Get(format!("/admin/realms/{realm}/users")),
             )?;
             listing(out, &body)
+        }
+        AdminCmd::Agents { turned } => {
+            let held = match turned.as_deref() {
+                Some(wanted) => asked(
+                    &agent,
+                    plane,
+                    &token,
+                    Call::Put(
+                        format!("/admin/realms/{realm}"),
+                        serde_json::json!({ "agent_exchange_enabled": wanted == "on" }),
+                    ),
+                )?,
+                None => asked(
+                    &agent,
+                    plane,
+                    &token,
+                    // The whole realm, not the brief: the switch rides the
+                    // full representation only.
+                    Call::Get(format!("/admin/realms/{realm}?briefRepresentation=false")),
+                )?,
+            };
+            // One fact either way: the switch as the plane now holds it.
+            shown(
+                out,
+                &serde_json::json!({
+                    "agent_exchange_enabled":
+                        held["agent_exchange_enabled"].as_bool().unwrap_or(false)
+                }),
+            )
         }
     }
 }

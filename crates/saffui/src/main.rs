@@ -445,13 +445,26 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
             .run()
     };
 
+    // The live feed's own ear on the database, one per process, handed to
+    // every worker: the SSE door subscribes here, the store speaks at commit.
+    let live_feed = server::live::listen(
+        config::required("DATABASE_URL")
+            .map_err(|e| e.to_string())?
+            .parse()
+            .map_err(|e| format!("SAFFUI_DATABASE_URL does not parse: {e}"))?,
+    );
+
     // Bound before anything is announced, so a port already taken fails here
     // rather than after the log line says it is serving.
-    let plane = HttpServer::new(move || observed_with(measured).configure(register(&plane)))
-        .disable_signals()
-        .bind(bind)
-        .map_err(|reason| format!("cannot listen on {bind}: {reason}"))?
-        .run();
+    let plane = HttpServer::new(move || {
+        observed_with(measured)
+            .configure(register(&plane))
+            .app_data(actix_web::web::Data::new(live_feed.clone()))
+    })
+    .disable_signals()
+    .bind(bind)
+    .map_err(|reason| format!("cannot listen on {bind}: {reason}"))?
+    .run();
 
     // Both ports are bound, so a probe asking now gets a true answer.
     vitals.started();

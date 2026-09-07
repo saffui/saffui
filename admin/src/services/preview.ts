@@ -414,6 +414,12 @@ export function previewAnswer<T>(path: string): T {
       },
     });
   }
+  if (path.includes("/events/dead")) {
+    return answer([
+      { event_id: 812, kind: "user.updated", user_id: "mira", attempts: 8,
+        occurred_at: new Date((NOW - 5400) * 1000).toISOString() },
+    ]);
+  }
   if (path.includes("/authz/decisions/disagreements")) {
     return answer([
       decided("d-9", "ada", "export", "invoice", "2026-08", "permit", "deny", 8),

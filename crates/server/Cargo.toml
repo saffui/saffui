@@ -26,6 +26,7 @@ secrecy = { workspace = true }
 actix-web = { workspace = true }
 chrono = { workspace = true }
 deadpool-postgres = { workspace = true }
+futures-util = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 # BASE64URL_NOPAD, to read the one unverified claim that says which realm's keys

@@ -303,3 +303,209 @@ async fn a_happening_lands_signed_filtered_and_redeliverable() {
         "a redelivery changed its id, which breaks every consumer's dedup"
     );
 }
+
+/// The dead-letter queue is rows an operator can see and act on: a telling
+/// that exhausts its attempts turns dead and shows in the list, a requeue
+/// puts it back due at once with its history kept, and once the broken
+/// listener is gone the next pass puts it away. The test door proves a
+/// subscription before trusting it, and only a webhook answers one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_dead_telling_is_seen_requeued_and_finally_put_away() {
+    let plane = Plane::with_actions(&[
+        AdminAction::IdpRead,
+        AdminAction::IdpWrite,
+        AdminAction::EventRead,
+        AdminAction::UserRead,
+        AdminAction::UserWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    one_pass(&plane).await;
+
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "dead-ear",
+            "name": "dead-ear",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "webhook" },
+                "url": { "Str": "http://127.0.0.1:9/hook" },
+                "filter": { "Str": "user.*" },
+                "secret": { "Str": SECRET },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/users"),
+        &bearer,
+        Some(json!({ "user_name": "mira", "enabled": true, "email": "mira@example.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    // Eight refusals is where the outbox gives up.
+    for _ in 0..9 {
+        one_pass(&plane).await;
+    }
+
+    let (status, dead) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/events/dead"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{dead}");
+    assert_eq!(dead.as_array().map(Vec::len), Some(1), "{dead}");
+    assert_eq!(dead[0]["kind"], "user.created", "{dead}");
+    let event_id = dead[0]["event_id"].as_i64().expect("an id");
+    assert!(dead[0]["attempts"].as_i64().unwrap_or(0) >= 8, "{dead}");
+
+    // Requeuing what is not dead refuses in words.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/events/dead/999999/requeue"),
+        &bearer,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no dead telling"),
+        "{told}"
+    );
+
+    // The broken listener goes; the requeued telling is finally put away.
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("/admin/realms/{REALM}/identity-providers/dead-ear"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/events/dead/{event_id}/requeue"),
+        &bearer,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    one_pass(&plane).await;
+    let (_, empty) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/events/dead"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(empty.as_array().map(Vec::len), Some(0), "{empty}");
+
+    // Delivered is not dead: the same id refuses a second life.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/events/dead/{event_id}/requeue"),
+        &bearer,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // The test door: a healthy webhook takes the synthetic telling, signed
+    // so the far side can verify it like any other.
+    let (url, heard) = listening();
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "probe",
+            "name": "probe",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "webhook" },
+                "url": { "Str": url },
+                "filter": { "Str": "*" },
+                "secret": { "Str": SECRET },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, answered) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers/probe/prove"),
+        &bearer,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answered}");
+    assert_eq!(answered["proven"], true, "{answered}");
+    assert_eq!(answered["how"], "pushed", "{answered}");
+    let probe = {
+        let held = heard.lock().unwrap();
+        assert_eq!(held.len(), 1, "the probe was not heard once");
+        held[0].clone()
+    };
+    assert_eq!(probe.kind, "saffui.subscription.test");
+    assert_eq!(
+        probe.signature,
+        services::webhook::signature(support::sealing().provider.as_ref(), SECRET, &probe.body)
+            .unwrap(),
+        "the probe's signature does not verify"
+    );
+
+    // An unreachable webhook proves false, in words, not with an error.
+    let (status, dark) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "dark-probe",
+            "name": "dark-probe",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "webhook" },
+                "url": { "Str": "http://127.0.0.1:9/hook" },
+                "filter": { "Str": "*" },
+                "secret": { "Str": SECRET },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{dark}");
+    let (status, dark) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers/dark-probe/prove"),
+        &bearer,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{dark}");
+    assert_eq!(dark["proven"], false, "{dark}");
+    assert_eq!(dark["how"], "unreachable", "{dark}");
+}

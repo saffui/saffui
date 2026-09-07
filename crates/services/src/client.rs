@@ -161,6 +161,9 @@ const PERFORMED: [&str; 5] = [
 pub struct CertificateNames {
     pub dns: Vec<String>,
     pub uris: Vec<String>,
+    /// The subject DN, in the one canonical rendering `mtls::subject_dn`
+    /// states. RFC 8705 §2.1.2's third way of naming the one credential.
+    pub subject: Option<String>,
 }
 
 /// What a client secret is sealed for, so a blob lifted from another column
@@ -276,9 +279,16 @@ pub async fn authenticate(
                 .filter(|held| !held.is_empty())
                 .map(str::to_owned)
         };
-        let admitted = match (expected("tls.san_dns"), expected("tls.san_uri")) {
-            (Some(dns), None) => names.dns.iter().any(|held| held.eq_ignore_ascii_case(&dns)),
-            (None, Some(uri)) => names.uris.contains(&uri),
+        let admitted = match (
+            expected("tls.san_dns"),
+            expected("tls.san_uri"),
+            expected("tls.subject_dn"),
+        ) {
+            (Some(dns), None, None) => names.dns.iter().any(|held| held.eq_ignore_ascii_case(&dns)),
+            (None, Some(uri), None) => names.uris.contains(&uri),
+            // Exact, in the canonical rendering: a DN compared loosely is a
+            // DN two certificates can share.
+            (None, None, Some(dn)) => names.subject.as_deref() == Some(dn.as_str()),
             _ => false,
         };
         if !admitted {

@@ -167,6 +167,7 @@ fn certificate_names(request: &HttpRequest) -> Option<client::CertificateNames> 
     Some(client::CertificateNames {
         dns: services::mtls::san_dns(carried).unwrap_or_default(),
         uris: services::mtls::san_uris(carried).unwrap_or_default(),
+        subject: services::mtls::subject_dn(carried).ok(),
     })
 }
 

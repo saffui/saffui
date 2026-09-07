@@ -211,6 +211,10 @@ pub fn observed_with(
 > {
     #[cfg(not(feature = "metrics"))]
     let _ = measured;
+    // With the export stack compiled in, the logger itself reads the
+    // caller's `traceparent` and opens the root span inside that trace: the
+    // span's trace is decided the moment it opens, so the tie has to happen
+    // there and nowhere later.
     let app = App::new()
         .wrap(TracingLogger::<SaffuiRootSpan>::new())
         .wrap(WithRequestId);

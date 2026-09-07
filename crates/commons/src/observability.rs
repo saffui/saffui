@@ -22,6 +22,24 @@ pub fn sanitize_for_log(input: &str) -> String {
 /// `format` is `json` for one object per line, anything else for compact text.
 #[cfg(feature = "tracing-json")]
 pub fn init(directives: &str, format: &str) {
+    init_with(directives, format, None);
+}
+
+/// What every extra layer sees: the registry, already filtered. Spelled so
+/// a caller can build one without repeating the stack's shape.
+#[cfg(feature = "tracing-json")]
+pub type Watched =
+    tracing_subscriber::layer::Layered<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>;
+
+/// The same install, with room for one more layer — a span exporter, say.
+/// This crate stays ignorant of what it is; the extra rides behind the same
+/// filter and beside the same format as everything else the process emits.
+#[cfg(feature = "tracing-json")]
+pub fn init_with(
+    directives: &str,
+    format: &str,
+    extra: Option<Box<dyn tracing_subscriber::Layer<Watched> + Send + Sync>>,
+) {
     use tracing_subscriber::Layer;
     use tracing_subscriber::prelude::*;
 
@@ -38,7 +56,7 @@ pub fn init(directives: &str, format: &str) {
     // second one written by hand to disagree with it.
     let layer = tracing_subscriber::fmt::layer()
         .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE);
-    let layer = match format {
+    let mut layers: Vec<Box<dyn Layer<Watched> + Send + Sync>> = vec![match format {
         "json" => layer
             .json()
             .flatten_event(true)
@@ -47,13 +65,14 @@ pub fn init(directives: &str, format: &str) {
             .boxed(),
         "compact" => layer.compact().boxed(),
         _ => layer.event_format(Readable).boxed(),
-    };
+    }];
+    layers.extend(extra);
 
     // `try_init` rather than `init`: a second call is a caller's mistake, not a
     // reason to abort a running process.
     let _ = tracing_subscriber::registry()
         .with(filter)
-        .with(layer)
+        .with(layers)
         .try_init();
 }
 
@@ -237,6 +256,18 @@ mod request_span {
         }
     }
 
+    /// How a fresh span is tied into the trace its caller is already in.
+    ///
+    /// Installed once, by a binary whose build carries an exporter; this
+    /// crate stays ignorant of what tracing system that is. It has to run
+    /// here, on the span just opened: a span's exported identity is settled
+    /// at its birth, and nothing later can move it into another trace.
+    static PARENTING: std::sync::OnceLock<fn(&ServiceRequest, &Span)> = std::sync::OnceLock::new();
+
+    pub fn install_parenting(tie: fn(&ServiceRequest, &Span)) {
+        let _ = PARENTING.set(tie);
+    }
+
     /// Opens the span every later record inherits.
     ///
     /// `route`, `realm` and `status` are declared empty and recorded once the
@@ -258,7 +289,7 @@ mod request_span {
                 .map(|id| id.0.clone())
                 .unwrap_or_default();
 
-            tracing::info_span!(
+            let span = tracing::info_span!(
                 "http-request",
                 request_id = %request_id,
                 method = %request.method(),
@@ -268,7 +299,11 @@ mod request_span {
                 route = tracing::field::Empty,
                 realm = tracing::field::Empty,
                 status = tracing::field::Empty,
-            )
+            );
+            if let Some(tie) = PARENTING.get() {
+                tie(request, &span);
+            }
+            span
         }
 
         fn on_request_end<B>(span: Span, outcome: &Result<ServiceResponse<B>, Error>) {
@@ -293,7 +328,7 @@ mod request_span {
 }
 
 #[cfg(feature = "request-span")]
-pub use request_span::{REQUEST_ID, RequestId, SaffuiRootSpan, WithRequestId};
+pub use request_span::{REQUEST_ID, RequestId, SaffuiRootSpan, WithRequestId, install_parenting};
 
 #[cfg(all(test, feature = "tracing-json"))]
 mod readable {

@@ -10,17 +10,21 @@ name = "saffui"
 path = "src/main.rs"
 
 [features]
-default = ["metrics"]
+default = ["metrics", "otel"]
 # The desktop-ticket door, passed through to the server crate: the binding
 # links the system Kerberos libraries, so a deployment asks for it by name.
 kerberos = ["server/kerberos"]
 # Request metrics, passed through likewise. Leaving it out builds a binary
 # that carries no metrics machinery and cannot be asked to expose any.
 metrics = ["server/metrics"]
+# Tracing export, passed through likewise. Leaving it out builds a binary
+# that cannot dial a collector at all.
+otel = ["server/otel"]
 
 [dependencies]
 commons = { workspace = true, features = ["http", "request-span"] }
 config = { workspace = true }
+tracing-subscriber = { workspace = true }
 ldapfront = { path = "../ldapfront" }
 openssl = { workspace = true }
 # The deployment wrapping key is opened here, at startup, so a missing one stops

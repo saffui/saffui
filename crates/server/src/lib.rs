@@ -7,3 +7,4 @@ pub mod messaging;
 pub mod metrics;
 pub mod middleware;
 pub mod negotiate;
+pub mod otel;

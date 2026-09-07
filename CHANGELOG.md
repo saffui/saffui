@@ -10,6 +10,13 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- Distributed tracing over OTLP, switchable on the same two layers as the
+  metrics: the `otel` cargo feature decides whether the export stack is
+  linked at all, `SAFFUI_FEATURES=-otel` turns a carrying build off, and
+  nothing dials until `SAFFUI_OTEL_ENDPOINT` names a collector. Sampling is
+  parent-based (`SAFFUI_OTEL_SAMPLE`, one in ten unless said), a caller's
+  W3C `traceparent` ties the request into their trace, and the exporter is
+  flushed before the process exits.
 - Request metrics in the Prometheus text form, scraped at `/metrics` on the
   operations port: requests, duration and in-progress by method and route
   template (never the raw path, never a realm), plus concluded logins by

@@ -101,6 +101,8 @@ registry! {
         "Structured logging through a tracing subscriber.";
     Metrics = "metrics", Stable, Both,
         "Request metrics on the operations port, in the Prometheus text form.";
+    Otel = "otel", Stable, Both,
+        "Span export over OTLP. Dials nothing until a collector is named.";
 }
 
 /// Whether the capabilities this crate itself carries were linked. Only

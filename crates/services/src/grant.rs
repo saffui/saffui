@@ -1675,6 +1675,16 @@ pub async fn token_exchange(
     // precise, §2.1. The actor's token is held to the subject's own bar,
     // and one that names nobody falls back to the party it was minted for.
     let mut acting = serde_json::json!({ "sub": client.client_id });
+    // §4.1 both ways: an actor token carries its own chain below, and a
+    // subject token that already names actors grows the chain too, so a
+    // re-exchange lengthens the record instead of losing it. Without this,
+    // an agent attenuating its own token would erase who it was acting
+    // through, which is the one thing the chain exists to remember.
+    if exchanging.actor_token.is_none()
+        && let Some(inner) = verified.claims.get("act")
+    {
+        acting["act"] = inner.clone();
+    }
     if let Some(presented) = exchanging.actor_token {
         let actor = crate::token::verify_presented(
             transaction,
@@ -1704,6 +1714,18 @@ pub async fn token_exchange(
         if let Some(inner) = actor.claims.get("act") {
             acting["act"] = inner.clone();
         }
+    }
+
+    // A delegation deeper than five links is refused whole: past that, a
+    // token is a genealogy nobody audits and a payload that only grows.
+    let mut depth = 0;
+    let mut walking = Some(&acting);
+    while let Some(held) = walking {
+        depth += 1;
+        if depth > 5 {
+            return Err(Ungranted::InvalidGrant);
+        }
+        walking = held.get("act");
     }
 
     // §4.4: a subject token that names who may act for it is the narrowest

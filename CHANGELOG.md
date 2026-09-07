@@ -10,6 +10,12 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- The native MCP door: `POST /realms/{realm}/mcp` speaks JSON-RPC 2.0 with
+  two tools, `capability.mint` and `capability.attenuate`, a facade over
+  the one exchange the token endpoint performs, under the same realm
+  switch and every gate the exchange already holds. A re-exchange now
+  grows the `act` chain instead of losing it, and a delegation deeper
+  than five links is refused whole.
 - The agent surface is a switch a realm turns: off, the capability exchange
   refuses in its own words. From the console's security settings, or from a
   terminal: `saffui admin agents [on|off]`. Introspection now tells a

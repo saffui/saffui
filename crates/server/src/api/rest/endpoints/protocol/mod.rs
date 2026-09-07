@@ -16,6 +16,7 @@ pub mod keys;
 pub mod login;
 pub mod logout;
 pub mod mail;
+pub mod mcp;
 pub mod page;
 pub mod par;
 pub mod privacy;

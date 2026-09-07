@@ -16,8 +16,8 @@ use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
 use crate::api::rest::endpoints::protocol::{
-    answering, authorize, broker, ciba, device, discovery, introspect, keys, login, logout, page,
-    par, privacy, recovery, registration, revoke, signup, ssf, token, userinfo, ussd,
+    answering, authorize, broker, ciba, device, discovery, introspect, keys, login, logout, mcp,
+    page, par, privacy, recovery, registration, revoke, signup, ssf, token, userinfo, ussd,
 };
 use crate::api::routes;
 use crate::middleware::admin_guard::Guard;
@@ -157,6 +157,10 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
                 web::resource("/realms/{realm}/ussd/callback")
                     .route(web::post().to(ussd::callback)),
             )
+            // The native MCP door: an agent obtains and attenuates its
+            // capability tokens over the protocol it already speaks. The
+            // whole door answers to the realm's agent switch.
+            .service(web::resource("/realms/{realm}/mcp").route(web::post().to(mcp::serve)))
             // The same document at the name RFC 8414 §3.1 gives it: the
             // well-known segment goes after the host and the issuer's path
             // after that, so a client that reads OAuth metadata and one that

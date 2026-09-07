@@ -13,6 +13,38 @@ export async function listClients(
   );
 }
 
+/// One registered agent, as the plane sees it; 404 means this client is
+/// no agent, which the drawer reads as "show nothing".
+export interface AgentBrief {
+  client_id: string;
+  name: string;
+  enabled: boolean;
+  capabilities: string[];
+  session_seconds: number | null;
+  keyed: boolean;
+  not_before: number | null;
+}
+
+export async function getAgent(realm: string, clientId: string): Promise<AgentBrief> {
+  return api<AgentBrief>(adminPath(realm, `agents/${encodeURIComponent(clientId)}`));
+}
+
+export async function listAgents(realm: string): Promise<AgentBrief[]> {
+  return api<AgentBrief[]>(adminPath(realm, "agents"));
+}
+
+export async function reshapeAgent(
+  realm: string,
+  clientId: string,
+  body: { add?: string[]; remove?: string[]; session_seconds?: number },
+): Promise<AgentBrief> {
+  return api<AgentBrief>(adminPath(realm, `agents/${encodeURIComponent(clientId)}`), {
+    method: "PUT",
+    json: body,
+    subject: say("subject-agent-reshape", { client: clientId }),
+  });
+}
+
 export async function getClient(realm: string, clientId: string): Promise<ClientBrief> {
   return api<ClientBrief>(adminPath(realm, `clients/${encodeURIComponent(clientId)}`));
 }

@@ -10,6 +10,12 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- Agents are administered whole: `saffui admin agent
+  register/list/show/grant/ungrant/revoke/audit`, the same doors in the
+  console's client drawer, and `GET/POST/PUT /admin/realms/{realm}/agents`.
+  Keyless by default (the platform is the credential), the root refused at
+  the door in words, the registration atomic with its service account, and
+  one revocation that kills every minted token everywhere at once.
 - The native MCP door: `POST /realms/{realm}/mcp` speaks JSON-RPC 2.0 with
   two tools, `capability.mint` and `capability.attenuate`, a facade over
   the one exchange the token endpoint performs, under the same realm

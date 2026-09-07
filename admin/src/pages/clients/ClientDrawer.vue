@@ -11,6 +11,8 @@ import {
   listClientMappers,
   rotateClientSecret,
   updateClient,
+  getAgent,
+  reshapeAgent,
 } from "@/services/clients";
 import { listScopeCatalogue } from "@/services/scopes";
 import { createRole, deleteRole, listRoles } from "@/services/directory";
@@ -75,6 +77,7 @@ async function load() {
   }
 }
 onMounted(async () => {
+  void loadAgent();
   await load();
   adoptClient();
   try {
@@ -157,6 +160,38 @@ async function rotate() {
     // The toast already said.
   }
 }
+/// The agent face of this client, when it has one: absent quietly for
+/// every ordinary client, edited through the agents door alone.
+const agentFace = ref<import("@/services/clients").AgentBrief | null>(null);
+const grantDraft = ref("");
+const agentNotice = ref("");
+async function loadAgent() {
+  try {
+    agentFace.value = await getAgent(props.realm, props.clientId);
+  } catch {
+    agentFace.value = null;
+  }
+}
+async function grantCapability() {
+  const wanted = grantDraft.value.trim();
+  if (!wanted) return;
+  agentNotice.value = "";
+  try {
+    agentFace.value = await reshapeAgent(props.realm, props.clientId, { add: [wanted] });
+    grantDraft.value = "";
+  } catch (why) {
+    agentNotice.value = why instanceof Error ? why.message : String(why);
+  }
+}
+async function ungrantCapability(held: string) {
+  agentNotice.value = "";
+  try {
+    agentFace.value = await reshapeAgent(props.realm, props.clientId, { remove: [held] });
+  } catch (why) {
+    agentNotice.value = why instanceof Error ? why.message : String(why);
+  }
+}
+
 async function copyFreshSecret() {
   try {
     await navigator.clipboard.writeText(freshSecret.value);
@@ -255,6 +290,54 @@ async function dropScope(name: string) {
     </div>
 
     <div v-if="tab === 'overview' && client" class="mt-4 flex flex-col gap-4">
+      <div
+        v-if="agentFace"
+        class="rounded-lg border border-brass/40 bg-brass/5 px-3 py-2.5 text-xs"
+      >
+        <div class="flex items-center gap-2">
+          <span class="rounded-full bg-brass/15 px-2 py-0.5 text-[10px] font-semibold text-brass">
+            {{ say("agent-badge") }}
+          </span>
+          <span class="text-muted">{{ say("agent-lede") }}</span>
+        </div>
+        <div class="mt-2 flex flex-wrap gap-1.5">
+          <span
+            v-for="held in agentFace.capabilities"
+            :key="held"
+            class="inline-flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-0.5 font-mono text-[11px]"
+          >
+            {{ held }}
+            <button
+              type="button"
+              class="text-muted hover:text-danger"
+              :title="say('agent-ungrant')"
+              @click="ungrantCapability(held)"
+            >
+              ×
+            </button>
+          </span>
+        </div>
+        <form class="mt-2 flex gap-1.5" @submit.prevent="grantCapability">
+          <input
+            v-model="grantDraft"
+            :placeholder="say('agent-grant-placeholder')"
+            class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1 font-mono text-[11px] text-ink"
+          />
+          <button
+            type="submit"
+            class="rounded-md border border-border px-2.5 py-1 text-[11px] hover:bg-surface-2"
+          >
+            {{ say("agent-grant") }}
+          </button>
+        </form>
+        <p v-if="agentNotice" class="mt-1.5 text-[11px] text-danger">{{ agentNotice }}</p>
+        <p class="mt-1.5 text-[10.5px] text-muted">
+          {{ say("agent-keyless") }}
+          <template v-if="agentFace.session_seconds"
+            >· {{ say("agent-session", { seconds: String(agentFace.session_seconds) }) }}</template
+          >
+        </p>
+      </div>
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveClient">
         <div class="grid grid-cols-[140px_1fr] items-center gap-y-2">
           <span class="text-muted">{{ say("clients-col-kind") }}</span>

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use super::support::Plane;
 use actix_web::{App, HttpServer, test};
 use models::entities::authz::AdminAction;
-use saffui::cli::{AdminCmd, PlaneArgs, Shown, run};
+use saffui::cli::{AdminCmd, AgentCmd, PlaneArgs, Shown, run};
 use serde_json::Value;
 use server::api::config::{Plane as Mounted, register};
 
@@ -68,6 +68,7 @@ async fn the_plane_is_operated_from_a_terminal() {
         AdminAction::RealmWrite,
         AdminAction::FeatureRead,
         AdminAction::ClientRead,
+        AdminAction::ClientWrite,
     ])
     .await;
 
@@ -228,6 +229,72 @@ async fn the_plane_is_operated_from_a_terminal() {
     .unwrap();
     assert_eq!(code, ExitCode::SUCCESS);
     assert_eq!(told["agent_exchange_enabled"], false, "{told}");
+
+    // One agent, from a terminal: born keyless, granted one more tool,
+    // shown whole, revoked in one cut, and the cut visible when shown.
+    let (code, born) = answered(AdminCmd::Agent {
+        command: AgentCmd::Register {
+            client_id: "till-agent".to_owned(),
+            capabilities: vec!["ledger.read".to_owned()],
+            session_seconds: Some(600),
+        },
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, ExitCode::SUCCESS, "{born}");
+    assert_eq!(born["keyed"], false, "{born}");
+    let (code, held) = answered(AdminCmd::Agent {
+        command: AgentCmd::Grant {
+            client_id: "till-agent".to_owned(),
+            capability: "ledger.write".to_owned(),
+        },
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, ExitCode::SUCCESS, "{held}");
+    assert_eq!(
+        held["capabilities"],
+        serde_json::json!(["ledger.read", "ledger.write"]),
+        "{held}"
+    );
+    let (code, told) = answered(AdminCmd::Agent {
+        command: AgentCmd::Grant {
+            client_id: "till-agent".to_owned(),
+            capability: "led ger".to_owned(),
+        },
+    })
+    .await
+    .unwrap();
+    assert_ne!(
+        code,
+        ExitCode::SUCCESS,
+        "a malformed grant was accepted: {told}"
+    );
+    let (code, cut) = answered(AdminCmd::Agent {
+        command: AgentCmd::Revoke {
+            client_id: "till-agent".to_owned(),
+            lift: false,
+        },
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, ExitCode::SUCCESS, "{cut}");
+    assert!(
+        cut["not_before"].as_i64().is_some_and(|held| held > 0),
+        "{cut}"
+    );
+    let (code, shown) = answered(AdminCmd::Agent {
+        command: AgentCmd::Show {
+            client_id: "till-agent".to_owned(),
+        },
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, ExitCode::SUCCESS);
+    assert!(
+        shown["not_before"].as_i64().is_some_and(|held| held > 0),
+        "the cut is not visible on the agent: {shown}"
+    );
 
     // The same answer as a table: a header a person scans, one line per
     // capability, and nothing a JSON parser would want.

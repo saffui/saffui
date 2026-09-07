@@ -4,9 +4,9 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    authorization, claim_sources, client_scopes, clients, compliance, directory, events, features,
-    federation, flows, idps, iga, journal, keys, mail, negotiation, portability, protocol_mappers,
-    realm_keys, realms, rebac, sessions, sms, users, ussd,
+    agents, authorization, claim_sources, client_scopes, clients, compliance, directory, events,
+    features, federation, flows, idps, iga, journal, keys, mail, negotiation, portability,
+    protocol_mappers, realm_keys, realms, rebac, sessions, sms, users, ussd,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -1246,6 +1246,30 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/sign-in-events",
             action: AdminAction::EventRead,
             handler: Some(|| web::get().to(events::list_sign_ins)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/agents",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(agents::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/agents",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::post().to(agents::register)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/agents/{client}",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(agents::get)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/agents/{client}",
+            action: AdminAction::ClientWrite,
+            handler: Some(|| web::put().to(agents::reshape)),
         },
         AdminRoute {
             method: Method::GET,

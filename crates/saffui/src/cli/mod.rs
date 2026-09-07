@@ -156,6 +156,56 @@ pub enum AdminCmd {
         #[arg(value_parser = ["on", "off"])]
         turned: Option<String>,
     },
+    /// One agent, administered: registered keyless, granted tool by tool,
+    /// revoked in one cut.
+    Agent {
+        #[command(subcommand)]
+        command: AgentCmd,
+    },
+}
+
+/// The per-agent commands. Keyless on purpose: an agent authenticates
+/// through its platform, so registering stores no credential anywhere and
+/// this terminal never sees one.
+#[derive(Subcommand, Debug)]
+pub enum AgentCmd {
+    /// Register an agent with its capability root, whole or not at all.
+    Register {
+        client_id: String,
+        /// Tool names, exact or a prefix ending in `*`. Repeatable.
+        #[arg(long = "capability", required = true)]
+        capabilities: Vec<String>,
+        /// How long its capability tokens live, seconds.
+        #[arg(long = "session-seconds")]
+        session_seconds: Option<i32>,
+    },
+    /// The realm's agents, each with its root.
+    List,
+    /// One agent, whole.
+    Show { client_id: String },
+    /// Add one capability to the root.
+    Grant {
+        client_id: String,
+        capability: String,
+    },
+    /// Take one capability off the root; emptying it refuses.
+    Ungrant {
+        client_id: String,
+        capability: String,
+    },
+    /// Cut every token this agent was ever minted, now. The registration
+    /// stays; `--lift` reopens it.
+    Revoke {
+        client_id: String,
+        #[arg(long, default_value_t = false)]
+        lift: bool,
+    },
+    /// The journal's last word on this agent, newest first.
+    Audit {
+        client_id: String,
+        #[arg(long, default_value_t = 20)]
+        max: usize,
+    },
 }
 
 /// Run one command and say how it went, in the exit code and nothing else:
@@ -458,6 +508,126 @@ fn answer(plane: &Resolved, command: &AdminCmd, out: &mut dyn Write) -> Result<(
                 Call::Get(format!("/admin/realms/{realm}/users")),
             )?;
             listing(out, &body)
+        }
+        AdminCmd::Agent { command } => {
+            let path = |tail: &str| format!("/admin/realms/{realm}/agents{tail}");
+            match command {
+                AgentCmd::Register {
+                    client_id,
+                    capabilities,
+                    session_seconds,
+                } => {
+                    let body = asked(
+                        &agent,
+                        plane,
+                        &token,
+                        Call::Post(
+                            path(""),
+                            serde_json::json!({
+                                "client_id": client_id,
+                                "capabilities": capabilities,
+                                "session_seconds": session_seconds,
+                            }),
+                        ),
+                    )?;
+                    shown(out, &body)
+                }
+                AgentCmd::List => {
+                    let body = asked(&agent, plane, &token, Call::Get(path("")))?;
+                    shown(out, &body)
+                }
+                AgentCmd::Show { client_id } => {
+                    let body = asked(
+                        &agent,
+                        plane,
+                        &token,
+                        Call::Get(path(&format!("/{client_id}"))),
+                    )?;
+                    shown(out, &body)
+                }
+                AgentCmd::Grant {
+                    client_id,
+                    capability,
+                } => {
+                    let body = asked(
+                        &agent,
+                        plane,
+                        &token,
+                        Call::Put(
+                            path(&format!("/{client_id}")),
+                            serde_json::json!({ "add": [capability] }),
+                        ),
+                    )?;
+                    shown(out, &body)
+                }
+                AgentCmd::Ungrant {
+                    client_id,
+                    capability,
+                } => {
+                    let body = asked(
+                        &agent,
+                        plane,
+                        &token,
+                        Call::Put(
+                            path(&format!("/{client_id}")),
+                            serde_json::json!({ "remove": [capability] }),
+                        ),
+                    )?;
+                    shown(out, &body)
+                }
+                AgentCmd::Revoke { client_id, lift } => {
+                    // The cut is the client's own not_before door: zero
+                    // lifts, now cuts, and the future is refused there.
+                    let instant = if *lift {
+                        0
+                    } else {
+                        chrono::Utc::now().timestamp()
+                    };
+                    let body = asked(
+                        &agent,
+                        plane,
+                        &token,
+                        Call::Put(
+                            format!("/admin/realms/{realm}/clients/{client_id}"),
+                            serde_json::json!({ "not_before": instant }),
+                        ),
+                    )?;
+                    shown(
+                        out,
+                        &serde_json::json!({
+                            "client_id": client_id,
+                            "not_before": body["not_before"],
+                        }),
+                    )
+                }
+                AgentCmd::Audit { client_id, max } => {
+                    let body = asked(
+                        &agent,
+                        plane,
+                        &token,
+                        Call::Get(format!("/admin/realms/{realm}/journal?first=0&max=200")),
+                    )?;
+                    // The journal speaks realm-wide; this terminal narrows
+                    // to the agent's own doings: as the acting party, or on
+                    // its registration path.
+                    let suffix = format!("/agents/{client_id}");
+                    let rows: Vec<&Value> = body["items"]
+                        .as_array()
+                        .map(|held| {
+                            held.iter()
+                                .filter(|row| {
+                                    row["entry"]["party"] == *client_id
+                                        || row["entry"]["path"]
+                                            .as_str()
+                                            .is_some_and(|path| path.ends_with(&suffix))
+                                })
+                                .take(*max)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    shown(out, &serde_json::json!({ "items": rows }))
+                }
+            }
         }
         AdminCmd::Agents { turned } => {
             let held = match turned.as_deref() {

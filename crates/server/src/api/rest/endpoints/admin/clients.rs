@@ -142,10 +142,35 @@ fn gates_of(asked: &ClientSpec) -> Result<Gates, ApiError> {
             ));
         }
     };
+    // At most one of the three may ride one request: the verifier admits a
+    // single name on the bag, so a body naming two is asking for a client
+    // that could never authenticate again.
+    let mut named = [
+        ("dns", &asked.tls_san_dns),
+        ("uri", &asked.tls_san_uri),
+        ("subject DN", &asked.tls_subject_dn),
+    ]
+    .into_iter()
+    .filter_map(|(kind, held)| held.as_deref().map(|value| (kind, value.trim().to_owned())));
+    let tls_name = match (named.next(), named.next()) {
+        (None, _) => None,
+        (Some(_), Some(_)) => {
+            return Err(ApiError::with_detail(
+                ErrorCode::ValidationError,
+                "a client authenticates by exactly one TLS name: a SAN dns, a SAN uri, \
+                 or the subject DN, never several",
+            ));
+        }
+        (Some((_, value)), None) if value.is_empty() => Some(registry::TlsName::Off),
+        (Some(("dns", value)), None) => Some(registry::TlsName::SanDns(value)),
+        (Some(("uri", value)), None) => Some(registry::TlsName::SanUri(value)),
+        (Some((_, value)), None) => Some(registry::TlsName::SubjectDn(value)),
+    };
     Ok(Gates {
         device: asked.device_grant,
         token_exchange: asked.token_exchange,
         ciba,
+        tls_name,
     })
 }
 

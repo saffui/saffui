@@ -18,6 +18,11 @@ export interface ClientBrief {
   ciba_notification_endpoint: string | null;
   /// The client-wide cut: tokens minted before this instant are refused.
   not_before: number | null;
+  /// RFC 8705's one name, in whichever of the three forms holds it. At
+  /// most one is ever set: the verifier refuses a plural bag.
+  tls_san_dns: string | null;
+  tls_san_uri: string | null;
+  tls_subject_dn: string | null;
 }
 
 /// Mirrors `models::entities::client::ClientScopeModel`, plus the

@@ -23,7 +23,12 @@ pub struct OutboxEvent {
     pub occurred_at: DateTime<Utc>,
 }
 
-/// Record one happening, inside the transaction that made it happen.
+/// The channel a committed emission is spoken on, for whoever listens.
+pub const CHANNEL: &str = "saffui_events";
+
+/// Record one happening, inside the transaction that made it happen. The
+/// notify rides the same transaction, and Postgres only speaks it at
+/// commit: nothing is announced that did not happen.
 pub async fn emit(
     transaction: &Transaction<'_>,
     kind: &str,
@@ -32,14 +37,61 @@ pub async fn emit(
 ) -> StoreResult<()> {
     transaction
         .execute(
-            "INSERT INTO event_outbox (tenant, realm_id, kind, user_id, payload) \
-             SELECT current_setting('saffui.current_tenant', true), \
-                    current_setting('saffui.current_realm', true), $1, $2, $3",
-            &[&kind, &user_id, &payload],
+            "WITH told AS ( \
+                 INSERT INTO event_outbox (tenant, realm_id, kind, user_id, payload) \
+                 SELECT current_setting('saffui.current_tenant', true), \
+                        current_setting('saffui.current_realm', true), $1, $2, $3 \
+                 RETURNING tenant, realm_id, event_id, kind, user_id, occurred_at) \
+             SELECT pg_notify($4, json_build_object( \
+                        'tenant', tenant, 'realm', realm_id, 'event_id', event_id, \
+                        'kind', kind, 'user_id', user_id, \
+                        'occurred_at', to_char(occurred_at at time zone 'UTC', \
+                                               'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'))::text) \
+             FROM told",
+            &[&kind, &user_id, &payload, &CHANNEL],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(())
+}
+
+/// The tellings given up on, newest first: the dead-letter queue, as rows
+/// an operator can see and requeue instead of a state only a SELECT knows.
+pub async fn dead_list(transaction: &Transaction<'_>, limit: i64) -> StoreResult<Vec<OutboxEvent>> {
+    Ok(transaction
+        .query(
+            "SELECT realm_id, event_id, kind, user_id, payload, attempts, occurred_at \
+             FROM event_outbox WHERE state = 'dead' \
+             ORDER BY event_id DESC LIMIT $1",
+            &[&limit],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| OutboxEvent {
+            event_id: row.get("event_id"),
+            realm_id: row.get("realm_id"),
+            kind: row.get("kind"),
+            user_id: row.get("user_id"),
+            payload: row.get("payload"),
+            attempts: row.get("attempts"),
+            occurred_at: row.get("occurred_at"),
+        })
+        .collect())
+}
+
+/// Put one dead telling back in the queue, due at once. The attempts stay
+/// counted: a requeue is another chance, not a clean record.
+pub async fn requeue(transaction: &Transaction<'_>, event_id: i64) -> StoreResult<bool> {
+    let changed = transaction
+        .execute(
+            "UPDATE event_outbox SET state = 'pending', next_attempt_at = now() \
+             WHERE event_id = $1 AND state = 'dead'",
+            &[&event_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
 }
 
 /// The tellings that are due, oldest first, claimed for this pass: the next

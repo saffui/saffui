@@ -6,6 +6,8 @@ mod support;
 mod broker_login;
 #[path = "grouped/caep.rs"]
 mod caep;
+#[path = "grouped/events_live.rs"]
+mod events_live;
 #[path = "grouped/ldap_front.rs"]
 mod ldap_front;
 #[path = "grouped/ldap_login.rs"]

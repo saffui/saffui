@@ -3,6 +3,7 @@ pub mod error;
 pub mod federation;
 pub mod jobs;
 pub mod lifecycle;
+pub mod live;
 pub mod messaging;
 pub mod metrics;
 pub mod middleware;

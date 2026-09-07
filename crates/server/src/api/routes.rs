@@ -1249,6 +1249,24 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/events/stream",
+            action: AdminAction::EventRead,
+            handler: Some(|| web::get().to(events::stream)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/events/dead",
+            action: AdminAction::EventRead,
+            handler: Some(|| web::get().to(events::dead_letters)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/events/dead/{event}/requeue",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::post().to(events::requeue)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/agents",
             action: AdminAction::ClientRead,
             handler: Some(|| web::get().to(agents::list)),

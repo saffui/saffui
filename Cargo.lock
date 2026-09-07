@@ -2956,6 +2956,7 @@ dependencies = [
  "data-encoding",
  "deadpool-postgres",
  "fluent-bundle",
+ "futures-util",
  "include_dir",
  "ldap3",
  "ldapfront",

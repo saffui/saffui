@@ -723,7 +723,52 @@ pub(crate) async fn opened_bearer(
     String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()
 }
 
-async fn opened_webhook_secret(
+/// The synthetic telling, delivered now and answered with what the far
+/// side said: signed like any real one, so the consumer's verification is
+/// exercised too.
+async fn ask_webhook(hook: &services::webhook::Webhook, signature: &str, body: String) -> Proof {
+    let url = hook.url.clone();
+    let signature = signature.to_owned();
+    let answered = tokio::task::spawn_blocking(move || {
+        let agent = far_side_agent();
+        match agent
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("x-saffui-signature", &signature)
+            .header("x-saffui-event", "saffui.subscription.test")
+            .header("x-saffui-event-id", "0")
+            .send(body.as_str())
+        {
+            Ok(answer) => Some(answer.status().as_u16()),
+            Err(ureq::Error::StatusCode(code)) => Some(code),
+            Err(_) => None,
+        }
+    })
+    .await
+    .unwrap_or(None);
+    match answered {
+        Some(status) if (200..300).contains(&status) => Proof {
+            proven: true,
+            how: "pushed",
+            status: Some(status),
+            said: String::new(),
+        },
+        Some(status) => Proof {
+            proven: false,
+            how: "answered",
+            status: Some(status),
+            said: "the far side answered, and refused".to_owned(),
+        },
+        None => Proof {
+            proven: false,
+            how: "unreachable",
+            status: None,
+            said: "nothing answered at the webhook's url".to_owned(),
+        },
+    }
+}
+
+pub(crate) async fn opened_webhook_secret(
     transaction: &deadpool_postgres::Transaction<'_>,
     sealing: &crate::api::config::Sealing,
     context: &store::tenancy::TenantContext,
@@ -758,7 +803,7 @@ async fn opened_webhook_secret(
 
 /// One signed telling to one webhook: these exact bytes, their signature,
 /// and the two headers a consumer dedups and routes by.
-async fn push_json(
+pub(crate) async fn push_json(
     hook: &services::webhook::Webhook,
     signature: &str,
     kind: &str,
@@ -940,6 +985,28 @@ pub async fn prove_delivery(
             .map_err(|why| Unprovable::NotProvable(why.to_string()))?;
         let bearer = opened_bearer(transaction, sealing, context, &row).await;
         return Ok(ask_scim_root(&connector, bearer.as_deref()).await);
+    }
+    if services::webhook::is_webhook(&row) {
+        let hook = services::webhook::Webhook::parse(&row)
+            .map_err(|why| Unprovable::NotProvable(why.to_string()))?;
+        let body = serde_json::json!({
+            "event_id": 0,
+            "kind": "saffui.subscription.test",
+            "realm": context.realm_id,
+            "user_id": "",
+            "occurred_at": chrono::Utc::now().to_rfc3339(),
+            "payload": {},
+        })
+        .to_string();
+        let signature = opened_webhook_secret(transaction, sealing, context, &row)
+            .await
+            .and_then(|secret| {
+                services::webhook::signature(sealing.provider.as_ref(), &secret, body.as_bytes())
+            })
+            .ok_or_else(|| {
+                Unprovable::NotProvable("the webhook's secret could not be opened".to_owned())
+            })?;
+        return Ok(ask_webhook(&hook, &signature, body).await);
     }
     if services::caep::is_receiver(&row) {
         let receiver = services::caep::Receiver::parse(&row)

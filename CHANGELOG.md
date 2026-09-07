@@ -10,6 +10,12 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- The realm's happenings, live and accounted for: an admin SSE feed spoken
+  at commit through the database's own notify, the dead-letter queue on the
+  console's Events page with one-click requeue, webhooks managed beside the
+  receivers and connectors they ride with, and the prove door extended so a
+  webhook takes a synthetic signed telling before being trusted with real
+  ones. The consumer's contract lives in `deploy/events/README.md`.
 - The outbox is offered to any system that speaks HTTP: a webhook is a
   connector like the SCIM ear and the CAEP receiver, one registry row with
   a sealed secret, riding the same delivery pass and the same retries.

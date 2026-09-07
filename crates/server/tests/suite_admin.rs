@@ -44,3 +44,5 @@ mod iga;
 mod iga_ttl;
 #[path = "grouped/observability.rs"]
 mod observability;
+#[path = "grouped/sod.rs"]
+mod sod;

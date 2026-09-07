@@ -703,6 +703,48 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/iga/sod/rules",
+            action: AdminAction::IgaRead,
+            handler: Some(|| web::get().to(iga::sod_rules)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/iga/sod/rules/{rule}",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::put().to(iga::put_sod_rule)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/iga/sod/rules/{rule}",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::delete().to(iga::delete_sod_rule)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/iga/sod/violations",
+            action: AdminAction::IgaRead,
+            handler: Some(|| web::get().to(iga::sod_violations)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/iga/sod/exceptions",
+            action: AdminAction::IgaRead,
+            handler: Some(|| web::get().to(iga::sod_exceptions)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/iga/sod/rules/{rule}/exceptions/{user}",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::put().to(iga::put_sod_exception)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/iga/sod/rules/{rule}/exceptions/{user}",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::delete().to(iga::delete_sod_exception)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/realms/{realm}/scim/v2/Users",
             action: AdminAction::ScimRead,
             handler: Some(|| web::get().to(scim::users::list)),

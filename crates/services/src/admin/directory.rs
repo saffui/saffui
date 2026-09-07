@@ -8,7 +8,7 @@ use store::providers::{organizations, roles};
 use store::query::list_query::ListQuery;
 
 /// Why a role, group or organization could not be written.
-#[derive(Debug, Clone, Copy, Eq, PartialEq, thiserror::Error)]
+#[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
 pub enum Unwritable {
     #[error("one with this name already exists")]
     AlreadyExists,
@@ -28,6 +28,10 @@ pub enum Unwritable {
     StillParent,
     #[error("{0}")]
     Invalid(&'static str),
+    /// A grant that would put a forbidden combination in one pair of
+    /// hands, refused with the rule and the roles named.
+    #[error("{0}")]
+    Toxic(String),
     #[error("the store could not be written")]
     Backend,
 }
@@ -446,9 +450,13 @@ pub async fn grant_role_to_user(
 ) -> Result<(), Unwritable> {
     get_role(transaction, role_id).await?;
     let user_id = user_named(transaction, user_id).await?;
+    store::providers::sod::hold_person(transaction, &user_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
     roles::grant_to_user(transaction, &user_id, role_id)
         .await
-        .map_err(|_| Unwritable::Backend)
+        .map_err(|_| Unwritable::Backend)?;
+    weighed(transaction, &user_id).await
 }
 
 pub async fn revoke_role_from_user(
@@ -482,9 +490,24 @@ pub async fn add_user_to_group(
 ) -> Result<(), Unwritable> {
     get_group(transaction, group_id).await?;
     let user_id = &user_named(transaction, user_id).await?;
+    store::providers::sod::hold_person(transaction, user_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
     roles::add_to_group(transaction, user_id, group_id)
         .await
-        .map_err(|_| Unwritable::Backend)
+        .map_err(|_| Unwritable::Backend)?;
+    weighed(transaction, user_id).await
+}
+
+/// The change is written, so the world weighed is the one the commit would
+/// make: a combination the rules forbid aborts the transaction instead of
+/// landing. The per-person hold above serializes rival weighers.
+async fn weighed(transaction: &Transaction<'_>, user_id: &str) -> Result<(), Unwritable> {
+    match crate::sod::weigh(transaction, user_id).await {
+        Ok(()) => Ok(()),
+        Err(crate::sod::Toxic::Refused(said)) => Err(Unwritable::Toxic(said)),
+        Err(crate::sod::Toxic::Backend) => Err(Unwritable::Backend),
+    }
 }
 
 pub async fn remove_user_from_group(

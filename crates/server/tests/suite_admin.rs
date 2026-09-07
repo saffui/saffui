@@ -40,6 +40,8 @@ mod health;
 mod housekeeping;
 #[path = "grouped/iga.rs"]
 mod iga;
+#[path = "grouped/iga_requests.rs"]
+mod iga_requests;
 #[path = "grouped/iga_ttl.rs"]
 mod iga_ttl;
 #[path = "grouped/observability.rs"]

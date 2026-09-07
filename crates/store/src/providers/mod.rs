@@ -27,6 +27,7 @@ pub mod realm_keys;
 pub mod realms;
 pub mod rebac;
 pub mod replay;
+pub mod requests;
 pub mod roles;
 pub mod sessions;
 pub mod sms;

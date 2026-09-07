@@ -21,15 +21,16 @@ const STRINGS = new Map(
   [...readFileSync(join(ui, "themes/en.ftl"), "utf8").matchAll(/^([a-z][a-z0-9-]*) = (.+)$/gm)]
     .map((found) => [found[1], found[2]]),
 );
-const PAGE = readFileSync(join(ui, "login.html"), "utf8").replace(
-  /\{\{([a-z-]+)\}\}/g,
-  (_, name) => {
+const PAGE = readFileSync(join(ui, "login.html"), "utf8")
+  .replace(/\{\{([a-z-]+)\}\}/g, (_, name) => {
     if (name === "lang") return "en";
     const held = STRINGS.get(name);
     if (held === undefined) throw new Error(`the page asks for \`${name}\`, which en.ftl does not hold`);
     return held;
-  },
-);
+  })
+  // What the server substitutes per request renders empty here, the way a
+  // realm with nothing wired renders it.
+  .replace("{idps}", "");
 const SCRIPT = readFileSync(join(ui, "login.js"), "utf8");
 
 /// What the page says inside the element with that identifier, for the

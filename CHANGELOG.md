@@ -10,6 +10,16 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- The sign-in page offers the realm's brokered identity providers as doors:
+  one link per browsable provider, straight to the broker, working with no
+  script at all. Recognised providers wear their real mark, shipped inline
+  because an authentication page dials no third-party host; unknown ones
+  wear their initial.
+- The sign-in card is retuned: a two-pixel brand hairline at its top edge
+  (the accent now stands in exactly four places: hairline, primary action,
+  focus ring, realm mark), one corner radius everywhere, a focus ring that
+  replaces the field border instead of doubling it, and one wide-tracked
+  code field that pastes and autocompletes instead of a row of boxes.
 - Agents are administered whole: `saffui admin agent
   register/list/show/grant/ungrant/revoke/audit`, the same doors in the
   console's client drawer, and `GET/POST/PUT /admin/realms/{realm}/agents`.

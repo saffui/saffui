@@ -3,7 +3,7 @@ use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
-use crate::api::rest::endpoints::protocol::i18n;
+use crate::api::rest::endpoints::protocol::{brands, i18n};
 
 const CHECK_SESSION: &str = include_str!("ui/check-session.html");
 const CHECK_SESSION_SCRIPT: &str = include_str!("ui/check-session.js");
@@ -129,10 +129,11 @@ async fn doors_of_realm(
     realm: &str,
 ) -> (
     String,
+    String,
     Option<serde_json::Value>,
     Option<models::entities::realm::PasswordPolicy>,
 ) {
-    let nothing = || (String::new(), None, None);
+    let nothing = || (String::new(), String::new(), None, None);
     let Ok(mut connection) = pool.get().await else {
         return nothing();
     };
@@ -165,7 +166,60 @@ async fn doors_of_realm(
     if offers_recovery_codes(&transaction, held.browser_flow.as_deref()).await {
         doors.push("recovery-code");
     }
-    (doors.join(" "), held.page_overrides, held.password_policy)
+    let idps = match store::providers::brokering::list_providers(&transaction).await {
+        Ok(rows) => federated_doors(realm, &rows),
+        Err(_) => String::new(),
+    };
+    (
+        doors.join(" "),
+        idps,
+        held.page_overrides,
+        held.password_policy,
+    )
+}
+
+/// The realm's browsable providers as ready markup: one anchor per door,
+/// straight to the broker, so the page works with no script at all.
+///
+/// The identity_providers table also holds connectors that no browser can
+/// be sent to; what earns a door here is an `authorization_endpoint`.
+fn federated_doors(realm: &str, rows: &[models::entities::authz::IdentityProviderModel]) -> String {
+    let mut doors = String::new();
+    for held in rows {
+        if held.enabled == Some(false) {
+            continue;
+        }
+        let browsable = held
+            .configs
+            .as_ref()
+            .is_some_and(|bag| bag.get("authorization_endpoint").is_some());
+        if !browsable {
+            continue;
+        }
+        let shown = if held.display_name.trim().is_empty() {
+            &held.provider_id
+        } else {
+            &held.display_name
+        };
+        let mark = brands::mark_of(&held.provider_id)
+            .or_else(|| brands::mark_of(shown))
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                let initial = shown.chars().next().map(char::to_uppercase);
+                let initial: String = initial.into_iter().flatten().collect();
+                format!(
+                    r#"<span class="idp-mark" aria-hidden="true">{}</span>"#,
+                    escaped(&initial)
+                )
+            });
+        doors.push_str(&format!(
+            r#"<a class="idp-door" href="/realms/{}/broker/{}/login">{mark}<span>{}</span></a>"#,
+            escaped(realm),
+            escaped(&held.provider_id),
+            escaped(shown),
+        ));
+    }
+    doors
 }
 
 /// Whether this realm's browser flow has a step that takes a printed code.
@@ -277,6 +331,7 @@ fn page(
     wanted: Option<&str>,
     tongues: &i18n::RealmTongues,
     doors: &str,
+    idps: &str,
     overrides: Option<&serde_json::Value>,
     policy: Option<&models::entities::realm::PasswordPolicy>,
 ) -> HttpResponse {
@@ -300,12 +355,14 @@ fn page(
         .insert_header(("X-Frame-Options", "DENY"))
         .insert_header(("Referrer-Policy", "no-referrer"))
         .body(
-            body.replace("{doors}", &escaped(doors)).replace(
-                "{policy}",
-                &policy
-                    .map(|held| i18n::policy_checklist(tongue, held))
-                    .unwrap_or_default(),
-            ),
+            body.replace("{doors}", &escaped(doors))
+                .replace("{idps}", idps)
+                .replace(
+                    "{policy}",
+                    &policy
+                        .map(|held| i18n::policy_checklist(tongue, held))
+                        .unwrap_or_default(),
+                ),
         )
 }
 
@@ -455,12 +512,13 @@ pub async fn magic_link(
         });
     let Some((named, token)) = followed else {
         let (wanted, tongues) = asked_tongue(&request, &pool, &tenancy, &realm).await;
-        let (doors, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
+        let (doors, idps, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
         return page(
             &request,
             wanted.as_deref(),
             &tongues,
             &doors,
+            &idps,
             overrides.as_ref(),
             policy.as_ref(),
         );
@@ -523,12 +581,13 @@ pub async fn reset_password(
         asked.user.filter(|held| !held.is_empty()),
     ) else {
         let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
-        let (doors, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
+        let (doors, idps, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
         return page(
             &request,
             None,
             &tongues,
             &doors,
+            &idps,
             overrides.as_ref(),
             policy.as_ref(),
         );
@@ -573,6 +632,7 @@ const RESET_PAGE: &str = r#"<!doctype html>
 #[cfg(test)]
 mod tests {
     use super::SCRIPT;
+    use super::federated_doors;
     use super::i18n;
 
     /// The script reaches for the page by identifier, and a page that lost one
@@ -607,6 +667,66 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn provider(
+        alias: &str,
+        display: &str,
+        enabled: bool,
+        browsable: bool,
+    ) -> models::entities::authz::IdentityProviderModel {
+        let mut configs = models::entities::attributes::AttributesMap::default();
+        if browsable {
+            configs.insert(
+                "authorization_endpoint".to_owned(),
+                models::entities::attributes::AttributeValue::Str(
+                    "https://upstream.example/auth".to_owned(),
+                ),
+            );
+        }
+        models::entities::authz::IdentityProviderModel {
+            internal_id: alias.to_owned(),
+            realm_id: "r".to_owned(),
+            provider_id: alias.to_owned(),
+            name: alias.to_owned(),
+            display_name: display.to_owned(),
+            description: String::new(),
+            enabled: Some(enabled),
+            trust_email: None,
+            configs: Some(configs),
+            metadata: models::auditable::AuditableModel::from_creator(
+                "t".to_owned(),
+                "test".to_owned(),
+            ),
+        }
+    }
+
+    /// A door per browsable provider and none for the rest: a connector has
+    /// no authorization endpoint and earns none, a disabled provider shows
+    /// nothing, a recognised name carries its mark, an unknown one its
+    /// initial, and every written value lands escaped.
+    #[test]
+    fn only_browsable_providers_earn_a_door_and_each_wears_its_mark() {
+        let rows = vec![
+            provider("google", "Google", true, true),
+            provider("the-ear", "", true, false),
+            provider("okta", "Okta", false, true),
+            provider("wiki<d>", "Wiki & Co", true, true),
+        ];
+        let doors = federated_doors("main", &rows);
+
+        assert!(doors.contains("/realms/main/broker/google/login"));
+        assert!(doors.contains("#4285F4"), "the recognised mark is missing");
+        assert!(!doors.contains("the-ear"), "a connector earned a door");
+        assert!(!doors.contains("okta"), "a disabled provider earned a door");
+        assert!(
+            doors.contains("broker/wiki&lt;d&gt;/login") && doors.contains("Wiki &amp; Co"),
+            "a written value reached the page unescaped: {doors}"
+        );
+        assert!(
+            doors.contains(r#"<span class="idp-mark" aria-hidden="true">W</span>"#),
+            "an unknown provider does not wear its initial: {doors}"
+        );
     }
 
     /// A round the script cannot name lands on its own last branch, which says

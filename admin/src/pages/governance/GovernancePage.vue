@@ -8,10 +8,18 @@ import {
   convergeRules,
   createRule,
   deleteRule,
+  deleteSodException,
+  deleteSodRule,
   handGrant,
+  listSodExceptions,
+  listSodRules,
+  listSodViolations,
+  putSodException,
+  putSodRule,
   revokeGrant,
   updateRule,
 } from "@/services/governance";
+import type { SodException, SodRule, SodViolation } from "@/services/governance";
 import AppHint from "@/components/AppHint.vue";
 import GovernanceTabs from "./GovernanceTabs.vue";
 import AppToggle from "@/components/AppToggle.vue";
@@ -138,6 +146,99 @@ function until(grant: IgaGrant): string {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(grant.expires_at));
+}
+
+const sodRules = ref<SodRule[]>([]);
+const sodViolations = ref<SodViolation[]>([]);
+const sodExceptions = ref<SodException[]>([]);
+const makingSod = ref(false);
+const sodDraft = ref({ rule_id: "", roles: "", min_conflicting: "", enabled: true });
+
+async function loadSod() {
+  try {
+    sodRules.value = await listSodRules(realm.value);
+    sodExceptions.value = await listSodExceptions(realm.value);
+    sodViolations.value = await listSodViolations(realm.value);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+onMounted(loadSod);
+afterWrites(loadSod);
+
+async function makeSodRule() {
+  const held = sodDraft.value;
+  const roles = held.roles
+    .split(/[\n,]/)
+    .map((row) => row.trim())
+    .filter(Boolean);
+  if (!held.rule_id.trim() || !roles.length) return;
+  try {
+    await putSodRule(realm.value, held.rule_id.trim(), {
+      roles,
+      min_conflicting: held.min_conflicting.trim() ? Number(held.min_conflicting) : undefined,
+      enabled: held.enabled,
+    });
+    makingSod.value = false;
+    sodDraft.value = { rule_id: "", roles: "", min_conflicting: "", enabled: true };
+  } catch {
+    // The toast already said.
+  }
+}
+async function flipSodRule(rule: SodRule) {
+  try {
+    await putSodRule(realm.value, rule.rule_id, {
+      roles: rule.roles,
+      min_conflicting: rule.min_conflicting,
+      enabled: !rule.enabled,
+    });
+  } catch {
+    // The toast already said.
+  }
+}
+async function dropSodRule(ruleId: string) {
+  try {
+    await deleteSodRule(realm.value, ruleId);
+  } catch {
+    // The toast already said.
+  }
+}
+
+/// Pre-filled from the standing combination: the excuse covers exactly
+/// what stands, nothing wider.
+const excusing = ref<SodViolation | null>(null);
+const excuseDraft = ref({ justification: "", valid_until: "" });
+function openExcuse(violation: SodViolation) {
+  excusing.value = violation;
+  excuseDraft.value = { justification: "", valid_until: "" };
+}
+async function giveExcuse() {
+  const target = excusing.value;
+  if (!target) return;
+  if (!excuseDraft.value.justification.trim() || !excuseDraft.value.valid_until.trim()) return;
+  try {
+    await putSodException(realm.value, target.rule_id, target.user_id, {
+      covered_roles: target.roles,
+      justification: excuseDraft.value.justification.trim(),
+      valid_until: excuseDraft.value.valid_until.trim(),
+    });
+    excusing.value = null;
+  } catch {
+    // The toast already said.
+  }
+}
+async function withdrawExcuse(ruleId: string, userId: string) {
+  try {
+    await deleteSodException(realm.value, ruleId, userId);
+  } catch {
+    // The toast already said.
+  }
+}
+
+function untilShort(spelled: string): string {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+    new Date(spelled),
+  );
 }
 </script>
 
@@ -345,5 +446,156 @@ function until(grant: IgaGrant): string {
         </button>
       </div>
     </div>
+
+    <h2 class="mt-8 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+      {{ say("sod-section") }}
+      <button
+        type="button"
+        class="ml-3 rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-ink normal-case tracking-normal hover:bg-accent-strong"
+        @click="makingSod = !makingSod"
+      >
+        {{ say("sod-new") }}
+      </button>
+    </h2>
+    <p class="mt-1 text-xs text-muted">{{ say("sod-lede") }}</p>
+
+    <form
+      v-if="makingSod"
+      class="mt-3 flex max-w-3xl items-end gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      @submit.prevent="makeSodRule"
+    >
+      <label class="w-40 text-[11px] font-medium text-muted">
+        {{ say("sod-rule-name") }}
+        <input v-model="sodDraft.rule_id" placeholder="payments" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+      </label>
+      <label class="flex-1 text-[11px] font-medium text-muted">
+        {{ say("sod-roles") }}
+        <input v-model="sodDraft.roles" placeholder="payer, approver" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+      </label>
+      <label class="w-32 text-[11px] font-medium text-muted">
+        {{ say("sod-threshold") }} <AppHint name="sod-threshold-help" />
+        <input v-model="sodDraft.min_conflicting" placeholder="2" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+      </label>
+      <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+        {{ say("realm-create") }}
+      </button>
+    </form>
+
+    <p v-if="!sodRules.length" class="mt-2 text-xs text-muted">{{ say("sod-no-rules") }}</p>
+    <div v-else class="mt-2 overflow-x-auto rounded-lg border border-border bg-surface">
+      <table class="w-full text-left text-xs">
+        <thead>
+          <tr class="border-b border-border text-[11px] text-muted">
+            <th class="px-3 py-2 font-medium">{{ say("sod-rule-name") }}</th>
+            <th class="px-3 py-2 font-medium">{{ say("sod-roles") }}</th>
+            <th class="px-3 py-2 font-medium">{{ say("sod-threshold") }}</th>
+            <th class="px-3 py-2 font-medium">{{ say("users-col-state") }}</th>
+            <th class="px-3 py-2 font-medium"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="rule in sodRules" :key="rule.rule_id" class="border-b border-border/60 last:border-0">
+            <td class="px-3 py-2 font-mono text-[10.5px]">{{ rule.rule_id }}</td>
+            <td class="px-3 py-2 font-mono text-[10.5px] text-muted">{{ rule.roles.join(", ") }}</td>
+            <td class="px-3 py-2 font-mono text-[10.5px]">{{ rule.min_conflicting }}</td>
+            <td class="px-3 py-2 text-[10.5px]">
+              {{ rule.enabled ? say("users-active") : say("users-disabled") }}
+            </td>
+            <td class="px-3 py-2">
+              <span class="flex justify-end gap-1.5">
+                <button type="button" class="rounded border border-border px-1.5 py-0.5 text-[10.5px] hover:bg-surface-2" @click="flipSodRule(rule)">
+                  {{ rule.enabled ? say("rule-pause") : say("rule-enable") }}
+                </button>
+                <button type="button" class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-danger hover:bg-surface-2" @click="dropSodRule(rule.rule_id)">
+                  {{ say("action-remove") }}
+                </button>
+              </span>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <template v-if="sodRules.length">
+      <h2 class="mt-6 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("sod-violations") }}
+      </h2>
+      <p v-if="!sodViolations.length" class="mt-2 text-xs text-muted">
+        {{ say("sod-no-violations") }}
+      </p>
+      <div v-else class="mt-2 grid max-w-3xl gap-2">
+        <div
+          v-for="violation in sodViolations"
+          :key="violation.user_id + violation.rule_id"
+          class="rounded-lg border border-border bg-surface px-3 py-2 text-xs"
+        >
+          <div class="flex items-center gap-2">
+            <span class="font-mono text-[11px]">{{ violation.user_name }}</span>
+            <span class="text-muted">{{ violation.rule_id }}</span>
+            <span class="font-mono text-[10.5px] text-muted">{{ violation.roles.join(", ") }}</span>
+            <span
+              class="ml-auto rounded border px-1.5 py-0.5 text-[10px]"
+              :class="violation.excused ? 'border-border text-muted' : 'border-warn/40 text-warn'"
+            >
+              {{ violation.excused ? say("sod-excused") : say("sod-standing") }}
+            </span>
+            <button
+              v-if="!violation.excused"
+              type="button"
+              class="rounded border border-border px-1.5 py-0.5 text-[10.5px] hover:bg-surface-2"
+              @click="openExcuse(violation)"
+            >
+              {{ say("sod-excuse") }}
+            </button>
+          </div>
+          <form
+            v-if="excusing?.user_id === violation.user_id && excusing?.rule_id === violation.rule_id"
+            class="mt-2 flex items-end gap-2 border-t border-border/60 pt-2"
+            @submit.prevent="giveExcuse"
+          >
+            <label class="flex-1 text-[11px] font-medium text-muted">
+              {{ say("sod-justification") }}
+              <input v-model="excuseDraft.justification" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+            </label>
+            <label class="w-52 text-[11px] font-medium text-muted">
+              {{ say("sod-valid-until") }}
+              <input v-model="excuseDraft.valid_until" placeholder="2026-12-31T00:00:00Z" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-[10.5px] text-ink" spellcheck="false" />
+            </label>
+            <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+              {{ say("sod-excuse") }}
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <template v-if="sodExceptions.length">
+        <h2 class="mt-6 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          {{ say("sod-exceptions") }}
+        </h2>
+        <div class="mt-2 grid max-w-3xl gap-2">
+          <div
+            v-for="exception in sodExceptions"
+            :key="exception.rule_id + exception.user_id"
+            class="flex items-center gap-2 rounded-lg border border-border bg-surface px-3 py-2 text-xs"
+          >
+            <span class="font-mono text-[11px]">{{ exception.user_id }}</span>
+            <span class="text-muted">{{ exception.rule_id }}</span>
+            <span class="font-mono text-[10.5px] text-muted">
+              {{ say("sod-covers") }} {{ exception.covered_roles.join(", ") }}
+            </span>
+            <span class="ml-auto font-mono text-[10px] text-warn">
+              {{ say("iga-until") }} {{ untilShort(exception.valid_until) }}
+            </span>
+            <button
+              type="button"
+              class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-danger hover:bg-surface-2"
+              @click="withdrawExcuse(exception.rule_id, exception.user_id)"
+            >
+              {{ say("sod-withdraw") }}
+            </button>
+          </div>
+        </div>
+      </template>
+    </template>
   </div>
 </template>

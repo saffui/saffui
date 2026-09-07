@@ -807,7 +807,6 @@ subject-hand-grant = { $role } for { $user }
 
 ## Paging, honesty chips, and the user identity card.
 paging-size = Per page
-settings-not-enforced = not enforced yet
 user-identifier = Identifier
 user-identifier-help = What grants, sessions and the journal point at: drawn at birth, never the name, so a rename moves nothing. Accounts born before drawn identifiers answer to their name here too.
 user-born = Created

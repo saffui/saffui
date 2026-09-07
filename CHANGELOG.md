@@ -10,6 +10,13 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- The sign-in pages stand on a designed ground: two quiet washes of the
+  realm's own brand and concentric hairline rings behind the card, and the
+  card itself frosts over it where the browser can afford it, stepping back
+  to the solid surface under reduced transparency, higher contrast, or a
+  browser without the filter. Everything is mixed from the same fifteen
+  theme tokens, so a branded realm tints its own ground and the contract
+  does not move; a test now holds the sheet to exactly those fifteen.
 - An evaluator page in the console: ask what one person would get, in the
   four ways this build answers. What a token would carry, the permission
   question a resource server actually asks, a role or group rule, an

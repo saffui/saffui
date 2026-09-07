@@ -729,6 +729,38 @@ mod tests {
         );
     }
 
+    /// The theme door admits exactly the fifteen names; a sheet that grew a
+    /// sixteenth would carry styling no realm can ever reach. Every custom
+    /// property the sheet declares has to be one the door admits, however
+    /// freely it derives further values from them.
+    #[test]
+    fn the_sheet_declares_no_token_the_theme_door_does_not_admit() {
+        let mut declared = Vec::new();
+        let mut rest = super::STYLE;
+        while let Some(at) = rest.find("--") {
+            rest = &rest[at + 2..];
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '-')
+                .collect();
+            if !name.is_empty() && rest[name.len()..].trim_start().starts_with(':') {
+                declared.push(name);
+            }
+        }
+        assert!(
+            declared.len() >= services::theme::TOKENS.len(),
+            "the sheet no longer declares the contract: {declared:?}"
+        );
+        for name in &declared {
+            assert!(
+                services::theme::TOKENS.contains(&name.as_str()),
+                "the sheet declares `--{name}`, which the theme door does not admit: \
+                 a realm can never override it. Derive it from the fifteen, or widen \
+                 the contract in services::theme deliberately."
+            );
+        }
+    }
+
     /// A round the script cannot name lands on its own last branch, which says
     /// only that something went wrong. Every outcome the endpoint speaks has to
     /// be one the script answers.

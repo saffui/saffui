@@ -39,6 +39,8 @@ pub struct Swept {
     pub backchannel_requests: u64,
     pub device_codes: u64,
     pub sessions: u64,
+    /// Client grants that ran out under logins still standing.
+    pub client_sessions: u64,
 }
 
 impl Swept {
@@ -60,6 +62,7 @@ impl Swept {
             + self.backchannel_requests
             + self.device_codes
             + self.sessions
+            + self.client_sessions
     }
 
     pub fn add(&mut self, other: Swept) {
@@ -78,6 +81,7 @@ impl Swept {
         self.backchannel_requests += other.backchannel_requests;
         self.device_codes += other.device_codes;
         self.sessions += other.sessions;
+        self.client_sessions += other.client_sessions;
     }
 }
 
@@ -143,6 +147,11 @@ pub async fn drop_expired_rows(
             .await
             .map_err(failed)?,
         device_codes: devices::drop_expired(transaction, now)
+            .await
+            .map_err(failed)?,
+        // Before the logins, so this pass counts only what ended early: what
+        // the login's own removal cascades away is not a second count.
+        client_sessions: sessions::drop_expired_client_sessions(transaction, now)
             .await
             .map_err(failed)?,
         // Last, because it cascades: a login taken away here takes its client

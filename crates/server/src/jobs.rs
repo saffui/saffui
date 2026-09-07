@@ -49,6 +49,7 @@ pub fn sweep_expired_rows(
                     delivery_receipts = swept.delivery_receipts,
                     pushed_requests = swept.pushed_requests,
                     sessions = swept.sessions,
+                    client_sessions = swept.client_sessions,
                     "swept expired rows"
                 ),
                 Some(_) => {}

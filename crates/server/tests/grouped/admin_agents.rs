@@ -187,6 +187,32 @@ async fn an_agent_is_born_whole_and_keyless_or_not_at_all() {
         still["capabilities"], held["capabilities"],
         "the refusal wrote anyway"
     );
+
+    // The operator keys the agent deliberately through the rotation door.
+    // The rotation stores a hash the client model never surfaces, so this
+    // is exactly the shape in which `keyed` once lied.
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/clients/scribe-1/secret"),
+        &bearer,
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the rotation door refused");
+    let (_, keyed) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/agents/scribe-1"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        keyed["keyed"],
+        json!(true),
+        "the deliberate keying is not visible on the agent: {keyed}"
+    );
 }
 
 /// The security walk the phase promises: a registered agent mints over MCP

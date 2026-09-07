@@ -105,6 +105,8 @@ const draft = ref({
   tokenExchange: false,
   cibaDelivery: "off",
   cibaEndpoint: "",
+  tlsForm: "off" as "off" | "dns" | "uri" | "dn",
+  tlsValue: "",
 });
 function adoptClient() {
   const held = client.value;
@@ -122,7 +124,37 @@ function adoptClient() {
     tokenExchange: held.token_exchange,
     cibaDelivery: held.ciba_delivery,
     cibaEndpoint: held.ciba_notification_endpoint ?? "",
+    tlsForm:
+      held.tls_san_dns != null
+        ? "dns"
+        : held.tls_san_uri != null
+          ? "uri"
+          : held.tls_subject_dn != null
+            ? "dn"
+            : "off",
+    tlsValue: held.tls_san_dns ?? held.tls_san_uri ?? held.tls_subject_dn ?? "",
   };
+}
+
+/// The one TLS field this save touches, or none. Turning off clears the
+/// standing key with an empty string; the plane clears its siblings with
+/// any write, so one field is always enough.
+function tlsTouched(): { tls_san_dns?: string; tls_san_uri?: string; tls_subject_dn?: string } {
+  const value = draft.value.tlsValue.trim();
+  const keys = { dns: "tls_san_dns", uri: "tls_san_uri", dn: "tls_subject_dn" } as const;
+  if (draft.value.tlsForm !== "off" && value) {
+    return { [keys[draft.value.tlsForm]]: value };
+  }
+  const held = client.value;
+  const standing =
+    held?.tls_san_dns != null
+      ? "tls_san_dns"
+      : held?.tls_san_uri != null
+        ? "tls_san_uri"
+        : held?.tls_subject_dn != null
+          ? "tls_subject_dn"
+          : null;
+  return standing ? { [standing]: "" } : {};
 }
 function lines(held: string): string[] {
   return held
@@ -144,6 +176,7 @@ async function saveClient() {
       token_exchange: draft.value.tokenExchange,
       ciba_delivery: draft.value.cibaDelivery,
       ciba_notification_endpoint: draft.value.cibaEndpoint.trim() || undefined,
+      ...tlsTouched(),
     });
     await load();
     adoptClient();
@@ -429,6 +462,36 @@ async function dropScope(name: string) {
             spellcheck="false"
           />
         </label>
+
+        <div v-if="client.confidential">
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("client-tls-title") }} <AppHint name="client-tls-help" />
+          </div>
+          <div class="mt-1.5 flex gap-2">
+            <select
+              v-model="draft.tlsForm"
+              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            >
+              <option value="off">{{ say("client-tls-off") }}</option>
+              <option value="dns">{{ say("client-tls-dns") }}</option>
+              <option value="uri">{{ say("client-tls-uri") }}</option>
+              <option value="dn">{{ say("client-tls-dn") }}</option>
+            </select>
+            <input
+              v-if="draft.tlsForm !== 'off'"
+              v-model="draft.tlsValue"
+              :placeholder="
+                draft.tlsForm === 'dns'
+                  ? 'till.example'
+                  : draft.tlsForm === 'uri'
+                    ? 'spiffe://till'
+                    : 'CN=till,O=Acme'
+              "
+              spellcheck="false"
+              class="min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            />
+          </div>
+        </div>
 
         <div>
           <button

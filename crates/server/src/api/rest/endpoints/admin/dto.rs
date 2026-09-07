@@ -108,6 +108,11 @@ pub struct ClientBrief {
     pub ciba_notification_endpoint: Option<String>,
     /// The client-wide cut: tokens minted before this instant are refused.
     pub not_before: Option<i32>,
+    /// RFC 8705's one name, whichever of the three forms holds it. At most
+    /// one is ever set: the verifier refuses a plural bag.
+    pub tls_san_dns: Option<String>,
+    pub tls_san_uri: Option<String>,
+    pub tls_subject_dn: Option<String>,
 }
 
 impl From<models::entities::client::ClientModel> for ClientBrief {
@@ -138,6 +143,9 @@ impl From<models::entities::client::ClientModel> for ClientBrief {
                 None => "off".to_owned(),
             },
             ciba_notification_endpoint: bag(&held, services::ciba::NOTIFICATION_ENDPOINT_FLAG),
+            tls_san_dns: bag(&held, "tls.san_dns"),
+            tls_san_uri: bag(&held, "tls.san_uri"),
+            tls_subject_dn: bag(&held, "tls.subject_dn"),
         }
     }
 }
@@ -221,6 +229,11 @@ pub struct ClientSpec {
     /// Cut every token this client was minted before this instant; 0 lifts
     /// the cut, absent leaves it alone. The future is refused at the door.
     pub not_before: Option<i32>,
+    /// RFC 8705's one name. Name at most one; a named empty string turns
+    /// certificate authentication off, absent leaves the standing name.
+    pub tls_san_dns: Option<String>,
+    pub tls_san_uri: Option<String>,
+    pub tls_subject_dn: Option<String>,
 }
 
 /// What the plane is asked to create or reshape a person as.

@@ -87,6 +87,11 @@ export interface ClientSpec {
   /// Cut tokens minted before this instant; 0 lifts the cut, absent leaves
   /// it alone. The plane refuses a cut in the future.
   not_before?: number;
+  /// RFC 8705's one name. Name at most one; "" turns certificate
+  /// authentication off, absent leaves the standing name alone.
+  tls_san_dns?: string;
+  tls_san_uri?: string;
+  tls_subject_dn?: string;
 }
 
 /// Creation answers the client, and for a confidential one the secret rides

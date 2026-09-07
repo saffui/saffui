@@ -1331,6 +1331,88 @@ async fn the_grants_an_operator_opens_are_the_ones_the_engines_serve() {
     );
 }
 
+/// RFC 8705's one name over the plane: set in one form, moved whole to
+/// another, refused in words when two ride one body, and cleared by an
+/// empty string. At most one key ever stands, because the verifier admits
+/// exactly one and refuses a plural bag.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_carries_at_most_one_tls_name() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/clients");
+
+    let (status, born) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "client_id": "mtls-till",
+            "confidential": true,
+            "redirect_uris": ["https://till.example/cb"],
+            "tls_san_dns": "till.example",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    assert_eq!(born["tls_san_dns"], "till.example", "{born}");
+    assert_eq!(born["tls_subject_dn"], serde_json::Value::Null, "{born}");
+
+    // Moved to another form: the old key does not linger beside the new.
+    let (status, moved) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/mtls-till"),
+        &bearer,
+        serde_json::json!({ "tls_subject_dn": "CN=till,O=Acme" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(moved["tls_subject_dn"], "CN=till,O=Acme", "{moved}");
+    assert_eq!(
+        moved["tls_san_dns"],
+        serde_json::Value::Null,
+        "the old name lingered beside the new: {moved}"
+    );
+
+    // Two in one body is a client that could never authenticate again.
+    let (status, refused) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/mtls-till"),
+        &bearer,
+        serde_json::json!({ "tls_san_dns": "till.example", "tls_san_uri": "spiffe://till" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("exactly one TLS name"),
+        "the refusal does not say the rule: {refused}"
+    );
+
+    // An empty string turns certificate authentication off.
+    let (status, off) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/mtls-till"),
+        &bearer,
+        serde_json::json!({ "tls_subject_dn": "" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{off}");
+    for key in ["tls_san_dns", "tls_san_uri", "tls_subject_dn"] {
+        assert_eq!(
+            off[key],
+            serde_json::Value::Null,
+            "{key} survived the clearing: {off}"
+        );
+    }
+}
+
 /// The backchannel opt-in is the delivery mode, so half of one is refused
 /// rather than written and then read back as nothing.
 #[tokio::test]

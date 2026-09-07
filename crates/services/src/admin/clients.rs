@@ -58,6 +58,21 @@ pub struct Gates {
     /// CIBA, whose opt-in is the delivery mode itself: there is no separate
     /// flag to disagree with.
     pub ciba: Option<CibaOptIn>,
+    /// RFC 8705's one name: what this client's certificate must carry to
+    /// authenticate it. Unnamed leaves the standing name alone.
+    pub tls_name: Option<TlsName>,
+}
+
+/// The one name a certificate authenticates by. One variant holds one
+/// name, so a client carrying two is not a state this can spell: the
+/// verifier admits exactly one key on the bag and refuses the rest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TlsName {
+    /// Certificate authentication is off: no key stands on the bag.
+    Off,
+    SanDns(String),
+    SanUri(String),
+    SubjectDn(String),
 }
 
 /// How this client is signed in over the backchannel, or not at all.
@@ -454,6 +469,24 @@ fn apply_gates(client: &mut ClientModel, gates: &Gates) {
                     AttributeValue::Str(endpoint.clone()),
                 );
             }
+        }
+    }
+    if let Some(named) = &gates.tls_name {
+        // One writer for the three keys: whatever stood before is taken
+        // away, and at most one name is put back. The verifier reads
+        // exactly one and refuses a plural bag, so this is the only shape
+        // a write may leave behind.
+        for key in ["tls.san_dns", "tls.san_uri", "tls.subject_dn"] {
+            bag.remove(key);
+        }
+        let (key, value) = match named {
+            TlsName::Off => (None, String::new()),
+            TlsName::SanDns(name) => (Some("tls.san_dns"), name.clone()),
+            TlsName::SanUri(name) => (Some("tls.san_uri"), name.clone()),
+            TlsName::SubjectDn(name) => (Some("tls.subject_dn"), name.clone()),
+        };
+        if let Some(key) = key {
+            bag.insert(key.to_owned(), AttributeValue::Str(value));
         }
     }
     client.configs = Some(bag);

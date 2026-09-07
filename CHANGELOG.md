@@ -10,6 +10,12 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- A client's certificate name reaches the console: RFC 8705's one name in
+  whichever of its three forms, on the client drawer, read back off the
+  same bag the verifier reads. The plane holds the rule the verifier
+  already enforced: at most one name ever stands, a body naming two is
+  refused in words, and turning it off removes the keys rather than
+  storing a lie.
 - The flow editor's canvas grows up: a sub-flow is drawn as a container
   holding its own steps, each selectable in place and one click from its
   own editor; the palette can finally add a sub-flow step, which the API

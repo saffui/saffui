@@ -18,6 +18,9 @@ pub struct OutboxEvent {
     pub user_id: String,
     pub payload: Value,
     pub attempts: i32,
+    /// When the happening happened, which under retries is not when any
+    /// telling of it goes out.
+    pub occurred_at: DateTime<Utc>,
 }
 
 /// Record one happening, inside the transaction that made it happen.
@@ -64,7 +67,7 @@ pub async fn due(
              WHERE held.tenant = picked.tenant AND held.realm_id = picked.realm_id \
                AND held.event_id = picked.event_id \
              RETURNING held.realm_id, held.event_id, held.kind, held.user_id, \
-                       held.payload, held.attempts",
+                       held.payload, held.attempts, held.occurred_at",
             &[&ceiling, &(backoff_seconds as f64), &now],
         )
         .await
@@ -77,6 +80,7 @@ pub async fn due(
             user_id: row.get("user_id"),
             payload: row.get("payload"),
             attempts: row.get("attempts"),
+            occurred_at: row.get("occurred_at"),
         })
         .collect())
 }

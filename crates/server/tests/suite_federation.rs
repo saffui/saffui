@@ -20,3 +20,5 @@ mod spnego_login;
 mod ssf_poll;
 #[path = "grouped/two_writers.rs"]
 mod two_writers;
+#[path = "grouped/webhooks.rs"]
+mod webhooks;

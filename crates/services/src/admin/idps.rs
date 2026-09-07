@@ -70,6 +70,7 @@ fn conceal(provider: &mut IdentityProviderModel) {
                 crate::outbound::CLEAR_BEARER,
                 crate::outbound::SEALED_BEARER,
             ),
+            (crate::webhook::CLEAR_SECRET, crate::webhook::SEALED_SECRET),
         ] {
             bag.remove(clear_key);
             if bag.remove(sealed_key).is_some() {
@@ -97,6 +98,7 @@ async fn seal_secret(
             crate::outbound::CLEAR_BEARER,
             crate::outbound::SEALED_BEARER,
         ),
+        (crate::webhook::CLEAR_SECRET, crate::webhook::SEALED_SECRET),
     ] {
         let Some(taken) = bag.remove(clear_key) else {
             continue;
@@ -163,6 +165,9 @@ pub async fn create_provider(
     } else if crate::caep::is_receiver(&provider) {
         crate::caep::Receiver::parse(&provider)
             .map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    } else if crate::webhook::is_webhook(&provider) {
+        crate::webhook::Webhook::parse(&provider)
+            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
     } else {
         Upstream::parse(&provider).map_err(|why| Unwritable::Invalid(why.to_string()))?;
     }
@@ -207,6 +212,7 @@ pub async fn update_provider(
             crate::outbound::CLEAR_BEARER,
             crate::outbound::SEALED_BEARER,
         ),
+        (crate::webhook::CLEAR_SECRET, crate::webhook::SEALED_SECRET),
     ] {
         let echoed_mask = rewritten.configs.as_ref().is_some_and(|bag| {
             bag.get(clear_key).and_then(AttributeValue::as_str) == Some("**********")
@@ -238,6 +244,9 @@ pub async fn update_provider(
             .map_err(|why| Unwritable::Invalid(why.to_string()))?;
     } else if crate::caep::is_receiver(&rewritten) {
         crate::caep::Receiver::parse(&rewritten)
+            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
+    } else if crate::webhook::is_webhook(&rewritten) {
+        crate::webhook::Webhook::parse(&rewritten)
             .map_err(|why| Unwritable::Invalid(why.to_string()))?;
     } else {
         Upstream::parse(&rewritten).map_err(|why| Unwritable::Invalid(why.to_string()))?;

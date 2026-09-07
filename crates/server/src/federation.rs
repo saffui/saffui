@@ -529,6 +529,15 @@ pub async fn deliver_outbox(
                 .map(|receiver| (row, receiver))
         })
         .collect();
+    let webhooks: Vec<_> = rows
+        .iter()
+        .filter(|row| services::webhook::is_webhook(row) && row.enabled != Some(false))
+        .filter_map(|row| {
+            services::webhook::Webhook::parse(row)
+                .ok()
+                .map(|hook| (row, hook))
+        })
+        .collect();
     // The realm's keys, only when somebody is listening for signed events.
     let ring = if receivers.is_empty() {
         None
@@ -624,6 +633,41 @@ pub async fn deliver_outbox(
                 }
             }
         }
+        // The webhooks take every kind their filter admits, as one signed
+        // JSON body: the signature covers these exact bytes, so the body is
+        // rendered once and rides verbatim.
+        if webhooks.iter().any(|(_, hook)| hook.wants(&event.kind)) {
+            let body = serde_json::json!({
+                "event_id": event.event_id,
+                "kind": event.kind,
+                "realm": context.realm_id,
+                "user_id": event.user_id,
+                "occurred_at": event.occurred_at.to_rfc3339(),
+                "payload": event.payload,
+            })
+            .to_string();
+            for (row, hook) in &webhooks {
+                if !hook.wants(&event.kind) {
+                    continue;
+                }
+                let signed = opened_webhook_secret(transaction, sealing, context, row)
+                    .await
+                    .and_then(|secret| {
+                        services::webhook::signature(
+                            sealing.provider.as_ref(),
+                            &secret,
+                            body.as_bytes(),
+                        )
+                    });
+                let Some(signature) = signed else {
+                    landed = false;
+                    continue;
+                };
+                if !push_json(hook, &signature, &event.kind, event.event_id, body.clone()).await {
+                    landed = false;
+                }
+            }
+        }
         if landed {
             store::providers::outbox::delivered(transaction, event.event_id)
                 .await
@@ -677,6 +721,66 @@ pub(crate) async fn opened_bearer(
         .await
         .ok()?;
     String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()
+}
+
+async fn opened_webhook_secret(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &crate::api::config::Sealing,
+    context: &store::tenancy::TenantContext,
+    provider: &models::entities::authz::IdentityProviderModel,
+) -> Option<String> {
+    use data_encoding::BASE64;
+    let sealed = provider
+        .configs
+        .as_ref()?
+        .get(services::webhook::SEALED_SECRET)?
+        .as_str()?;
+    let sealed = BASE64.decode(sealed.as_bytes()).ok()?;
+    let ring = store::keyring::load(
+        transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    .ok()?;
+    let opened = ring
+        .open(
+            &sealing.envelope,
+            "identity-provider-secret",
+            &provider.internal_id,
+            &sealed,
+        )
+        .await
+        .ok()?;
+    String::from_utf8(crypto::secrecy::ExposeSecret::expose_secret(&opened).clone()).ok()
+}
+
+/// One signed telling to one webhook: these exact bytes, their signature,
+/// and the two headers a consumer dedups and routes by.
+async fn push_json(
+    hook: &services::webhook::Webhook,
+    signature: &str,
+    kind: &str,
+    event_id: i64,
+    body: String,
+) -> bool {
+    let url = hook.url.clone();
+    let signature = signature.to_owned();
+    let kind = kind.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let agent = far_side_agent();
+        agent
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("x-saffui-signature", &signature)
+            .header("x-saffui-event", &kind)
+            .header("x-saffui-event-id", &event_id.to_string())
+            .send(body.as_str())
+            .is_ok()
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// The agent every ask to a far side rides: a short global timeout, no

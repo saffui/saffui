@@ -10,6 +10,13 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- The outbox is offered to any system that speaks HTTP: a webhook is a
+  connector like the SCIM ear and the CAEP receiver, one registry row with
+  a sealed secret, riding the same delivery pass and the same retries.
+  Every delivery signs its exact bytes (HMAC-SHA256 in
+  `X-Saffui-Signature`), names its kind and its monotone event id in
+  headers, and the kind filter speaks the capability grammar, `*` included
+  because a spelled firehose is an honest subscription.
 - A client's certificate name reaches the console: RFC 8705's one name in
   whichever of its three forms, on the client drawer, read back off the
   same bag the verifier reads. The plane holds the rule the verifier

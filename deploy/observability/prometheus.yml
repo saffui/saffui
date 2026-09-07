@@ -1,0 +1,9 @@
+# One target: the operations port, where the scrape lives so it never
+# queues behind traffic. Two seconds, because the harness waits on it.
+global:
+  scrape_interval: 2s
+
+scrape_configs:
+  - job_name: saffui
+    static_configs:
+      - targets: ["saffui:8081"]

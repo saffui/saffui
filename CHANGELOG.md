@@ -10,6 +10,11 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- One id joins the three records: the request's trace lands on its log
+  line, every admin write journals it inside the hashed envelope (projected
+  into a queryable, indexed `trace_id` column), and the telemetry rig
+  (`deploy/observability/`) proves the loop against Jaeger and Prometheus,
+  correlation queries included.
 - Distributed tracing over OTLP, switchable on the same two layers as the
   metrics: the `otel` cargo feature decides whether the export stack is
   linked at all, `SAFFUI_FEATURES=-otel` turns a carrying build off, and

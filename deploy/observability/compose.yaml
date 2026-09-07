@@ -1,0 +1,102 @@
+# The telemetry plane, end to end: one saffui against one Postgres, spans
+# leaving over OTLP into Jaeger, metrics scraped by Prometheus off the
+# operations port. This is the rig `harness.mjs` drives; every value here is
+# a development value.
+
+name: saffui-obs
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: saffui
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d saffui"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    image: saffui:local
+    pull_policy: never
+    command: ["migrate"]
+    environment:
+      SAFFUI_DATABASE_URL: host=postgres user=postgres password=postgres dbname=saffui
+      SAFFUI_APP_ROLE_PASSWORD: saffui_app
+      SAFFUI_PUBLIC_ORIGIN: http://localhost:38080
+      SAFFUI_ADMIN_AUDIENCES: saffui-console
+      SAFFUI_ADMIN_PARTIES: saffui-console
+      SAFFUI_CRYPTO_KEK: a-development-wrapping-key-of-decent-length
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  provision:
+    image: saffui:local
+    pull_policy: never
+    command:
+      - provision
+      - --tenant=local
+      - --realm=main
+      - --console-redirect=http://localhost:38080/console/login/return
+      - --user=ada
+      - --administrator
+      - --email=ada@example.test
+    environment:
+      SAFFUI_DATABASE_URL: host=postgres user=saffui_app password=saffui_app dbname=saffui
+      SAFFUI_PUBLIC_ORIGIN: http://localhost:38080
+      SAFFUI_ADMIN_AUDIENCES: saffui-console
+      SAFFUI_ADMIN_PARTIES: saffui-console
+      SAFFUI_CRYPTO_KEK: a-development-wrapping-key-of-decent-length
+      SAFFUI_PROVISION_USER_PASSWORD: a-password-of-decent-length
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  saffui:
+    image: saffui:local
+    pull_policy: never
+    ports:
+      - "38080:8080"
+      - "38081:8081"
+    environment:
+      SAFFUI_DATABASE_URL: host=postgres user=saffui_app password=saffui_app dbname=saffui
+      SAFFUI_PUBLIC_ORIGIN: http://localhost:38080
+      SAFFUI_ADMIN_AUDIENCES: saffui-console
+      SAFFUI_ADMIN_PARTIES: saffui-console
+      SAFFUI_CRYPTO_KEK: a-development-wrapping-key-of-decent-length
+      SAFFUI_OTEL_ENDPOINT: http://jaeger:4318/v1/traces
+      # Everything, so what the harness drives is what Jaeger holds. A
+      # deployment keeps the resting one-in-ten.
+      SAFFUI_OTEL_SAMPLE: "1"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    depends_on:
+      provision:
+        condition: service_completed_successfully
+      jaeger:
+        condition: service_started
+
+  # Collector, store and UI in one: OTLP in on 4318, the query API on 16686.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "36686:16686"
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "39090:9090"
+    depends_on:
+      saffui:
+        condition: service_healthy

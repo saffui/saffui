@@ -529,6 +529,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V087__ussd.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 88,
+            name: "journal_trace",
+            sql: include_str!("../migrations/V088__journal_trace.sql"),
+            transactional: true,
+        }),
     ]
 }
 

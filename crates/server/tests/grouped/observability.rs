@@ -462,3 +462,87 @@ async fn a_callers_trace_carries_through_to_the_exported_span() {
         .expect("a fresh trace for the untraced caller");
     assert_ne!(fresh, opentelemetry::trace::TraceId::INVALID);
 }
+
+/// One key joins the three records: the trace id lands on the log line, and
+/// an admin write made inside that trace journals it inside the hashed
+/// envelope, projected into the queryable column, with the chain still
+/// verifying whole over rows that carry the key and rows that do not.
+#[cfg(feature = "otel")]
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_trace_joins_the_log_line_and_the_journal_row() {
+    use models::entities::authz::AdminAction;
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::prelude::*;
+
+    let plane = Plane::with_actions(&[AdminAction::UserWrite]).await;
+    server::otel::install_propagation();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let captured = Captured::default();
+    let _scope = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .json()
+            .flatten_event(true)
+            .with_current_span(true)
+            .with_span_list(false)
+            .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+            .with_writer(captured.clone())
+            .finish()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("the-test"))),
+    );
+    let app = test::init_service(observed().configure(register(&mounted(&plane)))).await;
+
+    let bearer = plane.token(&support::claims());
+    let inside = "00-1bad2cafe00dfeed5566778899aabbcc-b7ad6b7169203331-01";
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/admin/realms/{}/users", support::REALM))
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .insert_header(("traceparent", inside))
+            .set_json(serde_json::json!({ "user_name": "traced-person" }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    drop(response);
+
+    let line = captured
+        .lines()
+        .into_iter()
+        .find(|line| line["message"] == "close" && line["span"]["status"] == 201)
+        .unwrap_or_else(|| panic!("no closing line for the write: {}", captured.text()));
+    assert_eq!(
+        line["span"]["trace_id"], "1bad2cafe00dfeed5566778899aabbcc",
+        "the log line does not carry the trace: {line}"
+    );
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let journalled: String = transaction
+        .query_one(
+            "SELECT envelope ->> 'trace_id' FROM audit_events \
+             WHERE trace_id = $1 AND kind = 'admin.write'",
+            &[&"1bad2cafe00dfeed5566778899aabbcc"],
+        )
+        .await
+        .expect("the journal row is findable by its projected trace")
+        .get(0);
+    assert_eq!(journalled, "1bad2cafe00dfeed5566778899aabbcc");
+    let verified = store::audit::verify(&transaction, support::sealing().provider.digest())
+        .await
+        .expect("a verification");
+    assert!(
+        verified.holds(),
+        "the chain broke under the carried key at {:?}",
+        verified.broken_at
+    );
+}

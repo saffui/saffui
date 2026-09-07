@@ -100,7 +100,7 @@ where
                     // route outside a realm has no chain to write.
                     let realm = realm_of(&path)?;
                     let context = TenantContext::new(&admin.context.tenant.tenant, &realm);
-                    let envelope = serde_json::json!({
+                    let mut envelope = serde_json::json!({
                         "kind": if mutates { "admin.write" } else { "admin.read" },
                         "occurred_at": Utc::now().timestamp() as f64,
                         "actor": admin.context.principal.id(),
@@ -110,6 +110,12 @@ where
                         "path": path,
                         "status": answered.status().as_u16(),
                     });
+                    // The trace this request rode, when it rode one: the key
+                    // is absent otherwise, so rows written before tracing or
+                    // without it keep their shape and their hash.
+                    if let Some(trace) = crate::otel::current_trace_id() {
+                        envelope["trace_id"] = serde_json::Value::String(trace);
+                    }
                     Some((context, envelope))
                 })
             };

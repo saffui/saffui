@@ -299,6 +299,10 @@ mod request_span {
                 route = tracing::field::Empty,
                 realm = tracing::field::Empty,
                 status = tracing::field::Empty,
+                // Recorded by the installed tie, when a build exports
+                // spans: the trace this request belongs to, fresh or the
+                // caller's own.
+                trace_id = tracing::field::Empty,
             );
             if let Some(tie) = PARENTING.get() {
                 tie(request, &span);

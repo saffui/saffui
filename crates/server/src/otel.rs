@@ -61,6 +61,26 @@ mod exporting {
         {
             tracing::debug!(%why, "a caller's trace context could not be tied");
         }
+        // Onto the log line, fresh or inherited, so a line and a trace join
+        // on the same key the journal row carries.
+        let settled = span.context().span().span_context().trace_id();
+        if settled != opentelemetry::trace::TraceId::INVALID {
+            span.record(
+                "trace_id",
+                tracing::field::display(format!("{settled:032x}")),
+            );
+        }
+    }
+
+    /// The trace the current request belongs to, when there is one: what the
+    /// audit journal writes beside what it records.
+    pub fn current_trace_id() -> Option<String> {
+        let id = tracing::Span::current()
+            .context()
+            .span()
+            .span_context()
+            .trace_id();
+        (id != opentelemetry::trace::TraceId::INVALID).then(|| format!("{id:032x}"))
     }
 
     /// The W3C `traceparent` and `tracestate` a caller sent, off the headers.
@@ -134,4 +154,10 @@ mod exporting {
 }
 
 #[cfg(feature = "otel")]
-pub use exporting::{Telemetry, install_propagation, start};
+pub use exporting::{Telemetry, current_trace_id, install_propagation, start};
+
+/// The build without the machinery: no request ever belongs to a trace.
+#[cfg(not(feature = "otel"))]
+pub fn current_trace_id() -> Option<String> {
+    None
+}

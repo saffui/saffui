@@ -48,11 +48,16 @@ unic-langid = "0.9"
 # `pnpm --dir admin build` to have produced admin/dist first.
 include_dir = { version = "0.7", optional = true }
 prometheus = { workspace = true, optional = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 lettre = { workspace = true }
 async-trait = { workspace = true }
 
 [features]
-default = ["metrics"]
+default = ["metrics", "otel"]
 # The desktop-ticket door. Compile-gated: the GSSAPI binding links the
 # system Kerberos libraries, and a deployment that does not negotiate
 # should not carry them.
@@ -64,8 +69,23 @@ embedded-admin = ["dep:include_dir"]
 # that leaves it out carries no metrics machinery at all, and the runtime
 # switch is `-metrics` in SAFFUI_FEATURES.
 metrics = ["dep:prometheus"]
+# Distributed tracing over OTLP. On by default, but nothing dials until an
+# operator names a collector; a build that leaves it out cannot dial one at
+# all, which is what an air-gapped profile wants said at link time.
+otel = [
+    "dep:opentelemetry",
+    "dep:tracing-subscriber",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]
 
 [dev-dependencies]
+# The in-memory half of the export pipeline, so a test can read back the
+# spans a request produced and the trace they claim to belong to.
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tracing-opentelemetry = { workspace = true }
 # The client half of a SPNEGO exchange, so the bench can hold a real ticket.
 cross-krb5 = { version = "0.4", default-features = false }
 # The binary's operator commands, driven in tests against this very server.

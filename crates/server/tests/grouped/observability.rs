@@ -382,3 +382,83 @@ async fn a_served_request_lands_in_the_families_by_template() {
         "a raw path reached the route label:\n{after}"
     );
 }
+
+/// A caller already inside a trace stays in it: the W3C header reparents
+/// the request's span, the exported span carries the caller's trace id,
+/// and the route rides it as an attribute. A caller outside any trace gets
+/// a fresh one. Exported through an in-memory pipe, read back whole.
+#[cfg(feature = "otel")]
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_callers_trace_carries_through_to_the_exported_span() {
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::prelude::*;
+
+    let plane = Plane::with_actions(&[]).await;
+    server::otel::install_propagation();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let _scope = tracing::subscriber::set_default(
+        tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("the-test"))),
+    );
+    let app = test::init_service(observed().configure(register(&mounted(&plane)))).await;
+    let path = format!("/realms/{}/protocol/openid-connect/certs", support::REALM);
+
+    let inside = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&path)
+            .insert_header(("traceparent", inside))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+
+    let spans = exporter.get_finished_spans().expect("the exported spans");
+    let carried = spans
+        .iter()
+        .find(|span| {
+            span.name == "http-request"
+                && span.span_context.trace_id()
+                    == opentelemetry::trace::TraceId::from_hex("0af7651916cd43dd8448eb211c80319c")
+                        .expect("a well-formed id")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no request span in the caller's trace: {:?}",
+                spans
+                    .iter()
+                    .map(|span| (span.name.clone(), span.span_context.trace_id()))
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        carried.attributes.iter().any(|held| {
+            held.key.as_str() == "route"
+                && held.value.as_str() == "/realms/{realm}/protocol/openid-connect/certs"
+        }),
+        "the route is not on the span: {:?}",
+        carried.attributes
+    );
+
+    // Outside any trace: a fresh id, not zero and not the caller's.
+    let response = test::call_service(&app, test::TestRequest::get().uri(&path).to_request()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    drop(response);
+    let spans = exporter.get_finished_spans().expect("the exported spans");
+    let fresh = spans
+        .iter()
+        .filter(|span| span.name == "http-request")
+        .map(|span| span.span_context.trace_id())
+        .find(|id| {
+            *id != opentelemetry::trace::TraceId::from_hex("0af7651916cd43dd8448eb211c80319c")
+                .expect("a well-formed id")
+        })
+        .expect("a fresh trace for the untraced caller");
+    assert_ne!(fresh, opentelemetry::trace::TraceId::INVALID);
+}

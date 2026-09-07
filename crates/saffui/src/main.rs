@@ -207,13 +207,52 @@ fn main() -> ExitCode {
         _ => {}
     }
 
+    // Resolved before the logger, because both the logger's shape and the
+    // refusal below come out of it: a capability asked for and not carried
+    // refuses the whole start in words, whichever command was asked.
+    let features = match commons::feature::FeatureSet::resolve(&config::features(), |feature| {
+        crypto::compiled_features().contains(&feature.slug())
+            || commons::feature::locally_compiled(feature)
+            || server::metrics::compiled(feature)
+            || server::otel::compiled(feature)
+    }) {
+        Ok(resolved) => resolved,
+        Err(reason) => {
+            eprintln!("SAFFUI_FEATURES could not be honoured: {reason}");
+            return ExitCode::FAILURE;
+        }
+    };
+    server::api::config::install_features(features.clone());
+
+    // The export pipeline, only under `serve`, only when the switch is on,
+    // and only against a named collector: absent an endpoint nothing is
+    // built, so nothing can dial.
+    let telemetry = match telemetry_for(&command, &features) {
+        Ok(started) => started,
+        Err(reason) => {
+            eprintln!("{reason}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     // Before anything that could have something to say. What is logged and
     // how are the operator's, from the environment; absent, every record at
     // `info` and above, as text a person reads at a terminal. A collector
     // that wants one JSON object per line asks for `json`.
-    commons::observability::init(
+    #[cfg(feature = "otel")]
+    let (telemetry, exporting) = match telemetry {
+        Some((held, layer)) => (Some(held), Some(layer)),
+        None => (None, None),
+    };
+    #[cfg(not(feature = "otel"))]
+    let (telemetry, exporting): (
+        Option<Exported>,
+        Option<Box<dyn tracing_subscriber::Layer<commons::observability::Watched> + Send + Sync>>,
+    ) = (telemetry, None);
+    commons::observability::init_with(
         &config::optional("LOG").unwrap_or_else(|| "info".to_owned()),
         &config::optional("LOG_FORMAT").unwrap_or_else(|| "text".to_owned()),
+        exporting,
     );
 
     let outcome = tokio::runtime::Runtime::new()
@@ -285,6 +324,14 @@ fn main() -> ExitCode {
             })
         });
 
+    // After the servers have stopped, so the last requests' spans leave too.
+    #[cfg(feature = "otel")]
+    if let Some(telemetry) = telemetry {
+        telemetry.shutdown();
+    }
+    #[cfg(not(feature = "otel"))]
+    let _ = telemetry;
+
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(reason) => {
@@ -294,17 +341,42 @@ fn main() -> ExitCode {
     }
 }
 
+/// The export pipeline and its layer, when `serve` was asked, the switch is
+/// on, and a collector is named. Every other shape is a quiet `None`.
+#[cfg(feature = "otel")]
+type Exported = (
+    server::otel::Telemetry,
+    Box<dyn tracing_subscriber::Layer<commons::observability::Watched> + Send + Sync>,
+);
+#[cfg(not(feature = "otel"))]
+type Exported = std::convert::Infallible;
+
+fn telemetry_for(
+    command: &Command,
+    features: &commons::feature::FeatureSet,
+) -> Result<Option<Exported>, String> {
+    if !matches!(command, Command::Serve { .. }) {
+        return Ok(None);
+    }
+    if !features.status(commons::feature::Feature::Otel).enabled {
+        return Ok(None);
+    }
+    #[cfg(feature = "otel")]
+    {
+        let Some(endpoint) = config::otel::endpoint() else {
+            return Ok(None);
+        };
+        let ratio = config::otel::sample_ratio().map_err(|reason| reason.to_string())?;
+        server::otel::start(&endpoint, ratio).map(Some)
+    }
+    #[cfg(not(feature = "otel"))]
+    Ok(None)
+}
+
 async fn serve(bind: &str, ops: &str) -> Result<(), String> {
-    // First, so a capability asked for and not carried refuses the whole
-    // start in words, rather than serving without it.
-    let features = commons::feature::FeatureSet::resolve(&config::features(), |feature| {
-        crypto::compiled_features().contains(&feature.slug())
-            || commons::feature::locally_compiled(feature)
-            || server::metrics::compiled(feature)
-    })
-    .map_err(|reason| format!("SAFFUI_FEATURES could not be honoured: {reason}"))?;
-    let measured = features.status(commons::feature::Feature::Metrics).enabled;
-    server::api::config::install_features(features);
+    let measured = server::api::config::features()
+        .status(commons::feature::Feature::Metrics)
+        .enabled;
 
     let plane = plane()?;
 

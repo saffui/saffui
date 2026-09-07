@@ -279,6 +279,7 @@ pub async fn workload(
     client: &ClientModel,
     external_subject: &str,
     platform_issuer: &str,
+    carried: serde_json::Map<String, Value>,
     requested: Option<&str>,
     seen: &auth::provenance::Provenance,
     now: DateTime<Utc>,
@@ -316,7 +317,10 @@ pub async fn workload(
         crate::authorize::granted_scope(transaction, &client.client_id, requested.unwrap_or(""))
             .await
             .map_err(|_| Ungranted::Unreadable)?;
-    let mut extra = serde_json::Map::new();
+    // The platform's own words first, then the minting's: carried names
+    // are refused the reserved set at the write door, so nothing here can
+    // shadow what follows.
+    let mut extra = carried;
     extra.insert(
         "act".to_owned(),
         serde_json::json!({ "sub": external_subject, "iss": platform_issuer }),

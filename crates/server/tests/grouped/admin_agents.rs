@@ -213,6 +213,46 @@ async fn an_agent_is_born_whole_and_keyless_or_not_at_all() {
         json!(true),
         "the deliberate keying is not visible on the agent: {keyed}"
     );
+
+    // The lifecycle told the outside, in the same transactions that did it.
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, REALM),
+            )
+            .await;
+        let kinds: Vec<String> = transaction
+            .query(
+                "SELECT kind FROM event_outbox WHERE user_id = 'scribe-1' ORDER BY event_id",
+                &[],
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get("kind"))
+            .collect();
+        assert!(
+            kinds.first().is_some_and(|kind| kind == "agent.registered"),
+            "the birth was not told: {kinds:?}"
+        );
+        assert!(
+            kinds.iter().any(|kind| kind == "agent.reshaped"),
+            "the reshape was not told: {kinds:?}"
+        );
+        let none: Vec<String> = transaction
+            .query(
+                "SELECT kind FROM event_outbox WHERE user_id = 'scribe-bad'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get("kind"))
+            .collect();
+        assert!(none.is_empty(), "a refused birth was told anyway: {none:?}");
+    }
 }
 
 /// The security walk the phase promises: a registered agent mints over MCP
@@ -361,4 +401,25 @@ async fn a_revoked_agents_tokens_die_everywhere_at_once() {
         StatusCode::UNAUTHORIZED,
         "a cut token still opened the MCP door"
     );
+
+    // The cut itself was told, in the transaction that cut.
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, REALM),
+            )
+            .await;
+        let told: i64 = transaction
+            .query_one(
+                "SELECT count(*) FROM event_outbox \
+                 WHERE kind = 'agent.revoked' AND user_id = 'scribe-2'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(told, 1, "the cut was not told exactly once");
+    }
 }

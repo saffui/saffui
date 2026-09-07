@@ -9,6 +9,10 @@ pub const USER_UPDATED: &str = "user.updated";
 pub const USER_DELETED: &str = "user.deleted";
 pub const SESSION_REVOKED: &str = "session.revoked";
 pub const CREDENTIAL_CHANGED: &str = "credential.changed";
+pub const AGENT_REGISTERED: &str = "agent.registered";
+pub const AGENT_RESHAPED: &str = "agent.reshaped";
+pub const AGENT_REVOKED: &str = "agent.revoked";
+pub const AGENT_LIFTED: &str = "agent.lifted";
 
 #[derive(Debug, Clone)]
 pub struct OutboxEvent {

@@ -10,6 +10,13 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- A trusted platform may spell which of its token's claims ride into the
+  minted workload token (`carried_claims`), values as data for the
+  resource server and never a reserved name, refused at the write door in
+  words. And the agent lifecycle reaches the outbox: `agent.registered`,
+  `agent.reshaped`, `agent.revoked`, `agent.lifted`, in the same
+  transactions that did the thing, so a SIEM subscribed to `agent.*`
+  hears every operator act on an agent.
 - A range of retained happenings can be replayed into one named webhook,
   dry by default, bounded by the outbox's own retention, under the
   original ids and signatures so the far side's dedup makes repeating it

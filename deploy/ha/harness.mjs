@@ -13,11 +13,12 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+
+import { login as consoleLogin } from "../lib/console.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const COMPOSE = join(here, "compose.yaml");
@@ -74,92 +75,17 @@ async function waitFor(label, check, timeoutMs = 60_000, everyMs = 250) {
   }
 }
 
-function cookieHeader(jar) {
-  return [...jar.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
-}
-
-function drink(jar, response) {
-  for (const line of response.headers.getSetCookie()) {
-    const [pair] = line.split(";");
-    const eq = pair.indexOf("=");
-    if (eq > 0) {
-      const name = pair.slice(0, eq).trim();
-      const value = pair.slice(eq + 1).trim();
-      if (value === "") {
-        jar.delete(name);
-      } else {
-        jar.set(name, value);
-      }
-    }
-  }
-}
-
-function pkce() {
-  const verifier = randomBytes(48).toString("base64url");
-  const challenge = createHash("sha256").update(verifier).digest("base64url");
-  return { verifier, challenge };
-}
-
-/// One whole code-flow login as the console client. Opening, answering and
-/// exchanging each name their instance, so a login can hop: the state lives
-/// in the one database, and the cookie is the only thing the browser carries.
+/// One whole code-flow login as the console client, riding the shared
+/// flow. Opening, answering and exchanging each name their instance, so a
+/// login can hop: the state lives in the one database, and the cookie is
+/// the only thing the browser carries.
 async function login(openAt, answerAt = openAt, tokenAt = openAt) {
-  const jar = new Map();
-  const { verifier, challenge } = pkce();
-  const query = new URLSearchParams({
-    client_id: CONSOLE,
-    redirect_uri: REDIRECT,
-    response_type: "code",
-    scope: "openid profile admin",
-    state: randomBytes(8).toString("base64url"),
-    nonce: randomBytes(8).toString("base64url"),
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-  });
-  const opened = await fetch(
-    `${openAt}/realms/${REALM}/protocol/openid-connect/auth?${query}`,
-    { redirect: "manual" },
+  return consoleLogin(
+    { realm: REALM, client: CONSOLE, redirect: REDIRECT, username: "ada", password: PASSWORD },
+    openAt,
+    answerAt,
+    tokenAt,
   );
-  drink(jar, opened);
-  assert.ok(
-    jar.has("saffui_auth_session"),
-    `no login opened at ${openAt}: ${opened.status} ${await opened.text()}`,
-  );
-
-  const answered = await fetch(`${answerAt}/realms/${REALM}/protocol/openid-connect/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json", cookie: cookieHeader(jar) },
-    body: JSON.stringify({ username: "ada", password: PASSWORD }),
-    redirect: "manual",
-  });
-  const outcome = await answered.json();
-  assert.equal(
-    outcome.status,
-    "admitted",
-    `the login answered at ${answerAt} was not admitted: ${JSON.stringify(outcome)}`,
-  );
-  const code = new URL(outcome.redirect_to).searchParams.get("code");
-  assert.ok(code, `no code rode the admission: ${outcome.redirect_to}`);
-
-  const exchanged = await fetch(`${tokenAt}/realms/${REALM}/protocol/openid-connect/token`, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: REDIRECT,
-      client_id: CONSOLE,
-      code_verifier: verifier,
-    }),
-  });
-  const tokens = await exchanged.json();
-  assert.equal(
-    exchanged.status,
-    200,
-    `the exchange at ${tokenAt} refused: ${JSON.stringify(tokens)}`,
-  );
-  assert.ok(tokens.access_token, "no access token came back");
-  return tokens;
 }
 
 async function admin(base, token, method, path, payload) {

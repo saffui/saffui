@@ -10,6 +10,12 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- The flow editor's canvas grows up: a sub-flow is drawn as a container
+  holding its own steps, each selectable in place and one click from its
+  own editor; the palette can finally add a sub-flow step, which the API
+  always accepted and the screen never offered; edges wear arrowheads; and
+  a minimap in the corner shows the whole drawing with the window onto it,
+  one click to stand elsewhere.
 - The sign-in pages stand on a designed ground: two quiet washes of the
   realm's own brand and concentric hairline rings behind the card, and the
   card itself frosts over it where the browser can afford it, stepping back

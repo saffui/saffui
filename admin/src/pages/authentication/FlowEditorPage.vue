@@ -10,8 +10,8 @@ import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
 import { addExecution, removeExecution } from "@/services/flows";
-import { getFlow, setRequirement } from "@/services/flows";
-import type { ExecutionRow, FlowDetail, Requirement } from "@/models/flows";
+import { getFlow, listFlows, setRequirement } from "@/services/flows";
+import type { ExecutionRow, FlowDetail, FlowRow, Requirement } from "@/models/flows";
 import { reorderFlow } from "@/services/flows";
 import { afterWrites } from "@/services/writes";
 
@@ -25,6 +25,11 @@ const router = useRouter();
 const realm = computed(() => String(route.params.realm));
 const flowId = computed(() => String(route.params.flow));
 const held = ref<FlowDetail | null>(null);
+/// The body of every sub-flow on the canvas, keyed by its flow id, so a
+/// container can show the steps it holds rather than a dashed promise.
+const inner = ref(new Map<string, FlowDetail>());
+/// Every flow of the realm, for the palette's sub-flow pick.
+const catalogue = ref<FlowRow[]>([]);
 const failed = ref("");
 const selected = ref<ExecutionRow | null>(null);
 
@@ -59,6 +64,19 @@ const hovered = ref<string | null>(null);
 async function load() {
   try {
     held.value = await getFlow(realm.value, flowId.value);
+    const wanted = held.value.executions.flatMap((row) =>
+      row.step.kind === "sub_flow" ? [row.step.flow_id] : [],
+    );
+    const fetched = await Promise.all(
+      wanted.map(async (id) => {
+        try {
+          return [id, await getFlow(realm.value, id)] as const;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    inner.value = new Map(fetched.filter((held2) => held2 !== null));
     if (selected.value) {
       selected.value =
         held.value.executions.find(
@@ -70,12 +88,33 @@ async function load() {
   }
 }
 onMounted(load);
+onMounted(async () => {
+  try {
+    catalogue.value = await listFlows(realm.value);
+  } catch {
+    // The palette then offers only authenticators, which still stands.
+  }
+});
 afterWrites(load);
 
 interface Placed {
   row: ExecutionRow;
   x: number;
   y: number;
+  h: number;
+}
+
+/// How much room the inner rows of a sub-flow take.
+const INNER_HEAD = 30;
+const INNER_ROW = 18;
+
+/// A step's own height: one card, unless it is a sub-flow whose body is
+/// known, which grows a row per inner step.
+function heightOf(row: ExecutionRow): number {
+  if (row.step.kind !== "sub_flow") return NODE_H;
+  const body = inner.value.get(row.step.flow_id);
+  if (!body || !body.executions.length) return NODE_H;
+  return INNER_HEAD + body.executions.length * INNER_ROW + 10;
 }
 interface Stage {
   nodes: Placed[];
@@ -101,14 +140,15 @@ const stages = computed<Stage[]>(() => {
   }
   let x = NODE_W + GAP_X;
   return folded.map((rows) => {
-    const tall = rows.length * NODE_H + (rows.length - 1) * GAP_Y;
-    const top = -tall / 2;
+    const heights = rows.map(heightOf);
+    const tall = heights.reduce((sum, h) => sum + h, 0) + (rows.length - 1) * GAP_Y;
+    let y = -tall / 2;
     const stage: Stage = {
-      nodes: rows.map((row, at) => ({
-        row,
-        x,
-        y: top + at * (NODE_H + GAP_Y),
-      })),
+      nodes: rows.map((row, at) => {
+        const placed = { row, x, y, h: heights[at] };
+        y += heights[at] + GAP_Y;
+        return placed;
+      }),
     };
     x += NODE_W + GAP_X;
     return stage;
@@ -134,11 +174,11 @@ const edges = computed<string[]>(() => {
     if (!living.length) continue;
     for (const node of living) {
       for (const y of fromYs) {
-        drawn.push(elbow(fromX, y, node.x, node.y + NODE_H / 2));
+        drawn.push(elbow(fromX, y, node.x, node.y + node.h / 2));
       }
     }
     fromX = living[0].x + NODE_W;
-    fromYs = living.map((node) => node.y + NODE_H / 2);
+    fromYs = living.map((node) => node.y + node.h / 2);
   }
   for (const y of fromYs) {
     drawn.push(elbow(fromX, y, exitX.value, 0));
@@ -156,7 +196,7 @@ function slotAt(wx: number, wy: number): number {
   for (let at = 0; at < rows.length; at += 1) {
     const centre = rows[at].x + NODE_W / 2;
     if (wx < centre - half) return at;
-    if (Math.abs(wx - centre) <= half && wy < rows[at].y + NODE_H / 2) return at;
+    if (Math.abs(wx - centre) <= half && wy < rows[at].y + rows[at].h / 2) return at;
   }
   return rows.length;
 }
@@ -167,7 +207,7 @@ const dropSlot = computed<{ x: number; y: number } | null>(() => {
   const at = slotAt(carrying.value.wx, carrying.value.wy);
   const rows = flat.value;
   if (at >= rows.length) return { x: exitX.value - GAP_X / 2, y: 0 };
-  return { x: rows[at].x - GAP_X / 2, y: rows[at].y + NODE_H / 2 };
+  return { x: rows[at].x - GAP_X / 2, y: rows[at].y + rows[at].h / 2 };
 });
 
 function grab(event: PointerEvent, row: ExecutionRow) {
@@ -220,7 +260,20 @@ function stripe(requirement: Requirement): string {
 }
 
 function stepName(row: ExecutionRow): string {
-  return row.step.kind === "authenticator" ? row.step.authenticator : say("flow-sub-flow");
+  if (row.step.kind === "authenticator") return row.step.authenticator;
+  return inner.value.get(row.step.flow_id)?.flow.alias ?? say("flow-sub-flow");
+}
+
+/// The inner steps a container shows, in their running order.
+function innerRows(row: ExecutionRow): ExecutionRow[] {
+  if (row.step.kind !== "sub_flow") return [];
+  const body = inner.value.get(row.step.flow_id);
+  return body ? [...body.executions].sort((a, b) => a.priority - b.priority) : [];
+}
+
+function openInner(row: ExecutionRow) {
+  if (row.step.kind !== "sub_flow") return;
+  router.push(`/${realm.value}/authentication/${row.step.flow_id}`);
 }
 
 function onWheel(event: WheelEvent) {
@@ -272,7 +325,19 @@ const AUTHENTICATORS = [
 const adding = ref(false);
 /// Where the next step lands in the running order; the end when unsaid.
 const insertAt = ref<number | null>(null);
-const stepDraft = ref({ alias: "", authenticator: "password", requirement: "required" });
+const stepDraft = ref({
+  kind: "authenticator" as "authenticator" | "sub_flow",
+  alias: "",
+  authenticator: "password",
+  subFlowId: "",
+  requirement: "required",
+});
+
+/// The flows a container may hold: everything but this one. The server
+/// checks existence; not offering a flow to itself is this side's manners.
+const containable = computed(() =>
+  catalogue.value.filter((row) => row.flow_id !== flowId.value),
+);
 
 /// A priority strictly between the neighbours of the asked slot. When the
 /// numbering leaves no room, the whole order is rewritten first: the numbers
@@ -299,16 +364,31 @@ async function addStep() {
       insertAt.value === null
         ? Math.max(0, ...rows.map((row) => row.priority)) + 10
         : await insertionPriority(insertAt.value);
+    const asked = stepDraft.value;
+    if (asked.kind === "sub_flow" && !asked.subFlowId) return;
+    const fallback =
+      asked.kind === "authenticator"
+        ? asked.authenticator
+        : (catalogue.value.find((row) => row.flow_id === asked.subFlowId)?.alias ?? "sub-flow");
     await addExecution(realm.value, flowId.value, {
-      alias: stepDraft.value.alias.trim() || stepDraft.value.authenticator,
+      alias: asked.alias.trim() || fallback,
       flow_id: flowId.value,
       priority,
-      step: { kind: "authenticator", authenticator: stepDraft.value.authenticator },
-      requirement: stepDraft.value.requirement,
+      step:
+        asked.kind === "authenticator"
+          ? { kind: "authenticator", authenticator: asked.authenticator }
+          : { kind: "sub_flow", flow_id: asked.subFlowId },
+      requirement: asked.requirement,
     });
     adding.value = false;
     insertAt.value = null;
-    stepDraft.value = { alias: "", authenticator: "password", requirement: "required" };
+    stepDraft.value = {
+      kind: "authenticator",
+      alias: "",
+      authenticator: "password",
+      subFlowId: "",
+      requirement: "required",
+    };
     held.value = await getFlow(realm.value, flowId.value);
   } catch {
     // The toast already said.
@@ -356,6 +436,54 @@ async function changeRequirement(requirement: Requirement) {
 }
 
 const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
+
+/// The whole drawing and the window onto it, both shrunk into a corner:
+/// enough to know where you stand, and one click to stand elsewhere.
+const MINI_W = 148;
+const MINI_H = 92;
+const minimap = computed(() => {
+  const rows = flat.value;
+  let left = -20;
+  let right = exitX.value + (NODE_W - 44) + 20;
+  let top = -60;
+  let bottom = 60;
+  for (const node of rows) {
+    top = Math.min(top, node.y - 20);
+    bottom = Math.max(bottom, node.y + node.h + 20);
+  }
+  const scale = Math.min(MINI_W / (right - left), MINI_H / (bottom - top));
+  const width = 1100 / view.value.zoom;
+  const height = 640 / view.value.zoom;
+  return {
+    left,
+    top,
+    scale,
+    nodes: rows.map((node) => ({
+      key: node.row.execution_id,
+      x: (node.x - left) * scale,
+      y: (node.y - top) * scale,
+      w: NODE_W * scale,
+      h: node.h * scale,
+      lit: selected.value?.execution_id === node.row.execution_id,
+    })),
+    port: {
+      x: (view.value.x - left) * scale,
+      y: (view.value.y - height / 2 + 120 - top) * scale,
+      w: width * scale,
+      h: height * scale,
+    },
+  };
+});
+
+function jumpTo(event: MouseEvent) {
+  const box = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const held2 = minimap.value;
+  const wx = held2.left + (event.clientX - box.left) / held2.scale;
+  const wy = held2.top + (event.clientY - box.top) / held2.scale;
+  // The viewBox is centred on (view.x + width / 2, view.y + 120).
+  view.value.x = wx - 1100 / view.value.zoom / 2;
+  view.value.y = wy - 120;
+}
 </script>
 
 <template>
@@ -411,7 +539,7 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
 
     <div class="mt-3 flex min-h-0 flex-1 gap-3">
       <div
-        class="min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-surface"
+        class="relative min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-surface"
       >
         <svg
           ref="canvas"
@@ -427,6 +555,17 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
             <pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse">
               <circle cx="1" cy="1" r="1" fill="var(--sf-border)" opacity="0.55" />
             </pattern>
+            <marker
+              id="arrow"
+              viewBox="0 0 8 8"
+              refX="7"
+              refY="4"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 8 4 L 0 8 z" fill="var(--sf-faint)" />
+            </marker>
           </defs>
           <rect
             :x="view.x - 2000"
@@ -443,6 +582,7 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
             fill="none"
             stroke="var(--sf-faint)"
             stroke-width="1.4"
+            marker-end="url(#arrow)"
           />
 
           <g>
@@ -486,7 +626,7 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
                 :x="node.x"
                 :y="node.y"
                 :width="NODE_W"
-                :height="NODE_H"
+                :height="node.h"
                 rx="8"
                 fill="var(--sf-surface-2)"
                 :stroke="
@@ -515,7 +655,7 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
                 :x="node.x"
                 :y="node.y"
                 width="3"
-                :height="NODE_H"
+                :height="node.h"
                 rx="1.5"
                 :fill="stripe(node.row.requirement)"
               />
@@ -529,6 +669,7 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
                 {{ node.row.alias }}
               </text>
               <text
+                v-if="node.row.step.kind !== 'sub_flow' || !innerRows(node.row).length"
                 :x="node.x + 14"
                 :y="node.y + 41"
                 fill="var(--sf-muted)"
@@ -537,6 +678,60 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
               >
                 {{ stepName(node.row) }} &middot; {{ say(`flow-req-${node.row.requirement}`) }}
               </text>
+              <!-- A container shows what it holds, one small row per inner
+                   step, and its title row opens the flow it names. -->
+              <template v-if="node.row.step.kind === 'sub_flow' && innerRows(node.row).length">
+                <text
+                  :x="node.x + NODE_W - 14"
+                  :y="node.y + 21"
+                  text-anchor="end"
+                  fill="var(--sf-faint)"
+                  font-size="10"
+                  class="cursor-pointer"
+                  @pointerdown.stop
+                  @click.stop="openInner(node.row)"
+                >
+                  {{ say("flow-open-sub") }} &#8599;
+                </text>
+                <g
+                  v-for="(step, at) in innerRows(node.row)"
+                  :key="step.execution_id"
+                  class="cursor-pointer"
+                  @pointerdown.stop
+                  @click.stop="selected = step"
+                >
+                  <rect
+                    :x="node.x + 10"
+                    :y="node.y + 28 + at * 18"
+                    :width="NODE_W - 20"
+                    height="15"
+                    rx="3"
+                    :fill="
+                      selected?.execution_id === step.execution_id
+                        ? 'var(--sf-surface-3)'
+                        : 'transparent'
+                    "
+                  />
+                  <rect
+                    :x="node.x + 10"
+                    :y="node.y + 30 + at * 18"
+                    width="2"
+                    height="11"
+                    rx="1"
+                    :fill="stripe(step.requirement)"
+                  />
+                  <text
+                    :x="node.x + 18"
+                    :y="node.y + 39 + at * 18"
+                    fill="var(--sf-muted)"
+                    font-size="10"
+                    font-family="JetBrains Mono, monospace"
+                    :opacity="step.requirement === 'disabled' ? 0.5 : 1"
+                  >
+                    {{ step.alias }}
+                  </text>
+                </g>
+              </template>
             </g>
           </g>
 
@@ -621,6 +816,36 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
             </text>
           </g>
         </svg>
+        <!-- The whole drawing in a corner, and the window onto it: click to
+             stand elsewhere. -->
+        <svg
+          class="absolute right-2 bottom-2 cursor-pointer rounded-md border border-border"
+          :width="148"
+          :height="92"
+          style="background: color-mix(in srgb, var(--sf-surface) 82%, transparent)"
+          @click="jumpTo"
+        >
+          <rect
+            v-for="node in minimap.nodes"
+            :key="node.key"
+            :x="node.x"
+            :y="node.y"
+            :width="Math.max(3, node.w)"
+            :height="Math.max(2, node.h)"
+            rx="1"
+            :fill="node.lit ? 'var(--sf-accent)' : 'var(--sf-faint)'"
+            opacity="0.8"
+          />
+          <rect
+            :x="minimap.port.x"
+            :y="minimap.port.y"
+            :width="minimap.port.w"
+            :height="minimap.port.h"
+            fill="none"
+            stroke="var(--sf-accent)"
+            stroke-width="1.2"
+          />
+        </svg>
       </div>
 
       <aside class="w-64 shrink-0 rounded-lg border border-border bg-surface p-3">
@@ -671,10 +896,29 @@ const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
   
   <AppDrawer v-if="adding" :title="say('flow-add-step')" :subtitle="held?.flow.alias ?? flowId" @close="adding = false">
     <form class="flex flex-col gap-3 text-xs" @submit.prevent="addStep">
-      <label class="block text-[11px] font-medium text-muted">
+      <div class="flex gap-1">
+        <button
+          v-for="kind in (['authenticator', 'sub_flow'] as const)"
+          :key="kind"
+          type="button"
+          class="rounded-md px-2 py-1 text-[11px] font-semibold"
+          :class="stepDraft.kind === kind ? 'bg-accent/12 text-accent' : 'text-muted hover:text-ink'"
+          @click="stepDraft.kind = kind"
+        >
+          {{ say(`flow-kind-${kind === "sub_flow" ? "sub-flow" : kind}`) }}
+        </button>
+      </div>
+      <label v-if="stepDraft.kind === 'authenticator'" class="block text-[11px] font-medium text-muted">
         {{ say("flow-step-what") }} <AppHint name="flow-step-what-help" />
         <select v-model="stepDraft.authenticator" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
           <option v-for="held2 in AUTHENTICATORS" :key="held2" :value="held2">{{ held2 }}</option>
+        </select>
+      </label>
+      <label v-else class="block text-[11px] font-medium text-muted">
+        {{ say("flow-pick-flow") }} <AppHint name="flow-pick-flow-help" />
+        <select v-model="stepDraft.subFlowId" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+          <option value="">&#8230;</option>
+          <option v-for="row in containable" :key="row.flow_id" :value="row.flow_id">{{ row.alias }}</option>
         </select>
       </label>
       <label class="block text-[11px] font-medium text-muted">

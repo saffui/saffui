@@ -10,6 +10,9 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- A client may register its subject DN as the one name its certificate
+  authenticates by, RFC 8705's third form, compared exactly in the one
+  canonical rendering the server states.
 - One id joins the three records: the request's trace lands on its log
   line, every admin write journals it inside the hashed envelope (projected
   into a queryable, indexed `trace_id` column), and the telemetry rig

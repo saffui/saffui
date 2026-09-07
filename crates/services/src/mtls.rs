@@ -40,6 +40,14 @@ pub fn san_dns(carried: &str) -> Result<Vec<String>, Unreadable> {
     crypto::x509::san_dns(&der).ok_or(Unreadable::Malformed)
 }
 
+/// The subject DN of the forwarded certificate, in this build's one
+/// canonical rendering: RFC 4514 order and escaping, short names. What a
+/// client registering `tls.subject_dn` must hold exactly.
+pub fn subject_dn(carried: &str) -> Result<String, Unreadable> {
+    let der = der_of(carried).ok_or(Unreadable::Malformed)?;
+    crypto::x509::subject_dn(&der).ok_or(Unreadable::Malformed)
+}
+
 fn der_of(carried: &str) -> Option<Vec<u8>> {
     // A header cannot hold a newline, so a proxy that forwards PEM either
     // escapes them or writes the body alone. Both arrive here as one line.

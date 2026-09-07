@@ -201,3 +201,150 @@ async fn a_certificate_is_a_client_credential() {
     let (status, _) = exchanged(&plane, &code, Some(&minted("till-7.shop.example"))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "two names served anyway");
 }
+
+/// RFC 8705's third name: the subject DN, registered whole and compared
+/// exactly in this build's one canonical rendering (most specific entry
+/// first, RFC 4514 escaping). The right certificate is admitted, a cousin
+/// with another CN is not, and a registration holding the same entries in
+/// another order names nobody: exact means exact.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_subject_dn_is_the_third_registered_name() {
+    use models::auditable::AuditableModel;
+    use models::entities::attributes::AttributeValue;
+    use models::entities::client::ClientCreateModel;
+
+    const NAMED: &str = "till-8";
+    let plane = Plane::with_actions(&[]).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = ClientCreateModel {
+            name: NAMED.into(),
+            display_name: NAMED.into(),
+            description: String::new(),
+            enabled: Some(true),
+        }
+        .into_model(
+            NAMED.to_owned(),
+            REALM.into(),
+            AuditableModel::from_creator(support::TENANT.into(), "root".into()),
+        );
+        store::providers::clients::create(&transaction, &client)
+            .await
+            .unwrap();
+        client.public_client = Some(false);
+        client.client_authenticator_type = Some("tls-client-auth".into());
+        client.redirect_uris = Some(vec![REDIRECT.to_owned()]);
+        client.standard_flow_enabled = Some(true);
+        client.configs.get_or_insert_with(Default::default).insert(
+            "tls.subject_dn".to_owned(),
+            AttributeValue::Str("CN=till-8.shop.example,O=Shop,C=FR".to_owned()),
+        );
+        store::providers::clients::update(&transaction, &client)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    // C, then O, then CN, the DER's general-to-specific order; the
+    // canonical rendering reads it back most specific first.
+    let minted_named = |cn: &str| {
+        use openssl::asn1::Asn1Time;
+        use openssl::hash::MessageDigest;
+        use openssl::pkey::PKey;
+        use openssl::x509::extension::SubjectAlternativeName;
+        use openssl::x509::{X509Builder, X509NameBuilder};
+
+        let group =
+            openssl::ec::EcGroup::from_curve_name(openssl::nid::Nid::X9_62_PRIME256V1).unwrap();
+        let key = PKey::from_ec_key(openssl::ec::EcKey::generate(&group).unwrap()).unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("C", "FR").unwrap();
+        name.append_entry_by_text("O", "Shop").unwrap();
+        name.append_entry_by_text("CN", cn).unwrap();
+        let name = name.build();
+        let mut builder = X509Builder::new().unwrap();
+        builder.set_version(2).unwrap();
+        builder.set_subject_name(&name).unwrap();
+        builder.set_issuer_name(&name).unwrap();
+        builder.set_pubkey(&key).unwrap();
+        builder
+            .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        builder
+            .set_not_after(&Asn1Time::days_from_now(1).unwrap())
+            .unwrap();
+        let san = SubjectAlternativeName::new()
+            .dns(cn)
+            .build(&builder.x509v3_context(None, None))
+            .unwrap();
+        builder.append_extension(san).unwrap();
+        builder.sign(&key, MessageDigest::sha256()).unwrap();
+        BASE64.encode(&builder.build().to_der().unwrap())
+    };
+
+    let exchanged_as = |code: String, certificate: String| {
+        let plane = &plane;
+        async move {
+            let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+            let response = test::call_service(
+                &app,
+                test::TestRequest::post()
+                    .uri(&format!("/realms/{REALM}/protocol/openid-connect/token"))
+                    .peer_addr("10.4.5.6:5000".parse().unwrap())
+                    .insert_header((CERT_HEADER, certificate))
+                    .set_form([
+                        ("grant_type", "authorization_code"),
+                        ("code", code.as_str()),
+                        ("redirect_uri", REDIRECT),
+                        ("client_id", NAMED),
+                    ])
+                    .to_request(),
+            )
+            .await;
+            let status = response.status();
+            let body = test::read_body(response).await;
+            (
+                status,
+                serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null),
+            )
+        }
+    };
+
+    let code = plane.mint_code(NAMED, REDIRECT, "openid", None).await;
+    let (status, told) = exchanged_as(code, minted_named("till-8.shop.example")).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let code = plane.mint_code(NAMED, REDIRECT, "openid", None).await;
+    let (status, told) = exchanged_as(code, minted_named("till-9.shop.example")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["error"], "invalid_client", "{told}");
+
+    // The same entries registered in another order name nobody: the
+    // rendering is canonical, and only the canonical string admits.
+    {
+        use models::entities::attributes::AttributeValue;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, NAMED)
+            .await
+            .unwrap()
+            .expect("the client");
+        client.configs.get_or_insert_with(Default::default).insert(
+            "tls.subject_dn".to_owned(),
+            AttributeValue::Str("O=Shop,CN=till-8.shop.example,C=FR".to_owned()),
+        );
+        store::providers::clients::update(&transaction, &client)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+    let code = plane.mint_code(NAMED, REDIRECT, "openid", None).await;
+    let (status, told) = exchanged_as(code, minted_named("till-8.shop.example")).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+}

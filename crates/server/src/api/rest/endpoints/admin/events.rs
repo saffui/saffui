@@ -178,3 +178,129 @@ pub async fn requeue(
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
+
+#[derive(serde::Deserialize)]
+pub struct ReplayAsk {
+    pub from_event_id: i64,
+    pub to_event_id: Option<i64>,
+    /// The one connector this replay feeds, by alias. Explicit, never all
+    /// of them: a replay that fanned out would redeliver to every listener
+    /// that already heard.
+    pub connector: String,
+    /// A replay tells what it would do unless told to do it.
+    #[serde(default = "stand_back")]
+    pub dry_run: bool,
+}
+
+fn stand_back() -> bool {
+    true
+}
+
+/// At most this many tellings per ask; the answer carries where it
+/// stopped, so the operator continues from there.
+const REPLAY_CEILING: i64 = 500;
+
+/// Re-deliver a range of retained tellings to one named webhook: the gap
+/// after an outage, or a consumer onboarded late. Bounded by the outbox's
+/// own retention, a dry run by default, and every delivery carries its
+/// original id, so the far side's dedup makes the operation safe to
+/// repeat.
+pub async fn replay(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<crate::api::config::Sealing>,
+    path: web::Path<String>,
+    body: web::Json<ReplayAsk>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let asked = body.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let context = TenantContext::new(&admin.context.tenant.tenant, &realm_id);
+    let transaction = tenancy
+        .transaction(&mut connection, &context)
+        .await
+        .map_err(|_| internal())?;
+
+    let row = store::providers::brokering::provider_by_alias(&transaction, &asked.connector)
+        .await
+        .map_err(|_| internal())?
+        .ok_or_else(|| ApiError::new(ErrorCode::IdentityProviderNotFound))?;
+    if row.enabled == Some(false) {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "the connector is disabled".to_owned(),
+        ));
+    }
+    let hook = services::webhook::Webhook::parse(&row).map_err(|_| {
+        ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "only a webhook takes a replay".to_owned(),
+        )
+    })?;
+
+    let held = store::providers::outbox::retained(
+        &transaction,
+        asked.from_event_id,
+        asked.to_event_id,
+        REPLAY_CEILING + 1,
+    )
+    .await
+    .map_err(|_| internal())?;
+    let more = held.len() as i64 > REPLAY_CEILING;
+    let held: Vec<_> = held
+        .into_iter()
+        .take(REPLAY_CEILING as usize)
+        .filter(|event| hook.wants(&event.kind))
+        .collect();
+    let stopped_at = held.last().map(|event| event.event_id);
+
+    if asked.dry_run {
+        return Ok(HttpResponse::Ok().json(serde_json::json!({
+            "dry_run": true,
+            "would_deliver": held.len(),
+            "stopped_at": stopped_at,
+            "more": more,
+        })));
+    }
+
+    let secret = crate::federation::opened_webhook_secret(&transaction, &sealing, &context, &row)
+        .await
+        .ok_or_else(|| {
+            ApiError::with_detail(
+                ErrorCode::ValidationError,
+                "the webhook's secret could not be opened".to_owned(),
+            )
+        })?;
+    let (mut delivered, mut failed) = (0, 0);
+    for event in &held {
+        let body = serde_json::json!({
+            "event_id": event.event_id,
+            "kind": event.kind,
+            "realm": context.realm_id,
+            "user_id": event.user_id,
+            "occurred_at": event.occurred_at.to_rfc3339(),
+            "payload": event.payload,
+        })
+        .to_string();
+        let Some(signature) =
+            services::webhook::signature(sealing.provider.as_ref(), &secret, body.as_bytes())
+        else {
+            failed += 1;
+            continue;
+        };
+        if crate::federation::push_json(&hook, &signature, &event.kind, event.event_id, body).await
+        {
+            delivered += 1;
+        } else {
+            failed += 1;
+        }
+    }
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "dry_run": false,
+        "delivered": delivered,
+        "failed": failed,
+        "stopped_at": stopped_at,
+        "more": more,
+    })))
+}

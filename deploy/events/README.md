@@ -68,6 +68,32 @@ best-effort by contract; a watcher that lags misses frames and the store
 misses nothing, so the feed is for eyes and the deliveries above are for
 systems.
 
+## Replaying a range
+
+The gap after an outage, or a consumer onboarded late:
+
+```
+POST /admin/realms/{realm}/events/replay
+{ "from_event_id": 1200, "to_event_id": 1500, "connector": "siem" }
+```
+
+Dry by default: the answer says what it would deliver and where it
+stopped (at most 500 per ask; `more` says to continue from `stopped_at`).
+Add `"dry_run": false` to do it. A replay feeds exactly the one named
+webhook, respects its filter, and re-delivers under the original ids and
+signatures, so the far side's dedup makes repeating it harmless. The
+range is bounded by the outbox's own retention: what the sweeper has let
+go of cannot be replayed.
+
+From a terminal:
+
+```
+saffui admin events tail
+saffui admin events dead
+saffui admin events requeue <event_id>
+saffui admin events replay --from 1200 --to 1500 --connector siem [--run]
+```
+
 ## Kinds
 
 `user.created`, `user.updated`, `user.deleted`, `session.revoked`,

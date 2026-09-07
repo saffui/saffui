@@ -1266,6 +1266,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::post().to(events::requeue)),
         },
         AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/events/replay",
+            action: AdminAction::IdpWrite,
+            handler: Some(|| web::post().to(events::replay)),
+        },
+        AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms/{realm}/agents",
             action: AdminAction::ClientRead,

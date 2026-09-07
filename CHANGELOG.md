@@ -10,6 +10,11 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- A range of retained happenings can be replayed into one named webhook,
+  dry by default, bounded by the outbox's own retention, under the
+  original ids and signatures so the far side's dedup makes repeating it
+  harmless. From the console's plane or a terminal: `saffui admin events
+  tail / dead / requeue / replay`.
 - The realm's happenings, live and accounted for: an admin SSE feed spoken
   at commit through the database's own notify, the dead-letter queue on the
   console's Events page with one-click requeue, webhooks managed beside the

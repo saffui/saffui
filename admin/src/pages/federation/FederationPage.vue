@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
@@ -20,7 +21,7 @@ const idps = ref<IdpRow[]>([]);
 const directories = ref<DirectoryRow[]>([]);
 const failed = ref("");
 
-onMounted(async () => {
+async function load() {
   try {
     [idps.value, directories.value] = await Promise.all([
       listIdps(realm.value),
@@ -29,7 +30,9 @@ onMounted(async () => {
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-});
+}
+onMounted(load);
+afterWrites(load);
 
 // Event receivers and outbound connectors live on the events page, trusted
 // platforms in their own section below; here stay the providers people

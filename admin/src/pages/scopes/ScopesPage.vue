@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import {
@@ -23,13 +24,15 @@ const failed = ref("");
 const unfolded = ref<string | null>(null);
 const mappers = ref<Record<string, ProtocolMapper[]>>({});
 
-onMounted(async () => {
+async function load() {
   try {
     scopes.value = await listScopeCatalogue(realm.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-});
+}
+onMounted(load);
+afterWrites(load);
 
 const making = ref(false);
 const newName = ref("");

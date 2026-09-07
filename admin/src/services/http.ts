@@ -1,6 +1,7 @@
 import { useSession } from "@/stores/session";
 import { say } from "@/i18n";
 import { toastOk, toastRefused } from "@/services/toasts";
+import { wroteSomething } from "@/services/writes";
 
 /// Console-side hints for refusals whose server message states what happened
 /// but not what to do about it. Keyed by the catalogue's error_code slug.
@@ -28,6 +29,7 @@ export async function api<T>(
   if (import.meta.env.DEV && bearer === "preview") {
     const { previewAnswer } = await import("@/services/preview");
     const answered = previewAnswer<T>(path);
+    if (method !== "GET") wroteSomething();
     if (speaks) kept();
     return answered;
   }
@@ -59,6 +61,9 @@ export async function api<T>(
     }
     throw refusal;
   }
+  // Every write that landed, quiet ones included: what a screen shows was
+  // read before it, and the toast is a courtesy while this is the fact.
+  if (method !== "GET") wroteSomething();
   if (speaks) kept();
   if (answer.status === 204) return undefined as T;
   return (await answer.json()) as T;

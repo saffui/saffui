@@ -19,6 +19,7 @@ import {
 } from "@/services/directory";
 import { joinGroup, leaveGroup } from "@/services/users";
 import { listUsers } from "@/services/users";
+import { afterWrites } from "@/services/writes";
 import AppPicker from "@/components/AppPicker.vue";
 import type { Page } from "@/models/paging";
 import type { GroupMembership, GroupRow } from "@/models/directory";
@@ -46,13 +47,15 @@ const failed = ref("");
 const opened = ref<GroupRow | null>(null);
 const membership = ref<GroupMembership | null>(null);
 
-onMounted(async () => {
+async function load() {
   try {
     page.value = await listGroups(realm.value, first.value, size.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-});
+}
+onMounted(load);
+afterWrites(load);
 
 async function open(group: GroupRow) {
   opened.value = group;

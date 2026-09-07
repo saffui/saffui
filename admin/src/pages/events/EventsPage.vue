@@ -17,6 +17,7 @@ import {
   updateIdp,
 } from "@/services/federation";
 import { getRealmSettings, listSignInEvents } from "@/services/settings";
+import { afterWrites } from "@/services/writes";
 import type { DeliveryProof, IdpRow } from "@/models/federation";
 import type { SignInEvent } from "@/models/events";
 import type { Page } from "@/models/paging";
@@ -44,7 +45,7 @@ function resize(asked: number) {
   void turn();
 }
 
-onMounted(async () => {
+async function load() {
   try {
     idps.value = await listIdps(realm.value);
     recording.value = (await getRealmSettings(realm.value)).events_enabled ?? false;
@@ -54,7 +55,9 @@ onMounted(async () => {
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-});
+}
+onMounted(load);
+afterWrites(load);
 
 function instant(epoch: number): string {
   return new Intl.DateTimeFormat(undefined, {

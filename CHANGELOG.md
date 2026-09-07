@@ -88,6 +88,13 @@ first release is cut.
   re-migrating and re-provisioning for every test.
 
 ### Fixed
+- A list in the console no longer shows what a drawer just changed or
+  deleted: every write that lands is counted at the one door they all go
+  through, and each screen re-reads on it. Creating already refreshed;
+  editing and deleting did not, and needed a page reload to tell the
+  truth. The screens that must not follow along, the forms and the
+  drawers holding what somebody is typing, are named with their reason
+  and held to it by a test that walks the pages.
 - The last test rig that stopped its server gracefully now stops it
   abruptly like the others, and the settings page sheds a "not enforced
   yet" badge that no setting has been able to earn for a while.

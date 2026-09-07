@@ -6,6 +6,7 @@ import AppHint from "@/components/AppHint.vue";
 import AppPaging from "@/components/AppPaging.vue";
 import { endRealmSessions, listRealmSessions } from "@/services/sessions";
 import { getRealmSettings, reshapeRealm } from "@/services/settings";
+import { afterWrites } from "@/services/writes";
 import type { RealmSessionBrief } from "@/models/session";
 
 const route = useRoute();
@@ -45,6 +46,7 @@ async function loadCut() {
 
 watch([realm, first, size], loadSessions, { immediate: true });
 watch(realm, loadCut, { immediate: true });
+afterWrites(loadSessions);
 
 async function endEveryLogin() {
   try {

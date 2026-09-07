@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
 import { createUser, listUsers } from "@/services/users";
+import { afterWrites } from "@/services/writes";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppToggle from "@/components/AppToggle.vue";
@@ -38,6 +39,7 @@ async function load() {
   }
 }
 onMounted(load);
+afterWrites(load);
 watch(first, load);
 
 function fullName(user: UserBrief): string {

@@ -5,6 +5,7 @@ import AppIcon from "@/components/AppIcon.vue";
 import AppHint from "@/components/AppHint.vue";
 import { say } from "@/i18n";
 import { getRealmKeys, rotateKey } from "@/services/settings";
+import { afterWrites } from "@/services/writes";
 import type { RealmKeys } from "@/models/keys";
 
 /// Every algorithm the build's signer mints: crypto's SignAlg::ALL, in the
@@ -50,6 +51,7 @@ async function load() {
   }
 }
 onMounted(load);
+afterWrites(load);
 
 async function rotate() {
   rotating.value = true;

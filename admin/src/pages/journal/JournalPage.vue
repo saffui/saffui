@@ -8,6 +8,7 @@ import { getRealmSettings, reshapeRealm } from "@/services/settings";
 import AppToggle from "@/components/AppToggle.vue";
 import AppHint from "@/components/AppHint.vue";
 import { adminPath, api } from "@/services/http";
+import { afterWrites } from "@/services/writes";
 import type { ChainVerified, JournalPage as Held } from "@/models/journal";
 
 
@@ -60,6 +61,7 @@ async function load() {
   }
 }
 onMounted(load);
+afterWrites(load);
 watch(first, load);
 
 async function anchor() {

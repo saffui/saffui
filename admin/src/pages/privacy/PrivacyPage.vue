@@ -3,6 +3,7 @@
 // on its statutory clock. Writing kinds cannot be fulfilled here at all
 // until execution lands; this page lodges, proves, and refuses.
 import { computed, onMounted, ref } from "vue";
+import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
@@ -39,6 +40,7 @@ async function load() {
   }
 }
 onMounted(load);
+afterWrites(load);
 
 const KINDS = ["access", "rectification", "erasure", "objection", "portability"];
 

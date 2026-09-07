@@ -3,6 +3,7 @@ import { adminPath, api } from "@/services/http";
 import type {
   EvaluateAnswer,
   EvaluateQuestion,
+  DecisionRow,
   PolicyRow,
   ResourceRow,
   ScopeRow,
@@ -36,6 +37,17 @@ export async function evaluate(
     // A question, not a write: the verdict panel is the answer.
     quiet: true,
   });
+}
+
+/// What the engine decided lately, newest first.
+export async function listDecisions(realm: string, limit = 100): Promise<DecisionRow[]> {
+  return api<DecisionRow[]>(adminPath(realm, `authz/decisions?limit=${limit}`));
+}
+
+/// Only the decisions where what was reported and what was computed parted
+/// company: what a permissive server let through, and would not have.
+export async function listDisagreements(realm: string, limit = 100): Promise<DecisionRow[]> {
+  return api<DecisionRow[]>(adminPath(realm, `authz/decisions/disagreements?limit=${limit}`));
 }
 
 /// Protect a client: give it a decision point and a strategy.

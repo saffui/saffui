@@ -10,6 +10,14 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- An evaluator page in the console: ask what one person would get, in the
+  four ways this build answers. What a token would carry, the permission
+  question a resource server actually asks, a role or group rule, an
+  attribute or time rule, and a walk of the relationship graph. The verdict
+  shows what was reported to the caller beside what was computed, which is
+  how a permissive decision point is caught telling two stories, and the
+  decision log and the disagreements behind it are on screen for the first
+  time: both doors existed and nothing called them.
 - The sign-in page offers the realm's brokered identity providers as doors:
   one link per browsable provider, straight to the broker, working with no
   script at all. Recognised providers wear their real mark, shipped inline

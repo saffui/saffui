@@ -77,6 +77,32 @@ function person(path: string): UserBrief | null {
   return found ? (PEOPLE.find((held) => held.user_id === found[1]) ?? null) : null;
 }
 
+/// One decision as the log keeps it, for the fixtures below.
+function decided(
+  id: string,
+  who: string,
+  action: string,
+  kind: string,
+  ref: string | null,
+  reported: string,
+  computed: string,
+  agoSeconds: number,
+) {
+  return {
+    decision_id: id,
+    subject_type: "user",
+    subject_id: who,
+    resource_kind: kind,
+    resource_ref: ref,
+    action,
+    reported,
+    computed,
+    duration_us: 400 + agoSeconds,
+    trace_id: null,
+    occurred_at_millis: (NOW - agoSeconds) * 1000,
+  };
+}
+
 export function previewAnswer<T>(path: string): T {
   const answer = (held: unknown) => held as T;
 
@@ -377,13 +403,30 @@ export function previewAnswer<T>(path: string): T {
       decision_id: "d-sim-1",
       reported: "deny",
       computed: "deny",
+      // The engine tags a reason inside the record, kebab-cased, and names
+      // the policy it is about beside it. A fixture in another shape is a
+      // page that renders here and not against the server.
       detail: {
         reasons: [
-          { EmptyBinding: { policy_id: "p-editors", kind: "role" } },
-          { DanglingCondition: { policy_id: "p-hours", condition: "office-hours" } },
+          { reason: "empty-binding", policy_id: "p-editors", kind: "role" },
+          { reason: "dangling-condition", policy_id: "p-hours", condition: "office-hours" },
         ],
       },
     });
+  }
+  if (path.includes("/authz/decisions/disagreements")) {
+    return answer([
+      decided("d-9", "ada", "export", "invoice", "2026-08", "permit", "deny", 8),
+      decided("d-7", "marchetti", "read", "invoice", "2026-07", "permit", "deny", 240),
+    ]);
+  }
+  if (path.includes("/authz/decisions")) {
+    return answer([
+      decided("d-9", "ada", "export", "invoice", "2026-08", "permit", "deny", 8),
+      decided("d-8", "ada", "read", "doc archive", null, "permit", "permit", 61),
+      decided("d-7", "marchetti", "read", "invoice", "2026-07", "permit", "deny", 240),
+      decided("d-6", "ledger", "viewer", "document", "2026-08", "deny", "deny", 900),
+    ]);
   }
   if (/\/authz\/servers\/[^/]+\/policies$/.test(path)) {
     return answer([

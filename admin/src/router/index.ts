@@ -63,6 +63,10 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/pages/clients/TokenPreviewPage.vue"),
       },
       {
+        path: "evaluator",
+        component: () => import("@/pages/authorization/EvaluatorPage.vue"),
+      },
+      {
         path: "authentication",
         component: () => import("@/pages/authentication/FlowsPage.vue"),
       },

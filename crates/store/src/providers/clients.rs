@@ -129,6 +129,23 @@ pub async fn load_secret(
         }))
 }
 
+/// Whether any credential is stored for this client, in whichever of the
+/// three forms a registration, a rotation or a seal leaves behind. The
+/// value never rides; the model's own `secret` field only ever carries the
+/// legacy plaintext, so a reader that wants the fact asks here.
+pub async fn holds_secret(transaction: &Transaction<'_>, client_id: &str) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM clients WHERE client_id = $1 \
+             AND (secret IS NOT NULL OR secret_hash IS NOT NULL \
+                  OR sealed_secret IS NOT NULL))",
+            &[&client_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get(0))
+}
+
 /// Keep a secret this deployment must be able to read back, sealed.
 ///
 /// The hash and the plaintext column are cleared: one storage form per client,

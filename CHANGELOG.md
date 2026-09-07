@@ -20,6 +20,11 @@ first release is cut.
   focus ring, realm mark), one corner radius everywhere, a focus ring that
   replaces the field border instead of doubling it, and one wide-tracked
   code field that pastes and autocompletes instead of a row of boxes.
+- A scripted demo of the capability rails, `deploy/agents/demo.mjs`: against
+  the one-machine deployment it registers an agent, mints and attenuates
+  over the MCP door, has a witness resource server admit exactly what
+  introspection names and refuse the rest flat, cuts every token with one
+  revocation, and reads the realm's switch refusing in words.
 - Agents are administered whole: `saffui admin agent
   register/list/show/grant/ungrant/revoke/audit`, the same doors in the
   console's client drawer, and `GET/POST/PUT /admin/realms/{realm}/agents`.

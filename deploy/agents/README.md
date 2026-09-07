@@ -26,6 +26,17 @@ saffui admin agent audit scribe-1 --max 50  # the journal, narrowed to it
 The same registration and reshaping live in the console, on the client's
 drawer, and over `GET/POST/PUT /admin/realms/{realm}/agents[/{client}]`.
 
+## The demo
+
+Every promise below, exercised against a real deployment in one sitting: a
+scripted MCP client registers, mints, is narrowed and is cut, and a witness
+resource server admits exactly what introspection says the token names.
+
+```
+docker build -t saffui:local .
+node deploy/agents/demo.mjs [--keep]
+```
+
 ## What "very secure" means here, concretely
 
 - **Keyless by default.** Registering stores no credential anywhere: the

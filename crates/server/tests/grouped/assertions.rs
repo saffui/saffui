@@ -580,5 +580,7 @@ async fn keys_published_elsewhere_are_read_and_read_again() {
         "a rotated key set was never read again"
     );
 
-    handle.stop(true).await;
+    // Abrupt, like every rig teardown: graceful waits for keep-alive
+    // connections nobody will close.
+    handle.stop(false).await;
 }

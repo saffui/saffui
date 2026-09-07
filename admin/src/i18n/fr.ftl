@@ -807,7 +807,6 @@ subject-hand-grant = { $role } pour { $user }
 
 ## Pagination, pastilles d'honnêteté et carte d'identité du compte.
 paging-size = Par page
-settings-not-enforced = pas encore appliqué
 user-identifier = Identifiant
 user-identifier-help = Ce que les octrois, les sessions et le journal pointent : tiré à la naissance, jamais le nom, donc un renommage ne déplace rien. Les comptes nés avant les identifiants tirés répondent aussi à leur nom ici.
 user-born = Créé

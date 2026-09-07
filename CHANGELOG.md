@@ -51,6 +51,9 @@ first release is cut.
   re-migrating and re-provisioning for every test.
 
 ### Fixed
+- The last test rig that stopped its server gracefully now stops it
+  abruptly like the others, and the settings page sheds a "not enforced
+  yet" badge that no setting has been able to earn for a while.
 - A client grant that ran out under a login still standing is swept away
   instead of sitting unreadable until the login goes; an offline grant
   still running keeps holding its login exactly as before.

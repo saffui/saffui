@@ -34,13 +34,25 @@
   }
 }
 
+/* The ground behind the card: two quiet washes of the brand and a set of
+   concentric hairline rings centred where the card sits. Everything is
+   mixed from the same fifteen tokens, so a themed realm tints its own
+   ground and the contract stays exactly where it was. */
 body {
   margin: 0;
   min-height: 100vh;
   display: grid;
   place-items: center;
   font: 16px/1.5 var(--font-sans);
-  background: var(--bg);
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(56rem 38rem at 16% 10%,
+      color-mix(in srgb, var(--brand-primary) 6%, transparent), transparent 70%),
+    radial-gradient(48rem 34rem at 86% 86%,
+      color-mix(in srgb, var(--brand-primary) 4%, transparent), transparent 70%),
+    repeating-radial-gradient(circle at 50% 36%,
+      transparent 0 71px,
+      color-mix(in srgb, var(--border) 45%, transparent) 71px 72px);
   color: var(--ink);
   padding: 24px 12px;
   box-sizing: border-box;
@@ -56,6 +68,19 @@ main {
   border-top: 2px solid var(--brand-primary);
   border-radius: var(--radius);
   box-shadow: var(--card-shadow);
+}
+/* Frosted where the browser can afford it, and only there: the base above
+   stays whole for everything else, for reduced transparency, and for
+   whoever asked for more contrast. Fields, buttons and notices inside
+   keep their own opaque fills either way. */
+@supports (backdrop-filter: blur(1px)) {
+  @media not ((prefers-reduced-transparency: reduce) or (prefers-contrast: more)) {
+    main {
+      background: color-mix(in srgb, var(--surface) 80%, transparent);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+  }
 }
 
 /* The realm as the host: its mark and its name, above everything. Hidden

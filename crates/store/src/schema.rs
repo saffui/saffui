@@ -541,6 +541,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V089__agent_exchange.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 90,
+            name: "sod",
+            sql: include_str!("../migrations/V090__sod.sql"),
+            transactional: true,
+        }),
     ]
 }
 

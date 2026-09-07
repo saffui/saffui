@@ -200,6 +200,7 @@ fn refused(why: Unwritable, exists: ErrorCode, missing: ErrorCode) -> ApiError {
             "its sub-groups remain, so not deleted",
         ),
         Unwritable::Invalid(what) => ApiError::with_detail(ErrorCode::ValidationError, what),
+        Unwritable::Toxic(said) => ApiError::with_detail(ErrorCode::ValidationError, said),
         Unwritable::Backend => internal(),
     }
 }

@@ -10,6 +10,14 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- Separation of duties: a rule names roles one pair of hands must not
+  hold together and how many trip it; every granting door (direct role,
+  group membership, timed grant) weighs the person's effective roles in
+  the same transaction under a per-person hold and refuses in words the
+  grant completing a toxic set. Dated, justified exceptions excuse one
+  exact combination and lapse on their own; standing combinations are
+  computed where read, never stored, and shown on the console's
+  Governance page.
 - A trusted platform may spell which of its token's claims ride into the
   minted workload token (`carried_claims`), values as data for the
   resource server and never a reserved name, refused at the write door in

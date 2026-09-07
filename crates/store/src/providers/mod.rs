@@ -30,6 +30,7 @@ pub mod replay;
 pub mod roles;
 pub mod sessions;
 pub mod sms;
+pub mod sod;
 pub mod tenants;
 pub mod users;
 pub mod ussd;

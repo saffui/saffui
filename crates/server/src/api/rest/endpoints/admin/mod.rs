@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod authorization;
 pub mod claim_sources;
 pub mod client_scopes;

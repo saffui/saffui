@@ -66,6 +66,26 @@ pub fn carried(claims: &serde_json::Map<String, serde_json::Value>) -> Option<Ve
     )
 }
 
+/// Why a written pattern is refused at the door, in words an operator can
+/// act on. The reader's grammar never widens; this keeps what is stored
+/// inside what will ever be read.
+pub fn well_formed(pattern: &str) -> Result<(), &'static str> {
+    if pattern.is_empty() || pattern.len() > 200 {
+        return Err("a capability is 1 to 200 characters");
+    }
+    if pattern.chars().any(char::is_whitespace) {
+        return Err("a capability carries no whitespace");
+    }
+    let inner = pattern.strip_suffix('*').unwrap_or(pattern);
+    if inner.contains('*') {
+        return Err("`*` stands only at the end, as a prefix mark");
+    }
+    if inner.is_empty() {
+        return Err("a bare `*` grants everything, which is what this exists to end");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +131,17 @@ mod tests {
             "one entry outside refuses the whole request"
         );
         assert_eq!(narrowed(&held, "  "), Err(Unnarrowable::Empty));
+    }
+
+    /// The door refuses in the reader's own grammar, naming the rule.
+    #[test]
+    fn a_written_pattern_is_held_to_the_readers_grammar() {
+        assert!(well_formed("a.tool").is_ok());
+        assert!(well_formed("a.prefix.*").is_ok());
+        assert!(well_formed("sp ace").is_err());
+        assert!(well_formed("a.*b").is_err());
+        assert!(well_formed("*").is_err());
+        assert!(well_formed("").is_err());
     }
 
     /// Asking twice holds once; the order is the asker's.

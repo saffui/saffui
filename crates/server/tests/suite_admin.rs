@@ -2,6 +2,8 @@
 //! fifty-nine link editions, and the links were most of the wait.
 mod support;
 
+#[path = "grouped/admin_agents.rs"]
+mod admin_agents;
 #[path = "grouped/admin_auth_flows.rs"]
 mod admin_auth_flows;
 #[path = "grouped/admin_authz.rs"]

@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { effectScope, nextTick } from "vue";
 import { describe, expect, test } from "vitest";
 
@@ -50,7 +51,7 @@ function everyScreen(at: string, under = ""): string[] {
 }
 
 describe("every screen that reads the plane", () => {
-  const pages = join(import.meta.dirname, "..", "pages");
+  const pages = join(dirname(fileURLToPath(import.meta.url)), "..", "pages");
   for (const leaf of everyScreen(pages)) {
     const source = readFileSync(join(pages, leaf), "utf8");
     // A screen that names no service reads nothing that a write can stale.

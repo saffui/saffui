@@ -616,23 +616,30 @@ async fn a_replay_feeds_one_listener_dry_by_default() {
     .await;
     assert_eq!(status, StatusCode::OK, "{ran}");
     assert!(ran["delivered"].as_i64().unwrap_or(0) >= 1, "{ran}");
-    let late = late_heard.lock().unwrap();
-    let replayed = late
-        .iter()
-        .find(|heard| heard.event_id == original.event_id)
-        .expect("the original id was not among the replayed");
-    assert_eq!(
-        replayed.signature,
-        services::webhook::signature(support::sealing().provider.as_ref(), SECRET, &replayed.body)
+    // Read and let go: the guard must not sit across the awaits below.
+    {
+        let late = late_heard.lock().unwrap();
+        let replayed = late
+            .iter()
+            .find(|heard| heard.event_id == original.event_id)
+            .expect("the original id was not among the replayed");
+        assert_eq!(
+            replayed.signature,
+            services::webhook::signature(
+                support::sealing().provider.as_ref(),
+                SECRET,
+                &replayed.body
+            )
             .unwrap(),
-        "a replayed telling arrived unsigned or missigned"
-    );
-    // The first ear was not told again: a replay feeds its one target.
-    assert_eq!(
-        first_heard.lock().unwrap().len(),
-        1,
-        "a replay fanned out to a listener that already heard"
-    );
+            "a replayed telling arrived unsigned or missigned"
+        );
+        // The first ear was not told again: a replay feeds its one target.
+        assert_eq!(
+            first_heard.lock().unwrap().len(),
+            1,
+            "a replay fanned out to a listener that already heard"
+        );
+    }
 
     // Anything that is not a webhook refuses in words.
     let (status, _) = asked(

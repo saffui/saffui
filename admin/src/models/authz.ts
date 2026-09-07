@@ -23,6 +23,23 @@ export interface ScopeRow {
   name: string;
 }
 
+/// One decision the engine reached, as the log keeps it. `reported` is what
+/// the caller was told and `computed` what the evaluation reached: a
+/// permissive server is where the two part company.
+export interface DecisionRow {
+  decision_id: string;
+  subject_type: string;
+  subject_id: string;
+  resource_kind: string;
+  resource_ref: string | null;
+  action: string;
+  reported: string;
+  computed: "permit" | "deny" | "indeterminate";
+  duration_us: number;
+  trace_id: string | null;
+  occurred_at_millis: number | null;
+}
+
 /// Mirrors `POST .../authz/evaluate`.
 export interface EvaluateAnswer {
   decision_id: string;

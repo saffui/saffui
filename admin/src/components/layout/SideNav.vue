@@ -35,6 +35,7 @@ const GROUPS: { label: string; items: { label: string; icon: any; leaf: string }
     items: [
       { label: say("nav-authentication"), icon: "authentication", leaf: "authentication" },
       { label: say("nav-authorization"), icon: "authorization", leaf: "authorization" },
+      { label: say("nav-evaluator"), icon: "authorization", leaf: "evaluator" },
       { label: say("nav-federation"), icon: "federation", leaf: "federation" },
       { label: say("nav-governance"), icon: "governance", leaf: "governance" },
       { label: say("nav-events"), icon: "events", leaf: "events" },

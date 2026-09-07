@@ -1559,6 +1559,19 @@ pub const EXCHANGE_FLAG: &str = "token.exchange.enabled";
 /// the client itself always stands.
 pub const EXCHANGE_AUDIENCES: &str = "token.exchange.audiences";
 
+/// The capability root an agent client holds, space-separated tool names or
+/// prefixes ending in `*`. Its presence is what makes a client an agent:
+/// only a bag holding one can mint capability tokens.
+pub const AGENT_CAPABILITIES: &str = "agent.capabilities";
+
+/// How long an agent's capability token lives, seconds. The realm's access
+/// lifespan stays the ceiling; this only ever shortens it.
+pub const AGENT_SESSION_SECONDS: &str = "agent.session_seconds";
+
+/// The resting capability-token lifespan where the agent's bag names none:
+/// half an hour, the short-lived end the whole design leans on.
+const DEFAULT_AGENT_SESSION: i64 = 1800;
+
 /// What a client presents to exchange, RFC 8693 §2.1.
 #[derive(Debug)]
 pub struct Exchanging<'a> {
@@ -1569,6 +1582,10 @@ pub struct Exchanging<'a> {
     pub actor_token: Option<&'a str>,
     pub scope: Option<&'a str>,
     pub audience: Option<&'a str>,
+    /// The tool names the minted token should carry, space-separated. An
+    /// extension of the form, for agents: what is asked is intersected
+    /// against the narrowest root in the room and lands in `cap`.
+    pub capabilities: Option<&'a str>,
     pub keys: &'a [models::entities::keys::RealmSigningKeyView],
 }
 
@@ -1754,6 +1771,35 @@ pub async fn token_exchange(
         }
     }
 
+    // What the minted token may do, when the exchange is an agent's. The
+    // narrowest root in the room wins: a subject token already carrying
+    // `cap` is the ceiling however wide the client's own registration is,
+    // which is what makes re-exchanging an attenuation and never an escape.
+    // Nothing asked, nothing carried: each link names what it needs, out
+    // loud, where the journal sees it. Anything asked past the root refuses
+    // the exchange whole, with the same face as not being allowed at all.
+    let inherited = crate::capability::carried(&verified.claims);
+    let capability = match exchanging
+        .capabilities
+        .map(str::trim)
+        .filter(|asked| !asked.is_empty())
+    {
+        None => None,
+        Some(asked) => {
+            let root = match &inherited {
+                Some(held) => held.clone(),
+                None => client
+                    .configs
+                    .as_ref()
+                    .and_then(|bag| bag.get(AGENT_CAPABILITIES))
+                    .and_then(models::entities::attributes::AttributeValue::as_str)
+                    .map(|held| held.split_whitespace().map(str::to_owned).collect())
+                    .ok_or(Ungranted::Unauthorized)?,
+            };
+            Some(crate::capability::narrowed(&root, asked).map_err(|_| Ungranted::Unauthorized)?)
+        }
+    };
+
     // Narrowed, never widened: what was asked intersected with what the
     // subject's token held, in the asked order; nothing asked reuses the
     // subject's own scope whole.
@@ -1791,12 +1837,26 @@ pub async fn token_exchange(
         .unwrap_or_default()
         .to_owned();
 
-    let lifespan = Duration::seconds(
-        within
-            .realm
-            .access_token_lifespan
-            .map_or(DEFAULT_ACCESS_LIFESPAN, i64::from),
-    );
+    let ceiling = within
+        .realm
+        .access_token_lifespan
+        .map_or(DEFAULT_ACCESS_LIFESPAN, i64::from);
+    // A capability token is short by design: the agent's own registered
+    // span, half an hour unless said, and the realm's lifespan stays the
+    // ceiling it cannot ask past.
+    let lifespan = Duration::seconds(if capability.is_some() {
+        client
+            .configs
+            .as_ref()
+            .and_then(|bag| bag.get(AGENT_SESSION_SECONDS))
+            .and_then(models::entities::attributes::AttributeValue::as_str)
+            .and_then(|held| held.trim().parse::<i64>().ok())
+            .filter(|asked| *asked > 0)
+            .unwrap_or(DEFAULT_AGENT_SESSION)
+            .min(ceiling)
+    } else {
+        ceiling
+    });
     let key = preferred_key(transaction, signing, SignAlg::Es256).await?;
 
     // The subject as the minted token's consumer will know them: the
@@ -1818,6 +1878,9 @@ pub async fn token_exchange(
     let mut extra = serde_json::Map::new();
     // §4.1: who is acting. The whole point of the exchanged token.
     extra.insert("act".to_owned(), acting);
+    if let Some(held) = &capability {
+        extra.insert("cap".to_owned(), serde_json::json!(held));
+    }
     let minted = mint_token(
         signing.provider,
         &key,

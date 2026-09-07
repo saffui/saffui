@@ -367,6 +367,7 @@ pub async fn ask(
                     actor_token,
                     scope: asked.scope.as_deref(),
                     audience: asked.audience.as_deref(),
+                    capabilities: asked.capabilities.as_deref(),
                     keys: &keys,
                 },
                 request

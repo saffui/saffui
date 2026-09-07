@@ -10,6 +10,12 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- An agent's token exchange can mint a capability token: the tools asked
+  for land in `cap`, narrowed against the narrowest root in the room (the
+  subject token's own `cap` when it carries one, the agent client's
+  registered root otherwise), short-lived by the agent's own span under the
+  realm's ceiling. Asking past the root refuses the exchange whole;
+  re-exchanging is attenuation, never escape.
 - A client may register its subject DN as the one name its certificate
   authenticates by, RFC 8705's third form, compared exactly in the one
   canonical rendering the server states.

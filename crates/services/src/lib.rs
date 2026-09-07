@@ -5,6 +5,7 @@ pub mod authorization;
 pub mod authorize;
 pub mod brokering;
 pub mod caep;
+pub mod capability;
 pub mod ciba;
 pub mod client;
 pub mod context;

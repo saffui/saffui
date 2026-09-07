@@ -224,6 +224,15 @@ pub async fn register(
         .await
         .map_err(|_| Refused::Unwritable)?;
 
+    store::providers::outbox::emit(
+        transaction,
+        store::providers::outbox::AGENT_REGISTERED,
+        client_id,
+        &serde_json::json!({ "capabilities": root }),
+    )
+    .await
+    .map_err(|_| Refused::Unwritable)?;
+
     brief_of(&client, false).ok_or(Refused::Unwritable)
 }
 
@@ -305,5 +314,13 @@ pub async fn reshape(
     clients::update(transaction, &client)
         .await
         .map_err(|_| Refused::Unwritable)?;
+    store::providers::outbox::emit(
+        transaction,
+        store::providers::outbox::AGENT_RESHAPED,
+        client_id,
+        &serde_json::json!({ "capabilities": root }),
+    )
+    .await
+    .map_err(|_| Refused::Unwritable)?;
     get(transaction, client_id).await
 }

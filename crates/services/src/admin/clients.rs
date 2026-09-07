@@ -370,6 +370,27 @@ pub async fn update(
         clients::update(transaction, &client)
             .await
             .map_err(|_| Unregistrable::Unwritable)?;
+        // An agent's cut is a happening the outside asked to hear about:
+        // same transaction, so the cut and its telling cannot disagree.
+        let is_agent = client
+            .configs
+            .as_ref()
+            .is_some_and(|bag| bag.contains_key(crate::grant::AGENT_CAPABILITIES));
+        if is_agent {
+            let kind = if at != 0 {
+                store::providers::outbox::AGENT_REVOKED
+            } else {
+                store::providers::outbox::AGENT_LIFTED
+            };
+            store::providers::outbox::emit(
+                transaction,
+                kind,
+                client_id,
+                &serde_json::json!({ "not_before": at }),
+            )
+            .await
+            .map_err(|_| Unregistrable::Unwritable)?;
+        }
     }
     Ok(client)
 }

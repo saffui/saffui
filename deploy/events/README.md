@@ -97,5 +97,9 @@ saffui admin events replay --from 1200 --to 1500 --connector siem [--run]
 ## Kinds
 
 `user.created`, `user.updated`, `user.deleted`, `session.revoked`,
-`credential.changed`. The catalogue grows when a consumer needs a kind,
-not before.
+`credential.changed`; and the agent lifecycle, whose subject is the agent
+client itself: `agent.registered`, `agent.reshaped`, `agent.revoked`,
+`agent.lifted`. Individual capability mints are not emitted: the journal
+already records every decided exchange, and a webhook per mint would be
+volume without a listener. The catalogue grows when a consumer needs a
+kind, not before.

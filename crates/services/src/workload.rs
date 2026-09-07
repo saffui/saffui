@@ -38,7 +38,32 @@ pub struct Trusted {
     /// The client whose service account the workload acts as.
     pub client_id: String,
     pub allowed_algs: Vec<SignAlg>,
+    /// The platform claims that ride into the minted token, by name.
+    /// Nothing rides unless spelled here, and never a reserved name.
+    pub carried_claims: Vec<String>,
 }
+
+/// The claims the minting itself owns; a platform naming one of these
+/// would be rewriting the token's own grammar, so the write door refuses.
+const RESERVED: [&str; 17] = [
+    "iss",
+    "sub",
+    "aud",
+    "exp",
+    "iat",
+    "nbf",
+    "jti",
+    "azp",
+    "scope",
+    "act",
+    "cap",
+    "sid",
+    "cnf",
+    "amr",
+    "acr",
+    "auth_time",
+    "typ",
+];
 
 impl Trusted {
     pub fn parse(provider: &IdentityProviderModel) -> Result<Self, Unusable> {
@@ -47,7 +72,7 @@ impl Trusted {
             .as_ref()
             .ok_or(Unusable::Missing("a trusted platform names its issuer"))?;
         for key in bag.keys() {
-            const KNOWN: [&str; 7] = [
+            const KNOWN: [&str; 8] = [
                 KIND_KEY,
                 "issuer",
                 "jwks_uri",
@@ -55,6 +80,7 @@ impl Trusted {
                 "subject_patterns",
                 "client_id",
                 "allowed_algs",
+                "carried_claims",
             ];
             if !KNOWN.contains(&key.as_str()) {
                 return Err(Unusable::Malformed("the bag holds a key no platform reads"));
@@ -101,6 +127,18 @@ impl Trusted {
                     .ok_or(Unusable::Malformed("allowed_algs names signing algorithms"))?
             }
         };
+        let carried_claims: Vec<String> = bag
+            .get("carried_claims")
+            .and_then(models::entities::attributes::AttributeValue::as_str)
+            .map(|held| held.split_whitespace().map(str::to_owned).collect())
+            .unwrap_or_default();
+        for named in &carried_claims {
+            if RESERVED.contains(&named.as_str()) {
+                return Err(Unusable::Malformed(
+                    "carried_claims may not name a claim the minting itself owns",
+                ));
+            }
+        }
         Ok(Self {
             issuer: text("issuer", "issuer names the platform")?,
             jwks_uri,
@@ -111,7 +149,25 @@ impl Trusted {
                 "client_id names whose powers the workload takes",
             )?,
             allowed_algs,
+            carried_claims,
         })
+    }
+
+    /// What of the platform token rides along: the named claims that are
+    /// present, exactly as the platform spoke them. Values are data for
+    /// the resource server; nothing here reaches scope or roles.
+    pub fn carried(
+        &self,
+        claims: &serde_json::Map<String, Value>,
+    ) -> serde_json::Map<String, Value> {
+        self.carried_claims
+            .iter()
+            .filter_map(|named| {
+                claims
+                    .get(named)
+                    .map(|value| (named.clone(), value.clone()))
+            })
+            .collect()
     }
 
     pub fn admits(&self, subject: &str) -> bool {

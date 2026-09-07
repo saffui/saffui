@@ -659,6 +659,7 @@ async fn workload_exchange(
         &client,
         &subject,
         &trusted.issuer,
+        trusted.carried(&claims),
         asked.scope.as_deref(),
         &crate::api::provenance::read_provenance(request),
         now,
@@ -765,6 +766,8 @@ async fn x509_exchange(
         &client,
         &identity,
         "x509",
+        // A certificate carries no claims to map; nothing rides.
+        serde_json::Map::new(),
         asked.scope.as_deref(),
         &crate::api::provenance::read_provenance(request),
         now,

@@ -79,13 +79,14 @@ pub struct AgentBrief {
     pub enabled: bool,
     pub capabilities: Vec<String>,
     pub session_seconds: Option<i32>,
-    /// Whether a client secret exists at all. Its value is never here.
+    /// Whether a credential is stored, in any of its forms. Its value is
+    /// never here.
     pub keyed: bool,
     /// The instant every earlier token was cut, when one was.
     pub not_before: Option<i32>,
 }
 
-fn brief_of(client: &ClientModel) -> Option<AgentBrief> {
+fn brief_of(client: &ClientModel, keyed: bool) -> Option<AgentBrief> {
     let bag = client.configs.as_ref()?;
     let root = bag
         .get(crate::grant::AGENT_CAPABILITIES)?
@@ -102,9 +103,25 @@ fn brief_of(client: &ClientModel) -> Option<AgentBrief> {
             .get(crate::grant::AGENT_SESSION_SECONDS)
             .and_then(AttributeValue::as_str)
             .and_then(|held| held.trim().parse().ok()),
-        keyed: client.secret.is_some(),
+        keyed,
         not_before: client.not_before,
     })
+}
+
+/// The brief with `keyed` told by the store: the model's `secret` field
+/// only ever carries the legacy plaintext, and the hash a rotation writes
+/// never surfaces on it, so the fact is asked where it lives.
+async fn briefed(
+    transaction: &Transaction<'_>,
+    client: &ClientModel,
+) -> Result<Option<AgentBrief>, Refused> {
+    let Some(brief) = brief_of(client, false) else {
+        return Ok(None);
+    };
+    let keyed = clients::holds_secret(transaction, &client.client_id)
+        .await
+        .map_err(|_| Refused::Unwritable)?;
+    Ok(Some(AgentBrief { keyed, ..brief }))
 }
 
 /// Register an agent: the client, its capability root, and its service
@@ -207,7 +224,7 @@ pub async fn register(
         .await
         .map_err(|_| Refused::Unwritable)?;
 
-    brief_of(&client).ok_or(Refused::Unwritable)
+    brief_of(&client, false).ok_or(Refused::Unwritable)
 }
 
 /// Every agent this realm holds: the clients whose bag names a root.
@@ -220,15 +237,22 @@ pub async fn list(transaction: &Transaction<'_>) -> Result<Vec<AgentBrief>, Refu
     let held = clients::list(transaction, &query, false)
         .await
         .map_err(|_| Refused::Unwritable)?;
-    Ok(held.items.iter().filter_map(brief_of).collect())
+    let mut kept = Vec::new();
+    for client in &held.items {
+        if let Some(brief) = briefed(transaction, client).await? {
+            kept.push(brief);
+        }
+    }
+    Ok(kept)
 }
 
 pub async fn get(transaction: &Transaction<'_>, client_id: &str) -> Result<AgentBrief, Refused> {
-    clients::load(transaction, client_id)
+    let client = clients::load(transaction, client_id)
         .await
         .map_err(|_| Refused::Unwritable)?
-        .as_ref()
-        .and_then(brief_of)
+        .ok_or(Refused::NotFound)?;
+    briefed(transaction, &client)
+        .await?
         .ok_or(Refused::NotFound)
 }
 
@@ -246,7 +270,7 @@ pub async fn reshape(
         .await
         .map_err(|_| Refused::Unwritable)?
         .ok_or(Refused::NotFound)?;
-    let Some(current) = brief_of(&client) else {
+    let Some(current) = brief_of(&client, false) else {
         return Err(Refused::NotFound);
     };
     for held in add.iter().chain(remove) {

@@ -10,6 +10,8 @@ mod assertions;
 mod encryption;
 #[path = "grouped/fapi.rs"]
 mod fapi;
+#[path = "grouped/mcp.rs"]
+mod mcp;
 #[path = "grouped/offline.rs"]
 mod offline;
 #[path = "grouped/pairwise.rs"]

@@ -140,3 +140,54 @@ export async function deleteSodException(
     { method: "DELETE", subject: say("subject-sod-exception") },
   );
 }
+
+export interface AccessRequest {
+  request_id: string;
+  user_id: string;
+  role_id: string;
+  reason: string;
+  expires_at: string | null;
+  state: string;
+  asked_by: string;
+  decided_by: string | null;
+  decided_at: string | null;
+  decided_reason: string | null;
+  created_at: string;
+}
+
+export async function listRequests(realm: string): Promise<AccessRequest[]> {
+  return api<AccessRequest[]>(adminPath(realm, "iga/requests"));
+}
+
+export async function lodgeRequest(
+  realm: string,
+  body: { user_id: string; role_id: string; reason: string; expires_at?: string },
+): Promise<void> {
+  await api<unknown>(adminPath(realm, "iga/requests"), {
+    method: "POST",
+    json: body,
+    subject: say("subject-request"),
+  });
+}
+
+export async function approveRequest(realm: string, requestId: string): Promise<void> {
+  await api<unknown>(adminPath(realm, `iga/requests/${encodeURIComponent(requestId)}/approve`), {
+    method: "POST",
+    subject: say("subject-request"),
+  });
+}
+
+export async function denyRequest(realm: string, requestId: string, reason: string): Promise<void> {
+  await api<unknown>(adminPath(realm, `iga/requests/${encodeURIComponent(requestId)}/deny`), {
+    method: "POST",
+    json: { reason },
+    subject: say("subject-request"),
+  });
+}
+
+export async function withdrawRequest(realm: string, requestId: string): Promise<void> {
+  await api<unknown>(adminPath(realm, `iga/requests/${encodeURIComponent(requestId)}/withdraw`), {
+    method: "POST",
+    subject: say("subject-request"),
+  });
+}

@@ -13,13 +13,18 @@ import {
   handGrant,
   listSodExceptions,
   listSodRules,
+  approveRequest,
+  denyRequest,
+  listRequests,
   listSodViolations,
+  lodgeRequest,
   putSodException,
   putSodRule,
   revokeGrant,
   updateRule,
+  withdrawRequest,
 } from "@/services/governance";
-import type { SodException, SodRule, SodViolation } from "@/services/governance";
+import type { AccessRequest, SodException, SodRule, SodViolation } from "@/services/governance";
 import AppHint from "@/components/AppHint.vue";
 import GovernanceTabs from "./GovernanceTabs.vue";
 import AppToggle from "@/components/AppToggle.vue";
@@ -239,6 +244,63 @@ function untilShort(spelled: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
     new Date(spelled),
   );
+}
+
+const requests = ref<AccessRequest[]>([]);
+const makingRequest = ref(false);
+const requestDraft = ref({ user_id: "", role_id: "", reason: "", expires_at: "" });
+const denying = ref("");
+const denialWords = ref("");
+
+async function loadRequests() {
+  try {
+    requests.value = await listRequests(realm.value);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+onMounted(loadRequests);
+afterWrites(loadRequests);
+
+async function makeRequest() {
+  const held = requestDraft.value;
+  if (!held.user_id.trim() || !held.role_id.trim() || !held.reason.trim()) return;
+  try {
+    await lodgeRequest(realm.value, {
+      user_id: held.user_id.trim(),
+      role_id: held.role_id.trim(),
+      reason: held.reason.trim(),
+      expires_at: held.expires_at.trim() || undefined,
+    });
+    makingRequest.value = false;
+    requestDraft.value = { user_id: "", role_id: "", reason: "", expires_at: "" };
+  } catch {
+    // The toast already said.
+  }
+}
+async function approve(requestId: string) {
+  try {
+    await approveRequest(realm.value, requestId);
+  } catch {
+    // The toast already said.
+  }
+}
+async function deny(requestId: string) {
+  if (!denialWords.value.trim()) return;
+  try {
+    await denyRequest(realm.value, requestId, denialWords.value.trim());
+    denying.value = "";
+    denialWords.value = "";
+  } catch {
+    // The toast already said.
+  }
+}
+async function withdraw(requestId: string) {
+  try {
+    await withdrawRequest(realm.value, requestId);
+  } catch {
+    // The toast already said.
+  }
 }
 </script>
 
@@ -597,5 +659,99 @@ function untilShort(spelled: string): string {
         </div>
       </template>
     </template>
+
+    <h2 class="mt-8 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+      {{ say("req-section") }}
+      <button
+        type="button"
+        class="ml-3 rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-ink normal-case tracking-normal hover:bg-accent-strong"
+        @click="makingRequest = !makingRequest"
+      >
+        {{ say("req-new") }}
+      </button>
+    </h2>
+    <p class="mt-1 text-xs text-muted">{{ say("req-lede") }}</p>
+
+    <form
+      v-if="makingRequest"
+      class="mt-3 flex max-w-4xl items-end gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      @submit.prevent="makeRequest"
+    >
+      <label class="w-36 text-[11px] font-medium text-muted">
+        {{ say("authz-subject") }}
+        <input v-model="requestDraft.user_id" placeholder="ada" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+      </label>
+      <label class="w-36 text-[11px] font-medium text-muted">
+        {{ say("iga-grant-role") }}
+        <input v-model="requestDraft.role_id" placeholder="role-..." class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+      </label>
+      <label class="flex-1 text-[11px] font-medium text-muted">
+        {{ say("req-reason") }}
+        <input v-model="requestDraft.reason" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+      </label>
+      <label class="w-48 text-[11px] font-medium text-muted">
+        {{ say("iga-grant-until") }} <AppHint name="iga-grant-until-help" />
+        <input v-model="requestDraft.expires_at" placeholder="2026-12-31T00:00:00Z" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-[10.5px] text-ink" spellcheck="false" />
+      </label>
+      <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+        {{ say("realm-create") }}
+      </button>
+    </form>
+
+    <p v-if="!requests.length" class="mt-2 text-xs text-muted">{{ say("req-no-requests") }}</p>
+    <div v-else class="mt-2 grid max-w-4xl gap-2">
+      <div
+        v-for="request in requests"
+        :key="request.request_id"
+        class="rounded-lg border border-border bg-surface px-3 py-2 text-xs"
+      >
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-[11px]">{{ request.user_id }}</span>
+          <span class="font-mono text-[10.5px] text-muted">{{ request.role_id }}</span>
+          <span class="text-[10.5px] text-muted">{{ request.reason }}</span>
+          <span
+            class="ml-auto rounded border px-1.5 py-0.5 text-[10px]"
+            :class="{
+              'border-warn/40 text-warn': request.state === 'pending',
+              'border-ok/40 text-ok': request.state === 'granted',
+              'border-danger/40 text-danger': request.state === 'denied',
+              'border-border text-muted': request.state === 'withdrawn',
+            }"
+          >
+            {{ say(`req-state-${request.state}`) }}
+          </span>
+          <template v-if="request.state === 'pending'">
+            <button type="button" class="rounded border border-border px-1.5 py-0.5 text-[10.5px] hover:bg-surface-2" @click="approve(request.request_id)">
+              {{ say("req-approve") }}
+            </button>
+            <button type="button" class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-danger hover:bg-surface-2" @click="denying = denying === request.request_id ? '' : request.request_id">
+              {{ say("req-deny") }}
+            </button>
+            <button type="button" class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-muted hover:bg-surface-2" @click="withdraw(request.request_id)">
+              {{ say("req-withdraw") }}
+            </button>
+          </template>
+        </div>
+        <p class="mt-1 text-[10px] text-faint">
+          {{ say("req-asked-by") }} {{ request.asked_by }}<template v-if="request.decided_by">
+            · {{ say("req-decided-by") }} {{ request.decided_by }}</template
+          ><template v-if="request.decided_reason"> · {{ request.decided_reason }}</template
+          ><template v-if="request.expires_at"> · {{ say("iga-until") }} {{ untilShort(request.expires_at) }}</template>
+        </p>
+        <form
+          v-if="denying === request.request_id"
+          class="mt-2 flex items-end gap-2 border-t border-border/60 pt-2"
+          @submit.prevent="deny(request.request_id)"
+        >
+          <label class="flex-1 text-[11px] font-medium text-muted">
+            {{ say("req-deny-reason") }}
+            <input v-model="denialWords" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+          </label>
+          <button type="submit" class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface-2">
+            {{ say("req-deny") }}
+          </button>
+        </form>
+      </div>
+    </div>
   </div>
 </template>

@@ -30,7 +30,7 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        browser_flow, otp_policy, webauthn_policy, \
                        mail_templates, device_code_lifespan, device_poll_interval, \
                        sms_daily_cap, sms_per_number_cap, sms_blocked_prefixes, sms_templates, \
-                       ciba_expiry, ciba_interval, webauthn_passwordless, page_overrides, \
+                       ciba_expiry, ciba_interval, agent_exchange_enabled, webauthn_passwordless, page_overrides, \
                        dsar_jurisdiction, dsar_response_days, \
                        supported_locales, default_locale, \
                        created_by, created_at, updated_by, updated_at, version";
@@ -244,6 +244,7 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             col("device_code_lifespan", &realm.device_code_lifespan),
             col("device_poll_interval", &realm.device_poll_interval),
             col("ciba_expiry", &realm.ciba_expiry),
+            col("agent_exchange_enabled", &realm.agent_exchange_enabled),
             col("ciba_interval", &realm.ciba_interval),
             col("webauthn_passwordless", &realm.webauthn_passwordless),
             col("page_overrides", &realm.page_overrides),
@@ -327,6 +328,7 @@ fn read(row: Row) -> RealmModel {
         device_code_lifespan: row.get("device_code_lifespan"),
         device_poll_interval: row.get("device_poll_interval"),
         ciba_expiry: row.get("ciba_expiry"),
+        agent_exchange_enabled: row.get("agent_exchange_enabled"),
         ciba_interval: row.get("ciba_interval"),
         webauthn_passwordless: row.get("webauthn_passwordless"),
         page_overrides: row.get("page_overrides"),

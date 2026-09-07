@@ -536,6 +536,9 @@ fn ungranted(why: Ungranted) -> HttpResponse {
         Ungranted::Unauthorized => {
             Denied::UnauthorizedClient.answer("this client may not use this grant")
         }
+        Ungranted::AgentsOff => {
+            Denied::UnauthorizedClient.answer("this realm does not mint capability tokens")
+        }
         // A replay is told apart from any other refusal only by what the store
         // now holds: the session is gone. Saying so would confirm a guess to
         // whoever presented a token they should not have.

@@ -150,6 +150,11 @@ pub enum Ungranted {
     /// The client may authenticate and may not have this grant.
     #[error("this client may not use this grant")]
     Unauthorized,
+    /// The realm has not turned the agent surface on. Its own words: the
+    /// caller is an authenticated client of this realm and the closed door
+    /// is the realm's choice, not the client's standing.
+    #[error("this realm does not mint capability tokens")]
+    AgentsOff,
     /// Never minted, already spent, another client's, another redirect's, or a
     /// proof that does not check out. One variant, or a client could learn
     /// whether a code it does not hold exists.
@@ -1786,6 +1791,12 @@ pub async fn token_exchange(
     {
         None => None,
         Some(asked) => {
+            // The realm's own switch, before any grant is weighed: an agent
+            // surface nobody turned on answers in its own words, because an
+            // operator reading this refusal must know which door to open.
+            if within.realm.agent_exchange_enabled != Some(true) {
+                return Err(Ungranted::AgentsOff);
+            }
             let root = match &inherited {
                 Some(held) => held.clone(),
                 None => client

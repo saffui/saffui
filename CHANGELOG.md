@@ -10,6 +10,10 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- The agent surface is a switch a realm turns: off, the capability exchange
+  refuses in its own words. From the console's security settings, or from a
+  terminal: `saffui admin agents [on|off]`. Introspection now tells a
+  resource server a token's `cap` and `act` beside the standard claims.
 - An agent's token exchange can mint a capability token: the tools asked
   for land in `cap`, narrowed against the narrowest root in the room (the
   subject token's own `cap` when it carries one, the agent client's

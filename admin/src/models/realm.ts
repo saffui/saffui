@@ -64,6 +64,7 @@ export interface RealmSettings {
   dsar_jurisdiction: string | null;
   dsar_response_days: number | null;
   webauthn_passwordless: boolean | null;
+  agent_exchange_enabled: boolean | null;
   page_overrides: Record<string, Record<string, string>> | null;
   browser_flow: string | null;
   supported_locales: string[] | null;
@@ -176,6 +177,7 @@ export interface RealmUpdate {
   dsar_jurisdiction?: string;
   dsar_response_days?: number;
   webauthn_passwordless?: boolean;
+  agent_exchange_enabled?: boolean;
   page_overrides?: Record<string, Record<string, string>> | null;
   browser_flow?: string;
   supported_locales?: string[];

@@ -251,7 +251,9 @@ pub async fn get(transaction: &Transaction<'_>, client_id: &str) -> Result<Agent
         .await
         .map_err(|_| Refused::Unwritable)?
         .ok_or(Refused::NotFound)?;
-    briefed(transaction, &client).await?.ok_or(Refused::NotFound)
+    briefed(transaction, &client)
+        .await?
+        .ok_or(Refused::NotFound)
 }
 
 /// Reshape the root and the span: additions and removals named one by one,

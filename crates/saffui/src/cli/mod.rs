@@ -162,6 +162,37 @@ pub enum AdminCmd {
         #[command(subcommand)]
         command: AgentCmd,
     },
+    /// The realm's happenings: watched live, the given-up listed and
+    /// requeued, a range replayed into one webhook.
+    Events {
+        #[command(subcommand)]
+        command: EventsCmd,
+    },
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum EventsCmd {
+    /// Print the live feed until interrupted.
+    Tail,
+    /// The dead-letter queue, newest first.
+    Dead {
+        #[arg(long, default_value_t = 20)]
+        max: usize,
+    },
+    /// Put one dead telling back in the queue.
+    Requeue { event_id: i64 },
+    /// Re-deliver a range of retained tellings to one webhook. Says what
+    /// it would do; --run does it.
+    Replay {
+        #[arg(long)]
+        from: i64,
+        #[arg(long)]
+        to: Option<i64>,
+        #[arg(long)]
+        connector: String,
+        #[arg(long, default_value_t = false)]
+        run: bool,
+    },
 }
 
 /// The per-agent commands. Keyless on purpose: an agent authenticates
@@ -509,6 +540,80 @@ fn answer(plane: &Resolved, command: &AdminCmd, out: &mut dyn Write) -> Result<(
             )?;
             listing(out, &body)
         }
+        AdminCmd::Events { command } => match command {
+            EventsCmd::Tail => {
+                let answer = agent
+                    .get(&format!(
+                        "{}/admin/realms/{realm}/events/stream",
+                        plane.server
+                    ))
+                    .header("authorization", &format!("Bearer {token}"))
+                    .call()
+                    .map_err(|why| trouble(1, format!("the feed refused: {why}")))?;
+                let mut reader = std::io::BufReader::new(answer.into_body().into_reader());
+                let mut line = String::new();
+                loop {
+                    line.clear();
+                    match std::io::BufRead::read_line(&mut reader, &mut line) {
+                        Ok(0) => return Err(trouble(1, "the feed closed")),
+                        Ok(_) => {
+                            if let Some(body) = line.trim_end().strip_prefix("data: ") {
+                                writeln!(out, "{body}").map_err(|_| trouble(1, "stdout closed"))?;
+                            }
+                        }
+                        Err(why) => return Err(trouble(1, format!("the feed broke: {why}"))),
+                    }
+                }
+            }
+            EventsCmd::Dead { max } => {
+                let body = asked(
+                    &agent,
+                    plane,
+                    &token,
+                    Call::Get(format!("/admin/realms/{realm}/events/dead")),
+                )?;
+                let held: Vec<Value> = body
+                    .as_array()
+                    .map(|rows| rows.iter().take(*max).cloned().collect())
+                    .unwrap_or_default();
+                listing(out, &Value::Array(held))
+            }
+            EventsCmd::Requeue { event_id } => {
+                asked(
+                    &agent,
+                    plane,
+                    &token,
+                    Call::Post(
+                        format!("/admin/realms/{realm}/events/dead/{event_id}/requeue"),
+                        serde_json::json!({}),
+                    ),
+                )?;
+                writeln!(out, "requeued").map_err(|_| trouble(1, "stdout closed"))?;
+                Ok(())
+            }
+            EventsCmd::Replay {
+                from,
+                to,
+                connector,
+                run,
+            } => {
+                let body = asked(
+                    &agent,
+                    plane,
+                    &token,
+                    Call::Post(
+                        format!("/admin/realms/{realm}/events/replay"),
+                        serde_json::json!({
+                            "from_event_id": from,
+                            "to_event_id": to,
+                            "connector": connector,
+                            "dry_run": !run,
+                        }),
+                    ),
+                )?;
+                listing(out, &body)
+            }
+        },
         AdminCmd::Agent { command } => {
             let path = |tail: &str| format!("/admin/realms/{realm}/agents{tail}");
             match command {

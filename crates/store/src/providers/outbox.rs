@@ -161,6 +161,38 @@ pub async fn dead(transaction: &Transaction<'_>, event_id: i64) -> StoreResult<(
     Ok(())
 }
 
+/// The retained tellings of a range, oldest first: what a replay may still
+/// reach. Delivered and dead alike are replayable; pending ones are not
+/// offered, because the delivery pass owns them.
+pub async fn retained(
+    transaction: &Transaction<'_>,
+    from: i64,
+    to: Option<i64>,
+    limit: i64,
+) -> StoreResult<Vec<OutboxEvent>> {
+    Ok(transaction
+        .query(
+            "SELECT realm_id, event_id, kind, user_id, payload, attempts, occurred_at \
+             FROM event_outbox \
+             WHERE state <> 'pending' AND event_id >= $1 AND event_id <= COALESCE($2, event_id) \
+             ORDER BY event_id ASC LIMIT $3",
+            &[&from, &to, &limit],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| OutboxEvent {
+            event_id: row.get("event_id"),
+            realm_id: row.get("realm_id"),
+            kind: row.get("kind"),
+            user_id: row.get("user_id"),
+            payload: row.get("payload"),
+            attempts: row.get("attempts"),
+            occurred_at: row.get("occurred_at"),
+        })
+        .collect())
+}
+
 pub async fn drop_delivered(
     transaction: &Transaction<'_>,
     before: DateTime<Utc>,

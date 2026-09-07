@@ -509,3 +509,173 @@ async fn a_dead_telling_is_seen_requeued_and_finally_put_away() {
     assert_eq!(dark["proven"], false, "{dark}");
     assert_eq!(dark["how"], "unreachable", "{dark}");
 }
+
+/// A replay feeds one named listener and only it: the gap after an outage,
+/// or a consumer onboarded late. A dry run says what it would do and does
+/// nothing; run, it redelivers under the original ids and signatures, so
+/// the far side's dedup makes repeating it safe; and anything that is not
+/// a webhook refuses in words.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_replay_feeds_one_listener_dry_by_default() {
+    let plane = Plane::with_actions(&[
+        AdminAction::IdpRead,
+        AdminAction::IdpWrite,
+        AdminAction::UserRead,
+        AdminAction::UserWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    one_pass(&plane).await;
+
+    let (first_url, first_heard) = listening();
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "first-ear",
+            "name": "first-ear",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "webhook" },
+                "url": { "Str": first_url },
+                "filter": { "Str": "user.*" },
+                "secret": { "Str": SECRET },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/users"),
+        &bearer,
+        Some(json!({ "user_name": "lin", "enabled": true, "email": "lin@example.test" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    one_pass(&plane).await;
+    let original = {
+        let held = first_heard.lock().unwrap();
+        assert_eq!(held.len(), 1);
+        held[0].clone()
+    };
+
+    // The late consumer, subscribed after the fact.
+    let (late_url, late_heard) = listening();
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "late-ear",
+            "name": "late-ear",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "webhook" },
+                "url": { "Str": late_url },
+                "filter": { "Str": "user.*" },
+                "secret": { "Str": SECRET },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Dry by default: told, not done.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/events/replay"),
+        &bearer,
+        Some(json!({ "from_event_id": 1, "connector": "late-ear" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["dry_run"], true, "{told}");
+    assert!(told["would_deliver"].as_i64().unwrap_or(0) >= 1, "{told}");
+    assert_eq!(
+        late_heard.lock().unwrap().len(),
+        0,
+        "a dry run delivered anyway"
+    );
+
+    // Run: the late ear hears the past under its original ids.
+    let (status, ran) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/events/replay"),
+        &bearer,
+        Some(json!({ "from_event_id": 1, "connector": "late-ear", "dry_run": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{ran}");
+    assert!(ran["delivered"].as_i64().unwrap_or(0) >= 1, "{ran}");
+    let late = late_heard.lock().unwrap();
+    let replayed = late
+        .iter()
+        .find(|heard| heard.event_id == original.event_id)
+        .expect("the original id was not among the replayed");
+    assert_eq!(
+        replayed.signature,
+        services::webhook::signature(support::sealing().provider.as_ref(), SECRET, &replayed.body)
+            .unwrap(),
+        "a replayed telling arrived unsigned or missigned"
+    );
+    // The first ear was not told again: a replay feeds its one target.
+    assert_eq!(
+        first_heard.lock().unwrap().len(),
+        1,
+        "a replay fanned out to a listener that already heard"
+    );
+
+    // Anything that is not a webhook refuses in words.
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "an-ear",
+            "name": "an-ear",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "scim-outbound" },
+                "base_url": { "Str": "http://127.0.0.1:9/scim/v2" },
+                "bearer": { "Str": "a-bearer-of-decent-length" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, refused) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/events/replay"),
+        &bearer,
+        Some(json!({ "from_event_id": 1, "connector": "an-ear", "dry_run": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("only a webhook takes a replay"),
+        "{refused}"
+    );
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/events/replay"),
+        &bearer,
+        Some(json!({ "from_event_id": 1, "connector": "nobody", "dry_run": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

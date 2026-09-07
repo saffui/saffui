@@ -5,7 +5,7 @@ use std::process::ExitCode;
 use super::support::Plane;
 use actix_web::{App, HttpServer, test};
 use models::entities::authz::AdminAction;
-use saffui::cli::{AdminCmd, AgentCmd, PlaneArgs, Shown, run};
+use saffui::cli::{AdminCmd, AgentCmd, EventsCmd, PlaneArgs, Shown, run};
 use serde_json::Value;
 use server::api::config::{Plane as Mounted, register};
 
@@ -69,6 +69,9 @@ async fn the_plane_is_operated_from_a_terminal() {
         AdminAction::FeatureRead,
         AdminAction::ClientRead,
         AdminAction::ClientWrite,
+        AdminAction::EventRead,
+        AdminAction::IdpRead,
+        AdminAction::IdpWrite,
     ])
     .await;
 
@@ -203,6 +206,38 @@ async fn the_plane_is_operated_from_a_terminal() {
     let (code, told) = answered(AdminCmd::Features).await.unwrap();
     assert_eq!(code, ExitCode::SUCCESS);
     assert_eq!(told.as_array().expect("a registry").len(), 7);
+
+    // The happenings, from a terminal: the empty dead-letter queue answers,
+    // a requeue of nothing refuses with a code, and a replay to nobody is
+    // told apart as not-found.
+    let (code, dead) = answered(AdminCmd::Events {
+        command: EventsCmd::Dead { max: 20 },
+    })
+    .await
+    .unwrap();
+    assert_eq!(code, ExitCode::SUCCESS, "{dead}");
+    assert_eq!(dead, serde_json::json!([]), "{dead}");
+    let (code, _) = answered(AdminCmd::Events {
+        command: EventsCmd::Requeue { event_id: 999_999 },
+    })
+    .await
+    .unwrap();
+    assert_ne!(code, ExitCode::SUCCESS, "a requeue of nothing succeeded");
+    let (code, _) = answered(AdminCmd::Events {
+        command: EventsCmd::Replay {
+            from: 1,
+            to: None,
+            connector: "nobody".to_owned(),
+            run: false,
+        },
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        code,
+        ExitCode::from(5),
+        "a replay to nobody was not a not-found"
+    );
 
     // The agent switch, from a terminal: asked, turned, asked again, turned
     // back. One fact either way.

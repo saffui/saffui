@@ -45,4 +45,5 @@ pub mod signup;
 pub mod theme;
 pub mod token;
 pub mod userinfo;
+pub mod webhook;
 pub mod workload;

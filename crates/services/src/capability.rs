@@ -12,6 +12,12 @@
 /// fits under `a.*`, and never the other way around, so nobody widens a
 /// grant by asking in the plural.
 fn admitted(held: &str, asked: &str) -> bool {
+    admits(held, asked)
+}
+
+/// The same admission, readable by the webhook filter: one grammar for
+/// every place a pattern admits a name, so nothing drifts.
+pub(crate) fn admits(held: &str, asked: &str) -> bool {
     match (held.strip_suffix('*'), asked.strip_suffix('*')) {
         (None, None) => held == asked,
         (Some(prefix), None) => asked.starts_with(prefix),

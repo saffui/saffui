@@ -5,6 +5,7 @@ import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
 import { listFlows } from "@/services/flows";
 import { getRealmSettings, reshapeRealm } from "@/services/settings";
+import { afterWrites } from "@/services/writes";
 import type { FlowRow } from "@/models/flows";
 
 const route = useRoute();
@@ -17,14 +18,16 @@ const failed = ref("");
 /// clients binding none. Empty is the built default, the alias "browser".
 const browserFlow = ref("");
 
-onMounted(async () => {
+async function load() {
   try {
     flows.value = await listFlows(realm.value);
     browserFlow.value = (await getRealmSettings(realm.value)).browser_flow ?? "";
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-});
+}
+onMounted(load);
+afterWrites(load);
 
 const topLevel = computed(() => flows.value.filter((flow) => flow.top_level));
 

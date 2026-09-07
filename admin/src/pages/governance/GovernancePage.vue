@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import { listIgaGrants, listIgaRules } from "@/services/federation";
+import { afterWrites } from "@/services/writes";
 import {
   convergeRules,
   createRule,
@@ -105,13 +106,15 @@ async function takeGrant(roleId: string) {
   }
 }
 
-onMounted(async () => {
+async function load() {
   try {
     rules.value = await listIgaRules(realm.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-});
+}
+onMounted(load);
+afterWrites(load);
 
 function condition(rule: IgaRule): string {
   if (rule.when_expr) return rule.when_expr;

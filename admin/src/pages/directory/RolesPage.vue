@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
@@ -38,13 +39,15 @@ const failed = ref("");
 const opened = ref<RoleRow | null>(null);
 const holders = ref<RoleHolders | null>(null);
 
-onMounted(async () => {
+async function load() {
   try {
     page.value = await listRoles(realm.value, first.value, size.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-});
+}
+onMounted(load);
+afterWrites(load);
 
 async function open(role: RoleRow) {
   opened.value = role;

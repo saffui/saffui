@@ -4,18 +4,21 @@ import { useRoute } from "vue-router";
 import AppIcon from "@/components/AppIcon.vue";
 import { say } from "@/i18n";
 import { readOverview, type OverviewTold } from "@/services/overview";
+import { afterWrites } from "@/services/writes";
 
 const route = useRoute();
 const told = ref<OverviewTold | null>(null);
 const failed = ref("");
 
-onMounted(async () => {
+async function load() {
   try {
     told.value = await readOverview(String(route.params.realm));
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-});
+}
+onMounted(load);
+afterWrites(load);
 
 function shown(count: number | null | undefined): string {
   if (count === null || count === undefined) return "··";

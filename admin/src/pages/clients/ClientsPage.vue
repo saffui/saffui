@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
 import AppPaging from "@/components/AppPaging.vue";
 import { createClient, listClients } from "@/services/clients";
+import { afterWrites } from "@/services/writes";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
 import type { Page } from "@/models/paging";
@@ -38,6 +39,7 @@ async function load() {
   }
 }
 onMounted(load);
+afterWrites(load);
 watch(first, load);
 
 function open(client: ClientBrief) {

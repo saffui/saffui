@@ -18,6 +18,7 @@ import {
 } from "@/services/authz";
 import { evaluate, listAuthzScopes, listPolicies, listResources } from "@/services/authz";
 import { ApiError } from "@/services/http";
+import { afterWrites } from "@/services/writes";
 import type {
   EvaluateAnswer,
   EvaluateQuestion,
@@ -74,6 +75,7 @@ async function load() {
   }
 }
 onMounted(load);
+afterWrites(load);
 
 interface PlacedPolicy {
   row: PolicyRow;

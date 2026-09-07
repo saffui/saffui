@@ -30,6 +30,7 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --dir packages/saffui-js test
+      - run: pnpm --dir admin test
       - run: pnpm --dir admin exec oxlint src
       - run: pnpm --dir admin build
       - name: no em dashes

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
+import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
@@ -41,13 +42,15 @@ const failed = ref("");
 const opened = ref<OrganizationRow | null>(null);
 const members = ref<OrgMember[] | null>(null);
 
-onMounted(async () => {
+async function load() {
   try {
     page.value = await listOrganizations(realm.value, first.value, size.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-});
+}
+onMounted(load);
+afterWrites(load);
 
 const making = ref(false);
 const newName = ref("");

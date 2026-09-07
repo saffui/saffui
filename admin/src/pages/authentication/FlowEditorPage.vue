@@ -13,6 +13,7 @@ import { addExecution, removeExecution } from "@/services/flows";
 import { getFlow, setRequirement } from "@/services/flows";
 import type { ExecutionRow, FlowDetail, Requirement } from "@/models/flows";
 import { reorderFlow } from "@/services/flows";
+import { afterWrites } from "@/services/writes";
 
 const NODE_W = 190;
 const NODE_H = 56;
@@ -69,6 +70,7 @@ async function load() {
   }
 }
 onMounted(load);
+afterWrites(load);
 
 interface Placed {
   row: ExecutionRow;

@@ -8,6 +8,7 @@ import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import { listActions, registerAction, reworkAction } from "@/services/flows";
+import { afterWrites } from "@/services/writes";
 import type { RequiredActionRow } from "@/models/flows";
 
 const route = useRoute();
@@ -40,6 +41,7 @@ async function load() {
   }
 }
 onMounted(load);
+afterWrites(load);
 
 const rows = computed(() =>
   CATALOGUE.map((held) => ({

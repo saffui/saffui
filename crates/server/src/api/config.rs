@@ -85,6 +85,29 @@ pub struct Sealing {
     pub envelope: Arc<Envelope>,
 }
 
+/// What this process carries and what was turned, fixed for its lifetime.
+///
+/// Installed once by the binary after resolving `SAFFUI_FEATURES`, before
+/// anything serves; asked before it is installed — a test process, which
+/// turns nothing — it is every compiled default. One value per process,
+/// like the subscriber: a feature is not something two workers disagree on.
+static FEATURES: std::sync::OnceLock<commons::feature::FeatureSet> = std::sync::OnceLock::new();
+
+pub fn install_features(resolved: commons::feature::FeatureSet) {
+    let _ = FEATURES.set(resolved);
+}
+
+pub fn features() -> &'static commons::feature::FeatureSet {
+    FEATURES.get_or_init(|| {
+        commons::feature::FeatureSet::resolve("", |feature| {
+            crypto::compiled_features().contains(&feature.slug())
+                || commons::feature::locally_compiled(feature)
+                || crate::metrics::compiled(feature)
+        })
+        .expect("an empty request resolves")
+    })
+}
+
 /// Register what a caller reaches.
 pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone + '_ {
     move |config: &mut web::ServiceConfig| {
@@ -169,9 +192,34 @@ pub fn observed() -> App<
         InitError = (),
     >,
 > {
-    App::new()
+    observed_with(true)
+}
+
+/// The same application, saying whether requests are measured. The last
+/// wrap is the outermost, so the measuring clock encloses the id, the span
+/// and everything they enclose.
+pub fn observed_with(
+    measured: bool,
+) -> App<
+    impl ServiceFactory<
+        ServiceRequest,
+        Config = (),
+        Response = ServiceResponse<impl MessageBody>,
+        Error = Error,
+        InitError = (),
+    >,
+> {
+    #[cfg(not(feature = "metrics"))]
+    let _ = measured;
+    let app = App::new()
         .wrap(TracingLogger::<SaffuiRootSpan>::new())
-        .wrap(WithRequestId)
+        .wrap(WithRequestId);
+    #[cfg(feature = "metrics")]
+    let app = app.wrap(actix_web::middleware::Condition::new(
+        measured,
+        crate::metrics::Measured,
+    ));
+    app
 }
 
 /// The administrative plane: a capability per route, from the table.
@@ -389,12 +437,27 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
 /// Its own listener, and nothing else on it. Sharing the data plane's port puts
 /// a probe behind that plane's traffic and its limits, and makes it reachable
 /// from wherever that port is.
-pub fn register_ops(vitals: &Vitals) -> impl FnOnce(&mut web::ServiceConfig) + Clone + '_ {
+pub fn register_ops(
+    vitals: &Vitals,
+    scraping: bool,
+) -> impl FnOnce(&mut web::ServiceConfig) + Clone + '_ {
     move |config: &mut web::ServiceConfig| {
         config
             .app_data(web::Data::new(vitals.clone()))
             .service(web::resource("/livez").route(web::get().to(health::alive)))
             .service(web::resource("/readyz").route(web::get().to(health::ready)))
             .service(web::resource("/startupz").route(web::get().to(health::started)));
+        // Turned off, the route is absent rather than refusing: a scrape
+        // answered 404 reads as "not here", which is the truth.
+        #[cfg(feature = "metrics")]
+        if scraping {
+            config.service(web::resource("/metrics").route(web::get().to(|| async {
+                actix_web::HttpResponse::Ok()
+                    .content_type("text/plain; version=0.0.4")
+                    .body(crate::metrics::render())
+            })));
+        }
+        #[cfg(not(feature = "metrics"))]
+        let _ = scraping;
     }
 }

@@ -7,7 +7,7 @@ use server::api::config::register_ops;
 use server::api::rest::endpoints::ops::health::Vitals;
 
 async fn ask(vitals: &Vitals, path: &str) -> (StatusCode, String) {
-    let app = test::init_service(App::new().configure(register_ops(vitals))).await;
+    let app = test::init_service(App::new().configure(register_ops(vitals, true))).await;
     let response = test::call_service(&app, test::TestRequest::get().uri(path).to_request()).await;
     let status = response.status();
     let body = String::from_utf8(test::read_body(response).await.to_vec()).unwrap_or_default();
@@ -112,7 +112,7 @@ async fn the_probes_ask_nothing_of_the_caller() {
     vitals.started();
 
     for path in ["/livez", "/readyz", "/startupz"] {
-        let app = test::init_service(App::new().configure(register_ops(&vitals))).await;
+        let app = test::init_service(App::new().configure(register_ops(&vitals, true))).await;
         let response = test::call_service(
             &app,
             test::TestRequest::get()
@@ -127,4 +127,38 @@ async fn the_probes_ask_nothing_of_the_caller() {
             "{path} refused a caller instead of answering an orchestrator"
         );
     }
+}
+
+/// The scrape is a switch: turned on it answers off the operations surface,
+/// turned off the route is absent, and a scraper reads the truth either way.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_scrape_is_there_exactly_when_it_is_turned_on() {
+    let plane = Plane::with_actions(&[]).await;
+    let vitals = Vitals::new(plane.pool(), 999);
+    vitals.started();
+
+    let exposing = test::init_service(App::new().configure(register_ops(&vitals, true))).await;
+    let answered = test::call_service(
+        &exposing,
+        test::TestRequest::get().uri("/metrics").to_request(),
+    )
+    .await;
+    assert_eq!(answered.status(), StatusCode::OK);
+    let kind = answered
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(kind.starts_with("text/plain"), "not the text form: {kind}");
+
+    let dark = test::init_service(App::new().configure(register_ops(&vitals, false))).await;
+    let refused =
+        test::call_service(&dark, test::TestRequest::get().uri("/metrics").to_request()).await;
+    assert_eq!(
+        refused.status(),
+        StatusCode::NOT_FOUND,
+        "a turned-off scrape still answers"
+    );
 }

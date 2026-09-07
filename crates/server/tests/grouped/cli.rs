@@ -199,7 +199,7 @@ async fn the_plane_is_operated_from_a_terminal() {
 
     let (code, told) = answered(AdminCmd::Features).await.unwrap();
     assert_eq!(code, ExitCode::SUCCESS);
-    assert_eq!(told.as_array().expect("a registry").len(), 5);
+    assert_eq!(told.as_array().expect("a registry").len(), 6);
 
     // The same answer as a table: a header a person scans, one line per
     // capability, and nothing a JSON parser would want.
@@ -220,8 +220,8 @@ async fn the_plane_is_operated_from_a_terminal() {
     .unwrap();
     assert_eq!(drawn.0, ExitCode::SUCCESS);
     assert!(
-        drawn.1.starts_with("SLUG") && drawn.1.lines().count() == 6,
-        "not a five-row table under its header: {}",
+        drawn.1.starts_with("SLUG") && drawn.1.lines().count() == 7,
+        "not a six-row table under its header: {}",
         drawn.1
     );
 

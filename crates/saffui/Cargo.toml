@@ -10,9 +10,13 @@ name = "saffui"
 path = "src/main.rs"
 
 [features]
+default = ["metrics"]
 # The desktop-ticket door, passed through to the server crate: the binding
 # links the system Kerberos libraries, so a deployment asks for it by name.
 kerberos = ["server/kerberos"]
+# Request metrics, passed through likewise. Leaving it out builds a binary
+# that carries no metrics machinery and cannot be asked to expose any.
+metrics = ["server/metrics"]
 
 [dependencies]
 commons = { workspace = true, features = ["http", "request-span"] }
@@ -24,7 +28,7 @@ openssl = { workspace = true }
 crypto = { workspace = true }
 secrecy = { workspace = true }
 pgcore = { workspace = true }
-server = { workspace = true }
+server = { workspace = true, default-features = false }
 # Provisioning: what a deployment needs before anybody can log in.
 services = { workspace = true }
 store = { workspace = true }

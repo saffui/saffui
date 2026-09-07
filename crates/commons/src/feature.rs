@@ -99,6 +99,8 @@ registry! {
         "A key store inside a PKCS#11 token, where the private key never leaves.";
     TracingJson = "tracing-json", Stable, CompileOnly,
         "Structured logging through a tracing subscriber.";
+    Metrics = "metrics", Stable, Both,
+        "Request metrics on the operations port, in the Prometheus text form.";
 }
 
 /// Whether the capabilities this crate itself carries were linked. Only
@@ -293,7 +295,7 @@ mod tests {
             assert_eq!(Feature::by_slug(feature.slug()), Some(feature));
         }
 
-        for unknown in ["", "chacha", "CHACHA20", "pkcs#11", "metrics"] {
+        for unknown in ["", "chacha", "CHACHA20", "pkcs#11", "prometheus"] {
             assert_eq!(Feature::by_slug(unknown), None, "{unknown:?}");
         }
     }
@@ -412,10 +414,30 @@ mod tests {
         assert!(!set.is_enabled(Feature::Pkcs11));
     }
 
+    /// The first Both-gated capability: what is compiled sets the bound, and
+    /// the runtime switch moves within it.
+    #[test]
+    fn a_runtime_switch_turns_a_compiled_capability_off() {
+        let compiled = |feature: Feature| matches!(feature, Feature::Metrics);
+
+        let resting = FeatureSet::resolve("", compiled).unwrap();
+        assert!(
+            resting.is_enabled(Feature::Metrics),
+            "stable and compiled did not start on"
+        );
+
+        let turned = FeatureSet::resolve("-metrics", compiled).unwrap();
+        assert!(!turned.is_enabled(Feature::Metrics));
+        assert!(
+            turned.status(Feature::Metrics).compiled,
+            "off is a choice here, not an absence"
+        );
+    }
+
     /// A name nobody registered is refused rather than ignored.
     #[test]
     fn an_unknown_name_is_refused() {
-        for written in ["metrics", "+ciba", "-sms", "chacha"] {
+        for written in ["prometheus", "+ciba", "-sms", "chacha"] {
             assert!(
                 matches!(resolve(written), Err(FeatureError::UnknownSlug(_))),
                 "{written:?} was ignored"

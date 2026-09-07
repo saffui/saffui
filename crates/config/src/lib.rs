@@ -45,6 +45,12 @@ pub fn optional(key: &str) -> Option<String> {
     read(key)
 }
 
+/// What the operator turned, as written: `+x,-y`, or bare slugs meaning on.
+/// Absent is nothing turned, which leaves every capability at its default.
+pub fn features() -> String {
+    optional("FEATURES").unwrap_or_default()
+}
+
 /// A parsed value, or `default` when the variable is not set.
 ///
 /// A variable that *is* set and cannot be parsed is an error. The alternative —

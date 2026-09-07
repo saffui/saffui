@@ -1,18 +1,13 @@
 use actix_web::HttpResponse;
-use commons::error::ErrorCode;
-use commons::feature::{Feature, FeatureSet, locally_compiled};
+use commons::feature::Feature;
 use commons::http::ApiError;
 use serde_json::json;
 
-/// What this build carries and what is on: the registry, answered from the
-/// crates that can see their own cfg. Read-only by nature: the gating is
-/// compile-time, so there is nothing here a request could turn.
+/// What this build carries and what is on: the set the process was started
+/// under. Read-only by nature; the compile half is link-time and the
+/// runtime half was fixed at boot.
 pub async fn list() -> Result<HttpResponse, ApiError> {
-    let resolved = FeatureSet::resolve("", |feature| {
-        crypto::compiled_features().contains(&feature.slug()) || locally_compiled(feature)
-    })
-    .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
-
+    let resolved = crate::api::config::features();
     let told: Vec<_> = Feature::ALL
         .iter()
         .map(|feature| {

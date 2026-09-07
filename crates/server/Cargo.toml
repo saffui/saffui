@@ -47,10 +47,12 @@ unic-langid = "0.9"
 # binary carries the whole plane. Building with the feature requires
 # `pnpm --dir admin build` to have produced admin/dist first.
 include_dir = { version = "0.7", optional = true }
+prometheus = { workspace = true, optional = true }
 lettre = { workspace = true }
 async-trait = { workspace = true }
 
 [features]
+default = ["metrics"]
 # The desktop-ticket door. Compile-gated: the GSSAPI binding links the
 # system Kerberos libraries, and a deployment that does not negotiate
 # should not carry them.
@@ -58,6 +60,10 @@ kerberos = ["dep:cross-krb5"]
 # Serve the admin console from inside the binary, under /console. Off by
 # default so a build never fails on a front nobody built.
 embedded-admin = ["dep:include_dir"]
+# Request metrics, scraped off the operations port. On by default; a build
+# that leaves it out carries no metrics machinery at all, and the runtime
+# switch is `-metrics` in SAFFUI_FEATURES.
+metrics = ["dep:prometheus"]
 
 [dev-dependencies]
 # The client half of a SPNEGO exchange, so the bench can hold a real ticket.

@@ -287,14 +287,22 @@ jobs:
             -v "$SAFFUI_TEST_PG_TLS_CERTS:/certs:ro" postgres:17-alpine \
             -c ssl=on -c ssl_cert_file=/certs/server.crt -c ssl_key_file=/certs/server.key
 
+          # A fresh postgres restarts itself once while initialising, and a
+          # liveness probe can answer inside that window; the readiness that
+          # counts is the server answering SQL with ssl on, so that is what
+          # is waited for.
+          ready=""
           for _ in $(seq 1 30); do
-            docker exec saffui-pg-tls pg_isready -U postgres && break
+            if [ "$(docker exec saffui-pg-tls psql -U postgres -tAc 'SHOW ssl' 2>/dev/null)" = "on" ]; then
+              ready=yes
+              break
+            fi
             sleep 2
           done
 
           # Whatever happened, say what the server said. A container that dies
           # otherwise reports only that it is not running, which names no cause.
-          if ! docker exec saffui-pg-tls psql -U postgres -tAc "SHOW ssl" | grep -qx on; then
+          if [ -z "$ready" ]; then
             echo "the TLS server did not come up:" >&2
             docker logs saffui-pg-tls >&2 || true
             exit 1

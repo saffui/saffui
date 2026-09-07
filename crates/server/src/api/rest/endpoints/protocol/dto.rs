@@ -29,6 +29,9 @@ pub struct Asked {
     pub actor_token_type: Option<String>,
     pub requested_token_type: Option<String>,
     pub audience: Option<String>,
+    /// Tool names for a capability token, space-separated: the agents'
+    /// extension of the exchange form.
+    pub capabilities: Option<String>,
 }
 
 /// A token, and what a client needs to use it.

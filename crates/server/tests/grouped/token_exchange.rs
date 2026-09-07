@@ -481,3 +481,210 @@ async fn an_exchange_points_only_where_the_operator_said() {
         }
     }
 }
+
+/// An agent's exchange mints a capability token: the tools it asked for
+/// land in `cap` intersected against its registered root, the lifespan is
+/// the agent's own short one, and re-exchanging attenuates against the
+/// token in hand: asking past either root is one flat refusal. A client
+/// that registered no capabilities is not an agent and cannot ask; an
+/// exchange asking nothing stays exactly what it always was.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_agents_exchange_narrows_capabilities_and_never_widens() {
+    use models::entities::attributes::AttributeValue;
+    use store::tenancy::TenantContext;
+
+    let plane = Plane::with_actions(&[]).await;
+    opted_in(&plane, support::CONFIDENTIAL).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        let bag = client.configs.get_or_insert_with(Default::default);
+        bag.insert(
+            "agent.capabilities".to_owned(),
+            AttributeValue::Str("github.create_issue saffui.user.*".to_owned()),
+        );
+        bag.insert(
+            "agent.session_seconds".to_owned(),
+            AttributeValue::Str("120".to_owned()),
+        );
+        assert!(
+            store::providers::clients::update(&transaction, &client)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+    }
+    let subject = subject_tokens(&plane, "openid profile").await;
+    let subject_token = subject["access_token"].as_str().expect("a subject token");
+
+    // The straight mint: cap carried, short-lived, act named.
+    let (status, minted) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+            ("capabilities", "saffui.user.read github.create_issue"),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    let capability = minted["access_token"].as_str().expect("a token");
+    let claims = plane.claims_of(capability).await;
+    assert_eq!(
+        claims["cap"],
+        serde_json::json!(["saffui.user.read", "github.create_issue"]),
+        "{claims}"
+    );
+    assert_eq!(minted["expires_in"], 120, "not the agent's own span");
+
+    // And the realm's lifespan stays the ceiling: an agent registered past
+    // it is clamped to it, never granted past it.
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        client.configs.get_or_insert_with(Default::default).insert(
+            "agent.session_seconds".to_owned(),
+            AttributeValue::Str("999999".to_owned()),
+        );
+        assert!(
+            store::providers::clients::update(&transaction, &client)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+    }
+    let (status, clamped) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+            ("capabilities", "github.create_issue"),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{clamped}");
+    let ceiling = plain_realm_lifespan(&clamped);
+    assert!(
+        ceiling <= 300,
+        "the realm's ceiling did not hold: {clamped}"
+    );
+
+    // Past the root: one flat refusal, the same face as not being allowed.
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+            ("capabilities", "saffui.user.read github.delete_repo"),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(told["error"], "unauthorized_client", "{told}");
+
+    // Attenuation: the token in hand is the ceiling, not the registration.
+    let (status, narrowed) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", capability),
+            ("subject_token_type", ACCESS_TYPE),
+            ("capabilities", "saffui.user.read"),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{narrowed}");
+    let narrowed_claims = plane
+        .claims_of(narrowed["access_token"].as_str().expect("a token"))
+        .await;
+    assert_eq!(
+        narrowed_claims["cap"],
+        serde_json::json!(["saffui.user.read"]),
+        "{narrowed_claims}"
+    );
+
+    // Broader than the parent: refused flat, though the registration would
+    // have allowed it. The token in hand is the narrowest root in the room.
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", capability),
+            ("subject_token_type", ACCESS_TYPE),
+            ("capabilities", "saffui.user.list"),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(told["error"], "unauthorized_client", "{told}");
+
+    // Asking nothing mints what it always did: no cap, the realm's span.
+    let (status, plain) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{plain}");
+    let plain_claims = plane
+        .claims_of(plain["access_token"].as_str().expect("a token"))
+        .await;
+    assert!(plain_claims.get("cap").is_none(), "{plain_claims}");
+}
+
+/// What the realm would have granted a plain exchange, read off an answer.
+fn plain_realm_lifespan(answer: &Value) -> i64 {
+    answer["expires_in"].as_i64().expect("a lifespan")
+}
+
+/// A client that registered no capability root is no agent: asking for
+/// capabilities refuses flat, whatever else its bag allows.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_without_a_root_cannot_ask_for_capabilities() {
+    let plane = Plane::with_actions(&[]).await;
+    opted_in(&plane, support::CONFIDENTIAL).await;
+    let subject = subject_tokens(&plane, "openid").await;
+
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            (
+                "subject_token",
+                subject["access_token"].as_str().expect("a token"),
+            ),
+            ("subject_token_type", ACCESS_TYPE),
+            ("capabilities", "saffui.user.read"),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(told["error"], "unauthorized_client", "{told}");
+}

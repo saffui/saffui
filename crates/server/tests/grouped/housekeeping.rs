@@ -119,3 +119,134 @@ async fn a_realm_pinned_elsewhere_is_not_swept_here() {
     assert_eq!(swept.total(), 0, "{swept:?}");
     assert_eq!(revocations_left(&plane, support::REALM).await, 1);
 }
+
+/// A client grant that ran out under a login still standing is taken away,
+/// the one still running is not, and an offline grant still running keeps
+/// holding its expired login exactly as before: what ends early goes early,
+/// and nothing the sweep takes reaches past its own expiration.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_client_grant_that_ran_out_goes_before_its_login_does() {
+    let plane = Plane::with_actions(&[]).await;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let plant_login = |id: &'static str, alive: bool| {
+        let transaction = &transaction;
+        async move {
+            transaction
+                .execute(
+                    &format!(
+                        "INSERT INTO user_sessions \
+                             (tenant, realm_id, session_id, user_id, login_username, \
+                              started_at, state, expiration) \
+                         SELECT current_setting('saffui.current_tenant', true), \
+                                current_setting('saffui.current_realm', true), \
+                                $1, $2, $2, extract(epoch from now())::bigint - 600, 'logged-in', \
+                                extract(epoch from now())::bigint {}",
+                        if alive { "+ 3600" } else { "- 60" }
+                    ),
+                    &[&id, &support::SUBJECT],
+                )
+                .await
+                .expect("a login planted");
+        }
+    };
+    let plant_grant = |session: &'static str,
+                       login: &'static str,
+                       client: &'static str,
+                       alive: bool,
+                       offline: bool| {
+        let transaction = &transaction;
+        async move {
+            transaction
+                .execute(
+                    &format!(
+                        "INSERT INTO client_sessions \
+                             (tenant, realm_id, session_id, user_session_id, user_id, client_id, \
+                              started_at, expiration, offline) \
+                         SELECT current_setting('saffui.current_tenant', true), \
+                                current_setting('saffui.current_realm', true), \
+                                $1, $2, $3, $4, extract(epoch from now())::bigint - 600, \
+                                extract(epoch from now())::bigint {}, $5",
+                        if alive { "+ 3600" } else { "- 60" }
+                    ),
+                    &[&session, &login, &support::SUBJECT, &client, &offline],
+                )
+                .await
+                .expect("a grant planted");
+        }
+    };
+    plant_login("sweep-live-login", true).await;
+    plant_grant(
+        "sweep-ended-grant",
+        "sweep-live-login",
+        support::CONFIDENTIAL,
+        false,
+        false,
+    )
+    .await;
+    plant_grant(
+        "sweep-live-grant",
+        "sweep-live-login",
+        support::PARTY,
+        true,
+        false,
+    )
+    .await;
+    // The one login that outlives itself: expired, held by an offline grant
+    // still running, the §11 retention the sweep must keep honouring.
+    plant_login("sweep-held-login", false).await;
+    plant_grant(
+        "sweep-offline-grant",
+        "sweep-held-login",
+        support::CONFIDENTIAL,
+        true,
+        true,
+    )
+    .await;
+    transaction.commit().await.expect("the seed kept");
+
+    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+        .await
+        .expect("the realms were listed");
+    assert_eq!(
+        swept.client_sessions, 1,
+        "other than the ended grant was taken: {swept:?}"
+    );
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let left: Vec<String> = transaction
+        .query(
+            "SELECT session_id FROM client_sessions WHERE session_id LIKE 'sweep-%' \
+             UNION ALL \
+             SELECT session_id FROM user_sessions WHERE session_id LIKE 'sweep-%' \
+             ORDER BY session_id",
+            &[],
+        )
+        .await
+        .expect("a census")
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(
+        left,
+        vec![
+            "sweep-held-login".to_owned(),
+            "sweep-live-grant".to_owned(),
+            "sweep-live-login".to_owned(),
+            "sweep-offline-grant".to_owned(),
+        ],
+        "the sweep took other than the ended grant"
+    );
+}

@@ -48,6 +48,9 @@ first release is cut.
   re-migrating and re-provisioning for every test.
 
 ### Fixed
+- A client grant that ran out under a login still standing is swept away
+  instead of sitting unreadable until the login goes; an offline grant
+  still running keeps holding its login exactly as before.
 - The server drains on SIGTERM as it always did on SIGINT: readiness fails
   first, in-flight requests finish, and only then does it stop. A `docker
   stop` or a pod eviction used to kill it outright.

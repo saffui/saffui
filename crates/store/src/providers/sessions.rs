@@ -257,6 +257,26 @@ pub async fn end_all_of_user(transaction: &Transaction<'_>, user_id: &str) -> St
     Ok(removed)
 }
 
+/// Take away the client grants that ran out under logins still standing.
+///
+/// The cascade only reaches these when their login goes; a grant that ended
+/// early — its own expiration, shorter than the login's — would otherwise
+/// sit unreadable until then. Every reader already treats a missing row and
+/// an expired one as the same refusal, which is what makes this safe.
+pub async fn drop_expired_client_sessions(
+    transaction: &Transaction<'_>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> StoreResult<u64> {
+    transaction
+        .execute(
+            "DELETE FROM client_sessions \
+             WHERE expiration IS NOT NULL AND expiration <= $1",
+            &[&now.timestamp()],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)
+}
+
 pub async fn drop_expired_sessions(
     transaction: &Transaction<'_>,
     now: chrono::DateTime<chrono::Utc>,

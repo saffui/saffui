@@ -442,6 +442,19 @@ export function previewAnswer<T>(path: string): T {
   if (/\/authz\/servers\/[^/]+\/scopes$/.test(path)) {
     return answer([{ scope_id: "sc-1", name: "edit" }]);
   }
+  if (path.endsWith("/auth/flows/f-stepup")) {
+    return answer({
+      flow: { flow_id: "f-stepup", alias: "step-up", description: "Second factor on demand", top_level: false, built_in: false },
+      executions: [
+        { execution_id: "y-1", alias: "Authenticator app", flow_id: "f-stepup", priority: 10,
+          step: { kind: "authenticator", authenticator: "totp", config_id: null }, requirement: "alternative" },
+        { execution_id: "y-2", alias: "Texted code", flow_id: "f-stepup", priority: 20,
+          step: { kind: "authenticator", authenticator: "sms-otp", config_id: null }, requirement: "alternative" },
+        { execution_id: "y-3", alias: "Recovery code", flow_id: "f-stepup", priority: 30,
+          step: { kind: "authenticator", authenticator: "recovery-code", config_id: null }, requirement: "alternative" },
+      ],
+    });
+  }
   if (/\/auth\/flows\/[^/]+$/.test(path)) {
     return answer({
       flow: { flow_id: "f-browser", alias: "browser", description: "The realm's own sign-in", top_level: true, built_in: true },

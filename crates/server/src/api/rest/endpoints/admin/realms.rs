@@ -5,10 +5,8 @@ use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
 use models::compliance::subject_request::Jurisdiction;
 use models::entities::realm::{RealmCreateModel, RealmUpdateModel};
-use models::paging::PagingParams;
 use models::representation::RepresentationParams;
 use services::provisioning;
-use store::query::list_query::ListQuery;
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::config::Sealing;
@@ -16,43 +14,34 @@ use crate::api::rest::endpoints::admin::dto::RealmBrief;
 use crate::middleware::admin_guard::Admin;
 use crate::middleware::admin_policy::AdminPolicy;
 
-/// The realms of the tenant this token belongs to.
+/// The realms this caller administers, which is the one that minted its
+/// token and no other.
+///
+/// It was a tenant-wide read once, which made it the one door answering
+/// about realms a caller cannot reach. An administrator is a user of its own
+/// realm, so the honest answer is a page of one, and nobody walks this list
+/// to learn what else the deployment holds.
 pub async fn list(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
-    paging: web::Query<PagingParams>,
 ) -> Result<HttpResponse, ApiError> {
-    let window = paging
-        .window()
-        .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
-
     let mut connection = pool.get().await.map_err(|_| internal())?;
-    // Tenant wide: a realm listing is the one admin read that is not about one
-    // realm, and the scope says so rather than a realm being borrowed for it.
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::tenant_wide(&admin.context.tenant.tenant),
-        )
+        .transaction(&mut connection, &admin.context.tenant)
         .await
         .map_err(|_| internal())?;
 
-    // One column is enough here and only here: the read is tenant wide and
-    // `realm_name_unique_per_tenant` makes the name unique within it, so the
-    // order is already total. A listing whose leading column can tie needs a
-    // tiebreaker, or an offset window serves one row twice and another never.
-    let query = ListQuery::new(window)
-        .sorted_by("name", store::query::list_query::SortDirection::Ascending);
-    let found = services::realm::listed(&transaction, &query, paging.count.unwrap_or(false))
+    let held = services::realm::named(&transaction, &admin.context.tenant.realm_id)
         .await
-        .map_err(|_| internal())?;
+        .map_err(|_| internal())?
+        .ok_or_else(internal)?;
 
     Ok(HttpResponse::Ok().json(models::paging::Page {
-        items: found.items.into_iter().map(brief).collect::<Vec<_>>(),
-        first: found.first,
-        max: found.max,
-        total: found.total,
+        items: vec![brief(held)],
+        first: 0,
+        max: 1,
+        total: Some(1),
     }))
 }
 

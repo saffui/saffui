@@ -113,9 +113,37 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{told}");
 
-    // Born ready: the standard scopes and the admin scope are in place, and
-    // the deployment's console is registered and pointed at this server.
-    let (status, scopes) = asked(
+    // Born ready, read from the store rather than over a door: this token
+    // belongs to another realm, and no token administers a realm it did not
+    // come from. What is under test is what provisioning wrote.
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &TenantContext::new(support::TENANT, "staging"),
+            )
+            .await;
+        let scopes = store::providers::client_scopes::list_scopes(&transaction)
+            .await
+            .expect("a scope catalogue");
+        let names: Vec<&str> = scopes.iter().map(|held| held.name.as_str()).collect();
+        for wanted in ["profile", "email", "offline_access", support::SCOPE] {
+            assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
+        }
+        assert!(
+            store::providers::clients::load(&transaction, support::PARTY)
+                .await
+                .expect("a client read")
+                .is_some(),
+            "the console was not registered in the new realm"
+        );
+    }
+
+    // And the door itself refuses, which is the same statement from the
+    // other side: a realm is created here and administered from its own.
+    let (status, _) = asked(
         &plane,
         Method::GET,
         "/admin/realms/staging/client-scopes",
@@ -123,32 +151,17 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{scopes}");
-    let names: Vec<&str> = scopes
-        .as_array()
-        .expect("a scope catalogue")
-        .iter()
-        .filter_map(|held| held["name"].as_str())
-        .collect();
-    for wanted in ["profile", "email", "offline_access", support::SCOPE] {
-        assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
-    }
-
-    let (status, console) = asked(
-        &plane,
-        Method::GET,
-        &format!("/admin/realms/staging/clients/{}", support::PARTY),
-        &bearer,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{console}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the creating token administered the realm it made"
+    );
 
     // Reshaped: the mentioned switches move, the name does not.
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({
             "display_name": "Staging ground",
@@ -165,7 +178,11 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{shaped}");
-    assert_eq!(shaped["name"], "staging", "{shaped}");
+    assert_eq!(
+        shaped["name"],
+        support::REALM,
+        "a reshape renamed the realm: {shaped}"
+    );
     assert_eq!(shaped["display_name"], "Staging ground", "{shaped}");
     assert_eq!(shaped["access_token_lifespan"], 600, "{shaped}");
     assert_eq!(shaped["refresh_token_lifespan"], 900, "{shaped}");
@@ -176,7 +193,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, read) = asked(
         &plane,
         Method::GET,
-        "/admin/realms/staging?briefRepresentation=false",
+        &format!("/admin/realms/{}?briefRepresentation=false", support::REALM),
         &bearer,
         None,
     )
@@ -189,7 +206,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, told) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "otp_policy": { "digits": 9, "period": 30 } })),
     )
@@ -199,7 +216,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({
             "otp_policy": { "digits": 8, "period": 60, "algorithm": "SHA256", "window": 2 }
@@ -214,7 +231,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, told) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({
             "mail_templates": { "magic_link": { "fr": { "subject": "Lien", "body": "sans lien" } } }
@@ -226,7 +243,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({
             "mail_templates": {
@@ -245,7 +262,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, told) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "device_code_lifespan": 10 })),
     )
@@ -255,7 +272,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "device_code_lifespan": 300, "device_poll_interval": 10 })),
     )
@@ -268,7 +285,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, told) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "ciba_expiry": 10 })),
     )
@@ -277,7 +294,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "ciba_expiry": 120, "ciba_interval": 9 })),
     )
@@ -290,7 +307,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, told) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "webauthn_policy": { "rp_name": "x".repeat(65) } })),
     )
@@ -300,7 +317,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({
             "webauthn_policy": { "rp_name": "Acme Staging", "allow_subdomains": true }
@@ -319,7 +336,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, told) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "browser_flow": "ghost" })),
     )
@@ -329,7 +346,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "browser_flow": "browser" })),
     )
@@ -340,7 +357,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "browser_flow": "" })),
     )
@@ -353,7 +370,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, told) = asked(
         &plane,
         Method::POST,
-        "/admin/realms/staging/mail/test",
+        &format!("/admin/realms/{}/mail/test", support::REALM),
         &bearer,
         Some(serde_json::json!({ "to": "nobody" })),
     )
@@ -362,29 +379,34 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, told) = asked(
         &plane,
         Method::POST,
-        "/admin/realms/staging/mail/test",
+        &format!("/admin/realms/{}/mail/test", support::REALM),
         &bearer,
         Some(serde_json::json!({ "to": "someone@acme.test" })),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
 
-    // Reshaping what does not exist is not creating it.
-    let (status, told) = asked(
-        &plane,
-        Method::PUT,
-        "/admin/realms/nowhere",
-        &bearer,
-        Some(serde_json::json!({ "display_name": "ghost" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+    // A realm this token did not come from is refused before anything is
+    // looked up, so one that does not exist and one that does answer alike.
+    // The door cannot be walked to learn which realms the deployment holds,
+    // and reshaping what is not yours is certainly not creating it.
+    for named in ["nowhere", "staging"] {
+        let (status, told) = asked(
+            &plane,
+            Method::PUT,
+            &format!("/admin/realms/{named}"),
+            &bearer,
+            Some(serde_json::json!({ "display_name": "ghost" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{named}: {told}");
+    }
 
     // The registration secret is drawn, answered once, and never read back.
     let (status, drawn) = asked(
         &plane,
         Method::POST,
-        "/admin/realms/staging/registration-secret",
+        &format!("/admin/realms/{}/registration-secret", support::REALM),
         &bearer,
         None,
     )
@@ -398,7 +420,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, drawn) = asked(
         &plane,
         Method::POST,
-        "/admin/realms/staging/registration-secret",
+        &format!("/admin/realms/{}/registration-secret", support::REALM),
         &bearer,
         None,
     )
@@ -413,7 +435,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, read) = asked(
         &plane,
         Method::GET,
-        "/admin/realms/staging?briefRepresentation=false",
+        &format!("/admin/realms/{}?briefRepresentation=false", support::REALM),
         &bearer,
         None,
     )
@@ -427,7 +449,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, _) = asked(
         &plane,
         Method::DELETE,
-        "/admin/realms/staging/registration-secret",
+        &format!("/admin/realms/{}/registration-secret", support::REALM),
         &bearer,
         None,
     )
@@ -439,33 +461,30 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let (status, told) = asked(&plane, Method::DELETE, "/admin/realms/main", &bearer, None).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
 
-    let (status, _) = asked(
+    // A realm is not deleted from its own console, for the reason it is not
+    // switched off from it: the caller would be removing the ground it
+    // stands on, and no token from anywhere else may do it either.
+    let (status, told) = asked(
         &plane,
         Method::DELETE,
-        "/admin/realms/staging",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-    let (status, _) = asked(
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    // And it is still standing: a refusal that left the realm half removed
+    // would be worse than the deletion it refused.
+    let (status, still) = asked(
         &plane,
         Method::GET,
-        "/admin/realms/staging?briefRepresentation=false",
+        &format!("/admin/realms/{}?briefRepresentation=false", support::REALM),
         &bearer,
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-    let (status, _) = asked(
-        &plane,
-        Method::DELETE,
-        "/admin/realms/staging",
-        &bearer,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(status, StatusCode::OK, "{still}");
+    assert_eq!(still["enabled"], true, "{still}");
 }
 
 /// A realm speaks over the pages: the accepted words reach the render, and
@@ -615,44 +634,28 @@ async fn a_realm_is_not_switched_off_from_its_own_console() {
     assert_eq!(status, StatusCode::OK, "{told}");
     assert_eq!(told["display_name"], "Still editable", "{told}");
 
-    // Another realm: switched off, and switched back on from the same console.
+    // Another realm is not switched off from here either, and not because
+    // of the guard above: it is refused before the switch is even read. The
+    // console that turns a realm off is the one that realm holds.
     let (status, born) = asked(
         &plane,
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "spare", "display_name": "Spare", "enabled": true })),
+        Some(serde_json::json!({ "name": "other", "display_name": "Other", "enabled": true })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{born}");
-    let other = format!(
-        "/admin/realms/{}",
-        born["realm_id"].as_str().expect("an id")
-    );
 
-    let (status, off) = asked(
+    let (status, told) = asked(
         &plane,
         Method::PUT,
-        &other,
+        "/admin/realms/other",
         &bearer,
         Some(serde_json::json!({ "enabled": false })),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{off}");
-    assert_eq!(off["enabled"], false, "{off}");
-
-    // The way back, from the console that turned it off. Without this the
-    // switch would be one-way and the guard above would only delay the lockout.
-    let (status, on) = asked(
-        &plane,
-        Method::PUT,
-        &other,
-        &bearer,
-        Some(serde_json::json!({ "enabled": true })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{on}");
-    assert_eq!(on["enabled"], true, "{on}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{told}");
 }
 
 /// Insisting on https is refused where nothing could ever check it.
@@ -742,7 +745,7 @@ async fn the_privacy_door_refuses_terms_it_cannot_honour() {
     let (status, told) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/doored",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "dsar_jurisdiction": "atlantis" })),
     )
@@ -753,7 +756,7 @@ async fn the_privacy_door_refuses_terms_it_cannot_honour() {
     let (status, told) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/doored",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "dsar_jurisdiction": "ng" })),
     )
@@ -763,7 +766,7 @@ async fn the_privacy_door_refuses_terms_it_cannot_honour() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/doored",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "dsar_jurisdiction": "ng", "dsar_response_days": 10 })),
     )
@@ -777,7 +780,7 @@ async fn the_privacy_door_refuses_terms_it_cannot_honour() {
     let (status, told) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/doored",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "dsar_response_days": 0 })),
     )
@@ -788,7 +791,7 @@ async fn the_privacy_door_refuses_terms_it_cannot_honour() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/doored",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({
             "mail_templates": {
@@ -804,7 +807,7 @@ async fn the_privacy_door_refuses_terms_it_cannot_honour() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/doored",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "dsar_jurisdiction": "eu", "dsar_response_days": 0 })),
     )
@@ -815,7 +818,7 @@ async fn the_privacy_door_refuses_terms_it_cannot_honour() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/doored",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({ "dsar_jurisdiction": "" })),
     )
@@ -835,15 +838,6 @@ async fn the_texting_brakes_hold_their_shapes() {
     ])
     .await;
     let bearer = plane.token(&support::claims());
-    let (status, born) = asked(
-        &plane,
-        Method::POST,
-        "/admin/realms",
-        &bearer,
-        Some(serde_json::json!({ "name": "texted", "display_name": "Texted", "enabled": true })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{born}");
 
     for refused in [
         serde_json::json!({ "sms_daily_cap": -1 }),
@@ -858,7 +852,7 @@ async fn the_texting_brakes_hold_their_shapes() {
         let (status, told) = asked(
             &plane,
             Method::PUT,
-            "/admin/realms/texted",
+            &format!("/admin/realms/{}", support::REALM),
             &bearer,
             Some(refused.clone()),
         )
@@ -873,7 +867,7 @@ async fn the_texting_brakes_hold_their_shapes() {
     let (status, shaped) = asked(
         &plane,
         Method::PUT,
-        "/admin/realms/texted",
+        &format!("/admin/realms/{}", support::REALM),
         &bearer,
         Some(serde_json::json!({
             "sms_daily_cap": 100,

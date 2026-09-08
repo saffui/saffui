@@ -1,16 +1,13 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use deadpool_postgres::Pool;
 use serde::Deserialize;
 use store::providers::birthright::{self, BirthrightRule};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use crate::middleware::admin_guard::Admin;
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
-}
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)

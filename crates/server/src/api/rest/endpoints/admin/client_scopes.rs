@@ -1,3 +1,4 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
@@ -5,7 +6,7 @@ use deadpool_postgres::Pool;
 use models::entities::client::ClientScopeMutationModel;
 use serde::Deserialize;
 use services::admin::client_scopes::{self, Unwritable};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
@@ -189,10 +190,6 @@ pub async fn detach(
         .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
-}
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }
 
 fn refused(why: Unwritable) -> ApiError {

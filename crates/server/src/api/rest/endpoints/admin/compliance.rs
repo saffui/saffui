@@ -1,3 +1,4 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
@@ -6,7 +7,7 @@ use models::compliance::breach::{BreachRecord, BreachSeverity};
 use models::compliance::subject_request::{DsarKind, DsarRequest, Jurisdiction};
 use serde::Deserialize;
 use services::admin::compliance::{self, Lodging, Unactionable};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
@@ -258,10 +259,6 @@ fn presentable(request: DsarRequest) -> serde_json::Value {
     let mut told = serde_json::to_value(&request).expect("a request serialises");
     told["deadline_source"] = serde_json::Value::String(source.to_owned());
     told
-}
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }
 
 fn refused(why: Unactionable) -> ApiError {

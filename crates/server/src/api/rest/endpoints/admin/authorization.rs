@@ -1,3 +1,4 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
@@ -28,10 +29,6 @@ fn refused(why: Unwritable, missing: ErrorCode) -> ApiError {
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
-}
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }
 
 /// What protecting a client asks: how its absencies decide, and how its

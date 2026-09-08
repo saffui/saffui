@@ -657,6 +657,26 @@ pub fn origin() -> config::serving::PublicOrigin {
     config::serving::PublicOrigin::parse(ORIGIN).expect("a usable origin")
 }
 
+/// The same claims, issued by another realm.
+///
+/// The guard reads the realm off the issuer, so this is the only thing that
+/// has to change for a token to belong somewhere else.
+#[allow(dead_code, reason = "only the suites crossing realms ask")]
+pub fn claims_in(realm_id: &str) -> JwtPayload {
+    let mut payload = claims();
+    payload.set_issuer(origin().issuer(realm_id));
+    payload
+        .set_claim("sid", Some(serde_json::json!(session_in(realm_id))))
+        .expect("a session claim");
+    payload
+}
+
+/// The login identifier the other realm's credential names.
+#[allow(dead_code, reason = "only the suites crossing realms ask")]
+pub fn session_in(realm_id: &str) -> String {
+    format!("{SESSION}-{realm_id}")
+}
+
 #[allow(
     dead_code,
     reason = "not every suite mints a token or mounts the plane"
@@ -1652,6 +1672,112 @@ impl Plane {
             AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned()),
         );
         realms::create(&transaction, &realm).await.unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    /// The same caller, credentialled in another realm.
+    ///
+    /// A token reaches exactly the realm that minted it, so a suite working
+    /// across two realms needs two tokens rather than one used twice. This
+    /// plants in `realm_id` what `plant` plants in the main realm: the ring,
+    /// the published signing key, the login the token names, and a role
+    /// carrying the actions asked for.
+    ///
+    /// The key is the same one, which is not how a deployment looks and is
+    /// exactly what makes the test cheap: what is being exercised is the
+    /// realm the issuer names, not whose key signed.
+    #[allow(dead_code, reason = "only the suites crossing realms ask")]
+    pub async fn plant_credential_in(&self, realm_id: &str, held: &[AdminAction]) {
+        let metadata = || AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned());
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, realm_id))
+            .await;
+        let envelope = envelope();
+        keyring::provision(&transaction, &envelope, TENANT, realm_id)
+            .await
+            .unwrap();
+        let ring = keyring::load(&transaction, &envelope, TENANT, realm_id)
+            .await
+            .unwrap();
+        // The administrator is a user of the realm it administers, so ada has
+        // to exist here before anything can be opened or granted in her name.
+        let user = UserCreateModel {
+            user_name: SUBJECT.into(),
+            enabled: true,
+            email: "ada@example.test".into(),
+            email_verified: Some(true),
+            phone_number: None,
+            phone_number_verified: None,
+            required_actions: None,
+            not_before: None,
+            user_storage: None,
+            attributes: None,
+            is_service_account: None,
+            service_account_client_link: None,
+        }
+        .into_model(SUBJECT.into(), realm_id.into(), metadata());
+        users::create(&transaction, &user).await.unwrap();
+        realm_keys::create(
+            &transaction,
+            &ring,
+            &envelope,
+            &RealmSigningKey {
+                tenant: TENANT.into(),
+                realm_id: realm_id.into(),
+                kid: self.key.kid.clone(),
+                algorithm: SignAlg::Es256,
+                key_use: KeyUse::Sig,
+                status: KeyStatus::Active,
+                priority: 10,
+                private_pem: self.key.private_pem(),
+                public_jwk: serde_json::to_value(self.key.public().as_ref()).expect("a public jwk"),
+                created_at: 1_700_000_000,
+            },
+        )
+        .await
+        .unwrap();
+        sessions::open(
+            &transaction,
+            &models::sessions::records::UserSessionModel {
+                browser_state: None,
+                tenant: TENANT.into(),
+                // A login of its own: the identifier is unique across the
+                // deployment, so the main realm's cannot be reused here.
+                session_id: session_in(realm_id),
+                realm_id: realm_id.into(),
+                user_id: SUBJECT.into(),
+                login_username: SUBJECT.into(),
+                broker_session_id: None,
+                broker_user_id: None,
+                auth_method: None,
+                ip_address: None,
+                user_agent: None,
+                started_at: chrono::Utc::now().timestamp(),
+                auth_time: None,
+                loa: None,
+                expiration: None,
+                state: models::sessions::records::UserSessionState::LoggedIn,
+                remember_me: None,
+                last_session_refresh: None,
+                is_offline: None,
+                notes: None,
+            },
+        )
+        .await
+        .unwrap();
+        let role = RoleMutationModel {
+            name: "admins".into(),
+            display_name: "Admins".into(),
+            description: String::new(),
+            client_id: None,
+            admin_actions: Some(held.to_vec()),
+        }
+        .into_model("admins".into(), realm_id.into(), metadata());
+        roles::create(&transaction, &role).await.unwrap();
+        roles::grant_to_user(&transaction, SUBJECT, "admins")
+            .await
+            .unwrap();
         transaction.commit().await.unwrap();
     }
 

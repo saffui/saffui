@@ -74,6 +74,14 @@ async fn a_change_here_lands_in_the_provisioned_app() {
         .run();
     tokio::spawn(upstream);
     plane.plant_realm("mirror").await;
+    // The mirror is a realm of its own, and a token reaches exactly the realm
+    // that minted it. The connector therefore holds the mirror's credential,
+    // not this realm's, which is what an outbound connector holds anyway: the
+    // far side's, whoever the far side is.
+    plane
+        .plant_credential_in("mirror", &[AdminAction::ScimRead, AdminAction::ScimWrite])
+        .await;
+    let over_there = plane.token(&support::claims_in("mirror"));
 
     let (status, told) = asked(
         &plane,
@@ -87,7 +95,7 @@ async fn a_change_here_lands_in_the_provisioned_app() {
             "configs": {
                 "kind": { "Str": "scim-outbound" },
                 "base_url": { "Str": format!("http://127.0.0.1:{port}/realms/mirror/scim/v2") },
-                "bearer": { "Str": bearer },
+                "bearer": { "Str": over_there.clone() },
             },
         })),
     )
@@ -139,7 +147,7 @@ async fn a_change_here_lands_in_the_provisioned_app() {
         &plane,
         Method::GET,
         &format!("/realms/mirror/scim/v2/Users?filter=externalId%20eq%20%22{grace}%22"),
-        &bearer,
+        &over_there,
         None,
     )
     .await;
@@ -177,7 +185,7 @@ async fn a_change_here_lands_in_the_provisioned_app() {
         &plane,
         Method::GET,
         &format!("/realms/mirror/scim/v2/Users/{mirrored}"),
-        &bearer,
+        &over_there,
         None,
     )
     .await;
@@ -205,7 +213,7 @@ async fn a_change_here_lands_in_the_provisioned_app() {
         &plane,
         Method::GET,
         &format!("/realms/mirror/scim/v2/Users/{mirrored}"),
-        &bearer,
+        &over_there,
         None,
     )
     .await;
@@ -251,6 +259,14 @@ async fn the_prove_button_asks_the_scim_root_itself() {
         .run();
     tokio::spawn(upstream);
     plane.plant_realm("mirror").await;
+    // The mirror is a realm of its own, and a token reaches exactly the realm
+    // that minted it. The connector therefore holds the mirror's credential,
+    // not this realm's, which is what an outbound connector holds anyway: the
+    // far side's, whoever the far side is.
+    plane
+        .plant_credential_in("mirror", &[AdminAction::ScimRead, AdminAction::ScimWrite])
+        .await;
+    let over_there = plane.token(&support::claims_in("mirror"));
 
     let (status, told) = asked(
         &plane,
@@ -264,7 +280,7 @@ async fn the_prove_button_asks_the_scim_root_itself() {
             "configs": {
                 "kind": { "Str": "scim-outbound" },
                 "base_url": { "Str": format!("http://127.0.0.1:{port}/realms/mirror/scim/v2") },
-                "bearer": { "Str": bearer },
+                "bearer": { "Str": over_there.clone() },
             },
         })),
     )

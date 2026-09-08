@@ -1,3 +1,4 @@
+use crate::api::rest::endpoints::within;
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, web};
 use config::serving::PublicOrigin;
@@ -13,15 +14,11 @@ use serde_json::Value;
 use services::scim::{self, AssertedUser, Matched, Refusal, UserPatch, list_response, shown_user};
 use store::providers::{credentials, roles, users};
 use store::query::list_query::ListQuery;
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use super::{answered, base_of, filter_of, refused, unavailable, window};
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
-}
 
 async fn groups_of(
     transaction: &Transaction<'_>,

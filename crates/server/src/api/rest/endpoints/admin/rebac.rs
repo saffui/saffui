@@ -1,3 +1,4 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
@@ -5,7 +6,7 @@ use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::json;
 use services::rebac::{Unpublishable, Unwritable};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use crate::middleware::admin_guard::Admin;
 
@@ -202,10 +203,6 @@ pub async fn subjects(
         })
         .collect();
     Ok(HttpResponse::Ok().json(told))
-}
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }
 
 fn internal() -> ApiError {

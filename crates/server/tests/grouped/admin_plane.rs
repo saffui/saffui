@@ -1975,7 +1975,10 @@ async fn a_subject_request_walks_its_lifecycle_and_the_clock_is_cited() {
     assert_eq!(refused["stage"], "refused", "{refused}");
     assert_eq!(refused["reason"], "legal hold", "{refused}");
 
-    // Another realm's register is another realm's: the rows do not cross.
+    // Another realm's register is another realm's, and the isolation is
+    // now stated a step earlier than it used to be: this once answered an
+    // empty list, which meant the rows did not cross. The read itself is
+    // refused, so there is no list to be empty.
     plane.plant_realm("mirror").await;
     let (status, elsewhere) = fetched(
         &plane,
@@ -1984,8 +1987,7 @@ async fn a_subject_request_walks_its_lifecycle_and_the_clock_is_cited() {
         &bearer,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{elsewhere}");
-    assert_eq!(elsewhere.as_array().map(Vec::len), Some(0), "{elsewhere}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{elsewhere}");
 
     // An id nobody holds answers as absent, not as an error to tell apart.
     let (status, told) = fetched(&plane, Method::GET, &format!("{base}/unknown"), &bearer).await;

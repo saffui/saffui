@@ -1,0 +1,26 @@
+// Headers, as the answer hands them back to the proxy.
+syntax = "proto3";
+
+package envoy.config.core.v3;
+
+message HeaderValue {
+  string key = 1;
+  string value = 2;
+}
+
+message HeaderValueOption {
+  // How the proxy is to treat a header the request already carries.
+  // Appending to one a caller supplied is how an identity header gets two
+  // values and a reader picks the wrong one, so what this server sets, it
+  // sets by overwriting.
+  enum HeaderAppendAction {
+    APPEND_IF_EXISTS_OR_ADD = 0;
+    ADD_IF_ABSENT = 1;
+    OVERWRITE_IF_EXISTS_OR_ADD = 2;
+    OVERWRITE_IF_EXISTS = 3;
+  }
+
+  HeaderValue header = 1;
+  HeaderAppendAction append_action = 3;
+  bool keep_empty_value = 4;
+}

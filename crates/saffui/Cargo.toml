@@ -17,6 +17,9 @@ kerberos = ["server/kerberos"]
 # Request metrics, passed through likewise. Leaving it out builds a binary
 # that carries no metrics machinery and cannot be asked to expose any.
 metrics = ["server/metrics"]
+# The mesh door, passed through likewise. Leaving it out builds a binary
+# with no external-authorization surface and none of its machinery.
+mesh = ["server/mesh"]
 # Tracing export, passed through likewise. Leaving it out builds a binary
 # that cannot dial a collector at all.
 otel = ["server/otel"]

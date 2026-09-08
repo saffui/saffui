@@ -1,0 +1,9 @@
+// The status a gRPC answer carries, trimmed to the two fields that are set.
+syntax = "proto3";
+
+package google.rpc;
+
+message Status {
+  int32 code = 1;
+  string message = 2;
+}

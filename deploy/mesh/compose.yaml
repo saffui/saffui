@@ -1,0 +1,29 @@
+# The mesh rig: an Envoy sidecar delegating authorization to saffui, and an
+# upstream that only ever sees what was permitted.
+#
+# saffui itself runs outside this file, on the host, with the mesh door
+# open:
+#
+#   SAFFUI_MESH_BIND=0.0.0.0:9191 SAFFUI_MESH_DANGER_PLAINTEXT=true \
+#     cargo run -p saffui --features mesh
+services:
+  proxy:
+    image: envoyproxy/envoy:v1.31-latest
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "8000:8000"
+      # Envoy's administration, on the host's loopback only: it can stop and
+      # reconfigure the proxy, so it is not something to publish onto a
+      # network because a rig found it convenient.
+      - "127.0.0.1:9901:9901"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - upstream
+
+  # Anything that answers. What matters is whether a request reaches it.
+  upstream:
+    image: hashicorp/http-echo:1.0
+    command: ["-text=the upstream was reached", "-listen=:80"]

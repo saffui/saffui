@@ -1,0 +1,81 @@
+# A sidecar that asks saffui before it forwards anything.
+#
+# The listener takes requests on 8000, calls the mesh door for every one of
+# them, and passes what is permitted to the upstream on 8080. The point of
+# the rig is the middle step: run it, curl through it with and without a
+# token, and read the answer.
+static_resources:
+  listeners:
+    - name: front
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8000 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: front
+                route_config:
+                  name: everything
+                  virtual_hosts:
+                    - name: everything
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route: { cluster: upstream }
+                http_filters:
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      # The bearer has to reach the door, so the request
+                      # headers travel with the check.
+                      with_request_body: { max_request_bytes: 0 }
+                      grpc_service:
+                        envoy_grpc: { cluster_name: saffui_mesh }
+                        timeout: 1s
+                      # An unreachable door stops traffic rather than waving
+                      # it through. This is the line a deployment changes if
+                      # it would rather stay up than stay closed, and it says
+                      # so where an operator can see it.
+                      failure_mode_allow: false
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    - name: saffui_mesh
+      type: STRICT_DNS
+      # The door speaks gRPC, which is HTTP/2 and nothing else.
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: saffui_mesh
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: host.docker.internal, port_value: 9191 }
+
+    - name: upstream
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: upstream
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: upstream, port_value: 80 }
+
+# Envoy's own administration, which can dump the running configuration,
+# rewrite runtime settings and stop the process. It is reachable from the
+# host's loopback and nowhere else, by the port publication in
+# `compose.yaml`; a deployment that copies this file keeps that containment
+# or drops the port, because anything that reaches this interface owns the
+# proxy.
+admin:
+  address:
+    socket_address: { address: 0.0.0.0, port_value: 9901 }

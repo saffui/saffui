@@ -5,6 +5,7 @@ use secrecy::SecretBox;
 pub mod crypto;
 pub mod jobs;
 pub mod ldap;
+pub mod mesh;
 pub mod messaging;
 pub mod otel;
 pub mod proxying;

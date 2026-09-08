@@ -10,6 +10,16 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- A mesh door: an Envoy external-authorization service, behind the `mesh`
+  build feature and closed unless a deployment names a bind address. A
+  proxy calls it on every request it forwards; the bearer is verified in
+  process against the realm its issuer names, the realm's route map says
+  which permission the path puts at stake, the token's audience has to
+  name that application, and the decision is written to the same log every
+  other decision is. On a permit the answer tells the proxy to set the
+  subject and decision-id headers by overwriting, so one a caller sent
+  itself cannot survive beside them. An Envoy rig and its operator notes
+  live in `deploy/mesh/`.
 - A realm can state what a request path puts at stake: an ordered route
   map (method and path patterns, exact or a prefix ending in `*`) naming
   the protected application, resource and scope behind it. The

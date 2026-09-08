@@ -56,6 +56,7 @@ jobs:
           cargo clippy --workspace --all-targets --features commons/request-span -- -D warnings
           cargo clippy --workspace --all-targets --features crypto/fips-strict -- -D warnings
           cargo clippy --workspace --all-targets --features server/kerberos -- -D warnings
+          cargo clippy --workspace --all-targets --features server/mesh -- -D warnings
       # The exclusion is a compile_error!, so nothing observes it unless someone
       # builds the pair it forbids - and a guard nobody fires is a guard nobody
       # notices losing. The failure has to carry the guard's own message: a build
@@ -360,7 +361,7 @@ jobs:
       - name: test both planes end to end
         run: |
           set -o pipefail
-          cargo test -p server --features kerberos -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/server.log"
+          cargo test -p server --features kerberos,mesh -- --include-ignored --test-threads=1 2>&1 | tee "$RUNNER_TEMP/server.log"
           if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/server.log")" -lt 5 ]; then
             echo "the end to end plane tests did not run; the job proved nothing." >&2
             exit 1

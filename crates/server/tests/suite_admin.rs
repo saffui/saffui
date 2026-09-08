@@ -44,6 +44,8 @@ mod iga;
 mod iga_requests;
 #[path = "grouped/iga_ttl.rs"]
 mod iga_ttl;
+#[path = "grouped/mesh_routes.rs"]
+mod mesh_routes;
 #[path = "grouped/observability.rs"]
 mod observability;
 #[path = "grouped/recert.rs"]

@@ -17,6 +17,10 @@ pub enum Asked {
         object_id: String,
         relation: String,
     },
+    /// May the caller make this request? The realm's route map says which
+    /// permission the path puts at stake, so a proxy that knows only the
+    /// request it is forwarding can ask without inventing an answer.
+    Route { method: String, path: String },
 }
 
 /// One question.

@@ -1,5 +1,6 @@
 pub mod auth_flows;
 pub mod authz_policies;
+pub mod authz_routes;
 pub mod authz_surface;
 pub mod backchannel;
 pub mod birthright;

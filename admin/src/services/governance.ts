@@ -1,5 +1,6 @@
 import { say } from "@/i18n";
 import { adminPath, api } from "@/services/http";
+import { useSession } from "@/stores/session";
 
 /// The plane only answers PUT at a named rule, so a new rule draws its
 /// own identifier here.
@@ -190,4 +191,93 @@ export async function withdrawRequest(realm: string, requestId: string): Promise
     method: "POST",
     subject: say("subject-request"),
   });
+}
+
+export interface Campaign {
+  campaign_id: string;
+  name: string;
+  scope_kind: string;
+  scope_ref: string | null;
+  reviewer_id: string;
+  state: string;
+  snapshot_at: string | null;
+  closed_at: string | null;
+  excluded: number;
+  report_seq: number | null;
+  created_at: string;
+}
+
+export interface CampaignItem {
+  item_id: string;
+  subject_id: string;
+  edge_kind: string;
+  edge_ref: string;
+  frozen: Record<string, unknown>;
+  state: string;
+  resolution: string | null;
+}
+
+export async function listCampaigns(realm: string): Promise<Campaign[]> {
+  return api<Campaign[]>(adminPath(realm, "iga/campaigns"));
+}
+
+export async function openCampaign(
+  realm: string,
+  body: { name: string; scope_kind: string; scope_ref?: string; reviewer_id: string },
+): Promise<void> {
+  await api<unknown>(adminPath(realm, "iga/campaigns"), {
+    method: "POST",
+    json: body,
+    subject: say("subject-campaign"),
+  });
+}
+
+export async function activateCampaign(realm: string, campaignId: string): Promise<void> {
+  await api<unknown>(
+    adminPath(realm, `iga/campaigns/${encodeURIComponent(campaignId)}/activate`),
+    { method: "POST", subject: say("subject-campaign") },
+  );
+}
+
+export async function listCampaignItems(
+  realm: string,
+  campaignId: string,
+): Promise<CampaignItem[]> {
+  return api<CampaignItem[]>(adminPath(realm, `iga/campaigns/${encodeURIComponent(campaignId)}/items`));
+}
+
+export async function decideItem(
+  realm: string,
+  campaignId: string,
+  itemId: string,
+  body: { decision: string; justification?: string },
+): Promise<void> {
+  await api<unknown>(
+    adminPath(
+      realm,
+      `iga/campaigns/${encodeURIComponent(campaignId)}/items/${encodeURIComponent(itemId)}/decide`,
+    ),
+    { method: "POST", json: body, subject: say("subject-decision") },
+  );
+}
+
+export async function closeCampaign(realm: string, campaignId: string): Promise<void> {
+  await api<unknown>(adminPath(realm, `iga/campaigns/${encodeURIComponent(campaignId)}/close`), {
+    method: "POST",
+    subject: say("subject-campaign"),
+  });
+}
+
+/// The report as it was hashed, read as the text it is. Parsing and
+/// re-printing it would hand the operator a second rendering, and a second
+/// rendering is a second digest.
+export async function readReport(realm: string, campaignId: string): Promise<string> {
+  const session = useSession();
+  const bearer = await session.bearer();
+  const answer = await fetch(
+    adminPath(realm, `iga/campaigns/${encodeURIComponent(campaignId)}/report`),
+    { headers: { authorization: `Bearer ${bearer}` } },
+  );
+  if (!answer.ok) throw new Error(String(answer.status));
+  return answer.text();
 }

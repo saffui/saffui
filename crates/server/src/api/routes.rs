@@ -6,7 +6,7 @@ use models::entities::authz::AdminAction;
 use crate::api::rest::endpoints::admin::{
     agents, authorization, claim_sources, client_scopes, clients, compliance, directory, events,
     features, federation, flows, idps, iga, journal, keys, mail, negotiation, portability,
-    protocol_mappers, realm_keys, realms, rebac, requests, sessions, sms, users, ussd,
+    protocol_mappers, realm_keys, realms, rebac, recert, requests, sessions, sms, users, ussd,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -700,6 +700,48 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/iga/converge",
             action: AdminAction::IgaWrite,
             handler: Some(|| web::post().to(iga::converge)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/iga/campaigns",
+            action: AdminAction::IgaRead,
+            handler: Some(|| web::get().to(recert::campaigns)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/iga/campaigns",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::post().to(recert::open)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/iga/campaigns/{campaign}/activate",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::post().to(recert::activate)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/iga/campaigns/{campaign}/items",
+            action: AdminAction::IgaRead,
+            handler: Some(|| web::get().to(recert::items)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/iga/campaigns/{campaign}/items/{item}/decide",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::post().to(recert::decide)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/iga/campaigns/{campaign}/close",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::post().to(recert::close)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/iga/campaigns/{campaign}/report",
+            action: AdminAction::IgaRead,
+            handler: Some(|| web::get().to(recert::report)),
         },
         AdminRoute {
             method: Method::GET,

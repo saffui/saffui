@@ -10,6 +10,16 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- Access recertification campaigns: a campaign freezes one picture of the
+  access edges in its scope, a named reviewer certifies, revokes or
+  abstains on each with words where words are owed, and closing pulls
+  everything nobody stood behind. A certification is checked against the
+  picture it was given, so an edge that widened since is reported as
+  drifted rather than attested to; the reviewer's own access is left out
+  of their campaign and counted. The close renders one canonical report,
+  binds each reasoning by its hash rather than carrying it, and appends
+  the report's digest to the realm's audit chain, so the served bytes
+  hash to the digest the chain vouches for.
 - Access requests with four-eyes approval: a request names who would
   hold which role, why, and until when; someone other than its author
   decides it (refused in words at the door, and held by a schema

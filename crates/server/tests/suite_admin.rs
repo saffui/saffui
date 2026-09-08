@@ -46,5 +46,7 @@ mod iga_requests;
 mod iga_ttl;
 #[path = "grouped/observability.rs"]
 mod observability;
+#[path = "grouped/recert.rs"]
+mod recert;
 #[path = "grouped/sod.rs"]
 mod sod;

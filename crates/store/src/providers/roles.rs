@@ -534,6 +534,43 @@ pub async fn effective_roles(
         .collect())
 }
 
+/// The role grants written against this person and no one else: the direct
+/// edges, without what a group confers. A review that offers to pull an
+/// edge has to name the edge it can pull.
+pub async fn direct_roles_of(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "SELECT role_id FROM users_roles WHERE user_id = $1 ORDER BY role_id ASC",
+            &[&user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("role_id"))
+        .collect())
+}
+
+/// The groups this person was put in, without the ones above them: joining
+/// is the edge, standing in the parent is the consequence.
+pub async fn groups_joined_by(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "SELECT group_id FROM users_groups WHERE user_id = $1 ORDER BY group_id ASC",
+            &[&user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("group_id"))
+        .collect())
+}
+
 /// The groups a subject stands in, by identifier: the ones joined, and every
 /// group above those, since standing in a sub-group is standing in the whole.
 /// Ordered by identifier so two reads of one membership answer in one order,

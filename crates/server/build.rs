@@ -4,9 +4,6 @@
 //! build needs nothing installed that Cargo did not fetch.
 fn main() {
     println!("cargo:rerun-if-changed=proto");
-    if std::env::var_os("CARGO_FEATURE_MESH").is_none() {
-        return;
-    }
     #[cfg(feature = "mesh")]
     {
         unsafe {

@@ -48,12 +48,7 @@ pub async fn ask(
             };
             // The same confinement the named question carries: an
             // application asks about its own routes and no one else's.
-            if !established
-                .verified
-                .audiences
-                .iter()
-                .any(|audience| *audience == route.server_id)
-            {
+            if !established.verified.audiences.contains(&route.server_id) {
                 return Err(ApiError::new(ErrorCode::AccessDenied));
             }
             Some(route.clone())

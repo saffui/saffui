@@ -1,3 +1,4 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
@@ -8,7 +9,7 @@ use services::admin::clients::{
     self as registry, CibaOptIn, Gates, Reshape, Secret, Spec, Unregistrable,
 };
 use store::query::list_query::{ListQuery, SortDirection};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::{ClientBrief, ClientSpec};
@@ -295,10 +296,6 @@ fn spec_of(asked: &ClientSpec) -> Result<Spec, ApiError> {
         backchannel_logout_uri: asked.backchannel_logout_uri.clone(),
         frontchannel_logout_uri: asked.frontchannel_logout_uri.clone(),
     })
-}
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }
 
 fn refused(why: Unregistrable) -> ApiError {

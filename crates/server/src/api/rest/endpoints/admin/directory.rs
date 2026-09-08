@@ -1,3 +1,4 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
@@ -7,7 +8,7 @@ use models::entities::organization::OrganizationMutationModel;
 use models::paging::PagingParams;
 use services::admin::directory::{self, Unwritable};
 use store::query::list_query::{ListQuery, SortDirection};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
@@ -181,10 +182,6 @@ crud!(
     OrganizationAlreadyExists,
     OrganizationNotFound
 );
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
-}
 
 /// One manager error, three vocabularies: the entity the route is about names
 /// its own conflict and its own absence, so a group in conflict is not

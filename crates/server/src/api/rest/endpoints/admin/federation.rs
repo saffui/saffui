@@ -1,10 +1,11 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use deadpool_postgres::Pool;
 use models::entities::brokering::UserFederationMutationModel;
 use services::admin::federation::{self, Unwritable};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
@@ -153,10 +154,6 @@ pub async fn import(
         "refreshed": told.refreshed,
         "walked": told.walked,
     })))
-}
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }
 
 fn refused(why: Unwritable) -> ApiError {

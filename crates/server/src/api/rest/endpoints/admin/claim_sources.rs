@@ -1,10 +1,11 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use deadpool_postgres::Pool;
 use models::entities::brokering::UserClaimSourceMutationModel;
 use services::admin::claim_sources::{self, Unwritable};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use super::users::named_user;
 use crate::api::config::Sealing;
@@ -76,10 +77,6 @@ pub async fn remove(
         .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
-}
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }
 
 fn refused(why: Unwritable) -> ApiError {

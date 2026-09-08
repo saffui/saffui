@@ -553,6 +553,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V091__access_requests.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 92,
+            name: "recertification",
+            sql: include_str!("../migrations/V092__recertification.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -26,6 +26,7 @@ pub mod pushed;
 pub mod realm_keys;
 pub mod realms;
 pub mod rebac;
+pub mod recert;
 pub mod replay;
 pub mod requests;
 pub mod roles;

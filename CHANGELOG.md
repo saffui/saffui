@@ -10,6 +10,14 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- A realm can state what a request path puts at stake: an ordered route
+  map (method and path patterns, exact or a prefix ending in `*`) naming
+  the protected application, resource and scope behind it. The
+  enforcement door accepts a `route` question, so a proxy that knows only
+  the request it is forwarding asks without inventing an answer. The
+  resolution is the server's: a caller naming the permission it faces
+  would name the one it can pass. A path the realm has said nothing about
+  is refused, and the decision record keeps the map's words.
 - Access recertification campaigns: a campaign freezes one picture of the
   access edges in its scope, a named reviewer certifies, revokes or
   abstains on each with words where words are owed, and closing pulls

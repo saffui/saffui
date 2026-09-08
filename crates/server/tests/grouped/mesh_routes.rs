@@ -152,8 +152,15 @@ async fn a_path_means_what_the_realm_says_it_means() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}: {told}");
     }
 
-    // Two routes covering one path, in the operator's own order.
+    // Three routes, in the operator's own order: the strict exact one first,
+    // the looser prefixes behind it.
     for (route_id, body) in [
+        (
+            "exact",
+            json!({ "method": "*", "path": "/api/orders", "server_id": support::CONFIDENTIAL,
+                    "resource": "orders", "scope": "write", "action": "write",
+                    "priority": 5 }),
+        ),
         (
             "admin",
             json!({ "method": "*", "path": "/api/admin/*", "server_id": support::CONFIDENTIAL,
@@ -180,7 +187,7 @@ async fn a_path_means_what_the_realm_says_it_means() {
 
     // A mapped path is decided as the permission the map names, and the
     // record keeps the map's words rather than the caller's.
-    let (status, told) = about_route(&plane, &application, "GET", "/api/orders", "d-read").await;
+    let (status, told) = about_route(&plane, &application, "GET", "/api/invoices", "d-read").await;
     assert_eq!(status, StatusCode::OK, "{told}");
     assert_eq!(
         recorded(&plane, "d-read").await,
@@ -206,27 +213,28 @@ async fn a_path_means_what_the_realm_says_it_means() {
         "a later route answered ahead of the one written first"
     );
 
-    // The verb narrows: a write falls past the read-only route and off the
-    // end of the map.
-    let (_, told) = about_route(&plane, &application, "POST", "/api/orders", "d-write").await;
+    // The verb narrows: a write on a path only the read route covers falls
+    // off the end of the map.
+    let (_, told) = about_route(&plane, &application, "POST", "/api/invoices", "d-write").await;
     assert_eq!(told["decision"], "deny", "{told}");
     assert!(recorded(&plane, "d-write").await.is_none());
 
-    // The query is the caller's to write, so it cannot choose the route: a
-    // path dressed to look like another one still faces the first map entry.
-    let (_, told) = about_route(
-        &plane,
-        &application,
-        "GET",
-        "/api/admin/users?as=/api/orders",
-        "d-dressed",
-    )
-    .await;
+    // The query is the caller's to write, so it cannot choose the route. The
+    // danger is not the strict route failing to match: it is the request
+    // falling past it onto a looser one further down, which is a caller
+    // picking the permission it faces by appending a character.
+    let (_, strict) = about_route(&plane, &application, "GET", "/api/orders", "d-strict").await;
+    assert_eq!(strict["decision"], "deny", "{strict}");
+    assert_eq!(
+        recorded(&plane, "d-strict").await.map(|held| held.1),
+        Some("orders#write".to_owned())
+    );
+    let (_, told) = about_route(&plane, &application, "GET", "/api/orders?x=1", "d-dressed").await;
     assert_eq!(told["decision"], "deny", "{told}");
     assert_eq!(
         recorded(&plane, "d-dressed").await.map(|held| held.1),
-        Some("console#manage".to_owned()),
-        "a query string chose the route"
+        Some("orders#write".to_owned()),
+        "a query string walked the request past its own route onto a looser one"
     );
 
     // An application asks about its own routes and no one else's: the guard
@@ -247,8 +255,10 @@ async fn a_path_means_what_the_realm_says_it_means() {
 
     // A route taken down stops answering, and taking down what is not there
     // says so.
-    let (status, _) = asked(&plane, Method::DELETE, &route("reads"), &admin, None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
+    for route_id in ["reads", "exact"] {
+        let (status, _) = asked(&plane, Method::DELETE, &route(route_id), &admin, None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
     let (status, _) = asked(&plane, Method::DELETE, &route("reads"), &admin, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let (_, told) = about_route(&plane, &application, "GET", "/api/orders", "d-gone").await;

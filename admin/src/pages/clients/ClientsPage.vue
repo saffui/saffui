@@ -131,7 +131,7 @@ function finishMaking() {
       <div class="flex items-center gap-3">
         <button
           type="button"
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+          class="sf-button sf-button-primary"
           @click="openMaking"
         >
           {{ say("client-new") }}
@@ -201,7 +201,7 @@ function finishMaking() {
           {{ say("client-id") }} <AppHint name="client-id-help" />
           <input
             v-model="draft.client_id"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           />
         </label>
@@ -209,7 +209,7 @@ function finishMaking() {
           {{ say("directory-col-display") }}
           <input
             v-model="draft.name"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           />
         </label>
         <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
@@ -234,7 +234,7 @@ function finishMaking() {
         <div>
           <button
             type="submit"
-            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+            class="sf-button sf-button-primary"
             :disabled="!draft.client_id.trim()"
           >
             {{ say("client-next") }}
@@ -248,7 +248,7 @@ function finishMaking() {
           <input
             v-model="draft.root"
             placeholder="https://app.example"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           />
         </label>
@@ -258,7 +258,7 @@ function finishMaking() {
             v-model="draft.redirects"
             rows="3"
             :placeholder="say('policy-blacklist-hint')"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           ></textarea>
         </label>
@@ -268,7 +268,7 @@ function finishMaking() {
             v-model="draft.logouts"
             rows="2"
             :placeholder="say('policy-blacklist-hint')"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           ></textarea>
         </label>
@@ -278,7 +278,7 @@ function finishMaking() {
             v-model="draft.origins"
             rows="2"
             :placeholder="say('policy-blacklist-hint')"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           ></textarea>
         </label>
@@ -295,7 +295,7 @@ function finishMaking() {
           </button>
           <button
             type="submit"
-            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+            class="sf-button sf-button-primary"
           >
             {{ say("realm-create") }}
           </button>
@@ -320,7 +320,7 @@ function finishMaking() {
         <div>
           <button
             type="button"
-            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+            class="sf-button sf-button-primary"
             @click="finishMaking"
           >
             {{ say("client-done") }}

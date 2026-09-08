@@ -498,7 +498,7 @@ function jumpTo(event: MouseEvent) {
       </button>
       <button
         type="button"
-        class="rounded-md bg-accent px-2.5 py-1 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
         @click="adding = true"
       >
         {{ say("flow-add-step") }}
@@ -508,7 +508,7 @@ function jumpTo(event: MouseEvent) {
       </h1>
       <span
         v-if="held?.flow.built_in"
-        class="rounded border border-accent/40 px-1.5 py-0.5 text-[10px] text-accent-strong"
+        class="rounded border border-accent/40 px-1.5 py-0.5 text-[10px] text-accent"
         >{{ say("flows-built-in") }}</span
       >
       <div class="ml-auto flex items-center gap-1">
@@ -910,24 +910,24 @@ function jumpTo(event: MouseEvent) {
       </div>
       <label v-if="stepDraft.kind === 'authenticator'" class="block text-[11px] font-medium text-muted">
         {{ say("flow-step-what") }} <AppHint name="flow-step-what-help" />
-        <select v-model="stepDraft.authenticator" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+        <select v-model="stepDraft.authenticator" class="sf-field mt-1 font-mono">
           <option v-for="held2 in AUTHENTICATORS" :key="held2" :value="held2">{{ held2 }}</option>
         </select>
       </label>
       <label v-else class="block text-[11px] font-medium text-muted">
         {{ say("flow-pick-flow") }} <AppHint name="flow-pick-flow-help" />
-        <select v-model="stepDraft.subFlowId" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+        <select v-model="stepDraft.subFlowId" class="sf-field mt-1 font-mono">
           <option value="">&#8230;</option>
           <option v-for="row in containable" :key="row.flow_id" :value="row.flow_id">{{ row.alias }}</option>
         </select>
       </label>
       <label class="block text-[11px] font-medium text-muted">
         {{ say("flows-col-alias") }}
-        <input v-model="stepDraft.alias" :placeholder="stepDraft.authenticator" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        <input v-model="stepDraft.alias" :placeholder="stepDraft.authenticator" class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
       <label class="block text-[11px] font-medium text-muted">
         {{ say("flow-requirement") }} <AppHint name="flow-requirement-help" />
-        <select v-model="stepDraft.requirement" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+        <select v-model="stepDraft.requirement" class="sf-field mt-1 font-mono">
           <option value="required">required</option>
           <option value="alternative">alternative</option>
           <option value="disabled">disabled</option>
@@ -935,7 +935,7 @@ function jumpTo(event: MouseEvent) {
       </label>
       <p class="text-[10.5px] text-faint">{{ say("flow-add-note") }}</p>
       <div>
-        <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+        <button type="submit" class="sf-button sf-button-primary">
           {{ say("flow-add-step") }}
         </button>
       </div>

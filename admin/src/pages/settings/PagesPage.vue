@@ -90,7 +90,7 @@ async function save() {
         </a>
         <button
           type="button"
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+          class="sf-button sf-button-primary"
           @click="save"
         >
           {{ say("settings-save") }}
@@ -120,7 +120,7 @@ async function save() {
       <input
         v-model="filter"
         :placeholder="say('palette-filter')"
-        class="w-64 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+        class="w-64 sf-field"
         spellcheck="false"
       />
     </div>

@@ -380,7 +380,7 @@ async function dropScope(name: string) {
           {{ say("directory-col-display") }}
           <input
             v-model="draft.name"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           />
         </label>
         <label class="block text-[11px] font-medium text-muted">
@@ -388,7 +388,7 @@ async function dropScope(name: string) {
           <input
             v-model="draft.root"
             placeholder="https://app.example"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           />
         </label>
@@ -397,7 +397,7 @@ async function dropScope(name: string) {
           <input
             v-model="draft.home"
             placeholder="https://app.example/welcome"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           />
         </label>
@@ -406,7 +406,7 @@ async function dropScope(name: string) {
           <textarea
             v-model="draft.description"
             rows="2"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           ></textarea>
         </label>
         <label class="block text-[11px] font-medium text-muted">
@@ -433,7 +433,7 @@ async function dropScope(name: string) {
             v-model="draft.origins"
             rows="2"
             :placeholder="say('policy-blacklist-hint')"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           ></textarea>
         </label>
@@ -446,7 +446,7 @@ async function dropScope(name: string) {
           {{ say("client-grant-ciba") }} <AppHint name="client-grant-ciba-help" />
           <select
             v-model="draft.cibaDelivery"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           >
             <option value="off">{{ say("client-ciba-off") }}</option>
             <option value="poll">{{ say("client-ciba-poll") }}</option>
@@ -458,7 +458,7 @@ async function dropScope(name: string) {
           <input
             v-model="draft.cibaEndpoint"
             placeholder="https://app.example/ciba"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           />
         </label>
@@ -470,7 +470,7 @@ async function dropScope(name: string) {
           <div class="mt-1.5 flex gap-2">
             <select
               v-model="draft.tlsForm"
-              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field"
             >
               <option value="off">{{ say("client-tls-off") }}</option>
               <option value="dns">{{ say("client-tls-dns") }}</option>
@@ -488,7 +488,7 @@ async function dropScope(name: string) {
                     : 'CN=till,O=Acme'
               "
               spellcheck="false"
-              class="min-w-0 flex-1 rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="min-w-0 flex-1 sf-field font-mono"
             />
           </div>
         </div>
@@ -496,7 +496,7 @@ async function dropScope(name: string) {
         <div>
           <button
             type="submit"
-            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+            class="sf-button sf-button-primary"
           >
             {{ say("settings-save") }}
           </button>
@@ -551,12 +551,12 @@ async function dropScope(name: string) {
             <input
               v-model="doomCut"
               :placeholder="props.clientId"
-              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field font-mono"
               spellcheck="false"
             />
             <button
               type="button"
-              class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              class="sf-button sf-button-danger disabled:opacity-40"
               :disabled="doomCut !== props.clientId"
               @click="refuseTokensMintedSoFar"
             >
@@ -568,12 +568,12 @@ async function dropScope(name: string) {
             <input
               v-model="doomName"
               :placeholder="props.clientId"
-              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field font-mono"
               spellcheck="false"
             />
             <button
               type="button"
-              class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              class="sf-button sf-button-danger disabled:opacity-40"
               :disabled="doomName !== props.clientId"
               @click="dropClient"
             >
@@ -700,7 +700,7 @@ async function dropScope(name: string) {
           {{ say("settings-name") }}
           <input
             v-model="roleDraft.name"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           />
         </label>
@@ -708,12 +708,12 @@ async function dropScope(name: string) {
           {{ say("scopes-col-description") }}
           <input
             v-model="roleDraft.description"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           />
         </label>
         <button
           type="submit"
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+          class="sf-button sf-button-primary"
         >
           {{ say("realm-create") }}
         </button>

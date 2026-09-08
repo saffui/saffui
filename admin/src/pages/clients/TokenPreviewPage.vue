@@ -66,7 +66,7 @@ function worded(value: unknown): string {
         <input
           v-model="userId"
           placeholder="ada"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field mt-1 font-mono"
           spellcheck="false"
         />
       </label>
@@ -74,7 +74,7 @@ function worded(value: unknown): string {
         {{ say("clients-title") }}
         <select
           v-model="clientId"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field mt-1 font-mono"
         >
           <option v-for="held in clients" :key="held.client_id" :value="held.client_id">
             {{ held.client_id }}
@@ -85,13 +85,13 @@ function worded(value: unknown): string {
         {{ say("preview-scope") }} <AppHint name="preview-scope-help" />
         <input
           v-model="scope"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field mt-1 font-mono"
           spellcheck="false"
         />
       </label>
       <button
         type="submit"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
       >
         {{ say("preview-ask") }}
       </button>

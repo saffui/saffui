@@ -747,7 +747,7 @@ async function saveSmsTemplate() {
               {{ say("directory-col-display") }} <AppHint name="settings-display-help" />
               <input
                 v-model="draft.display_name"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                class="sf-field mt-1"
               />
             </label>
             <AppToggle v-model="draft.enabled">
@@ -760,7 +760,7 @@ async function saveSmsTemplate() {
                 type="number"
                 min="0"
                 placeholder="0"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                class="sf-field mt-1 font-mono"
               />
             </label>
 
@@ -775,13 +775,13 @@ async function saveSmsTemplate() {
               <input
                 v-model="row.name"
                 :placeholder="say('settings-attr-name')"
-                class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                class="sf-field font-mono"
                 spellcheck="false"
               />
               <input
                 v-model="row.value"
                 :placeholder="say('settings-attr-value')"
-                class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                class="sf-field font-mono"
                 spellcheck="false"
               />
               <button
@@ -817,12 +817,12 @@ async function saveSmsTemplate() {
                 <input
                   v-model="doomName"
                   :placeholder="realm"
-                  class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field font-mono"
                   spellcheck="false"
                 />
                 <button
                   type="button"
-                  class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+                  class="sf-button sf-button-danger disabled:opacity-40"
                   :disabled="doomName !== realm"
                   @click="dropRealm"
                 >
@@ -841,7 +841,7 @@ async function saveSmsTemplate() {
               {{ say("settings-client-registration") }} <AppHint name="settings-client-registration-help" />
               <select
                 v-model="draft.client_registration"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                class="sf-field mt-1"
               >
                 <option value="disabled">disabled</option>
                 <option value="open">open</option>
@@ -857,7 +857,7 @@ async function saveSmsTemplate() {
                     type="number"
                     min="0"
                     :placeholder="say('settings-unbounded-plain')"
-                    class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                    class="sf-field mt-1 font-mono"
                   />
                 </label>
                 <div class="flex items-end pb-1.5">
@@ -873,7 +873,7 @@ async function saveSmsTemplate() {
                   v-model="draft.bounds_trusted_hosts"
                   rows="3"
                   :placeholder="say('settings-trusted-hosts-hint')"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                   spellcheck="false"
                 ></textarea>
               </label>
@@ -895,7 +895,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="0"
                   :placeholder="say('settings-unset')"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -905,7 +905,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="0"
                   :placeholder="say('settings-unset')"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -915,7 +915,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="0"
                   :placeholder="say('settings-unset')"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -924,7 +924,7 @@ async function saveSmsTemplate() {
                   v-model="draft.offline_session_max_lifespan"
                   type="number"
                   min="0"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -933,7 +933,7 @@ async function saveSmsTemplate() {
                   v-model="draft.max_offline_grants"
                   type="number"
                   min="0"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -944,7 +944,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="1"
                   placeholder="1800"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -954,7 +954,7 @@ async function saveSmsTemplate() {
                   v-model="draft.session_max_lifespan"
                   type="number"
                   min="0"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -964,7 +964,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="1"
                   placeholder="60"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -974,7 +974,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="1"
                   :placeholder="say('settings-unset')"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -984,7 +984,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="1"
                   :placeholder="say('settings-unset')"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -994,7 +994,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="1"
                   :placeholder="say('settings-unset')"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -1005,7 +1005,7 @@ async function saveSmsTemplate() {
                   min="60"
                   max="3600"
                   placeholder="600"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -1016,7 +1016,7 @@ async function saveSmsTemplate() {
                   min="1"
                   max="60"
                   placeholder="5"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -1027,7 +1027,7 @@ async function saveSmsTemplate() {
                   min="30"
                   max="600"
                   placeholder="300"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -1038,7 +1038,7 @@ async function saveSmsTemplate() {
                   min="1"
                   max="60"
                   placeholder="5"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
             </div>
@@ -1060,7 +1060,7 @@ async function saveSmsTemplate() {
               {{ say("settings-ssl") }} <AppHint name="settings-ssl-help" />
               <select
                 v-model="draft.ssl_enforcement"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                class="sf-field mt-1"
               >
                 <option value="">{{ say("settings-unset") }}</option>
                 <option value="none">none</option>
@@ -1083,7 +1083,7 @@ async function saveSmsTemplate() {
                   v-model="draft.bf_max_failures"
                   type="number"
                   min="1"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -1092,7 +1092,7 @@ async function saveSmsTemplate() {
                   v-model="draft.bf_lockout_seconds"
                   type="number"
                   min="1"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -1101,7 +1101,7 @@ async function saveSmsTemplate() {
                   v-model="draft.bf_max_lockout_seconds"
                   type="number"
                   min="1"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -1110,7 +1110,7 @@ async function saveSmsTemplate() {
                   v-model="draft.bf_reset_seconds"
                   type="number"
                   min="1"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
             </div>
@@ -1130,7 +1130,7 @@ async function saveSmsTemplate() {
                 {{ say("settings-dsar-jurisdiction") }}
                 <select
                   v-model="draft.dsar_jurisdiction"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                  class="sf-field mt-1"
                 >
                   <option value="">{{ say("settings-dsar-closed") }}</option>
                   <option v-for="held in JURISDICTIONS" :key="held" :value="held">{{ held }}</option>
@@ -1143,7 +1143,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="0"
                   max="3650"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
             </div>
@@ -1155,7 +1155,7 @@ async function saveSmsTemplate() {
               <input
                 v-model="row.context"
                 :placeholder="say('settings-assurance-context')"
-                class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                class="sf-field font-mono"
                 spellcheck="false"
               />
               <input
@@ -1163,7 +1163,7 @@ async function saveSmsTemplate() {
                 type="number"
                 min="0"
                 :placeholder="say('settings-assurance-level')"
-                class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                class="sf-field font-mono"
               />
               <button
                 type="button"
@@ -1232,7 +1232,7 @@ async function saveSmsTemplate() {
                 {{ say("otp-digits") }} <AppHint name="otp-digits-help" />
                 <select
                   v-model.number="otp.digits"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 >
                   <option :value="6">6</option>
                   <option :value="7">7</option>
@@ -1246,14 +1246,14 @@ async function saveSmsTemplate() {
                   type="number"
                   min="15"
                   max="300"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("otp-algorithm") }} <AppHint name="otp-algorithm-help" />
                 <select
                   v-model="otp.algorithm"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 >
                   <option value="SHA1">SHA1</option>
                   <option value="SHA256">SHA256</option>
@@ -1267,7 +1267,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="0"
                   max="4"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
             </div>
@@ -1282,7 +1282,7 @@ async function saveSmsTemplate() {
                   v-model="webauthn.rp_name"
                   maxlength="64"
                   :placeholder="settings.name"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                  class="sf-field mt-1"
                 />
               </label>
               <div class="flex items-end pb-1.5">
@@ -1316,7 +1316,7 @@ async function saveSmsTemplate() {
                   type="number"
                   min="0"
                   :placeholder="say('settings-unset')"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
             </div>
@@ -1327,7 +1327,7 @@ async function saveSmsTemplate() {
               {{ say("policy-regex") }} <AppHint name="policy-regex-help" />
               <input
                 v-model="policy.regex_pattern"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                class="sf-field mt-1 font-mono"
                 spellcheck="false"
               />
             </label>
@@ -1337,7 +1337,7 @@ async function saveSmsTemplate() {
                 v-model="policy.blacklisted"
                 rows="3"
                 :placeholder="say('policy-blacklist-hint')"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                class="sf-field mt-1 font-mono"
                 spellcheck="false"
               ></textarea>
             </label>
@@ -1375,7 +1375,7 @@ async function saveSmsTemplate() {
               {{ say("locales-default") }} <AppHint name="locales-default-help" />
               <select
                 v-model="defaultTongue"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                class="sf-field mt-1"
               >
                 <option value="">{{ say("locales-default-first") }}</option>
                 <option v-for="tongue in offeredTongues" :key="tongue" :value="tongue">
@@ -1388,7 +1388,7 @@ async function saveSmsTemplate() {
           <div class="mt-1 flex items-center gap-2">
             <button
               type="submit"
-              class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+              class="sf-button sf-button-primary"
             >
               {{ say("settings-save") }}
             </button>
@@ -1408,7 +1408,7 @@ async function saveSmsTemplate() {
                 {{ say("mail-templates-kind") }}
                 <select
                   v-model="templateKind"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 >
                   <option v-for="kind in MAIL_KINDS" :key="kind" :value="kind">
                     {{ say(`mail-kind-${kind}`) }}
@@ -1419,7 +1419,7 @@ async function saveSmsTemplate() {
                 {{ say("locales-default") }}
                 <select
                   v-model="templateTongue"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 >
                   <option v-for="tongue in offeredTongues" :key="tongue" :value="tongue">
                     {{ tongue }} · {{ say(`locale-${tongue}`) }}
@@ -1433,7 +1433,7 @@ async function saveSmsTemplate() {
                 v-model="templateDraft.subject"
                 maxlength="200"
                 :placeholder="say('mail-templates-built')"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                class="sf-field mt-1"
               />
             </label>
             <label class="block text-[11px] font-medium text-muted">
@@ -1443,7 +1443,7 @@ async function saveSmsTemplate() {
                 rows="5"
                 maxlength="4000"
                 :placeholder="say('mail-templates-built')"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                class="sf-field mt-1 font-mono"
                 spellcheck="false"
               ></textarea>
             </label>
@@ -1456,7 +1456,7 @@ async function saveSmsTemplate() {
             <div class="flex items-center gap-2">
               <button
                 type="submit"
-                class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+                class="sf-button sf-button-primary"
               >
                 {{ say("settings-save") }}
               </button>
@@ -1503,7 +1503,7 @@ async function saveSmsTemplate() {
                 {{ say("mail-host") }} <AppHint name="mail-host-help" />
                 <input
                   v-model="mailForm.host"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                   spellcheck="false"
                 />
               </label>
@@ -1512,7 +1512,7 @@ async function saveSmsTemplate() {
                 <input
                   v-model.number="mailForm.port"
                   type="number"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                 />
               </label>
             </div>
@@ -1520,7 +1520,7 @@ async function saveSmsTemplate() {
               {{ say("mail-from") }} <AppHint name="mail-from-help" />
               <input
                 v-model="mailForm.from_address"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                class="sf-field mt-1 font-mono"
                 spellcheck="false"
               />
             </label>
@@ -1528,7 +1528,7 @@ async function saveSmsTemplate() {
               {{ say("mail-from-name") }} <AppHint name="mail-from-name-help" />
               <input
                 v-model="mailForm.from_name"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                class="sf-field mt-1"
               />
             </label>
             <div class="grid grid-cols-2 gap-3">
@@ -1536,7 +1536,7 @@ async function saveSmsTemplate() {
                 {{ say("mail-username") }} <AppHint name="mail-username-help" />
                 <input
                   v-model="mailForm.username"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                   spellcheck="false"
                   autocomplete="off"
                 />
@@ -1547,7 +1547,7 @@ async function saveSmsTemplate() {
                   v-model="mailForm.password"
                   type="password"
                   :placeholder="mail?.has_password ? say('mail-password-kept') : ''"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                  class="sf-field mt-1"
                   autocomplete="new-password"
                 />
               </label>
@@ -1558,7 +1558,7 @@ async function saveSmsTemplate() {
             <div class="mt-1 flex items-center gap-2">
               <button
                 type="submit"
-                class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+                class="sf-button sf-button-primary"
               >
                 {{ say("settings-save") }}
               </button>
@@ -1582,7 +1582,7 @@ async function saveSmsTemplate() {
                 {{ say("mail-test-to") }}
                 <input
                   v-model="testTo"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                   spellcheck="false"
                 />
               </label>
@@ -1608,7 +1608,7 @@ async function saveSmsTemplate() {
               {{ say("sms-url") }} <AppHint name="sms-url-help" />
               <input
                 v-model="smsForm.url"
-                class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                class="sf-field mt-1 font-mono"
                 spellcheck="false"
                 placeholder="https://gateway.example/send"
               />
@@ -1618,7 +1618,7 @@ async function saveSmsTemplate() {
                 {{ say("sms-sender") }} <AppHint name="sms-sender-help" />
                 <input
                   v-model="smsForm.sender"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                   spellcheck="false"
                 />
               </label>
@@ -1628,7 +1628,7 @@ async function saveSmsTemplate() {
                   v-model="smsForm.token"
                   type="password"
                   :placeholder="sms?.has_token ? say('sms-token-kept') : ''"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                  class="sf-field mt-1"
                   autocomplete="new-password"
                 />
               </label>
@@ -1636,7 +1636,7 @@ async function saveSmsTemplate() {
             <div class="mt-1 flex items-center gap-2">
               <button
                 type="submit"
-                class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+                class="sf-button sf-button-primary"
               >
                 {{ say("settings-save") }}
               </button>
@@ -1660,7 +1660,7 @@ async function saveSmsTemplate() {
                 {{ say("sms-test-to") }}
                 <input
                   v-model="smsTestTo"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                   spellcheck="false"
                   placeholder="+22890123456"
                 />
@@ -1690,7 +1690,7 @@ async function saveSmsTemplate() {
                     type="number"
                     min="0"
                     max="1000000"
-                    class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                    class="sf-field mt-1 font-mono"
                   />
                 </label>
                 <label class="block text-[11px] font-medium text-muted">
@@ -1700,7 +1700,7 @@ async function saveSmsTemplate() {
                     type="number"
                     min="1"
                     max="1000"
-                    class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                    class="sf-field mt-1 font-mono"
                   />
                 </label>
               </div>
@@ -1710,13 +1710,13 @@ async function saveSmsTemplate() {
                   v-model="smsBrakes.prefixes"
                   rows="3"
                   placeholder="+88213&#10;+979"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                   spellcheck="false"
                 ></textarea>
               </label>
               <button
                 type="submit"
-                class="w-fit rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+                class="w-fit sf-button sf-button-primary"
               >
                 {{ say("settings-save") }}
               </button>
@@ -1733,7 +1733,7 @@ async function saveSmsTemplate() {
                   {{ say("sms-template-kind") }}
                   <select
                     v-model="smsTplKind"
-                    class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                    class="sf-field mt-1"
                   >
                     <option v-for="held in SMS_KINDS" :key="held" :value="held">{{ held }}</option>
                   </select>
@@ -1742,7 +1742,7 @@ async function saveSmsTemplate() {
                   {{ say("sms-template-tongue") }}
                   <select
                     v-model="smsTplTongue"
-                    class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                    class="sf-field mt-1"
                   >
                     <option v-for="held in TONGUES" :key="held" :value="held">{{ held }}</option>
                   </select>
@@ -1754,14 +1754,14 @@ async function saveSmsTemplate() {
                   v-model="smsTplBody"
                   rows="3"
                   maxlength="160"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+                  class="sf-field mt-1 font-mono"
                   spellcheck="false"
                 ></textarea>
                 <span class="text-[10px] text-faint">{{ smsTplBody.length }}/160</span>
               </label>
               <button
                 type="submit"
-                class="w-fit rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+                class="w-fit sf-button sf-button-primary"
               >
                 {{ say("settings-save") }}
               </button>
@@ -1784,13 +1784,13 @@ async function saveSmsTemplate() {
                   type="password"
                   minlength="16"
                   :placeholder="ussdHeld ? say('sms-token-kept') : ''"
-                  class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                  class="sf-field mt-1"
                   autocomplete="new-password"
                 />
               </label>
               <button
                 type="submit"
-                class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+                class="sf-button sf-button-primary"
               >
                 {{ say("settings-save") }}
               </button>

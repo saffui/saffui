@@ -151,12 +151,12 @@ function instant(epoch: number | null | undefined): string {
         <input
           v-model="doomEndAll"
           :placeholder="realm"
-          class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field font-mono"
           spellcheck="false"
         />
         <button
           type="button"
-          class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+          class="sf-button sf-button-danger disabled:opacity-40"
           :disabled="doomEndAll !== realm"
           @click="endEveryLogin"
         >
@@ -179,12 +179,12 @@ function instant(epoch: number | null | undefined): string {
         <input
           v-model="doomCut"
           :placeholder="realm"
-          class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field font-mono"
           spellcheck="false"
         />
         <button
           type="button"
-          class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+          class="sf-button sf-button-danger disabled:opacity-40"
           :disabled="doomCut !== realm"
           @click="refuseEveryTokenMintedSoFar"
         >

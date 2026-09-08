@@ -149,7 +149,7 @@ function joined(member: OrgMember): string {
       <h1 class="text-lg font-semibold tracking-tight">{{ say("organizations-title") }}</h1>
       <button
         type="button"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
         @click="making = !making"
       >
         {{ say("org-new") }}
@@ -166,7 +166,7 @@ function joined(member: OrgMember): string {
         {{ say("settings-name") }}
         <input
           v-model="newName"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field mt-1 font-mono"
           spellcheck="false"
         />
       </label>
@@ -174,12 +174,12 @@ function joined(member: OrgMember): string {
         {{ say("directory-col-display") }}
         <input
           v-model="newDisplay"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          class="sf-field mt-1"
         />
       </label>
       <button
         type="submit"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
       >
         {{ say("realm-create") }}
       </button>
@@ -269,7 +269,7 @@ function joined(member: OrgMember): string {
             <input
               v-model="newDomain"
               placeholder="apps.example.com"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
               spellcheck="false"
             />
           </label>
@@ -328,12 +328,12 @@ function joined(member: OrgMember): string {
           <input
             v-model="doomName"
             :placeholder="opened.name"
-            class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field font-mono"
             spellcheck="false"
           />
           <button
             type="button"
-            class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+            class="sf-button sf-button-danger disabled:opacity-40"
             :disabled="doomName !== opened.name"
             @click="dropOrg"
           >

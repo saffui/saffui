@@ -327,7 +327,7 @@ async function prove(row: IdpRow) {
     </h2>
     <p v-if="!recording" class="mt-1.5 text-xs text-muted">
       {{ say("signin-events-off") }}
-      <router-link :to="`/${realm}/settings`" class="text-accent hover:text-accent-strong">{{
+      <router-link :to="`/${realm}/settings`" class="text-accent hover:text-ink">{{
         say("signin-events-off-link")
       }}</router-link>
     </p>
@@ -638,14 +638,14 @@ async function prove(row: IdpRow) {
             v-model="form.alias"
             required
             spellcheck="false"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("connector-display") }}
           <input
             v-model="form.displayName"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           />
         </label>
         <AppToggle v-model="form.enabled">{{ say("connector-enabled") }}</AppToggle>
@@ -658,7 +658,7 @@ async function prove(row: IdpRow) {
               required
               spellcheck="false"
               placeholder="https://siem.example/hooks/saffui"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
           </label>
           <label class="block text-[11px] font-medium text-muted">
@@ -668,7 +668,7 @@ async function prove(row: IdpRow) {
               required
               spellcheck="false"
               placeholder="user.* session.revoked"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
           </label>
           <label class="block text-[11px] font-medium text-muted">
@@ -679,7 +679,7 @@ async function prove(row: IdpRow) {
               :placeholder="secretOnFile ? '**********' : ''"
               spellcheck="false"
               autocomplete="off"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
           </label>
         </template>
@@ -691,7 +691,7 @@ async function prove(row: IdpRow) {
               required
               spellcheck="false"
               placeholder="https://app.example/scim/v2"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
           </label>
         </template>
@@ -700,7 +700,7 @@ async function prove(row: IdpRow) {
             {{ say("connector-delivery") }}
             <select
               v-model="form.delivery"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field mt-1"
             >
               <option value="push">{{ say("connector-delivery-push") }}</option>
               <option value="poll">{{ say("connector-delivery-poll") }}</option>
@@ -713,7 +713,7 @@ async function prove(row: IdpRow) {
               required
               spellcheck="false"
               placeholder="https://soc.example/events"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
           </label>
           <label class="block text-[11px] font-medium text-muted">
@@ -722,7 +722,7 @@ async function prove(row: IdpRow) {
               v-model="form.audience"
               spellcheck="false"
               :required="form.delivery === 'poll'"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
             <span v-if="form.delivery === 'push'" class="mt-0.5 block font-normal text-faint">
               {{ say("connector-audience-hint") }}
@@ -753,7 +753,7 @@ async function prove(row: IdpRow) {
             type="password"
             autocomplete="off"
             spellcheck="false"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
           <span v-if="bearerOnFile" class="mt-0.5 block font-normal text-faint">
             {{ say("connector-bearer-kept") }}
@@ -778,11 +778,11 @@ async function prove(row: IdpRow) {
               v-model="doomName"
               :placeholder="editing.alias"
               spellcheck="false"
-              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field font-mono"
             />
             <button
               type="button"
-              class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              class="sf-button sf-button-danger disabled:opacity-40"
               :disabled="doomName !== editing.alias"
               @click="drop"
             >

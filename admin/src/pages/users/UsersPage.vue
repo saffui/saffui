@@ -115,7 +115,7 @@ async function makeUser() {
       <h1 class="text-lg font-semibold tracking-tight">{{ say("users-title") }}</h1>
       <button
         type="button"
-        class="ml-3 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="ml-3 sf-button sf-button-primary"
         @click="making = true"
       >
         {{ say("user-new") }}
@@ -194,7 +194,7 @@ async function makeUser() {
           {{ say("users-col-username") }} <AppHint name="user-username-help" />
           <input
             v-model="born.user_name"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             spellcheck="false"
           />
         </label>
@@ -204,7 +204,7 @@ async function makeUser() {
             <input
               v-model="born.email"
               type="email"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
               spellcheck="false"
             />
           </label>
@@ -212,21 +212,21 @@ async function makeUser() {
             {{ say("user-phone") }}
             <input
               v-model="born.phone_number"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
           </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("user-given") }}
             <input
               v-model="born.given_name"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field mt-1"
             />
           </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("user-family") }}
             <input
               v-model="born.family_name"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field mt-1"
             />
           </label>
         </div>
@@ -237,7 +237,7 @@ async function makeUser() {
             type="password"
             autocomplete="new-password"
             :placeholder="say('user-first-password-skip')"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           />
         </label>
         <div>
@@ -259,7 +259,7 @@ async function makeUser() {
         <div>
           <button
             type="submit"
-            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+            class="sf-button sf-button-primary"
           >
             {{ say("realm-create") }}
           </button>

@@ -434,7 +434,7 @@ function edgeWords(item: CampaignItem): string {
       {{ say("iga-rules") }}
       <button
         type="button"
-        class="ml-3 rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-ink normal-case tracking-normal hover:bg-accent-strong"
+        class="sf-button sf-button-primary ml-3 normal-case tracking-normal"
         @click="making = !making"
       >
         {{ say("rule-new") }}
@@ -466,24 +466,24 @@ function edgeWords(item: CampaignItem): string {
       <div v-if="ruleDraft.mode === 'attribute'" class="grid grid-cols-2 gap-3">
         <label class="block text-[11px] font-medium text-muted">
           {{ say("rule-attribute") }}
-          <input v-model="ruleDraft.when_attribute" placeholder="department" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          <input v-model="ruleDraft.when_attribute" placeholder="department" class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("rule-value") }}
-          <input v-model="ruleDraft.when_value" placeholder="finance" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          <input v-model="ruleDraft.when_value" placeholder="finance" class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
       </div>
       <label v-else class="block text-[11px] font-medium text-muted">
         {{ say("rule-expr") }}
-        <input v-model="ruleDraft.when_expr" placeholder='department == "finance" && seniority > 2' class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        <input v-model="ruleDraft.when_expr" placeholder='department == "finance" && seniority > 2' class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
       <label class="block text-[11px] font-medium text-muted">
         {{ say("rule-roles") }} <AppHint name="rule-roles-help" />
-        <input v-model="ruleDraft.roles" :placeholder="say('policy-blacklist-hint')" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        <input v-model="ruleDraft.roles" :placeholder="say('policy-blacklist-hint')" class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
       <div class="flex items-center gap-3">
         <AppToggle v-model="ruleDraft.enabled">{{ say("users-active") }}</AppToggle>
-        <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+        <button type="submit" class="sf-button sf-button-primary">
           {{ say("realm-create") }}
         </button>
         <span class="text-[10.5px] text-faint">{{ say("rule-boundary") }}</span>
@@ -552,7 +552,7 @@ function edgeWords(item: CampaignItem): string {
         <input
           v-model="grantDraft.user_id"
           placeholder="ada"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field mt-1 font-mono"
           spellcheck="false"
         />
       </label>
@@ -561,7 +561,7 @@ function edgeWords(item: CampaignItem): string {
         <input
           v-model="grantDraft.role_id"
           placeholder="role-..."
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field mt-1 font-mono"
           spellcheck="false"
         />
       </label>
@@ -576,7 +576,7 @@ function edgeWords(item: CampaignItem): string {
       </label>
       <button
         type="submit"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
       >
         {{ say("iga-grant-give") }}
       </button>
@@ -632,7 +632,7 @@ function edgeWords(item: CampaignItem): string {
       {{ say("sod-section") }}
       <button
         type="button"
-        class="ml-3 rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-ink normal-case tracking-normal hover:bg-accent-strong"
+        class="sf-button sf-button-primary ml-3 normal-case tracking-normal"
         @click="makingSod = !makingSod"
       >
         {{ say("sod-new") }}
@@ -647,17 +647,17 @@ function edgeWords(item: CampaignItem): string {
     >
       <label class="w-40 text-[11px] font-medium text-muted">
         {{ say("sod-rule-name") }}
-        <input v-model="sodDraft.rule_id" placeholder="payments" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        <input v-model="sodDraft.rule_id" placeholder="payments" class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("sod-roles") }}
-        <input v-model="sodDraft.roles" placeholder="payer, approver" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        <input v-model="sodDraft.roles" placeholder="payer, approver" class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
       <label class="w-32 text-[11px] font-medium text-muted">
         {{ say("sod-threshold") }} <AppHint name="sod-threshold-help" />
-        <input v-model="sodDraft.min_conflicting" placeholder="2" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        <input v-model="sodDraft.min_conflicting" placeholder="2" class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
-      <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+      <button type="submit" class="sf-button sf-button-primary">
         {{ say("realm-create") }}
       </button>
     </form>
@@ -736,13 +736,13 @@ function edgeWords(item: CampaignItem): string {
           >
             <label class="flex-1 text-[11px] font-medium text-muted">
               {{ say("sod-justification") }}
-              <input v-model="excuseDraft.justification" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+              <input v-model="excuseDraft.justification" class="sf-field mt-1" />
             </label>
             <label class="w-52 text-[11px] font-medium text-muted">
               {{ say("sod-valid-until") }}
               <input v-model="excuseDraft.valid_until" placeholder="2026-12-31T00:00:00Z" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-[10.5px] text-ink" spellcheck="false" />
             </label>
-            <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+            <button type="submit" class="sf-button sf-button-primary">
               {{ say("sod-excuse") }}
             </button>
           </form>
@@ -783,7 +783,7 @@ function edgeWords(item: CampaignItem): string {
       {{ say("req-section") }}
       <button
         type="button"
-        class="ml-3 rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-ink normal-case tracking-normal hover:bg-accent-strong"
+        class="sf-button sf-button-primary ml-3 normal-case tracking-normal"
         @click="makingRequest = !makingRequest"
       >
         {{ say("req-new") }}
@@ -798,21 +798,21 @@ function edgeWords(item: CampaignItem): string {
     >
       <label class="w-36 text-[11px] font-medium text-muted">
         {{ say("authz-subject") }}
-        <input v-model="requestDraft.user_id" placeholder="ada" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        <input v-model="requestDraft.user_id" placeholder="ada" class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
       <label class="w-36 text-[11px] font-medium text-muted">
         {{ say("iga-grant-role") }}
-        <input v-model="requestDraft.role_id" placeholder="role-..." class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        <input v-model="requestDraft.role_id" placeholder="role-..." class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("req-reason") }}
-        <input v-model="requestDraft.reason" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+        <input v-model="requestDraft.reason" class="sf-field mt-1" />
       </label>
       <label class="w-48 text-[11px] font-medium text-muted">
         {{ say("iga-grant-until") }} <AppHint name="iga-grant-until-help" />
         <input v-model="requestDraft.expires_at" placeholder="2026-12-31T00:00:00Z" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-[10.5px] text-ink" spellcheck="false" />
       </label>
-      <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+      <button type="submit" class="sf-button sf-button-primary">
         {{ say("realm-create") }}
       </button>
     </form>
@@ -864,7 +864,7 @@ function edgeWords(item: CampaignItem): string {
         >
           <label class="flex-1 text-[11px] font-medium text-muted">
             {{ say("req-deny-reason") }}
-            <input v-model="denialWords" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+            <input v-model="denialWords" class="sf-field mt-1" />
           </label>
           <button type="submit" class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface-2">
             {{ say("req-deny") }}
@@ -877,7 +877,7 @@ function edgeWords(item: CampaignItem): string {
       {{ say("cert-section") }}
       <button
         type="button"
-        class="ml-3 rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-ink normal-case tracking-normal hover:bg-accent-strong"
+        class="sf-button sf-button-primary ml-3 normal-case tracking-normal"
         @click="makingCampaign = !makingCampaign"
       >
         {{ say("cert-new") }}
@@ -892,11 +892,11 @@ function edgeWords(item: CampaignItem): string {
     >
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("cert-name") }}
-        <input v-model="campaignDraft.name" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+        <input v-model="campaignDraft.name" class="sf-field mt-1" />
       </label>
       <label class="w-44 text-[11px] font-medium text-muted">
         {{ say("cert-scope") }}
-        <select v-model="campaignDraft.scope_kind" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink">
+        <select v-model="campaignDraft.scope_kind" class="sf-field mt-1">
           <option value="realm">{{ say("cert-scope-realm") }}</option>
           <option value="role">{{ say("cert-scope-role") }}</option>
           <option value="group">{{ say("cert-scope-group") }}</option>
@@ -904,13 +904,13 @@ function edgeWords(item: CampaignItem): string {
       </label>
       <label v-if="campaignDraft.scope_kind !== 'realm'" class="w-40 text-[11px] font-medium text-muted">
         {{ say("cert-scope-ref") }}
-        <input v-model="campaignDraft.scope_ref" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        <input v-model="campaignDraft.scope_ref" class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
       <label class="w-36 text-[11px] font-medium text-muted">
         {{ say("cert-reviewer") }}
-        <input v-model="campaignDraft.reviewer_id" placeholder="ada" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+        <input v-model="campaignDraft.reviewer_id" placeholder="ada" class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
-      <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+      <button type="submit" class="sf-button sf-button-primary">
         {{ say("realm-create") }}
       </button>
     </form>
@@ -1008,7 +1008,7 @@ function edgeWords(item: CampaignItem): string {
           >
             <label class="flex-1 text-[11px] font-medium text-muted">
               {{ say("cert-why") }}
-              <input v-model="decisionWords" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+              <input v-model="decisionWords" class="sf-field mt-1" />
             </label>
             <button type="submit" class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface-2">
               {{ say("cert-revoke") }}

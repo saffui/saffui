@@ -112,7 +112,7 @@ async function dropRole() {
       <div class="flex items-center gap-3">
         <button
           type="button"
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+          class="sf-button sf-button-primary"
           @click="making = !making"
         >
           {{ say("role-new") }}
@@ -129,7 +129,7 @@ async function dropRole() {
         {{ say("settings-name") }} <AppHint name="role-name-help" />
         <input
           v-model="newName"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field mt-1 font-mono"
           spellcheck="false"
         />
       </label>
@@ -137,12 +137,12 @@ async function dropRole() {
         {{ say("scopes-col-description") }}
         <input
           v-model="newDescription"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          class="sf-field mt-1"
         />
       </label>
       <button
         type="submit"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
       >
         {{ say("realm-create") }}
       </button>
@@ -186,21 +186,21 @@ async function dropRole() {
             {{ say("directory-col-display") }}
             <input
               v-model="draft.display_name"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field mt-1"
             />
           </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("scopes-col-description") }}
             <input
               v-model="draft.description"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field mt-1"
             />
           </label>
         </div>
         <div>
           <button
             type="submit"
-            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+            class="sf-button sf-button-primary"
           >
             {{ say("settings-save") }}
           </button>
@@ -247,12 +247,12 @@ async function dropRole() {
           <input
             v-model="doomName"
             :placeholder="opened.name"
-            class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field font-mono"
             spellcheck="false"
           />
           <button
             type="button"
-            class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+            class="sf-button sf-button-danger disabled:opacity-40"
             :disabled="doomName !== opened.name"
             @click="dropRole"
           >

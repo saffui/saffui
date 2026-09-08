@@ -182,7 +182,7 @@ function instant(epoch: number): string {
       </label>
       <button
         type="submit"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
       >
         {{ say("journal-anchor") }}
       </button>

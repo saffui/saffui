@@ -32,14 +32,14 @@ async function begin() {
           {{ say("login-realm") }}
           <input
             v-model="realm"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             autocomplete="off"
             spellcheck="false"
           />
         </label>
         <button
           type="submit"
-          class="mt-4 w-full rounded-md bg-accent py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+          class="sf-button sf-button-primary mt-4 w-full justify-center"
         >
           {{ say("login-continue") }}
         </button>

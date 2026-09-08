@@ -101,9 +101,29 @@ async fn a_realm_crosses_as_a_document() {
     assert_eq!(status, StatusCode::CREATED, "{told}");
     assert_eq!(told["realm_id"], "twin");
 
-    // The twin answers with the same inventory, re-exported through the
-    // same door.
-    let (status, twin) = asked(
+    // The twin holds the same inventory. It is re-exported through the
+    // service rather than the door: this token belongs to another realm,
+    // and no token administers a realm it did not come from. What is under
+    // test is the document's round trip, not who may ask for it.
+    let twin = {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &TenantContext::new(support::TENANT, "twin"),
+            )
+            .await;
+        let document =
+            services::admin::portability::export_realm(&transaction, "twin", chrono::Utc::now())
+                .await
+                .expect("the twin exports");
+        serde_json::to_value(document).expect("a document")
+    };
+
+    // And the door refuses, which is the same statement from the other
+    // side: a realm is imported here and exported from its own console.
+    let (status, _) = asked(
         &plane,
         Method::GET,
         "/admin/realms/twin/export",
@@ -111,7 +131,11 @@ async fn a_realm_crosses_as_a_document() {
         None,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{twin}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the importing token exported the realm it made"
+    );
     assert_eq!(twin["realm"]["realm_id"], "twin");
     for section in [
         "clients",

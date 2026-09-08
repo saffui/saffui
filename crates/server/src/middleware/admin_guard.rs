@@ -14,7 +14,7 @@ use store::tenancy::{Tenancy, resolve};
 
 use crate::api::routes;
 use crate::error::{refused, unauthenticated};
-use crate::middleware::admin_policy::{AdminPolicy, decide};
+use crate::middleware::admin_policy::{AdminPolicy, Refusal, decide};
 use crate::middleware::bearer::{bearer, unverified_issuer};
 
 /// What the guard established, for the handler that follows.
@@ -99,6 +99,26 @@ where
     }
 }
 
+/// The realm the path names, read off the pattern that matched it.
+///
+/// The resolved parameters are not there to read: a middleware wrapping the
+/// scope runs before the resource fills them in, and `match_info` answers
+/// nothing. The pattern is available though, and it says which segment is
+/// the realm, so the two are walked together and the segment is taken by
+/// position rather than by counting slashes and hoping.
+///
+/// The path is compared as it arrived, undecoded. A caller that percent-
+/// encodes its own realm is refused rather than served, which is the safe
+/// direction: the decoded form can only ever be the one the handler would
+/// have used, so nothing that differs here becomes equal down there.
+fn named_realm<'a>(pattern: Option<&str>, path: &'a str) -> Option<&'a str> {
+    pattern?
+        .split('/')
+        .zip(path.split('/'))
+        .find(|(held, _)| *held == "{realm}")
+        .map(|(_, named)| named)
+}
+
 /// Establish the caller, then decide.
 ///
 /// Every failure before the decision answers the same way a missing token does.
@@ -156,6 +176,20 @@ async fn establish(
         .await
         .map_err(|_| unauthenticated())?;
 
+    // The path names a realm on every route but the handful that speak for
+    // the deployment. It has to be the one that minted the token: an
+    // administrator is a user of the realm it administers, and nothing here
+    // grants across that line.
+    //
+    // Two strings, and the path's is never looked up. A realm that exists
+    // and one that does not are refused identically, so this door cannot be
+    // asked which realms the deployment holds.
+    if let Some(named) = named_realm(request.match_pattern().as_deref(), request.path())
+        && named != established.tenant.realm_id
+    {
+        return Err(refused(Refusal::WrongRealm));
+    }
+
     let held = capabilities(&transaction, &established).await?;
 
     let required = request
@@ -189,4 +223,59 @@ async fn capabilities(
     services::authorization::admin_actions(transaction, established.principal.id(), within)
         .await
         .map_err(|_| unauthenticated())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::named_realm;
+
+    /// The segment is taken by position on the pattern, so a realm named
+    /// like a later segment cannot be mistaken for it.
+    #[test]
+    fn the_pattern_says_which_segment_is_the_realm() {
+        assert_eq!(
+            named_realm(
+                Some("/admin/realms/{realm}/users"),
+                "/admin/realms/main/users"
+            ),
+            Some("main")
+        );
+        assert_eq!(
+            named_realm(
+                Some("/realms/{realm}/scim/v2/Users/{id}"),
+                "/realms/other/scim/v2/Users/7"
+            ),
+            Some("other")
+        );
+        assert_eq!(
+            named_realm(
+                Some("/admin/realms/{realm}/groups/{group}"),
+                "/admin/realms/users/groups/users"
+            ),
+            Some("users"),
+            "a realm called like a later segment is still read at its own position"
+        );
+    }
+
+    /// A route that names no realm speaks for the deployment, and this
+    /// check has nothing to say about it.
+    #[test]
+    fn a_pattern_without_a_realm_names_none() {
+        assert_eq!(named_realm(Some("/admin/realms"), "/admin/realms"), None);
+        assert_eq!(
+            named_realm(Some("/admin/features"), "/admin/features"),
+            None
+        );
+        assert_eq!(named_realm(None, "/admin/realms/main/users"), None);
+    }
+
+    /// A path shorter than its pattern cannot happen through routing, and
+    /// answers nothing rather than an index out of a shorter list.
+    #[test]
+    fn a_path_that_stops_early_names_no_realm() {
+        assert_eq!(
+            named_realm(Some("/admin/realms/{realm}/users"), "/admin"),
+            None
+        );
+    }
 }

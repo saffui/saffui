@@ -34,6 +34,10 @@ pub enum Refusal {
     NotHeld,
     /// Obtained by a client that is not part of this plane.
     WrongParty,
+    /// The path names a realm other than the one that minted the token. An
+    /// administrator is a user of the realm it administers, so there is no
+    /// token in this deployment that reaches two realms.
+    WrongRealm,
 }
 
 /// What the admin plane requires of every token, whatever the route.

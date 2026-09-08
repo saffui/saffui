@@ -50,6 +50,8 @@ mod mesh_door;
 mod mesh_routes;
 #[path = "grouped/observability.rs"]
 mod observability;
+#[path = "grouped/realm_boundary.rs"]
+mod realm_boundary;
 #[path = "grouped/recert.rs"]
 mod recert;
 #[path = "grouped/sod.rs"]

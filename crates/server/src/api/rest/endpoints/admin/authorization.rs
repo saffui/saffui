@@ -565,3 +565,156 @@ pub async fn evaluate(
         "detail": answer.detail,
     })))
 }
+
+/// The realm's route map: which permission a request path puts at stake.
+pub async fn routes(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let held = store::providers::authz_routes::routes(&transaction)
+        .await
+        .map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(
+        held.iter()
+            .map(|route| {
+                serde_json::json!({
+                    "route_id": route.route_id,
+                    "method": route.method,
+                    "path": route.path,
+                    "server_id": route.server_id,
+                    "resource": route.resource,
+                    "scope": route.scope,
+                    "action": route.action,
+                    "priority": route.priority,
+                    "enabled": route.enabled,
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AskedRoute {
+    /// An exact verb, or `*`.
+    pub method: Option<String>,
+    /// An exact path, or a prefix ending in `*`.
+    pub path: Option<String>,
+    pub server_id: Option<String>,
+    pub resource: Option<String>,
+    pub scope: Option<String>,
+    pub action: Option<String>,
+    #[serde(default = "a_hundred")]
+    pub priority: i32,
+    pub enabled: Option<bool>,
+}
+
+/// Where a route sits when nobody said: after the ones an operator placed
+/// deliberately, before nothing.
+fn a_hundred() -> i32 {
+    100
+}
+
+pub async fn put_route(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+    body: web::Json<AskedRoute>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, route_id) = path.into_inner();
+    let asked = body.into_inner();
+    let refused =
+        |detail: &str| ApiError::with_detail(ErrorCode::ValidationError, detail.to_owned());
+
+    let named = |held: Option<String>, what: &str| -> Result<String, ApiError> {
+        held.as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| refused(&format!("{what} says what it is")))
+    };
+    let method = named(asked.method, "method")?.to_uppercase();
+    let route_path = named(asked.path, "path")?;
+    let server_id = named(asked.server_id, "server_id")?;
+    let resource = named(asked.resource, "resource")?;
+    let scope = named(asked.scope, "scope")?;
+    let action = asked
+        .action
+        .as_deref()
+        .map(str::trim)
+        .filter(|held| !held.is_empty())
+        .unwrap_or("invoke")
+        .to_owned();
+
+    // A pattern the matcher cannot read would match nothing and say nothing
+    // about why, so it is refused here where there is somebody to tell.
+    for (pattern, what) in [(&method, "method"), (&route_path, "path")] {
+        if !services::mesh::pattern_reads(pattern) {
+            return Err(refused(&format!(
+                "{what} is an exact value or a prefix ending in *"
+            )));
+        }
+    }
+
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    // The resource server has to be one this realm protects: a route naming
+    // a server that does not exist is a route whose decisions could only ever
+    // be refusals, written as if they were rules.
+    if store::providers::authz_surface::load_server(&transaction, &server_id)
+        .await
+        .map_err(|_| internal())?
+        .is_none()
+    {
+        return Err(refused("no protected application answers to that name"));
+    }
+    let route = store::providers::authz_routes::AuthzRoute {
+        route_id: route_id.clone(),
+        method,
+        path: route_path,
+        server_id,
+        resource,
+        scope,
+        action,
+        priority: asked.priority,
+        enabled: asked.enabled.unwrap_or(true),
+    };
+    store::providers::authz_routes::keep(&transaction, &route, admin.context.principal.id())
+        .await
+        .map_err(|_| internal())?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "route_id": route_id })))
+}
+
+pub async fn delete_route(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, route_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let removed = store::providers::authz_routes::drop_route(&transaction, &route_id)
+        .await
+        .map_err(|_| internal())?;
+    if !removed {
+        return Err(ApiError::new(ErrorCode::ResourceNotFound));
+    }
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}

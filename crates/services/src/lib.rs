@@ -24,6 +24,7 @@ pub mod landing;
 pub mod lifecycle;
 pub mod logout;
 pub mod mappers;
+pub mod mesh;
 pub mod minting;
 pub mod mtls;
 pub mod negotiation;

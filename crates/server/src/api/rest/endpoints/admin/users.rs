@@ -1,3 +1,4 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
@@ -6,7 +7,7 @@ use models::paging::PagingParams;
 use secrecy::SecretBox;
 use services::admin::users::{self as people, Spec, Uncreatable};
 use store::query::list_query::{ListQuery, SortDirection};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::{PasswordSpec, UserBrief, UserSpec};
@@ -233,10 +234,6 @@ fn spec_of(asked: &UserSpec) -> Spec {
             .into_iter()
             .collect(),
     }
-}
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }
 
 fn refused(why: Uncreatable) -> ApiError {

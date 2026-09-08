@@ -1,3 +1,4 @@
+use crate::api::rest::endpoints::within;
 use std::str::FromStr;
 
 use actix_web::{HttpResponse, web};
@@ -12,7 +13,7 @@ use models::entities::user::RequiredAction;
 use serde::Deserialize;
 use serde_json::json;
 use services::admin::flows::{self, Unwritable};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
@@ -345,10 +346,6 @@ pub async fn release_user(
         .map_err(refused)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
-}
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }
 
 fn refused(why: Unwritable) -> ApiError {

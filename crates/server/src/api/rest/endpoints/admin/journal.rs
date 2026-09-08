@@ -1,10 +1,11 @@
+use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use data_encoding::HEXLOWER;
 use deadpool_postgres::Pool;
 use models::paging::PagingParams;
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::Tenancy;
 
 use crate::middleware::admin_guard::Admin;
 
@@ -160,10 +161,6 @@ pub async fn list_anchors(
             }))
             .collect::<Vec<_>>(),
     })))
-}
-
-fn within(admin: &Admin, realm_id: &str) -> TenantContext {
-    TenantContext::new(&admin.context.tenant.tenant, realm_id)
 }
 
 fn internal() -> ApiError {

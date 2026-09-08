@@ -14,6 +14,7 @@ pub mod negotiation;
 pub mod portability;
 pub mod protocol_mappers;
 pub mod realm_keys;
+pub mod requests;
 pub mod sessions;
 pub mod sms;
 pub mod users;

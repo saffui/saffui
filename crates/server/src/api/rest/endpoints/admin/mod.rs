@@ -21,6 +21,7 @@ pub mod protocol_mappers;
 pub mod realm_keys;
 pub mod realms;
 pub mod rebac;
+pub mod requests;
 pub mod sessions;
 pub mod sms;
 pub mod users;

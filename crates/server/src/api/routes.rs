@@ -6,7 +6,7 @@ use models::entities::authz::AdminAction;
 use crate::api::rest::endpoints::admin::{
     agents, authorization, claim_sources, client_scopes, clients, compliance, directory, events,
     features, federation, flows, idps, iga, journal, keys, mail, negotiation, portability,
-    protocol_mappers, realm_keys, realms, rebac, sessions, sms, users, ussd,
+    protocol_mappers, realm_keys, realms, rebac, requests, sessions, sms, users, ussd,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -700,6 +700,36 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/iga/converge",
             action: AdminAction::IgaWrite,
             handler: Some(|| web::post().to(iga::converge)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/iga/requests",
+            action: AdminAction::IgaRead,
+            handler: Some(|| web::get().to(requests::list)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/iga/requests",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::post().to(requests::lodge)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/iga/requests/{request}/approve",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::post().to(requests::approve)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/iga/requests/{request}/deny",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::post().to(requests::deny)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/iga/requests/{request}/withdraw",
+            action: AdminAction::IgaWrite,
+            handler: Some(|| web::post().to(requests::withdraw)),
         },
         AdminRoute {
             method: Method::GET,

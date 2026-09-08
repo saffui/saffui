@@ -10,6 +10,13 @@ first release is cut.
 ## [Unreleased]
 
 ### Added
+- Access requests with four-eyes approval: a request names who would
+  hold which role, why, and until when; someone other than its author
+  decides it (refused in words at the door, and held by a schema
+  constraint underneath), the approval re-weighs separations inside the
+  granting transaction, and the grant itself is issued by the governed
+  path so the ledger tells where it came from. Denials carry their
+  reason; only the asker may withdraw.
 - Separation of duties: a rule names roles one pair of hands must not
   hold together and how many trip it; every granting door (direct role,
   group membership, timed grant) weighs the person's effective roles in

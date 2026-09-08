@@ -13,18 +13,32 @@ import {
   handGrant,
   listSodExceptions,
   listSodRules,
+  activateCampaign,
   approveRequest,
+  closeCampaign,
+  decideItem,
   denyRequest,
+  listCampaignItems,
+  listCampaigns,
   listRequests,
   listSodViolations,
   lodgeRequest,
+  openCampaign,
   putSodException,
   putSodRule,
+  readReport,
   revokeGrant,
   updateRule,
   withdrawRequest,
 } from "@/services/governance";
-import type { AccessRequest, SodException, SodRule, SodViolation } from "@/services/governance";
+import type {
+  AccessRequest,
+  Campaign,
+  CampaignItem,
+  SodException,
+  SodRule,
+  SodViolation,
+} from "@/services/governance";
 import AppHint from "@/components/AppHint.vue";
 import GovernanceTabs from "./GovernanceTabs.vue";
 import AppToggle from "@/components/AppToggle.vue";
@@ -301,6 +315,111 @@ async function withdraw(requestId: string) {
   } catch {
     // The toast already said.
   }
+}
+
+const campaigns = ref<Campaign[]>([]);
+const makingCampaign = ref(false);
+const campaignDraft = ref({ name: "", scope_kind: "realm", scope_ref: "", reviewer_id: "" });
+const openCampaignId = ref("");
+const campaignItems = ref<CampaignItem[]>([]);
+const decidingItem = ref("");
+const decisionWords = ref("");
+
+async function loadCampaigns() {
+  try {
+    campaigns.value = await listCampaigns(realm.value);
+    if (openCampaignId.value) await showItems(openCampaignId.value, true);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+onMounted(loadCampaigns);
+afterWrites(loadCampaigns);
+
+async function makeCampaign() {
+  const held = campaignDraft.value;
+  if (!held.name.trim() || !held.reviewer_id.trim()) return;
+  try {
+    await openCampaign(realm.value, {
+      name: held.name.trim(),
+      scope_kind: held.scope_kind,
+      scope_ref: held.scope_kind === "realm" ? undefined : held.scope_ref.trim(),
+      reviewer_id: held.reviewer_id.trim(),
+    });
+    makingCampaign.value = false;
+    campaignDraft.value = { name: "", scope_kind: "realm", scope_ref: "", reviewer_id: "" };
+  } catch {
+    // The toast already said.
+  }
+}
+async function showItems(campaignId: string, keep = false) {
+  if (!keep && openCampaignId.value === campaignId) {
+    openCampaignId.value = "";
+    campaignItems.value = [];
+    return;
+  }
+  openCampaignId.value = campaignId;
+  try {
+    campaignItems.value = await listCampaignItems(realm.value, campaignId);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+async function freeze(campaignId: string) {
+  try {
+    await activateCampaign(realm.value, campaignId);
+    await showItems(campaignId, true);
+  } catch {
+    // The toast already said.
+  }
+}
+async function decide(campaignId: string, itemId: string, decision: string) {
+  // Revoking and abstaining are owed words; certifying is not.
+  if (decision !== "certify" && !decisionWords.value.trim()) {
+    decidingItem.value = itemId;
+    return;
+  }
+  try {
+    await decideItem(realm.value, campaignId, itemId, {
+      decision,
+      justification: decisionWords.value.trim() || undefined,
+    });
+    decidingItem.value = "";
+    decisionWords.value = "";
+    await showItems(campaignId, true);
+  } catch {
+    // The toast already said.
+  }
+}
+async function shut(campaignId: string) {
+  try {
+    await closeCampaign(realm.value, campaignId);
+    await showItems(campaignId, true);
+  } catch {
+    // The toast already said.
+  }
+}
+async function downloadReport(campaign: Campaign) {
+  try {
+    const rendered = await readReport(realm.value, campaign.campaign_id);
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([rendered], { type: "application/json" }));
+    link.download = `recertification-${campaign.name.replace(/\W+/g, "-")}.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  } catch {
+    // The toast already said.
+  }
+}
+function edgeWords(item: CampaignItem): string {
+  const frozen = item.frozen as Record<string, unknown>;
+  if (item.edge_kind === "group") {
+    return `${say("cert-confers")} ${(frozen.confers as string[] | undefined)?.join(", ") ?? ""}`;
+  }
+  if (item.edge_kind === "grant" && typeof frozen.until === "string") {
+    return `${say("cert-until")} ${untilShort(frozen.until)}`;
+  }
+  return "";
 }
 </script>
 
@@ -751,6 +870,154 @@ async function withdraw(requestId: string) {
             {{ say("req-deny") }}
           </button>
         </form>
+      </div>
+    </div>
+
+    <h2 class="mt-8 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+      {{ say("cert-section") }}
+      <button
+        type="button"
+        class="ml-3 rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-accent-ink normal-case tracking-normal hover:bg-accent-strong"
+        @click="makingCampaign = !makingCampaign"
+      >
+        {{ say("cert-new") }}
+      </button>
+    </h2>
+    <p class="mt-1 text-xs text-muted">{{ say("cert-lede") }}</p>
+
+    <form
+      v-if="makingCampaign"
+      class="mt-3 flex max-w-4xl items-end gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      @submit.prevent="makeCampaign"
+    >
+      <label class="flex-1 text-[11px] font-medium text-muted">
+        {{ say("cert-name") }}
+        <input v-model="campaignDraft.name" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+      </label>
+      <label class="w-44 text-[11px] font-medium text-muted">
+        {{ say("cert-scope") }}
+        <select v-model="campaignDraft.scope_kind" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink">
+          <option value="realm">{{ say("cert-scope-realm") }}</option>
+          <option value="role">{{ say("cert-scope-role") }}</option>
+          <option value="group">{{ say("cert-scope-group") }}</option>
+        </select>
+      </label>
+      <label v-if="campaignDraft.scope_kind !== 'realm'" class="w-40 text-[11px] font-medium text-muted">
+        {{ say("cert-scope-ref") }}
+        <input v-model="campaignDraft.scope_ref" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+      </label>
+      <label class="w-36 text-[11px] font-medium text-muted">
+        {{ say("cert-reviewer") }}
+        <input v-model="campaignDraft.reviewer_id" placeholder="ada" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+      </label>
+      <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+        {{ say("realm-create") }}
+      </button>
+    </form>
+
+    <p v-if="!campaigns.length" class="mt-2 text-xs text-muted">{{ say("cert-no-campaigns") }}</p>
+    <div v-else class="mt-2 grid max-w-4xl gap-2">
+      <div
+        v-for="campaign in campaigns"
+        :key="campaign.campaign_id"
+        class="rounded-lg border border-border bg-surface px-3 py-2 text-xs"
+      >
+        <div class="flex items-center gap-2">
+          <button type="button" class="font-medium hover:underline" @click="showItems(campaign.campaign_id)">
+            {{ campaign.name }}
+          </button>
+          <span class="font-mono text-[10.5px] text-muted">
+            {{ campaign.scope_kind }}<template v-if="campaign.scope_ref">:{{ campaign.scope_ref }}</template>
+          </span>
+          <span class="text-[10.5px] text-muted">{{ say("cert-reviewer") }} {{ campaign.reviewer_id }}</span>
+          <span
+            class="ml-auto rounded border px-1.5 py-0.5 text-[10px]"
+            :class="{
+              'border-border text-muted': campaign.state === 'draft',
+              'border-warn/40 text-warn': campaign.state === 'active',
+              'border-ok/40 text-ok': campaign.state === 'closed',
+            }"
+          >
+            {{ say(`cert-state-${campaign.state}`) }}
+          </span>
+          <button
+            v-if="campaign.state === 'draft'"
+            type="button"
+            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] hover:bg-surface-2"
+            @click="freeze(campaign.campaign_id)"
+          >
+            {{ say("cert-activate") }}
+          </button>
+          <button
+            v-if="campaign.state === 'active'"
+            type="button"
+            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] hover:bg-surface-2"
+            @click="shut(campaign.campaign_id)"
+          >
+            {{ say("cert-close") }}
+          </button>
+          <button
+            v-if="campaign.state === 'closed'"
+            type="button"
+            class="rounded border border-border px-1.5 py-0.5 text-[10.5px] hover:bg-surface-2"
+            @click="downloadReport(campaign)"
+          >
+            {{ say("cert-report") }}
+          </button>
+        </div>
+        <p v-if="campaign.excluded" class="mt-1 text-[10px] text-faint">
+          {{ campaign.excluded }} {{ say("cert-excluded") }}
+        </p>
+
+        <template v-if="openCampaignId === campaign.campaign_id">
+          <p v-if="!campaignItems.length" class="mt-2 border-t border-border/60 pt-2 text-[10.5px] text-muted">
+            {{ say("cert-no-items") }}
+          </p>
+          <table v-else class="mt-2 w-full border-t border-border/60 pt-2 text-left text-[11px]">
+            <tbody>
+              <tr v-for="item in campaignItems" :key="item.item_id" class="border-b border-border/40 last:border-0">
+                <td class="py-1.5 font-mono text-[10.5px]">{{ item.subject_id }}</td>
+                <td class="py-1.5 text-[10.5px] text-muted">{{ item.edge_kind }}</td>
+                <td class="py-1.5 font-mono text-[10.5px]">{{ item.edge_ref }}</td>
+                <td class="py-1.5 text-[10px] text-faint">{{ edgeWords(item) }}</td>
+                <td class="py-1.5 text-[10px]">
+                  <span :class="item.resolution === 'drifted' && 'text-warn'">
+                    {{ item.resolution ?? item.state }}
+                  </span>
+                </td>
+                <td class="py-1.5">
+                  <span v-if="campaign.state === 'active'" class="flex justify-end gap-1">
+                    <button type="button" class="rounded border border-border px-1.5 py-0.5 text-[10px] hover:bg-surface-2" @click="decide(campaign.campaign_id, item.item_id, 'certify')">
+                      {{ say("cert-certify") }}
+                    </button>
+                    <button type="button" class="rounded border border-border px-1.5 py-0.5 text-[10px] text-danger hover:bg-surface-2" @click="decide(campaign.campaign_id, item.item_id, 'revoke')">
+                      {{ say("cert-revoke") }}
+                    </button>
+                    <button type="button" class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted hover:bg-surface-2" @click="decide(campaign.campaign_id, item.item_id, 'abstain')">
+                      {{ say("cert-abstain") }}
+                    </button>
+                  </span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+          <form
+            v-if="decidingItem"
+            class="mt-2 flex items-end gap-2 border-t border-border/60 pt-2"
+            @submit.prevent="decide(campaign.campaign_id, decidingItem, 'revoke')"
+          >
+            <label class="flex-1 text-[11px] font-medium text-muted">
+              {{ say("cert-why") }}
+              <input v-model="decisionWords" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+            </label>
+            <button type="submit" class="rounded-md border border-border px-3 py-1.5 text-xs text-danger hover:bg-surface-2">
+              {{ say("cert-revoke") }}
+            </button>
+            <button type="button" class="rounded-md border border-border px-3 py-1.5 text-xs text-muted hover:bg-surface-2" @click="decide(campaign.campaign_id, decidingItem, 'abstain')">
+              {{ say("cert-abstain") }}
+            </button>
+          </form>
+        </template>
       </div>
     </div>
   </div>

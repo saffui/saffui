@@ -1499,6 +1499,52 @@ pub fn required(method: &Method, pattern: &str) -> Option<AdminAction> {
 mod tests {
     use super::*;
 
+    /// The four routes that speak for the deployment rather than for a
+    /// realm, and which therefore escape the boundary the guard draws.
+    ///
+    /// The guard refuses a path naming a realm the token did not come from.
+    /// A route with no realm in its path has nothing to compare, so it sits
+    /// outside that rule by construction. Four do today; a fifth is a
+    /// decision, and this list is where it has to be written down.
+    const WITHOUT_A_REALM: [(&str, &str); 4] = [
+        ("GET", "/admin/realms"),
+        ("POST", "/admin/realms"),
+        ("POST", "/admin/realms/import"),
+        ("GET", "/admin/features"),
+    ];
+
+    /// Every route names a realm, or is one of the four that deliberately
+    /// do not.
+    ///
+    /// This is the boundary's completeness check. The guard cannot refuse
+    /// what a path never names, so a route added without a realm would step
+    /// outside it silently; here it stops the build until somebody says it
+    /// meant to.
+    #[test]
+    fn only_the_named_routes_stand_outside_a_realm() {
+        let loose: Vec<String> = routes()
+            .into_iter()
+            .filter(|route| !route.pattern.contains("{realm}"))
+            .map(|route| format!("{} {}", route.method, route.pattern))
+            .collect();
+        let allowed: Vec<String> = WITHOUT_A_REALM
+            .iter()
+            .map(|(method, pattern)| format!("{method} {pattern}"))
+            .collect();
+        for held in &loose {
+            assert!(
+                allowed.contains(held),
+                "{held} names no realm, so the guard cannot confine it. \
+                 Give it a realm, or add it to WITHOUT_A_REALM on purpose."
+            );
+        }
+        assert_eq!(
+            loose.len(),
+            allowed.len(),
+            "the list names a route the table no longer holds"
+        );
+    }
+
     /// One entry per method and path. A duplicate means two answers to one
     /// question, and which one applies would depend on the order of this list.
     #[test]

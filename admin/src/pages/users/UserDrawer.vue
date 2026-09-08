@@ -353,7 +353,7 @@ function instant(epoch: number | null | undefined): string {
             {{ say("users-col-name") }} <AppHint name="user-rename-help" />
             <input
               v-model="profile.user_name"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
               spellcheck="false"
             />
           </label>
@@ -365,7 +365,7 @@ function instant(epoch: number | null | undefined): string {
             <input
               v-model="profile.email"
               type="email"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
               spellcheck="false"
             />
           </label>
@@ -373,21 +373,21 @@ function instant(epoch: number | null | undefined): string {
             {{ say("user-phone") }}
             <input
               v-model="profile.phone_number"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
           </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("user-given") }}
             <input
               v-model="profile.given_name"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field mt-1"
             />
           </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("user-family") }}
             <input
               v-model="profile.family_name"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field mt-1"
             />
           </label>
         </div>
@@ -437,7 +437,7 @@ function instant(epoch: number | null | undefined): string {
         <div>
           <button
             type="submit"
-            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+            class="sf-button sf-button-primary"
           >
             {{ say("settings-save") }}
           </button>
@@ -452,12 +452,12 @@ function instant(epoch: number | null | undefined): string {
             <input
               v-model="doomName"
               :placeholder="user.user_name"
-              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field font-mono"
               spellcheck="false"
             />
             <button
               type="button"
-              class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              class="sf-button sf-button-danger disabled:opacity-40"
               :disabled="doomName !== user.user_name"
               @click="dropUser"
             >
@@ -515,12 +515,12 @@ function instant(epoch: number | null | undefined): string {
             v-model="newPasswordAgain"
             :type="showPassword ? 'text' : 'password'"
             autocomplete="new-password"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           />
         </label>
         <button
           type="submit"
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+          class="sf-button sf-button-primary"
         >
           {{ say("settings-save") }}
         </button>

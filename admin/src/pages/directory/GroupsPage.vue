@@ -215,7 +215,7 @@ async function flipDefault(group: GroupRow) {
       <div class="flex items-center gap-3">
         <button
           type="button"
-          class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+          class="sf-button sf-button-primary"
           @click="making = !making"
         >
           {{ say("group-new") }}
@@ -232,7 +232,7 @@ async function flipDefault(group: GroupRow) {
         {{ say("settings-name") }}
         <input
           v-model="newName"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field mt-1 font-mono"
           spellcheck="false"
         />
       </label>
@@ -240,14 +240,14 @@ async function flipDefault(group: GroupRow) {
         {{ say("scopes-col-description") }}
         <input
           v-model="newDescription"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          class="sf-field mt-1"
         />
       </label>
       <label class="w-44 text-[11px] font-medium text-muted">
         {{ say("group-parent") }} <AppHint name="group-parent-help" />
         <select
           v-model="newParent"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          class="sf-field mt-1"
         >
           <option value="">{{ say("group-parent-none") }}</option>
           <option v-for="row in page?.items ?? []" :key="row.group_id" :value="row.group_id">
@@ -257,7 +257,7 @@ async function flipDefault(group: GroupRow) {
       </label>
       <button
         type="submit"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
       >
         {{ say("realm-create") }}
       </button>
@@ -294,7 +294,7 @@ async function flipDefault(group: GroupRow) {
             {{ say("settings-name") }}
             <input
               v-model="draft.name"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
               spellcheck="false"
             />
           </label>
@@ -302,7 +302,7 @@ async function flipDefault(group: GroupRow) {
             {{ say("scopes-col-description") }}
             <input
               v-model="draft.description"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field mt-1"
             />
           </label>
         </div>
@@ -310,7 +310,7 @@ async function flipDefault(group: GroupRow) {
           {{ say("group-parent") }} <AppHint name="group-parent-help" />
           <select
             v-model="draft.parent_id"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           >
             <option value="">{{ say("group-parent-none") }}</option>
             <option
@@ -325,7 +325,7 @@ async function flipDefault(group: GroupRow) {
         <div>
           <button
             type="submit"
-            class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+            class="sf-button sf-button-primary"
           >
             {{ say("settings-save") }}
           </button>
@@ -432,12 +432,12 @@ async function flipDefault(group: GroupRow) {
           <input
             v-model="doomName"
             :placeholder="opened.name"
-            class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field font-mono"
             spellcheck="false"
           />
           <button
             type="button"
-            class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+            class="sf-button sf-button-danger disabled:opacity-40"
             :disabled="doomName !== opened.name"
             @click="dropGroup"
           >

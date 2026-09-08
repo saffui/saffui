@@ -1,43 +1,85 @@
 @import "tailwindcss";
 
-/* The console's design tokens, lifted from the approved deck. Brass is the
-   one accent, spent only where it means something; every other color is a
-   quiet step of the ground. Both halves are complete: the class `dark` on
-   the root flips the whole set, and components read tokens, never hexes. */
+/* The console's design tokens, taken from the design file rather than read
+   off a picture of it: every value below is a variable the canvas declares.
+   Brass is the one accent, spent where it means something; everything else
+   is a quiet step of a warm ground. Both halves are complete, `dark` on the
+   root flips the set, and components read tokens and never hexes.
+
+   Each state color comes as three: the solid for text and icons, `-line`
+   for a border that must read as that state without shouting, and `-tint`
+   for the ground under it. A state drawn with one color has to choose
+   between being legible and being quiet; with three it does neither. */
 :root {
-  --sf-bg: #f3f3ef;
+  --sf-bg: #f4f2ee;
   --sf-surface: #ffffff;
-  --sf-surface-2: #eef1f5;
-  --sf-surface-3: #e8edf4;
-  --sf-border: #ccd4df;
-  --sf-ink: #14181f;
-  --sf-muted: #4f5b6b;
-  --sf-faint: #97a4b5;
-  --sf-accent: #b8862f;
-  --sf-accent-strong: #8f6b20;
-  --sf-accent-ink: #171104;
-  --sf-ok: #2f7d54;
-  --sf-danger: #b23b34;
-  --sf-warn: #8a7a1f;
-  --sf-info: #3d6a9e;
-  --sf-shadow: 0 1px 2px rgb(20 24 31 / 0.06);
+  --sf-surface-2: #faf8f4;
+  --sf-surface-3: #f0ede7;
+  --sf-border: #e3dfd8;
+  --sf-border-strong: #cfc9c0;
+
+  --sf-ink: #17150f;
+  --sf-muted: #5f594f;
+  --sf-faint: #8b857b;
+
+  --sf-accent: #c99433;
+  --sf-accent-ink: #1a1305;
+  --sf-accent-line: #c9943366;
+  --sf-accent-tint: #c9943322;
+
+  --sf-ok: #2f7d52;
+  --sf-ok-line: #2f7d5255;
+  --sf-ok-tint: #2f7d5218;
+  --sf-warn: #79800f;
+  --sf-warn-line: #79800f55;
+  --sf-warn-tint: #79800f18;
+  --sf-danger: #c03a2b;
+  --sf-danger-line: #c03a2b55;
+  --sf-danger-tint: #c03a2b18;
+  /* Nothing in the design says a fourth state; the console's informational
+     notes borrow the accent's quiet end rather than invent a blue. */
+  --sf-info: #5f594f;
+
+  --sf-neutral-tint: #17150f08;
+  --sf-glass: #ffffffc7;
+  --sf-glass-line: #17150f1a;
+  --sf-grid-dot: #d6d1c8;
+
+  --sf-shadow: 0 1px 2px rgb(23 21 15 / 0.06);
 }
 .dark {
-  --sf-bg: #0a0f16;
-  --sf-surface: #131a24;
-  --sf-surface-2: #1a2130;
-  --sf-surface-3: #202433;
-  --sf-border: #26313f;
-  --sf-ink: #e6e9f0;
-  --sf-muted: #8a93a5;
-  --sf-faint: #4f5b6b;
+  --sf-bg: #0b0a09;
+  --sf-surface: #121110;
+  --sf-surface-2: #191817;
+  --sf-surface-3: #201e1c;
+  --sf-border: #272523;
+  --sf-border-strong: #3a3733;
+
+  --sf-ink: #efece7;
+  --sf-muted: #a29b92;
+  --sf-faint: #6e6862;
+
   --sf-accent: #d9a441;
-  --sf-accent-strong: #e3be7c;
-  --sf-accent-ink: #171104;
-  --sf-ok: #4caf7d;
-  --sf-danger: #e07a72;
-  --sf-warn: #c9b458;
-  --sf-info: #7ea7d8;
+  --sf-accent-ink: #17110a;
+  --sf-accent-line: #d9a44159;
+  --sf-accent-tint: #d9a4411f;
+
+  --sf-ok: #5ba97a;
+  --sf-ok-line: #5ba97a55;
+  --sf-ok-tint: #5ba97a1f;
+  --sf-warn: #c8d24e;
+  --sf-warn-line: #c8d24e50;
+  --sf-warn-tint: #c8d24e1a;
+  --sf-danger: #e0574b;
+  --sf-danger-line: #e0574b55;
+  --sf-danger-tint: #e0574b1a;
+  --sf-info: #a29b92;
+
+  --sf-neutral-tint: #ffffff0a;
+  --sf-glass: #191715c7;
+  --sf-glass-line: #ffffff20;
+  --sf-grid-dot: #33302c;
+
   --sf-shadow: none;
 }
 
@@ -47,16 +89,36 @@
   --color-surface-2: var(--sf-surface-2);
   --color-surface-3: var(--sf-surface-3);
   --color-border: var(--sf-border);
+  --color-border-strong: var(--sf-border-strong);
   --color-ink: var(--sf-ink);
   --color-muted: var(--sf-muted);
   --color-faint: var(--sf-faint);
   --color-accent: var(--sf-accent);
-  --color-accent-strong: var(--sf-accent-strong);
   --color-accent-ink: var(--sf-accent-ink);
+  --color-accent-line: var(--sf-accent-line);
+  --color-accent-tint: var(--sf-accent-tint);
   --color-ok: var(--sf-ok);
-  --color-danger: var(--sf-danger);
+  --color-ok-line: var(--sf-ok-line);
+  --color-ok-tint: var(--sf-ok-tint);
   --color-warn: var(--sf-warn);
+  --color-warn-line: var(--sf-warn-line);
+  --color-warn-tint: var(--sf-warn-tint);
+  --color-danger: var(--sf-danger);
+  --color-danger-line: var(--sf-danger-line);
+  --color-danger-tint: var(--sf-danger-tint);
   --color-info: var(--sf-info);
+  --color-neutral-tint: var(--sf-neutral-tint);
+  --color-glass: var(--sf-glass);
+  --color-glass-line: var(--sf-glass-line);
+  --color-grid-dot: var(--sf-grid-dot);
+
+  /* The design's own measures, so a button here and a button there are one
+     button: 30 tall on a 4 radius, a 46 topbar over a 210 rail, and rows
+     that stay dense because these screens are scanned and not read. */
+  --spacing-rail: 210px;
+  --spacing-topbar: 46px;
+  --radius-control: 4px;
+
   --font-sans: "Inter", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
@@ -80,4 +142,100 @@ body {
 :focus-visible {
   outline: 2px solid var(--sf-accent);
   outline-offset: 1px;
+}
+
+/* The three controls the whole console is built out of. Written once here
+   rather than as a class list repeated on every page, because a button that
+   is a paragraph of utilities is a button that drifts. */
+@layer components {
+  .sf-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 30px;
+    padding: 0 13px;
+    border-radius: var(--radius-control);
+    border: 1px solid transparent;
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .sf-button-primary {
+    background: var(--sf-accent);
+    color: var(--sf-accent-ink);
+  }
+  .sf-button-primary:hover {
+    background: color-mix(in srgb, var(--sf-accent) 88%, var(--sf-ink));
+  }
+  .sf-button-secondary {
+    background: var(--sf-surface);
+    border-color: var(--sf-border-strong);
+    color: var(--sf-ink);
+  }
+  .sf-button-secondary:hover {
+    background: var(--sf-surface-2);
+  }
+  .sf-button-danger {
+    background: var(--sf-danger-tint);
+    border-color: var(--sf-danger-line);
+    color: var(--sf-danger);
+  }
+  .sf-button-ghost {
+    color: var(--sf-muted);
+  }
+  .sf-button-ghost:hover {
+    background: var(--sf-neutral-tint);
+    color: var(--sf-ink);
+  }
+
+  /* A state is said by its own three colors, so it reads without the
+     reader having to know which hue means what. */
+  .sf-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 19px;
+    padding: 0 8px;
+    border-radius: 10px;
+    border: 1px solid transparent;
+    background: var(--sf-neutral-tint);
+    color: var(--sf-muted);
+    font-size: 11px;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .sf-badge-ok {
+    background: var(--sf-ok-tint);
+    border-color: var(--sf-ok-line);
+    color: var(--sf-ok);
+  }
+  .sf-badge-warn {
+    background: var(--sf-warn-tint);
+    border-color: var(--sf-warn-line);
+    color: var(--sf-warn);
+  }
+  .sf-badge-danger {
+    background: var(--sf-danger-tint);
+    border-color: var(--sf-danger-line);
+    color: var(--sf-danger);
+  }
+  .sf-badge-accent {
+    background: var(--sf-accent-tint);
+    border-color: var(--sf-accent-line);
+    color: var(--sf-accent);
+  }
+
+  .sf-field {
+    width: 100%;
+    padding: 6px 10px;
+    border-radius: var(--radius-control);
+    border: 1px solid var(--sf-border);
+    background: var(--sf-surface-2);
+    color: var(--sf-ink);
+    font-size: 12px;
+  }
+  .sf-field:focus {
+    border-color: var(--sf-accent-line);
+  }
 }

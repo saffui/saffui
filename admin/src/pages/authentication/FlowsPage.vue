@@ -73,7 +73,7 @@ function open(flow: FlowRow) {
         {{ say("flows-binding") }} <AppHint name="flows-binding-help" />
         <select
           v-model="browserFlow"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field mt-1 font-mono"
         >
           <option value="">{{ say("flows-binding-default") }}</option>
           <option v-for="flow in topLevel" :key="flow.flow_id" :value="flow.alias">
@@ -83,7 +83,7 @@ function open(flow: FlowRow) {
       </label>
       <button
         type="submit"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
       >
         {{ say("settings-save") }}
       </button>
@@ -117,7 +117,7 @@ function open(flow: FlowRow) {
                 >
                 <span
                   v-if="flow.built_in"
-                  class="rounded border border-accent/40 px-1.5 py-0.5 text-[10px] text-accent-strong"
+                  class="rounded border border-accent/40 px-1.5 py-0.5 text-[10px] text-accent"
                   >{{ say("flows-built-in") }}</span
                 >
                 <span

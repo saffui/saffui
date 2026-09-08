@@ -125,7 +125,7 @@ async function unfold(scope: ClientScope) {
       <h1 class="text-lg font-semibold tracking-tight">{{ say("scopes-title") }}</h1>
       <button
         type="button"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
         @click="making = !making"
       >
         {{ say("scope-new") }}
@@ -147,7 +147,7 @@ async function unfold(scope: ClientScope) {
         {{ say("settings-name") }} <AppHint name="scope-name-help" />
         <input
           v-model="newName"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+          class="sf-field mt-1 font-mono"
           spellcheck="false"
         />
       </label>
@@ -155,12 +155,12 @@ async function unfold(scope: ClientScope) {
         {{ say("scope-sentence") }} <AppHint name="scope-sentence-help" />
         <input
           v-model="newSentence"
-          class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+          class="sf-field mt-1"
         />
       </label>
       <button
         type="submit"
-        class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="sf-button sf-button-primary"
       >
         {{ say("realm-create") }}
       </button>
@@ -185,7 +185,7 @@ async function unfold(scope: ClientScope) {
               <td class="px-3 py-2 font-mono text-[11.5px]">{{ scope.name }}</td>
               <td class="px-3 py-2 text-muted">{{ scope.description }}</td>
               <td class="px-3 py-2">
-                <span v-if="scope.default_scope" class="text-[10.5px] text-accent-strong">{{
+                <span v-if="scope.default_scope" class="text-[10.5px] text-accent">{{
                   say("scopes-default")
                 }}</span>
               </td>
@@ -243,12 +243,12 @@ async function unfold(scope: ClientScope) {
                     {{ say("scope-sentence") }} <AppHint name="scope-sentence-help" />
                     <input
                       v-model="sentenceDraft"
-                      class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                      class="sf-field mt-1"
                     />
                   </label>
                   <button
                     type="submit"
-                    class="rounded-md bg-accent px-3 py-1.5 text-[11px] font-semibold text-accent-ink hover:bg-accent-strong"
+                    class="sf-button sf-button-primary"
                   >
                     {{ say("settings-save") }}
                   </button>

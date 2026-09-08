@@ -259,7 +259,7 @@ function worded(value: unknown): string {
             v-model="subject"
             placeholder="ada"
             spellcheck="false"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
         </label>
 
@@ -271,7 +271,7 @@ function worded(value: unknown): string {
           <input
             v-model="organization"
             spellcheck="false"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
         </label>
 
@@ -279,7 +279,7 @@ function worded(value: unknown): string {
           {{ asking === "token" ? say("clients-title") : say("evaluator-server") }}
           <select
             v-model="clientId"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
             @change="loadServer"
           >
             <option v-for="held in clients" :key="held.client_id" :value="held.client_id">
@@ -293,7 +293,7 @@ function worded(value: unknown): string {
           <input
             v-model="tokenScope"
             spellcheck="false"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
         </label>
 
@@ -302,7 +302,7 @@ function worded(value: unknown): string {
             {{ say("evaluator-policy") }}
             <select
               v-model="policyId"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field mt-1"
             >
               <option value="">{{ say("evaluator-pick-policy") }}</option>
               <option v-for="held in offered" :key="held.policy_id" :value="held.policy_id">
@@ -322,7 +322,7 @@ function worded(value: unknown): string {
               v-model="resource"
               list="evaluator-resources"
               spellcheck="false"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
             <datalist id="evaluator-resources">
               <option v-for="held in resources" :key="held.resource_id" :value="held.name" />
@@ -334,7 +334,7 @@ function worded(value: unknown): string {
               v-model="scope"
               list="evaluator-scopes"
               spellcheck="false"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
             <datalist id="evaluator-scopes">
               <option v-for="held in scopes" :key="held.scope_id" :value="held.name" />
@@ -349,7 +349,7 @@ function worded(value: unknown): string {
               v-model="objectType"
               placeholder="document"
               spellcheck="false"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
           </label>
           <label class="mt-3 block text-[11px] font-medium text-muted">
@@ -357,7 +357,7 @@ function worded(value: unknown): string {
             <input
               v-model="objectId"
               spellcheck="false"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
           </label>
           <label class="mt-3 block text-[11px] font-medium text-muted">
@@ -366,14 +366,14 @@ function worded(value: unknown): string {
               v-model="relation"
               placeholder="viewer"
               spellcheck="false"
-              class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field mt-1 font-mono"
             />
           </label>
         </template>
 
         <button
           type="submit"
-          class="mt-4 w-full rounded-md bg-accent px-3 py-2 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+          class="sf-button sf-button-primary mt-4 w-full justify-center"
         >
           {{ say("evaluator-run") }}
         </button>

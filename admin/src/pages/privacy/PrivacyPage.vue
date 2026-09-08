@@ -243,7 +243,7 @@ function instant(epoch: number | null): string {
       </div>
       <button
         type="button"
-        class="ml-auto rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+        class="ml-auto sf-button sf-button-primary"
         @click="lodging = true"
       >
         {{ say("privacy-lodge") }}
@@ -366,7 +366,7 @@ function instant(epoch: number | null): string {
             v-model="breachDraft.description"
             required
             rows="3"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           ></textarea>
         </label>
         <label class="block text-[11px] font-medium text-muted">
@@ -375,18 +375,18 @@ function instant(epoch: number | null): string {
             v-model="breachDraft.categories"
             spellcheck="false"
             :placeholder="say('breach-categories-hint')"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           />
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("breach-col-severity") }}
-          <select v-model="breachDraft.severity" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink">
+          <select v-model="breachDraft.severity" class="sf-field mt-1">
             <option v-for="held in SEVERITIES" :key="held" :value="held">{{ held }}</option>
           </select>
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("privacy-col-jurisdiction") }}
-          <select v-model="breachDraft.jurisdiction" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink">
+          <select v-model="breachDraft.jurisdiction" class="sf-field mt-1">
             <option v-for="held in JURISDICTIONS" :key="held" :value="held">{{ held }}</option>
           </select>
         </label>
@@ -422,14 +422,14 @@ function instant(epoch: number | null): string {
 
         <div v-if="openedBreach.status === 'discovered'" class="flex flex-col gap-2 rounded-lg border border-border p-3">
           <p class="text-[11px] text-muted">{{ say("breach-assess-lede") }}</p>
-          <select v-model="assessment.severity" class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink">
+          <select v-model="assessment.severity" class="sf-field">
             <option v-for="held in SEVERITIES" :key="held" :value="held">{{ held }}</option>
           </select>
           <input
             v-model="assessment.subjects"
             type="number"
             :placeholder="say('breach-subjects')"
-            class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field"
           />
           <button type="button" class="self-start rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink" @click="stepBreach('assess')">
             {{ say("breach-assess") }}
@@ -438,8 +438,8 @@ function instant(epoch: number | null): string {
 
         <div v-if="openedBreach.status === 'assessed'" class="flex flex-col gap-2 rounded-lg border border-border p-3">
           <p class="text-[11px] text-muted">{{ say("breach-filing-lede") }}</p>
-          <input v-model="filing.notified_to" :placeholder="say('breach-notified-to')" class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
-          <input v-model="filing.filed_by" :placeholder="say('breach-filed-by')" class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+          <input v-model="filing.notified_to" :placeholder="say('breach-notified-to')" class="sf-field" />
+          <input v-model="filing.filed_by" :placeholder="say('breach-filed-by')" class="sf-field" />
           <div class="flex gap-2">
             <button type="button" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink" @click="stepBreach('filing')">
               {{ say("breach-file") }}
@@ -475,10 +475,10 @@ function instant(epoch: number | null): string {
       </h2>
       <p class="mt-1 text-xs text-muted">{{ say("evidence-lede") }}</p>
       <div class="mt-2 flex flex-wrap items-center gap-2 text-xs">
-        <input v-model="packPeriod.from" type="datetime-local" class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+        <input v-model="packPeriod.from" type="datetime-local" class="sf-field" />
         <span class="text-faint">→</span>
-        <input v-model="packPeriod.to" type="datetime-local" class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
-        <button type="button" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong" @click="drawEvidencePack">
+        <input v-model="packPeriod.to" type="datetime-local" class="sf-field" />
+        <button type="button" class="sf-button sf-button-primary" @click="drawEvidencePack">
           {{ say("evidence-draw") }}
         </button>
         <span v-if="packVerdict" class="rounded border px-1.5 py-0.5 font-mono text-[10px]" :class="packVerdict === 'sound' ? 'border-border text-ok' : 'border-danger/40 text-danger'">
@@ -495,19 +495,19 @@ function instant(epoch: number | null): string {
             v-model="form.identifier"
             required
             spellcheck="false"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
           <span class="mt-0.5 block font-normal text-faint">{{ say("privacy-identifier-hint") }}</span>
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("privacy-col-kind") }}
-          <select v-model="form.kind" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink">
+          <select v-model="form.kind" class="sf-field mt-1">
             <option v-for="kind in KINDS" :key="kind" :value="kind">{{ say(`privacy-kind-${kind}`) }}</option>
           </select>
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("privacy-col-jurisdiction") }}
-          <select v-model="form.jurisdiction" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink">
+          <select v-model="form.jurisdiction" class="sf-field mt-1">
             <option v-for="held in JURISDICTIONS" :key="held" :value="held">{{ held }}</option>
           </select>
         </label>
@@ -516,7 +516,7 @@ function instant(epoch: number | null): string {
           <input
             v-model="form.due"
             type="datetime-local"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           />
           <span class="mt-0.5 block font-normal text-faint">{{ say("privacy-due-hint") }}</span>
         </label>
@@ -586,7 +586,7 @@ function instant(epoch: number | null): string {
               v-model="correction[field]"
               :placeholder="say(`privacy-correct-${field}`)"
               spellcheck="false"
-              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+              class="sf-field"
             />
             <button
               type="button"
@@ -605,7 +605,7 @@ function instant(epoch: number | null): string {
               v-model="objectedClient"
               :placeholder="say('privacy-object-client')"
               spellcheck="false"
-              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field font-mono"
             />
             <button
               type="button"
@@ -621,7 +621,7 @@ function instant(epoch: number | null): string {
               (opened.kind === 'access' || opened.kind === 'portability')
             "
             type="button"
-            class="self-start rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+            class="self-start sf-button sf-button-primary"
             @click="fulfil"
           >
             {{ say("privacy-produce") }}
@@ -632,11 +632,11 @@ function instant(epoch: number | null): string {
               <input
                 v-model="reason"
                 :placeholder="say('privacy-reason')"
-                class="w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+                class="w-full sf-field"
               />
               <button
                 type="button"
-                class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+                class="sf-button sf-button-danger disabled:opacity-40"
                 :disabled="!reason.trim()"
                 @click="refuse"
               >

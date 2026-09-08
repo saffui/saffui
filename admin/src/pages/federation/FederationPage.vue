@@ -271,14 +271,14 @@ async function drop() {
             v-model="form.alias"
             required
             spellcheck="false"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("connector-display") }}
           <input
             v-model="form.displayName"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink"
+            class="sf-field mt-1"
           />
         </label>
         <AppToggle v-model="form.enabled">{{ say("connector-enabled") }}</AppToggle>
@@ -289,7 +289,7 @@ async function drop() {
             required
             spellcheck="false"
             placeholder="https://token.actions.githubusercontent.com"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
         </label>
         <label class="block text-[11px] font-medium text-muted">
@@ -299,7 +299,7 @@ async function drop() {
             required
             spellcheck="false"
             placeholder="https://token.actions.githubusercontent.com/.well-known/jwks"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
         </label>
         <label class="block text-[11px] font-medium text-muted">
@@ -308,7 +308,7 @@ async function drop() {
             v-model="form.audience"
             required
             spellcheck="false"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
           <span class="mt-0.5 block font-normal text-faint">
             {{ say("platform-audience-hint") }}
@@ -334,7 +334,7 @@ async function drop() {
             v-model="form.clientId"
             required
             spellcheck="false"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
           <span class="mt-0.5 block font-normal text-faint">
             {{ say("platform-client-hint") }}
@@ -346,7 +346,7 @@ async function drop() {
             v-model="form.algs"
             spellcheck="false"
             placeholder="RS256 ES256"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+            class="sf-field mt-1 font-mono"
           />
           <span class="mt-0.5 block font-normal text-faint">
             {{ say("platform-algs-hint") }}
@@ -371,11 +371,11 @@ async function drop() {
               v-model="doomName"
               :placeholder="editing.alias"
               spellcheck="false"
-              class="rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink"
+              class="sf-field font-mono"
             />
             <button
               type="button"
-              class="rounded-md bg-danger px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40"
+              class="sf-button sf-button-danger disabled:opacity-40"
               :disabled="doomName !== editing.alias"
               @click="drop"
             >

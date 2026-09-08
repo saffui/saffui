@@ -534,7 +534,7 @@ function nodeStroke(row: PolicyRow): string {
             </label>
             <button
               type="submit"
-              class="mt-1 rounded-md bg-accent py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong"
+              class="sf-button sf-button-primary mt-1 justify-center"
             >
               {{ say("authz-ask") }}
             </button>
@@ -601,7 +601,7 @@ function nodeStroke(row: PolicyRow): string {
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="doProtect">
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-enforcement") }} <AppHint name="authz-enforcement-help" />
-          <select v-model="protectDraft.enforcement" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+          <select v-model="protectDraft.enforcement" class="sf-field mt-1 font-mono">
             <option value="enforcing">enforcing</option>
             <option value="permissive">permissive</option>
             <option value="disabled">disabled</option>
@@ -609,14 +609,14 @@ function nodeStroke(row: PolicyRow): string {
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-strategy") }} <AppHint name="authz-strategy-help" />
-          <select v-model="protectDraft.strategy" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+          <select v-model="protectDraft.strategy" class="sf-field mt-1 font-mono">
             <option value="affirmative">affirmative</option>
             <option value="unanimous">unanimous</option>
             <option value="consensus">consensus</option>
           </select>
         </label>
         <div>
-          <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+          <button type="submit" class="sf-button sf-button-primary">
             {{ say("authz-protect") }}
           </button>
         </div>
@@ -627,24 +627,24 @@ function nodeStroke(row: PolicyRow): string {
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="makePolicy">
         <label class="block text-[11px] font-medium text-muted">
           {{ say("settings-name") }}
-          <input v-model="policyDraft.name" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          <input v-model="policyDraft.name" class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-evaluator") }} <AppHint name="authz-evaluator-help" />
-          <select v-model="policyDraft.policy_type" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink">
+          <select v-model="policyDraft.policy_type" class="sf-field mt-1 font-mono">
             <option v-for="held in EVALUATORS" :key="held.type" :value="held.type">{{ held.type }}</option>
           </select>
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("scopes-col-description") }}
-          <input v-model="policyDraft.description" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-ink" />
+          <input v-model="policyDraft.description" class="sf-field mt-1" />
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-terms") }} <AppHint name="authz-terms-help" />
-          <textarea v-model="policyDraft.terms" rows="2" :placeholder="say('policy-blacklist-hint')" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false"></textarea>
+          <textarea v-model="policyDraft.terms" rows="2" :placeholder="say('policy-blacklist-hint')" class="sf-field mt-1 font-mono" spellcheck="false"></textarea>
         </label>
         <div>
-          <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+          <button type="submit" class="sf-button sf-button-primary">
             {{ say("realm-create") }}
           </button>
         </div>
@@ -655,22 +655,22 @@ function nodeStroke(row: PolicyRow): string {
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="makeResource">
         <label class="block text-[11px] font-medium text-muted">
           {{ say("settings-name") }}
-          <input v-model="resourceDraft.name" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          <input v-model="resourceDraft.name" class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-resource-type") }} <AppHint name="authz-resource-type-help" />
-          <input v-model="resourceDraft.resource_type" placeholder="document" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          <input v-model="resourceDraft.resource_type" placeholder="document" class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-resource-uris") }} <AppHint name="authz-resource-uris-help" />
-          <textarea v-model="resourceDraft.uris" rows="2" :placeholder="say('policy-blacklist-hint')" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false"></textarea>
+          <textarea v-model="resourceDraft.uris" rows="2" :placeholder="say('policy-blacklist-hint')" class="sf-field mt-1 font-mono" spellcheck="false"></textarea>
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-resource-owner") }}
-          <input v-model="resourceDraft.owner" :placeholder="clientId" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          <input v-model="resourceDraft.owner" :placeholder="clientId" class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
         <div>
-          <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+          <button type="submit" class="sf-button sf-button-primary">
             {{ say("realm-create") }}
           </button>
         </div>
@@ -683,29 +683,29 @@ function nodeStroke(row: PolicyRow): string {
         <div class="grid grid-cols-2 gap-3">
           <label class="block text-[11px] font-medium text-muted">
             {{ say("authz-subject-type") }}
-            <input v-model="tuple.subject_type" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+            <input v-model="tuple.subject_type" class="sf-field mt-1 font-mono" spellcheck="false" />
           </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("authz-subject-id") }}
-            <input v-model="tuple.subject_id" placeholder="ada" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+            <input v-model="tuple.subject_id" placeholder="ada" class="sf-field mt-1 font-mono" spellcheck="false" />
           </label>
         </div>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-relation-name") }} <AppHint name="authz-relation-help" />
-          <input v-model="tuple.relation" placeholder="owner" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+          <input v-model="tuple.relation" placeholder="owner" class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
         <div class="grid grid-cols-2 gap-3">
           <label class="block text-[11px] font-medium text-muted">
             {{ say("authz-object-type") }}
-            <input v-model="tuple.object_type" placeholder="document" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+            <input v-model="tuple.object_type" placeholder="document" class="sf-field mt-1 font-mono" spellcheck="false" />
           </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("authz-object-id") }}
-            <input v-model="tuple.object_id" placeholder="doc-42" class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-xs text-ink" spellcheck="false" />
+            <input v-model="tuple.object_id" placeholder="doc-42" class="sf-field mt-1 font-mono" spellcheck="false" />
           </label>
         </div>
         <div class="flex items-center gap-2">
-          <button type="submit" class="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-accent-ink hover:bg-accent-strong">
+          <button type="submit" class="sf-button sf-button-primary">
             {{ say("authz-write") }}
           </button>
           <button type="button" class="rounded-md border border-danger/40 px-3 py-1.5 text-xs text-danger hover:bg-surface-2" @click="saveTuple(true)">

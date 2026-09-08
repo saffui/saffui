@@ -1,0 +1,17 @@
+// The HTTP status a refusal names. Only the codes this server answers with
+// are listed; the field is an int32 on the wire, so the shorter list costs
+// nothing.
+syntax = "proto3";
+
+package envoy.type.v3;
+
+enum StatusCode {
+  Empty = 0;
+  Unauthorized = 401;
+  Forbidden = 403;
+  ServiceUnavailable = 503;
+}
+
+message HttpStatus {
+  StatusCode code = 1;
+}

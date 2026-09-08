@@ -399,6 +399,12 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         plane.tenancy.clone(),
         plane.sealing.provider.clone(),
     );
+    #[cfg(feature = "mesh")]
+    let (mesh_pool, mesh_tenancy, mesh_origin) = (
+        plane.pool.clone(),
+        plane.tenancy.clone(),
+        plane.origin.clone(),
+    );
     let (plane_pool_for_outbox, tenancy_for_outbox, origin_for_outbox) = (
         plane.pool.clone(),
         plane.tenancy.clone(),
@@ -427,6 +433,26 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
                 ldapfront::Front {
                     realm_id: door.realm_id,
                     base_dn: door.base_dn,
+                },
+            )))
+        }
+    };
+
+    // The mesh door, bound with the others for the same reason: a port
+    // asked for and not listenable fails the deployment now.
+    #[cfg(feature = "mesh")]
+    let meshing = match config::mesh::MeshFront::from_env().map_err(|reason| reason.to_string())? {
+        None => None,
+        Some(door) => {
+            let listener = tokio::net::TcpListener::bind(door.bind)
+                .await
+                .map_err(|reason| format!("cannot listen on {}: {reason}", door.bind))?;
+            Some(tokio::spawn(server::grpc::serve(
+                listener,
+                server::grpc::Door {
+                    pool: mesh_pool,
+                    tenancy: mesh_tenancy,
+                    origin: mesh_origin,
                 },
             )))
         }
@@ -528,6 +554,10 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     let (served, _) = tokio::join!(plane, probes);
     if let Some(fronting) = fronting {
         fronting.abort();
+    }
+    #[cfg(feature = "mesh")]
+    if let Some(meshing) = meshing {
+        meshing.abort();
     }
     if let Some(delivering) = delivering {
         delivering.abort();

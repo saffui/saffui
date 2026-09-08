@@ -1,0 +1,77 @@
+// The Envoy external-authorization service, trimmed to what is read and
+// what is answered.
+//
+// Not the upstream file: that one pulls in the whole Envoy annotation tree
+// (xds, udpa, validate) for definitions this server never touches. Package
+// names, service and method names, and every field number here are the
+// upstream ones, so the bytes on the wire are the same bytes; fields left
+// out are skipped by the decoder the way protobuf skips anything unknown.
+// What is parsed is what is used, which keeps the untrusted-input surface
+// the size of this file.
+syntax = "proto3";
+
+package envoy.service.auth.v3;
+
+import "google/rpc/status.proto";
+import "envoy/type/v3/http_status.proto";
+import "envoy/config/core/v3/base.proto";
+
+service Authorization {
+  rpc Check(CheckRequest) returns (CheckResponse);
+}
+
+message CheckRequest {
+  AttributeContext attributes = 1;
+}
+
+message AttributeContext {
+  message Peer {
+    string service = 2;
+    map<string, string> labels = 3;
+    string principal = 4;
+    string certificate = 5;
+  }
+
+  message HttpRequest {
+    string id = 1;
+    string method = 2;
+    map<string, string> headers = 3;
+    string path = 4;
+    string host = 5;
+    string scheme = 6;
+    string query = 7;
+    string protocol = 10;
+  }
+
+  message Request {
+    // The proxy's own clock, field 1, is not read: what a decision is
+    // weighed against is this server's now.
+    HttpRequest http = 2;
+  }
+
+  Peer source = 1;
+  Peer destination = 2;
+  Request request = 4;
+  // Set by the mesh operator on the filter, never by the caller: this is
+  // where the realm is named.
+  map<string, string> context_extensions = 10;
+}
+
+message CheckResponse {
+  google.rpc.Status status = 1;
+  oneof http_response {
+    DeniedHttpResponse denied_response = 2;
+    OkHttpResponse ok_response = 3;
+  }
+}
+
+message DeniedHttpResponse {
+  envoy.type.v3.HttpStatus status = 1;
+  repeated envoy.config.core.v3.HeaderValueOption headers = 2;
+  string body = 3;
+}
+
+message OkHttpResponse {
+  repeated envoy.config.core.v3.HeaderValueOption headers = 1;
+  repeated string headers_to_remove = 2;
+}

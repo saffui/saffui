@@ -30,6 +30,7 @@ fn mounted_dialling(plane: &Plane, egress: Egress) -> Mounted {
         hops: config::proxying::Proxying::none(),
         egress,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     }
 }
 

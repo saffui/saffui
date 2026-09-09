@@ -131,6 +131,31 @@ impl PublicOrigin {
 }
 
 #[cfg(test)]
+mod ceilings {
+    use super::RealmCeiling;
+
+    /// A tenant that named a ceiling is answered by its own, in both
+    /// directions: a number below the deployment's is a tenant somebody
+    /// deliberately kept small, and one above is a tenant somebody
+    /// deliberately let grow.
+    #[test]
+    fn the_tenant_s_own_number_wins_either_way() {
+        let deployment = RealmCeiling(Some(50));
+        assert_eq!(deployment.against(Some(3)), Some(3));
+        assert_eq!(deployment.against(Some(500)), Some(500));
+        assert_eq!(deployment.against(None), Some(50));
+    }
+
+    /// A deployment that turned the ceiling off still lets a tenant set one.
+    #[test]
+    fn an_unlimited_deployment_still_honours_a_tenant_that_asked() {
+        let deployment = RealmCeiling(None);
+        assert_eq!(deployment.against(None), None);
+        assert_eq!(deployment.against(Some(2)), Some(2));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -249,5 +274,38 @@ impl Egress {
                 expected: "outward or anywhere".to_owned(),
             }),
         }
+    }
+}
+
+const MAX_REALMS: &str = "MAX_REALMS";
+
+/// How many realms one tenant may hold, where the tenant itself names no
+/// ceiling of its own.
+///
+/// Finite by default, because creating a realm is reachable from a console
+/// and an unbounded one is a resource the deployment never chose to give: a
+/// single compromised administrator would otherwise fill the store. Fifty is
+/// well past what a deployment of this shape uses and well short of a runaway.
+///
+/// Zero is unlimited, which an operator may choose but this server will not
+/// choose for them. A tenant carrying its own `max_realms` is answered by
+/// that number instead, higher or lower, since the more specific ceiling is
+/// the one somebody wrote down on purpose.
+#[derive(Clone, Copy, Debug)]
+pub struct RealmCeiling(Option<i64>);
+
+impl RealmCeiling {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        let ceiling = crate::parse_or(MAX_REALMS, 50_i64)?;
+        Ok(Self((ceiling > 0).then_some(ceiling)))
+    }
+
+    /// The ceiling that applies, given what the tenant says for itself.
+    ///
+    /// The tenant's own number wins wherever it wrote one, higher or lower:
+    /// a ceiling somebody set for this tenant is the one they meant, and a
+    /// deployment default exists for the tenants nobody has thought about.
+    pub fn against(self, tenant: Option<i64>) -> Option<i64> {
+        tenant.or(self.0)
     }
 }

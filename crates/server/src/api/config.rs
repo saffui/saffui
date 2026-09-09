@@ -64,6 +64,8 @@ pub struct Plane {
     /// What signs. Verification reads published public halves and needs none of
     /// this; minting has to open a private one, which is the envelope's job.
     pub sealing: Sealing,
+    /// How many realms a tenant may hold when it names no ceiling itself.
+    pub ceiling: config::serving::RealmCeiling,
 }
 
 /// What it takes to open a realm's sealed keys.
@@ -122,6 +124,7 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             .app_data(web::Data::new(plane.policy.clone()))
             .app_data(web::Data::new(plane.hops.clone()))
             .app_data(web::Data::new(plane.egress))
+            .app_data(web::Data::new(plane.ceiling))
             .app_data(web::Data::new(plane.login_ui.clone()))
             .app_data(web::Data::new(plane.sealing.clone()))
             .service({

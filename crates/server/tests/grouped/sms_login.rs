@@ -27,6 +27,7 @@ fn mounted(plane: &Plane, textbox: &Textbox) -> Mounted {
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Outward,
+        ceiling: support::ceiling(),
         sealing: support::sealing_carrying(
             None,
             Some(Arc::new(textbox.clone()) as Arc<dyn auth::messaging::Texter>),

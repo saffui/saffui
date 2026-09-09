@@ -653,6 +653,15 @@ pub fn login_ui() -> config::serving::LoginUi {
     dead_code,
     reason = "not every suite mints a token or mounts the plane"
 )]
+/// The realm ceiling a mounted plane carries.
+///
+/// The deployment default, which is what a suite that says nothing about
+/// ceilings should meet; a suite about them writes the tenant's own number.
+#[allow(dead_code, reason = "not every suite mounts the plane")]
+pub fn ceiling() -> config::serving::RealmCeiling {
+    config::serving::RealmCeiling::from_env().expect("a ceiling")
+}
+
 pub fn origin() -> config::serving::PublicOrigin {
     config::serving::PublicOrigin::parse(ORIGIN).expect("a usable origin")
 }
@@ -2436,6 +2445,7 @@ pub async fn granted_scope_of(plane: &Plane, asked: &[(&str, &str)]) -> String {
         login_ui: login_ui(),
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Outward,
+        ceiling: ceiling(),
         sealing: sealing(),
     };
     let app = actix_web::test::init_service(

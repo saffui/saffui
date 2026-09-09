@@ -24,6 +24,7 @@ fn mounted(plane: &Plane, postbox: Option<&Postbox>) -> Mounted {
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
         sealing,
+        ceiling: support::ceiling(),
         egress: config::serving::Egress::Outward,
     }
 }

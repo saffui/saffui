@@ -31,6 +31,7 @@ fn mounted(plane: &Plane) -> server::api::config::Plane {
         ),
         egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     }
 }
 

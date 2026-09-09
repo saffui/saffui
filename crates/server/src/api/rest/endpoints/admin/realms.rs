@@ -151,6 +151,7 @@ pub async fn create(
     policy: web::Data<AdminPolicy>,
     origin: web::Data<PublicOrigin>,
     sealing: web::Data<Sealing>,
+    ceiling: web::Data<config::serving::RealmCeiling>,
     body: web::Json<Birth>,
 ) -> Result<HttpResponse, ApiError> {
     let born = body.into_inner();
@@ -183,11 +184,12 @@ pub async fn create(
     store::providers::tenants::hold_realms(&transaction, &tenant)
         .await
         .map_err(|_| internal())?;
-    if let Some(ceiling) = store::providers::tenants::load(&transaction)
+    let named = store::providers::tenants::load(&transaction)
         .await
         .map_err(|_| internal())?
         .and_then(|held| held.limits)
-        .and_then(|limits| limits.max_realms)
+        .and_then(|limits| limits.max_realms);
+    if let Some(ceiling) = ceiling.against(named)
         && store::providers::tenants::count_realms(&transaction)
             .await
             .map_err(|_| internal())?

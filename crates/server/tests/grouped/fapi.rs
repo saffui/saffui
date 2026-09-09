@@ -30,6 +30,7 @@ fn mounted(plane: &Plane) -> server::api::config::Plane {
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     }
 }
 

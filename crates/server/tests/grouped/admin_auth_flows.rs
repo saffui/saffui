@@ -31,6 +31,7 @@ async fn asked(
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     })))
     .await;
     let mut asking = test::TestRequest::default()

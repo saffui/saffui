@@ -23,6 +23,7 @@ fn mounted(plane: &Plane) -> Mounted {
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
         egress: config::serving::Egress::Outward,
     }
 }

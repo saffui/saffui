@@ -49,6 +49,7 @@ async fn asked_under(
         hops,
         egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     })))
     .await;
     let mut asking = test::TestRequest::default()
@@ -236,9 +237,24 @@ async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
     let plane = Plane::with_actions(&[AdminAction::RealmCreate]).await;
     let bearer = plane.token(&support::claims());
 
-    // The provisioned world already holds one realm, so a ceiling of one is
-    // reached before this call rather than by it.
-    plane.cap_realms(1).await;
+    // A deployment that configured nothing still has a ceiling: fifty, which
+    // this world is nowhere near, so the first call goes through and says so.
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({
+            "name": "roomy", "display_name": "Roomy", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@roomy.test" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The provisioned world already holds two realms now, so a ceiling of two
+    // is reached before the next call rather than by it.
+    plane.cap_realms(2).await;
     let (status, told) = asked(
         &plane,
         Method::POST,
@@ -254,7 +270,7 @@ async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
 
     // Raised, the same call goes through: the refusal was the ceiling and
     // not something else about the request.
-    plane.cap_realms(2).await;
+    plane.cap_realms(3).await;
     let (status, born) = asked(
         &plane,
         Method::POST,
@@ -779,6 +795,7 @@ async fn a_realm_speaks_over_its_pages() {
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     })))
     .await;
     let request = test::TestRequest::get()

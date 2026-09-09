@@ -17,9 +17,10 @@ export interface RealmBorn extends RealmBrief {
   administrator: { user_name: string; password: string };
 }
 
-/// Create a realm. The server seeds it ready — scopes, console, key, flow —
-/// and draws its first administrator, because this session's token was
-/// minted by another realm and will never reach the new one.
+/// Create a realm. The server seeds it ready: scopes, console, key and flow
+/// arrive with it, and so does its first administrator, because this
+/// session's token was minted by another realm and will never reach the new
+/// one.
 export async function createRealm(
   name: string,
   displayName: string,

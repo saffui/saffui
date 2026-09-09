@@ -219,7 +219,16 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
     });
   }
   if (path.includes("/users?")) {
-    return answer({ items: PEOPLE, first: 0, max: 25, total: 1284 });
+    const asked = new URLSearchParams(path.split("?")[1]);
+    const typed = (asked.get("search") ?? "").toLowerCase();
+    const enabled = asked.get("enabled");
+    const rows = PEOPLE.filter(
+      (row) =>
+        !typed ||
+        row.user_name.toLowerCase().startsWith(typed) ||
+        (row.email ?? "").toLowerCase().startsWith(typed),
+    ).filter((row) => !enabled || String(row.enabled) === enabled);
+    return answer({ items: rows, first: 0, max: 25, total: rows.length });
   }
   if (/\/clients\/[^/]+\/scopes$/.test(path)) {
     return answer([

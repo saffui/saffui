@@ -17,8 +17,12 @@ export async function listUsers(
   realm: string,
   first: number,
   max: number,
+  narrowing: { search?: string; enabled?: string } = {},
 ): Promise<Page<UserBrief>> {
-  return api<Page<UserBrief>>(`${adminPath(realm, "users")}?first=${first}&max=${max}`);
+  const asked = new URLSearchParams({ first: String(first), max: String(max) });
+  if (narrowing.search) asked.set("search", narrowing.search);
+  if (narrowing.enabled) asked.set("enabled", narrowing.enabled);
+  return api<Page<UserBrief>>(`${adminPath(realm, "users")}?${asked}`);
 }
 
 export async function getUser(realm: string, userId: string): Promise<UserFull> {

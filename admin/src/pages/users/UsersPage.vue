@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
 import { createUser, listUsers } from "@/services/users";
+import ListFilters, { type Choice } from "@/components/ListFilters.vue";
 import { afterWrites } from "@/services/writes";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
@@ -25,6 +26,31 @@ function resize(asked: number) {
 const page = ref<Page<UserBrief> | null>(null);
 const failed = ref("");
 
+const search = ref("");
+const chosen = ref<Record<string, string>>({});
+const CHOICES: Choice[] = [
+  {
+    name: "enabled",
+    label: say("users-col-state"),
+    options: [
+      { value: "", label: say("filters-any") },
+      { value: "true", label: say("users-enabled") },
+      { value: "false", label: say("users-disabled") },
+    ],
+  },
+];
+
+let typing = 0;
+/// A keystroke does not become a request. The listing is asked once the
+/// typing stops, so a name typed in full costs one read and not eight.
+function narrowed() {
+  window.clearTimeout(typing);
+  typing = window.setTimeout(() => {
+    first.value = 0;
+    void load();
+  }, 250);
+}
+
 const opened = computed(() => {
   const asked = route.query.user;
   return typeof asked === "string" && asked !== "" ? asked : null;
@@ -33,7 +59,10 @@ const opened = computed(() => {
 async function load() {
   failed.value = "";
   try {
-    page.value = await listUsers(realm.value, first.value, size.value);
+    page.value = await listUsers(realm.value, first.value, size.value, {
+      search: search.value,
+      enabled: chosen.value.enabled,
+    });
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -121,6 +150,16 @@ async function makeUser() {
         {{ say("user-new") }}
       </button>
     </div>
+
+    <ListFilters
+      v-model:search="search"
+      v-model:chosen="chosen"
+      :placeholder="say('users-search')"
+      :choices="CHOICES"
+      class="mt-4"
+      @update:search="narrowed"
+      @update:chosen="narrowed"
+    />
 
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 

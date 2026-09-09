@@ -146,6 +146,15 @@ mod ceilings {
         assert_eq!(deployment.against(None), Some(50));
     }
 
+    /// Zero means the same thing on a tenant row as in the variable: no
+    /// bound. The other reading, refusing every realm, is what the tenant's
+    /// own state is for.
+    #[test]
+    fn a_tenant_lifts_the_bound_with_a_zero() {
+        assert_eq!(RealmCeiling(Some(50)).against(Some(0)), None);
+        assert_eq!(RealmCeiling(None).against(Some(0)), None);
+    }
+
     /// A deployment that turned the ceiling off still lets a tenant set one.
     #[test]
     fn an_unlimited_deployment_still_honours_a_tenant_that_asked() {
@@ -303,9 +312,17 @@ impl RealmCeiling {
     /// The ceiling that applies, given what the tenant says for itself.
     ///
     /// The tenant's own number wins wherever it wrote one, higher or lower:
-    /// a ceiling somebody set for this tenant is the one they meant, and a
-    /// deployment default exists for the tenants nobody has thought about.
+    /// a ceiling somebody set for this tenant is the one they meant, and the
+    /// deployment's answers for the tenants nobody has thought about.
+    ///
+    /// Zero is unlimited here too. A number means the same thing wherever a
+    /// ceiling is written in this deployment, and the alternative was a zero
+    /// that lifts the bound in a variable and refuses every realm in a row.
     pub fn against(self, tenant: Option<i64>) -> Option<i64> {
-        tenant.or(self.0)
+        match tenant {
+            Some(0) => None,
+            Some(named) => Some(named),
+            None => self.0,
+        }
     }
 }

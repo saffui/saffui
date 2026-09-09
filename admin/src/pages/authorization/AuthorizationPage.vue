@@ -9,6 +9,7 @@ import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
+import PageTabs from "@/components/PageTabs.vue";
 import {
   createPolicy,
   createResource,
@@ -41,6 +42,32 @@ const scopes = ref<ScopeRow[]>([]);
 const failed = ref("");
 const unprotected = ref(false);
 const selected = ref<PolicyRow | null>(null);
+
+/// The design's boards. Each reads what `load` already holds, so moving
+/// between them costs nothing: the three listings were fetched together the
+/// moment a resource server was named.
+const BOARDS = ["models", "resources", "scopes", "policies", "permissions", "evaluator"];
+
+const board = computed(() => {
+  const asked = String(route.query.board ?? "models");
+  return BOARDS.includes(asked) ? asked : "models";
+});
+
+function boardAt(leaf: string): string {
+  return leaf === "evaluator"
+    ? `/${realm.value}/evaluator`
+    : `/${realm.value}/authorization?board=${leaf}`;
+}
+
+/// A policy that binds a resource or a scope is a permission; one that binds
+/// neither is a rule a permission can be built from. One door answers for
+/// both, so the two boards are one listing read two ways.
+const binding = computed(() =>
+  policies.value.filter((held) => held.resources.length > 0 || held.scopes.length > 0),
+);
+const unbound = computed(() =>
+  policies.value.filter((held) => held.resources.length === 0 && held.scopes.length === 0),
+);
 
 const view = ref({ x: -40, y: -200, zoom: 0.95 });
 const dragging = ref<{ px: number; py: number; ox: number; oy: number } | null>(null);
@@ -349,7 +376,11 @@ function nodeStroke(row: PolicyRow): string {
   <div class="flex h-full min-h-0 flex-col">
     <div class="flex items-center gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("authz-title") }}</h1>
-      <form class="ml-auto flex items-center gap-2" @submit.prevent="load">
+      <form
+        v-if="board === 'models'"
+        class="ml-auto flex items-center gap-2"
+        @submit.prevent="load"
+      >
         <label class="text-[11px] text-muted">{{ say("authz-server") }}</label>
         <input
           v-model="clientId"
@@ -400,10 +431,18 @@ function nodeStroke(row: PolicyRow): string {
       </form>
     </div>
 
+    <PageTabs
+      :leaves="BOARDS"
+      :at="board"
+      :to="boardAt"
+      saying="authz-board"
+      class="mt-3"
+    />
+
     <p v-if="failed" class="mt-2 text-xs text-danger" role="alert">{{ failed }}</p>
     <p v-if="unprotected" class="mt-2 text-xs text-muted">{{ say("authz-unprotected") }}</p>
 
-    <div class="mt-3 flex min-h-0 flex-1 gap-3">
+    <div v-if="board === 'models'" class="mt-3 flex min-h-0 flex-1 gap-3">
       <div class="min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-surface">
         <svg
           class="h-full w-full cursor-grab active:cursor-grabbing"
@@ -596,6 +635,90 @@ function nodeStroke(row: PolicyRow): string {
         </div>
       </aside>
     </div>
+    <div v-if="board === 'resources'" class="sf-list mt-3 overflow-x-auto">
+      <table class="sf-table">
+        <thead>
+          <tr>
+              <th>{{ say("authz-column-name") }}</th>
+              <th>{{ say("authz-column-id") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="held in resources" :key="held.resource_id">
+              <td>{{ held.name }}</td>
+              <td class="font-mono text-[10.5px] text-faint">{{ held.resource_id }}</td>
+          </tr>
+          <tr v-if="!resources.length">
+            <td colspan="2" class="text-muted">{{ say("authz-none-here") }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div v-if="board === 'scopes'" class="sf-list mt-3 overflow-x-auto">
+      <table class="sf-table">
+        <thead>
+          <tr>
+              <th>{{ say("authz-column-name") }}</th>
+              <th>{{ say("authz-column-id") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="held in scopes" :key="held.scope_id">
+              <td>{{ held.name }}</td>
+              <td class="font-mono text-[10.5px] text-faint">{{ held.scope_id }}</td>
+          </tr>
+          <tr v-if="!scopes.length">
+            <td colspan="2" class="text-muted">{{ say("authz-none-here") }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div v-if="board === 'policies'" class="sf-list mt-3 overflow-x-auto">
+      <table class="sf-table">
+        <thead>
+          <tr>
+              <th>{{ say("authz-column-name") }}</th>
+              <th>{{ say("authz-column-kind") }}</th>
+              <th>{{ say("authz-column-about") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="held in unbound" :key="held.policy_id">
+              <td>{{ held.name }}</td>
+              <td>{{ held.policy_type }}</td>
+              <td class="text-muted">{{ held.description || say('value-none') }}</td>
+          </tr>
+          <tr v-if="!unbound.length">
+            <td colspan="3" class="text-muted">{{ say("authz-none-here") }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div v-if="board === 'permissions'" class="sf-list mt-3 overflow-x-auto">
+      <table class="sf-table">
+        <thead>
+          <tr>
+              <th>{{ say("authz-column-name") }}</th>
+              <th>{{ say("authz-column-kind") }}</th>
+              <th>{{ say("authz-column-binds") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="held in binding" :key="held.policy_id">
+              <td>{{ held.name }}</td>
+              <td>{{ held.policy_type }}</td>
+              <td class="text-muted">{{ held.resources.length + held.scopes.length }}</td>
+          </tr>
+          <tr v-if="!binding.length">
+            <td colspan="3" class="text-muted">{{ say("authz-none-here") }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
 
     <AppDrawer v-if="drawer === 'protect'" :title="say('authz-protect')" :subtitle="clientId" @close="drawer = ''">
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="doProtect">

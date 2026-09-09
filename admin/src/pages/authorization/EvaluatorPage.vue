@@ -7,6 +7,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
+import PageTabs from "@/components/PageTabs.vue";
 import {
   evaluate,
   listAuthzScopes,
@@ -28,6 +29,14 @@ import type {
 import type { ClientBrief } from "@/models/client";
 
 const route = useRoute();
+
+/// The evaluator keeps its own sidebar entry and is also a board of the
+/// authorization screen, so both paths lead here.
+function boardAt(leaf: string): string {
+  return leaf === "evaluator"
+    ? `/${realm.value}/evaluator`
+    : `/${realm.value}/authorization?board=${leaf}`;
+}
 const realm = computed(() => String(route.params.realm));
 const failed = ref("");
 
@@ -220,6 +229,14 @@ function worded(value: unknown): string {
 
 <template>
   <div>
+    <PageTabs
+      :leaves="['models', 'resources', 'scopes', 'policies', 'permissions', 'evaluator']"
+      at="evaluator"
+      :to="boardAt"
+      saying="authz-board"
+      class="mb-3"
+    />
+
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h1 class="text-lg font-semibold tracking-tight">{{ say("evaluator-title") }}</h1>

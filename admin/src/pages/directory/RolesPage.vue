@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageTabs from "@/components/PageTabs.vue";
 import { computed, onMounted, ref } from "vue";
 import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
@@ -109,6 +110,7 @@ async function dropRole() {
   <div>
     <div class="flex items-center justify-between">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("roles-title") }}</h1>
+
       <div class="flex items-center gap-3">
         <button
           type="button"
@@ -119,6 +121,8 @@ async function dropRole() {
         </button>
       </div>
     </div>
+
+      <PageTabs class="mt-3" />
 
     <form
       v-if="making"

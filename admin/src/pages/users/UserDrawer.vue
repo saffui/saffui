@@ -18,12 +18,14 @@ import {
   listMemberOrganizations,
   listSessions,
   countRecoveryCodes,
-  listWebAuthnKeys,
   revokeRoleFromUser,
+  revokeCredential,
   revokeWebAuthnKey,
   setUserPassword,
   readPasswordHistory,
+  readCredentials,
   type PasswordChange,
+  type Credential,
   updateUser,
 } from "@/services/users";
 import { listRoles, listGroups } from "@/services/directory";
@@ -35,7 +37,6 @@ import { Eye, EyeOff } from "lucide-vue-next";
 import type {
   ConsentBrief,
   GroupBrief,
-  KeyBrief,
   Lockout,
   OrgBrief,
   RoleBrief,
@@ -51,7 +52,6 @@ const tab = ref<(typeof TABS)[number]>("overview");
 
 const user = ref<UserFull | null>(null);
 const lockout = ref<Lockout | null>(null);
-const keys = ref<KeyBrief[]>([]);
 /// How many codes are left on the sheet. Never the codes: the server counts
 /// them and hands nobody the set, this drawer included.
 const codesLeft = ref(0);
@@ -178,7 +178,6 @@ async function load() {
     [
       user.value,
       lockout.value,
-      keys.value,
       codesLeft.value,
       sessions.value,
       consents.value,
@@ -188,7 +187,6 @@ async function load() {
     ] = await Promise.all([
       getUser(props.realm, props.userId),
       getLockout(props.realm, props.userId),
-      listWebAuthnKeys(props.realm, props.userId),
       countRecoveryCodes(props.realm, props.userId),
       listSessions(props.realm, props.userId),
       listConsents(props.realm, props.userId),
@@ -215,6 +213,7 @@ async function load() {
 onMounted(() => {
   void load();
   void readHistory();
+  void readTheCredentials();
 });
 
 async function saveProfile() {
@@ -265,6 +264,18 @@ function askFor(action: string) {
 
 const temporary = ref(true);
 const history = ref<PasswordChange[]>([]);
+const credentials = ref<Credential[]>([]);
+const adding = ref(false);
+
+async function readTheCredentials() {
+  try {
+    credentials.value = await readCredentials(props.realm, props.userId);
+  } catch {
+    credentials.value = [];
+  }
+}
+
+
 
 async function readHistory() {
   try {
@@ -345,9 +356,18 @@ async function onLift() {
   await liftLockout(props.realm, props.userId);
   lockout.value = await getLockout(props.realm, props.userId);
 }
-async function onRevokeKey(credentialId: string) {
-  await revokeWebAuthnKey(props.realm, props.userId, credentialId);
-  keys.value = await listWebAuthnKeys(props.realm, props.userId);
+/// Keys live in their own store, so their door is its own. Picking here rather
+/// than letting the server guess which store an identifier came from is what
+/// keeps a revoke from being offered where nothing answers it.
+async function onRevoke(held: Credential) {
+  if (!held.id) return;
+  if (held.kind === "webauthn") {
+    await revokeWebAuthnKey(props.realm, props.userId, held.id);
+  } else {
+    await revokeCredential(props.realm, props.userId, held.id);
+  }
+  await readTheCredentials();
+  codesLeft.value = await countRecoveryCodes(props.realm, props.userId);
 }
 async function onCloseSession(sessionId: string) {
   await closeSession(props.realm, props.userId, sessionId);
@@ -578,7 +598,66 @@ function instant(epoch: number | null | undefined): string {
       </div>
     </div>
 
-    <div v-if="tab === 'credentials'" class="mt-4">
+    <div v-if="tab === 'credentials'" class="mt-4 flex flex-col gap-3">
+      <div class="flex h-[30px] items-center gap-2">
+        <span class="flex-1 text-[13px] text-ink">
+          {{ say("user-credentials") }} <AppHint name="user-credentials-help" />
+        </span>
+        <button type="button" class="sf-button sf-button-secondary" @click="adding = !adding">
+          <AppIcon name="plus" :size="13" />
+          {{ say("user-credential-add") }}
+        </button>
+      </div>
+
+      <div class="sf-list overflow-x-auto">
+        <table class="sf-table">
+          <thead>
+            <tr>
+              <th>{{ say("user-credential-kind") }}</th>
+              <th>{{ say("user-credential-label") }}</th>
+              <th>{{ say("user-credential-detail") }}</th>
+              <th>{{ say("user-credential-created") }}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="held in credentials" :key="held.kind + (held.label ?? '')">
+              <td><span class="sf-badge sf-badge-accent">{{ held.kind }}</span></td>
+              <td class="text-faint">{{ held.label ?? say("value-none") }}</td>
+              <td class="text-muted">{{ held.detail ?? say("value-none") }}</td>
+              <td class="text-faint">{{ stamp(held.created_at) }}</td>
+              <td class="text-right">
+                <button
+                  v-if="held.id"
+                  type="button"
+                  class="text-[11px] text-faint hover:text-danger"
+                  @click="onRevoke(held)"
+                >
+                  {{ say("user-revoke") }}
+                </button>
+              </td>
+            </tr>
+            <tr v-if="!credentials.length">
+              <td colspan="5" class="text-muted">{{ say("user-no-credentials") }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div
+        v-if="askedActions.length"
+        class="flex items-center gap-2 rounded-md bg-warn-tint px-3 py-2.5"
+      >
+        <AppIcon name="danger" :size="14" class="shrink-0 text-warn" />
+        <span class="text-[11.5px] text-muted">{{
+          say("user-pending-enforced", { held: askedActions.length })
+        }}</span>
+        <span v-for="action in askedActions" :key="action" class="sf-badge sf-badge-warn">{{
+          action
+        }}</span>
+      </div>
+
+      <template v-if="adding">
       <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("user-set-password") }} <AppHint name="user-set-password-help" />
       </div>
@@ -644,6 +723,8 @@ function instant(epoch: number | null | undefined): string {
         <span v-for="rule in rules" :key="rule" class="sf-badge">{{ rule }}</span>
       </div>
 
+      </template>
+
       <div class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("user-password-history") }} <AppHint name="user-password-history-help" />
       </div>
@@ -664,33 +745,6 @@ function instant(epoch: number | null | undefined): string {
           }}</span>
           <span class="shrink-0 text-[10.5px] text-faint">{{ ago(change.replaced_at) }}</span>
         </div>
-      </div>
-
-      <div class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-        {{ say("user-webauthn") }}
-      </div>
-      <p v-if="!keys.length" class="mt-2 text-xs text-muted">{{ say("user-no-keys") }}</p>
-      <div
-        v-for="key in keys"
-        :key="key.credential_id"
-        class="mt-2 flex items-center gap-3 rounded-lg border border-border px-3 py-2.5 text-xs"
-      >
-        <div class="min-w-0">
-          <div class="font-medium">{{ key.label || say("user-key-unnamed") }}</div>
-          <div class="mt-0.5 font-mono text-[10.5px] text-faint">
-            {{ say("user-key-enrolled") }} {{ instant(key.enrolled_at) }}
-            <template v-if="key.last_used_at">
-              &middot; {{ say("user-key-last-used") }} {{ instant(key.last_used_at) }}
-            </template>
-          </div>
-        </div>
-        <button
-          type="button"
-          class="ml-auto rounded-md border border-border px-2 py-1 text-[11px] text-danger hover:bg-surface-2"
-          @click="onRevokeKey(key.credential_id)"
-        >
-          {{ say("user-revoke") }}
-        </button>
       </div>
 
       <div class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">

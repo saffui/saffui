@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageTabs from "@/components/PageTabs.vue";
 import { computed, onMounted, ref } from "vue";
 import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
@@ -147,6 +148,7 @@ function joined(member: OrgMember): string {
   <div>
     <div class="flex items-center justify-between">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("organizations-title") }}</h1>
+
       <button
         type="button"
         class="sf-button sf-button-primary"
@@ -155,6 +157,8 @@ function joined(member: OrgMember): string {
         {{ say("org-new") }}
       </button>
     </div>
+
+      <PageTabs class="mt-3" />
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
     <form

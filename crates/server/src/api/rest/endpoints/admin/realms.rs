@@ -155,6 +155,27 @@ pub async fn create(
     {
         return Err(ApiError::new(ErrorCode::RealmAlreadyExists));
     }
+    // The tenant's own ceiling, where it set one. The lock is taken before
+    // the count, so two creates one below the ceiling cannot both read a
+    // count that passes and both write.
+    store::providers::tenants::hold_realms(&transaction, &tenant)
+        .await
+        .map_err(|_| internal())?;
+    if let Some(ceiling) = store::providers::tenants::load(&transaction)
+        .await
+        .map_err(|_| internal())?
+        .and_then(|held| held.limits)
+        .and_then(|limits| limits.max_realms)
+        && store::providers::tenants::count_realms(&transaction)
+            .await
+            .map_err(|_| internal())?
+            >= ceiling
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            format!("this tenant holds the {ceiling} realms it is allowed"),
+        ));
+    }
     let realm = asked.into_model(
         realm_id.clone(),
         models::auditable::AuditableModel::from_creator(

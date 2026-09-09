@@ -1781,6 +1781,27 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Give this deployment's tenant a ceiling on how many realms it holds.
+    ///
+    /// A tenant with no ceiling skips the check rather than comparing against
+    /// something infinite, so a test of the refusal has to write one.
+    #[allow(dead_code, reason = "only the suites that create realms ask")]
+    pub async fn cap_realms(&self, ceiling: i64) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::tenant_wide(TENANT))
+            .await;
+        let limits = serde_json::json!({ "max_realms": ceiling });
+        transaction
+            .execute(
+                "UPDATE tenants SET limits = $1 WHERE tenant_id = $2",
+                &[&limits, &TENANT],
+            )
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
     /// Pin this deployment's tenant to a region, so a node elsewhere is refused
     /// it. Residency is opted into on both sides, so a test of the refusal has
     /// to write the tenant's half.

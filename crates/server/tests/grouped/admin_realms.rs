@@ -70,6 +70,43 @@ async fn asked_under(
 /// is a conflict, and the switches are rewritten in place afterwards.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
+    let plane = Plane::with_actions(&[AdminAction::RealmCreate]).await;
+    let bearer = plane.token(&support::claims());
+
+    // The provisioned world already holds one realm, so a ceiling of one is
+    // reached before this call rather than by it.
+    plane.cap_realms(1).await;
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(
+            serde_json::json!({ "name": "overflow", "display_name": "Overflow", "enabled": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // Raised, the same call goes through: the refusal was the ceiling and
+    // not something else about the request.
+    plane.cap_realms(2).await;
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(
+            serde_json::json!({ "name": "overflow", "display_name": "Overflow", "enabled": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let plane = Plane::with_actions(&[
         AdminAction::RealmCreate,

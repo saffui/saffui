@@ -649,10 +649,6 @@ pub fn login_ui() -> config::serving::LoginUi {
     config::serving::LoginUi::parse("https://login.test").expect("a usable login ui")
 }
 
-#[allow(
-    dead_code,
-    reason = "not every suite mints a token or mounts the plane"
-)]
 /// The realm ceiling a mounted plane carries.
 ///
 /// The deployment default, which is what a suite that says nothing about
@@ -662,6 +658,10 @@ pub fn ceiling() -> config::serving::RealmCeiling {
     config::serving::RealmCeiling::from_env().expect("a ceiling")
 }
 
+#[allow(
+    dead_code,
+    reason = "not every suite mints a token or mounts the plane"
+)]
 pub fn origin() -> config::serving::PublicOrigin {
     config::serving::PublicOrigin::parse(ORIGIN).expect("a usable origin")
 }

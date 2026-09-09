@@ -144,6 +144,10 @@ pub struct Administrator {
     pub email: String,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct thing the birth needs"
+)]
 pub async fn create(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,

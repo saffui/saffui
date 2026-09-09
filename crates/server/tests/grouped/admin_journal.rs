@@ -65,6 +65,49 @@ async fn journalled(plane: &Plane, bearer: &str) -> (i64, Value) {
 /// verifies whole; and anchoring publishes the head and is itself an entry.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn making_a_realm_lands_in_the_maker_s_own_chain() {
+    let plane = Plane::with_actions(&[AdminAction::RealmCreate, AdminAction::JournalRead]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (before, _) = journalled(&plane, &bearer).await;
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({
+            "name": "chronicle", "display_name": "Chronicle", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@chronicle.test" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    // The path names no realm, so nothing could be read off it. The entry
+    // belongs to the realm the maker came from, which is where an auditor
+    // looks for what this realm's administrators did.
+    let (after, told) = journalled(&plane, &bearer).await;
+    assert_eq!(
+        after,
+        before + 1,
+        "making a realm left no trace in any chain: {told}"
+    );
+    let newest = &told["items"].as_array().expect("entries")[0]["entry"];
+    assert_eq!(newest["kind"], "admin.write", "{newest}");
+    assert_eq!(newest["method"], "POST", "{newest}");
+    assert_eq!(newest["status"], 201, "{newest}");
+    assert_eq!(newest["path"], "/admin/realms", "{newest}");
+    assert_eq!(newest["actor"], support::SUBJECT, "{newest}");
+    // The password is never a fact anyone keeps, the journal included.
+    let written = serde_json::to_string(newest).expect("an entry renders");
+    let password = born["administrator"]["password"]
+        .as_str()
+        .expect("a password");
+    assert!(!written.contains(password), "the journal kept the password");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_plane_journals_its_own_writes() {
     let plane = Plane::with_actions(&[
         AdminAction::RealmRead,

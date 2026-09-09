@@ -1,20 +1,21 @@
 <script setup lang="ts">
-// The jump-anywhere box: pages by name, realms by prefix. Opens on the
-// keyboard shortcut or the top bar button, filters as you type, Enter takes
-// the first match, Escape leaves quietly.
+// The jump-anywhere box: pages by name. Opens on the keyboard shortcut or the
+// top bar button, filters as you type, Enter takes the first match, Escape
+// leaves quietly.
+//
+// It used to offer the other realms too. A token reaches the realm that
+// minted it, so the listing answers one row and the offer was always empty:
+// reaching another realm is signing into it, not jumping there.
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import AppIcon from "@/components/AppIcon.vue";
 import { say } from "@/i18n";
-import { listRealms } from "@/services/realms";
-import type { RealmBrief } from "@/models/realm";
 
 const opened = defineModel<boolean>({ required: true });
 const route = useRoute();
 const router = useRouter();
 const typed = ref("");
 const field = ref<HTMLInputElement | null>(null);
-const realms = ref<RealmBrief[]>([]);
 
 const PAGES: { leaf: string; name: () => string }[] = [
   { leaf: "overview", name: () => say("nav-overview") },
@@ -54,15 +55,7 @@ const hits = computed<Hit[]>(() => {
     hint: `/${realm}/${page.leaf}`,
     go: () => router.push(`/${realm}/${page.leaf}`),
   }));
-  const elsewhere: Hit[] = realms.value
-    .filter((held) => held.name !== realm)
-    .map((held) => ({
-      kind: "realm" as const,
-      label: held.display_name || held.name,
-      hint: say("palette-switch", { realm: held.name }),
-      go: () => router.push(`/${held.name}/overview`),
-    }));
-  const all = [...pages, ...elsewhere];
+  const all = pages;
   if (!needle) return all.slice(0, 9);
   return all
     .filter(
@@ -77,11 +70,6 @@ watch(opened, async (now) => {
     typed.value = "";
     await nextTick();
     field.value?.focus();
-    try {
-      realms.value = await listRealms();
-    } catch {
-      realms.value = [];
-    }
   }
 });
 

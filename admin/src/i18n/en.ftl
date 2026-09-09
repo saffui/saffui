@@ -438,7 +438,6 @@ journal-witness = Witness
 journal-receipt = Receipt
 journal-anchor = Anchor the head
 
-palette-switch = switch to { $realm }
 palette-nothing = Nothing matches.
 settings-name-fixed = The name is the issuer's tail; it does not change.
 settings-max-clients = Registration ceiling
@@ -551,7 +550,6 @@ settings-secret-forget = Forget it
 settings-secret-once = Written nowhere else: copy it now or draw again.
 settings-danger = Danger
 settings-delete-lede = Deleting { $realm } takes its users, clients, sessions and keys with it. There is no undo.
-settings-delete-own = This session's own realm cannot be deleted from here: sign into another realm first.
 settings-delete-help = The schema cascades: everything keyed under the realm goes with the row. The realm your token was minted by is refused, so the plane cannot saw off its own branch.
 settings-delete-realm = Delete this realm
 settings-delete-elsewhere = { $realm } is not this session's realm, and no token from here reaches it. Sign into it to take it away.

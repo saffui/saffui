@@ -438,7 +438,6 @@ journal-witness = Témoin
 journal-receipt = Reçu
 journal-anchor = Ancrer la tête
 
-palette-switch = basculer vers { $realm }
 palette-nothing = Rien ne correspond.
 settings-name-fixed = Le nom est la fin de l'issuer ; il ne change pas.
 settings-max-clients = Plafond d'enregistrement
@@ -551,7 +550,6 @@ settings-secret-forget = L'oublier
 settings-secret-once = Écrit nulle part ailleurs : copie-le maintenant ou retire.
 settings-danger = Danger
 settings-delete-lede = Supprimer { $realm } emporte ses comptes, clients, sessions et clés. Sans retour.
-settings-delete-own = Le realm de cette session ne se supprime pas d'ici : connecte-toi à un autre realm d'abord.
 settings-delete-help = Le schéma cascade : tout ce qui est rattaché au realm part avec la ligne. Le realm de ton propre jeton est refusé : le plan ne scie pas sa branche.
 settings-delete-realm = Supprimer ce realm
 settings-delete-elsewhere = { $realm } n'est pas le realm de cette session, et aucun jeton d'ici ne l'atteint. Connectez-vous à lui pour le supprimer.

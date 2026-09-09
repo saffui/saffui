@@ -17,8 +17,13 @@ export async function listUsers(
   realm: string,
   first: number,
   max: number,
+  narrowing: { search?: string; enabled?: string; pending?: string } = {},
 ): Promise<Page<UserBrief>> {
-  return api<Page<UserBrief>>(`${adminPath(realm, "users")}?first=${first}&max=${max}`);
+  const asked = new URLSearchParams({ first: String(first), max: String(max) });
+  if (narrowing.search) asked.set("search", narrowing.search);
+  if (narrowing.enabled) asked.set("enabled", narrowing.enabled);
+  if (narrowing.pending) asked.set("pending", narrowing.pending);
+  return api<Page<UserBrief>>(`${adminPath(realm, "users")}?${asked}`);
 }
 
 export async function getUser(realm: string, userId: string): Promise<UserFull> {
@@ -152,12 +157,32 @@ export async function setUserPassword(
   realm: string,
   userId: string,
   password: string,
+  temporary = false,
 ): Promise<void> {
   await api<void>(adminPath(realm, `users/${encodeURIComponent(userId)}/password`), {
     method: "PUT",
-    json: { password },
+    json: { password, temporary },
     subject: say("subject-password", { user: userId }),
   });
+}
+
+export interface PasswordChange {
+  /// RFC 3339, as the server writes a timestamp.
+  replaced_at: string | null;
+  by: string | null;
+}
+
+/// When this account's passwords were replaced, and by whom. The secrets are
+/// never part of the answer: what is kept is a hash, and a hash still opens
+/// an account wherever the person reused it.
+export async function readPasswordHistory(
+  realm: string,
+  userId: string,
+): Promise<PasswordChange[]> {
+  const told = await api<{ items: PasswordChange[] }>(
+    adminPath(realm, `users/${encodeURIComponent(userId)}/password/history`),
+  );
+  return told.items;
 }
 
 export async function grantRoleToUser(realm: string, roleId: string, userId: string) {

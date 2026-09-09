@@ -286,7 +286,7 @@ fn main() -> ExitCode {
                         tenant,
                         max,
                         verify,
-                    } => chronicle(&tenant, max, verify).await,
+                    } => read_chronicle(&tenant, max, verify).await,
                     Command::Provision {
                         tenant,
                         realm,
@@ -630,7 +630,7 @@ fn ldap_acceptor(paths: &config::ldap::TlsPaths) -> Result<openssl::ssl::SslCont
 /// Its own connection rather than the plane's: the served role is granted no
 /// select here on purpose, so a command that read as `saffui_app` would find
 /// nothing and say the deployment had no history.
-async fn chronicle(tenant: &str, max: i64, verify: bool) -> Result<(), String> {
+async fn read_chronicle(tenant: &str, max: i64, verify: bool) -> Result<(), String> {
     let connection = config::required("DATABASE_URL").map_err(|e| e.to_string())?;
     let pg: tokio_postgres::Config = connection
         .parse()

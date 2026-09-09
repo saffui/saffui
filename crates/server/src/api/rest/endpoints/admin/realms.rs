@@ -265,7 +265,7 @@ pub async fn create(
     )
     .await
     .map_err(|_| internal())?;
-    tenant_chain(&transaction, &admin, &realm_id, "realm.created", now)
+    record_what_happened(&transaction, &admin, &realm_id, "realm.created", now)
         .await
         .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;
@@ -288,7 +288,7 @@ pub async fn create(
 /// statement it records. The served plane may append here and may not read,
 /// which keeps a neighbouring realm's existence as unknowable as the guard
 /// makes it.
-async fn tenant_chain(
+async fn record_what_happened(
     transaction: &deadpool_postgres::Transaction<'_>,
     admin: &Admin,
     realm_id: &str,
@@ -360,7 +360,7 @@ pub async fn delete(
     // In the same transaction as the deletion, and in the tenant's chain
     // rather than the realm's: the realm's own chain went with the cascade a
     // statement ago, which is the reason this table exists at all.
-    tenant_chain(
+    record_what_happened(
         &transaction,
         &admin,
         &realm_id,

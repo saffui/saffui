@@ -252,13 +252,13 @@ function instant(epoch: number | null): string {
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
     <div class="mt-4 max-w-4xl overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("privacy-col-subject") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("privacy-col-kind") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("privacy-col-stage") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("privacy-col-jurisdiction") }}</th>
+          <tr>
+            <th>{{ say("privacy-col-subject") }}</th>
+            <th>{{ say("privacy-col-kind") }}</th>
+            <th>{{ say("privacy-col-stage") }}</th>
+            <th>{{ say("privacy-col-jurisdiction") }}</th>
             <th class="px-3 py-2 text-right font-medium">{{ say("privacy-col-due") }}</th>
           </tr>
         </thead>
@@ -266,21 +266,21 @@ function instant(epoch: number | null): string {
           <tr
             v-for="row in rows"
             :key="row.request_id"
-            class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2"
+            class="cursor-pointer hover:bg-surface-2"
             @click="opened = row; reason = ''"
           >
-            <td class="px-3 py-2 font-mono text-[11px]">{{ row.subject_identifier }}</td>
-            <td class="px-3 py-2">
+            <td class="font-mono text-[11px]">{{ row.subject_identifier }}</td>
+            <td>
               <span class="rounded border border-border px-1.5 py-0.5 font-mono text-[10px] text-muted">
                 {{ row.kind }}
               </span>
             </td>
-            <td class="px-3 py-2 text-[10.5px]">
+            <td class="text-[10.5px]">
               <span :class="row.stage === 'refused' ? 'text-danger' : row.stage === 'fulfilled' ? 'text-ok' : ''">
                 {{ say(`privacy-stage-${row.stage}`) }}
               </span>
             </td>
-            <td class="px-3 py-2 font-mono text-[10.5px] text-faint">{{ row.jurisdiction }}</td>
+            <td class="font-mono text-[10.5px] text-faint">{{ row.jurisdiction }}</td>
             <td class="px-3 py-2 text-right font-mono text-[10.5px]" :class="overdue(row) ? 'text-danger' : 'text-faint'">
               {{ instant(row.due_at) }}
               <span v-if="overdue(row)" class="ml-1 rounded border border-danger/40 px-1 text-[9.5px] uppercase">
@@ -308,12 +308,12 @@ function instant(epoch: number | null): string {
       </button>
     </div>
     <div class="mt-2 max-w-4xl overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("breach-col-what") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("breach-col-severity") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("privacy-col-stage") }}</th>
+          <tr>
+            <th>{{ say("breach-col-what") }}</th>
+            <th>{{ say("breach-col-severity") }}</th>
+            <th>{{ say("privacy-col-stage") }}</th>
             <th class="px-3 py-2 text-right font-medium">{{ say("breach-col-notify-by") }}</th>
           </tr>
         </thead>
@@ -321,11 +321,11 @@ function instant(epoch: number | null): string {
           <tr
             v-for="held in breaches"
             :key="held.breach_id"
-            class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2"
+            class="cursor-pointer hover:bg-surface-2"
             @click="openedBreach = held; notificationDraft = null"
           >
-            <td class="px-3 py-2">{{ held.description }}</td>
-            <td class="px-3 py-2">
+            <td>{{ held.description }}</td>
+            <td>
               <span
                 class="rounded border px-1.5 py-0.5 font-mono text-[10px]"
                 :class="
@@ -337,7 +337,7 @@ function instant(epoch: number | null): string {
                 {{ held.severity }}
               </span>
             </td>
-            <td class="px-3 py-2 text-[10.5px]">{{ say(`breach-status-${held.status}`) }}</td>
+            <td class="text-[10.5px]">{{ say(`breach-status-${held.status}`) }}</td>
             <td
               class="px-3 py-2 text-right font-mono text-[10.5px]"
               :class="breachOverdue(held) ? 'text-danger' : 'text-faint'"

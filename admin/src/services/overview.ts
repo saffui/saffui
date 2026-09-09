@@ -4,6 +4,7 @@ import type { ChainVerified, JournalEntry } from "@/models/journal";
 import type { Page } from "@/models/paging";
 import type { RealmKeys } from "@/models/keys";
 import type { MailBrief } from "@/models/mail";
+import type { SmsBrief } from "@/models/sms";
 import type { RealmSettings } from "@/models/realm";
 
 /// One row of a collection plus the paid-for count: the cheapest honest way
@@ -15,11 +16,38 @@ export async function countOf(realm: string, leaf: string): Promise<number | nul
   return page.total;
 }
 
+/// What the strip shows, as the server answers it in one reading.
+///
+/// `slowTailMillis` is absent where the build carries no histogram, and the
+/// strip then leaves the box out rather than printing a placeholder for a
+/// reading that never comes.
 export interface OverviewNumbers {
-  users: number | null;
-  clients: number | null;
-  organizations: number | null;
-  signingKeys: number;
+  users: number;
+  clients: number;
+  sessions: number;
+  pendingRequests: number;
+  slowTailMillis?: number;
+}
+
+/// One message gateway, as the console can honestly describe it.
+///
+/// The deck reads `up` and `degraded` on these. Nothing here probes them, so
+/// nothing here claims a liveness: what is known is whether the realm has
+/// configured the gateway, and what it points at.
+export interface Gateway {
+  which: "email" | "sms" | "ussd";
+  /// Where it goes, in the gateway's own terms. Absent when unconfigured.
+  at: string | null;
+  /// Three states, not two. A gateway named without its credential is the
+  /// quiet failure: it looks configured and fails at the first send, which
+  /// nobody sees until somebody asks for a reset link.
+  state: "unset" | "incomplete" | "set";
+  /// What in this realm stops working while it is unset, read off settings
+  /// already in hand. Empty means nothing switched on depends on it.
+  needed_by: string[];
+  /// Mail only: whether the connection to the server is encrypted. A password
+  /// crossing in the clear belongs on the overview, not buried in settings.
+  clear_text?: boolean;
 }
 
 export interface Attention {
@@ -31,6 +59,7 @@ export interface Attention {
 
 export interface OverviewTold {
   numbers: OverviewNumbers;
+  gateways: Gateway[];
   attention: Attention[];
   /// The newest journal entries, and whether the chain verifies whole.
   journal: JournalEntry[];
@@ -45,13 +74,19 @@ export async function readOverview(realm: string): Promise<OverviewTold> {
       if (refused instanceof ApiError && refused.status < 500) return null;
       throw refused;
     });
-  const [users, clients, organizations, keys, mail, settings, journal, chain] =
+  const [strip, keys, mail, sms, ussd, settings, journal, chain] =
     await Promise.all([
-      countOf(realm, "users"),
-      countOf(realm, "clients"),
-      countOf(realm, "organizations"),
+      api<{
+        users: number;
+        clients: number;
+        sessions: number;
+        pending_requests: number;
+        slow_tail_millis?: number;
+      }>(adminPath(realm, "overview")),
       api<RealmKeys>(adminPath(realm, "keys")),
       quietly(api<MailBrief>(adminPath(realm, "mail"))),
+      quietly(api<SmsBrief>(adminPath(realm, "sms"))),
+      quietly(api<{ has_secret: boolean }>(adminPath(realm, "ussd"))),
       api<RealmSettings>(`/admin/realms/${encodeURIComponent(realm)}`),
       quietly(listJournal(realm, 0, 5)),
       quietly(verifyChain(realm)),
@@ -71,13 +106,50 @@ export async function readOverview(realm: string): Promise<OverviewTold> {
     attention.push({ what: "open-registration", where: "settings" });
   }
 
+  // What each gateway points at, said in its own terms. A refusal reads as
+  // unconfigured, which is what a realm with no such settings answers.
+  const stateOf = (named: boolean, credentialled: boolean): Gateway["state"] =>
+    !named ? "unset" : credentialled ? "set" : "incomplete";
+
+  // What breaks while a gateway is missing, from settings already read. Only
+  // what the realm has switched on counts: a realm that never verifies an
+  // address does not need mail to do it.
+  const mailNeeds = [
+    settings.verify_email ? "verify-email" : null,
+    settings.reset_password_allowed ? "reset-password" : null,
+  ].filter((held): held is string => held !== null);
+
+  const gateways: Gateway[] = [
+    {
+      which: "email",
+      at: mail?.host ? `${mail.host}:${mail.port}` : null,
+      state: stateOf(Boolean(mail?.host), Boolean(mail?.has_password)),
+      needed_by: mailNeeds,
+      clear_text: mail?.host ? !mail.implicit_tls : undefined,
+    },
+    {
+      which: "sms",
+      at: sms?.url ?? null,
+      state: stateOf(Boolean(sms?.url), Boolean(sms?.has_token)),
+      needed_by: [],
+    },
+    {
+      which: "ussd",
+      at: null,
+      state: ussd?.has_secret ? "set" : "unset",
+      needed_by: [],
+    },
+  ];
+
   return {
     numbers: {
-      users,
-      clients,
-      organizations,
-      signingKeys: keys.signing.length,
+      users: strip.users,
+      clients: strip.clients,
+      sessions: strip.sessions,
+      pendingRequests: strip.pending_requests,
+      slowTailMillis: strip.slow_tail_millis,
     },
+    gateways,
     attention,
     journal: journal?.items ?? [],
     chain,

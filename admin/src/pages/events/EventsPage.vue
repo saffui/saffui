@@ -333,15 +333,15 @@ async function prove(row: IdpRow) {
     </p>
     <div
       v-else-if="signIns"
-      class="mt-2 overflow-x-auto rounded-lg border border-border bg-surface"
+      class="sf-list mt-2 overflow-x-auto"
     >
-      <table class="w-full text-left text-xs">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("signin-col-kind") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("signin-col-who") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("signin-col-client") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("signin-col-from") }}</th>
+          <tr>
+            <th>{{ say("signin-col-kind") }}</th>
+            <th>{{ say("signin-col-who") }}</th>
+            <th>{{ say("signin-col-client") }}</th>
+            <th>{{ say("signin-col-from") }}</th>
             <th class="px-3 py-2 text-right font-medium">{{ say("journal-col-when") }}</th>
           </tr>
         </thead>
@@ -351,7 +351,7 @@ async function prove(row: IdpRow) {
             :key="held.id"
             class="border-b border-border/60 last:border-0"
           >
-            <td class="px-3 py-2">
+            <td>
               <span
                 class="rounded border px-1.5 py-0.5 font-mono text-[10.5px]"
                 :class="
@@ -362,10 +362,10 @@ async function prove(row: IdpRow) {
                 >{{ held.kind }}</span
               >
             </td>
-            <td class="px-3 py-2 font-mono text-[11px]">{{ held.user_id || "·" }}</td>
-            <td class="px-3 py-2 font-mono text-[11px]">{{ held.client_id || "·" }}</td>
-            <td class="px-3 py-2 font-mono text-[10.5px] text-faint">{{ held.ip || "·" }}</td>
-            <td class="px-3 py-2 text-right font-mono text-[10.5px] text-faint">
+            <td class="font-mono text-[11px]">{{ held.user_id || "·" }}</td>
+            <td class="font-mono text-[11px]">{{ held.client_id || "·" }}</td>
+            <td class="font-mono text-[10.5px] text-faint">{{ held.ip || "·" }}</td>
+            <td class="text-right font-mono text-[10.5px] text-faint">
               {{ instant(held.recorded_at) }}
             </td>
           </tr>
@@ -580,13 +580,13 @@ async function prove(row: IdpRow) {
     </div>
     <p v-if="!dead.length" class="mt-2 text-xs text-muted">{{ say("events-no-dead") }}</p>
     <div v-else class="mt-2 overflow-x-auto rounded-lg border border-border bg-surface max-w-3xl">
-      <table class="w-full text-left text-xs">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("events-dead-col-kind") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("events-dead-col-who") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("events-dead-col-attempts") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("events-dead-col-when") }}</th>
+          <tr>
+            <th>{{ say("events-dead-col-kind") }}</th>
+            <th>{{ say("events-dead-col-who") }}</th>
+            <th>{{ say("events-dead-col-attempts") }}</th>
+            <th>{{ say("events-dead-col-when") }}</th>
             <th class="px-3 py-2"></th>
           </tr>
         </thead>
@@ -596,13 +596,13 @@ async function prove(row: IdpRow) {
             :key="letter.event_id"
             class="border-b border-border/60 last:border-0"
           >
-            <td class="px-3 py-2 font-mono text-[11px]">{{ letter.kind }}</td>
-            <td class="px-3 py-2 font-mono text-[11px]">{{ letter.user_id }}</td>
-            <td class="px-3 py-2 text-muted">{{ letter.attempts }}</td>
-            <td class="px-3 py-2 text-[10.5px] text-muted">
+            <td class="font-mono text-[11px]">{{ letter.kind }}</td>
+            <td class="font-mono text-[11px]">{{ letter.user_id }}</td>
+            <td class="text-muted">{{ letter.attempts }}</td>
+            <td class="text-[10.5px] text-muted">
               {{ new Date(letter.occurred_at).toLocaleString() }}
             </td>
-            <td class="px-3 py-2 text-right">
+            <td class="text-right">
               <button
                 type="button"
                 class="rounded-md border border-border px-2 py-0.5 text-[10.5px] text-muted hover:bg-surface-2 hover:text-ink"

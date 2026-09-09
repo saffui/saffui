@@ -659,3 +659,18 @@ pub async fn requested_claims_of(
         .map_err(|_| StoreError::Backend)?
         .and_then(|row| row.get("requested_claims")))
 }
+
+/// How many logins are standing in this realm.
+///
+/// Counted on the realm's own rows, which the primary key leads with, so the
+/// work is the realm's size rather than the deployment's.
+pub async fn count_standing(transaction: &Transaction<'_>) -> StoreResult<i64> {
+    Ok(transaction
+        .query_one(
+            "SELECT count(*) FROM user_sessions WHERE state = 'logged-in'",
+            &[],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .get(0))
+}

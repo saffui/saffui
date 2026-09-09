@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
+import { useStanding } from "@/stores/standing";
 import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
 import {
@@ -21,6 +22,8 @@ import {
   revokeRoleFromUser,
   revokeWebAuthnKey,
   setUserPassword,
+  readPasswordHistory,
+  type PasswordChange,
   updateUser,
 } from "@/services/users";
 import { listRoles, listGroups } from "@/services/directory";
@@ -55,6 +58,20 @@ const codesLeft = ref(0);
 const sessions = ref<SessionBrief[]>([]);
 const consents = ref<ConsentBrief[]>([]);
 const roles = ref<RoleBrief[]>([]);
+
+/// Realm roles and client roles are the same table apart from whether a
+/// client owns them, and an account with many of both reads as one heap.
+const ROLE_KINDS = ["all", "realm", "client"] as const;
+const roleKind = ref<(typeof ROLE_KINDS)[number]>("all");
+const countOfKind = (kind: "realm" | "client") =>
+  roles.value.filter((role) => (kind === "client") === (role.client_id !== null)).length;
+const shownRoles = computed(() =>
+  roleKind.value === "all"
+    ? roles.value
+    : roles.value.filter(
+        (role) => (roleKind.value === "client") === (role.client_id !== null),
+      ),
+);
 const groups = ref<GroupBrief[]>([]);
 const organizations = ref<OrgBrief[]>([]);
 const failed = ref("");
@@ -71,6 +88,23 @@ function customAttributes(held: UserFull): [string, string][] {
       typeof value === "string" ? value : (value?.Str ?? JSON.stringify(value)),
     ]);
 }
+/// How long ago, so a long list reads without the reader doing arithmetic.
+function ago(at: string | null): string {
+  if (!at) return "";
+  const days = Math.floor((Date.now() - new Date(at).getTime()) / 86_400_000);
+  if (days < 1) return say("ago-today");
+  if (days < 31) return say("ago-days", { held: days });
+  if (days < 365) return say("ago-months", { held: Math.floor(days / 30) });
+  return say("ago-years", { held: Math.floor(days / 365) });
+}
+
+function stamp(at: string | null): string {
+  if (!at) return "";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+    new Date(at),
+  );
+}
+
 function born(held: UserFull): string {
   if (!held.created_at) return "";
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
@@ -78,6 +112,40 @@ function born(held: UserFull): string {
   );
 }
 const showPassword = ref(false);
+const showAgain = ref(false);
+
+const standing = useStanding();
+/// The realm decides whether an account is renamed at all, and the server
+/// refuses either way; the field says so before a request is spent.
+const renameable = computed(() => standing.switches?.edit_user_name_allowed === true);
+
+/// What the realm will hold a password to, said before it refuses one. Only
+/// the rules a person can act on: the hashing cost and the expiry are the
+/// realm's business, not this form's.
+/// Enough of a shape to catch a typo before a request is spent. The server
+/// decides what an address is; this only stops the obvious.
+const emailWrong = computed(() => {
+  const held = profile.value.email.trim();
+  return held !== "" && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(held);
+});
+
+const rules = computed(() => {
+  const policy = standing.switches?.password_policy;
+  if (!policy) return [];
+  const held: string[] = [];
+  const count = (value: number | null | undefined, key: string) => {
+    if (value) held.push(say(key, { held: value }));
+  };
+  count(policy.min_length, "held-to-min-length");
+  count(policy.min_digits, "held-to-min-digits");
+  count(policy.min_upper_case, "held-to-min-upper");
+  count(policy.min_lower_case, "held-to-min-lower");
+  count(policy.min_special_chars, "held-to-min-special");
+  count(policy.history_look_back, "held-to-history");
+  if (policy.not_username) held.push(say("held-to-not-username"));
+  if (policy.not_email) held.push(say("held-to-not-email"));
+  return held;
+});
 
 /// The editable half of the overview, adopted from the loaded user.
 const profile = ref({
@@ -144,9 +212,16 @@ async function load() {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
-onMounted(load);
+onMounted(() => {
+  void load();
+  void readHistory();
+});
 
 async function saveProfile() {
+  if (emailWrong.value) {
+    failed.value = say("user-email-shape");
+    return;
+  }
   try {
     await updateUser(props.realm, props.userId, {
       user_name: profile.value.user_name.trim() || undefined,
@@ -188,16 +263,28 @@ function askFor(action: string) {
   askOpen.value = false;
 }
 
+const temporary = ref(true);
+const history = ref<PasswordChange[]>([]);
+
+async function readHistory() {
+  try {
+    history.value = await readPasswordHistory(props.realm, props.userId);
+  } catch {
+    history.value = [];
+  }
+}
+
 async function savePassword() {
   if (!newPassword.value || newPassword.value !== newPasswordAgain.value) {
     failed.value = say("user-password-mismatch");
     return;
   }
   try {
-    await setUserPassword(props.realm, props.userId, newPassword.value);
+    await setUserPassword(props.realm, props.userId, newPassword.value, temporary.value);
     newPassword.value = "";
     newPasswordAgain.value = "";
     failed.value = "";
+    await Promise.all([load(), readHistory()]);
   } catch {
     // The toast already said.
   }
@@ -279,7 +366,7 @@ function instant(epoch: number | null | undefined): string {
 <template>
   <AppDrawer
     :title="user?.user_name ?? '…'"
-    :subtitle="props.userId"
+    :subtitle="user?.user_id ?? props.userId"
     @close="emit('close')"
   >
     <p v-if="failed" class="text-xs text-danger" role="alert">{{ failed }}</p>
@@ -305,9 +392,10 @@ function instant(epoch: number | null | undefined): string {
         <div class="flex items-center gap-1.5">
           <span class="text-muted">{{ say("user-identifier") }}</span>
           <AppHint name="user-identifier-help" />
-          <code class="rounded border border-border bg-surface-2 px-1.5 py-0.5 font-mono text-[10.5px]">{{
-            user.user_id
-          }}</code>
+          <code
+            class="min-w-0 truncate rounded border border-border bg-surface-2 px-1.5 py-0.5 font-mono text-[10.5px]"
+            >{{ user.user_name }}</code
+          >
         </div>
         <div class="flex items-center gap-1.5">
           <span class="text-muted">{{ say("user-born") }}</span>
@@ -350,11 +438,13 @@ function instant(epoch: number | null | undefined): string {
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveProfile">
         <div class="grid grid-cols-2 gap-3">
           <label class="block text-[11px] font-medium text-muted">
-            {{ say("users-col-name") }} <AppHint name="user-rename-help" />
+            {{ say("users-col-username") }} <AppHint name="user-rename-help" />
             <input
               v-model="profile.user_name"
-              class="sf-field mt-1 font-mono"
+              class="sf-field mt-1 font-mono disabled:opacity-60"
               spellcheck="false"
+              :disabled="!renameable"
+              :title="renameable ? undefined : say('user-rename-refused')"
             />
           </label>
           <label class="block text-[11px] font-medium text-muted">
@@ -366,15 +456,12 @@ function instant(epoch: number | null | undefined): string {
               v-model="profile.email"
               type="email"
               class="sf-field mt-1 font-mono"
+              :class="emailWrong && 'border-danger'"
               spellcheck="false"
             />
-          </label>
-          <label class="block text-[11px] font-medium text-muted">
-            {{ say("user-phone") }}
-            <input
-              v-model="profile.phone_number"
-              class="sf-field mt-1 font-mono"
-            />
+            <span v-if="emailWrong" class="mt-1 block text-[10.5px] text-danger">{{
+              say("user-email-shape")
+            }}</span>
           </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("user-given") }}
@@ -388,6 +475,13 @@ function instant(epoch: number | null | undefined): string {
             <input
               v-model="profile.family_name"
               class="sf-field mt-1"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("user-phone") }}
+            <input
+              v-model="profile.phone_number"
+              class="sf-field mt-1 font-mono"
             />
           </label>
         </div>
@@ -511,12 +605,23 @@ function instant(epoch: number | null | undefined): string {
         </label>
         <label class="flex-1 text-[11px] font-medium text-muted">
           {{ say("user-new-password-again") }}
-          <input
-            v-model="newPasswordAgain"
-            :type="showPassword ? 'text' : 'password'"
-            autocomplete="new-password"
-            class="sf-field mt-1"
-          />
+          <span class="relative mt-1 block">
+            <input
+              v-model="newPasswordAgain"
+              :type="showAgain ? 'text' : 'password'"
+              autocomplete="new-password"
+              class="w-full rounded-md border border-border bg-surface-2 py-1.5 pr-7 pl-2.5 text-xs text-ink"
+            />
+            <button
+              type="button"
+              class="absolute inset-y-0 right-1.5 grid place-items-center text-faint hover:text-muted"
+              :aria-label="say('user-password-reveal')"
+              @click="showAgain = !showAgain"
+            >
+              <EyeOff v-if="showAgain" :size="13" :stroke-width="1.6" />
+              <Eye v-else :size="13" :stroke-width="1.6" />
+            </button>
+          </span>
         </label>
         <button
           type="submit"
@@ -525,6 +630,41 @@ function instant(epoch: number | null | undefined): string {
           {{ say("settings-save") }}
         </button>
       </form>
+
+      <label class="mt-2 flex items-center gap-2 text-[11px] text-muted">
+        <input v-model="temporary" type="checkbox" class="accent-accent" />
+        {{ say("user-password-temporary") }}
+        <AppHint name="user-password-temporary-help" />
+      </label>
+
+      <div v-if="rules.length" class="mt-3 flex flex-wrap items-center gap-1.5">
+        <span class="text-[11px] text-muted">
+          {{ say("user-password-rules") }} <AppHint name="user-password-rules-help" />
+        </span>
+        <span v-for="rule in rules" :key="rule" class="sf-badge">{{ rule }}</span>
+      </div>
+
+      <div class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("user-password-history") }} <AppHint name="user-password-history-help" />
+      </div>
+      <p v-if="!history.length" class="mt-2 text-xs text-muted">
+        {{ say("user-password-history-empty") }}
+      </p>
+      <div v-else class="sf-list mt-2 max-h-40 overflow-y-auto">
+        <div
+          v-for="change in history"
+          :key="change.replaced_at ?? change.by ?? ''"
+          class="flex items-baseline gap-3 border-b border-border px-3 py-2 last:border-0"
+        >
+          <span class="w-32 shrink-0 font-mono text-[10.5px] text-faint">{{
+            stamp(change.replaced_at)
+          }}</span>
+          <span class="min-w-0 flex-1 truncate text-[11px] text-muted">{{
+            change.by ?? say("user-password-history-unknown")
+          }}</span>
+          <span class="shrink-0 text-[10.5px] text-faint">{{ ago(change.replaced_at) }}</span>
+        </div>
+      </div>
 
       <div class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("user-webauthn") }}
@@ -609,13 +749,31 @@ function instant(epoch: number | null | undefined): string {
 
     <div v-if="tab === 'memberships'" class="mt-4 flex flex-col gap-5">
       <div class="relative">
-        <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-          {{ say("user-roles") }}
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("user-roles") }}
+          </span>
+          <span v-if="roles.length" class="ml-auto flex items-center gap-1">
+            <button
+              v-for="held in ROLE_KINDS"
+              :key="held"
+              type="button"
+              class="sf-badge"
+              :class="roleKind === held && 'sf-badge-accent'"
+              @click="roleKind = held"
+            >
+              {{ say(`user-roles-${held}`) }}
+              <span v-if="held !== 'all'" class="text-faint">{{ countOfKind(held) }}</span>
+            </button>
+          </span>
         </div>
         <p v-if="!roles.length" class="mt-1.5 text-xs text-muted">{{ say("user-no-roles") }}</p>
+        <p v-else-if="!shownRoles.length" class="mt-1.5 text-xs text-muted">
+          {{ say("user-no-roles-of-kind") }}
+        </p>
         <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
           <span
-            v-for="role in roles"
+            v-for="role in shownRoles"
             :key="role.role_id"
             class="inline-flex items-center gap-1.5 rounded border border-border px-1.5 py-0.5 text-[11px]"
             :title="role.description"

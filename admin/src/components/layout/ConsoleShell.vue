@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import SideNav from "./SideNav.vue";
 import TopBar from "./TopBar.vue";
+import StatusBar from "./StatusBar.vue";
 import AppToasts from "@/components/AppToasts.vue";
 </script>
 
@@ -13,6 +14,7 @@ import AppToasts from "@/components/AppToasts.vue";
       <main class="min-h-0 flex-1 overflow-y-auto bg-bg p-6">
         <router-view />
       </main>
+      <StatusBar />
     </div>
   </div>
 </template>

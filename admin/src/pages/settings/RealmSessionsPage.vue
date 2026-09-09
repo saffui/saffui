@@ -101,14 +101,14 @@ function instant(epoch: number | null | undefined): string {
       {{ say("realm-sessions-open") }}
     </h2>
     <p v-if="!sessions.length" class="mt-2 text-xs text-muted">{{ say("realm-sessions-none") }}</p>
-    <div v-else class="mt-2 overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+    <div v-else class="sf-list mt-2 overflow-x-auto">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("realm-sessions-col-who") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("realm-sessions-col-where") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("realm-sessions-col-how") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("user-session-started") }}</th>
+          <tr>
+            <th>{{ say("realm-sessions-col-who") }}</th>
+            <th>{{ say("realm-sessions-col-where") }}</th>
+            <th>{{ say("realm-sessions-col-how") }}</th>
+            <th>{{ say("user-session-started") }}</th>
           </tr>
         </thead>
         <tbody>
@@ -117,11 +117,11 @@ function instant(epoch: number | null | undefined): string {
             :key="held.session_id"
             class="border-b border-border/60 last:border-0"
           >
-            <td class="px-3 py-2">
+            <td>
               <div class="font-medium">{{ held.login_username }}</div>
               <div class="mt-0.5 font-mono text-[10.5px] text-faint">{{ held.user_id }}</div>
             </td>
-            <td class="px-3 py-2">
+            <td>
               <span v-if="held.ip_address" class="font-mono text-[10.5px]">{{
                 held.ip_address
               }}</span>
@@ -129,17 +129,17 @@ function instant(epoch: number | null | undefined): string {
                 {{ [held.browser, held.system].filter(Boolean).join(" · ") }}
               </div>
             </td>
-            <td class="px-3 py-2">{{ held.auth_method || say("user-session-unknown") }}</td>
-            <td class="px-3 py-2 font-mono text-[10.5px]">{{ instant(held.started_at) }}</td>
+            <td>{{ held.auth_method || say("user-session-unknown") }}</td>
+            <td class="font-mono text-[10.5px]">{{ instant(held.started_at) }}</td>
           </tr>
         </tbody>
       </table>
-    </div>
     <AppPaging
       v-model:first="first"
       v-model:size="size"
       :count="sessions.length"
     />
+    </div>
 
     <div class="mt-6 rounded-lg border border-danger/40 p-3">
       <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">

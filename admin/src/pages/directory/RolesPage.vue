@@ -163,15 +163,17 @@ async function dropRole() {
             >{{ row.client_id }}</span
           >
         </template>
+        <template #foot>
+        <AppPaging
+          v-if="page"
+          :first="first"
+          :count="page.items.length"
+          :size="size"
+          @update:first="(held) => { first = held; void turn(); }"
+          @update:size="resize"
+        />
+        </template>
       </DirectoryTable>
-    <AppPaging
-      v-if="page"
-      :first="first"
-      :count="page.items.length"
-      :size="size"
-      @update:first="(held) => { first = held; void turn(); }"
-      @update:size="resize"
-    />
     </div>
 
     <AppDrawer

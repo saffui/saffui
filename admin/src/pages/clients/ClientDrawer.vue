@@ -670,11 +670,11 @@ async function dropScope(name: string) {
     <div v-if="tab === 'mappers'" class="mt-4">
       <p v-if="!mappers.length" class="text-xs text-muted">{{ say("mappers-none") }}</p>
       <div v-else class="overflow-x-auto rounded-lg border border-border">
-        <table class="w-full text-left text-xs">
+        <table class="sf-table">
           <thead>
-            <tr class="border-b border-border text-[11px] text-muted">
-              <th class="px-3 py-2 font-medium">{{ say("mappers-col-name") }}</th>
-              <th class="px-3 py-2 font-medium">{{ say("mappers-col-type") }}</th>
+            <tr>
+              <th>{{ say("mappers-col-name") }}</th>
+              <th>{{ say("mappers-col-type") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -683,8 +683,8 @@ async function dropScope(name: string) {
               :key="mapper.mapper_id"
               class="border-b border-border/60 last:border-0"
             >
-              <td class="px-3 py-2">{{ mapper.name }}</td>
-              <td class="px-3 py-2 font-mono text-[10.5px] text-muted">
+              <td>{{ mapper.name }}</td>
+              <td class="font-mono text-[10.5px] text-muted">
                 {{ mapper.mapper_type }}
               </td>
             </tr>
@@ -720,12 +720,12 @@ async function dropScope(name: string) {
       </form>
       <p v-if="!clientRoles.length" class="text-xs text-muted">{{ say("client-roles-none") }}</p>
       <div v-else class="overflow-x-auto rounded-lg border border-border">
-        <table class="w-full text-left text-xs">
+        <table class="sf-table">
           <thead>
-            <tr class="border-b border-border text-[11px] text-muted">
-              <th class="px-3 py-2 font-medium">{{ say("scopes-col-name") }}</th>
-              <th class="px-3 py-2 font-medium">{{ say("scopes-col-description") }}</th>
-              <th class="px-3 py-2 font-medium"></th>
+            <tr>
+              <th>{{ say("scopes-col-name") }}</th>
+              <th>{{ say("scopes-col-description") }}</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -734,9 +734,9 @@ async function dropScope(name: string) {
               :key="role.role_id"
               class="border-b border-border/60 last:border-0"
             >
-              <td class="px-3 py-2 font-mono text-[11.5px]">{{ role.name }}</td>
-              <td class="px-3 py-2 text-muted">{{ role.description }}</td>
-              <td class="px-3 py-2 text-right">
+              <td class="font-mono text-[11.5px]">{{ role.name }}</td>
+              <td class="text-muted">{{ role.description }}</td>
+              <td class="text-right">
                 <button
                   type="button"
                   class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-danger hover:bg-surface-2"

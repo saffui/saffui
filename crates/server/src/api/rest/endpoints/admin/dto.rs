@@ -255,4 +255,7 @@ pub struct UserSpec {
 #[derive(Debug, Deserialize)]
 pub struct PasswordSpec {
     pub password: String,
+    /// Whether the person must replace it at their next sign-in.
+    #[serde(default)]
+    pub temporary: bool,
 }

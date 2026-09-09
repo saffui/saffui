@@ -271,15 +271,18 @@ async function flipDefault(group: GroupRow) {
         :key-of="(row: GroupRow) => row.group_id"
         :indent-of="(row: GroupRow) => shown.depths.get(row.group_id) ?? 0"
         @open="open"
-      />
-    <AppPaging
-      v-if="page"
-      :first="first"
-      :count="page.items.length"
-      :size="size"
-      @update:first="(held) => { first = held; void turn(); }"
-      @update:size="resize"
-    />
+      >
+        <template #foot>
+        <AppPaging
+          v-if="page"
+          :first="first"
+          :count="page.items.length"
+          :size="size"
+          @update:first="(held) => { first = held; void turn(); }"
+          @update:size="resize"
+        />
+        </template>
+      </DirectoryTable>
     </div>
 
     <AppDrawer

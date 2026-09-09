@@ -66,7 +66,26 @@ export interface OverviewTold {
   chain: ChainVerified | null;
 }
 
-export async function readOverview(realm: string): Promise<OverviewTold> {
+/// The counts and the settings the strip needs, which the standing store has
+/// already read for the status bar. Passing them in rather than asking again
+/// is the whole point of that store: one reading per realm, not one per page
+/// that happens to show the same four numbers.
+export interface AlreadyRead {
+  strip: {
+    users: number;
+    clients: number;
+    sessions: number;
+    pending_requests: number;
+    slow_tail_millis?: number;
+  };
+  settings: RealmSettings;
+}
+
+export async function readOverview(
+  realm: string,
+  held: AlreadyRead,
+): Promise<OverviewTold> {
+  const { strip, settings } = held;
   // The journal needs its own capability; an operator without it still gets
   // the rest of the page rather than an error.
   const quietly = <T>(asked: Promise<T>): Promise<T | null> =>
@@ -74,23 +93,14 @@ export async function readOverview(realm: string): Promise<OverviewTold> {
       if (refused instanceof ApiError && refused.status < 500) return null;
       throw refused;
     });
-  const [strip, keys, mail, sms, ussd, settings, journal, chain] =
-    await Promise.all([
-      api<{
-        users: number;
-        clients: number;
-        sessions: number;
-        pending_requests: number;
-        slow_tail_millis?: number;
-      }>(adminPath(realm, "overview")),
-      api<RealmKeys>(adminPath(realm, "keys")),
-      quietly(api<MailBrief>(adminPath(realm, "mail"))),
-      quietly(api<SmsBrief>(adminPath(realm, "sms"))),
-      quietly(api<{ has_secret: boolean }>(adminPath(realm, "ussd"))),
-      api<RealmSettings>(`/admin/realms/${encodeURIComponent(realm)}`),
-      quietly(listJournal(realm, 0, 5)),
-      quietly(verifyChain(realm)),
-    ]);
+  const [keys, mail, sms, ussd, journal, chain] = await Promise.all([
+    api<RealmKeys>(adminPath(realm, "keys")),
+    quietly(api<MailBrief>(adminPath(realm, "mail"))),
+    quietly(api<SmsBrief>(adminPath(realm, "sms"))),
+    quietly(api<{ has_secret: boolean }>(adminPath(realm, "ussd"))),
+    quietly(listJournal(realm, 0, 5)),
+    quietly(verifyChain(realm)),
+  ]);
 
   const attention: Attention[] = [];
   if (keys.signing.length === 0) {

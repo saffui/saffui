@@ -2,6 +2,9 @@
 
 console-name = saffui
 status-realm = realm { $realm }
+status-asking = Asking the realm
+status-answering = The realm is answering
+status-silent = The realm did not answer
 status-queue = queue { $held }
 status-slow-tail = p95 { $millis } ms
 console-footprint = saffui, self-hosted
@@ -41,6 +44,7 @@ login-continue = Continue
 login-failed = That sign-in did not go through. Try again.
 
 overview-title = Overview
+overview-unread = The realm did not answer.
 overview-empty = Nothing to show yet. Metrics land here as the realm is used.
 
 overview-users = Users

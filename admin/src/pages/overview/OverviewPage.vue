@@ -5,14 +5,24 @@ import AppIcon from "@/components/AppIcon.vue";
 import { say } from "@/i18n";
 import { readOverview, type OverviewTold } from "@/services/overview";
 import { afterWrites } from "@/services/writes";
+import { useStanding } from "@/stores/standing";
 
 const route = useRoute();
+const standing = useStanding();
 const told = ref<OverviewTold | null>(null);
 const failed = ref("");
 
 async function load() {
+  const realm = String(route.params.realm);
   try {
-    told.value = await readOverview(String(route.params.realm));
+    // The status bar has already asked, or is asking; either way this waits
+    // on that one reading rather than paying for a second.
+    await standing.read(realm, true);
+    if (!standing.held || !standing.settings) throw new Error(say("overview-unread"));
+    told.value = await readOverview(realm, {
+      strip: standing.held,
+      settings: standing.settings,
+    });
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }

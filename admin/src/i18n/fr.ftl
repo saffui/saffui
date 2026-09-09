@@ -2,6 +2,9 @@
 
 console-name = saffui
 status-realm = realm { $realm }
+status-asking = Interrogation du realm
+status-answering = Le realm répond
+status-silent = Le realm n'a pas répondu
 status-queue = file { $held }
 status-slow-tail = p95 { $millis } ms
 console-footprint = saffui, auto-hébergé
@@ -40,6 +43,7 @@ login-continue = Continuer
 login-failed = Cette connexion n'a pas abouti. Réessayez.
 
 overview-title = Vue d'ensemble
+overview-unread = Le realm n'a pas répondu.
 overview-empty = Rien à montrer pour le moment. Les mesures arrivent ici avec l'usage du realm.
 
 overview-users = Utilisateurs

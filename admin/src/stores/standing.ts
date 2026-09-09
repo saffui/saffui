@@ -1,23 +1,12 @@
 import { defineStore } from "pinia";
 import { adminPath, api } from "@/services/http";
-import type { PasswordPolicy } from "@/models/realm";
+import type { RealmSettings } from "@/models/realm";
 
 /// What the realm looks like right now, read once and shared.
 ///
 /// The status bar sits on every screen and the overview opens with the same
-/// numbers, so fetching them per page would pay for the same four counts on
-/// every navigation. One reading per realm, refreshed when something is
-/// written, is what both read from.
-/// The realm's own switches, as far as the shell needs them. Read beside the
-/// numbers because both are wanted on the first screen and neither changes
-/// between two clicks.
-interface Switches {
-  edit_user_name_allowed: boolean | null;
-  duplicated_email_allowed: boolean | null;
-  register_email_as_username: boolean | null;
-  password_policy: PasswordPolicy | null;
-}
-
+/// numbers and the same settings, so fetching them per page would pay twice
+/// for one answer. Both read from here.
 interface Standing {
   users: number;
   clients: number;
@@ -29,35 +18,48 @@ interface Standing {
   slow_tail_millis?: number;
 }
 
+/// The reading in flight, shared rather than dropped. Two callers on the same
+/// navigation are the normal case, and the second one needs the answer as
+/// much as the first.
+let inFlight: { realm: string; asked: Promise<void> } | null = null;
+
 export const useStanding = defineStore("standing", {
   state: () => ({
     realm: "",
     held: null as Standing | null,
-    switches: null as Switches | null,
-    reading: false,
+    settings: null as RealmSettings | null,
+    /// Whether the realm's doors answered the last time this asked. Null
+    /// until they have been asked at all, so nothing claims a state it has
+    /// not yet observed.
+    answering: null as boolean | null,
   }),
   actions: {
-    /// Read the realm's numbers. A second call for the same realm while one is
-    /// in flight is dropped rather than queued: the bar and the page both ask
-    /// on the same navigation.
+    /// Read the realm's numbers and its settings in one go.
     async read(realm: string, again = false) {
-      if (this.reading) return;
       if (!again && this.realm === realm && this.held) return;
-      this.reading = true;
+      if (inFlight?.realm === realm) return inFlight.asked;
+      const asked = this.ask(realm).finally(() => {
+        if (inFlight?.asked === asked) inFlight = null;
+      });
+      inFlight = { realm, asked };
+      return asked;
+    },
+    async ask(realm: string) {
       try {
-        const [held, switches] = await Promise.all([
+        const [held, settings] = await Promise.all([
           api<Standing>(adminPath(realm, "overview")),
-          api<Switches>(`/admin/realms/${encodeURIComponent(realm)}`),
+          api<RealmSettings>(`/admin/realms/${encodeURIComponent(realm)}`),
         ]);
         this.held = held;
-        this.switches = switches;
+        this.settings = settings;
         this.realm = realm;
+        this.answering = true;
       } catch {
-        // The bar shows what it can; a refusal here is not the page's error.
+        // The bar shows what it can; a refusal here is not the page's error,
+        // but it is not a healthy realm either, and the bar says so.
         this.held = null;
-        this.switches = null;
-      } finally {
-        this.reading = false;
+        this.settings = null;
+        this.answering = false;
       }
     },
   },

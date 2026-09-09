@@ -117,7 +117,7 @@ const showAgain = ref(false);
 const standing = useStanding();
 /// The realm decides whether an account is renamed at all, and the server
 /// refuses either way; the field says so before a request is spent.
-const renameable = computed(() => standing.switches?.edit_user_name_allowed === true);
+const renameable = computed(() => standing.settings?.edit_user_name_allowed === true);
 
 /// What the realm will hold a password to, said before it refuses one. Only
 /// the rules a person can act on: the hashing cost and the expiry are the
@@ -130,7 +130,7 @@ const emailWrong = computed(() => {
 });
 
 const rules = computed(() => {
-  const policy = standing.switches?.password_policy;
+  const policy = standing.settings?.password_policy;
   if (!policy) return [];
   const held: string[] = [];
   const count = (value: number | null | undefined, key: string) => {

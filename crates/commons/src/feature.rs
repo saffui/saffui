@@ -26,6 +26,28 @@ impl Lifecycle {
     }
 }
 
+/// How far down a capability can be switched.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reach {
+    /// The process decides, once, at boot. A realm cannot move it, because
+    /// what it changes is not a realm's to change: what was linked, what the
+    /// node exports, which provider the crypto goes through.
+    Process,
+    /// The process sets the ceiling and a realm moves within it. A realm may
+    /// close a capability the process carries; it may never open one the
+    /// process does not, or a deployment could not say what it is running.
+    Realm,
+}
+
+impl Reach {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Process => "process",
+            Self::Realm => "realm",
+        }
+    }
+}
+
 /// Where a capability can be turned off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gating {
@@ -54,7 +76,7 @@ impl Gating {
 /// that a hand-written list stays in the enum's order — and a test can only
 /// check what that list already contains.
 macro_rules! registry {
-    ($($variant:ident = $slug:literal, $lifecycle:ident, $gating:ident, $doc:literal;)+) => {
+    ($($variant:ident = $slug:literal, $lifecycle:ident, $gating:ident, $reach:ident, $doc:literal;)+) => {
         /// A capability this build may or may not have.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Feature {
@@ -71,6 +93,7 @@ macro_rules! registry {
                         slug: $slug,
                         lifecycle: Lifecycle::$lifecycle,
                         gating: Gating::$gating,
+                        reach: Reach::$reach,
                         doc: $doc,
                     },)+
                 }
@@ -85,24 +108,29 @@ pub struct FeatureSpec {
     pub slug: &'static str,
     pub lifecycle: Lifecycle,
     pub gating: Gating,
+    pub reach: Reach,
     pub doc: &'static str,
 }
 
 registry! {
-    ChaCha20 = "chacha20", Preview, CompileOnly,
+    ChaCha20 = "chacha20", Preview, CompileOnly, Process,
         "ChaCha20-Poly1305, for hardware without AES acceleration. Not FIPS.";
-    PqHybrid = "pq-hybrid", Preview, CompileOnly,
+    PqHybrid = "pq-hybrid", Preview, CompileOnly, Process,
         "ML-DSA signatures and ML-KEM encapsulation. Needs libcrypto 3.5 or newer.";
-    FipsStrict = "fips-strict", Preview, CompileOnly,
+    FipsStrict = "fips-strict", Preview, CompileOnly, Process,
         "Pin the validated FIPS provider; excludes the algorithms it does not cover.";
-    Pkcs11 = "pkcs11", Preview, CompileOnly,
+    Pkcs11 = "pkcs11", Preview, CompileOnly, Process,
         "A key store inside a PKCS#11 token, where the private key never leaves.";
-    TracingJson = "tracing-json", Stable, CompileOnly,
+    TracingJson = "tracing-json", Stable, CompileOnly, Process,
         "Structured logging through a tracing subscriber.";
-    Metrics = "metrics", Stable, Both,
+    Metrics = "metrics", Stable, Both, Process,
         "Request metrics on the operations port, in the Prometheus text form.";
-    Otel = "otel", Stable, Both,
+    Otel = "otel", Stable, Both, Process,
         "Span export over OTLP. Dials nothing until a collector is named.";
+    TokenExchange = "token-exchange", Stable, RuntimeOnly, Realm,
+        "Trade a token for another audience, or for a subject being acted for.";
+    Scim = "scim", Stable, RuntimeOnly, Realm,
+        "A SCIM 2.0 root for an external directory to provision accounts through.";
 }
 
 /// Whether the capabilities this crate itself carries were linked. Only
@@ -167,6 +195,8 @@ pub enum FeatureError {
     UnknownSlug(String),
     #[error("feature '{0}' was asked to be both on and off")]
     Contradictory(String),
+    #[error("feature '{0}' is the process's to set, not a realm's")]
+    NotARealmsToMake(String),
 }
 
 /// The resolved set, fixed for the life of the process.
@@ -219,7 +249,14 @@ impl FeatureSet {
         let mut statuses = Vec::with_capacity(Feature::ALL.len());
         for feature in Feature::ALL.iter().copied() {
             let index = feature.index();
-            let compiled = compiled(feature);
+            // A runtime switch is in every build by construction, which is
+            // what its gating says. Asking the caller would mean each of them
+            // remembering to answer yes for a capability that belongs to no
+            // crate's `cfg!`, and the one that forgets ships it switched off.
+            let compiled = match feature.spec().gating {
+                Gating::RuntimeOnly => true,
+                Gating::CompileOnly | Gating::Both => compiled(feature),
+            };
 
             if wanted_on[index] && wanted_off[index] {
                 return Err(FeatureError::Contradictory(feature.slug().to_string()));
@@ -259,6 +296,72 @@ impl FeatureSet {
     /// Every status, in registry order.
     pub fn statuses(&self) -> &[FeatureStatus] {
         &self.statuses
+    }
+
+    /// What one realm is running, given what it has asked for.
+    ///
+    /// The process is the ceiling and the realm moves under it. A realm that
+    /// has asked for nothing runs what the process runs, so a deployment that
+    /// upgrades into this finds every realm exactly where it was.
+    pub fn within_realm(&self, asked: &RealmWishes) -> RealmFeatures {
+        let mut enabled = vec![false; Feature::ALL.len()];
+        for feature in Feature::ALL.iter().copied() {
+            let above = self.is_enabled(feature);
+            enabled[feature.index()] = match feature.spec().reach {
+                Reach::Process => above,
+                Reach::Realm => above && asked.wants(feature).unwrap_or(true),
+            };
+        }
+        RealmFeatures { enabled }
+    }
+}
+
+/// What one realm has said about the capabilities it may move.
+///
+/// Absent means "as the process has it", which is why this holds an option
+/// per capability rather than a set: a realm that has never been asked is not
+/// the same as one that has turned everything off.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RealmWishes {
+    asked: Vec<(Feature, bool)>,
+}
+
+impl RealmWishes {
+    pub fn none() -> Self {
+        Self::default()
+    }
+
+    /// Take one wish. A slug this build does not know is refused rather than
+    /// dropped: a realm carrying a name nothing answers to is a realm whose
+    /// operator believes something that is not so.
+    pub fn with_wish(mut self, slug: &str, enabled: bool) -> Result<Self, FeatureError> {
+        let feature =
+            Feature::by_slug(slug).ok_or_else(|| FeatureError::UnknownSlug(slug.to_string()))?;
+        if feature.spec().reach != Reach::Realm {
+            return Err(FeatureError::NotARealmsToMake(slug.to_string()));
+        }
+        self.asked.retain(|(held, _)| *held != feature);
+        self.asked.push((feature, enabled));
+        Ok(self)
+    }
+
+    fn wants(&self, feature: Feature) -> Option<bool> {
+        self.asked
+            .iter()
+            .find(|(held, _)| *held == feature)
+            .map(|(_, enabled)| *enabled)
+    }
+}
+
+/// What one realm is actually running.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RealmFeatures {
+    enabled: Vec<bool>,
+}
+
+impl RealmFeatures {
+    pub fn is_enabled(&self, feature: Feature) -> bool {
+        self.enabled[feature.index()]
     }
 }
 
@@ -502,5 +605,101 @@ mod tests {
         let reported: Vec<Feature> = set.statuses().iter().map(|s| s.feature).collect();
 
         assert_eq!(reported, Feature::ALL.to_vec());
+    }
+
+    /// A realm may close what the process carries.
+    #[test]
+    fn a_realm_may_shut_a_capability_the_process_runs() {
+        let process = resolve("").expect("the process resolves");
+        assert!(process.is_enabled(Feature::TokenExchange));
+
+        let asked = RealmWishes::none()
+            .with_wish("token-exchange", false)
+            .expect("a realm may name it");
+
+        assert!(
+            !process
+                .within_realm(&asked)
+                .is_enabled(Feature::TokenExchange)
+        );
+    }
+
+    /// A realm may not open what the process does not carry. This is the whole
+    /// of the ceiling: without it a realm's own settings would decide what the
+    /// deployment is running, and an operator turning a capability off for the
+    /// node would not have turned it off.
+    #[test]
+    fn a_realm_may_not_open_what_the_process_shut() {
+        let process = resolve("-token-exchange").expect("the process resolves");
+        assert!(!process.is_enabled(Feature::TokenExchange));
+
+        let asked = RealmWishes::none()
+            .with_wish("token-exchange", true)
+            .expect("a realm may name it");
+
+        assert!(
+            !process
+                .within_realm(&asked)
+                .is_enabled(Feature::TokenExchange),
+            "a realm reached above the process"
+        );
+    }
+
+    /// A realm that has asked for nothing runs what the process runs, so an
+    /// upgrade into this changes nothing anywhere.
+    #[test]
+    fn a_realm_that_asked_for_nothing_runs_what_the_process_runs() {
+        let process = resolve("").expect("the process resolves");
+        let quiet = process.within_realm(&RealmWishes::none());
+
+        for feature in Feature::ALL.iter().copied() {
+            assert_eq!(
+                quiet.is_enabled(feature),
+                process.is_enabled(feature),
+                "{feature:?} moved for a realm that said nothing"
+            );
+        }
+    }
+
+    /// What the process alone decides stays the process's.
+    #[test]
+    fn a_realm_is_refused_a_capability_that_is_not_its_to_move() {
+        for feature in Feature::ALL.iter().copied() {
+            let asked = RealmWishes::none().with_wish(feature.slug(), false);
+            match feature.spec().reach {
+                Reach::Realm => assert!(asked.is_ok(), "{feature:?} is a realm's to move"),
+                Reach::Process => assert_eq!(
+                    asked.unwrap_err(),
+                    FeatureError::NotARealmsToMake(feature.slug().to_string()),
+                ),
+            }
+        }
+    }
+
+    /// An unknown name is refused rather than ignored.
+    #[test]
+    fn a_realm_is_refused_a_name_this_build_does_not_know() {
+        assert_eq!(
+            RealmWishes::none()
+                .with_wish("declarative-user-profile", true)
+                .unwrap_err(),
+            FeatureError::UnknownSlug("declarative-user-profile".to_string()),
+        );
+    }
+
+    /// A runtime switch is carried by every build, whatever a caller that
+    /// only knows its own crate would answer.
+    #[test]
+    fn a_runtime_switch_is_in_the_build_whoever_is_asked() {
+        let resolved = FeatureSet::resolve("", |_| false).expect("it resolves");
+
+        for feature in Feature::ALL.iter().copied() {
+            if feature.spec().gating == Gating::RuntimeOnly {
+                assert!(
+                    resolved.status(feature).compiled,
+                    "{feature:?} is a runtime switch and was reported absent"
+                );
+            }
+        }
     }
 }

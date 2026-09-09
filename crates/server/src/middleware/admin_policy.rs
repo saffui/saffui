@@ -38,6 +38,10 @@ pub enum Refusal {
     /// administrator is a user of the realm it administers, so there is no
     /// token in this deployment that reaches two realms.
     WrongRealm,
+    /// The realm has closed the capability this route belongs to. Told apart
+    /// from a missing grant on purpose: the caller may well hold the right,
+    /// and the deployment is simply not running the thing here.
+    ClosedHere,
 }
 
 /// What the admin plane requires of every token, whatever the route.

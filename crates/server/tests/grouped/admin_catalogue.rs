@@ -297,7 +297,7 @@ async fn the_last_capabilities_split_where_they_should() {
     let (status, told) = asked(&plane, Method::GET, "/admin/features", &bearer, None).await;
     assert_eq!(status, StatusCode::OK, "{told}");
     let listed = told.as_array().expect("a registry");
-    assert_eq!(listed.len(), 7, "{told}");
+    assert_eq!(listed.len(), commons::feature::Feature::ALL.len(), "{told}");
     assert!(
         listed.iter().any(|held| held["slug"] == "pq-hybrid"
             && held["compiled"].is_boolean()

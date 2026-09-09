@@ -146,6 +146,14 @@ pub enum AdminCmd {
     Disable { kid: String },
     /// What this build carries and what is on.
     Features,
+    /// What this realm runs of it, and what it has asked for. Naming a
+    /// capability with `on` or `off` says so; `default` stops saying
+    /// anything, which returns it to whatever the process runs.
+    RealmFeatures {
+        slug: Option<String>,
+        #[arg(value_parser = ["on", "off", "default"])]
+        wanted: Option<String>,
+    },
     /// One page of the realm's clients.
     Clients,
     /// One page of the realm's people.
@@ -418,6 +426,9 @@ fn columns(command: &AdminCmd) -> Option<&'static [&'static str]> {
     match command {
         AdminCmd::Realms => Some(&["realm_id", "name", "enabled"]),
         AdminCmd::Features => Some(&["slug", "lifecycle", "compiled", "enabled"]),
+        AdminCmd::RealmFeatures { .. } => {
+            Some(&["slug", "reach", "in_process", "enabled", "asked"])
+        }
         AdminCmd::Clients => Some(&["client_id", "name", "enabled"]),
         AdminCmd::Users => Some(&["user_id", "user_name", "email", "enabled"]),
         _ => None,
@@ -521,6 +532,32 @@ fn answer(plane: &Resolved, command: &AdminCmd, out: &mut dyn Write) -> Result<(
         AdminCmd::Features => {
             let body = asked(&agent, plane, &token, Call::Get("/admin/features".into()))?;
             listing(out, &body)
+        }
+        AdminCmd::RealmFeatures { slug, wanted } => {
+            if let (Some(slug), Some(wanted)) = (slug, wanted) {
+                // clap has already refused anything but these three.
+                let enabled = match wanted.as_str() {
+                    "on" => serde_json::json!(true),
+                    "off" => serde_json::json!(false),
+                    _ => serde_json::Value::Null,
+                };
+                asked(
+                    &agent,
+                    plane,
+                    &token,
+                    Call::Put(
+                        format!("/admin/realms/{realm}/features/{slug}"),
+                        serde_json::json!({ "enabled": enabled }),
+                    ),
+                )?;
+            }
+            let body = asked(
+                &agent,
+                plane,
+                &token,
+                Call::Get(format!("/admin/realms/{realm}/features")),
+            )?;
+            listing(out, &body["items"])
         }
         AdminCmd::Clients => {
             let body = asked(

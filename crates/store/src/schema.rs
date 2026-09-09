@@ -571,6 +571,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V094__tenant_chain.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 95,
+            name: "realm_features",
+            sql: include_str!("../migrations/V095__realm_features.sql"),
+            transactional: true,
+        }),
     ]
 }
 

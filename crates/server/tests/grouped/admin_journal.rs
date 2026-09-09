@@ -149,11 +149,25 @@ async fn what_happens_to_a_realm_outlives_it() {
         )
         .await;
     assert!(
-        store::tenant_chain::list_entries(&transaction, 0, 50)
+        store::tenant_chain::list_entries(&transaction, support::TENANT, 0, 50)
             .await
             .is_err(),
         "the served role can read what happened to other realms"
     );
+
+    // The tenant is named in the statement, not left to row security: the one
+    // reader allowed here may be a superuser, and a superuser bypasses row
+    // security whatever FORCE says. Asked for a tenant with no history, the
+    // answer is nothing rather than somebody else's.
+    let elsewhere = owner
+        .query(
+            "SELECT count(*) AS held FROM tenant_events WHERE tenant = $1",
+            &[&"nowhere"],
+        )
+        .await
+        .expect("the owner reads the chain");
+    let none: i64 = elsewhere[0].get("held");
+    assert_eq!(none, 0, "a tenant with no history was shown somebody's");
 }
 
 #[tokio::test]

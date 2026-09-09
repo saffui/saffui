@@ -41,16 +41,22 @@ pub struct TenantEntry {
 /// execute the appender and select nothing, so this answers only to a
 /// connection holding the owner's credentials. That is the whole point of the
 /// table living above realms rather than inside one.
+///
+/// The tenant is named in the statement rather than left to row security. The
+/// reader here is the one connection that may be a superuser, and a superuser
+/// bypasses row security whatever `FORCE` says, so a caller asking for one
+/// tenant would quietly be shown every one of them.
 pub async fn list_entries(
     transaction: &Transaction<'_>,
+    tenant: &str,
     first: i64,
     max: i64,
 ) -> StoreResult<Vec<TenantEntry>> {
     let rows = transaction
         .query(
-            "SELECT seq, envelope, hash FROM tenant_events \
-             ORDER BY seq DESC OFFSET $1 LIMIT $2",
-            &[&first, &max],
+            "SELECT seq, envelope, hash FROM tenant_events WHERE tenant = $1 \
+             ORDER BY seq DESC OFFSET $2 LIMIT $3",
+            &[&tenant, &first, &max],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
@@ -71,13 +77,14 @@ pub async fn list_entries(
 /// then the canonical text of the envelope, which is what the function hashed.
 pub async fn verify(
     transaction: &Transaction<'_>,
+    tenant: &str,
     digest: &dyn DigestProvider,
 ) -> StoreResult<Option<i64>> {
     let rows = transaction
         .query(
             "SELECT seq, envelope::text AS text, prev_hash, hash FROM tenant_events \
-             ORDER BY seq ASC",
-            &[],
+             WHERE tenant = $1 ORDER BY seq ASC",
+            &[&tenant],
         )
         .await
         .map_err(|_| StoreError::Backend)?;

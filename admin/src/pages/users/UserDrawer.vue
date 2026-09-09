@@ -380,8 +380,7 @@ function instant(epoch: number | null | undefined): string {
           <AppHint name="user-identifier-help" />
           <code
             class="min-w-0 truncate rounded border border-border bg-surface-2 px-1.5 py-0.5 font-mono text-[10.5px]"
-            :title="user.user_id"
-            >{{ user.user_id }}</code
+            >{{ user.user_name }}</code
           >
         </div>
         <div class="flex items-center gap-1.5">

@@ -528,9 +528,22 @@ function featuresAt(stage: string) {
   return features.value.filter((held) => held.lifecycle === stage);
 }
 
+/// A capability whose closing takes a protection away, waiting to be
+/// confirmed. An administrator closing one to harden a realm would be doing
+/// the opposite, so this one asks.
+const closingWeakens = ref<RealmFeature | null>(null);
+
+async function switchFeature(held: RealmFeature, enabled: boolean) {
+  if (!enabled && held.closing === "weakens") {
+    closingWeakens.value = held;
+    return;
+  }
+  await keepWish(held, enabled);
+}
+
 /// Say what this realm wants of one capability, then re-read. The answer is
 /// the process's set narrowed by the wish, and only the server holds both.
-async function switchFeature(held: RealmFeature, enabled: boolean) {
+async function keepWish(held: RealmFeature, enabled: boolean) {
   try {
     await keepFeatureWish(realm.value, held.slug, enabled);
     features.value = await listRealmFeatures(realm.value);
@@ -1567,6 +1580,23 @@ async function saveSmsTemplate() {
               </div>
             </div>
           </template>
+
+          <DangerDialog
+            :open="closingWeakens !== null"
+            :title="say('features-closing-title')"
+            :named="closingWeakens?.slug ?? ''"
+            :lede="say('features-closing-lede')"
+            :facts="[]"
+            :warning="closingWeakens ? say(`features-closing-${closingWeakens.slug}`) : ''"
+            :aside="say('features-closing-aside')"
+            :trail="say('features-closing-trail')"
+            :confirm-label="say('features-closing-confirm')"
+            @close="closingWeakens = null"
+            @confirm="
+              closingWeakens && keepWish(closingWeakens, false);
+              closingWeakens = null;
+            "
+          />
         </div>
 
         <div v-if="group === 'email'" class="mt-4 max-w-lg">

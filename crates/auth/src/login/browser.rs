@@ -672,6 +672,11 @@ async fn named_subject(
     let compact: String = named.chars().filter(|held| !held.is_whitespace()).collect();
     if compact.starts_with('+')
         && compact[1..].chars().all(|held| held.is_ascii_digit())
+        && store::providers::realm_features::runs_for_realm(
+            transaction,
+            commons::feature::Feature::PhoneFirstLogin,
+        )
+        .await
         && let Some(standing) = users::sole_by_proven_phone(transaction, &compact)
             .await
             .map_err(|_| Unanswerable::Unreadable)?

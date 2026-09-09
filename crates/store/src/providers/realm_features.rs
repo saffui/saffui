@@ -63,3 +63,36 @@ pub async fn forget_wish(transaction: &Transaction<'_>, slug: &str) -> StoreResu
         .map_err(|_| StoreError::Backend)?
         > 0)
 }
+
+/// Whether one capability is running for the realm this transaction is scoped
+/// to.
+///
+/// The process is the ceiling, so a realm that has asked for nothing gets the
+/// process's answer and none can reach above it. A read that fails answers
+/// with the process's own state rather than refusing: a capability must not
+/// switch itself off because a table was briefly unreadable.
+///
+/// It lives here, at the bottom, because a capability is refused where it is
+/// used and the places it is used run from the login engine to the admin
+/// doors. Every layer above can ask without being handed the answer.
+pub async fn runs_for_realm(
+    transaction: &Transaction<'_>,
+    feature: commons::feature::Feature,
+) -> bool {
+    let process = commons::feature::installed();
+    if !process.is_enabled(feature) {
+        return false;
+    }
+
+    let Ok(held) = read_wishes(transaction).await else {
+        return true;
+    };
+    let mut wishes = commons::feature::RealmWishes::none();
+    for wish in &held {
+        wishes = wishes
+            .clone()
+            .with_wish(&wish.slug, wish.enabled)
+            .unwrap_or(wishes);
+    }
+    process.within_realm(&wishes).is_enabled(feature)
+}

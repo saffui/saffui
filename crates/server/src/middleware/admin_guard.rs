@@ -217,8 +217,15 @@ async fn establish(
 /// Actions with no capability behind them are always open, which is every one
 /// of them but the few a realm may close.
 async fn action_still_runs(transaction: &Transaction<'_>, action: AdminAction) -> bool {
+    use commons::feature::Feature;
     let behind = match action {
-        AdminAction::ScimRead | AdminAction::ScimWrite => commons::feature::Feature::Scim,
+        AdminAction::ScimRead | AdminAction::ScimWrite => Feature::Scim,
+        AdminAction::UmaRead
+        | AdminAction::UmaWrite
+        | AdminAction::AuthzDecisionRead
+        | AdminAction::AuthzDecisionWrite => Feature::Authorization,
+        AdminAction::RebacRead | AdminAction::RebacWrite => Feature::RebacStore,
+        AdminAction::OrgRead | AdminAction::OrgWrite => Feature::Organization,
         _ => return true,
     };
     crate::api::feature::runs_for_realm(transaction, behind).await

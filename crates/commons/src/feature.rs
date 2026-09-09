@@ -1,4 +1,7 @@
-/// How finished a capability is, which decides whether it is on by default.
+/// How finished a capability is. It promises support and a migration path,
+/// and it decides nothing about whether the capability is on: `Standing` does
+/// that, because the two questions part company the moment a capability that
+/// already shipped gains a switch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lifecycle {
     /// Supported. On unless turned off.
@@ -12,10 +15,6 @@ pub enum Lifecycle {
 }
 
 impl Lifecycle {
-    pub const fn default_enabled(self) -> bool {
-        matches!(self, Self::Stable | Self::Deprecated)
-    }
-
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Stable => "stable",
@@ -48,6 +47,54 @@ impl Reach {
     }
 }
 
+/// Whether a deployment that says nothing runs it.
+///
+/// Told apart from the lifecycle on purpose. How finished a capability is and
+/// whether it is on are two questions, and deriving the second from the first
+/// makes declaring an existing capability a silent removal: everything this
+/// build already runs ungated has to stay on the day it gains a switch,
+/// whatever its maturity. A capability born gated says `Off` and is opted
+/// into; one being retrofitted says `On` and nothing moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Standing {
+    On,
+    Off,
+}
+
+impl Standing {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
+/// What closing a capability does to the people behind it.
+///
+/// The ceiling says a realm cannot reach above the process. It says nothing
+/// about which way a switch points, and the two are not the same question. A
+/// capability whose absence is simply one surface fewer is safe to close on a
+/// hunch. One whose absence takes away a defence that was in force is not,
+/// and an administrator closing it to harden a realm would be doing the
+/// opposite. The registry says which, so the console can say it too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Closing {
+    /// One surface fewer, and nothing that was protecting anybody is gone.
+    Narrows,
+    /// A protection that was in force goes with it.
+    Weakens,
+}
+
+impl Closing {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Narrows => "narrows",
+            Self::Weakens => "weakens",
+        }
+    }
+}
+
 /// Where a capability can be turned off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Gating {
@@ -76,7 +123,7 @@ impl Gating {
 /// that a hand-written list stays in the enum's order — and a test can only
 /// check what that list already contains.
 macro_rules! registry {
-    ($($variant:ident = $slug:literal, $lifecycle:ident, $gating:ident, $reach:ident, $doc:literal;)+) => {
+    ($($variant:ident = $slug:literal, $lifecycle:ident, $gating:ident, $reach:ident, $closing:ident, $standing:ident, $doc:literal;)+) => {
         /// A capability this build may or may not have.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Feature {
@@ -94,6 +141,8 @@ macro_rules! registry {
                         lifecycle: Lifecycle::$lifecycle,
                         gating: Gating::$gating,
                         reach: Reach::$reach,
+                        closing: Closing::$closing,
+                        standing: Standing::$standing,
                         doc: $doc,
                     },)+
                 }
@@ -109,28 +158,47 @@ pub struct FeatureSpec {
     pub lifecycle: Lifecycle,
     pub gating: Gating,
     pub reach: Reach,
+    /// What goes away with it, which is not the same question as who may
+    /// turn it off.
+    pub closing: Closing,
+    /// Whether a deployment that says nothing runs it.
+    pub standing: Standing,
     pub doc: &'static str,
 }
 
 registry! {
-    ChaCha20 = "chacha20", Preview, CompileOnly, Process,
+    ChaCha20 = "chacha20", Preview, CompileOnly, Process, Narrows, Off,
         "ChaCha20-Poly1305, for hardware without AES acceleration. Not FIPS.";
-    PqHybrid = "pq-hybrid", Preview, CompileOnly, Process,
+    PqHybrid = "pq-hybrid", Preview, CompileOnly, Process, Weakens, Off,
         "ML-DSA signatures and ML-KEM encapsulation. Needs libcrypto 3.5 or newer.";
-    FipsStrict = "fips-strict", Preview, CompileOnly, Process,
+    FipsStrict = "fips-strict", Preview, CompileOnly, Process, Weakens, Off,
         "Pin the validated FIPS provider; excludes the algorithms it does not cover.";
-    Pkcs11 = "pkcs11", Preview, CompileOnly, Process,
+    Pkcs11 = "pkcs11", Preview, CompileOnly, Process, Weakens, Off,
         "A key store inside a PKCS#11 token, where the private key never leaves.";
-    TracingJson = "tracing-json", Stable, CompileOnly, Process,
+    TracingJson = "tracing-json", Stable, CompileOnly, Process, Narrows, On,
         "Structured logging through a tracing subscriber.";
-    Metrics = "metrics", Stable, Both, Process,
+    Metrics = "metrics", Stable, Both, Process, Narrows, On,
         "Request metrics on the operations port, in the Prometheus text form.";
-    Otel = "otel", Stable, Both, Process,
+    Otel = "otel", Stable, Both, Process, Narrows, On,
         "Span export over OTLP. Dials nothing until a collector is named.";
-    TokenExchange = "token-exchange", Stable, RuntimeOnly, Realm,
+    TokenExchange = "token-exchange", Stable, RuntimeOnly, Realm, Narrows, On,
         "Trade a token for another audience, or for a subject being acted for.";
-    Scim = "scim", Stable, RuntimeOnly, Realm,
+    Scim = "scim", Stable, RuntimeOnly, Realm, Narrows, On,
         "A SCIM 2.0 root for an external directory to provision accounts through.";
+    UssdBridge = "ussd-bridge", Stable, RuntimeOnly, Realm, Narrows, On,
+        "Answer USSD sessions opened on an operator short code.";
+    Authorization = "authorization", Stable, RuntimeOnly, Realm, Narrows, On,
+        "Resources, scopes and policies served to this realm's resource servers.";
+    RebacStore = "rebac-store", Experimental, RuntimeOnly, Realm, Narrows, On,
+        "Relation tuples backing the ReBAC side of the authorization engine.";
+    Organization = "organization", Preview, RuntimeOnly, Realm, Narrows, On,
+        "Group accounts under an organization carrying its own brokers and domains.";
+    PhoneFirstLogin = "phone-first-login", Stable, RuntimeOnly, Realm, Narrows, On,
+        "Accept a proven phone number anywhere a username is expected.";
+    WebAuthn = "web-authn", Stable, RuntimeOnly, Realm, Weakens, On,
+        "Passkeys and roaming authenticators as a factor. Closing it sends people back to what is left.";
+    SmsOtp = "sms-otp", Stable, RuntimeOnly, Realm, Weakens, On,
+        "A code delivered by the SMS gateway, as a first or second factor. Closing it takes a factor away.";
 }
 
 /// Whether the capabilities this crate itself carries were linked. Only
@@ -265,8 +333,8 @@ impl FeatureSet {
                 return Err(FeatureError::NotCompiled(feature.slug().to_string()));
             }
 
-            let wanted = (feature.spec().lifecycle.default_enabled() || wanted_on[index])
-                && !wanted_off[index];
+            let wanted =
+                (feature.spec().standing == Standing::On || wanted_on[index]) && !wanted_off[index];
 
             statuses.push(FeatureStatus {
                 feature,
@@ -314,6 +382,27 @@ impl FeatureSet {
         }
         RealmFeatures { enabled }
     }
+}
+
+/// The set this process resolved at boot, readable from any layer.
+///
+/// It lived in the serving crate while only that crate asked. A capability is
+/// refused where it is used, and the places it is used are spread across the
+/// engine as much as the doors, so a set only the outermost layer can read is
+/// a set the inner ones have to be handed by every caller. One process, one
+/// answer, asked wherever the question comes up.
+static INSTALLED: std::sync::OnceLock<FeatureSet> = std::sync::OnceLock::new();
+
+/// Fix the set for the life of the process. The second call is ignored: this
+/// is decided once, at boot, before anything serves.
+pub fn install(resolved: FeatureSet) {
+    let _ = INSTALLED.set(resolved);
+}
+
+/// What the process is running. Before `install`, every compiled default,
+/// which is what a test that never boots a server should see.
+pub fn installed() -> &'static FeatureSet {
+    INSTALLED.get_or_init(|| FeatureSet::resolve("", |_| false).expect("an empty request resolves"))
 }
 
 /// What one realm has said about the capabilities it may move.
@@ -407,20 +496,8 @@ mod tests {
 
     /// What each lifecycle means, tested on the lifecycle rather than through
     /// a capability that happens to have it.
-    ///
-    /// No registered feature is deprecated or experimental today, so nothing
-    /// else reaches those two — and the day one is, its default has to be the
-    /// one that was decided here, not the one nobody checked.
     #[test]
     fn a_lifecycle_decides_on_its_own() {
-        assert!(Lifecycle::Stable.default_enabled());
-        assert!(
-            Lifecycle::Deprecated.default_enabled(),
-            "still works, so still on"
-        );
-        assert!(!Lifecycle::Preview.default_enabled());
-        assert!(!Lifecycle::Experimental.default_enabled());
-
         let mut named = HashSet::new();
         for lifecycle in [
             Lifecycle::Stable,
@@ -447,13 +524,13 @@ mod tests {
 
     /// The lifecycle decides the default, and nothing else does.
     #[test]
-    fn the_lifecycle_decides_the_default() {
+    fn the_standing_decides_the_default() {
         let set = resolve("").unwrap();
 
         for feature in Feature::ALL.iter().copied() {
             assert_eq!(
                 set.is_enabled(feature),
-                feature.spec().lifecycle.default_enabled(),
+                feature.spec().standing == Standing::On,
                 "{feature:?}"
             );
             assert_eq!(set.status(feature).source, FeatureSource::Default);
@@ -698,6 +775,58 @@ mod tests {
                 assert!(
                     resolved.status(feature).compiled,
                     "{feature:?} is a runtime switch and was reported absent"
+                );
+            }
+        }
+    }
+
+    /// A capability a realm may move says which way closing it points, and
+    /// the two that take a factor away are the two that say so.
+    #[test]
+    fn a_capability_says_what_closing_it_costs() {
+        for feature in Feature::ALL.iter().copied() {
+            let spec = feature.spec();
+            let weakens = spec.closing == Closing::Weakens;
+            let takes_a_factor = matches!(feature, Feature::WebAuthn | Feature::SmsOtp);
+            if takes_a_factor {
+                assert!(
+                    weakens,
+                    "{feature:?} takes a factor away and does not say so"
+                );
+            }
+        }
+    }
+
+    /// Everything a realm may move is a runtime switch, because a realm cannot
+    /// relink the build it is served by.
+    #[test]
+    fn what_a_realm_may_move_is_a_runtime_switch() {
+        for feature in Feature::ALL.iter().copied() {
+            if feature.spec().reach == Reach::Realm {
+                assert_eq!(
+                    feature.spec().gating,
+                    Gating::RuntimeOnly,
+                    "{feature:?} is a realm's to move but is not a runtime switch"
+                );
+            }
+        }
+    }
+
+    /// Nothing a build already runs is switched off by being declared.
+    ///
+    /// A capability gains its switch after it has been shipping, and a
+    /// deployment that upgrades has said nothing about it. If declaring it
+    /// turned it off, the upgrade would take away what was working, which is
+    /// the one thing a registry must never do to a realm holding real people.
+    #[test]
+    fn declaring_a_capability_that_already_ran_does_not_take_it_away() {
+        let resolved = FeatureSet::resolve("", |_| true).expect("it resolves");
+
+        for feature in Feature::ALL.iter().copied() {
+            if feature.spec().reach == Reach::Realm {
+                assert!(
+                    resolved.is_enabled(feature),
+                    "{feature:?} is a realm's to close and a silent deployment does not run it"
                 );
             }
         }

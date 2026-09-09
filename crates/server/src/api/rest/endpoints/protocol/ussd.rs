@@ -58,6 +58,16 @@ pub async fn callback(
     else {
         return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
     };
+    // A realm that closed the bridge answers as one that never named a
+    // gateway, which is the same door and the same silence.
+    if !store::providers::realm_features::runs_for_realm(
+        &transaction,
+        commons::feature::Feature::UssdBridge,
+    )
+    .await
+    {
+        return plain(StatusCode::NOT_FOUND, "");
+    }
     let Ok(Some(secret)) =
         store::providers::ussd::load_secret(&transaction, &ring, &sealing.envelope).await
     else {

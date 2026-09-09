@@ -149,19 +149,26 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
     return answer(null);
   }
   if (/\/realms\/[^/]+\/features$/.test(path)) {
-    const held = (slug: string, lifecycle: string, reach: string, doc: string, on: boolean) => ({
-      slug, lifecycle, reach, doc,
+    const held = (
+      slug: string, lifecycle: string, reach: string, closing: string, doc: string, on: boolean,
+    ) => ({
+      slug, lifecycle, reach, closing, doc,
       compiled: true, in_process: on, enabled: on,
       asked: null, changed_by: null, changed_at: null,
     });
     return answer({
       items: [
-        held("token-exchange", "stable", "realm", "Trade a token for another audience, or for a subject being acted for.", true),
-        held("scim", "stable", "realm", "A SCIM 2.0 root for an external directory to provision accounts through.", true),
-        held("metrics", "stable", "process", "Request metrics on the operations port, in the Prometheus text form.", true),
-        held("otel", "stable", "process", "Span export over OTLP. Dials nothing until a collector is named.", false),
-        held("pq-hybrid", "preview", "process", "ML-DSA signatures and ML-KEM encapsulation.", false),
-        held("chacha20", "preview", "process", "ChaCha20-Poly1305, for hardware without AES acceleration.", false),
+        held("token-exchange", "stable", "realm", "narrows", "Trade a token for another audience, or for a subject being acted for.", true),
+        held("scim", "stable", "realm", "narrows", "A SCIM 2.0 root for an external directory to provision accounts through.", true),
+        held("ussd-bridge", "stable", "realm", "narrows", "Answer USSD sessions opened on an operator short code.", true),
+        held("authorization", "stable", "realm", "narrows", "Resources, scopes and policies served to this realm's resource servers.", true),
+        held("phone-first-login", "stable", "realm", "narrows", "Accept a proven phone number anywhere a username is expected.", true),
+        held("web-authn", "stable", "realm", "weakens", "Passkeys and roaming authenticators as a factor.", true),
+        held("sms-otp", "stable", "realm", "weakens", "A code delivered by the SMS gateway, as a first or second factor.", true),
+        held("metrics", "stable", "process", "narrows", "Request metrics on the operations port, in the Prometheus text form.", true),
+        held("organization", "preview", "realm", "narrows", "Group accounts under an organization carrying its own brokers and domains.", true),
+        held("pq-hybrid", "preview", "process", "weakens", "ML-DSA signatures and ML-KEM encapsulation.", false),
+        held("rebac-store", "experimental", "realm", "narrows", "Relation tuples backing the ReBAC side of the authorization engine.", false),
       ],
     });
   }

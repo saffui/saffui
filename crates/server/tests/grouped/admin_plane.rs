@@ -3101,3 +3101,72 @@ async fn a_realm_is_refused_a_capability_the_process_holds() {
         }
     }
 }
+
+/// Closing the authorization capability shuts the doors that serve it, and
+/// closing it does not touch what belongs to something else.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn closing_one_capability_shuts_its_doors_and_no_others() {
+    let plane = Plane::with_actions(&[
+        AdminAction::FeatureRead,
+        AdminAction::FeatureWrite,
+        AdminAction::UmaRead,
+        AdminAction::RebacRead,
+        AdminAction::OrgRead,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let realm = support::REALM;
+
+    let asking = |leaf: &'static str| async move { format!("/admin/realms/{realm}/{leaf}") };
+    let policies = asking("authz/servers/app/policies").await;
+    let relations = asking("rebac/relations?first=0&max=1").await;
+    let organizations = asking("organizations").await;
+
+    for path in [&policies, &relations, &organizations] {
+        let status = reached(&plane, path, &bearer).await;
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{path} is shut to begin with"
+        );
+    }
+
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{realm}/features/authorization"),
+        &bearer,
+        serde_json::json!({ "enabled": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+
+    let status = reached(&plane, &policies, &bearer).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "the authz doors still answer"
+    );
+
+    // The neighbours are their own capability and did not move with it.
+    for path in [&relations, &organizations] {
+        let status = reached(&plane, path, &bearer).await;
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{path} was shut by somebody else's capability"
+        );
+    }
+}
+
+/// The status alone, for a door whose body is not this test's business and
+/// may not be JSON at all.
+async fn reached(plane: &Plane, path: &str, bearer: &str) -> StatusCode {
+    let app = test::init_service(App::new().configure(register(&mounted(plane, &policy())))).await;
+    let request = test::TestRequest::with_uri(path)
+        .method(Method::GET)
+        .insert_header(("authorization", format!("Bearer {bearer}")))
+        .to_request();
+    test::call_service(&app, request).await.status()
+}

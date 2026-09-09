@@ -113,6 +113,15 @@ impl FromStr for Authenticator {
     }
 }
 
+/// The capability a step belongs to, where closing it takes the step away.
+fn capability_behind(authenticator: Authenticator) -> Option<commons::feature::Feature> {
+    match authenticator {
+        Authenticator::Webauthn => Some(commons::feature::Feature::WebAuthn),
+        Authenticator::SmsOtp => Some(commons::feature::Feature::SmsOtp),
+        _ => None,
+    }
+}
+
 impl Authenticator {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -210,6 +219,17 @@ pub async fn verify_answer(
     // The directories this realm federates from. Only the password step asks.
     federations: &[crate::login::directory::Named<'_>],
 ) -> Answered {
+    // A factor the realm has closed does not run. Skipped rather than failed,
+    // because the flow is what decides whether a login can still finish: an
+    // alternative step carries it, and a step the flow requires stops it. A
+    // refusal here would make that the authenticator's decision instead of
+    // the flow's, and it would read as a wrong credential.
+    if let Some(behind) = capability_behind(authenticator)
+        && !store::providers::realm_features::runs_for_realm(transaction, behind).await
+    {
+        return Answered::plain(Outcome::Skipped);
+    }
+
     match authenticator {
         Authenticator::Password => Answered::plain(
             password(transaction, provider, realm, subject, answers, federations).await,

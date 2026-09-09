@@ -19,6 +19,10 @@ export interface RealmFeature {
   lifecycle: "stable" | "preview" | "experimental" | "deprecated";
   /// Whose switch it is. A process capability is read-only here.
   reach: "process" | "realm";
+  /// What goes away with it. "weakens" means closing it takes a protection
+  /// that was in force, which an administrator hardening a realm would not
+  /// expect, so the console asks before it does that.
+  closing: "narrows" | "weakens";
   doc: string;
   compiled: boolean;
   in_process: boolean;

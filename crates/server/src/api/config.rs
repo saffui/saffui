@@ -93,21 +93,12 @@ pub struct Sealing {
 /// anything serves; asked before it is installed — a test process, which
 /// turns nothing — it is every compiled default. One value per process,
 /// like the subscriber: a feature is not something two workers disagree on.
-static FEATURES: std::sync::OnceLock<commons::feature::FeatureSet> = std::sync::OnceLock::new();
-
 pub fn install_features(resolved: commons::feature::FeatureSet) {
-    let _ = FEATURES.set(resolved);
+    commons::feature::install(resolved);
 }
 
 pub fn features() -> &'static commons::feature::FeatureSet {
-    FEATURES.get_or_init(|| {
-        commons::feature::FeatureSet::resolve("", |feature| {
-            crypto::compiled_features().contains(&feature.slug())
-                || commons::feature::locally_compiled(feature)
-                || crate::metrics::compiled(feature)
-        })
-        .expect("an empty request resolves")
-    })
+    commons::feature::installed()
 }
 
 /// Register what a caller reaches.

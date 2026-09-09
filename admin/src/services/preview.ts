@@ -8,7 +8,7 @@ const NOW = Math.floor(Date.now() / 1000);
 
 const PEOPLE: UserBrief[] = [
   {
-    user_id: "ada",
+    user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
     user_name: "ada",
     enabled: true,
     email: "ada@example.test",
@@ -21,7 +21,7 @@ const PEOPLE: UserBrief[] = [
     origin: "local",
   },
   {
-    user_id: "grace",
+    user_id: "3d1e7a86-9f04-42bb-8e57-c6b2d09fa715",
     user_name: "grace",
     enabled: true,
     email: "grace@acme.example",
@@ -34,7 +34,7 @@ const PEOPLE: UserBrief[] = [
     origin: "local",
   },
   {
-    user_id: "linus",
+    user_id: "b74c2f90-15da-4e83-a6d1-8f30c5b91e2a",
     user_name: "linus",
     enabled: true,
     email: "linus@beta.example",
@@ -47,7 +47,7 @@ const PEOPLE: UserBrief[] = [
     origin: "local",
   },
   {
-    user_id: "margaret",
+    user_id: "9e05b3c7-42af-4610-b8d2-7c1e6f4a83d5",
     user_name: "margaret",
     enabled: false,
     email: "margaret@acme.example",
@@ -74,7 +74,10 @@ const CLIENTS = [
 
 function person(path: string): UserBrief | null {
   const found = /\/users\/([^/?]+)/.exec(path);
-  return found ? (PEOPLE.find((held) => held.user_id === found[1]) ?? null) : null;
+  return found
+    ? (PEOPLE.find((held) => held.user_id === found[1] || held.user_name === found[1]) ??
+      null)
+    : null;
 }
 
 /// One decision as the log keeps it, for the fixtures below.
@@ -140,10 +143,10 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
   }
   if (/\/users\/[^/]+\/password\/history$/.test(path)) {
     return answer({
-      items: [
-        { replaced_at: new Date((NOW - 86_400 * 12) * 1000).toISOString(), by: "ada" },
-        { replaced_at: new Date((NOW - 86_400 * 97) * 1000).toISOString(), by: "root" },
-      ],
+      items: [12, 97, 168, 240, 401, 520, 733].map((days, at) => ({
+        replaced_at: new Date((NOW - 86_400 * days) * 1000).toISOString(),
+        by: ["ada", "root", "ada", "linus", "root", "ada", "root"][at],
+      })),
     });
   }
   if (/\/users\/[^/]+\/roles$/.test(path)) {
@@ -320,8 +323,8 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
   }
   if (/\/organizations\/[^/]+\/members$/.test(path)) {
     return answer([
-      { user_id: "ada", membership_type: "unmanaged", roles: [], joined_at: "2026-07-02T09:00:00Z" },
-      { user_id: "grace", membership_type: "managed", roles: ["org-admin"], joined_at: "2026-08-11T14:00:00Z" },
+      { user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40", membership_type: "unmanaged", roles: [], joined_at: "2026-07-02T09:00:00Z" },
+      { user_id: "3d1e7a86-9f04-42bb-8e57-c6b2d09fa715", membership_type: "managed", roles: ["org-admin"], joined_at: "2026-08-11T14:00:00Z" },
     ]);
   }
   if (/\/organizations\/[^/?]+$/.test(path) && !path.endsWith("/theme")) {
@@ -371,13 +374,13 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
   }
   if (path.endsWith("/subject-requests")) {
     return answer([
-      { request_id: "d-1", user_id: "ada", subject_identifier: "ada", kind: "erasure", stage: "received",
+      { request_id: "d-1", user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40", subject_identifier: "ada", kind: "erasure", stage: "received",
         jurisdiction: "ke", received_at: 1788700000, due_at: 1788700000 - 86400, verified_at: null, closed_at: null,
         deadline_source: "Data Protection (General) Regulations 2021, reg. 9(4), seven days." },
       { request_id: "d-2", user_id: null, subject_identifier: "gone@example.test", kind: "access", stage: "verified",
         jurisdiction: "eu", received_at: 1788700000, due_at: 1788700000 + 2000000, verified_at: 1788700000, closed_at: null,
         deadline_source: "GDPR art. 12(3), one month, extendable by two" },
-      { request_id: "d-3", user_id: "linus", subject_identifier: "linus", kind: "objection", stage: "refused",
+      { request_id: "d-3", user_id: "b74c2f90-15da-4e83-a6d1-8f30c5b91e2a", subject_identifier: "linus", kind: "objection", stage: "refused",
         reason: "duplicate of d-1", jurisdiction: "eu", received_at: 1788700000, due_at: 1788700000 + 2000000,
         verified_at: null, closed_at: 1788700000, deadline_source: "GDPR art. 12(3), one month, extendable by two" },
     ]);

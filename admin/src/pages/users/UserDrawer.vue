@@ -58,6 +58,20 @@ const codesLeft = ref(0);
 const sessions = ref<SessionBrief[]>([]);
 const consents = ref<ConsentBrief[]>([]);
 const roles = ref<RoleBrief[]>([]);
+
+/// Realm roles and client roles are the same table apart from whether a
+/// client owns them, and an account with many of both reads as one heap.
+const ROLE_KINDS = ["all", "realm", "client"] as const;
+const roleKind = ref<(typeof ROLE_KINDS)[number]>("all");
+const countOfKind = (kind: "realm" | "client") =>
+  roles.value.filter((role) => (kind === "client") === (role.client_id !== null)).length;
+const shownRoles = computed(() =>
+  roleKind.value === "all"
+    ? roles.value
+    : roles.value.filter(
+        (role) => (roleKind.value === "client") === (role.client_id !== null),
+      ),
+);
 const groups = ref<GroupBrief[]>([]);
 const organizations = ref<OrgBrief[]>([]);
 const failed = ref("");
@@ -735,13 +749,31 @@ function instant(epoch: number | null | undefined): string {
 
     <div v-if="tab === 'memberships'" class="mt-4 flex flex-col gap-5">
       <div class="relative">
-        <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-          {{ say("user-roles") }}
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("user-roles") }}
+          </span>
+          <span v-if="roles.length" class="ml-auto flex items-center gap-1">
+            <button
+              v-for="held in ROLE_KINDS"
+              :key="held"
+              type="button"
+              class="sf-badge"
+              :class="roleKind === held && 'sf-badge-accent'"
+              @click="roleKind = held"
+            >
+              {{ say(`user-roles-${held}`) }}
+              <span v-if="held !== 'all'" class="text-faint">{{ countOfKind(held) }}</span>
+            </button>
+          </span>
         </div>
         <p v-if="!roles.length" class="mt-1.5 text-xs text-muted">{{ say("user-no-roles") }}</p>
+        <p v-else-if="!shownRoles.length" class="mt-1.5 text-xs text-muted">
+          {{ say("user-no-roles-of-kind") }}
+        </p>
         <div class="mt-1.5 flex flex-wrap items-center gap-1.5">
           <span
-            v-for="role in roles"
+            v-for="role in shownRoles"
             :key="role.role_id"
             class="inline-flex items-center gap-1.5 rounded border border-border px-1.5 py-0.5 text-[11px]"
             :title="role.description"

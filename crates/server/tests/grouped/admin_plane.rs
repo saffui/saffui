@@ -3170,3 +3170,62 @@ async fn reached(plane: &Plane, path: &str, bearer: &str) -> StatusCode {
         .to_request();
     test::call_service(&app, request).await.status()
 }
+
+/// The day's texting counters are the engine's own, not a second set that
+/// could drift from them.
+///
+/// A screen that keeps its own tally is a screen that disagrees with the
+/// brake sooner or later, and the operator then has two numbers and no way
+/// to tell which one the sender obeyed.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_days_texting_counters_are_the_ones_the_brakes_read() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    let bearer = plane.token(&support::claims());
+    let path = format!("/admin/realms/{}/sms/today", support::REALM);
+
+    let (status, told) = fetched(&plane, Method::GET, &path, &bearer).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let before = told["sent"].as_i64().expect("a count");
+
+    // Two sends and three brakes, written the way the sending path writes
+    // them: the day counter, and the throttle log a brake trips.
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let now = Utc::now();
+    for _ in 0..2 {
+        store::providers::sms::record_send(&transaction, now.timestamp())
+            .await
+            .expect("a send counted");
+    }
+    for brake in ["blocked-prefix", "blocked-prefix", "number-velocity"] {
+        store::providers::login_events::record(
+            &transaction,
+            now.timestamp(),
+            &store::providers::login_events::LoginEventWrite {
+                kind: "sms_throttled",
+                user_id: Some(support::SUBJECT),
+                detail: Some(serde_json::json!({ "brake": brake, "to": "+22890000000" })),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("a brake recorded");
+    }
+    transaction.commit().await.expect("the day stands");
+
+    let (status, told) = fetched(&plane, Method::GET, &path, &bearer).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["sent"], before + 2, "{told}");
+    assert_eq!(told["blocked_prefix"], 2, "{told}");
+    assert_eq!(told["number_velocity"], 1, "{told}");
+    assert_eq!(
+        told["day_budget"], 0,
+        "a brake nobody tripped was counted: {told}"
+    );
+}

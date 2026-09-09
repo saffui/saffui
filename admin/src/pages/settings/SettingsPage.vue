@@ -20,6 +20,7 @@ import {
   keepFeatureWish,
   listRealmFeatures,
   lookAtRelay,
+  readSmsToday,
   readRelayRefusals,
   reshapeRealm,
   rotateRegistrationSecret,
@@ -36,7 +37,7 @@ import { useSession } from "@/stores/session";
 import type { RealmFeature } from "@/models/feature";
 import { ApiError } from "@/services/http";
 import type { MailBrief, MailRefusal, RelayReport } from "@/models/mail";
-import type { SmsBrief } from "@/models/sms";
+import type { SmsBrief, SmsToday } from "@/models/sms";
 import { OTP_DEFAULTS, OWASP_HASHING } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 import { JURISDICTIONS } from "@/services/compliance";
@@ -304,6 +305,11 @@ onMounted(async () => {
     }
     try {
       ussdHeld.value = (await getUssd(realm.value)).has_secret;
+    } catch (refused) {
+      if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
+    }
+    try {
+      smsToday.value = await readSmsToday(realm.value);
     } catch (refused) {
       if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
     }
@@ -766,6 +772,26 @@ const ussdCallback = computed(
 /// The realm's brakes on texting. A cap left blank keeps whatever is held;
 /// returning to the built default means typing it.
 const smsBrakes = ref({ daily: "" as string | number, perNumber: "" as string | number, prefixes: "" });
+
+/// What the day has cost so far, read once with the rest of the screen.
+const smsToday = ref<SmsToday | null>(null);
+
+/// The four the design puts on this board. A cap the realm has not named is
+/// shown as the count alone rather than against the engine's own, which is
+/// not this realm's setting to display.
+const todayCounts = computed(() => {
+  const held = smsToday.value;
+  if (!held) return [];
+  return [
+    {
+      label: say("sms-today-sent"),
+      value: held.cap === null ? String(held.sent) : `${held.sent} / ${held.cap}`,
+    },
+    { label: say("sms-today-velocity"), value: String(held.number_velocity) },
+    { label: say("sms-today-prefix"), value: String(held.blocked_prefix) },
+    { label: say("sms-today-budget"), value: String(held.day_budget) },
+  ];
+});
 
 async function saveSmsBrakes() {
   const changes: RealmUpdate = {
@@ -1900,6 +1926,24 @@ async function saveSmsTemplate() {
                 say("sms-test-passed")
               }}</span>
             </form>
+          </div>
+
+          <div v-if="smsToday" class="mt-6">
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("sms-today-title") }} <AppHint name="sms-today-help" />
+            </div>
+            <div class="mt-2 grid grid-cols-2 gap-3 xl:grid-cols-4">
+              <div
+                v-for="count in todayCounts"
+                :key="count.label"
+                class="rounded-lg border border-border bg-surface px-3 py-2.5"
+              >
+                <div class="text-[10.5px] text-faint">{{ count.label }}</div>
+                <div class="mt-0.5 font-mono text-base text-ink tabular-nums">
+                  {{ count.value }}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="mt-6">

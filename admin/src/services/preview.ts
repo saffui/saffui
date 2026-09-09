@@ -145,6 +145,12 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       total: 42,
     });
   }
+  if (path.endsWith("/sms/today")) {
+    return answer({
+      sent: 3218, cap: 5000,
+      blocked_prefix: 19, number_velocity: 7, day_budget: 0,
+    });
+  }
   if (path.endsWith("/mail/probe")) {
     return answer({
       reached_in_millis: 412,

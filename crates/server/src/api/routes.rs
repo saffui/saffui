@@ -170,6 +170,12 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/sms/today",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(sms::spent_today)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/sms",
             action: AdminAction::RealmRead,
             handler: Some(|| web::get().to(sms::read)),

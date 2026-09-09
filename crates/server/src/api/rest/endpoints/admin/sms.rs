@@ -225,3 +225,53 @@ fn refused(why: Unsettable) -> ApiError {
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
 }
+
+/// What this realm has spent on texts today, and what its brakes held back.
+///
+/// Both numbers come off what the sending path already writes: the day
+/// counter the daily cap reads, and the throttle log a brake writes when it
+/// trips. Nothing is counted twice and nothing is counted here that the
+/// engine does not count for itself, so the screen and the brake can never
+/// disagree about the same day.
+pub async fn spent_today(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.as_str();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+
+    let now = chrono::Utc::now().timestamp();
+    let sent = store::providers::sms::spent_today(&transaction, now)
+        .await
+        .map_err(|_| internal())?;
+    let held = store::providers::sms::held_back_today(&transaction, now)
+        .await
+        .map_err(|_| internal())?;
+    let realm = store::providers::realms::of_context(&transaction)
+        .await
+        .map_err(|_| internal())?;
+
+    let counted = |named: &str| -> i64 {
+        held.iter()
+            .find(|(brake, _)| brake == named)
+            .map_or(0, |(_, count)| *count)
+    };
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "sent": sent,
+        // Absent where the realm names no cap: the engine has its own, and
+        // printing that one here would read as this realm's setting.
+        "cap": realm.as_ref().and_then(|held| held.sms_daily_cap),
+        "blocked_prefix": counted("blocked-prefix"),
+        "number_velocity": counted("number-velocity"),
+        "day_budget": counted("day-budget"),
+    })))
+}

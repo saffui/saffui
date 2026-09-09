@@ -98,6 +98,11 @@ export async function forgetRegistrationSecret(realm: string): Promise<void> {
 
 /// What this build carries and what is on. Read-only by nature: the gating
 /// is compile-time.
+/// What this realm spent on texts today, and what its brakes held back.
+export async function readSmsToday(realm: string) {
+  return api<import("@/models/sms").SmsToday>(adminPath(realm, "sms/today"));
+}
+
 /// Hold the relay in conversation and report what it said. Sends nothing.
 export async function lookAtRelay(realm: string) {
   return api<import("@/models/mail").RelayReport>(adminPath(realm, "mail/probe"));

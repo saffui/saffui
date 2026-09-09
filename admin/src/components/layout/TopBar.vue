@@ -55,7 +55,7 @@ function initials(name: string): string {
   <header
     class="flex h-[46px] shrink-0 items-center gap-[18px] border-b border-border bg-surface px-[18px]"
   >
-    <div class="flex min-w-0 flex-1 items-center gap-1.5 text-[12px]">
+    <div class="flex min-w-0 flex-1 items-center gap-1.5 text-[13px]">
       <span class="shrink-0 text-faint">{{ current }}</span>
       <span v-for="crumb in trail" :key="crumb" class="flex items-center gap-1.5">
         <span class="text-faint">/</span>
@@ -65,24 +65,42 @@ function initials(name: string): string {
 
     <button
       type="button"
-      class="flex min-w-56 items-center gap-2 rounded-md border border-border px-2 py-1 text-xs text-faint hover:bg-surface-2"
+      class="flex h-7 w-[320px] shrink-0 items-center gap-[7px] rounded bg-surface-2 px-2.5 text-left text-[13px] text-faint hover:bg-surface-3"
       @click="paletteOpen = true"
     >
       <AppIcon name="search" :size="13" />
-      <span>{{ say("topbar-search") }}</span>
-      <kbd class="ml-auto rounded border border-border bg-surface-2 px-1 font-mono text-[10px]"
-        >&#8984;K</kbd
-      >
+      <span class="truncate">{{ say("topbar-search") }}</span>
     </button>
 
-    <div class="relative ml-auto flex items-center gap-2" data-profile-menu>
+    <div class="relative ml-auto flex shrink-0 items-center gap-2.5" data-profile-menu>
       <button
         type="button"
-        class="grid size-7 place-items-center rounded-full border border-border bg-surface-2 text-[10.5px] font-semibold hover:border-accent/50"
+        class="grid size-7 place-items-center rounded text-muted hover:bg-neutral-tint hover:text-ink"
+        :aria-label="dark ? say('profile-light') : say('profile-dark')"
+        @click="flipTheme"
+      >
+        <AppIcon :name="dark ? 'sun' : 'moon'" :size="14" />
+      </button>
+      <button
+        type="button"
+        class="flex h-7 items-center rounded px-2 text-[12px] text-muted uppercase hover:bg-neutral-tint hover:text-ink"
+        :aria-label="say('profile-tongue')"
+        @click="pinTongue(tongues.find((held) => held !== tongue) ?? tongue)"
+      >
+        {{ tongue }}
+      </button>
+      <button
+        type="button"
+        class="flex h-[22px] items-center gap-[7px] rounded px-1 text-[13px] text-muted hover:bg-neutral-tint"
         :aria-label="say('profile-open')"
         @click.stop="profileOpen = !profileOpen"
       >
-        {{ initials(session.displayName) }}
+        <span
+          class="grid size-[22px] shrink-0 place-items-center rounded-[3px] bg-surface-3 text-[11px] font-semibold text-ink"
+          >{{ initials(session.displayName) }}</span
+        >
+        <span class="max-w-24 truncate">{{ session.displayName }}</span>
+        <AppIcon name="chevron" :size="13" class="rotate-90 text-faint" />
       </button>
 
       <div
@@ -91,36 +109,9 @@ function initials(name: string): string {
       >
         <div class="px-2.5 pt-2 pb-1.5">
           <p class="text-xs font-semibold">{{ session.displayName }}</p>
-          <p class="font-mono text-[10.5px] text-faint">{{ say("profile-realm") }} {{ current }}</p>
+          <p class="font-mono text-[11.5px] text-faint">{{ say("profile-realm") }} {{ current }}</p>
         </div>
         <div class="my-1 border-t border-border"></div>
-        <div class="flex items-center gap-1 px-2.5 py-1.5 text-[11px] text-muted">
-          {{ say("profile-tongue") }}
-          <span class="ml-auto flex gap-1">
-            <button
-              v-for="held in tongues"
-              :key="held"
-              type="button"
-              class="rounded border px-1.5 py-0.5 font-mono text-[10.5px]"
-              :class="
-                held === tongue
-                  ? 'border-accent/60 text-accent'
-                  : 'border-border text-muted hover:text-ink'
-              "
-              @click="pinTongue(held)"
-            >
-              {{ held }}
-            </button>
-          </span>
-        </div>
-        <button
-          type="button"
-          class="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs hover:bg-surface-2"
-          @click="flipTheme"
-        >
-          <AppIcon :name="dark ? 'sun' : 'moon'" :size="13" class="text-faint" />
-          {{ dark ? say("profile-light") : say("profile-dark") }}
-        </button>
         <div class="my-1 border-t border-border"></div>
         <button
           type="button"

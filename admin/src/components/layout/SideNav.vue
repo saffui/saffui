@@ -9,49 +9,48 @@ const realm = () => String(route.params.realm ?? "main");
 
 // The domain map of the whole console. Entries without a page yet still
 // belong on the map: they route to overview until their slice lands.
+// The deck's four captions and its order. Every leaf the console serves is
+// placed in the group the deck implies rather than dropped: the boards fold
+// several of them into tabs on a neighbour, and none of those hosts exists
+// yet, so folding now would leave pages reachable only by typing a URL.
 const GROUPS: { label: string; items: { label: string; icon: any; leaf: string }[] }[] = [
   {
-    label: "",
-    items: [{ label: say("nav-overview"), icon: "overview", leaf: "overview" }],
-  },
-  {
-    label: say("nav-directory"),
+    label: say("nav-cap-manage"),
     items: [
+      { label: say("nav-overview"), icon: "overview", leaf: "overview" },
       { label: say("nav-users"), icon: "users", leaf: "users" },
       { label: say("nav-roles"), icon: "roles", leaf: "roles" },
-      { label: say("nav-groups"), icon: "directory", leaf: "groups" },
-      { label: say("nav-organizations"), icon: "directory", leaf: "organizations" },
-    ],
-  },
-  {
-    label: say("nav-clients"),
-    items: [
+      { label: say("nav-groups"), icon: "groups", leaf: "groups" },
+      { label: say("nav-organizations"), icon: "organizations", leaf: "organizations" },
       { label: say("nav-clients"), icon: "clients", leaf: "clients" },
       { label: say("nav-scopes"), icon: "scopes", leaf: "client-scopes" },
-      { label: say("nav-preview"), icon: "key", leaf: "token-preview" },
     ],
   },
   {
-    label: "",
+    label: say("nav-cap-configure"),
     items: [
       { label: say("nav-authentication"), icon: "authentication", leaf: "authentication" },
       { label: say("nav-authorization"), icon: "authorization", leaf: "authorization" },
-      { label: say("nav-evaluator"), icon: "authorization", leaf: "evaluator" },
+      { label: say("nav-evaluator"), icon: "evaluator", leaf: "evaluator" },
       { label: say("nav-federation"), icon: "federation", leaf: "federation" },
-      { label: say("nav-governance"), icon: "governance", leaf: "governance" },
-      { label: say("nav-events"), icon: "events", leaf: "events" },
-      { label: say("nav-journal"), icon: "directory", leaf: "journal" },
+      { label: say("nav-appearance"), icon: "appearance", leaf: "theme" },
+      { label: say("nav-pages"), icon: "pages", leaf: "pages" },
+      { label: say("nav-settings"), icon: "settings", leaf: "settings" },
     ],
   },
   {
-    label: say("nav-settings"),
+    label: say("nav-cap-operate"),
     items: [
-      { label: say("nav-settings"), icon: "settings", leaf: "settings" },
+      { label: say("nav-events"), icon: "events", leaf: "events" },
+      { label: say("nav-journal"), icon: "journal", leaf: "journal" },
       { label: say("nav-keys"), icon: "key", leaf: "keys" },
-      { label: say("nav-realm-sessions"), icon: "users", leaf: "sessions" },
-      { label: say("nav-theme"), icon: "scopes", leaf: "theme" },
-      { label: say("nav-pages"), icon: "events", leaf: "pages" },
+      { label: say("nav-governance"), icon: "governance", leaf: "governance" },
+      { label: say("nav-realm-sessions"), icon: "sessions", leaf: "sessions" },
     ],
+  },
+  {
+    label: say("nav-cap-tools"),
+    items: [{ label: say("nav-preview"), icon: "preview", leaf: "token-preview" }],
   },
 ];
 
@@ -71,7 +70,7 @@ function active(leaf: string): boolean {
       >
         S
       </div>
-      <span class="text-[12.5px] text-ink">{{ say("console-name") }}</span>
+      <span class="text-[13.5px] text-ink">{{ say("console-name") }}</span>
     </div>
 
     <RealmSelector />
@@ -80,7 +79,7 @@ function active(leaf: string): boolean {
       <div v-for="(group, at) in GROUPS" :key="at">
         <div
           v-if="group.label"
-          class="px-3 pt-2.5 pb-1 text-[9px] font-semibold tracking-[0.09em] text-faint uppercase"
+          class="px-3 pt-2.5 pb-1 text-[10px] font-semibold tracking-[0.09em] text-faint uppercase"
         >
           {{ group.label }}
         </div>
@@ -100,7 +99,7 @@ function active(leaf: string): boolean {
             :class="active(item.leaf) ? 'text-accent' : 'text-faint'"
           />
           <span
-            class="truncate text-[12.5px]"
+            class="truncate text-[13.5px]"
             :class="active(item.leaf) ? 'text-ink' : 'text-muted'"
             >{{ item.label }}</span
           >
@@ -109,8 +108,8 @@ function active(leaf: string): boolean {
     </div>
 
     <div class="flex h-[34px] shrink-0 items-center gap-1.5 px-3">
-      <span class="size-[7px] shrink-0 rounded-full bg-ok"></span>
-      <span class="truncate text-[10.5px] text-faint">{{ say("console-footprint") }}</span>
+      <AppIcon name="server" :size="13" class="shrink-0 text-ok" />
+      <span class="truncate text-[11.5px] text-faint">{{ say("console-footprint") }}</span>
     </div>
   </nav>
 </template>

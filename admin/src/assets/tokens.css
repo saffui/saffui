@@ -133,7 +133,7 @@ body {
   background: var(--sf-bg);
   color: var(--sf-ink);
   font-family: var(--font-sans);
-  font-size: 13px;
+  font-size: 14px;
   -webkit-font-smoothing: antialiased;
 }
 ::selection {

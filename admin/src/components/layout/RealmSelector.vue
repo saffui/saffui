@@ -108,7 +108,7 @@ onUnmounted(() => document.removeEventListener("click", onAway));
 
 <template>
   <div class="relative px-3 py-2.5" data-realm-menu>
-      <div class="text-[9.5px] tracking-[0.08em] text-faint uppercase">
+      <div class="text-[10.5px] tracking-[0.08em] text-faint uppercase">
         {{ say("topbar-realm") }}
       </div>
       <button
@@ -117,8 +117,8 @@ onUnmounted(() => document.removeEventListener("click", onAway));
         :class="realmsOpen ? 'bg-surface-3' : 'bg-surface-2'"
         @click.stop="openRealms"
       >
-        <span class="min-w-0 flex-1 truncate text-[12.5px] text-ink">{{ current }}</span>
-        <AppIcon name="chevron" :size="13" class="rotate-90 text-faint" />
+        <span class="min-w-0 flex-1 truncate text-[13.5px] text-ink">{{ current }}</span>
+        <AppIcon name="chevron-pick" :size="13" class="text-faint" />
       </button>
       <div
         v-if="realmsOpen"
@@ -134,11 +134,11 @@ onUnmounted(() => document.removeEventListener("click", onAway));
         >
           <span class="flex min-w-0 flex-1 flex-col gap-0.5">
             <span
-              class="truncate font-mono text-[11.5px]"
+              class="truncate font-mono text-[12.5px]"
               :class="realm.name === current ? 'text-accent' : 'text-ink'"
               >{{ realm.name }}</span
             >
-            <span class="truncate text-[10.5px] text-faint">{{ realm.display_name }}</span>
+            <span class="truncate text-[11.5px] text-faint">{{ realm.display_name }}</span>
           </span>
           <AppIcon
             v-if="realm.name === current"
@@ -150,7 +150,7 @@ onUnmounted(() => document.removeEventListener("click", onAway));
             say("users-disabled")
           }}</span>
         </button>
-        <p v-if="!realms.length" class="px-2.5 py-3 text-[11px] text-muted">
+        <p v-if="!realms.length" class="px-2.5 py-3 text-[12px] text-muted">
           {{ say("palette-nothing") }}
         </p>
         <button
@@ -159,7 +159,7 @@ onUnmounted(() => document.removeEventListener("click", onAway));
           @click="openMaking"
         >
           <AppIcon name="plus" :size="13" class="text-muted" />
-          <span class="flex-1 text-[11.5px] text-muted">{{ say("realm-new") }}</span>
+          <span class="flex-1 text-[12.5px] text-muted">{{ say("realm-new") }}</span>
         </button>
       </div>
 
@@ -180,29 +180,29 @@ onUnmounted(() => document.removeEventListener("click", onAway));
             <span class="block truncate text-[15px] text-ink">{{
               say("realm-born", { realm: born.name })
             }}</span>
-            <span class="block truncate font-mono text-[11px] text-faint">{{ born.realm_id }}</span>
+            <span class="block truncate font-mono text-[12px] text-faint">{{ born.realm_id }}</span>
           </span>
         </div>
         <div class="flex flex-col gap-3.5 px-[18px] pb-1">
           <p class="text-[13px] text-ink">{{ say("realm-born-lede") }}</p>
           <div class="flex flex-col gap-1.5">
-            <span class="text-[10.5px] text-faint">{{ say("realm-born-credential") }}</span>
+            <span class="text-[11.5px] text-faint">{{ say("realm-born-credential") }}</span>
             <div class="flex flex-col gap-1 rounded-md bg-surface-2 px-3 py-2.5">
-              <span class="font-mono text-[11px] text-muted"
+              <span class="font-mono text-[12px] text-muted"
                 >user_name = {{ born.administrator.user_name }}</span
               >
-              <span class="font-mono text-[11px] break-all text-ink">{{
+              <span class="font-mono text-[12px] break-all text-ink">{{
                 born.administrator.password
               }}</span>
             </div>
           </div>
           <div class="flex items-center gap-2 rounded-md bg-warn-tint px-3 py-2.5">
             <AppIcon name="danger" :size="13" class="shrink-0 text-warn" />
-            <span class="text-[11px] text-muted">{{ say("realm-born-once") }}</span>
+            <span class="text-[12px] text-muted">{{ say("realm-born-once") }}</span>
           </div>
         </div>
         <div class="flex h-14 items-center gap-3 px-[18px]">
-          <span class="min-w-0 flex-1 truncate font-mono text-[10.5px] text-faint">{{
+          <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint">{{
             say("realm-born-trail")
           }}</span>
           <button type="button" class="sf-button sf-button-secondary" @click="copyPassword">
@@ -227,7 +227,7 @@ onUnmounted(() => document.removeEventListener("click", onAway));
           </span>
           <span class="min-w-0 flex-1">
             <span class="block text-[15px] text-ink">{{ say("realm-new") }}</span>
-            <span class="block text-[11px] text-faint">{{ say("realm-new-lede") }}</span>
+            <span class="block text-[12px] text-faint">{{ say("realm-new-lede") }}</span>
           </span>
           <button
             type="button"
@@ -241,20 +241,20 @@ onUnmounted(() => document.removeEventListener("click", onAway));
         <div class="flex flex-col gap-3.5 px-[18px] pb-1">
           <div class="flex gap-3">
             <label class="flex flex-1 flex-col gap-1.5">
-              <span class="text-[10.5px] text-faint">
+              <span class="text-[11.5px] text-faint">
                 {{ say("settings-name") }} <AppHint name="realm-new-name-help" />
               </span>
               <input v-model="newName" class="sf-field font-mono" spellcheck="false" autofocus />
             </label>
             <label class="flex flex-1 flex-col gap-1.5">
-              <span class="text-[10.5px] text-faint">
+              <span class="text-[11.5px] text-faint">
                 {{ say("directory-col-display") }} <AppHint name="realm-new-display-help" />
               </span>
               <input v-model="newDisplay" class="sf-field" />
             </label>
           </div>
           <div class="flex flex-col gap-1.5 rounded-md bg-neutral-tint px-3 py-2.5">
-            <span class="text-[10.5px] text-faint">{{ say("realm-new-admin-lede") }}</span>
+            <span class="text-[11.5px] text-faint">{{ say("realm-new-admin-lede") }}</span>
             <div class="flex gap-3">
               <input
                 v-model="newAdmin"
@@ -270,10 +270,10 @@ onUnmounted(() => document.removeEventListener("click", onAway));
               />
             </div>
           </div>
-          <p v-if="makeFailed" class="text-[11px] text-danger" role="alert">{{ makeFailed }}</p>
+          <p v-if="makeFailed" class="text-[12px] text-danger" role="alert">{{ makeFailed }}</p>
         </div>
         <div class="flex h-14 items-center gap-3 px-[18px]">
-          <span class="min-w-0 flex-1 truncate font-mono text-[10.5px] text-faint">{{
+          <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint">{{
             say("realm-new-trail")
           }}</span>
           <button

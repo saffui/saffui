@@ -27,6 +27,7 @@ fn mounted(plane: &Plane) -> Mounted {
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Anywhere,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     }
 }
 

@@ -149,6 +149,26 @@ enum Command {
         #[command(subcommand)]
         command: saffui::cli::AdminCmd,
     },
+    /// Read what happened to this deployment's realms.
+    ///
+    /// A realm's own journal is keyed to the realm and goes when it does, so
+    /// the record of a realm arriving or leaving is kept above them, in the
+    /// tenant's chain. The served plane may write there and may not read: a
+    /// tenant-wide reader would tell an administrator of one realm which
+    /// realms neighbour it. Reading is from here, with the owner's
+    /// credentials, which is what `SAFFUI_DATABASE_URL` holds for this
+    /// command as it does for `migrate`.
+    Chronicle {
+        #[arg(long, default_value = "default")]
+        tenant: String,
+        /// How many entries, newest first.
+        #[arg(long, default_value_t = 50)]
+        max: i64,
+        /// Recompute every link from the stored bytes and say where the chain
+        /// first breaks, rather than listing it.
+        #[arg(long)]
+        verify: bool,
+    },
     /// Name, keep and switch the places this terminal speaks to.
     Ctx {
         #[command(subcommand)]
@@ -262,6 +282,11 @@ fn main() -> ExitCode {
                 match command {
                     Command::Serve { bind, ops } => serve(&bind, &ops).await,
                     Command::Migrate => migrate().await,
+                    Command::Chronicle {
+                        tenant,
+                        max,
+                        verify,
+                    } => chronicle(&tenant, max, verify).await,
                     Command::Provision {
                         tenant,
                         realm,
@@ -600,6 +625,65 @@ fn ldap_acceptor(paths: &config::ldap::TlsPaths) -> Result<openssl::ssl::SslCont
 }
 
 /// Apply the schema, and give the application role its login when asked.
+/// Read the tenant's chain, or check that it holds.
+///
+/// Its own connection rather than the plane's: the served role is granted no
+/// select here on purpose, so a command that read as `saffui_app` would find
+/// nothing and say the deployment had no history.
+async fn chronicle(tenant: &str, max: i64, verify: bool) -> Result<(), String> {
+    let connection = config::required("DATABASE_URL").map_err(|e| e.to_string())?;
+    let pg: tokio_postgres::Config = connection
+        .parse()
+        .map_err(|_| "DATABASE_URL is not a connection string".to_owned())?;
+    let pool = Pool::builder(Manager::new(pg, NoTls))
+        .build()
+        .map_err(|reason| format!("cannot build a pool: {reason}"))?;
+    let tenancy = Tenancy::unpinned();
+    let mut held = pool.get().await.map_err(|e| e.to_string())?;
+    let transaction = tenancy
+        .transaction(&mut held, &TenantContext::tenant_wide(tenant))
+        .await
+        .map_err(|reason| format!("the store refused: {reason:?}"))?;
+
+    if verify {
+        let crypto = config::crypto::from_env().map_err(|e| e.to_string())?;
+        let provider = OpenSslProvider::new(&crypto)
+            .map_err(|reason| format!("cannot build crypto: {reason}"))?;
+        return match store::tenant_chain::verify(&transaction, tenant, provider.digest())
+            .await
+            .map_err(|reason| format!("the store refused: {reason:?}"))?
+        {
+            None => {
+                println!("the chain holds");
+                Ok(())
+            }
+            Some(seq) => Err(format!("the chain breaks at entry {seq}")),
+        };
+    }
+
+    let entries = store::tenant_chain::list_entries(&transaction, tenant, 0, max)
+        .await
+        .map_err(|reason| format!("the store refused: {reason:?}"))?;
+    if entries.is_empty() {
+        println!("nothing has happened to a realm of {tenant}");
+        return Ok(());
+    }
+    for entry in entries {
+        let at = entry.envelope["occurred_at"].as_f64().unwrap_or_default() as i64;
+        let when = chrono::DateTime::from_timestamp(at, 0)
+            .map(|held| held.to_rfc3339())
+            .unwrap_or_else(|| at.to_string());
+        println!(
+            "{:>6}  {when}  {:<14} {:<24} {}",
+            entry.seq,
+            entry.envelope["kind"].as_str().unwrap_or("?"),
+            entry.envelope["realm"].as_str().unwrap_or("?"),
+            entry.envelope["actor"].as_str().unwrap_or("?"),
+        );
+    }
+    Ok(())
+}
+
 async fn migrate() -> Result<(), String> {
     let connection = config::required("DATABASE_URL").map_err(|e| e.to_string())?;
     let pg: tokio_postgres::Config = connection
@@ -964,6 +1048,7 @@ fn plane() -> Result<Plane, String> {
         login_ui,
         hops: config::proxying::Proxying::from_env().map_err(|e| e.to_string())?,
         egress,
+        ceiling: config::serving::RealmCeiling::from_env().map_err(|e| e.to_string())?,
         sealing: Sealing {
             sender: match config::messaging::Sink::from_env().map_err(|e| e.to_string())? {
                 config::messaging::Sink::None => None,

@@ -96,6 +96,24 @@ pub async fn set_state(
     Ok(changed > 0)
 }
 
+/// One tenant's realms are counted and created by one writer at a time.
+///
+/// Transaction scoped, so it is released at commit and never rides a pooled
+/// backend to the next caller. Counting and then creating without it lets two
+/// creates one below the ceiling both read a count that passes.
+const PLANTING: i32 = 0x504C_414E_u32 as i32;
+
+pub async fn hold_realms(transaction: &Transaction<'_>, tenant: &str) -> StoreResult<()> {
+    transaction
+        .execute(
+            "SELECT pg_advisory_xact_lock($1, hashtext($2))",
+            &[&PLANTING, &tenant],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
 /// How many realms this tenant has, for a check against its own ceiling.
 pub async fn count_realms(transaction: &Transaction<'_>) -> StoreResult<i64> {
     Ok(transaction

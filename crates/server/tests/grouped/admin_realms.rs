@@ -49,6 +49,7 @@ async fn asked_under(
         hops,
         egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     })))
     .await;
     let mut asking = test::TestRequest::default()
@@ -70,6 +71,222 @@ async fn asked_under(
 /// is a conflict, and the switches are rewritten in place afterwards.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_birth_hands_back_the_one_way_into_what_it_made() {
+    let plane = Plane::with_actions(&[AdminAction::RealmCreate, AdminAction::UserRead]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({
+            "name": "annex", "display_name": "Annex", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@annex.test" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let password = born["administrator"]["password"]
+        .as_str()
+        .expect("the birth handed back a password")
+        .to_owned();
+    assert!(password.len() >= 40, "a drawn password, not a placeholder");
+
+    // The creator gained nothing. Its token was minted by another realm and
+    // still reaches nothing here, which is the whole point of handing a
+    // password back rather than letting the maker walk in.
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        "/admin/realms/annex/users",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, "annex"),
+        )
+        .await;
+    let root = store::providers::users::load_by_name(&transaction, "root")
+        .await
+        .expect("the store answered")
+        .expect("the annex holds its administrator");
+    assert!(root.enabled, "the drawn administrator is switched off");
+
+    // The password is worth one login: the account carries the instruction to
+    // replace it, and the login engine puts that ahead of everything else.
+    assert!(
+        root.required_actions
+            .clone()
+            .unwrap_or_default()
+            .contains(&models::entities::user::RequiredAction::UpdatePassword),
+        "the first login is not made to replace the drawn password: {:?}",
+        root.required_actions
+    );
+
+    // Only the hash was kept, so what was handed back cannot be read again.
+    let stored = store::providers::credentials::load_for_user_of_type(
+        &transaction,
+        &root.user_id,
+        models::entities::credentials::CredentialType::Password,
+    )
+    .await
+    .expect("the store answered");
+    let kept = stored.first().expect("a password was stored");
+    assert!(
+        !kept.secret.expose().contains(&password),
+        "the drawn password was kept in the clear"
+    );
+
+    // And the account may actually administer the realm it was drawn for.
+    let held = store::providers::roles::direct_roles_of(&transaction, &root.user_id)
+        .await
+        .expect("the store answered");
+    assert!(
+        held.iter().any(|role| role == "administrator"),
+        "the drawn administrator administers nothing: {held:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_is_taken_away_by_the_realm_itself() {
+    let plane = Plane::with_actions(&[AdminAction::RealmCreate, AdminAction::RealmDelete]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({
+            "name": "doomed", "display_name": "Doomed", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@doomed.test" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    // The maker cannot take it away, confirmation or not: that would be a
+    // token reaching a realm it was not minted by, which is refused before
+    // the handler ever sees the name.
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        "/admin/realms/doomed?confirm=doomed",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Its own administrator can, and only by naming it back. The realm is
+    // planted rather than born here: a realm the plane made sealed its keys
+    // under the server's envelope, and this harness holds another, so a
+    // token it signs is one that realm cannot verify.
+    plane.plant_realm("condemned").await;
+    plane
+        .plant_credential_in(
+            "condemned",
+            &[AdminAction::RealmDelete, AdminAction::RealmRead],
+        )
+        .await;
+    let inside = plane.token(&support::claims_in("condemned"));
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        "/admin/realms/condemned",
+        &inside,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        "/admin/realms/condemned?confirm=condemned",
+        &inside,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // And it is gone, which the same token now learns the way any caller
+    // learns of a realm that is not there.
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        "/admin/realms/condemned",
+        &inside,
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
+    let plane = Plane::with_actions(&[AdminAction::RealmCreate]).await;
+    let bearer = plane.token(&support::claims());
+
+    // A deployment that configured nothing still has a ceiling: fifty, which
+    // this world is nowhere near, so the first call goes through and says so.
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({
+            "name": "roomy", "display_name": "Roomy", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@roomy.test" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // The provisioned world already holds two realms now, so a ceiling of two
+    // is reached before the next call rather than by it.
+    plane.cap_realms(2).await;
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(
+            serde_json::json!({ "name": "overflow", "display_name": "Overflow", "enabled": true,
+                "administrator": { "user_name": "root", "email": "root@example.test" } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // Raised, the same call goes through: the refusal was the ceiling and
+    // not something else about the request.
+    plane.cap_realms(3).await;
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(
+            serde_json::json!({ "name": "overflow", "display_name": "Overflow", "enabled": true,
+                "administrator": { "user_name": "root", "email": "root@example.test" } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let plane = Plane::with_actions(&[
         AdminAction::RealmCreate,
@@ -87,7 +304,10 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "no spaces", "display_name": "x", "enabled": true })),
+        Some(
+            serde_json::json!({ "name": "no spaces", "display_name": "x", "enabled": true,
+                "administrator": { "user_name": "root", "email": "root@example.test" } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
@@ -97,7 +317,10 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "staging", "display_name": "Staging", "enabled": true })),
+        Some(
+            serde_json::json!({ "name": "staging", "display_name": "Staging", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@staging.test" } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{born}");
@@ -108,7 +331,10 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "staging", "display_name": "Again", "enabled": true })),
+        Some(
+            serde_json::json!({ "name": "staging", "display_name": "Again", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@staging.test" } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{told}");
@@ -456,18 +682,24 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // A realm is deleted from somewhere else, never out from under its own
-    // console, and the schema takes everything keyed under it along.
-    let (status, told) = asked(&plane, Method::DELETE, "/admin/realms/main", &bearer, None).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
-
-    // A realm is not deleted from its own console, for the reason it is not
-    // switched off from it: the caller would be removing the ground it
-    // stands on, and no token from anywhere else may do it either.
+    // A deletion that names nothing back is refused. Everything keyed under
+    // the realm goes with the row, so the confirmation is the last thing
+    // standing between a wrong click and a deployment.
     let (status, told) = asked(
         &plane,
         Method::DELETE,
         &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // Naming a different realm back is not naming this one.
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("/admin/realms/{}?confirm=somewhere-else", support::REALM),
         &bearer,
         None,
     )
@@ -563,6 +795,7 @@ async fn a_realm_speaks_over_its_pages() {
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     })))
     .await;
     let request = test::TestRequest::get()
@@ -642,7 +875,10 @@ async fn a_realm_is_not_switched_off_from_its_own_console() {
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "other", "display_name": "Other", "enabled": true })),
+        Some(
+            serde_json::json!({ "name": "other", "display_name": "Other", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@other.test" } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{born}");
@@ -736,7 +972,10 @@ async fn the_privacy_door_refuses_terms_it_cannot_honour() {
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "doored", "display_name": "Doored", "enabled": true })),
+        Some(
+            serde_json::json!({ "name": "doored", "display_name": "Doored", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@doored.test" } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{born}");

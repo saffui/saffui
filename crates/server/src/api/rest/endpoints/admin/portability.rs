@@ -8,6 +8,7 @@ use serde::Deserialize;
 use services::admin::portability::{self, Unportable};
 use store::tenancy::{Tenancy, TenantContext};
 
+use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
 
 /// The realm as a document. Read whole inside one transaction, so no
@@ -39,6 +40,13 @@ pub async fn export(
 pub struct Landing {
     #[serde(rename = "as")]
     pub landed_as: Option<String>,
+    /// Who will administer what lands.
+    ///
+    /// An export carries users and, by construction, no secrets, so a realm
+    /// imported without this holds accounts that cannot answer for
+    /// themselves and nobody can open it. Named here rather than read from
+    /// the document, because the document was written elsewhere.
+    pub administrator: Option<String>,
 }
 
 pub async fn import(
@@ -46,11 +54,13 @@ pub async fn import(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     landing: web::Query<Landing>,
+    sealing: web::Data<Sealing>,
+    ceiling: web::Data<config::serving::RealmCeiling>,
     body: web::Json<ExportedRealm>,
 ) -> Result<HttpResponse, ApiError> {
     let document = body.into_inner();
+    let landing = landing.into_inner();
     let realm_id = landing
-        .into_inner()
         .landed_as
         .unwrap_or_else(|| document.realm.realm_id.clone());
     if realm_id.trim().is_empty() {
@@ -59,7 +69,37 @@ pub async fn import(
             "a realm answers to a name",
         ));
     }
+    let tenant = admin.context.tenant.tenant.clone();
     let mut connection = pool.get().await.map_err(|_| internal())?;
+
+    // The ceiling first, tenant wide, before anything is written. An import
+    // is a realm arriving like any other, and a door that skipped the count
+    // would be the way past it.
+    let counting = tenancy
+        .transaction(&mut connection, &TenantContext::tenant_wide(&tenant))
+        .await
+        .map_err(|_| internal())?;
+    store::providers::tenants::hold_realms(&counting, &tenant)
+        .await
+        .map_err(|_| internal())?;
+    let named = store::providers::tenants::load(&counting)
+        .await
+        .map_err(|_| internal())?
+        .and_then(|held| held.limits)
+        .and_then(|limits| limits.max_realms);
+    if let Some(ceiling) = ceiling.against(named)
+        && store::providers::tenants::count_realms(&counting)
+            .await
+            .map_err(|_| internal())?
+            >= ceiling
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            format!("this tenant holds the {ceiling} realms it is allowed"),
+        ));
+    }
+    drop(counting);
+
     let transaction = tenancy
         .transaction(
             &mut connection,
@@ -75,8 +115,49 @@ pub async fn import(
     )
     .await
     .map_err(refused)?;
+
+    // The way in, when one was asked for. The account may have arrived with
+    // the document; either way it leaves here with a drawn password and the
+    // instruction to replace it.
+    let opened = match landing.administrator.as_deref() {
+        Some(user_name) if !user_name.trim().is_empty() => Some((
+            user_name.to_owned(),
+            services::provisioning::provision_first_administrator(
+                &transaction,
+                sealing.provider.as_ref(),
+                &tenant,
+                &realm_id,
+                user_name,
+                &format!("{user_name}@{realm_id}.invalid"),
+            )
+            .await
+            .map_err(|_| internal())?,
+        )),
+        _ => None,
+    };
+    store::tenant_chain::append(
+        &transaction,
+        &serde_json::json!({
+            "kind": "realm.imported",
+            "occurred_at": chrono::Utc::now().timestamp() as f64,
+            "realm": realm_id,
+            "actor": admin.context.principal.id(),
+            "actor_realm": admin.context.tenant.realm_id,
+            "party": admin.context.presenter,
+        }),
+    )
+    .await
+    .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;
-    Ok(HttpResponse::Created().json(serde_json::json!({ "realm_id": realm_id })))
+
+    let mut answer = serde_json::json!({ "realm_id": realm_id });
+    if let Some((user_name, password)) = opened {
+        answer["administrator"] = serde_json::json!({
+            "user_name": user_name,
+            "password": password,
+        });
+    }
+    Ok(HttpResponse::Created().json(answer))
 }
 
 fn refused(why: Unportable) -> ApiError {

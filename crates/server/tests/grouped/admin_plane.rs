@@ -47,6 +47,7 @@ fn mounted(plane: &Plane, policy: &AdminPolicy) -> Mounted {
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     }
 }
 

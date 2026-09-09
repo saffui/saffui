@@ -103,7 +103,7 @@ function decided(
   };
 }
 
-export function previewAnswer<T>(path: string): T {
+export function previewAnswer<T>(path: string, method = "GET"): T {
   const answer = (held: unknown) => held as T;
 
   if (path.endsWith("/mail")) throw new ApiError(404, "nothing is configured");
@@ -541,6 +541,20 @@ export function previewAnswer<T>(path: string): T {
   }
   if (path.endsWith("/registration-secret")) {
     return answer({ registration_secret: "preview-secret-drawn-once" });
+  }
+  if (path === "/admin/realms" && method === "POST") {
+    // A birth, answered the way the plane answers one: the realm, and the
+    // credential that opens it, readable here and nowhere afterwards.
+    return answer({
+      realm_id: "annex",
+      name: "annex",
+      display_name: "Annex",
+      enabled: true,
+      administrator: {
+        user_name: "root",
+        password: "8Qm2vXpLd0RhTsYb_cN4jWkE6zAuFgH1iOoP3-eSrVc",
+      },
+    });
   }
   if (path === "/admin/realms" || path.startsWith("/admin/realms?")) {
     const rows = [

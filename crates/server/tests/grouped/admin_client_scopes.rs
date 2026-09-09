@@ -31,6 +31,7 @@ async fn asked(
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Outward,
         sealing: support::sealing(),
+        ceiling: support::ceiling(),
     })))
     .await;
     let mut asking = test::TestRequest::default()
@@ -370,6 +371,7 @@ async fn a_new_client_carries_the_catalogue_defaults() {
                     hops: config::proxying::Proxying::none(),
                     egress: config::serving::Egress::Outward,
                     sealing: support::sealing(),
+                    ceiling: support::ceiling(),
                 })))
                 .await;
             let response = test::call_service(

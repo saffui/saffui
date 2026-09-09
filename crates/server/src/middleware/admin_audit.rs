@@ -94,12 +94,18 @@ where
             let entry: Option<(TenantContext, serde_json::Value)> = {
                 let request = answered.request();
                 let held = request.extensions();
-                held.get::<Admin>().and_then(|admin| {
+                held.get::<Admin>().map(|admin| {
                     let path = request.path().to_owned();
-                    // The realm the chain belongs to is the one in the path; a
-                    // route outside a realm has no chain to write.
-                    let realm = realm_of(&path)?;
-                    let context = TenantContext::new(&admin.context.tenant.tenant, &realm);
+                    // The chain is the caller's own realm, read off the token
+                    // rather than the path. The guard makes the two agree
+                    // wherever a path names a realm, so this is the same row
+                    // it always was; where a path names none, as a realm's
+                    // own creation does not, it gives the entry the only home
+                    // it can have. Writing into the realm just made would be
+                    // the cross-realm write the guard exists to refuse, and
+                    // an auditor looks for what this realm's administrators
+                    // did in this realm's chain.
+                    let context = admin.context.tenant.clone();
                     let mut envelope = serde_json::json!({
                         "kind": if mutates { "admin.write" } else { "admin.read" },
                         "occurred_at": Utc::now().timestamp() as f64,
@@ -116,7 +122,7 @@ where
                     if let Some(trace) = crate::otel::current_trace_id() {
                         envelope["trace_id"] = serde_json::Value::String(trace);
                     }
-                    Some((context, envelope))
+                    (context, envelope)
                 })
             };
             if let Some((context, envelope)) = entry {
@@ -135,20 +141,17 @@ async fn reads_are_journalled(
     tenancy: &Tenancy,
     request: &actix_web::HttpRequest,
 ) -> bool {
-    let Some(admin) = request
+    let Some(context) = request
         .extensions()
         .get::<Admin>()
-        .map(|held| held.context.tenant.tenant.clone())
+        .map(|held| held.context.tenant.clone())
     else {
-        return false;
-    };
-    let Some(realm) = realm_of(request.path()) else {
         return false;
     };
     let Ok(mut connection) = pool.get().await else {
         return false;
     };
-    let context = TenantContext::new(&admin, &realm);
+    let realm = context.realm_id.clone();
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
         return false;
     };
@@ -156,14 +159,6 @@ async fn reads_are_journalled(
         store::providers::realms::load(&transaction, &realm).await,
         Ok(Some(held)) if held.admin_events_enabled == Some(true)
     )
-}
-
-/// The realm segment of an admin path: `/admin/realms/{realm}/...`, already
-/// percent-decoded by the router.
-fn realm_of(path: &str) -> Option<String> {
-    let rest = path.strip_prefix("/admin/realms/")?;
-    let realm = rest.split('/').next().filter(|held| !held.is_empty())?;
-    Some(realm.to_owned())
 }
 
 /// Append, starting the realm's chain on the way when nothing has yet.

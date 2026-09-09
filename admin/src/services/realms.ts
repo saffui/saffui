@@ -10,18 +10,39 @@ export async function listRealms(): Promise<RealmBrief[]> {
   return page.items;
 }
 
-/// Create a realm. The server seeds it ready: scopes, console, key, flow.
-export async function createRealm(name: string, displayName: string): Promise<RealmBrief> {
-  return api<RealmBrief>("/admin/realms", {
+/// What a birth answers with: the realm, and the one credential that opens
+/// it. The password is readable this once and never again, so a caller that
+/// drops it has drawn a realm nobody can enter.
+export interface RealmBorn extends RealmBrief {
+  administrator: { user_name: string; password: string };
+}
+
+/// Create a realm. The server seeds it ready: scopes, console, key and flow
+/// arrive with it, and so does its first administrator, because this
+/// session's token was minted by another realm and will never reach the new
+/// one.
+export async function createRealm(
+  name: string,
+  displayName: string,
+  administrator: { userName: string; email: string },
+): Promise<RealmBorn> {
+  return api<RealmBorn>("/admin/realms", {
     method: "POST",
-    json: { name, display_name: displayName, enabled: true },
+    json: {
+      name,
+      display_name: displayName,
+      enabled: true,
+      administrator: { user_name: administrator.userName, email: administrator.email },
+    },
     subject: say("subject-realm", { realm: name }),
   });
 }
 
-/// Take a realm away. Refused for the realm the session belongs to.
+/// Take a realm away. Only this session's own realm, and only by naming it
+/// back: everything keyed under it goes, this account included.
 export async function deleteRealm(realm: string): Promise<void> {
-  await api<void>(`/admin/realms/${encodeURIComponent(realm)}`, {
+  const named = encodeURIComponent(realm);
+  await api<void>(`/admin/realms/${named}?confirm=${named}`, {
     method: "DELETE",
     quiet: true,
   });

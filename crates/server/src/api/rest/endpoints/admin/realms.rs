@@ -123,6 +123,31 @@ fn usable_name(name: &str) -> bool {
 /// told who is writing. A failure between the two leaves a realm that a
 /// second create refuses; `provision` heals such a realm, and so does the
 /// deployment's next start.
+/// What a realm needs at birth: the realm itself, and the one person who
+/// will be able to enter it.
+///
+/// The administrator is required rather than optional. A realm made through
+/// the plane cannot be reached by the token that made it, self-registration
+/// is closed by default, and nothing else ever creates a user there; an
+/// optional field would therefore make it easy to create a realm that no
+/// living person can open, and impossible to tell from one that works.
+#[derive(serde::Deserialize)]
+pub struct Birth {
+    #[serde(flatten)]
+    pub realm: RealmCreateModel,
+    pub administrator: Administrator,
+}
+
+#[derive(serde::Deserialize)]
+pub struct Administrator {
+    pub user_name: String,
+    pub email: String,
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct thing the birth needs"
+)]
 pub async fn create(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
@@ -130,9 +155,11 @@ pub async fn create(
     policy: web::Data<AdminPolicy>,
     origin: web::Data<PublicOrigin>,
     sealing: web::Data<Sealing>,
-    body: web::Json<RealmCreateModel>,
+    ceiling: web::Data<config::serving::RealmCeiling>,
+    body: web::Json<Birth>,
 ) -> Result<HttpResponse, ApiError> {
-    let asked = body.into_inner();
+    let born = body.into_inner();
+    let (asked, first) = (born.realm, born.administrator);
     if !usable_name(&asked.name) {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,
@@ -154,6 +181,28 @@ pub async fn create(
         .is_some()
     {
         return Err(ApiError::new(ErrorCode::RealmAlreadyExists));
+    }
+    // The tenant's own ceiling, where it set one. The lock is taken before
+    // the count, so two creates one below the ceiling cannot both read a
+    // count that passes and both write.
+    store::providers::tenants::hold_realms(&transaction, &tenant)
+        .await
+        .map_err(|_| internal())?;
+    let named = store::providers::tenants::load(&transaction)
+        .await
+        .map_err(|_| internal())?
+        .and_then(|held| held.limits)
+        .and_then(|limits| limits.max_realms);
+    if let Some(ceiling) = ceiling.against(named)
+        && store::providers::tenants::count_realms(&transaction)
+            .await
+            .map_err(|_| internal())?
+            >= ceiling
+    {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            format!("this tenant holds the {ceiling} realms it is allowed"),
+        ));
     }
     let realm = asked.into_model(
         realm_id.clone(),
@@ -204,28 +253,94 @@ pub async fn create(
     provisioning::provision_levels(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?;
+    // Last, so a realm that fails to become usable does not leave a password
+    // in an operator's hands for an account that was never committed.
+    let password = provisioning::provision_first_administrator(
+        &transaction,
+        sealing.provider.as_ref(),
+        &tenant,
+        &realm_id,
+        &first.user_name,
+        &first.email,
+    )
+    .await
+    .map_err(|_| internal())?;
+    tenant_chain(&transaction, &admin, &realm_id, "realm.created", now)
+        .await
+        .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;
 
-    Ok(HttpResponse::Created().json(brief(realm)))
+    // The one time this password is ever readable. It is stored as a hash
+    // like any other, and the account carries the instruction to replace it
+    // at the first login, so what is written here is worth one entry.
+    let mut answer = serde_json::to_value(brief(realm)).map_err(|_| internal())?;
+    answer["administrator"] = serde_json::json!({
+        "user_name": first.user_name,
+        "password": password,
+    });
+    Ok(HttpResponse::Created().json(answer))
+}
+
+/// Write what happened to a realm where it will still be readable afterwards.
+///
+/// The tenant's chain, not the realm's: a realm's own chain is keyed to it and
+/// cascades with it, so the entry recording a deletion would be deleted by the
+/// statement it records. The served plane may append here and may not read,
+/// which keeps a neighbouring realm's existence as unknowable as the guard
+/// makes it.
+async fn tenant_chain(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    admin: &Admin,
+    realm_id: &str,
+    kind: &str,
+    at: i64,
+) -> Result<(), store::error::StoreError> {
+    store::tenant_chain::append(
+        transaction,
+        &serde_json::json!({
+            "kind": kind,
+            "occurred_at": at as f64,
+            "realm": realm_id,
+            "actor": admin.context.principal.id(),
+            "actor_realm": admin.context.tenant.realm_id,
+            "party": admin.context.presenter,
+        }),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Take the realm away. The schema cascades, so everything keyed under it
 /// goes with the row: users, clients, sessions, keys, the lot.
 ///
-/// The realm this caller's own token was minted by is refused: deleting it
-/// would take the admin plane down with it, and the person would learn that
-/// from a broken console rather than an answer. Do it from another realm.
+/// Only the caller's own realm. The guard refuses every other name before
+/// this runs, so the one thing left to check is that the caller meant it:
+/// the body must name the realm back, the way a person is asked to type what
+/// they are about to lose.
+///
+/// This used to refuse the caller's own realm and point at another one. That
+/// advice became impossible to follow the day a token stopped reaching two
+/// realms, and the two refusals together left the route unreachable.
+#[derive(serde::Deserialize)]
+pub struct Confirmation {
+    pub confirm: Option<String>,
+}
+
 pub async fn delete(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
+    confirm: web::Query<Confirmation>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    if admin.context.tenant.realm_id == realm_id {
+    // The name typed back. Everything under the realm goes with the row, the
+    // caller's own account included, so the confirmation is the last thing
+    // standing between a wrong click and a deployment.
+    if confirm.into_inner().confirm.as_deref() != Some(realm_id.as_str()) {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,
-            "a realm is not deleted from its own console: sign into another realm first".to_owned(),
+            "name the realm back to confirm what is about to be taken away".to_owned(),
         ));
     }
     let mut connection = pool.get().await.map_err(|_| internal())?;
@@ -242,6 +357,18 @@ pub async fn delete(
     {
         return Err(ApiError::new(ErrorCode::RealmNotFound));
     }
+    // In the same transaction as the deletion, and in the tenant's chain
+    // rather than the realm's: the realm's own chain went with the cascade a
+    // statement ago, which is the reason this table exists at all.
+    tenant_chain(
+        &transaction,
+        &admin,
+        &realm_id,
+        "realm.deleted",
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }

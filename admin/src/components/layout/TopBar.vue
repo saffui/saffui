@@ -5,7 +5,7 @@ import AppIcon from "@/components/AppIcon.vue";
 import { offeredTongues, pinTongue, say, tongueInForce } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
 import { useSession } from "@/stores/session";
-import { createRealm, listRealms } from "@/services/realms";
+import { createRealm, listRealms, type RealmBorn } from "@/services/realms";
 import type { RealmBrief } from "@/models/realm";
 import CommandPalette from "./CommandPalette.vue";
 
@@ -44,22 +44,37 @@ async function openRealms() {
   }
 }
 
-function switchTo(realm: RealmBrief) {
-  realmsOpen.value = false;
-  router.push(`/${realm.name}/overview`);
-}
-
 const making = ref(false);
 const newName = ref("");
 const newDisplay = ref("");
+const newAdmin = ref("");
+const newEmail = ref("");
 const makeFailed = ref("");
+/// What the birth answered with, held until the person dismisses it. This is
+/// the only moment the password exists anywhere a human can read it.
+const born = ref<RealmBorn | null>(null);
+const copied = ref(false);
 
 function openMaking() {
   realmsOpen.value = false;
   making.value = true;
   newName.value = "";
   newDisplay.value = "";
+  newAdmin.value = "";
+  newEmail.value = "";
   makeFailed.value = "";
+  born.value = null;
+  copied.value = false;
+}
+
+async function copyPassword() {
+  if (!born.value) return;
+  try {
+    await navigator.clipboard.writeText(born.value.administrator.password);
+    copied.value = true;
+  } catch {
+    // The box stays selectable; copying by hand still works.
+  }
 }
 
 /// What the server will accept as a name; refused here first so the person
@@ -75,11 +90,19 @@ async function makeRealm() {
     makeFailed.value = say("realm-new-bad-name");
     return;
   }
+  const admin = newAdmin.value.trim();
+  if (!usableName(admin)) {
+    makeFailed.value = say("realm-new-bad-admin");
+    return;
+  }
   try {
-    await createRealm(name, newDisplay.value.trim() || name);
-    making.value = false;
-    // By the typed name, not the echo: the destination is what was asked for.
-    router.push(`/${name}/overview`);
+    // No routing to the new realm: this session's token was minted by
+    // another one and reaches nothing there. What the birth hands back is
+    // the way in, and it is shown once.
+    born.value = await createRealm(name, newDisplay.value.trim() || name, {
+      userName: admin,
+      email: newEmail.value.trim(),
+    });
   } catch (refused) {
     makeFailed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -112,73 +135,169 @@ function initials(name: string): string {
       </button>
       <div
         v-if="realmsOpen"
-        class="absolute top-9 left-0 z-40 w-56 rounded-md border border-border bg-surface p-1 shadow-(--sf-shadow)"
+        class="absolute top-9 left-0 z-40 w-[238px] overflow-hidden rounded-md border border-glass-line bg-glass shadow-(--sf-shadow) backdrop-blur-xl"
       >
         <button
           v-for="realm in realms"
           :key="realm.realm_id"
           type="button"
-          class="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-surface-2"
-          :class="realm.name === current && 'bg-surface-2 font-medium'"
-          @click="switchTo(realm)"
+          class="flex h-[46px] w-full items-center gap-[9px] px-2.5 py-2 text-left"
+          :class="realm.name === current ? 'bg-accent-tint' : 'hover:bg-neutral-tint'"
+          @click="realmsOpen = false"
         >
-          <span class="font-mono text-[11px]">{{ realm.name }}</span>
-          <span class="ml-auto truncate text-[10.5px] text-faint">{{ realm.display_name }}</span>
-          <span v-if="!realm.enabled" class="text-[10px] text-danger">{{
+          <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span
+              class="truncate font-mono text-[11.5px]"
+              :class="realm.name === current ? 'text-accent' : 'text-ink'"
+              >{{ realm.name }}</span
+            >
+            <span class="truncate text-[10.5px] text-faint">{{ realm.display_name }}</span>
+          </span>
+          <AppIcon
+            v-if="realm.name === current"
+            name="verified"
+            :size="13"
+            class="shrink-0 text-accent"
+          />
+          <span v-if="!realm.enabled" class="sf-badge sf-badge-danger shrink-0">{{
             say("users-disabled")
           }}</span>
         </button>
-        <p v-if="!realms.length" class="px-2 py-2 text-[11px] text-muted">
+        <p v-if="!realms.length" class="px-2.5 py-3 text-[11px] text-muted">
           {{ say("palette-nothing") }}
         </p>
         <button
           type="button"
-          class="mt-1 flex w-full items-center gap-2 rounded border-t border-border px-2 pt-2 pb-1.5 text-left text-xs text-accent hover:bg-surface-2"
+          class="flex h-[30px] w-full items-center gap-2 border-t border-glass-line px-2.5 text-left hover:bg-neutral-tint"
           @click="openMaking"
         >
-          <AppIcon name="plus" :size="12" />
-          {{ say("realm-new") }}
+          <AppIcon name="plus" :size="13" class="text-muted" />
+          <span class="flex-1 text-[11.5px] text-muted">{{ say("realm-new") }}</span>
         </button>
       </div>
     </div>
 
-    <div v-if="making" class="fixed inset-0 z-50">
-      <div class="absolute inset-0 bg-black/30" @click="making = false"></div>
+    <div v-if="making" class="fixed inset-0 z-50 flex items-start justify-center">
+      <div class="absolute inset-0 bg-black/45" @click="making = false"></div>
+
+      <div
+        v-if="born"
+        class="relative mt-24 w-[540px] max-w-full rounded-lg border border-glass-line bg-glass shadow-(--sf-shadow) backdrop-blur-xl"
+      >
+        <div class="flex h-[66px] items-center gap-3 px-[18px]">
+          <span
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ok-tint text-ok"
+          >
+            <AppIcon name="verified" :size="15" />
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-[15px] text-ink">{{
+              say("realm-born", { realm: born.name })
+            }}</span>
+            <span class="block truncate font-mono text-[11px] text-faint">{{ born.realm_id }}</span>
+          </span>
+        </div>
+        <div class="flex flex-col gap-3.5 px-[18px] pb-1">
+          <p class="text-[13px] text-ink">{{ say("realm-born-lede") }}</p>
+          <div class="flex flex-col gap-1.5">
+            <span class="text-[10.5px] text-faint">{{ say("realm-born-credential") }}</span>
+            <div class="flex flex-col gap-1 rounded-md bg-surface-2 px-3 py-2.5">
+              <span class="font-mono text-[11px] text-muted"
+                >user_name = {{ born.administrator.user_name }}</span
+              >
+              <span class="font-mono text-[11px] break-all text-ink">{{
+                born.administrator.password
+              }}</span>
+            </div>
+          </div>
+          <div class="flex items-center gap-2 rounded-md bg-warn-tint px-3 py-2.5">
+            <AppIcon name="danger" :size="13" class="shrink-0 text-warn" />
+            <span class="text-[11px] text-muted">{{ say("realm-born-once") }}</span>
+          </div>
+        </div>
+        <div class="flex h-14 items-center gap-3 px-[18px]">
+          <span class="min-w-0 flex-1 truncate font-mono text-[10.5px] text-faint">{{
+            say("realm-born-trail")
+          }}</span>
+          <button type="button" class="sf-button sf-button-secondary" @click="copyPassword">
+            {{ copied ? say("action-copied") : say("action-copy") }}
+          </button>
+          <button type="button" class="sf-button sf-button-primary" @click="making = false">
+            {{ say("action-done") }}
+          </button>
+        </div>
+      </div>
+
       <form
-        class="absolute top-28 left-1/2 w-[380px] max-w-full -translate-x-1/2 rounded-lg border border-border bg-surface p-4 shadow-(--sf-shadow)"
+        v-else
+        class="relative mt-24 w-[540px] max-w-full rounded-lg border border-glass-line bg-glass shadow-(--sf-shadow) backdrop-blur-xl"
         @submit.prevent="makeRealm"
       >
-        <h2 class="text-sm font-semibold">{{ say("realm-new") }}</h2>
-        <p class="mt-1 text-[11px] text-muted">{{ say("realm-new-lede") }}</p>
-        <label class="mt-3 block text-[11px] font-medium text-muted">
-          {{ say("settings-name") }} <AppHint name="realm-new-name-help" />
-          <input
-            v-model="newName"
-            class="sf-field mt-1 font-mono"
-            spellcheck="false"
-            autofocus
-          />
-        </label>
-        <label class="mt-2 block text-[11px] font-medium text-muted">
-          {{ say("directory-col-display") }} <AppHint name="realm-new-display-help" />
-          <input
-            v-model="newDisplay"
-            class="sf-field mt-1"
-          />
-        </label>
-        <p v-if="makeFailed" class="mt-2 text-[11px] text-danger" role="alert">{{ makeFailed }}</p>
-        <div class="mt-3 flex items-center justify-end gap-2">
+        <div class="flex h-[66px] items-center gap-3 px-[18px]">
+          <span
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent-tint text-accent"
+          >
+            <AppIcon name="plus" :size="15" />
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block text-[15px] text-ink">{{ say("realm-new") }}</span>
+            <span class="block text-[11px] text-faint">{{ say("realm-new-lede") }}</span>
+          </span>
           <button
             type="button"
-            class="rounded-md border border-border px-3 py-1.5 text-xs text-muted hover:bg-surface-2"
+            class="shrink-0 text-muted hover:text-ink"
+            :aria-label="say('action-cancel')"
+            @click="making = false"
+          >
+            <AppIcon name="close" :size="16" />
+          </button>
+        </div>
+        <div class="flex flex-col gap-3.5 px-[18px] pb-1">
+          <div class="flex gap-3">
+            <label class="flex flex-1 flex-col gap-1.5">
+              <span class="text-[10.5px] text-faint">
+                {{ say("settings-name") }} <AppHint name="realm-new-name-help" />
+              </span>
+              <input v-model="newName" class="sf-field font-mono" spellcheck="false" autofocus />
+            </label>
+            <label class="flex flex-1 flex-col gap-1.5">
+              <span class="text-[10.5px] text-faint">
+                {{ say("directory-col-display") }} <AppHint name="realm-new-display-help" />
+              </span>
+              <input v-model="newDisplay" class="sf-field" />
+            </label>
+          </div>
+          <div class="flex flex-col gap-1.5 rounded-md bg-neutral-tint px-3 py-2.5">
+            <span class="text-[10.5px] text-faint">{{ say("realm-new-admin-lede") }}</span>
+            <div class="flex gap-3">
+              <input
+                v-model="newAdmin"
+                class="sf-field flex-1 font-mono"
+                spellcheck="false"
+                :placeholder="say('realm-new-admin-name')"
+              />
+              <input
+                v-model="newEmail"
+                class="sf-field flex-1"
+                type="email"
+                :placeholder="say('realm-new-admin-email')"
+              />
+            </div>
+          </div>
+          <p v-if="makeFailed" class="text-[11px] text-danger" role="alert">{{ makeFailed }}</p>
+        </div>
+        <div class="flex h-14 items-center gap-3 px-[18px]">
+          <span class="min-w-0 flex-1 truncate font-mono text-[10.5px] text-faint">{{
+            say("realm-new-trail")
+          }}</span>
+          <button
+            type="button"
+            class="sf-button sf-button-secondary"
             @click="making = false"
           >
             {{ say("action-cancel") }}
           </button>
-          <button
-            type="submit"
-            class="sf-button sf-button-primary"
-          >
+          <button type="submit" class="sf-button sf-button-primary">
             {{ say("realm-create") }}
           </button>
         </div>

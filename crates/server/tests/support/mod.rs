@@ -649,6 +649,15 @@ pub fn login_ui() -> config::serving::LoginUi {
     config::serving::LoginUi::parse("https://login.test").expect("a usable login ui")
 }
 
+/// The realm ceiling a mounted plane carries.
+///
+/// The deployment default, which is what a suite that says nothing about
+/// ceilings should meet; a suite about them writes the tenant's own number.
+#[allow(dead_code, reason = "not every suite mounts the plane")]
+pub fn ceiling() -> config::serving::RealmCeiling {
+    config::serving::RealmCeiling::from_env().expect("a ceiling")
+}
+
 #[allow(
     dead_code,
     reason = "not every suite mints a token or mounts the plane"
@@ -1781,6 +1790,27 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
+    /// Give this deployment's tenant a ceiling on how many realms it holds.
+    ///
+    /// A tenant with no ceiling skips the check rather than comparing against
+    /// something infinite, so a test of the refusal has to write one.
+    #[allow(dead_code, reason = "only the suites that create realms ask")]
+    pub async fn cap_realms(&self, ceiling: i64) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::tenant_wide(TENANT))
+            .await;
+        let limits = serde_json::json!({ "max_realms": ceiling });
+        transaction
+            .execute(
+                "UPDATE tenants SET limits = $1 WHERE tenant_id = $2",
+                &[&limits, &TENANT],
+            )
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
     /// Pin this deployment's tenant to a region, so a node elsewhere is refused
     /// it. Residency is opted into on both sides, so a test of the refusal has
     /// to write the tenant's half.
@@ -2415,6 +2445,7 @@ pub async fn granted_scope_of(plane: &Plane, asked: &[(&str, &str)]) -> String {
         login_ui: login_ui(),
         hops: config::proxying::Proxying::none(),
         egress: config::serving::Egress::Outward,
+        ceiling: ceiling(),
         sealing: sealing(),
     };
     let app = actix_web::test::init_service(

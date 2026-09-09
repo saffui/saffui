@@ -24,6 +24,9 @@ import {
   Eye,
   EyeOff,
   BadgeCheck,
+  TriangleAlert,
+  X,
+  Trash2,
   type LucideProps,
 } from "lucide-vue-next";
 import type { FunctionalComponent } from "vue";
@@ -50,6 +53,9 @@ const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
   eye: Eye,
   "eye-off": EyeOff,
   verified: BadgeCheck,
+  danger: TriangleAlert,
+  close: X,
+  remove: Trash2,
 };
 
 const props = defineProps<{ name: keyof typeof GLYPHS; size?: number }>();

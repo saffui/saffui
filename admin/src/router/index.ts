@@ -131,5 +131,16 @@ router.beforeEach((to) => {
     }
     return "/login";
   }
+  // Signed in, and the path names a realm this session was not minted by.
+  // Every call the page would make carries the token of another realm and
+  // the server refuses each one, so the person reads an access denied for a
+  // realm they may legitimately administer under another sign-in. The realm
+  // is chosen by signing into it, so that is what happens here.
+  const named = typeof to.params.realm === "string" ? to.params.realm : "";
+  if (named && named !== session.realm) {
+    rememberPath(to.fullPath);
+    void session.login(named);
+    return false;
+  }
   return true;
 });

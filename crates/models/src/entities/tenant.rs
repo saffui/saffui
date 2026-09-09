@@ -13,8 +13,10 @@ str_enum! {
     }
 }
 
-/// Per-tenant ceilings an operator may set. Every field `None` — the default —
-/// means unlimited.
+/// Per-tenant ceilings an operator may set. A field left `None` says nothing
+/// rather than saying unlimited: the deployment's own ceiling answers for it.
+/// A tenant that means unlimited writes a zero, which is what a zero means
+/// wherever a ceiling is written in this deployment.
 ///
 /// These bound what one tenant can make the deployment do, not what it is
 /// entitled to: a runaway import in one tenant is the reason they exist.
@@ -48,9 +50,12 @@ impl TenantModel {
         self.state == TenantState::Active
     }
 
-    /// A tenant with no limits skips the quota checks rather than comparing
-    /// against a zero that would refuse everything.
-    pub fn is_unlimited(&self) -> bool {
+    /// Whether this tenant wrote any ceiling of its own.
+    ///
+    /// Not the same as unlimited, which it used to claim: a tenant that says
+    /// nothing is answered by the deployment's ceiling, and only a tenant
+    /// that wrote a zero is unbounded.
+    pub fn names_no_ceilings(&self) -> bool {
         self.limits.is_none()
     }
 }
@@ -117,10 +122,10 @@ mod tests {
     }
 
     #[test]
-    fn create_defaults_to_an_active_unlimited_tenant() {
+    fn create_defaults_to_an_active_tenant_naming_no_ceiling() {
         let tenant: TenantModel = create().into();
         assert!(tenant.is_active());
-        assert!(tenant.is_unlimited());
+        assert!(tenant.names_no_ceilings());
         assert_eq!(tenant.version, 1);
     }
 
@@ -136,7 +141,7 @@ mod tests {
         }
         .into();
         assert_eq!(tenant.region.as_deref(), Some("eu-west"));
-        assert!(!tenant.is_unlimited());
+        assert!(!tenant.names_no_ceilings());
         assert_eq!(tenant.limits.unwrap().max_realms, Some(100));
     }
 

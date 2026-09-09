@@ -68,6 +68,18 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/features",
+            action: AdminAction::FeatureRead,
+            handler: Some(|| web::get().to(features::list_for_realm)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/features/{slug}",
+            action: AdminAction::FeatureWrite,
+            handler: Some(|| web::put().to(features::set_wish)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/export",
             action: AdminAction::RealmExport,
             handler: Some(|| web::get().to(portability::export)),

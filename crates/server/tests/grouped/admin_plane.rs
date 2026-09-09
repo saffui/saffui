@@ -2995,3 +2995,109 @@ async fn an_evidence_pack_accounts_for_its_period_with_the_chain_leading() {
     assert_eq!(pack["verdict"], "chain-unverified", "{pack}");
     assert!(pack["chain"]["at"].is_i64(), "{pack}");
 }
+
+/// A realm may close a capability, and closing it shuts every door that
+/// belongs to it rather than most of them.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_that_closes_scim_closes_all_of_it() {
+    let plane = Plane::with_actions(&[
+        AdminAction::FeatureRead,
+        AdminAction::FeatureWrite,
+        AdminAction::ScimRead,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let root = format!("/realms/{}/scim/v2", support::REALM);
+
+    let (status, _) = fetched(&plane, Method::GET, &format!("{root}/Users"), &bearer).await;
+    assert_eq!(status, StatusCode::OK, "SCIM does not answer to begin with");
+
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}/features/scim", support::REALM),
+        &bearer,
+        serde_json::json!({ "enabled": false }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+
+    // Every SCIM route, not the one the switch was tested against.
+    for leaf in [
+        "Users",
+        "Groups",
+        "Schemas",
+        "ResourceTypes",
+        "ServiceProviderConfig",
+    ] {
+        let (status, _) = fetched(&plane, Method::GET, &format!("{root}/{leaf}"), &bearer).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{leaf} still answers on a realm that closed SCIM"
+        );
+    }
+
+    // Returning the realm to the process's answer is not the same as asking
+    // for the capability to be on, and it reopens the root.
+    let (status, told) = written(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}/features/scim", support::REALM),
+        &bearer,
+        serde_json::json!({ "enabled": null }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+
+    let (status, _) = fetched(&plane, Method::GET, &format!("{root}/Users"), &bearer).await;
+    assert_eq!(status, StatusCode::OK, "the root did not reopen");
+}
+
+/// What the process alone decides is refused at the door rather than stored
+/// and quietly ignored.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_is_refused_a_capability_the_process_holds() {
+    let plane = Plane::with_actions(&[AdminAction::FeatureRead, AdminAction::FeatureWrite]).await;
+    let bearer = plane.token(&support::claims());
+
+    for slug in ["metrics", "declarative-user-profile"] {
+        let (status, told) = written(
+            &plane,
+            Method::PUT,
+            &format!("/admin/realms/{}/features/{slug}", support::REALM),
+            &bearer,
+            serde_json::json!({ "enabled": false }),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{slug} was accepted: {told}"
+        );
+    }
+
+    let (status, told) = fetched(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{}/features", support::REALM),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let items = told["items"].as_array().expect("a registry");
+    for item in items {
+        assert!(
+            item["asked"].is_null(),
+            "a refused wish was stored anyway: {item}"
+        );
+        if item["reach"] == "process" {
+            assert_eq!(
+                item["enabled"], item["in_process"],
+                "a process capability moved for a realm: {item}"
+            );
+        }
+    }
+}

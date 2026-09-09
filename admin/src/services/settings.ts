@@ -102,6 +102,24 @@ export async function listFeatures() {
   return api<import("@/models/feature").FeatureBrief[]>("/admin/features");
 }
 
+/// The same registry, said for one realm.
+export async function listRealmFeatures(realm: string) {
+  const told = await api<{ items: import("@/models/feature").RealmFeature[] }>(
+    adminPath(realm, "features"),
+  );
+  return told.items;
+}
+
+/// Say what this realm wants of one capability. `null` returns it to whatever
+/// the process runs, which is not the same as asking for it to be off.
+export async function keepFeatureWish(realm: string, slug: string, enabled: boolean | null) {
+  await api<void>(adminPath(realm, `features/${encodeURIComponent(slug)}`), {
+    method: "PUT",
+    json: { enabled },
+    subject: say("subject-feature", { slug }),
+  });
+}
+
 /// One page of the sign-in log, newest first.
 export async function listSignInEvents(realm: string, first: number, max: number) {
   return api<import("@/models/paging").Page<import("@/models/events").SignInEvent>>(

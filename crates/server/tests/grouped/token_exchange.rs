@@ -779,3 +779,85 @@ async fn a_client_without_a_root_cannot_ask_for_capabilities() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
     assert_eq!(told["error"], "unauthorized_client", "{told}");
 }
+
+/// Closing the exchange for a realm stops the door and the advertisement
+/// together.
+///
+/// A client reads discovery to decide what to attempt. A document that keeps
+/// offering a grant the token endpoint then denies costs a round trip and
+/// reads as a fault of the client, so the two have to move as one.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_that_closes_the_exchange_stops_offering_it() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead]).await;
+    opted_in(&plane, support::CONFIDENTIAL).await;
+    let subject = subject_tokens(&plane, "openid profile").await;
+    let subject_token = subject["access_token"]
+        .as_str()
+        .expect("a token")
+        .to_owned();
+
+    let offered = |told: &Value| {
+        told["grant_types_supported"]
+            .as_array()
+            .expect("the grants")
+            .iter()
+            .any(|held| held == EXCHANGE)
+    };
+
+    let (status, told) = discovered(&plane).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(offered(&told), "the exchange is not offered to begin with");
+
+    exchange_turned(&plane, false).await;
+
+    let (status, told) = discovered(&plane).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(
+        !offered(&told),
+        "a closed exchange is still advertised: {told}"
+    );
+
+    let (status, told) = asking(
+        &plane,
+        &[
+            ("grant_type", EXCHANGE),
+            ("subject_token", &subject_token),
+            ("subject_token_type", ACCESS_TYPE),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(told["error"], "unsupported_grant_type", "{told}");
+}
+
+async fn discovered(plane: &Plane) -> (StatusCode, Value) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let request = test::TestRequest::get()
+        .uri(&format!("/realms/{REALM}/.well-known/openid-configuration"))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    let status = response.status();
+    (status, test::read_body_json(response).await)
+}
+
+/// What the admin door writes, written straight so this suite does not need
+/// a token that may switch capabilities.
+async fn exchange_turned(plane: &Plane, on: bool) {
+    use store::tenancy::TenantContext;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    transaction
+        .execute(
+            "INSERT INTO realm_features (tenant, realm_id, slug, enabled, changed_by) \
+             VALUES ($1, $2, 'token-exchange', $3, 'the suite') \
+             ON CONFLICT (tenant, realm_id, slug) DO UPDATE SET enabled = EXCLUDED.enabled",
+            &[&support::TENANT, &REALM, &on],
+        )
+        .await
+        .expect("the wish was kept");
+    transaction.commit().await.expect("the wish stands");
+}

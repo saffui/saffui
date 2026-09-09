@@ -301,6 +301,17 @@ pub async fn ask(
             .await
         }
         "urn:ietf:params:oauth:grant-type:token-exchange" => {
+            // A realm that has closed the exchange answers as a deployment
+            // that never carried it, and says so with the code the RFC keeps
+            // for a grant this server will not run.
+            if !crate::api::feature::runs_for_realm(
+                &transaction,
+                commons::feature::Feature::TokenExchange,
+            )
+            .await
+            {
+                return Denied::UnsupportedGrantType.answer("this realm does not exchange tokens");
+            }
             let (Ok(ring), Ok(keys)) = (
                 keyring::load(
                     &transaction,

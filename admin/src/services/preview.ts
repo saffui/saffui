@@ -145,6 +145,26 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       total: 42,
     });
   }
+  if (/\/features\/[^/]+$/.test(path) && method === "PUT") {
+    return answer(null);
+  }
+  if (/\/realms\/[^/]+\/features$/.test(path)) {
+    const held = (slug: string, lifecycle: string, reach: string, doc: string, on: boolean) => ({
+      slug, lifecycle, reach, doc,
+      compiled: true, in_process: on, enabled: on,
+      asked: null, changed_by: null, changed_at: null,
+    });
+    return answer({
+      items: [
+        held("token-exchange", "stable", "realm", "Trade a token for another audience, or for a subject being acted for.", true),
+        held("scim", "stable", "realm", "A SCIM 2.0 root for an external directory to provision accounts through.", true),
+        held("metrics", "stable", "process", "Request metrics on the operations port, in the Prometheus text form.", true),
+        held("otel", "stable", "process", "Span export over OTLP. Dials nothing until a collector is named.", false),
+        held("pq-hybrid", "preview", "process", "ML-DSA signatures and ML-KEM encapsulation.", false),
+        held("chacha20", "preview", "process", "ChaCha20-Poly1305, for hardware without AES acceleration.", false),
+      ],
+    });
+  }
   if (/\/users\/[^/]+\/(credentials|keys)\/[^/]+$/.test(path) && method === "DELETE") {
     TAKEN_AWAY.add(path.split("/").pop() ?? "");
     return answer(null);

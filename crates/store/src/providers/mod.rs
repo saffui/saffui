@@ -24,6 +24,7 @@ pub mod organizations;
 pub mod outbox;
 pub mod pairwise;
 pub mod pushed;
+pub mod realm_features;
 pub mod realm_keys;
 pub mod realms;
 pub mod rebac;

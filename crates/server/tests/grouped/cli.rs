@@ -68,6 +68,7 @@ async fn the_plane_is_operated_from_a_terminal() {
         AdminAction::RealmRead,
         AdminAction::RealmWrite,
         AdminAction::FeatureRead,
+        AdminAction::FeatureWrite,
         AdminAction::ClientRead,
         AdminAction::ClientWrite,
         AdminAction::EventRead,
@@ -206,7 +207,10 @@ async fn the_plane_is_operated_from_a_terminal() {
 
     let (code, told) = answered(AdminCmd::Features).await.unwrap();
     assert_eq!(code, ExitCode::SUCCESS);
-    assert_eq!(told.as_array().expect("a registry").len(), 7);
+    assert_eq!(
+        told.as_array().expect("a registry").len(),
+        commons::feature::Feature::ALL.len()
+    );
 
     // The happenings, from a terminal: the empty dead-letter queue answers,
     // a requeue of nothing refuses with a code, and a replay to nobody is
@@ -351,10 +355,46 @@ async fn the_plane_is_operated_from_a_terminal() {
     .unwrap();
     assert_eq!(drawn.0, ExitCode::SUCCESS);
     assert!(
-        drawn.1.starts_with("SLUG") && drawn.1.lines().count() == 8,
-        "not a seven-row table under its header: {}",
+        drawn.1.starts_with("SLUG")
+            && drawn.1.lines().count() == commons::feature::Feature::ALL.len() + 1,
+        "not the whole registry under its header: {}",
         drawn.1
     );
+
+    // A capability a realm may move is closed from the terminal, and the
+    // listing that comes back says so rather than being taken on trust.
+    let switching = PlaneArgs {
+        server: Some(base.clone()),
+        realm: Some(REALM.to_owned()),
+        client: Some(support::CONFIDENTIAL.to_owned()),
+        secret: Some(support::CLIENT_SECRET.to_owned()),
+        context: None,
+        format: Some(Shown::Json),
+    };
+    let closed = tokio::task::spawn_blocking(move || {
+        let mut printed = Vec::new();
+        let code = run(
+            &switching,
+            &AdminCmd::RealmFeatures {
+                slug: Some("scim".to_owned()),
+                wanted: Some("off".to_owned()),
+            },
+            &mut printed,
+        );
+        (code, String::from_utf8(printed).expect("printable"))
+    })
+    .await
+    .unwrap();
+    assert_eq!(closed.0, ExitCode::SUCCESS, "{}", closed.1);
+    let listed: serde_json::Value = serde_json::from_str(&closed.1).expect("a registry");
+    let scim = listed
+        .as_array()
+        .expect("rows")
+        .iter()
+        .find(|held| held["slug"] == "scim")
+        .expect("scim is in the registry");
+    assert_eq!(scim["asked"], false, "{scim}");
+    assert_eq!(scim["enabled"], false, "{scim}");
 
     // Refusals are told apart in the exit code: what the role does not
     // grant, and what does not exist.

@@ -60,6 +60,7 @@ str_enum! {
         OrgRead => "org:read",
         OrgWrite => "org:write",
         FeatureRead => "feature:read",
+        FeatureWrite => "feature:write",
         ScimRead => "scim:read",
         ScimWrite => "scim:write",
         IgaRead => "iga:read",
@@ -961,7 +962,13 @@ mod tests {
 
     #[test]
     fn the_vocabulary_agrees_with_its_own_spelling() {
-        assert_eq!(AdminAction::ALL.len(), 48);
+        // Counted rather than graven: the number is only here to catch a
+        // duplicate, which the round trip below would otherwise let through.
+        let mut named = std::collections::HashSet::new();
+        for action in AdminAction::ALL {
+            assert!(named.insert(action.as_str()), "{action:?} reuses a name");
+        }
+        assert_eq!(named.len(), AdminAction::ALL.len());
         assert_round_trips(AdminAction::ALL);
     }
 

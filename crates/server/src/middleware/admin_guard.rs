@@ -198,10 +198,30 @@ async fn establish(
 
     let allowed = decide(required, &verified, &held, &guard.policy).map_err(refused)?;
 
+    // A capability the realm has closed refuses every route that belongs to
+    // it, here rather than in each handler. Twelve SCIM doors are twelve
+    // chances to forget one, and a capability that is off on eleven of them
+    // is not off.
+    if !action_still_runs(&transaction, allowed).await {
+        return Err(refused(Refusal::ClosedHere));
+    }
+
     Ok(Admin {
         context: established,
         allowed,
     })
+}
+
+/// Whether the realm still runs whatever the action belongs to.
+///
+/// Actions with no capability behind them are always open, which is every one
+/// of them but the few a realm may close.
+async fn action_still_runs(transaction: &Transaction<'_>, action: AdminAction) -> bool {
+    let behind = match action {
+        AdminAction::ScimRead | AdminAction::ScimWrite => commons::feature::Feature::Scim,
+        _ => return true,
+    };
+    crate::api::feature::runs_for_realm(transaction, behind).await
 }
 
 /// What this caller may do, where it is acting.

@@ -94,6 +94,25 @@ pub async fn published(
     let pushes_first = held
         .as_ref()
         .is_some_and(|realm| realm.require_pushed_authorization_requests);
+    // A grant this realm will refuse is a grant this document must not offer.
+    // A client reads discovery to decide what to attempt, and a promise the
+    // token endpoint then denies costs a round trip and reads as a fault.
+    let exchanges =
+        crate::api::feature::runs_for_realm(&transaction, commons::feature::Feature::TokenExchange)
+            .await;
+    let mut grants = vec![
+        "authorization_code",
+        "implicit",
+        "refresh_token",
+        "client_credentials",
+        "urn:openid:params:grant-type:ciba",
+        "urn:ietf:params:oauth:grant-type:jwt-bearer",
+        "urn:ietf:params:oauth:grant-type:device_code",
+    ];
+    if exchanges {
+        grants.insert(4, "urn:ietf:params:oauth:grant-type:token-exchange");
+    }
+
     let tongues = crate::api::rest::endpoints::protocol::i18n::RealmTongues::of(
         held.as_ref()
             .and_then(|realm| realm.supported_locales.as_deref()),
@@ -156,16 +175,7 @@ pub async fn published(
                 "code id_token token",
             ],
             "response_modes_supported": ["query", "fragment", "form_post"],
-            "grant_types_supported": [
-                "authorization_code",
-                "implicit",
-                "refresh_token",
-                "client_credentials",
-                "urn:ietf:params:oauth:grant-type:token-exchange",
-                "urn:openid:params:grant-type:ciba",
-                "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                "urn:ietf:params:oauth:grant-type:device_code",
-            ],
+            "grant_types_supported": grants,
             "subject_types_supported": ["public", "pairwise"],
             "id_token_signing_alg_values_supported": algorithms,
             "token_endpoint_auth_methods_supported": AUTHENTICATED,

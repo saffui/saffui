@@ -17,7 +17,8 @@ import {
   getSms,
   getUssd,
   getRealmSettings,
-  listFeatures,
+  keepFeatureWish,
+  listRealmFeatures,
   reshapeRealm,
   rotateRegistrationSecret,
   sendTestMail,
@@ -30,7 +31,7 @@ import { deleteRealm } from "@/services/realms";
 import { countOf } from "@/services/overview";
 import { toastOk } from "@/services/toasts";
 import { useSession } from "@/stores/session";
-import type { FeatureBrief } from "@/models/feature";
+import type { RealmFeature } from "@/models/feature";
 import { ApiError } from "@/services/http";
 import type { MailBrief } from "@/models/mail";
 import type { SmsBrief } from "@/models/sms";
@@ -520,10 +521,27 @@ async function dropRealm() {
   }
 }
 
-const features = ref<FeatureBrief[]>([]);
+const features = ref<RealmFeature[]>([]);
+const LIFECYCLES = ["stable", "preview", "experimental", "deprecated"] as const;
+
+function featuresAt(stage: string) {
+  return features.value.filter((held) => held.lifecycle === stage);
+}
+
+/// Say what this realm wants of one capability, then re-read. The answer is
+/// the process's set narrowed by the wish, and only the server holds both.
+async function switchFeature(held: RealmFeature, enabled: boolean) {
+  try {
+    await keepFeatureWish(realm.value, held.slug, enabled);
+    features.value = await listRealmFeatures(realm.value);
+  } catch {
+    // The toast already said.
+  }
+}
+
 async function loadFeatures() {
   try {
-    features.value = await listFeatures();
+    features.value = await listRealmFeatures(realm.value);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -1498,29 +1516,57 @@ async function saveSmsTemplate() {
           </form>
         </div>
 
-        <div v-if="group === 'features'" class="mt-4 max-w-2xl">
+        <div v-if="group === 'features'" class="mt-4 max-w-3xl">
           <p class="text-xs text-muted">{{ say("features-lede") }}</p>
-          <div class="mt-3 grid gap-1.5">
-            <div
-              v-for="held in features"
-              :key="held.slug"
-              class="flex items-center gap-2.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs"
-            >
-              <span class="font-mono text-[11.5px]">{{ held.slug }}</span>
-              <span
-                class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted"
-                >{{ held.lifecycle }}</span
-              >
-              <span class="ml-auto text-[10.5px] text-faint">{{
-                held.enabled
-                  ? say("features-on")
-                  : held.compiled
-                    ? say("features-off")
-                    : say("features-not-compiled")
-              }}</span>
-              <AppHint :text="held.doc" />
+
+          <template v-for="stage in LIFECYCLES" :key="stage">
+            <div v-if="featuresAt(stage).length" class="mt-5">
+              <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+                {{ say(`features-stage-${stage}`) }}
+              </div>
+              <p class="mt-1 text-[10.5px] text-faint">{{ say(`features-stage-${stage}-lede`) }}</p>
+
+              <div class="mt-2 grid gap-1.5">
+                <div
+                  v-for="held in featuresAt(stage)"
+                  :key="held.slug"
+                  class="flex items-center gap-2.5 rounded-lg border border-border bg-surface px-3 py-2 text-xs"
+                >
+                  <span class="font-mono text-[11.5px]">{{ held.slug }}</span>
+                  <AppHint :text="held.doc" />
+
+                  <span
+                    v-if="held.reach === 'process' || !held.in_process"
+                    class="ml-auto text-[10.5px] text-faint"
+                    :title="
+                      held.reach === 'process'
+                        ? say('features-process-only')
+                        : say('features-not-in-process')
+                    "
+                  >
+                    {{
+                      held.enabled
+                        ? say("features-on")
+                        : held.compiled
+                          ? say("features-off")
+                          : say("features-not-compiled")
+                    }}
+                  </span>
+
+                  <template v-else>
+                    <span v-if="held.asked !== null" class="ml-auto text-[10px] text-faint">
+                      {{ say("features-asked-here", { by: held.changed_by ?? "" }) }}
+                    </span>
+                    <AppToggle
+                      :class="held.asked === null ? 'ml-auto' : ''"
+                      :model-value="held.enabled"
+                      @update:model-value="switchFeature(held, $event)"
+                    />
+                  </template>
+                </div>
+              </div>
             </div>
-          </div>
+          </template>
         </div>
 
         <div v-if="group === 'email'" class="mt-4 max-w-lg">

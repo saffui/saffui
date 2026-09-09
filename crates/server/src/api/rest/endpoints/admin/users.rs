@@ -13,12 +13,8 @@ use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::{PasswordSpec, UserBrief, UserSpec};
 use crate::middleware::admin_guard::Admin;
 
-/// What a caller may narrow the listing by.
-///
-/// Two things and no more, because two are what the store can answer without
-/// scanning: an equality the primary key leads with, and a prefix an index on
-/// the column can walk. A substring search would read the whole realm on
-/// every keystroke.
+/// What a caller may narrow the listing by: an equality, and a prefix an
+/// index can walk.
 #[derive(serde::Deserialize)]
 pub struct Narrowing {
     pub search: Option<String>,
@@ -43,8 +39,8 @@ pub async fn list(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    // What was typed, as a prefix. The trailing `%` is added here and the
-    // rest is bound, so nothing a caller wrote reaches the statement as text.
+    // The trailing `%` is added here and the rest is bound, so nothing a
+    // caller wrote reaches the statement as text.
     let typed = narrowing
         .search
         .as_deref()

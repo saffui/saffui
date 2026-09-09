@@ -1,6 +1,7 @@
 # Chaînes de la console saffui (fr). Clés partagées avec en.ftl.
 
 console-name = saffui
+console-footprint = saffui, auto-hébergé
 nav-overview = Vue d'ensemble
 nav-directory = Annuaire
 nav-users = Utilisateurs

@@ -1,6 +1,7 @@
 # saffui console strings (en). Keys shared with fr.ftl.
 
 console-name = saffui
+console-footprint = saffui, self-hosted
 nav-overview = Overview
 nav-directory = Directory
 nav-users = Users

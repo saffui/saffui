@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageTabs from "@/components/PageTabs.vue";
 import { computed, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
@@ -94,6 +95,7 @@ function instant(epoch: number | null | undefined): string {
 <template>
   <div>
     <h1 class="text-lg font-semibold tracking-tight">{{ say("realm-sessions-title") }}</h1>
+
     <p class="mt-1 text-xs text-muted">{{ say("realm-sessions-lede") }}</p>
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
@@ -193,4 +195,6 @@ function instant(epoch: number | null | undefined): string {
       </div>
     </div>
   </div>
+
+    <PageTabs class="mt-3" />
 </template>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageTabs from "@/components/PageTabs.vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
@@ -151,6 +152,7 @@ async function makeUser() {
   <div>
     <div class="flex items-center justify-between">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("users-title") }}</h1>
+
       <button
         type="button"
         class="ml-3 sf-button sf-button-primary"
@@ -159,6 +161,8 @@ async function makeUser() {
         {{ say("user-new") }}
       </button>
     </div>
+
+      <PageTabs class="mt-3" />
 
     <ListFilters
       v-model:search="search"

@@ -4,10 +4,10 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    agents, authorization, claim_sources, client_scopes, clients, compliance, directory, events,
-    features, federation, flows, idps, iga, journal, keys, mail, negotiation, overview,
-    portability, protocol_mappers, realm_keys, realms, rebac, recert, requests, sessions, sms,
-    users, ussd,
+    agents, authorization, claim_sources, client_scopes, clients, compliance, credentials,
+    directory, events, features, federation, flows, idps, iga, journal, keys, mail, negotiation,
+    overview, portability, protocol_mappers, realm_keys, realms, rebac, recert, requests, sessions,
+    sms, users, ussd,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -1349,6 +1349,18 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/users/{user}/lockout",
             action: AdminAction::UserWrite,
             handler: Some(|| web::delete().to(users::lift_lockout)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/credentials",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(credentials::list)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/users/{user}/credentials/{credential}",
+            action: AdminAction::UserWrite,
+            handler: Some(|| web::delete().to(credentials::revoke)),
         },
         AdminRoute {
             method: Method::GET,

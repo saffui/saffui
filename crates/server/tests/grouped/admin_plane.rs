@@ -2719,6 +2719,120 @@ async fn a_breach_runs_its_clock_and_its_paper_trail() {
 /// retention in force rides along in the controller's own words.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_second_factor_is_taken_away_and_a_password_is_not() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead, AdminAction::UserWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let listing = format!(
+        "/admin/realms/{}/users/{}/credentials",
+        support::REALM,
+        support::SUBJECT
+    );
+    let (_, told) = fetched(&plane, Method::GET, &listing, &bearer).await;
+    let items = told["items"].as_array().expect("a listing").clone();
+
+    // The password names no identifier, so the console cannot even ask.
+    let password = items
+        .iter()
+        .find(|item| item["kind"] == "password")
+        .expect("the person holds a password");
+    assert!(password["id"].is_null(), "{password}");
+
+    let factor = items
+        .iter()
+        .find(|item| item["kind"] == "totp")
+        .expect("the person holds a one-time password");
+    let id = factor["id"].as_str().expect("a named factor").to_owned();
+
+    let gone = request(
+        &plane,
+        Method::DELETE,
+        &format!(
+            "/admin/realms/{}/users/{}/credentials/{id}",
+            support::REALM,
+            support::SUBJECT
+        ),
+        Some(&bearer),
+    )
+    .await;
+    assert_eq!(gone, StatusCode::NO_CONTENT);
+
+    let (_, after) = fetched(&plane, Method::GET, &listing, &bearer).await;
+    assert!(
+        !after["items"]
+            .as_array()
+            .expect("a listing")
+            .iter()
+            .any(|item| item["kind"] == "totp"),
+        "the factor is still there: {after}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_credential_listing_says_what_is_held_and_never_what_opens_it() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, told) = fetched(
+        &plane,
+        Method::GET,
+        &format!(
+            "/admin/realms/{}/users/{}/credentials",
+            support::REALM,
+            support::SUBJECT
+        ),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let items = told["items"].as_array().expect("a listing");
+    assert!(!items.is_empty(), "the provisioned person holds nothing");
+
+    // Every secret this realm stores, none of which may appear. The one-time
+    // password seed is kept in the clear because a login has to recompute
+    // from it, so a listing that leaked it would hand over the second factor.
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let held = transaction
+        .query("SELECT secret FROM user_credentials", &[])
+        .await
+        .expect("the store answered");
+    let rendered = serde_json::to_string(&told).expect("the answer renders");
+    for row in held {
+        let secret: String = row.get(0);
+        assert!(
+            !rendered.contains(&secret),
+            "a stored secret reached the listing"
+        );
+    }
+
+    // A row names itself exactly where a door answers for it. A password is
+    // replaced through its own and a superseded one is not a way in, so
+    // neither may name itself; a second factor is taken away, so each must.
+    for item in items {
+        let named = !item["id"].is_null();
+        let answered = matches!(
+            item["kind"].as_str(),
+            Some("totp" | "hotp" | "recovery-code" | "webauthn")
+        );
+        assert_eq!(
+            named, answered,
+            "a row and its door disagree about the action offered: {item}"
+        );
+        assert_ne!(
+            item["kind"], "password-history",
+            "a superseded password reached the listing: {item}"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_evidence_pack_accounts_for_its_period_with_the_chain_leading() {
     let plane = Plane::with_actions(&[
         AdminAction::EvidenceRead,

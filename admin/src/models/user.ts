@@ -29,14 +29,6 @@ export interface Lockout {
   last_address?: string | null;
 }
 
-/// Mirrors `admin::keys::KeyBrief`: one WebAuthn credential.
-export interface KeyBrief {
-  credential_id: string;
-  label: string | null;
-  enrolled_at: number | null;
-  last_used_at: number | null;
-}
-
 /// Mirrors `admin::dto::SessionBrief` and its `GrantBrief`.
 export interface GrantBrief {
   client_id: string;

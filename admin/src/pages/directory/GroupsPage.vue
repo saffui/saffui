@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PageTabs from "@/components/PageTabs.vue";
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
@@ -212,6 +213,7 @@ async function flipDefault(group: GroupRow) {
   <div>
     <div class="flex items-center justify-between">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("groups-title") }}</h1>
+
       <div class="flex items-center gap-3">
         <button
           type="button"
@@ -222,6 +224,8 @@ async function flipDefault(group: GroupRow) {
         </button>
       </div>
     </div>
+
+      <PageTabs class="mt-3" />
 
     <form
       v-if="making"

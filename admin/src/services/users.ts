@@ -4,7 +4,6 @@ import type { Page } from "@/models/paging";
 import type {
   ConsentBrief,
   GroupBrief,
-  KeyBrief,
   Lockout,
   OrgBrief,
   RoleBrief,
@@ -48,10 +47,6 @@ export async function countRecoveryCodes(realm: string, userId: string): Promise
     adminPath(realm, `users/${encodeURIComponent(userId)}/recovery-codes`),
   );
   return held.remaining;
-}
-
-export async function listWebAuthnKeys(realm: string, userId: string): Promise<KeyBrief[]> {
-  return api<KeyBrief[]>(adminPath(realm, `users/${encodeURIComponent(userId)}/keys`));
 }
 
 export async function revokeWebAuthnKey(
@@ -164,6 +159,42 @@ export async function setUserPassword(
     json: { password, temporary },
     subject: say("subject-password", { user: userId }),
   });
+}
+
+export interface Credential {
+  /// Present only where a door takes this one away, so the console offers the
+  /// action exactly where something answers it.
+  id: string | null;
+  kind: string;
+  label: string | null;
+  detail: string | null;
+  created_at: string | null;
+}
+
+/// Everything the account can answer with, and nothing it answers with: the
+/// server sends kinds, names and parameters, never a secret.
+export async function readCredentials(realm: string, userId: string): Promise<Credential[]> {
+  const told = await api<{ items: Credential[] }>(
+    adminPath(realm, `users/${encodeURIComponent(userId)}/credentials`),
+  );
+  return told.items;
+}
+
+/// Take away one second factor. Keys are enrolled into their own store, so
+/// theirs is a different door; the caller picks by kind rather than the server
+/// guessing which store an identifier came from.
+export async function revokeCredential(
+  realm: string,
+  userId: string,
+  credentialId: string,
+): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `users/${encodeURIComponent(userId)}/credentials/${encodeURIComponent(credentialId)}`,
+    ),
+    { method: "DELETE", subject: say("subject-credential", { user: userId }) },
+  );
 }
 
 export interface PasswordChange {

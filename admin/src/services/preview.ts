@@ -598,7 +598,7 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
     ]);
   }
   if (/\/authz\/servers\/[^/]+\/resources$/.test(path)) {
-    return answer([{ resource_id: "res-1", name: "doc archive" }]);
+    return answer([{ resource_id: "res-1", name: "doc archive", user_managed_access: true }]);
   }
   if (/\/authz\/servers\/[^/]+\/scopes$/.test(path)) {
     return answer([{ scope_id: "sc-1", name: "edit" }]);

@@ -10,6 +10,7 @@ import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
 import DangerDialog from "@/components/DangerDialog.vue";
 import AppHint from "@/components/AppHint.vue";
+import AppToggle from "@/components/AppToggle.vue";
 import PageTabs from "@/components/PageTabs.vue";
 import {
   createPolicy,
@@ -352,7 +353,7 @@ async function lookAtTuples() {
 
 function openNew(which: "policy" | "resource" | "scope") {
   editing.value = "";
-  if (which === "resource") resourceDraft.value = { name: "", resource_type: "", uris: "", owner: "" };
+  if (which === "resource") resourceDraft.value = { name: "", resource_type: "", uris: "", owner: "", shareable: false };
   if (which === "scope") scopeDraft.value = { name: "", display_name: "" };
   drawer.value = which;
 }
@@ -377,6 +378,7 @@ function openResource(held: ResourceRow) {
     resource_type: "",
     uris: "",
     owner: "",
+    shareable: held.user_managed_access ?? false,
   };
   drawer.value = "resource";
 }
@@ -423,7 +425,7 @@ async function eraseHeld() {
     erasing.value = null;
   }
 }
-const protectDraft = ref({ enforcement: "enforcing", strategy: "affirmative" });
+const protectDraft = ref({ enforcement: "enforcing", strategy: "affirmative", shareable: false });
 async function doProtect() {
   try {
     await protectClient(
@@ -431,6 +433,7 @@ async function doProtect() {
       clientId.value,
       protectDraft.value.enforcement,
       protectDraft.value.strategy,
+      protectDraft.value.shareable,
     );
     drawer.value = "";
     await load();
@@ -477,7 +480,7 @@ async function makePolicy() {
   }
 }
 
-const resourceDraft = ref({ name: "", resource_type: "", uris: "", owner: "" });
+const resourceDraft = ref({ name: "", resource_type: "", uris: "", owner: "", shareable: false });
 async function makeResource() {
   if (!resourceDraft.value.name.trim()) return;
   try {
@@ -491,7 +494,7 @@ async function makeResource() {
         .map((held) => held.trim())
         .filter(Boolean),
       resource_owner: resourceDraft.value.owner.trim() || clientId.value,
-      user_managed_access: false,
+      user_managed_access: resourceDraft.value.shareable,
     };
     if (editing.value) {
       await reworkResource(realm.value, clientId.value, editing.value, body);
@@ -500,7 +503,7 @@ async function makeResource() {
     }
     drawer.value = "";
     editing.value = "";
-    resourceDraft.value = { name: "", resource_type: "", uris: "", owner: "" };
+    resourceDraft.value = { name: "", resource_type: "", uris: "", owner: "", shareable: false };
     await load();
   } catch {
     // The toast already said.
@@ -1109,6 +1112,9 @@ function nodeStroke(row: PolicyRow): string {
             <option value="consensus">consensus</option>
           </select>
         </label>
+        <AppToggle v-model="protectDraft.shareable">
+          {{ say("authz-server-shareable") }} <AppHint name="authz-server-shareable-help" />
+        </AppToggle>
         <div>
           <button type="submit" class="sf-button sf-button-primary">
             {{ say("authz-protect") }}
@@ -1163,6 +1169,9 @@ function nodeStroke(row: PolicyRow): string {
           {{ say("authz-resource-owner") }}
           <input v-model="resourceDraft.owner" :placeholder="clientId" class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
+        <AppToggle v-model="resourceDraft.shareable">
+          {{ say("authz-shareable") }} <AppHint name="authz-shareable-help" />
+        </AppToggle>
         <div>
           <button type="submit" class="sf-button sf-button-primary">
             {{ say("realm-create") }}

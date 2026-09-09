@@ -56,10 +56,17 @@ export async function protectClient(
   clientId: string,
   enforcement: string,
   strategy: string,
+  /// Whether resources under this server may be shared. The server is the
+  /// ceiling: a resource cannot open what the server has closed.
+  shareable: boolean,
 ) {
   await api<unknown>(adminPath(realm, `authz/servers/${encodeURIComponent(clientId)}`), {
     method: "POST",
-    json: { enforcement_mode: enforcement, decision_strategy: strategy },
+    json: {
+      enforcement_mode: enforcement,
+      decision_strategy: strategy,
+      user_managed_access: shareable,
+    },
     subject: say("subject-server", { client: clientId }),
   });
 }

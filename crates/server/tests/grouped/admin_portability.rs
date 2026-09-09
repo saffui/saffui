@@ -57,6 +57,83 @@ fn count(document: &Value, section: &str) -> usize {
 /// crosses verbatim.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_other_birth_door_answers_to_the_same_rules() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmExport,
+        AdminAction::RealmImport,
+        AdminAction::RealmCreate,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{}/export", support::REALM),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+
+    // Named, so the landing realm holds somebody who can answer for it. An
+    // export carries users and no secrets, so without this the realm arrives
+    // with accounts nobody can sign in as.
+    let (status, landed) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=arrival&administrator=root",
+        &bearer,
+        Some(document.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{landed}");
+    let password = landed["administrator"]["password"]
+        .as_str()
+        .expect("the landing handed back a way in");
+    assert!(password.len() >= 40, "a drawn password, not a placeholder");
+
+    // The ceiling counts an import like any other arrival. Two realms stand
+    // now, so a ceiling of two is reached before the next document lands.
+    plane.cap_realms(2).await;
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=overflow",
+        &bearer,
+        Some(document),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "the import walked past the ceiling: {told}"
+    );
+
+    // And the arrival is written above the realms, where a deletion cannot
+    // take it with the row.
+    let (owner, connection) = support::owner()
+        .connect(tokio_postgres::NoTls)
+        .await
+        .expect("the owner");
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let rows = owner
+        .query(
+            "SELECT envelope FROM tenant_events WHERE tenant = $1 AND \
+             envelope ->> 'realm' = 'arrival'",
+            &[&support::TENANT],
+        )
+        .await
+        .expect("the owner reads the chain");
+    assert_eq!(rows.len(), 1, "the arrival left no trace above the realms");
+    let envelope: serde_json::Value = rows[0].get("envelope");
+    assert_eq!(envelope["kind"], "realm.imported", "{envelope}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_crosses_as_a_document() {
     let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
     let bearer = plane.token(&support::claims());

@@ -296,6 +296,24 @@ pub async fn provision_first_administrator(
         },
     )
     .await?;
+    // Set again, because the account may have arrived with an import rather
+    // than been made here, and `provision_user` leaves an existing one alone.
+    // An import carries users and no secrets, so without this the realm holds
+    // an administrator who cannot answer for themselves.
+    let standing = users::load_by_name(transaction, user_name)
+        .await?
+        .ok_or(StoreError::Backend)?;
+    admin::users::set_password(
+        transaction,
+        provider,
+        tenant,
+        realm_id,
+        PROVISIONER,
+        &standing.user_id,
+        &sealed,
+    )
+    .await
+    .map_err(|_| StoreError::Backend)?;
     // Added rather than assigned: the realm's own defaults were applied at
     // creation, and replacing them here would quietly drop whatever else a
     // first login is meant to ask for.

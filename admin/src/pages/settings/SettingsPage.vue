@@ -19,6 +19,9 @@ import {
   getRealmSettings,
   keepFeatureWish,
   listRealmFeatures,
+  lookAtRelay,
+  readSmsToday,
+  readRelayRefusals,
   reshapeRealm,
   rotateRegistrationSecret,
   sendTestMail,
@@ -33,8 +36,8 @@ import { toastOk } from "@/services/toasts";
 import { useSession } from "@/stores/session";
 import type { RealmFeature } from "@/models/feature";
 import { ApiError } from "@/services/http";
-import type { MailBrief } from "@/models/mail";
-import type { SmsBrief } from "@/models/sms";
+import type { MailBrief, MailRefusal, RelayReport } from "@/models/mail";
+import type { SmsBrief, SmsToday } from "@/models/sms";
 import { OTP_DEFAULTS, OWASP_HASHING } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 import { JURISDICTIONS } from "@/services/compliance";
@@ -292,6 +295,7 @@ onMounted(async () => {
         port: mail.value.port,
         from_address: mail.value.from_address,
         from_name: mail.value.from_name ?? "",
+        reply_to: mail.value.reply_to ?? "",
         username: mail.value.username ?? "",
         password: "",
         implicit_tls: mail.value.implicit_tls,
@@ -301,6 +305,11 @@ onMounted(async () => {
     }
     try {
       ussdHeld.value = (await getUssd(realm.value)).has_secret;
+    } catch (refused) {
+      if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
+    }
+    try {
+      smsToday.value = await readSmsToday(realm.value);
     } catch (refused) {
       if (!(refused instanceof ApiError && refused.status < 500)) throw refused;
     }
@@ -621,10 +630,59 @@ const mailForm = ref({
   port: 587,
   from_address: "",
   from_name: "",
+  reply_to: "",
   username: "",
   password: "",
   implicit_tls: false,
 });
+
+/// What the relay said when last asked, and what it could not deliver.
+const relayReport = ref<RelayReport | null>(null);
+const refusals = ref<MailRefusal[]>([]);
+const refusalHours = ref(24);
+
+/// A stored instant, as this browser writes one.
+function stamp(at: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(new Date(at));
+}
+
+/// Only what the relay actually answered. A row nobody has a reading for is
+/// left out rather than filled with a placeholder.
+const relayFacts = computed(() => {
+  const held = relayReport.value;
+  if (!held) return [];
+  const facts: { label: string; value: string }[] = [];
+  const add = (label: string, value: string | null | undefined) => {
+    if (value) facts.push({ label, value });
+  };
+  add(say("mail-probe-reached"), held.reached_in_millis === null ? null : `${held.reached_in_millis} ms`);
+  add(say("mail-probe-tls"), held.tls_version);
+  add(say("mail-probe-cipher"), held.cipher);
+  add(say("mail-probe-certificate"), held.certificate_until);
+  add(say("mail-probe-issuer"), held.certificate_issuer);
+  add(
+    say("mail-probe-max"),
+    held.max_message_bytes === null
+      ? null
+      : `${Math.round(held.max_message_bytes / 1_048_576)} MB`,
+  );
+  add(say("mail-probe-auth"), held.auth_offered.length ? held.auth_offered.join(", ") : null);
+  return facts;
+});
+
+async function askTheRelay() {
+  try {
+    relayReport.value = await lookAtRelay(realm.value);
+    const told = await readRelayRefusals(realm.value);
+    refusals.value = told.items;
+    refusalHours.value = told.hours;
+  } catch {
+    // The toast already said.
+  }
+}
 
 async function saveMail() {
   const asked = mailForm.value;
@@ -633,7 +691,7 @@ async function saveMail() {
     port: asked.port,
     from_address: asked.from_address,
     from_name: asked.from_name,
-    reply_to: null,
+    reply_to: asked.reply_to || null,
     implicit_tls: asked.implicit_tls,
     username: asked.username || null,
     // Blank keeps the held password; typed replaces it.
@@ -714,6 +772,26 @@ const ussdCallback = computed(
 /// The realm's brakes on texting. A cap left blank keeps whatever is held;
 /// returning to the built default means typing it.
 const smsBrakes = ref({ daily: "" as string | number, perNumber: "" as string | number, prefixes: "" });
+
+/// What the day has cost so far, read once with the rest of the screen.
+const smsToday = ref<SmsToday | null>(null);
+
+/// The four the design puts on this board. A cap the realm has not named is
+/// shown as the count alone rather than against the engine's own, which is
+/// not this realm's setting to display.
+const todayCounts = computed(() => {
+  const held = smsToday.value;
+  if (!held) return [];
+  return [
+    {
+      label: say("sms-today-sent"),
+      value: held.cap === null ? String(held.sent) : `${held.sent} / ${held.cap}`,
+    },
+    { label: say("sms-today-velocity"), value: String(held.number_velocity) },
+    { label: say("sms-today-prefix"), value: String(held.blocked_prefix) },
+    { label: say("sms-today-budget"), value: String(held.day_budget) },
+  ];
+});
 
 async function saveSmsBrakes() {
   const changes: RealmUpdate = {
@@ -1634,6 +1712,15 @@ async function saveSmsTemplate() {
                 class="sf-field mt-1"
               />
             </label>
+            <label class="block text-[11px] font-medium text-muted">
+              {{ say("mail-reply-to") }} <AppHint name="mail-reply-to-help" />
+              <input
+                v-model="mailForm.reply_to"
+                class="sf-field mt-1 font-mono"
+                spellcheck="false"
+                :placeholder="say('settings-unset')"
+              />
+            </label>
             <div class="grid grid-cols-2 gap-3">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("mail-username") }} <AppHint name="mail-username-help" />
@@ -1698,7 +1785,68 @@ async function saveSmsTemplate() {
               <span v-if="testPassed" class="pb-1.5 text-[11px] text-ok">{{
                 say("mail-test-passed")
               }}</span>
+              <button
+                type="button"
+                class="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2"
+                @click="askTheRelay"
+              >
+                {{ say("mail-probe-run") }} <AppHint name="mail-probe-help" />
+              </button>
             </form>
+
+            <div v-if="relayReport" class="mt-3 grid gap-3 lg:grid-cols-2">
+              <div class="sf-list overflow-x-auto p-3">
+                <pre class="font-mono text-[10.5px] leading-relaxed text-muted">{{
+                  relayReport.transcript.join("\n")
+                }}</pre>
+                <p v-if="relayReport.refused" class="mt-2 text-[11px] text-danger" role="alert">
+                  {{ relayReport.refused }}
+                </p>
+              </div>
+
+              <div class="sf-list p-3 text-[11px]">
+                <div class="font-semibold tracking-[0.08em] text-faint uppercase">
+                  {{ say("mail-probe-status") }}
+                </div>
+                <dl class="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
+                  <template v-for="fact in relayFacts" :key="fact.label">
+                    <dt class="text-muted">{{ fact.label }}</dt>
+                    <dd class="font-mono text-ink">{{ fact.value }}</dd>
+                  </template>
+                </dl>
+                <p v-if="!relayFacts.length" class="mt-2 text-muted">
+                  {{ say("mail-probe-nothing") }}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="mail" class="mt-5">
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("mail-refusals-title", { hours: refusalHours }) }}
+              <AppHint name="mail-refusals-help" />
+            </div>
+            <div class="sf-list mt-2 overflow-x-auto">
+              <table class="sf-table">
+                <thead>
+                  <tr>
+                    <th>{{ say("mail-refusals-when") }}</th>
+                    <th>{{ say("mail-refusals-to") }}</th>
+                    <th>{{ say("mail-refusals-why") }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="held in refusals" :key="held.attempted_at + held.recipient">
+                    <td class="text-faint">{{ stamp(held.attempted_at) }}</td>
+                    <td class="font-mono text-[10.5px]">{{ held.recipient }}</td>
+                    <td class="text-muted">{{ held.detail ?? say("value-none") }}</td>
+                  </tr>
+                  <tr v-if="!refusals.length">
+                    <td colspan="3" class="text-muted">{{ say("mail-refusals-none") }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
 
@@ -1778,6 +1926,24 @@ async function saveSmsTemplate() {
                 say("sms-test-passed")
               }}</span>
             </form>
+          </div>
+
+          <div v-if="smsToday" class="mt-6">
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("sms-today-title") }} <AppHint name="sms-today-help" />
+            </div>
+            <div class="mt-2 grid grid-cols-2 gap-3 xl:grid-cols-4">
+              <div
+                v-for="count in todayCounts"
+                :key="count.label"
+                class="rounded-lg border border-border bg-surface px-3 py-2.5"
+              >
+                <div class="text-[10.5px] text-faint">{{ count.label }}</div>
+                <div class="mt-0.5 font-mono text-base text-ink tabular-nums">
+                  {{ count.value }}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="mt-6">

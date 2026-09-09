@@ -27,7 +27,15 @@ jobs:
       # The SPNEGO bench holds the client half of a real exchange, so building
       # the workspace's tests links the system GSSAPI.
       - name: gssapi headers
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libkrb5-dev
+        run: |
+          # The runner image carries vendor repositories this build installs
+          # nothing from, and a broken index in any one of them fails every
+          # apt call in the job. Everything below comes from Ubuntu's own
+          # archive, which is itself a file in this directory: it is the one
+          # kept, and the vendors' are dropped rather than retried against.
+          sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libkrb5-dev
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy
@@ -92,7 +100,15 @@ jobs:
       - uses: actions/checkout@v5.0.1
       - uses: Swatinem/rust-cache@v2
       - name: gssapi headers
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libkrb5-dev
+        run: |
+          # The runner image carries vendor repositories this build installs
+          # nothing from, and a broken index in any one of them fails every
+          # apt call in the job. Everything below comes from Ubuntu's own
+          # archive, which is itself a file in this directory: it is the one
+          # kept, and the vendors' are dropped rather than retried against.
+          sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libkrb5-dev
 
       - name: cache the built library
         id: cache
@@ -174,6 +190,7 @@ jobs:
             return 1
           }
 
+          sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
           apt_bounded update
           apt_bounded install -y softhsm2
 
@@ -252,6 +269,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: gssapi headers and a KDC
         run: |
+          # The runner image carries vendor repositories this build installs
+          # nothing from, and a broken index in any one of them fails every
+          # apt call in the job. Everything below comes from Ubuntu's own
+          # archive, which is itself a file in this directory: it is the one
+          # kept, and the vendors' are dropped rather than retried against.
+          sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libkrb5-dev krb5-kdc krb5-admin-server krb5-user

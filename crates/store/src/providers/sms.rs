@@ -184,3 +184,32 @@ pub async fn drop_stale_counters(transaction: &Transaction<'_>, now: i64) -> Sto
         .map_err(|_| StoreError::Backend)?;
     Ok(hours + days)
 }
+
+/// How many texts each brake held back today, by the brake that held them.
+///
+/// A throttle is recorded where a failed sign-in is, so this reads the same
+/// log rather than keeping a second set of counters that could disagree with
+/// it. The day is the one the counter above uses, so the two numbers on the
+/// screen are about the same day.
+pub async fn held_back_today(
+    transaction: &Transaction<'_>,
+    now: i64,
+) -> StoreResult<Vec<(String, i64)>> {
+    Ok(transaction
+        .query(
+            "SELECT detail ->> 'brake' AS brake, count(*) \
+             FROM login_events \
+             WHERE tenant = current_setting('saffui.current_tenant', true) \
+               AND realm_id = current_setting('saffui.current_realm', true) \
+               AND kind = 'sms_throttled' \
+               AND to_timestamp(recorded_at)::date = to_timestamp($1::bigint)::date \
+               AND detail ? 'brake' \
+             GROUP BY brake",
+            &[&now],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1)))
+        .collect())
+}

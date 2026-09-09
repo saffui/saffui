@@ -236,3 +236,88 @@ fn refused(why: Unsettable) -> ApiError {
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
 }
+
+/// Hold the relay in conversation and report what it said.
+///
+/// Told apart from the test send on purpose. The test proves a message
+/// leaves; this proves nothing about delivery and answers the questions an
+/// operator asks before there is a message to send: does it answer, how fast,
+/// what did the handshake settle on, whose certificate is it, how large a
+/// message will it take, and how does it want to be authenticated.
+pub async fn look_at_relay(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool
+        .get()
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+    let ring = keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &admin.context.tenant.tenant,
+        &realm_id,
+    )
+    .await
+    .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+    let settings = services::admin::mail::read(&transaction, &ring, &sealing.envelope)
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::MailSettingsNotFound))?;
+
+    // Off the reactor: this holds a socket open for as long as the relay takes
+    // to answer, and a slow one would otherwise hold every other request on
+    // this worker.
+    let report = tokio::task::spawn_blocking(move || crate::smtp_probe::look_at_relay(&settings))
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+    Ok(HttpResponse::Ok().json(report))
+}
+
+/// What this realm tried to send lately and could not.
+pub async fn list_refusals(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool
+        .get()
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+
+    let since = chrono::Utc::now() - chrono::Duration::hours(24);
+    let held = store::providers::deliveries::read_refusals_since(&transaction, since, 50)
+        .await
+        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+    let items: Vec<_> = held
+        .into_iter()
+        .map(|refusal| {
+            serde_json::json!({
+                "recipient": refusal.recipient,
+                "purpose": refusal.purpose,
+                "attempted_at": refusal.attempted_at,
+                "detail": refusal.detail,
+            })
+        })
+        .collect();
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "items": items, "hours": 24 })))
+}

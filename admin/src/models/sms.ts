@@ -12,3 +12,15 @@ export interface SmsWrite {
   sender: string;
   token: string | null;
 }
+
+/// What this realm spent on texts today, and what its brakes held back.
+///
+/// `cap` is absent where the realm names none: the engine carries its own,
+/// and printing that here would read as this realm's setting.
+export interface SmsToday {
+  sent: number;
+  cap: number | null;
+  blocked_prefix: number;
+  number_velocity: number;
+  day_budget: number;
+}

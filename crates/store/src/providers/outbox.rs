@@ -222,3 +222,18 @@ pub async fn erase_pending_for_user(
         .await
         .map_err(|_| StoreError::Backend)
 }
+
+/// How many tellings are still waiting to go out of this realm.
+///
+/// The state is indexed and the rows are the realm's, so this is a reading an
+/// operator can take often without paying for it.
+pub async fn count_waiting(transaction: &Transaction<'_>) -> StoreResult<i64> {
+    Ok(transaction
+        .query_one(
+            "SELECT count(*) FROM event_outbox WHERE state = 'pending'",
+            &[],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .get(0))
+}

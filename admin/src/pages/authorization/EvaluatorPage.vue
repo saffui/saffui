@@ -437,14 +437,14 @@ function worded(value: unknown): string {
 
         <div
           v-if="claims"
-          class="overflow-x-auto rounded-lg border border-border bg-surface"
+          class="sf-list overflow-x-auto"
         >
-          <table class="w-full text-left text-xs">
+          <table class="sf-table">
             <thead>
-              <tr class="border-b border-border text-[11px] text-muted">
-                <th class="px-3 py-2 font-medium">{{ say("preview-col-claim") }}</th>
-                <th class="px-3 py-2 font-medium">{{ say("preview-col-value") }}</th>
-                <th class="px-3 py-2 font-medium">{{ say("preview-col-origin") }}</th>
+              <tr>
+                <th>{{ say("preview-col-claim") }}</th>
+                <th>{{ say("preview-col-value") }}</th>
+                <th>{{ say("preview-col-origin") }}</th>
               </tr>
             </thead>
             <tbody>
@@ -453,11 +453,11 @@ function worded(value: unknown): string {
                 :key="row.claim + row.origin"
                 class="border-b border-border/60 last:border-0"
               >
-                <td class="px-3 py-2 font-mono text-[11.5px]">{{ row.claim }}</td>
+                <td class="font-mono text-[11.5px]">{{ row.claim }}</td>
                 <td class="max-w-80 px-3 py-2 font-mono text-[10.5px] break-all">
                   {{ worded(row.value) }}
                 </td>
-                <td class="px-3 py-2 text-[10.5px] text-muted">{{ row.origin }}</td>
+                <td class="text-[10.5px] text-muted">{{ row.origin }}</td>
               </tr>
             </tbody>
           </table>
@@ -470,16 +470,16 @@ function worded(value: unknown): string {
         <p v-if="!decisions.length" class="mt-2 text-xs text-muted">
           {{ say("evaluator-log-empty") }}
         </p>
-        <div v-else class="mt-2 overflow-x-auto rounded-lg border border-border bg-surface">
-          <table class="w-full text-left text-xs">
+        <div v-else class="sf-list mt-2 overflow-x-auto">
+          <table class="sf-table">
             <thead>
-              <tr class="border-b border-border text-[11px] text-muted">
-                <th class="px-3 py-2 font-medium">{{ say("evaluator-col-when") }}</th>
-                <th class="px-3 py-2 font-medium">{{ say("evaluator-col-subject") }}</th>
-                <th class="px-3 py-2 font-medium">{{ say("evaluator-col-asked") }}</th>
-                <th class="px-3 py-2 font-medium">{{ say("evaluator-col-reported") }}</th>
-                <th class="px-3 py-2 font-medium">{{ say("evaluator-col-computed") }}</th>
-                <th class="px-3 py-2 font-medium">{{ say("evaluator-col-took") }}</th>
+              <tr>
+                <th>{{ say("evaluator-col-when") }}</th>
+                <th>{{ say("evaluator-col-subject") }}</th>
+                <th>{{ say("evaluator-col-asked") }}</th>
+                <th>{{ say("evaluator-col-reported") }}</th>
+                <th>{{ say("evaluator-col-computed") }}</th>
+                <th>{{ say("evaluator-col-took") }}</th>
               </tr>
             </thead>
             <tbody>
@@ -489,16 +489,16 @@ function worded(value: unknown): string {
                 class="border-b border-border/60 last:border-0"
                 :class="parted(row) ? 'bg-warn/6' : ''"
               >
-                <td class="px-3 py-2 text-[10.5px] text-muted">
+                <td class="text-[10.5px] text-muted">
                   {{ instant(row.occurred_at_millis) }}
                 </td>
-                <td class="px-3 py-2 font-mono text-[11px]">{{ row.subject_id }}</td>
-                <td class="px-3 py-2 font-mono text-[10.5px] break-all">
+                <td class="font-mono text-[11px]">{{ row.subject_id }}</td>
+                <td class="font-mono text-[10.5px] break-all">
                   {{ row.action }} {{ row.resource_kind
                   }}<template v-if="row.resource_ref">:{{ row.resource_ref }}</template>
                 </td>
-                <td class="px-3 py-2 font-mono text-[10.5px]">{{ row.reported }}</td>
-                <td class="px-3 py-2">
+                <td class="font-mono text-[10.5px]">{{ row.reported }}</td>
+                <td>
                   <span
                     class="rounded px-1.5 py-0.5 text-[10.5px] font-semibold"
                     :class="
@@ -507,7 +507,7 @@ function worded(value: unknown): string {
                     >{{ row.computed }}</span
                   >
                 </td>
-                <td class="px-3 py-2 text-[10.5px] text-faint">{{ row.duration_us }}&#181;s</td>
+                <td class="text-[10.5px] text-faint">{{ row.duration_us }}&#181;s</td>
               </tr>
             </tbody>
           </table>

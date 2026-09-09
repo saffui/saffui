@@ -33,6 +33,7 @@ impl SortDirection {
 /// together carries the same timestamp exactly.
 pub struct ListQuery<'a> {
     filters: Vec<Bind<'a>>,
+    prefix: Option<(&'static [&'static str], &'a (dyn ToSql + Sync))>,
     sort: Vec<(&'static str, SortDirection)>,
     window: Window,
 }
@@ -41,6 +42,7 @@ impl<'a> ListQuery<'a> {
     pub fn new(window: Window) -> Self {
         Self {
             filters: Vec::new(),
+            prefix: None,
             sort: Vec::new(),
             window,
         }
@@ -49,6 +51,24 @@ impl<'a> ListQuery<'a> {
     /// Narrow the read.
     pub fn filter(mut self, binds: Vec<Bind<'a>>) -> Self {
         self.filters.extend(binds);
+        self
+    }
+
+    /// Keep rows where one of these columns starts with what was typed.
+    ///
+    /// A prefix and not a substring, deliberately. `column LIKE 'x%'` can walk
+    /// an index on that column; `LIKE '%x%'` cannot, and a listing that scans
+    /// the realm on every keystroke is how a search box becomes the slowest
+    /// thing in the console.
+    ///
+    /// The caller binds the value with its trailing `%` already on it, so what
+    /// crosses is one placeholder and never a fragment of statement.
+    pub fn starting_with(
+        mut self,
+        columns: &'static [&'static str],
+        value: &'a (dyn ToSql + Sync),
+    ) -> Self {
+        self.prefix = Some((columns, value));
         self
     }
 
@@ -81,16 +101,38 @@ impl<'a> ListQuery<'a> {
     /// Empty when nothing is filtered, so a caller pastes it in either way
     /// rather than deciding whether to.
     pub fn where_clause(&self) -> String {
-        if self.filters.is_empty() {
-            return String::new();
-        }
-        let conditions: Vec<String> = self
+        let mut conditions: Vec<String> = self
             .filters
             .iter()
             .enumerate()
             .map(|(index, bind)| format!("{} = ${}", bind.column(), index + 1))
             .collect();
+        if let Some((columns, _)) = self.prefix {
+            let at = self.filters.len() + 1;
+            let any: Vec<String> = columns
+                .iter()
+                .map(|column| format!("{column} ILIKE ${at}"))
+                .collect();
+            conditions.push(format!("({})", any.join(" OR ")));
+        }
+        if conditions.is_empty() {
+            return String::new();
+        }
         format!(" WHERE {}", conditions.join(" AND "))
+    }
+
+    /// Everything bound, in the order the placeholders name them.
+    ///
+    /// The prefix value comes last because its placeholder is numbered after
+    /// the filters, and a caller that built its own list would have to know
+    /// that; this hands back the whole list already in step.
+    pub fn bound(&self) -> Vec<&'a (dyn ToSql + Sync)> {
+        let mut held: Vec<&'a (dyn ToSql + Sync)> =
+            self.filters.iter().map(|bind| bind.value()).collect();
+        if let Some((_, value)) = self.prefix {
+            held.push(value);
+        }
+        held
     }
 
     /// The ordering, when one was asked for.
@@ -136,6 +178,50 @@ impl<'a> ListQuery<'a> {
     /// bounded by a page would report the page's size.
     pub fn count(&self, table: &str) -> String {
         format!("SELECT count(*) FROM {table}{}", self.where_clause())
+    }
+}
+
+#[cfg(test)]
+mod prefixes {
+    use super::*;
+    use crate::query::write_set::col;
+
+    fn window() -> Window {
+        Window {
+            first: 0,
+            max: 10,
+            clamped: false,
+        }
+    }
+
+    /// The prefix reads after the filters and numbers its placeholder after
+    /// them, because a caller pastes both fragments into one statement.
+    #[test]
+    fn the_prefix_is_numbered_after_the_filters() {
+        let enabled = true;
+        let typed = "ada%".to_owned();
+        let query = ListQuery::new(window())
+            .filter(vec![col("enabled", &enabled)])
+            .starting_with(&["user_name", "email"], &typed);
+        assert_eq!(
+            query.where_clause(),
+            " WHERE enabled = $1 AND (user_name ILIKE $2 OR email ILIKE $2)"
+        );
+        assert_eq!(query.bound().len(), 2);
+    }
+
+    /// A prefix alone still opens the clause, and a query with neither still
+    /// yields nothing to paste.
+    #[test]
+    fn a_prefix_alone_is_the_whole_clause() {
+        let typed = "ada%".to_owned();
+        assert_eq!(
+            ListQuery::new(window())
+                .starting_with(&["user_name"], &typed)
+                .where_clause(),
+            " WHERE (user_name ILIKE $1)"
+        );
+        assert_eq!(ListQuery::new(window()).where_clause(), "");
     }
 }
 

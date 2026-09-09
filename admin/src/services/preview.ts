@@ -532,6 +532,22 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       first: 0, max: 25, total: 3,
     });
   }
+  if (path.endsWith("/ussd")) {
+    return answer({ has_secret: true });
+  }
+  if (path.endsWith("/sms")) {
+    return answer({ url: "https://api.orange.tg/v1/sms", sender: "SAFFUI", has_token: false });
+  }
+  if (path.endsWith("/overview")) {
+    return answer({
+      users: 1284,
+      clients: 12,
+      sessions: 217,
+      pending_requests: 3,
+      queue: 0,
+      slow_tail_millis: 42,
+    });
+  }
   if (path === "/admin/features") {
     return answer([
       { slug: "kerberos", lifecycle: "stable", compiled: false, enabled: false, doc: "SPNEGO desktop tickets at the LDAP front; links the system Kerberos libraries." },

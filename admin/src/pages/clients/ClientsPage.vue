@@ -141,32 +141,32 @@ function finishMaking() {
 
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div v-if="page" class="mt-4 overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+    <div v-if="page" class="sf-list mt-4 overflow-x-auto">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("clients-col-id") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("clients-col-name") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("clients-col-kind") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("users-col-state") }}</th>
+          <tr>
+            <th>{{ say("clients-col-id") }}</th>
+            <th>{{ say("clients-col-name") }}</th>
+            <th>{{ say("clients-col-kind") }}</th>
+            <th>{{ say("users-col-state") }}</th>
           </tr>
         </thead>
         <tbody>
           <tr
             v-for="client in page.items"
             :key="client.client_id"
-            class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2"
+            class="cursor-pointer hover:bg-surface-2"
             :class="opened === client.client_id && 'bg-surface-2'"
             @click="open(client)"
           >
-            <td class="px-3 py-2 font-mono text-[11.5px]">{{ client.client_id }}</td>
-            <td class="px-3 py-2">{{ client.name }}</td>
-            <td class="px-3 py-2">
+            <td class="font-mono text-[11.5px]">{{ client.client_id }}</td>
+            <td>{{ client.name }}</td>
+            <td>
               <span class="rounded border border-border px-1.5 py-0.5 text-[10.5px] text-muted">
                 {{ client.confidential ? say("clients-confidential") : say("clients-public") }}
               </span>
             </td>
-            <td class="px-3 py-2">
+            <td>
               <span v-if="client.enabled" class="text-[10.5px] text-faint">{{
                 say("users-active")
               }}</span>
@@ -179,8 +179,6 @@ function finishMaking() {
           </tr>
         </tbody>
       </table>
-    </div>
-
     <AppPaging
       v-if="page"
       :first="first"
@@ -189,6 +187,8 @@ function finishMaking() {
       @update:first="first = $event"
       @update:size="resize"
     />
+    </div>
+
 
     <AppDrawer
       v-if="making"

@@ -233,6 +233,53 @@ async fn a_realm_is_taken_away_by_the_realm_itself() {
 
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_overview_answers_its_numbers_together() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, told) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{}/overview", support::REALM),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    for named in ["users", "clients", "sessions", "pending_requests"] {
+        assert!(told[named].is_i64(), "{named} is not a number: {told}");
+    }
+    // The provisioned world holds people and a console, so two of these are
+    // positive rather than merely present.
+    assert!(told["users"].as_i64().unwrap_or(0) > 0, "{told}");
+    assert!(told["clients"].as_i64().unwrap_or(0) > 0, "{told}");
+
+    // The reading from the histogram is there in a build that measures, and
+    // absent in one that does not, which is what the console reads to decide
+    // whether the box appears at all.
+    if cfg!(feature = "metrics") {
+        assert!(
+            told["slow_tail_millis"].is_i64() || told.get("slow_tail_millis").is_none(),
+            "the slow tail is neither a number nor absent: {told}"
+        );
+    } else {
+        assert!(told.get("slow_tail_millis").is_none(), "{told}");
+    }
+
+    // And it is behind the boundary like everything else.
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        "/admin/realms/nowhere/overview",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
     let plane = Plane::with_actions(&[AdminAction::RealmCreate]).await;
     let bearer = plane.token(&support::claims());

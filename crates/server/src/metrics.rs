@@ -70,6 +70,63 @@ mod measured {
         LOGINS.with_label_values(&[outcome]).inc();
     }
 
+    /// How long the slower twentieth of answers took, in milliseconds.
+    ///
+    /// Read off the histogram this process already keeps, so the number costs
+    /// no query and no store: the buckets are in memory because every answer
+    /// walks past them anyway.
+    ///
+    /// Interpolated inside the bucket the rank falls in, which is what any
+    /// reader of a Prometheus histogram does. It is an estimate bounded by the
+    /// bucket edges, and the number is shown as one.
+    pub fn slow_tail_millis() -> Option<f64> {
+        let mut edges: Vec<(f64, u64)> = Vec::new();
+        let mut counted = 0u64;
+        let mut summed = 0f64;
+        for family in prometheus::gather() {
+            if family.name() != "saffui_http_request_duration_seconds" {
+                continue;
+            }
+            for metric in family.get_metric() {
+                let held = metric.get_histogram();
+                counted += held.get_sample_count();
+                summed += held.get_sample_sum();
+                for (at, bucket) in held.get_bucket().iter().enumerate() {
+                    let bound = bucket.upper_bound();
+                    let seen = bucket.cumulative_count();
+                    match edges.get_mut(at) {
+                        Some(held) => held.1 += seen,
+                        None => edges.push((bound, seen)),
+                    }
+                }
+            }
+        }
+        let _ = summed;
+        if counted == 0 {
+            return None;
+        }
+        let rank = counted as f64 * 0.95;
+        let mut under = 0f64;
+        let mut floor = 0f64;
+        for (bound, cumulative) in edges {
+            if (cumulative as f64) >= rank {
+                if bound.is_infinite() {
+                    return Some(floor * 1000.0);
+                }
+                let across = cumulative as f64 - under;
+                let into = if across > 0.0 {
+                    (rank - under) / across
+                } else {
+                    0.0
+                };
+                return Some((floor + (bound - floor) * into) * 1000.0);
+            }
+            under = cumulative as f64;
+            floor = bound;
+        }
+        None
+    }
+
     /// Every family in the text exposition format, version 0.0.4.
     pub fn render() -> String {
         let mut out = Vec::new();
@@ -152,9 +209,17 @@ mod measured {
 }
 
 #[cfg(feature = "metrics")]
-pub use measured::{Measured, login_counted, render};
+pub use measured::{Measured, login_counted, render, slow_tail_millis};
 
 /// The build without the machinery: counting is nothing, and the scrape
 /// route is never registered.
 #[cfg(not(feature = "metrics"))]
 pub fn login_counted(_outcome: &str) {}
+
+/// Absent where nothing measures. The console hides the reading rather than
+/// showing a dash: a build that carries no histogram has no slow tail to
+/// report, and an empty box says that better than a placeholder.
+#[cfg(not(feature = "metrics"))]
+pub fn slow_tail_millis() -> Option<f64> {
+    None
+}

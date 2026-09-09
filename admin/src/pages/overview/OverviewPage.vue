@@ -35,9 +35,19 @@ function instant(epoch: number): string {
 const CARDS = [
   { name: "users", title: () => say("overview-users"), icon: "users" },
   { name: "clients", title: () => say("overview-clients"), icon: "clients" },
-  { name: "organizations", title: () => say("overview-organizations"), icon: "directory" },
-  { name: "signingKeys", title: () => say("overview-keys"), icon: "key" },
+  { name: "sessions", title: () => say("overview-sessions"), icon: "sessions" },
+  { name: "pendingRequests", title: () => say("overview-pending"), icon: "governance" },
 ] as const;
+
+const BADGE = {
+  unset: "",
+  incomplete: "sf-badge-danger",
+  set: "sf-badge-ok",
+} as const;
+
+function needs(held: string[]): string {
+  return held.map((named) => say(`gateway-needs-${named}`)).join(", ");
+}
 </script>
 
 <template>
@@ -62,30 +72,8 @@ const CARDS = [
       </div>
     </div>
 
-    <section v-if="told && told.attention.length" class="mt-6">
-      <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-        {{ say("overview-attention") }}
-      </h2>
-      <div class="mt-2 flex flex-col gap-2">
-        <router-link
-          v-for="held in told.attention"
-          :key="held.what"
-          :to="`/${route.params.realm}/${held.where}`"
-          class="group flex items-center gap-3 rounded-lg border border-warn/40 bg-surface px-4 py-3 hover:bg-surface-2"
-        >
-          <span class="text-xs text-ink">{{ say(`attention-${held.what}`) }}</span>
-          <span class="ml-auto flex items-center gap-1 text-[11px] text-muted group-hover:text-ink">
-            {{ say("overview-fix") }}
-            <AppIcon name="chevron" :size="12" />
-          </span>
-        </router-link>
-      </div>
-    </section>
-
-    <p v-if="told && !told.attention.length" class="mt-6 text-xs text-muted">
-      {{ say("overview-quiet") }}
-    </p>
-
+    <div class="mt-6 flex flex-col gap-4 xl:flex-row">
+      <div class="min-w-0 flex-1">
     <section v-if="told && told.journal.length" class="mt-6">
       <div class="flex items-center gap-2">
         <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
@@ -103,27 +91,27 @@ const CARDS = [
           }}
         </span>
       </div>
-      <div class="mt-2 overflow-x-auto rounded-lg border border-border bg-surface">
-        <table class="w-full text-left text-xs">
+      <div class="sf-list mt-2 overflow-x-auto">
+        <table class="sf-table">
           <tbody>
             <tr
               v-for="held in told.journal"
               :key="held.seq"
               class="border-b border-border/60 last:border-0"
             >
-              <td class="px-3 py-2 font-mono text-[10.5px] text-faint">#{{ held.seq }}</td>
-              <td class="px-3 py-2">{{ held.entry.actor }}</td>
-              <td class="px-3 py-2 font-mono text-[10.5px]">
+              <td class="font-mono text-[10.5px] text-faint">#{{ held.seq }}</td>
+              <td>{{ held.entry.actor }}</td>
+              <td class="font-mono text-[10.5px]">
                 {{ held.entry.method }} {{ held.entry.path || held.entry.pattern }}
               </td>
-              <td class="px-3 py-2">
+              <td>
                 <span
                   class="font-mono text-[10.5px]"
                   :class="held.entry.status < 400 ? 'text-ok' : 'text-danger'"
                   >{{ held.entry.status }}</span
                 >
               </td>
-              <td class="px-3 py-2 text-right font-mono text-[10.5px] text-faint">
+              <td class="text-right font-mono text-[10.5px] text-faint">
                 {{ instant(held.recorded_at) }}
               </td>
             </tr>
@@ -131,5 +119,65 @@ const CARDS = [
         </table>
       </div>
     </section>
+      </div>
+
+      <div class="flex w-full shrink-0 flex-col gap-4 xl:w-[360px]">
+        <section class="rounded-lg border border-border bg-surface">
+          <h2 class="px-4 pt-3 pb-2 text-[13px] text-ink">{{ say("overview-gateways") }}</h2>
+          <div
+            v-for="held in told?.gateways ?? []"
+            :key="held.which"
+            class="flex items-center gap-3 border-t border-border px-4 py-3"
+          >
+            <span class="flex min-w-0 flex-1 flex-col gap-0.5">
+              <span class="flex items-center gap-1.5 text-[12.5px] text-ink">
+                {{ say(`gateway-${held.which}`) }}
+                <span v-if="held.clear_text" class="sf-badge sf-badge-warn">{{
+                  say("gateway-clear-text")
+                }}</span>
+              </span>
+              <span
+                v-if="held.at || held.state === 'unset'"
+                class="truncate font-mono text-[11px] text-faint"
+                >{{ held.at ?? say("gateway-nowhere") }}</span
+              >
+              <span
+                v-if="held.needed_by.length"
+                class="truncate text-[11px]"
+                :class="held.state === 'set' ? 'text-faint' : 'text-danger'"
+                >{{ say("gateway-needed-by", { held: needs(held.needed_by) }) }}</span
+              >
+            </span>
+            <span class="sf-badge shrink-0" :class="BADGE[held.state]">{{
+              say(`gateway-${held.state}`)
+            }}</span>
+          </div>
+        </section>
+
+        <section class="rounded-lg border border-border bg-surface">
+          <h2 class="flex items-center gap-2 px-4 pt-3 pb-2 text-[13px] text-ink">
+            {{ say("overview-attention") }}
+            <span v-if="told?.attention.length" class="sf-badge sf-badge-warn">{{
+              told.attention.length
+            }}</span>
+          </h2>
+          <p v-if="told && !told.attention.length" class="px-4 pb-3 text-[11.5px] text-muted">
+            {{ say("overview-quiet") }}
+          </p>
+          <router-link
+            v-for="held in told?.attention ?? []"
+            :key="held.what"
+            :to="`/${route.params.realm}/${held.where}`"
+            class="flex items-center gap-2.5 border-t border-border px-4 py-2.5 hover:bg-neutral-tint"
+          >
+            <AppIcon name="danger" :size="14" class="shrink-0 text-warn" />
+            <span class="min-w-0 flex-1 text-[11.5px] text-muted">{{
+              say(`attention-${held.what}`)
+            }}</span>
+            <span class="shrink-0 text-[11px] text-accent">{{ say("overview-fix") }}</span>
+          </router-link>
+        </section>
+      </div>
+    </div>
   </div>
 </template>

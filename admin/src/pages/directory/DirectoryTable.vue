@@ -16,25 +16,25 @@ const emit = defineEmits<{ open: [row: T] }>();
 </script>
 
 <template>
-  <div class="overflow-x-auto rounded-lg border border-border bg-surface">
-    <table class="w-full text-left text-xs">
+  <div class="sf-list overflow-x-auto">
+    <table class="sf-table">
       <thead>
-        <tr class="border-b border-border text-[11px] text-muted">
-          <th class="px-3 py-2 font-medium">{{ say("scopes-col-name") }}</th>
-          <th class="px-3 py-2 font-medium">{{ say("directory-col-display") }}</th>
-          <th class="px-3 py-2 font-medium">{{ say("scopes-col-description") }}</th>
-          <th class="px-3 py-2 font-medium"><slot name="extra-head" /></th>
+        <tr>
+          <th>{{ say("scopes-col-name") }}</th>
+          <th>{{ say("directory-col-display") }}</th>
+          <th>{{ say("scopes-col-description") }}</th>
+          <th><slot name="extra-head" /></th>
         </tr>
       </thead>
       <tbody>
         <tr
           v-for="row in items"
           :key="keyOf(row)"
-          class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2"
-          :class="openedKey === keyOf(row) && 'bg-surface-2'"
+          class="cursor-pointer"
+          :class="openedKey === keyOf(row) && 'bg-surface-3'"
           @click="emit('open', row)"
         >
-          <td class="px-3 py-2 font-mono text-[11.5px]">
+          <td class="font-mono text-[11.5px]">
             <span
               class="inline-flex items-center gap-1"
               :style="{ paddingLeft: `${(indentOf?.(row) ?? 0) * 16}px` }"
@@ -48,11 +48,12 @@ const emit = defineEmits<{ open: [row: T] }>();
               {{ row.name }}
             </span>
           </td>
-          <td class="px-3 py-2">{{ row.display_name }}</td>
-          <td class="px-3 py-2 text-muted">{{ row.description }}</td>
-          <td class="px-3 py-2"><slot name="extra" :row="row" /></td>
+          <td>{{ row.display_name }}</td>
+          <td class="text-muted">{{ row.description }}</td>
+          <td><slot name="extra" :row="row" /></td>
         </tr>
       </tbody>
     </table>
+    <slot name="foot" />
   </div>
 </template>

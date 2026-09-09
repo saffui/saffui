@@ -1,6 +1,9 @@
 # Chaînes de la console saffui (fr). Clés partagées avec en.ftl.
 
 console-name = saffui
+status-realm = realm { $realm }
+status-queue = file { $held }
+status-slow-tail = p95 { $millis } ms
 console-footprint = saffui, auto-hébergé
 nav-cap-manage = Gérer
 nav-cap-configure = Configurer
@@ -41,9 +44,23 @@ overview-empty = Rien à montrer pour le moment. Les mesures arrivent ici avec l
 
 overview-users = Utilisateurs
 overview-clients = Clients
+overview-sessions = Sessions actives
+overview-pending = Demandes en attente
 overview-organizations = Organisations
 overview-keys = Clés de signature
 overview-attention = À traiter
+overview-gateways = Passerelles de messages
+gateway-email = Courriel
+gateway-sms = SMS
+gateway-ussd = USSD
+gateway-nowhere = non configurée
+gateway-set = posée
+gateway-unset = absente
+gateway-incomplete = sans identifiant
+gateway-clear-text = en clair
+gateway-needed-by = requise par { $held }
+gateway-needs-verify-email = la vérification d'adresse
+gateway-needs-reset-password = la réinitialisation du mot de passe
 overview-fix = Corriger
 overview-quiet = Rien à traiter.
 attention-no-signing-key = Ce realm n'a aucune clé de signature ; rien ne peut être émis avant d'en frapper une.

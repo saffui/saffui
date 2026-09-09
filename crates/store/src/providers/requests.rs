@@ -109,3 +109,15 @@ fn read(row: Row) -> AccessRequest {
         created_at: row.get("created_at"),
     }
 }
+
+/// How many access requests are waiting on somebody.
+pub async fn count_pending(transaction: &Transaction<'_>) -> StoreResult<i64> {
+    Ok(transaction
+        .query_one(
+            "SELECT count(*) FROM access_requests WHERE state = $1",
+            &[&PENDING],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .get(0))
+}

@@ -673,3 +673,12 @@ pub async fn count_created_by(
         .map(|row| row.get::<_, i64>(0))
         .map_err(|_| StoreError::Backend)
 }
+
+/// How many clients this realm registers.
+pub async fn count(transaction: &Transaction<'_>) -> StoreResult<i64> {
+    Ok(transaction
+        .query_one("SELECT count(*) FROM clients", &[])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .get(0))
+}

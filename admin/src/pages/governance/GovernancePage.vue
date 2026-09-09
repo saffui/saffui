@@ -490,15 +490,15 @@ function edgeWords(item: CampaignItem): string {
       </div>
     </form>
     <p v-if="!rules.length" class="mt-2 text-xs text-muted">{{ say("iga-no-rules") }}</p>
-    <div v-else class="mt-2 overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+    <div v-else class="sf-list mt-2 overflow-x-auto">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("iga-col-when") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("user-roles") }}</th>
-            <th class="px-3 py-2 font-medium"></th>
-            <th class="px-3 py-2 font-medium">{{ say("flow-priority") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("users-col-state") }}</th>
+          <tr>
+            <th>{{ say("iga-col-when") }}</th>
+            <th>{{ say("user-roles") }}</th>
+            <th></th>
+            <th>{{ say("flow-priority") }}</th>
+            <th>{{ say("users-col-state") }}</th>
           </tr>
         </thead>
         <tbody>
@@ -507,20 +507,20 @@ function edgeWords(item: CampaignItem): string {
             :key="rule.rule_id"
             class="border-b border-border/60 last:border-0"
           >
-            <td class="px-3 py-2">
+            <td>
               <code
                 class="rounded border border-border bg-surface-2 px-1.5 py-0.5 font-mono text-[10.5px]"
                 >{{ condition(rule) }}</code
               >
             </td>
-            <td class="px-3 py-2 font-mono text-[10.5px] text-muted">
+            <td class="font-mono text-[10.5px] text-muted">
               {{ rule.roles.length }}
             </td>
-            <td class="px-3 py-2 font-mono text-[10.5px]">{{ rule.priority }}</td>
-            <td class="px-3 py-2 text-[10.5px]">
+            <td class="font-mono text-[10.5px]">{{ rule.priority }}</td>
+            <td class="text-[10.5px]">
               {{ rule.enabled ? say("users-active") : say("users-disabled") }}
             </td>
-            <td class="px-3 py-2">
+            <td>
               <span class="flex justify-end gap-1.5">
                 <button
                   type="button"
@@ -663,26 +663,26 @@ function edgeWords(item: CampaignItem): string {
     </form>
 
     <p v-if="!sodRules.length" class="mt-2 text-xs text-muted">{{ say("sod-no-rules") }}</p>
-    <div v-else class="mt-2 overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+    <div v-else class="sf-list mt-2 overflow-x-auto">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("sod-rule-name") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("sod-roles") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("sod-threshold") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("users-col-state") }}</th>
-            <th class="px-3 py-2 font-medium"></th>
+          <tr>
+            <th>{{ say("sod-rule-name") }}</th>
+            <th>{{ say("sod-roles") }}</th>
+            <th>{{ say("sod-threshold") }}</th>
+            <th>{{ say("users-col-state") }}</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="rule in sodRules" :key="rule.rule_id" class="border-b border-border/60 last:border-0">
-            <td class="px-3 py-2 font-mono text-[10.5px]">{{ rule.rule_id }}</td>
-            <td class="px-3 py-2 font-mono text-[10.5px] text-muted">{{ rule.roles.join(", ") }}</td>
-            <td class="px-3 py-2 font-mono text-[10.5px]">{{ rule.min_conflicting }}</td>
-            <td class="px-3 py-2 text-[10.5px]">
+            <td class="font-mono text-[10.5px]">{{ rule.rule_id }}</td>
+            <td class="font-mono text-[10.5px] text-muted">{{ rule.roles.join(", ") }}</td>
+            <td class="font-mono text-[10.5px]">{{ rule.min_conflicting }}</td>
+            <td class="text-[10.5px]">
               {{ rule.enabled ? say("users-active") : say("users-disabled") }}
             </td>
-            <td class="px-3 py-2">
+            <td>
               <span class="flex justify-end gap-1.5">
                 <button type="button" class="rounded border border-border px-1.5 py-0.5 text-[10.5px] hover:bg-surface-2" @click="flipSodRule(rule)">
                   {{ rule.enabled ? say("rule-pause") : say("rule-enable") }}

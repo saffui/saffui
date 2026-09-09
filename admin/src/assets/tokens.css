@@ -226,6 +226,64 @@ body {
     color: var(--sf-accent);
   }
 
+  /* The deck's list, to its own measurements: a 31 header on the quiet
+     surface, 38 rows, a 34 foot, and twelve either side of every cell so the
+     first column starts where the header does. Written once here because
+     seventeen boards are this same table. */
+  .sf-table {
+    width: 100%;
+    text-align: left;
+    border-collapse: collapse;
+    background: var(--sf-surface);
+    font-size: 13px;
+  }
+  .sf-table thead tr {
+    height: 31px;
+    background: var(--sf-surface-2);
+  }
+  .sf-table th {
+    padding: 0 6px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--sf-muted);
+    white-space: nowrap;
+  }
+  .sf-table tbody tr {
+    height: 38px;
+    border-top: 1px solid var(--sf-border);
+  }
+  .sf-table tbody tr:hover {
+    background: var(--sf-neutral-tint);
+  }
+  .sf-table td {
+    padding: 0 6px;
+  }
+  .sf-table th:first-child,
+  .sf-table td:first-child {
+    padding-left: 12px;
+  }
+  .sf-table th:last-child,
+  .sf-table td:last-child {
+    padding-right: 12px;
+  }
+  .sf-table tfoot tr {
+    height: 34px;
+    background: var(--sf-surface-2);
+    border-top: 1px solid var(--sf-border);
+  }
+  .sf-table tfoot td {
+    font-size: 11.5px;
+    color: var(--sf-faint);
+  }
+
+  /* The frame the list sits in: the surface, its edge, and nothing that
+     overflows it. */
+  .sf-list {
+    overflow: hidden;
+    border: 1px solid var(--sf-border);
+    border-radius: 8px;
+  }
+
   .sf-field {
     width: 100%;
     padding: 6px 10px;

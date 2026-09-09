@@ -163,14 +163,14 @@ async function drop() {
       {{ say("federation-idps") }}
     </h2>
     <p v-if="!brokers.length" class="mt-2 text-xs text-muted">{{ say("federation-no-idps") }}</p>
-    <div v-else class="mt-2 overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+    <div v-else class="sf-list mt-2 overflow-x-auto">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("clients-col-name") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("federation-col-alias") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("federation-col-trust") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("users-col-state") }}</th>
+          <tr>
+            <th>{{ say("clients-col-name") }}</th>
+            <th>{{ say("federation-col-alias") }}</th>
+            <th>{{ say("federation-col-trust") }}</th>
+            <th>{{ say("users-col-state") }}</th>
           </tr>
         </thead>
         <tbody>
@@ -179,9 +179,9 @@ async function drop() {
             :key="row.internal_id"
             class="border-b border-border/60 last:border-0"
           >
-            <td class="px-3 py-2">{{ row.display_name || row.name }}</td>
-            <td class="px-3 py-2 font-mono text-[11.5px]">{{ row.provider_id }}</td>
-            <td class="px-3 py-2">
+            <td>{{ row.display_name || row.name }}</td>
+            <td class="font-mono text-[11.5px]">{{ row.provider_id }}</td>
+            <td>
               <span
                 v-if="row.trust_email"
                 class="inline-flex items-center gap-1.5 text-[10.5px] text-ok"
@@ -189,7 +189,7 @@ async function drop() {
                 {{ say("federation-trusted") }}
               </span>
             </td>
-            <td class="px-3 py-2 text-[10.5px]">
+            <td class="text-[10.5px]">
               {{ row.enabled === false ? say("users-disabled") : say("users-active") }}
             </td>
           </tr>

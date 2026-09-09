@@ -1,6 +1,9 @@
 # saffui console strings (en). Keys shared with fr.ftl.
 
 console-name = saffui
+status-realm = realm { $realm }
+status-queue = queue { $held }
+status-slow-tail = p95 { $millis } ms
 console-footprint = saffui, self-hosted
 nav-cap-manage = Manage
 nav-cap-configure = Configure
@@ -41,9 +44,23 @@ overview-empty = Nothing to show yet. Metrics land here as the realm is used.
 
 overview-users = Users
 overview-clients = Clients
+overview-sessions = Active sessions
+overview-pending = Pending requests
 overview-organizations = Organizations
 overview-keys = Signing keys
 overview-attention = Needs attention
+overview-gateways = Message gateways
+gateway-email = Email
+gateway-sms = SMS
+gateway-ussd = USSD
+gateway-nowhere = not configured
+gateway-set = set
+gateway-unset = unset
+gateway-incomplete = no credential
+gateway-clear-text = clear text
+gateway-needed-by = needed by { $held }
+gateway-needs-verify-email = address verification
+gateway-needs-reset-password = password reset
 overview-fix = Fix
 overview-quiet = Nothing needs attention.
 attention-no-signing-key = This realm has no signing key; nothing can be issued until one is minted.

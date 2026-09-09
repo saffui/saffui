@@ -125,24 +125,24 @@ async function save() {
       />
     </div>
 
-    <div class="mt-3 overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+    <div class="sf-list mt-3 overflow-x-auto">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
+          <tr>
             <th class="w-56 px-3 py-2 font-medium">{{ say("pages-col-key") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("pages-col-built") }}</th>
-            <th class="px-3 py-2 font-medium">
+            <th>{{ say("pages-col-built") }}</th>
+            <th>
               {{ say("pages-col-spoken") }} <AppHint name="pages-spoken-help" />
             </th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="row in shown" :key="row.name" class="border-b border-border/60 last:border-0">
-            <td class="px-3 py-2 align-top">
+            <td class="align-top">
               <code class="font-mono text-[10.5px]">{{ row.name }}</code>
             </td>
             <td class="max-w-96 px-3 py-2 align-top text-[11px] text-muted">{{ built(row) }}</td>
-            <td class="px-3 py-2">
+            <td>
               <input
                 v-model="spoken[tongue][row.name]"
                 :placeholder="say('pages-unspoken')"

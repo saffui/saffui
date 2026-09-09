@@ -13,14 +13,28 @@ use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::{PasswordSpec, UserBrief, UserSpec};
 use crate::middleware::admin_guard::Admin;
 
+/// What a caller may narrow the listing by.
+///
+/// Two things and no more, because two are what the store can answer without
+/// scanning: an equality the primary key leads with, and a prefix an index on
+/// the column can walk. A substring search would read the whole realm on
+/// every keystroke.
+#[derive(serde::Deserialize)]
+pub struct Narrowing {
+    pub search: Option<String>,
+    pub enabled: Option<bool>,
+}
+
 pub async fn list(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     paging: web::Query<PagingParams>,
+    narrowing: web::Query<Narrowing>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
+    let narrowing = narrowing.into_inner();
     let window = paging
         .window()
         .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
@@ -29,7 +43,21 @@ pub async fn list(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    let query = ListQuery::new(window).sorted_by("user_name", SortDirection::Ascending);
+    // What was typed, as a prefix. The trailing `%` is added here and the
+    // rest is bound, so nothing a caller wrote reaches the statement as text.
+    let typed = narrowing
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|held| !held.is_empty())
+        .map(|held| format!("{}%", held.replace('%', "\\%").replace('_', "\\_")));
+    let mut query = ListQuery::new(window).sorted_by("user_name", SortDirection::Ascending);
+    if let Some(enabled) = narrowing.enabled.as_ref() {
+        query = query.filter(vec![store::query::write_set::col("enabled", enabled)]);
+    }
+    if let Some(typed) = typed.as_ref() {
+        query = query.starting_with(&["user_name", "email"], typed);
+    }
     let found = people::list(&transaction, &query, paging.count.unwrap_or(false))
         .await
         .map_err(refused)?;

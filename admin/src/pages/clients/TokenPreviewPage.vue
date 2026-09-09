@@ -100,16 +100,16 @@ function worded(value: unknown): string {
     <p v-if="claims && !claims.length" class="mt-4 text-xs text-muted">
       {{ say("preview-none") }}
     </p>
-    <div v-if="claims?.length" class="mt-4 overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+    <div v-if="claims?.length" class="sf-list mt-4 overflow-x-auto">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("preview-col-claim") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("preview-col-value") }}</th>
-            <th class="px-3 py-2 font-medium">
+          <tr>
+            <th>{{ say("preview-col-claim") }}</th>
+            <th>{{ say("preview-col-value") }}</th>
+            <th>
               {{ say("preview-col-origin") }} <AppHint name="preview-origin-help" />
             </th>
-            <th class="px-3 py-2 font-medium">{{ say("preview-col-lands") }}</th>
+            <th>{{ say("preview-col-lands") }}</th>
           </tr>
         </thead>
         <tbody>
@@ -118,16 +118,16 @@ function worded(value: unknown): string {
             :key="row.claim + row.origin"
             class="border-b border-border/60 last:border-0"
           >
-            <td class="px-3 py-2 font-mono text-[11.5px]">{{ row.claim }}</td>
+            <td class="font-mono text-[11.5px]">{{ row.claim }}</td>
             <td class="max-w-96 px-3 py-2 font-mono text-[10.5px] break-all">
               {{ worded(row.value) }}
             </td>
-            <td class="px-3 py-2">
+            <td>
               <span class="rounded border border-info/40 px-1.5 py-0.5 text-[10px] text-info"
                 >{{ say("preview-by") }} {{ row.origin }}</span
               >
             </td>
-            <td class="px-3 py-2 text-[10.5px] text-muted">{{ landsIn(row) }}</td>
+            <td class="text-[10.5px] text-muted">{{ landsIn(row) }}</td>
           </tr>
         </tbody>
       </table>

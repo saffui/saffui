@@ -166,13 +166,13 @@ async function unfold(scope: ClientScope) {
       </button>
     </form>
 
-    <div class="mt-4 overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+    <div class="sf-list mt-4 overflow-x-auto">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("scopes-col-name") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("scopes-col-description") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("scopes-col-default") }}</th>
+          <tr>
+            <th>{{ say("scopes-col-name") }}</th>
+            <th>{{ say("scopes-col-description") }}</th>
+            <th>{{ say("scopes-col-default") }}</th>
           </tr>
         </thead>
         <tbody>
@@ -182,9 +182,9 @@ async function unfold(scope: ClientScope) {
               :class="unfolded === scope.client_scope_id && 'bg-surface-2'"
               @click="unfold(scope)"
             >
-              <td class="px-3 py-2 font-mono text-[11.5px]">{{ scope.name }}</td>
-              <td class="px-3 py-2 text-muted">{{ scope.description }}</td>
-              <td class="px-3 py-2">
+              <td class="font-mono text-[11.5px]">{{ scope.name }}</td>
+              <td class="text-muted">{{ scope.description }}</td>
+              <td>
                 <span v-if="scope.default_scope" class="text-[10.5px] text-accent">{{
                   say("scopes-default")
                 }}</span>

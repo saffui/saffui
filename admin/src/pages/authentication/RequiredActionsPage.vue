@@ -94,34 +94,34 @@ async function rework(row: RequiredActionRow, reshape: Partial<RequiredActionRow
     <p class="mt-1 max-w-2xl text-xs text-muted">{{ say("actions-lede") }}</p>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div class="mt-4 overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+    <div class="sf-list mt-4 overflow-x-auto">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("actions-col-what") }}</th>
-            <th class="px-3 py-2 font-medium">
+          <tr>
+            <th>{{ say("actions-col-what") }}</th>
+            <th>
               {{ say("actions-col-enabled") }} <AppHint name="actions-enabled-help" />
             </th>
-            <th class="px-3 py-2 font-medium">
+            <th>
               {{ say("actions-col-birth") }} <AppHint name="actions-birth-help" />
             </th>
-            <th class="px-3 py-2 font-medium">{{ say("flow-priority") }}</th>
+            <th>{{ say("flow-priority") }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="held in rows" :key="held.action" class="border-b border-border/60 last:border-0">
-            <td class="px-3 py-2">
+            <td>
               <div class="font-medium">{{ held.row?.display_name || held.title }}</div>
               <code class="font-mono text-[10.5px] text-faint">{{ held.action }}</code>
             </td>
             <template v-if="held.row">
-              <td class="px-3 py-2">
+              <td>
                 <AppToggle
                   :model-value="held.row.enabled ?? false"
                   @update:model-value="rework(held.row!, { enabled: !(held.row!.enabled ?? false) })"
                 />
               </td>
-              <td class="px-3 py-2">
+              <td>
                 <AppToggle
                   :model-value="held.row.default_action ?? false"
                   @update:model-value="
@@ -129,7 +129,7 @@ async function rework(row: RequiredActionRow, reshape: Partial<RequiredActionRow
                   "
                 />
               </td>
-              <td class="px-3 py-2 font-mono text-[11px]">{{ held.row.priority ?? 0 }}</td>
+              <td class="font-mono text-[11px]">{{ held.row.priority ?? 0 }}</td>
             </template>
             <template v-else>
               <td class="px-3 py-2" colspan="2">
@@ -142,7 +142,7 @@ async function rework(row: RequiredActionRow, reshape: Partial<RequiredActionRow
                 </button>
                 <AppHint name="actions-register-help" />
               </td>
-              <td class="px-3 py-2 text-[10.5px] text-faint">{{ say("actions-unregistered") }}</td>
+              <td class="text-[10.5px] text-faint">{{ say("actions-unregistered") }}</td>
             </template>
           </tr>
         </tbody>

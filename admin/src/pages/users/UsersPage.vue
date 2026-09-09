@@ -124,26 +124,26 @@ async function makeUser() {
 
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div v-if="page" class="mt-4 overflow-x-auto rounded-lg border border-border bg-surface">
-      <table class="w-full text-left text-xs">
+    <div v-if="page" class="sf-list mt-4 overflow-x-auto">
+      <table class="sf-table">
         <thead>
-          <tr class="border-b border-border text-[11px] text-muted">
-            <th class="px-3 py-2 font-medium">{{ say("users-col-username") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("users-col-email") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("users-col-name") }}</th>
-            <th class="px-3 py-2 font-medium">{{ say("users-col-state") }}</th>
+          <tr>
+            <th>{{ say("users-col-username") }}</th>
+            <th>{{ say("users-col-email") }}</th>
+            <th>{{ say("users-col-name") }}</th>
+            <th>{{ say("users-col-state") }}</th>
           </tr>
         </thead>
         <tbody>
           <tr
             v-for="user in page.items"
             :key="user.user_id"
-            class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2"
+            class="cursor-pointer hover:bg-surface-2"
             :class="opened === user.user_id && 'bg-surface-2'"
             @click="open(user)"
           >
-            <td class="px-3 py-2 font-mono text-[11.5px]">{{ user.user_name }}</td>
-            <td class="px-3 py-2">
+            <td class="font-mono text-[11.5px]">{{ user.user_name }}</td>
+            <td>
               <span class="inline-flex items-center gap-1.5">
                 {{ user.email }}
                 <AppIcon
@@ -155,8 +155,8 @@ async function makeUser() {
                 />
               </span>
             </td>
-            <td class="px-3 py-2 text-muted">{{ fullName(user) }}</td>
-            <td class="px-3 py-2">
+            <td class="text-muted">{{ fullName(user) }}</td>
+            <td>
               <span
                 v-if="!user.enabled"
                 class="rounded border border-danger/40 px-1.5 py-0.5 text-[10.5px] text-danger"
@@ -172,8 +172,6 @@ async function makeUser() {
           </tr>
         </tbody>
       </table>
-    </div>
-
     <AppPaging
       v-if="page"
       :first="first"
@@ -182,6 +180,8 @@ async function makeUser() {
       @update:first="first = $event"
       @update:size="resize"
     />
+    </div>
+
 
     <AppDrawer
       v-if="making"

@@ -28,7 +28,7 @@ export async function api<T>(
     );
   if (import.meta.env.DEV && bearer === "preview") {
     const { previewAnswer } = await import("@/services/preview");
-    const answered = previewAnswer<T>(path);
+    const answered = previewAnswer<T>(path, method);
     if (method !== "GET") wroteSomething();
     if (speaks) kept();
     return answered;

@@ -3,6 +3,8 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
+import AppIcon from "@/components/AppIcon.vue";
+import DangerDialog from "@/components/DangerDialog.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import { useRouter } from "vue-router";
 import {
@@ -24,6 +26,7 @@ import {
   writeUssd,
 } from "@/services/settings";
 import { deleteRealm } from "@/services/realms";
+import { countOf } from "@/services/overview";
 import { toastOk } from "@/services/toasts";
 import { useSession } from "@/stores/session";
 import type { FeatureBrief } from "@/models/feature";
@@ -482,9 +485,26 @@ async function copySecret() {
   }
 }
 
-/// Deleting the realm: typed name arms the button; the session's own realm
-/// is refused here as the server refuses it.
-const doomName = ref("");
+/// Taking the realm away. Only this session's own, which is the only one the
+/// boundary leaves reachable, and only through a dialog that counts what goes
+/// and asks for the name back.
+const dooming = ref(false);
+/// What goes with the row, counted when the dialog opens rather than kept
+/// fresh: a number read a moment before the deletion is the number the
+/// person is deciding on.
+const doomed = ref<{ value: string; label: string }[]>([]);
+async function openDooming() {
+  dooming.value = true;
+  doomed.value = [];
+  const asked = ["users", "clients", "organizations", "sessions"] as const;
+  const held = await Promise.all(
+    asked.map((leaf) => countOf(realm.value, leaf).catch(() => null)),
+  );
+  doomed.value = asked.map((leaf, at) => ({
+    value: held[at] === null ? "?" : String(held[at]),
+    label: say(`settings-delete-count-${leaf}`),
+  }));
+}
 async function dropRealm() {
   failed.value = "";
   try {
@@ -801,34 +821,27 @@ async function saveSmsTemplate() {
               {{ say("settings-attr-add") }}
             </button>
 
-            <div class="mt-4 rounded-lg border border-danger/40 p-3">
+            <div class="mt-4 rounded-lg border border-danger-line p-3">
               <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">
                 {{ say("settings-danger") }}
               </div>
               <p class="mt-1 text-[11px] text-muted">
                 {{
                   realm === home
-                    ? say("settings-delete-own")
-                    : say("settings-delete-lede", { realm })
+                    ? say("settings-delete-lede", { realm })
+                    : say("settings-delete-elsewhere", { realm })
                 }}
                 <AppHint name="settings-delete-help" />
               </p>
-              <div v-if="realm !== home" class="mt-2 flex items-center gap-2">
-                <input
-                  v-model="doomName"
-                  :placeholder="realm"
-                  class="sf-field font-mono"
-                  spellcheck="false"
-                />
-                <button
-                  type="button"
-                  class="sf-button sf-button-danger disabled:opacity-40"
-                  :disabled="doomName !== realm"
-                  @click="dropRealm"
-                >
-                  {{ say("settings-delete-realm") }}
-                </button>
-              </div>
+              <button
+                v-if="realm === home"
+                type="button"
+                class="sf-button sf-button-danger mt-2"
+                @click="openDooming"
+              >
+                <AppIcon name="remove" :size="13" />
+                {{ say("settings-delete-realm") }}
+              </button>
             </div>
           </template>
 
@@ -1808,4 +1821,22 @@ async function saveSmsTemplate() {
       </template>
     </div>
   </div>
+
+  <DangerDialog
+    :open="dooming"
+    :title="say('settings-delete-title', { realm })"
+    :named="realm"
+    :lede="say('settings-delete-dialog-lede')"
+    :facts="doomed"
+    :aside="say('settings-delete-aside')"
+    :answer="{
+      code: '404 realm_not_found',
+      body: `GET /realms/${realm}/.well-known/openid-configuration`,
+    }"
+    :warning="say('settings-delete-warning')"
+    :confirm-label="say('settings-delete-realm')"
+    :failed="failed"
+    @close="dooming = false"
+    @confirm="dropRealm"
+  />
 </template>

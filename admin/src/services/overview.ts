@@ -8,7 +8,9 @@ import type { RealmSettings } from "@/models/realm";
 
 /// One row of a collection plus the paid-for count: the cheapest honest way
 /// to say "how many" over a paged listing.
-async function countOf(realm: string, leaf: string): Promise<number | null> {
+/// How many rows a listing holds, paid for by the count rather than by the
+/// page: `max=1` so the answer is the number and not the rows.
+export async function countOf(realm: string, leaf: string): Promise<number | null> {
   const page = await api<Page<unknown>>(`${adminPath(realm, leaf)}?max=1&count=true`);
   return page.total;
 }

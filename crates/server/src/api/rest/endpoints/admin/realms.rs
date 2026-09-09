@@ -265,6 +265,9 @@ pub async fn create(
     )
     .await
     .map_err(|_| internal())?;
+    tenant_chain(&transaction, &admin, &realm_id, "realm.created", now)
+        .await
+        .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;
 
     // The one time this password is ever readable. It is stored as a hash
@@ -276,6 +279,35 @@ pub async fn create(
         "password": password,
     });
     Ok(HttpResponse::Created().json(answer))
+}
+
+/// Write what happened to a realm where it will still be readable afterwards.
+///
+/// The tenant's chain, not the realm's: a realm's own chain is keyed to it and
+/// cascades with it, so the entry recording a deletion would be deleted by the
+/// statement it records. The served plane may append here and may not read,
+/// which keeps a neighbouring realm's existence as unknowable as the guard
+/// makes it.
+async fn tenant_chain(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    admin: &Admin,
+    realm_id: &str,
+    kind: &str,
+    at: i64,
+) -> Result<(), store::error::StoreError> {
+    store::tenant_chain::append(
+        transaction,
+        &serde_json::json!({
+            "kind": kind,
+            "occurred_at": at as f64,
+            "realm": realm_id,
+            "actor": admin.context.principal.id(),
+            "actor_realm": admin.context.tenant.realm_id,
+            "party": admin.context.presenter,
+        }),
+    )
+    .await
+    .map(|_| ())
 }
 
 /// Take the realm away. The schema cascades, so everything keyed under it
@@ -325,6 +357,18 @@ pub async fn delete(
     {
         return Err(ApiError::new(ErrorCode::RealmNotFound));
     }
+    // In the same transaction as the deletion, and in the tenant's chain
+    // rather than the realm's: the realm's own chain went with the cascade a
+    // statement ago, which is the reason this table exists at all.
+    tenant_chain(
+        &transaction,
+        &admin,
+        &realm_id,
+        "realm.deleted",
+        chrono::Utc::now().timestamp(),
+    )
+    .await
+    .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }

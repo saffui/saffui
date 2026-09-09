@@ -98,6 +98,19 @@ export async function forgetRegistrationSecret(realm: string): Promise<void> {
 
 /// What this build carries and what is on. Read-only by nature: the gating
 /// is compile-time.
+/// Hold the relay in conversation and report what it said. Sends nothing.
+export async function lookAtRelay(realm: string) {
+  return api<import("@/models/mail").RelayReport>(adminPath(realm, "mail/probe"));
+}
+
+/// What this realm tried to send lately and could not.
+export async function readRelayRefusals(realm: string) {
+  const told = await api<{ items: import("@/models/mail").MailRefusal[]; hours: number }>(
+    adminPath(realm, "mail/refusals"),
+  );
+  return told;
+}
+
 export async function listFeatures() {
   return api<import("@/models/feature").FeatureBrief[]>("/admin/features");
 }

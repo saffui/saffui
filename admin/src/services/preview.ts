@@ -145,6 +145,46 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       total: 42,
     });
   }
+  if (path.endsWith("/mail/probe")) {
+    return answer({
+      reached_in_millis: 412,
+      tls_version: "TLSv1.3",
+      cipher: "TLS_AES_256_GCM_SHA384",
+      certificate_until: "Aug  2 09:14:00 2026 GMT",
+      certificate_issuer: "R11",
+      max_message_bytes: 20_480_000,
+      auth_offered: ["LOGIN", "PLAIN"],
+      transcript: [
+        "< 220 smtp.saffui.tg ESMTP ready",
+        "> EHLO smtp.saffui.tg",
+        "< 250-smtp.saffui.tg",
+        "< 250-STARTTLS",
+        "< 250-AUTH LOGIN PLAIN",
+        "< 250 SIZE 20480000",
+        "> STARTTLS",
+        "< 220 2.0.0 Ready to start TLS",
+        "--- TLS ---",
+        "> EHLO smtp.saffui.tg",
+        "< 250 smtp.saffui.tg",
+        "> AUTH LOGIN (no-reply@saffui.tg)",
+        "< 235 2.7.0 Authentication succeeded",
+        "> QUIT",
+        "< 221 2.0.0 Bye",
+      ],
+      refused: null,
+    });
+  }
+  if (path.endsWith("/mail/refusals")) {
+    const ago = (hours: number) => new Date((NOW - hours * 3600) * 1000).toISOString();
+    return answer({
+      hours: 24,
+      items: [
+        { recipient: "kwame.b@old.tg", purpose: "reset-password", attempted_at: ago(3), detail: "550 5.1.1 mailbox unknown" },
+        { recipient: "batch@acme.example", purpose: "verify-email", attempted_at: ago(6), detail: "421 4.7.0 too many connections" },
+        { recipient: "probe@beta.example", purpose: "magic-link", attempted_at: ago(9), detail: "read timed out after 20 s" },
+      ],
+    });
+  }
   if (/\/features\/[^/]+$/.test(path) && method === "PUT") {
     return answer(null);
   }

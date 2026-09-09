@@ -80,3 +80,37 @@ pub async fn drop_older_than(
         .await
         .map_err(|_| StoreError::Backend)
 }
+
+/// What this realm tried to send and could not, most recent first.
+///
+/// The console shows these where mail is configured, because a relay that
+/// answers a probe and still refuses real mail is the case an operator cannot
+/// otherwise see: the settings are right and the messages are not arriving.
+pub async fn read_refusals_since(
+    transaction: &Transaction<'_>,
+    since: DateTime<Utc>,
+    max: i64,
+) -> StoreResult<Vec<Delivery>> {
+    Ok(transaction
+        .query(
+            "SELECT delivery_id, user_id, purpose, recipient, attempted_at, delivered, detail \
+             FROM message_deliveries \
+             WHERE delivered = false AND attempted_at >= $1 \
+             ORDER BY attempted_at DESC \
+             LIMIT $2",
+            &[&since, &max],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| Delivery {
+            delivery_id: row.get(0),
+            user_id: row.get(1),
+            purpose: row.get(2),
+            recipient: row.get(3),
+            attempted_at: row.get(4),
+            delivered: row.get(5),
+            detail: row.get(6),
+        })
+        .collect())
+}

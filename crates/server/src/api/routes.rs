@@ -134,6 +134,18 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/mail/probe",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(mail::look_at_relay)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/mail/refusals",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(mail::list_refusals)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/mail",
             action: AdminAction::RealmRead,
             handler: Some(|| web::get().to(mail::read)),

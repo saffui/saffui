@@ -14,3 +14,4 @@ pub mod metrics;
 pub mod middleware;
 pub mod negotiate;
 pub mod otel;
+pub mod smtp_probe;

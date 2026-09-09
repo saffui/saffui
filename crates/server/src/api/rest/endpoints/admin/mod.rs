@@ -4,6 +4,7 @@ pub mod claim_sources;
 pub mod client_scopes;
 pub mod clients;
 pub mod compliance;
+pub mod credentials;
 pub mod directory;
 pub mod dto;
 pub mod events;

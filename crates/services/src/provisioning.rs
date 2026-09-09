@@ -25,6 +25,7 @@ use store::keyring;
 
 use crate::admin;
 use models::entities::authz::{AdminAction, RoleModel};
+use models::entities::user::RequiredAction;
 use store::providers::{
     auth_flows, client_scopes, clients, realm_keys, realms, roles, tenants, users,
 };
@@ -251,6 +252,65 @@ pub const ADMINISTRATOR_ROLE: &str = "administrator";
 /// console is: a role the operator reshaped keeps its shape, and only the
 /// grant is re-asserted, which is the one thing a deployment cannot log in
 /// to fix.
+/// Draw the realm's first administrator, and hand its password back once.
+///
+/// A realm born through the plane cannot be reached by the token that made
+/// it, so unless the birth hands back a way in, the realm has none and never
+/// will: it holds no user, and self-registration is closed by default.
+///
+/// The password is drawn from the provider's own randomness, kept only as
+/// the hash every other password is kept as, and the account carries the
+/// instruction to replace it. The answer handed back is therefore worth one
+/// login and no more, and losing it means drawing another administrator
+/// rather than recovering this one.
+pub async fn provision_first_administrator(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    tenant: &str,
+    realm_id: &str,
+    user_name: &str,
+    email: &str,
+) -> StoreResult<String> {
+    let mut drawn = [0u8; 32];
+    provider
+        .rand()
+        .fill(&mut drawn)
+        .map_err(|_| StoreError::Backend)?;
+    let password = data_encoding::BASE64URL_NOPAD.encode(&drawn);
+    // The store wants it sealed like any other password; the plain copy is
+    // handed back to the caller and to nobody else.
+    let sealed = SecretBox::new(Box::new(password.clone()));
+    provision_user(
+        transaction,
+        provider,
+        tenant,
+        realm_id,
+        &Person {
+            user_name,
+            email,
+            password: &sealed,
+            given_name: None,
+            family_name: None,
+            phone: None,
+            attributes: Vec::new(),
+        },
+    )
+    .await?;
+    // Added rather than assigned: the realm's own defaults were applied at
+    // creation, and replacing them here would quietly drop whatever else a
+    // first login is meant to ask for.
+    let mut born = users::load_by_name(transaction, user_name)
+        .await?
+        .ok_or(StoreError::Backend)?;
+    let standing = born.required_actions.get_or_insert_with(Vec::new);
+    if !standing.contains(&RequiredAction::UpdatePassword) {
+        standing.push(RequiredAction::UpdatePassword);
+    }
+    users::update(transaction, &born).await?;
+    provision_realm_administration(transaction, tenant, realm_id, user_name).await?;
+    Ok(password)
+}
+
 pub async fn provision_realm_administration(
     transaction: &Transaction<'_>,
     tenant: &str,

@@ -70,6 +70,91 @@ async fn asked_under(
 /// is a conflict, and the switches are rewritten in place afterwards.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_birth_hands_back_the_one_way_into_what_it_made() {
+    let plane = Plane::with_actions(&[AdminAction::RealmCreate, AdminAction::UserRead]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({
+            "name": "annex", "display_name": "Annex", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@annex.test" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let password = born["administrator"]["password"]
+        .as_str()
+        .expect("the birth handed back a password")
+        .to_owned();
+    assert!(password.len() >= 40, "a drawn password, not a placeholder");
+
+    // The creator gained nothing. Its token was minted by another realm and
+    // still reaches nothing here, which is the whole point of handing a
+    // password back rather than letting the maker walk in.
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        "/admin/realms/annex/users",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, "annex"),
+        )
+        .await;
+    let root = store::providers::users::load_by_name(&transaction, "root")
+        .await
+        .expect("the store answered")
+        .expect("the annex holds its administrator");
+    assert!(root.enabled, "the drawn administrator is switched off");
+
+    // The password is worth one login: the account carries the instruction to
+    // replace it, and the login engine puts that ahead of everything else.
+    assert!(
+        root.required_actions
+            .clone()
+            .unwrap_or_default()
+            .contains(&models::entities::user::RequiredAction::UpdatePassword),
+        "the first login is not made to replace the drawn password: {:?}",
+        root.required_actions
+    );
+
+    // Only the hash was kept, so what was handed back cannot be read again.
+    let stored = store::providers::credentials::load_for_user_of_type(
+        &transaction,
+        &root.user_id,
+        models::entities::credentials::CredentialType::Password,
+    )
+    .await
+    .expect("the store answered");
+    let kept = stored.first().expect("a password was stored");
+    assert!(
+        !kept.secret.expose().contains(&password),
+        "the drawn password was kept in the clear"
+    );
+
+    // And the account may actually administer the realm it was drawn for.
+    let held = store::providers::roles::direct_roles_of(&transaction, &root.user_id)
+        .await
+        .expect("the store answered");
+    assert!(
+        held.iter().any(|role| role == "administrator"),
+        "the drawn administrator administers nothing: {held:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
     let plane = Plane::with_actions(&[AdminAction::RealmCreate]).await;
     let bearer = plane.token(&support::claims());
@@ -83,7 +168,8 @@ async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
         "/admin/realms",
         &bearer,
         Some(
-            serde_json::json!({ "name": "overflow", "display_name": "Overflow", "enabled": true }),
+            serde_json::json!({ "name": "overflow", "display_name": "Overflow", "enabled": true,
+                "administrator": { "user_name": "root", "email": "root@example.test" } }),
         ),
     )
     .await;
@@ -98,7 +184,8 @@ async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
         "/admin/realms",
         &bearer,
         Some(
-            serde_json::json!({ "name": "overflow", "display_name": "Overflow", "enabled": true }),
+            serde_json::json!({ "name": "overflow", "display_name": "Overflow", "enabled": true,
+                "administrator": { "user_name": "root", "email": "root@example.test" } }),
         ),
     )
     .await;
@@ -124,7 +211,10 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "no spaces", "display_name": "x", "enabled": true })),
+        Some(
+            serde_json::json!({ "name": "no spaces", "display_name": "x", "enabled": true,
+                "administrator": { "user_name": "root", "email": "root@example.test" } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
@@ -134,7 +224,10 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "staging", "display_name": "Staging", "enabled": true })),
+        Some(
+            serde_json::json!({ "name": "staging", "display_name": "Staging", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@staging.test" } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{born}");
@@ -145,7 +238,10 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "staging", "display_name": "Again", "enabled": true })),
+        Some(
+            serde_json::json!({ "name": "staging", "display_name": "Again", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@staging.test" } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{told}");
@@ -679,7 +775,10 @@ async fn a_realm_is_not_switched_off_from_its_own_console() {
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "other", "display_name": "Other", "enabled": true })),
+        Some(
+            serde_json::json!({ "name": "other", "display_name": "Other", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@other.test" } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{born}");
@@ -773,7 +872,10 @@ async fn the_privacy_door_refuses_terms_it_cannot_honour() {
         Method::POST,
         "/admin/realms",
         &bearer,
-        Some(serde_json::json!({ "name": "doored", "display_name": "Doored", "enabled": true })),
+        Some(
+            serde_json::json!({ "name": "doored", "display_name": "Doored", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@doored.test" } }),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{born}");

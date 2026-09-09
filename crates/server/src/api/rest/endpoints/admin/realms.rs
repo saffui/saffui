@@ -123,6 +123,27 @@ fn usable_name(name: &str) -> bool {
 /// told who is writing. A failure between the two leaves a realm that a
 /// second create refuses; `provision` heals such a realm, and so does the
 /// deployment's next start.
+/// What a realm needs at birth: the realm itself, and the one person who
+/// will be able to enter it.
+///
+/// The administrator is required rather than optional. A realm made through
+/// the plane cannot be reached by the token that made it, self-registration
+/// is closed by default, and nothing else ever creates a user there; an
+/// optional field would therefore make it easy to create a realm that no
+/// living person can open, and impossible to tell from one that works.
+#[derive(serde::Deserialize)]
+pub struct Birth {
+    #[serde(flatten)]
+    pub realm: RealmCreateModel,
+    pub administrator: Administrator,
+}
+
+#[derive(serde::Deserialize)]
+pub struct Administrator {
+    pub user_name: String,
+    pub email: String,
+}
+
 pub async fn create(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
@@ -130,9 +151,10 @@ pub async fn create(
     policy: web::Data<AdminPolicy>,
     origin: web::Data<PublicOrigin>,
     sealing: web::Data<Sealing>,
-    body: web::Json<RealmCreateModel>,
+    body: web::Json<Birth>,
 ) -> Result<HttpResponse, ApiError> {
-    let asked = body.into_inner();
+    let born = body.into_inner();
+    let (asked, first) = (born.realm, born.administrator);
     if !usable_name(&asked.name) {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,
@@ -225,9 +247,29 @@ pub async fn create(
     provisioning::provision_levels(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?;
+    // Last, so a realm that fails to become usable does not leave a password
+    // in an operator's hands for an account that was never committed.
+    let password = provisioning::provision_first_administrator(
+        &transaction,
+        sealing.provider.as_ref(),
+        &tenant,
+        &realm_id,
+        &first.user_name,
+        &first.email,
+    )
+    .await
+    .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;
 
-    Ok(HttpResponse::Created().json(brief(realm)))
+    // The one time this password is ever readable. It is stored as a hash
+    // like any other, and the account carries the instruction to replace it
+    // at the first login, so what is written here is worth one entry.
+    let mut answer = serde_json::to_value(brief(realm)).map_err(|_| internal())?;
+    answer["administrator"] = serde_json::json!({
+        "user_name": first.user_name,
+        "password": password,
+    });
+    Ok(HttpResponse::Created().json(answer))
 }
 
 /// Take the realm away. The schema cascades, so everything keyed under it

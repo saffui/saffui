@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
+import PageTabs from "@/components/PageTabs.vue";
 import AppIcon from "@/components/AppIcon.vue";
 import DangerDialog from "@/components/DangerDialog.vue";
 import AppToggle from "@/components/AppToggle.vue";
@@ -37,10 +38,14 @@ import { OTP_DEFAULTS, OWASP_HASHING } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 import { JURISDICTIONS } from "@/services/compliance";
 
+/// The deck's boards, in the deck's order. "User profile" is drawn there too
+/// and is not here: a declarative user profile is a server feature this build
+/// does not carry, and a tab that writes nowhere is worse than a missing one.
 const GROUPS = [
   "general",
   "login",
   "sessions",
+  "tokens",
   "security",
   "credentials",
   "localization",
@@ -65,7 +70,6 @@ const LOGIN_TOGGLES = [
   ["duplicated_email_allowed", "settings-duplicated-email"],
   ["edit_user_name_allowed", "settings-edit-username"],
   ["reset_password_allowed", "settings-reset-password"],
-  ["remember_me", "settings-remember-me"],
 ] as const;
 
 const route = useRoute();
@@ -524,10 +528,23 @@ async function loadFeatures() {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
-function openGroup(which: Group) {
-  group.value = which;
-  if (which === "features" && !features.value.length) void loadFeatures();
+/// A board is a place, not a panel: it lives in the address, so a link to one
+/// opens it and the back button walks between them.
+function boardAt(leaf: string): string {
+  return `/${realm.value}/settings?group=${leaf}`;
 }
+
+watch(
+  () => route.query.group,
+  (asked) => {
+    const named = String(asked ?? "general");
+    group.value = (GROUPS as readonly string[]).includes(named)
+      ? (named as Group)
+      : "general";
+    if (group.value === "features" && !features.value.length) void loadFeatures();
+  },
+  { immediate: true },
+);
 
 /// The realm's rewording of its mails, kept whole and saved whole.
 const MAIL_KINDS = ["magic_link", "verify_email", "reset_password", "subject_request"] as const;
@@ -719,33 +736,22 @@ async function saveSmsTemplate() {
 </script>
 
 <template>
-  <div class="flex gap-6">
-    <nav class="w-52 shrink-0">
-      <div class="sticky top-0 flex flex-col gap-0.5">
-        <button
-          v-for="held in GROUPS"
-          :key="held"
-          type="button"
-          class="relative rounded-md px-2 py-1.5 text-left text-xs text-muted hover:bg-surface-2 hover:text-ink"
-          :class="group === held && 'bg-surface-2 text-ink'"
-          @click="openGroup(held)"
-        >
-          <span
-            v-if="dirtyGroups[held]"
-            class="absolute top-1.5 bottom-1.5 left-0 w-0.5 rounded bg-accent"
-          ></span>
-          <span class="block font-medium">{{ say(`settings-group-${held}`) }}</span>
-          <span class="block text-[10px] leading-tight text-faint">{{
-            say(`settings-group-${held}-desc`)
-          }}</span>
-        </button>
-      </div>
-    </nav>
+  <div>
+    <h1 class="text-lg font-semibold tracking-tight">{{ say("settings-title") }}</h1>
+    <p class="mt-1 text-[11.5px] text-faint">
+      {{ say("settings-under", { realm, about: say(`settings-group-${group}-desc`) }) }}
+    </p>
 
-    <div class="min-w-0 flex-1">
-      <h1 class="text-lg font-semibold tracking-tight">
-        {{ say(`settings-group-${group}`) }}
-      </h1>
+    <PageTabs
+      :leaves="[...GROUPS]"
+      :at="group"
+      :to="boardAt"
+      :marked="GROUPS.filter((held) => dirtyGroups[held])"
+      saying="settings-group"
+      class="mt-3"
+    />
+
+    <div class="min-w-0">
       <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
       <template v-if="settings">
@@ -902,22 +908,12 @@ async function saveSmsTemplate() {
           <template v-if="group === 'sessions'">
             <div class="grid grid-cols-2 gap-3">
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-access-lifespan") }} <AppHint name="settings-access-lifespan-help" />
+                {{ say("settings-session-ceiling") }}
+                <AppHint name="settings-session-ceiling-help" />
                 <input
-                  v-model="draft.access_token_lifespan"
+                  v-model="draft.session_max_lifespan"
                   type="number"
                   min="0"
-                  :placeholder="say('settings-unset')"
-                  class="sf-field mt-1 font-mono"
-                />
-              </label>
-              <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-refresh-reuse") }} <AppHint name="settings-refresh-reuse-help" />
-                <input
-                  v-model="draft.refresh_token_max_reuse"
-                  type="number"
-                  min="0"
-                  :placeholder="say('settings-unset')"
                   class="sf-field mt-1 font-mono"
                 />
               </label>
@@ -950,37 +946,6 @@ async function saveSmsTemplate() {
                 />
               </label>
               <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-refresh-sliding") }}
-                <AppHint name="settings-refresh-sliding-help" />
-                <input
-                  v-model="draft.refresh_token_lifespan"
-                  type="number"
-                  min="1"
-                  placeholder="1800"
-                  class="sf-field mt-1 font-mono"
-                />
-              </label>
-              <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-session-ceiling") }}
-                <AppHint name="settings-session-ceiling-help" />
-                <input
-                  v-model="draft.session_max_lifespan"
-                  type="number"
-                  min="0"
-                  class="sf-field mt-1 font-mono"
-                />
-              </label>
-              <label class="block text-[11px] font-medium text-muted">
-                {{ say("settings-code-lifespan") }} <AppHint name="settings-code-lifespan-help" />
-                <input
-                  v-model="draft.access_code_lifespan"
-                  type="number"
-                  min="1"
-                  placeholder="60"
-                  class="sf-field mt-1 font-mono"
-                />
-              </label>
-              <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-login-window") }} <AppHint name="settings-login-window-help" />
                 <input
                   v-model="draft.access_code_lifespan_login"
@@ -997,6 +962,55 @@ async function saveSmsTemplate() {
                   type="number"
                   min="1"
                   :placeholder="say('settings-unset')"
+                  class="sf-field mt-1 font-mono"
+                />
+              </label>
+            </div>
+            <p class="text-[10.5px] text-faint">{{ say("settings-zero-unbounded") }}</p>
+            <AppToggle v-model="draft.remember_me">
+              {{ say("settings-remember-me") }} <AppHint name="settings-remember-me-help" />
+            </AppToggle>
+          </template>
+          <template v-if="group === 'tokens'">
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-access-lifespan") }} <AppHint name="settings-access-lifespan-help" />
+                <input
+                  v-model="draft.access_token_lifespan"
+                  type="number"
+                  min="0"
+                  :placeholder="say('settings-unset')"
+                  class="sf-field mt-1 font-mono"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-refresh-sliding") }}
+                <AppHint name="settings-refresh-sliding-help" />
+                <input
+                  v-model="draft.refresh_token_lifespan"
+                  type="number"
+                  min="1"
+                  placeholder="1800"
+                  class="sf-field mt-1 font-mono"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-refresh-reuse") }} <AppHint name="settings-refresh-reuse-help" />
+                <input
+                  v-model="draft.refresh_token_max_reuse"
+                  type="number"
+                  min="0"
+                  :placeholder="say('settings-unset')"
+                  class="sf-field mt-1 font-mono"
+                />
+              </label>
+              <label class="block text-[11px] font-medium text-muted">
+                {{ say("settings-code-lifespan") }} <AppHint name="settings-code-lifespan-help" />
+                <input
+                  v-model="draft.access_code_lifespan"
+                  type="number"
+                  min="1"
+                  placeholder="60"
                   class="sf-field mt-1 font-mono"
                 />
               </label>

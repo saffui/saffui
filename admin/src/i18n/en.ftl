@@ -72,6 +72,8 @@ users-col-username = Username
 users-col-email = Email
 users-col-name = Name
 users-col-state = State
+users-col-pending = Pending
+users-pending-owing = something owed
 filters-any = any
 filters-clear = clear all
 users-search = username, email…
@@ -736,6 +738,22 @@ user-set-password-help = Writes a new password for this account, replacing whate
 user-new-password = New password
 user-new-password-again = Again
 user-password-mismatch = The two passwords do not match.
+user-password-temporary = Temporary: the person replaces it at their next sign-in
+user-password-temporary-help = Writes the update-password instruction in the same transaction as the secret, so a password handed to somebody else does not become permanent by accident.
+user-password-history = Password changes
+user-password-rules = This realm holds a password to
+user-password-rules-help = Read off the realm's policy, and enforced by the server on every door at once: a password refused here would be refused at a reset and at a sign-up too.
+user-password-history-help = What is kept for the reuse rule is a hash, never a secret, so this says when a password was replaced and by whom and nothing else.
+held-to-min-length = { $held } characters
+held-to-min-digits = { $held } digits
+held-to-min-upper = { $held } upper case
+held-to-min-lower = { $held } lower case
+held-to-min-special = { $held } special
+held-to-history = not the last { $held }
+held-to-not-username = not the username
+held-to-not-email = not the address
+user-password-history-empty = No password has been replaced on this account.
+user-password-history-unknown = unknown
 user-delete-lede = Deleting the account takes its sessions, credentials and grants with it. There is no undo.
 user-delete = Delete this account
 user-grant-role = Grant a role
@@ -1006,6 +1024,7 @@ preview-lands-both = both tokens
 
 ## Decoupled identities.
 user-rename-help = Renaming is the realm's to allow, under Login settings. The identifier underneath never moves: grants, sessions and the journal keep pointing where they pointed.
+user-rename-refused = This realm does not rename accounts.
 
 ## The client's own address, and the origins its scripts call from.
 client-root = Root URL

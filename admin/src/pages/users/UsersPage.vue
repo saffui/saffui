@@ -38,6 +38,14 @@ const CHOICES: Choice[] = [
       { value: "false", label: say("users-disabled") },
     ],
   },
+  {
+    name: "pending",
+    label: say("users-col-pending"),
+    options: [
+      { value: "", label: say("filters-any") },
+      { value: "true", label: say("users-pending-owing") },
+    ],
+  },
 ];
 
 let typing = 0;
@@ -62,6 +70,7 @@ async function load() {
     page.value = await listUsers(realm.value, first.value, size.value, {
       search: search.value,
       enabled: chosen.value.enabled,
+      pending: chosen.value.pending,
     });
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);

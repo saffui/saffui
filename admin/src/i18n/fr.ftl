@@ -72,6 +72,8 @@ users-col-username = Identifiant
 users-col-email = E-mail
 users-col-name = Nom
 users-col-state = État
+users-col-pending = En attente
+users-pending-owing = quelque chose à faire
 filters-any = tous
 filters-clear = tout effacer
 users-search = nom d'utilisateur, courriel…
@@ -736,6 +738,22 @@ user-set-password-help = Écrit un nouveau mot de passe, remplaçant l'existant.
 user-new-password = Nouveau mot de passe
 user-new-password-again = Encore
 user-password-mismatch = Les deux mots de passe diffèrent.
+user-password-temporary = Temporaire : la personne le remplace à sa prochaine connexion
+user-password-temporary-help = Écrit l'instruction de remplacement dans la même transaction que le secret, pour qu'un mot de passe remis à quelqu'un ne devienne pas permanent par accident.
+user-password-history = Changements de mot de passe
+user-password-rules = Ce realm exige
+user-password-rules-help = Lu sur la politique du realm, et appliqué par le serveur à toutes les portes à la fois : un mot de passe refusé ici le serait aussi à une réinitialisation et à une inscription.
+user-password-history-help = Ce qui est conservé pour la règle de non-réutilisation est une empreinte et jamais un secret, donc ceci dit quand un mot de passe a été remplacé et par qui, rien de plus.
+held-to-min-length = { $held } caractères
+held-to-min-digits = { $held } chiffres
+held-to-min-upper = { $held } majuscules
+held-to-min-lower = { $held } minuscules
+held-to-min-special = { $held } spéciaux
+held-to-history = pas les { $held } derniers
+held-to-not-username = pas le nom d'utilisateur
+held-to-not-email = pas l'adresse
+user-password-history-empty = Aucun mot de passe n'a été remplacé sur ce compte.
+user-password-history-unknown = inconnu
 user-delete-lede = Supprimer le compte emporte sessions, identifiants et octrois. Sans retour.
 user-delete = Supprimer ce compte
 user-grant-role = Accorder un rôle
@@ -1006,6 +1024,7 @@ preview-lands-both = les deux jetons
 
 ## Identités découplées.
 user-rename-help = Renommer relève du realm, dans les réglages de connexion. L'identifiant dessous ne bouge jamais : octrois, sessions et journal pointent où ils pointaient.
+user-rename-refused = Ce realm ne renomme pas les comptes.
 
 ## L'adresse propre du client, et les origins d'où ses scripts appellent.
 client-root = URL racine

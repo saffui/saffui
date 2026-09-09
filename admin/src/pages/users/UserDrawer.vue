@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
+import { useStanding } from "@/stores/standing";
 import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
 import {
@@ -21,6 +22,8 @@ import {
   revokeRoleFromUser,
   revokeWebAuthnKey,
   setUserPassword,
+  readPasswordHistory,
+  type PasswordChange,
   updateUser,
 } from "@/services/users";
 import { listRoles, listGroups } from "@/services/directory";
@@ -71,6 +74,13 @@ function customAttributes(held: UserFull): [string, string][] {
       typeof value === "string" ? value : (value?.Str ?? JSON.stringify(value)),
     ]);
 }
+function stamp(at: string | null): string {
+  if (!at) return "";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+    new Date(at),
+  );
+}
+
 function born(held: UserFull): string {
   if (!held.created_at) return "";
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
@@ -78,6 +88,32 @@ function born(held: UserFull): string {
   );
 }
 const showPassword = ref(false);
+
+const standing = useStanding();
+/// The realm decides whether an account is renamed at all, and the server
+/// refuses either way; the field says so before a request is spent.
+const renameable = computed(() => standing.switches?.edit_user_name_allowed === true);
+
+/// What the realm will hold a password to, said before it refuses one. Only
+/// the rules a person can act on: the hashing cost and the expiry are the
+/// realm's business, not this form's.
+const rules = computed(() => {
+  const policy = standing.switches?.password_policy;
+  if (!policy) return [];
+  const held: string[] = [];
+  const count = (value: number | null | undefined, key: string) => {
+    if (value) held.push(say(key, { held: value }));
+  };
+  count(policy.min_length, "held-to-min-length");
+  count(policy.min_digits, "held-to-min-digits");
+  count(policy.min_upper_case, "held-to-min-upper");
+  count(policy.min_lower_case, "held-to-min-lower");
+  count(policy.min_special_chars, "held-to-min-special");
+  count(policy.history_look_back, "held-to-history");
+  if (policy.not_username) held.push(say("held-to-not-username"));
+  if (policy.not_email) held.push(say("held-to-not-email"));
+  return held;
+});
 
 /// The editable half of the overview, adopted from the loaded user.
 const profile = ref({
@@ -144,7 +180,10 @@ async function load() {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
-onMounted(load);
+onMounted(() => {
+  void load();
+  void readHistory();
+});
 
 async function saveProfile() {
   try {
@@ -188,16 +227,28 @@ function askFor(action: string) {
   askOpen.value = false;
 }
 
+const temporary = ref(true);
+const history = ref<PasswordChange[]>([]);
+
+async function readHistory() {
+  try {
+    history.value = await readPasswordHistory(props.realm, props.userId);
+  } catch {
+    history.value = [];
+  }
+}
+
 async function savePassword() {
   if (!newPassword.value || newPassword.value !== newPasswordAgain.value) {
     failed.value = say("user-password-mismatch");
     return;
   }
   try {
-    await setUserPassword(props.realm, props.userId, newPassword.value);
+    await setUserPassword(props.realm, props.userId, newPassword.value, temporary.value);
     newPassword.value = "";
     newPasswordAgain.value = "";
     failed.value = "";
+    await Promise.all([load(), readHistory()]);
   } catch {
     // The toast already said.
   }
@@ -353,8 +404,10 @@ function instant(epoch: number | null | undefined): string {
             {{ say("users-col-name") }} <AppHint name="user-rename-help" />
             <input
               v-model="profile.user_name"
-              class="sf-field mt-1 font-mono"
+              class="sf-field mt-1 font-mono disabled:opacity-60"
               spellcheck="false"
+              :disabled="!renameable"
+              :title="renameable ? undefined : say('user-rename-refused')"
             />
           </label>
           <label class="block text-[11px] font-medium text-muted">
@@ -525,6 +578,36 @@ function instant(epoch: number | null | undefined): string {
           {{ say("settings-save") }}
         </button>
       </form>
+
+      <label class="mt-2 flex items-center gap-2 text-[11px] text-muted">
+        <input v-model="temporary" type="checkbox" class="accent-accent" />
+        {{ say("user-password-temporary") }}
+        <AppHint name="user-password-temporary-help" />
+      </label>
+
+      <div v-if="rules.length" class="mt-3 flex flex-wrap items-center gap-1.5">
+        <span class="text-[11px] text-muted">
+          {{ say("user-password-rules") }} <AppHint name="user-password-rules-help" />
+        </span>
+        <span v-for="rule in rules" :key="rule" class="sf-badge">{{ rule }}</span>
+      </div>
+
+      <div class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("user-password-history") }} <AppHint name="user-password-history-help" />
+      </div>
+      <p v-if="!history.length" class="mt-2 text-xs text-muted">
+        {{ say("user-password-history-empty") }}
+      </p>
+      <ul v-else class="mt-2 flex flex-col gap-1">
+        <li
+          v-for="change in history"
+          :key="change.replaced_at ?? change.by ?? ''"
+          class="flex items-center gap-2 text-[11px] text-muted"
+        >
+          <span class="font-mono text-[10.5px] text-faint">{{ stamp(change.replaced_at) }}</span>
+          <span>{{ change.by ?? say("user-password-history-unknown") }}</span>
+        </li>
+      </ul>
 
       <div class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("user-webauthn") }}

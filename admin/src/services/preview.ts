@@ -138,6 +138,14 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       total: 42,
     });
   }
+  if (/\/users\/[^/]+\/password\/history$/.test(path)) {
+    return answer({
+      items: [
+        { replaced_at: new Date((NOW - 86_400 * 12) * 1000).toISOString(), by: "ada" },
+        { replaced_at: new Date((NOW - 86_400 * 97) * 1000).toISOString(), by: "root" },
+      ],
+    });
+  }
   if (/\/users\/[^/]+\/roles$/.test(path)) {
     return answer({
       roles: [
@@ -227,7 +235,11 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
         !typed ||
         row.user_name.toLowerCase().startsWith(typed) ||
         (row.email ?? "").toLowerCase().startsWith(typed),
-    ).filter((row) => !enabled || String(row.enabled) === enabled);
+    )
+      .filter((row) => !enabled || String(row.enabled) === enabled)
+      .filter(
+        (row) => asked.get("pending") !== "true" || (row.required_actions ?? []).length > 0,
+      );
     return answer({ items: rows, first: 0, max: 25, total: rows.length });
   }
   if (/\/clients\/[^/]+\/scopes$/.test(path)) {

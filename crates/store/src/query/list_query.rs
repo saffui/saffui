@@ -34,6 +34,9 @@ impl SortDirection {
 pub struct ListQuery<'a> {
     filters: Vec<Bind<'a>>,
     prefix: Option<(&'static [&'static str], &'a (dyn ToSql + Sync))>,
+    /// Conditions that bind nothing, so they are compile time strings for the
+    /// same reason the sort columns are.
+    kept_by: Vec<&'static str>,
     sort: Vec<(&'static str, SortDirection)>,
     window: Window,
 }
@@ -43,6 +46,7 @@ impl<'a> ListQuery<'a> {
         Self {
             filters: Vec::new(),
             prefix: None,
+            kept_by: Vec::new(),
             sort: Vec::new(),
             window,
         }
@@ -69,6 +73,13 @@ impl<'a> ListQuery<'a> {
         value: &'a (dyn ToSql + Sync),
     ) -> Self {
         self.prefix = Some((columns, value));
+        self
+    }
+
+    /// Keep rows the condition holds for. It binds nothing, so it is named
+    /// here as a constant and never assembled from a request.
+    pub fn keeping_only(mut self, condition: &'static str) -> Self {
+        self.kept_by.push(condition);
         self
     }
 
@@ -107,6 +118,7 @@ impl<'a> ListQuery<'a> {
             .enumerate()
             .map(|(index, bind)| format!("{} = ${}", bind.column(), index + 1))
             .collect();
+        conditions.extend(self.kept_by.iter().map(|held| (*held).to_owned()));
         if let Some((columns, _)) = self.prefix {
             let at = self.filters.len() + 1;
             let any: Vec<String> = columns
@@ -212,6 +224,25 @@ mod prefixes {
 
     /// A prefix alone still opens the clause, and a query with neither still
     /// yields nothing to paste.
+    /// A condition that binds nothing must not disturb the numbering of the
+    /// ones that do.
+    #[test]
+    fn a_bare_condition_leaves_the_placeholders_alone() {
+        let enabled = true;
+        let typed = "ada%".to_owned();
+        let query = ListQuery::new(window())
+            .filter(vec![col("enabled", &enabled)])
+            .keeping_only("cardinality(required_actions) > 0")
+            .starting_with(&["user_name"], &typed);
+        assert_eq!(
+            query.where_clause(),
+            " WHERE enabled = $1 AND cardinality(required_actions) > 0 \
+             AND (user_name ILIKE $2)"
+                .replace("             ", "")
+        );
+        assert_eq!(query.bound().len(), 2);
+    }
+
     #[test]
     fn a_prefix_alone_is_the_whole_clause() {
         let typed = "ada%".to_owned();

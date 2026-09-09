@@ -1309,6 +1309,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::delete().to(users::remove)),
         },
         AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/users/{user}/password/history",
+            action: AdminAction::UserRead,
+            handler: Some(|| web::get().to(users::read_password_history)),
+        },
+        AdminRoute {
             method: Method::PUT,
             pattern: "/admin/realms/{realm}/users/{user}/password",
             action: AdminAction::UserWrite,

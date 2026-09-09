@@ -19,6 +19,8 @@ use crate::middleware::admin_guard::Admin;
 pub struct Narrowing {
     pub search: Option<String>,
     pub enabled: Option<bool>,
+    /// Accounts still owing something at their next sign-in.
+    pub pending: Option<bool>,
 }
 
 pub async fn list(
@@ -50,6 +52,9 @@ pub async fn list(
     let mut query = ListQuery::new(window).sorted_by("user_name", SortDirection::Ascending);
     if let Some(enabled) = narrowing.enabled.as_ref() {
         query = query.filter(vec![store::query::write_set::col("enabled", enabled)]);
+    }
+    if narrowing.pending == Some(true) {
+        query = query.keeping_only("cardinality(required_actions) > 0");
     }
     if let Some(typed) = typed.as_ref() {
         query = query.starting_with(&["user_name", "email"], typed);
@@ -190,7 +195,8 @@ pub async fn set_password(
     body: web::Json<PasswordSpec>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let password = body.into_inner().password;
+    let asked = body.into_inner();
+    let password = asked.password;
     if password.is_empty() {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,
@@ -214,8 +220,58 @@ pub async fn set_password(
     )
     .await
     .map_err(refused)?;
+    // A password handed to somebody else is theirs to replace, so the
+    // instruction is written in the same transaction that writes the secret:
+    // a password that landed without it would be permanent by accident.
+    if asked.temporary {
+        people::require_action(
+            &transaction,
+            &user_id,
+            models::entities::user::RequiredAction::UpdatePassword,
+        )
+        .await
+        .map_err(refused)?;
+    }
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+/// When this account's passwords were replaced, and by whom.
+///
+/// The secrets are never rendered: what is kept for the reuse rule is a hash,
+/// and a hash is still the thing that opens an account somewhere else. The
+/// answer carries the dates and the actors and nothing more.
+pub async fn read_password_history(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, user_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let user_id = named_user(&transaction, &user_id).await?;
+    let mut held = store::providers::credentials::load_for_user_of_type(
+        &transaction,
+        &user_id,
+        models::entities::credentials::CredentialType::PasswordHistory,
+    )
+    .await
+    .map_err(|_| internal())?;
+    held.sort_by_key(|row| std::cmp::Reverse(row.metadata.created_at));
+    let shown: Vec<_> = held
+        .into_iter()
+        .map(|row| {
+            serde_json::json!({
+                "replaced_at": row.metadata.created_at,
+                "by": row.metadata.created_by,
+            })
+        })
+        .collect();
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "items": shown })))
 }
 
 pub async fn remove(

@@ -261,6 +261,25 @@ pub async fn keep_password(
     .map_err(unkept)
 }
 
+/// Add an instruction the next sign-in has to satisfy, leaving the ones
+/// already standing alone.
+pub async fn require_action(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    action: RequiredAction,
+) -> Result<(), Uncreatable> {
+    let mut user = get(transaction, user_id).await?;
+    let standing = user.required_actions.get_or_insert_with(Vec::new);
+    if standing.contains(&action) {
+        return Ok(());
+    }
+    standing.push(action);
+    users::update(transaction, &user)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?;
+    Ok(())
+}
+
 pub async fn remove(transaction: &Transaction<'_>, user_id: &str) -> Result<bool, Uncreatable> {
     users::delete(transaction, user_id)
         .await

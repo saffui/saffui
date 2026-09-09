@@ -275,20 +275,34 @@ pub async fn create(
 /// Take the realm away. The schema cascades, so everything keyed under it
 /// goes with the row: users, clients, sessions, keys, the lot.
 ///
-/// The realm this caller's own token was minted by is refused: deleting it
-/// would take the admin plane down with it, and the person would learn that
-/// from a broken console rather than an answer. Do it from another realm.
+/// Only the caller's own realm. The guard refuses every other name before
+/// this runs, so the one thing left to check is that the caller meant it:
+/// the body must name the realm back, the way a person is asked to type what
+/// they are about to lose.
+///
+/// This used to refuse the caller's own realm and point at another one. That
+/// advice became impossible to follow the day a token stopped reaching two
+/// realms, and the two refusals together left the route unreachable.
+#[derive(serde::Deserialize)]
+pub struct Confirmation {
+    pub confirm: Option<String>,
+}
+
 pub async fn delete(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
+    confirm: web::Query<Confirmation>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    if admin.context.tenant.realm_id == realm_id {
+    // The name typed back. Everything under the realm goes with the row, the
+    // caller's own account included, so the confirmation is the last thing
+    // standing between a wrong click and a deployment.
+    if confirm.into_inner().confirm.as_deref() != Some(realm_id.as_str()) {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,
-            "a realm is not deleted from its own console: sign into another realm first".to_owned(),
+            "name the realm back to confirm what is about to be taken away".to_owned(),
         ));
     }
     let mut connection = pool.get().await.map_err(|_| internal())?;

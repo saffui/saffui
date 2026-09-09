@@ -155,6 +155,83 @@ async fn a_birth_hands_back_the_one_way_into_what_it_made() {
 
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_is_taken_away_by_the_realm_itself() {
+    let plane = Plane::with_actions(&[AdminAction::RealmCreate, AdminAction::RealmDelete]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({
+            "name": "doomed", "display_name": "Doomed", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@doomed.test" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    // The maker cannot take it away, confirmation or not: that would be a
+    // token reaching a realm it was not minted by, which is refused before
+    // the handler ever sees the name.
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        "/admin/realms/doomed?confirm=doomed",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Its own administrator can, and only by naming it back. The realm is
+    // planted rather than born here: a realm the plane made sealed its keys
+    // under the server's envelope, and this harness holds another, so a
+    // token it signs is one that realm cannot verify.
+    plane.plant_realm("condemned").await;
+    plane
+        .plant_credential_in(
+            "condemned",
+            &[AdminAction::RealmDelete, AdminAction::RealmRead],
+        )
+        .await;
+    let inside = plane.token(&support::claims_in("condemned"));
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        "/admin/realms/condemned",
+        &inside,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        "/admin/realms/condemned?confirm=condemned",
+        &inside,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // And it is gone, which the same token now learns the way any caller
+    // learns of a realm that is not there.
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        "/admin/realms/condemned",
+        &inside,
+        None,
+    )
+    .await;
+    assert_ne!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
     let plane = Plane::with_actions(&[AdminAction::RealmCreate]).await;
     let bearer = plane.token(&support::claims());
@@ -589,18 +666,24 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // A realm is deleted from somewhere else, never out from under its own
-    // console, and the schema takes everything keyed under it along.
-    let (status, told) = asked(&plane, Method::DELETE, "/admin/realms/main", &bearer, None).await;
-    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
-
-    // A realm is not deleted from its own console, for the reason it is not
-    // switched off from it: the caller would be removing the ground it
-    // stands on, and no token from anywhere else may do it either.
+    // A deletion that names nothing back is refused. Everything keyed under
+    // the realm goes with the row, so the confirmation is the last thing
+    // standing between a wrong click and a deployment.
     let (status, told) = asked(
         &plane,
         Method::DELETE,
         &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // Naming a different realm back is not naming this one.
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("/admin/realms/{}?confirm=somewhere-else", support::REALM),
         &bearer,
         None,
     )

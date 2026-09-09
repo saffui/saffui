@@ -1,8 +1,7 @@
 **/target
-.git
-.github
 **/*.md
 **/node_modules
 admin/dist
 admin/.vite
-.claude
+.*
+!.config

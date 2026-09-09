@@ -37,6 +37,11 @@ fn internal() -> ApiError {
 pub struct Protection {
     pub enforcement_mode: PolicyEnforcementMode,
     pub decision_strategy: DecisionStrategy,
+    /// Whether resources under this server may be shared by the people they
+    /// belong to. Absent is closed: a deployment that has not said does not
+    /// get the wider of the two answers.
+    #[serde(default)]
+    pub user_managed_access: bool,
 }
 
 pub async fn protect(
@@ -61,6 +66,7 @@ pub async fn protect(
         &client_id,
         asked.enforcement_mode,
         asked.decision_strategy,
+        asked.user_managed_access,
     )
     .await
     .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;
@@ -583,14 +589,65 @@ pub async fn evaluate(
     )
     .await
     .map_err(|_| internal())?;
+    // Where a relationship was asked, walk it a second time for the trace.
+    // The decision point itself stays untraced: it answers real enforcement
+    // points, and a walk that builds strings for a reader nobody has is a cost
+    // every request would pay. A simulation has a reader by definition, and
+    // this is the only place that pays for one.
+    let walked = match &question {
+        EvaluationQuestion::Relationship {
+            object_type,
+            object_id,
+            relation,
+        } => walk_of(&transaction, object_type, object_id, relation, &context).await,
+        _ => None,
+    };
+
     transaction.commit().await.map_err(|_| internal())?;
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({
+    let mut told = serde_json::json!({
         "decision_id": decision_id,
         "reported": answer.reported,
         "computed": answer.computed,
         "detail": answer.detail,
-    })))
+    });
+    if let Some(walked) = walked {
+        told["walk"] = walked;
+    }
+    Ok(HttpResponse::Ok().json(told))
+}
+
+/// The steps a relationship question took, as the reader of a simulation
+/// wants them: in order, with the depth to indent by.
+async fn walk_of(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    object_type: &str,
+    object_id: &str,
+    relation: &str,
+    context: &services::context::Context,
+) -> Option<serde_json::Value> {
+    let schema = services::rebac::schema_of(transaction).await.ok()?;
+    let (answered, steps, cut) = services::rebac::explain(
+        transaction,
+        &schema,
+        services::rebac::Object {
+            object_type,
+            object_id,
+        },
+        relation,
+        services::rebac::Subject {
+            subject_type: context.principal.kind(),
+            subject_id: context.principal.id(),
+        },
+        services::rebac::CHECK,
+    )
+    .await;
+    Some(serde_json::json!({
+        "reached": answered.as_ref().ok(),
+        "stopped": answered.err().map(|why| why.to_string()),
+        "steps": steps,
+        "cut": cut,
+    }))
 }
 
 /// The realm's route map: which permission a request path puts at stake.
@@ -742,6 +799,105 @@ pub async fn delete_route(
     if !removed {
         return Err(ApiError::new(ErrorCode::ResourceNotFound));
     }
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
+/// Who a resource is being shared with, and as what.
+#[derive(Debug, Deserialize)]
+pub struct ShareBody {
+    pub relation: String,
+    pub subject_type: String,
+    pub subject_id: String,
+    /// Sharing with everybody standing in a relation to something, rather
+    /// than with one named subject. Empty is one subject.
+    #[serde(default)]
+    pub subject_relation: String,
+}
+
+fn unshareable(why: services::admin::authorization::Unshareable) -> ApiError {
+    use services::admin::authorization::Unshareable;
+    let told = match why {
+        Unshareable::ServerHoldsIt => {
+            "this resource server does not let its resources be shared".to_owned()
+        }
+        Unshareable::ResourceHoldsIt => "this resource is not user managed".to_owned(),
+        Unshareable::NoSchema(why) => format!("no relation graph is published: {why}"),
+        Unshareable::UnknownType(named) => {
+            format!("the relation graph does not describe '{named}'")
+        }
+        Unshareable::UnknownRelation { relation, on } => {
+            format!("the relation graph describes no '{relation}' on '{on}'")
+        }
+        Unshareable::NotFound => return ApiError::new(ErrorCode::ResourceNotFound),
+        Unshareable::Backend => return internal(),
+    };
+    ApiError::with_detail(ErrorCode::ValidationError, told)
+}
+
+/// Share one user-managed resource, as a relation on it.
+pub async fn share(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+    body: web::Json<ShareBody>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, server_id, resource_id) = path.into_inner();
+    let asked = body.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+
+    services::admin::authorization::share_resource(
+        &transaction,
+        &server_id,
+        &resource_id,
+        &asked.relation,
+        &store::providers::rebac::Subject {
+            subject_type: asked.subject_type,
+            subject_id: asked.subject_id,
+            subject_relation: asked.subject_relation,
+        },
+        admin.context.principal.id(),
+    )
+    .await
+    .map_err(unshareable)?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::NoContent().finish())
+}
+
+/// Stop sharing one user-managed resource.
+pub async fn unshare(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+    body: web::Json<ShareBody>,
+) -> Result<HttpResponse, ApiError> {
+    let (realm_id, server_id, resource_id) = path.into_inner();
+    let asked = body.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+
+    services::admin::authorization::unshare_resource(
+        &transaction,
+        &server_id,
+        &resource_id,
+        &asked.relation,
+        &store::providers::rebac::Subject {
+            subject_type: asked.subject_type,
+            subject_id: asked.subject_id,
+            subject_relation: asked.subject_relation,
+        },
+    )
+    .await
+    .map_err(unshareable)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }

@@ -1,7 +1,7 @@
 mod support;
 
 use authz::rebac::{CompiledSchema, compile, parse};
-use services::rebac::{Budget, CHECK, Object, Subject, Unwalkable, check};
+use services::rebac::{Budget, CHECK, Object, Step, Subject, Unwalkable, check, explain};
 use store::providers::rebac;
 use store::tenancy::TenantContext;
 use support::Fixture;
@@ -719,4 +719,178 @@ async fn a_published_schema_is_the_compilation_of_its_own_source() {
         after.source, SCHEMA,
         "a schema that was refused replaced the one that stood"
     );
+}
+
+/// The walk says where it went, and it says the same thing the check says.
+///
+/// A trace that could disagree with the answer would be worse than none: an
+/// author would tune a schema against a story the engine does not follow.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_walk_tells_where_it_went_and_agrees_with_the_answer() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let compiled = schema();
+    plant(&transaction, &compiled).await;
+
+    // ada reaches the document only through its parent folder, by way of a
+    // group. Three hops, which is what the trace has to show.
+    relate(
+        &transaction,
+        "group",
+        "editors",
+        "member",
+        named("user", "ada"),
+    )
+    .await;
+    relate(
+        &transaction,
+        "folder",
+        "archive",
+        "viewer",
+        holders("group", "editors", "member"),
+    )
+    .await;
+    relate(
+        &transaction,
+        "document",
+        "minutes",
+        "parent",
+        named("folder", "archive"),
+    )
+    .await;
+
+    let object = Object {
+        object_type: "document",
+        object_id: "minutes",
+    };
+    let subject = Subject {
+        subject_type: "user",
+        subject_id: "ada",
+    };
+
+    let plain = check(&transaction, &compiled, object, "view", subject, CHECK)
+        .await
+        .expect("it walks");
+    let (traced, steps, cut) =
+        explain(&transaction, &compiled, object, "view", subject, CHECK).await;
+    assert_eq!(
+        traced.expect("it walks"),
+        plain,
+        "the trace and the check disagree"
+    );
+    assert!(plain, "ada does not reach the document at all");
+    assert_eq!(cut, 0, "a short walk was cut");
+
+    // The walk starts where it was asked, and every step says what the schema
+    // told it to do there.
+    assert_eq!(
+        steps.first().expect("a first step").asked,
+        "document:minutes#view"
+    );
+    assert_eq!(steps.first().expect("a first step").depth, 0);
+    assert!(
+        steps.iter().all(|held: &Step| held.rule.is_some()),
+        "a step does not say what it was told to do: {steps:?}"
+    );
+
+    // And it went through the folder, which is the whole point of the arrow.
+    assert!(
+        steps.iter().any(|held| held.asked == "folder:archive#view"),
+        "the arrow was not walked: {steps:?}"
+    );
+    assert!(
+        steps
+            .iter()
+            .any(|held| held.answered == Some(true) && held.asked.starts_with("group:editors#")),
+        "the group was not reached: {steps:?}"
+    );
+}
+
+/// A walk that reaches nobody says so at every member it tried, rather than
+/// handing back one bare no.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_walk_that_reaches_nobody_still_says_where_it_looked() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let compiled = schema();
+    plant(&transaction, &compiled).await;
+
+    let (answered, steps, _) = explain(
+        &transaction,
+        &compiled,
+        Object {
+            object_type: "document",
+            object_id: "minutes",
+        },
+        "view",
+        Subject {
+            subject_type: "user",
+            subject_id: "ada",
+        },
+        CHECK,
+    )
+    .await;
+
+    assert!(
+        !answered.expect("it walks"),
+        "an empty store admitted somebody"
+    );
+    assert!(!steps.is_empty(), "a walk with no edges wrote nothing down");
+    assert!(
+        steps.iter().all(|held| held.answered == Some(false)),
+        "a step came out true with nothing stored: {steps:?}"
+    );
+}
+
+/// A trace is bounded. A budget allows a thousand queries and nobody reads a
+/// thousand steps, so what is kept is the beginning and the rest is counted.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_long_walk_is_cut_and_says_it_was_cut() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let compiled = schema();
+    plant(&transaction, &compiled).await;
+
+    // Many viewers on one folder, none of them the one being asked about, so
+    // the walk has to look at every one.
+    for at in 0..260 {
+        relate(
+            &transaction,
+            "folder",
+            "archive",
+            "viewer",
+            holders("group", &format!("team-{at}"), "member"),
+        )
+        .await;
+    }
+
+    let (answered, steps, cut) = explain(
+        &transaction,
+        &compiled,
+        Object {
+            object_type: "folder",
+            object_id: "archive",
+        },
+        "view",
+        Subject {
+            subject_type: "user",
+            subject_id: "ada",
+        },
+        CHECK,
+    )
+    .await;
+
+    assert!(!answered.expect("it walks"));
+    assert!(
+        steps.len() <= 200,
+        "the trace was not bounded: {}",
+        steps.len()
+    );
+    assert!(cut > 0, "a cut trace did not say it was cut");
 }

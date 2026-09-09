@@ -997,6 +997,18 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::post().to(authorization::add_resource)),
         },
         AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/resources/{resource}/shares",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::post().to(authorization::share)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/resources/{resource}/shares",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::delete().to(authorization::unshare)),
+        },
+        AdminRoute {
             method: Method::PUT,
             pattern: "/admin/realms/{realm}/authz/servers/{client}/resources/{resource}",
             action: AdminAction::UmaWrite,

@@ -514,6 +514,26 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       { seq: 38, head_hash: "ab12", witness: "https://witness.example/log", receipt: "r-2026-09-01", anchored_at: NOW - 86_000 },
     ] });
   }
+  if (path.endsWith("/rebac/schema") && method === "PUT") {
+    return answer(null);
+  }
+  if (path.endsWith("/rebac/schema")) {
+    return answer({
+      revision: 4,
+      format: 1,
+      source:
+        "definition user {}\n\ndefinition group {\n    relation member: user | group#member\n}\n\n" +
+        "definition folder {\n    relation viewer: user | group#member\n    permission view = viewer\n}\n\n" +
+        "definition document {\n    relation parent: folder\n    relation owner: user\n" +
+        "    relation viewer: user | group#member\n    permission view = viewer + owner + view from parent\n}\n",
+    });
+  }
+  if (path.includes("/rebac/relations?")) {
+    return answer([
+      { subject_type: "user", subject_id: "ada", subject_relation: "" },
+      { subject_type: "group", subject_id: "editors", subject_relation: "member" },
+    ]);
+  }
   if (path.endsWith("/authz/evaluate")) {
     return answer({
       decision_id: "d-sim-1",
@@ -526,6 +546,22 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
         reasons: [
           { reason: "empty-binding", policy_id: "p-editors", kind: "role" },
           { reason: "dangling-condition", policy_id: "p-hours", condition: "office-hours" },
+        ],
+      },
+      // A relationship question also carries where the walk went, which is
+      // what the resolution tree renders.
+      walk: {
+        reached: true,
+        stopped: null,
+        cut: 0,
+        steps: [
+          { depth: 0, asked: "document:minutes#view", rule: "any: one part is enough", answered: true, note: null },
+          { depth: 1, asked: "document:minutes#viewer", rule: "direct: the edges stored against this relation", answered: false, note: null },
+          { depth: 1, asked: "document:minutes#owner", rule: "direct: the edges stored against this relation", answered: false, note: null },
+          { depth: 1, asked: "document:minutes#parent", rule: "arrow: follow a relation, then ask there", answered: true, note: null },
+          { depth: 2, asked: "folder:archive#view", rule: "computed: another member of the same object", answered: true, note: null },
+          { depth: 3, asked: "folder:archive#viewer", rule: "direct: the edges stored against this relation", answered: true, note: null },
+          { depth: 4, asked: "group:editors#member", rule: "direct: the edges stored against this relation", answered: true, note: null },
         ],
       },
     });

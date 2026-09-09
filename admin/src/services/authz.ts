@@ -185,8 +185,43 @@ export async function eraseAuthzScope(
   await erased(realm, clientId, "scopes", scopeId, say("subject-scope", { scope: named }));
 }
 
-/// One relation tuple into the graph. There is no listing route yet: the
-/// graph is written here and read by the engine.
+/// The relation graph this realm publishes, and what it compiled to.
+export async function readRebacSchema(realm: string) {
+  return api<{ source: string; revision: number; format: number }>(
+    adminPath(realm, "rebac/schema"),
+  );
+}
+
+/// Publish a graph. Read, compiled and stored as one act, so a realm can
+/// never show one graph and decide by another; what does not compile comes
+/// back in the compiler's own words.
+export async function publishRebacSchema(realm: string, source: string) {
+  return api<unknown>(adminPath(realm, "rebac/schema"), {
+    method: "PUT",
+    json: { source },
+    subject: say("subject-rebac-schema"),
+  });
+}
+
+/// Who stands in one relation on one object, as written. Nothing is walked:
+/// these are the tuples themselves, which is what an author edits.
+export async function readRelations(
+  realm: string,
+  objectType: string,
+  objectId: string,
+  relation: string,
+) {
+  const asked = new URLSearchParams({
+    object_type: objectType,
+    object_id: objectId,
+    relation,
+  });
+  return api<{ subject_type: string; subject_id: string; subject_relation: string }[]>(
+    `${adminPath(realm, "rebac/relations")}?${asked}`,
+  );
+}
+
+/// One relation tuple into the graph.
 export async function writeRelation(
   realm: string,
   edge: {

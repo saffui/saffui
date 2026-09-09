@@ -4,7 +4,7 @@
 // to the right of everything they are built from, permissions (policies
 // binding resources) drawn against their resources. The simulator asks the
 // server's own engine and lights the nodes the trace names.
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
@@ -27,6 +27,9 @@ import {
   listAuthzScopes,
   listPolicies,
   listResources,
+  publishRebacSchema,
+  readRebacSchema,
+  readRelations,
   reworkAuthzScope,
   reworkPolicy,
   reworkResource,
@@ -59,12 +62,14 @@ const selected = ref<PolicyRow | null>(null);
 /// The design's boards. Each reads what `load` already holds, so moving
 /// between them costs nothing: the three listings were fetched together the
 /// moment a resource server was named.
-const BOARDS = ["models", "resources", "scopes", "policies", "permissions", "evaluator"];
+const BOARDS = ["models", "resources", "scopes", "policies", "permissions", "graph", "evaluator"];
 
 const board = computed(() => {
   const asked = String(route.query.board ?? "models");
   return BOARDS.includes(asked) ? asked : "models";
 });
+
+watch(board, (named) => named === "graph" && readGraph());
 
 function boardAt(leaf: string): string {
   return leaf === "evaluator"
@@ -115,6 +120,9 @@ async function load() {
   }
 }
 onMounted(load);
+// The graph is read where the rest of the page is read. Reading it at setup
+// would run before the session holds a token on a cold load.
+onMounted(() => board.value === "graph" && readGraph());
 afterWrites(load);
 
 interface PlacedPolicy {
@@ -288,6 +296,59 @@ const erasing = ref<{ leaf: "policies" | "resources" | "scopes"; id: string; nam
   null,
 );
 const scopeDraft = ref({ name: "", display_name: "" });
+
+/// The relation graph as published, and as it is being rewritten. Held apart
+/// so what is on screen is never mistaken for what the engine decides by.
+const schemaSource = ref("");
+const schemaRevision = ref<number | null>(null);
+const schemaFailed = ref("");
+
+/// One object's tuples, looked at rather than walked.
+const lookingAt = ref({ object_type: "", object_id: "", relation: "" });
+const tuples = ref<{ subject_type: string; subject_id: string; subject_relation: string }[]>([]);
+const tuplesFailed = ref("");
+
+async function readGraph() {
+  schemaFailed.value = "";
+  try {
+    const held = await readRebacSchema(realm.value);
+    schemaSource.value = held.source;
+    schemaRevision.value = held.revision;
+  } catch {
+    // A realm publishing none is the ordinary first state, not an error.
+    schemaSource.value = "";
+    schemaRevision.value = null;
+  }
+}
+
+async function publishGraph() {
+  schemaFailed.value = "";
+  try {
+    await publishRebacSchema(realm.value, schemaSource.value);
+    await readGraph();
+  } catch (refused) {
+    // The compiler's own words, which is the only useful thing to show an
+    // author whose graph did not compile.
+    schemaFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+async function lookAtTuples() {
+  tuplesFailed.value = "";
+  const asked = lookingAt.value;
+  if (!asked.object_type.trim() || !asked.object_id.trim() || !asked.relation.trim()) return;
+  try {
+    tuples.value = await readRelations(
+      realm.value,
+      asked.object_type.trim(),
+      asked.object_id.trim(),
+      asked.relation.trim(),
+    );
+  } catch (refused) {
+    tuples.value = [];
+    tuplesFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
 
 function openNew(which: "policy" | "resource" | "scope") {
   editing.value = "";
@@ -761,6 +822,102 @@ function nodeStroke(row: PolicyRow): string {
         </div>
       </aside>
     </div>
+    <div v-if="board === 'graph'" class="mt-3 grid gap-4 lg:grid-cols-2">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("graph-schema-title") }}
+          </span>
+          <AppHint name="graph-schema-help" />
+          <span v-if="schemaRevision !== null" class="text-[10.5px] text-faint">
+            {{ say("graph-schema-revision", { held: schemaRevision }) }}
+          </span>
+          <button
+            type="button"
+            class="sf-button sf-button-primary ml-auto"
+            @click="publishGraph"
+          >
+            {{ say("graph-publish") }}
+          </button>
+        </div>
+        <p v-if="schemaRevision === null" class="mt-2 text-[11px] text-muted">
+          {{ say("graph-schema-none") }}
+        </p>
+        <textarea
+          v-model="schemaSource"
+          rows="18"
+          spellcheck="false"
+          class="sf-field mt-2 font-mono text-[11.5px] leading-relaxed"
+        ></textarea>
+        <p v-if="schemaFailed" class="mt-2 text-[11px] text-danger" role="alert">
+          {{ schemaFailed }}
+        </p>
+      </div>
+
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("graph-tuples-title") }}
+          </span>
+          <AppHint name="graph-tuples-help" />
+        </div>
+        <form class="mt-2 grid grid-cols-3 gap-2" @submit.prevent="lookAtTuples">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("graph-object-type") }}
+            <input
+              v-model="lookingAt.object_type"
+              placeholder="document"
+              spellcheck="false"
+              class="sf-field mt-1 font-mono"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("graph-object-id") }}
+            <input v-model="lookingAt.object_id" spellcheck="false" class="sf-field mt-1 font-mono" />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("graph-relation") }}
+            <input
+              v-model="lookingAt.relation"
+              placeholder="viewer"
+              spellcheck="false"
+              class="sf-field mt-1 font-mono"
+            />
+          </label>
+          <div class="col-span-3">
+            <button type="submit" class="sf-button sf-button-secondary">
+              {{ say("graph-look") }}
+            </button>
+          </div>
+        </form>
+
+        <div class="sf-list mt-3 overflow-x-auto">
+          <table class="sf-table">
+            <thead>
+              <tr>
+                <th>{{ say("graph-subject") }}</th>
+                <th>{{ say("graph-relation") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="held in tuples" :key="held.subject_type + held.subject_id + held.subject_relation">
+                <td class="font-mono text-[10.5px]">{{ held.subject_type }}:{{ held.subject_id }}</td>
+                <td class="text-muted">
+                  {{ held.subject_relation || say("value-none") }}
+                </td>
+              </tr>
+              <tr v-if="!tuples.length">
+                <td colspan="2" class="text-muted">{{ say("graph-tuples-none") }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p v-if="tuplesFailed" class="mt-2 text-[11px] text-danger" role="alert">
+          {{ tuplesFailed }}
+        </p>
+      </div>
+    </div>
+
     <div v-if="board === 'resources'" class="mt-3 flex justify-end">
       <button type="button" class="sf-button sf-button-secondary" @click="openNew('resource')">
         {{ say("authz-add-resource") }}

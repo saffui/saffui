@@ -565,3 +565,190 @@ async fn a_surface_is_reworked_in_place_and_never_through_another_server() {
     assert_eq!(told["scope_id"], scope_id, "the identity moved: {told}");
     assert_eq!(told["display_name"], "Read, including archived", "{told}");
 }
+
+/// A resource is shared only where both the server and the resource say it
+/// may be, and only as a relation the published graph describes.
+///
+/// `user_managed_access` was stored on both and read nowhere, which made it a
+/// promise nothing kept. Every refusal below is that promise being kept.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_resource_is_shared_only_where_it_is_user_managed_and_the_graph_says_how() {
+    let plane = Plane::with_actions(&[
+        AdminAction::UmaRead,
+        AdminAction::UmaWrite,
+        AdminAction::RebacRead,
+        AdminAction::RebacWrite,
+        AdminAction::AuthzDecisionWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!(
+        "/admin/realms/{REALM}/authz/servers/{}",
+        support::CONFIDENTIAL
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(json!({
+            "enforcement_mode": "enforcing",
+            "decision_strategy": "unanimous",
+            "user_managed_access": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+
+    // A graph that describes the resource's own type, and one relation on it.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/rebac/schema"),
+        &bearer,
+        Some(json!({
+            "source": "definition user {}\n\ndefinition invoice {\n    relation viewer: user\n}\n"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let make = |managed: bool, name: &str| {
+        json!({
+            "name": name, "display_name": name, "description": "",
+            "resource_uris": [], "resource_type": "invoice",
+            "resource_owner": support::SUBJECT, "user_managed_access": managed,
+        })
+    };
+    let (_, open) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/resources"),
+        &bearer,
+        Some(make(true, "shared")),
+    )
+    .await;
+    let (_, shut) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/resources"),
+        &bearer,
+        Some(make(false, "private")),
+    )
+    .await;
+    let open_id = open["resource_id"].as_str().expect("an id").to_owned();
+    let shut_id = shut["resource_id"].as_str().expect("an id").to_owned();
+
+    let with =
+        json!({ "relation": "viewer", "subject_type": "user", "subject_id": support::SUBJECT });
+
+    // A resource that is not user managed is not shareable, whatever the
+    // server says.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/resources/{shut_id}/shares"),
+        &bearer,
+        Some(with.clone()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a private resource was shared: {told}"
+    );
+
+    // A relation the graph does not describe is refused rather than written
+    // as a tuple the walk would never follow.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/resources/{open_id}/shares"),
+        &bearer,
+        Some(
+            json!({ "relation": "editor", "subject_type": "user", "subject_id": support::SUBJECT }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "an undescribed relation was written: {told}"
+    );
+
+    // And the share the graph does describe lands, and the engine walks it.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/resources/{open_id}/shares"),
+        &bearer,
+        Some(with.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+
+    let (status, verdict) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/authz/evaluate"),
+        &bearer,
+        Some(json!({
+            "subject": support::SUBJECT,
+            "question": {
+                "kind": "relationship",
+                "object_type": "invoice",
+                "object_id": open_id,
+                "relation": "viewer",
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{verdict}");
+    assert_eq!(
+        verdict["computed"], "permit",
+        "the share was not walked: {verdict}"
+    );
+
+    // The simulation says where it went, which is what an author reads.
+    let steps = verdict["walk"]["steps"].as_array().expect("a walk");
+    assert!(!steps.is_empty(), "a walk with no steps: {verdict}");
+    assert_eq!(
+        steps[0]["asked"],
+        format!("invoice:{open_id}#viewer"),
+        "{verdict}"
+    );
+
+    // Unsharing goes back the same way, and the engine stops walking it.
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{base}/resources/{open_id}/shares"),
+        &bearer,
+        Some(with),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+
+    let (_, verdict) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/authz/evaluate"),
+        &bearer,
+        Some(json!({
+            "subject": support::SUBJECT,
+            "question": {
+                "kind": "relationship",
+                "object_type": "invoice",
+                "object_id": open_id,
+                "relation": "viewer",
+            },
+        })),
+    )
+    .await;
+    assert_ne!(
+        verdict["computed"], "permit",
+        "the share outlived being taken back: {verdict}"
+    );
+}

@@ -292,6 +292,7 @@ onMounted(async () => {
         port: mail.value.port,
         from_address: mail.value.from_address,
         from_name: mail.value.from_name ?? "",
+        reply_to: mail.value.reply_to ?? "",
         username: mail.value.username ?? "",
         password: "",
         implicit_tls: mail.value.implicit_tls,
@@ -621,6 +622,7 @@ const mailForm = ref({
   port: 587,
   from_address: "",
   from_name: "",
+  reply_to: "",
   username: "",
   password: "",
   implicit_tls: false,
@@ -633,7 +635,7 @@ async function saveMail() {
     port: asked.port,
     from_address: asked.from_address,
     from_name: asked.from_name,
-    reply_to: null,
+    reply_to: asked.reply_to || null,
     implicit_tls: asked.implicit_tls,
     username: asked.username || null,
     // Blank keeps the held password; typed replaces it.
@@ -1632,6 +1634,15 @@ async function saveSmsTemplate() {
               <input
                 v-model="mailForm.from_name"
                 class="sf-field mt-1"
+              />
+            </label>
+            <label class="block text-[11px] font-medium text-muted">
+              {{ say("mail-reply-to") }} <AppHint name="mail-reply-to-help" />
+              <input
+                v-model="mailForm.reply_to"
+                class="sf-field mt-1 font-mono"
+                spellcheck="false"
+                :placeholder="say('settings-unset')"
               />
             </label>
             <div class="grid grid-cols-2 gap-3">

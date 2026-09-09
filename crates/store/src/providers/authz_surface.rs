@@ -168,6 +168,48 @@ pub async fn create_resource(
     Ok(())
 }
 
+/// Rework one resource in place, and say whether there was one.
+///
+/// The identity does not move. A resource is named by policies and by
+/// permissions, so replacing it with a new row under a new id would break the
+/// bindings that point at it while looking like an edit.
+pub async fn update_resource(
+    transaction: &Transaction<'_>,
+    resource: &ResourceModel,
+) -> StoreResult<bool> {
+    let configs = resource
+        .configs
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|_| StoreError::Backend)?;
+
+    let set = WriteSet::update(
+        vec![
+            col("name", &resource.name),
+            col("display_name", &resource.display_name),
+            col("description", &resource.description),
+            col("resource_uris", &resource.resource_uris),
+            col("resource_type", &resource.resource_type),
+            col("resource_owner", &resource.resource_owner),
+            col("user_managed_access", &resource.user_managed_access),
+            col("configs", &configs),
+            col("updated_by", &resource.metadata.updated_by),
+        ],
+        vec![col("resource_id", &resource.resource_id)],
+    );
+    // The stamp and the version are the statement's, not the caller's.
+    let statement = statement::update("resources", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    Ok(transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?
+        > 0)
+}
+
 /// One resource, with the verbs it declares.
 pub async fn load_resource(
     transaction: &Transaction<'_>,
@@ -264,6 +306,29 @@ pub async fn create_scope(transaction: &Transaction<'_>, scope: &ScopeModel) -> 
 }
 
 /// One verb of this realm.
+/// Rework one scope in place, and say whether there was one. The identity
+/// does not move, for the same reason a resource's does not.
+pub async fn update_scope(transaction: &Transaction<'_>, scope: &ScopeModel) -> StoreResult<bool> {
+    let set = WriteSet::update(
+        vec![
+            col("name", &scope.name),
+            col("display_name", &scope.display_name),
+            col("description", &scope.description),
+            col("updated_by", &scope.metadata.updated_by),
+        ],
+        vec![col("scope_id", &scope.scope_id)],
+    );
+    let statement = statement::update("scopes", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    Ok(transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?
+        > 0)
+}
+
 pub async fn load_scope(
     transaction: &Transaction<'_>,
     scope_id: &str,

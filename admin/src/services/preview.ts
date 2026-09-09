@@ -550,10 +550,13 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       decided("d-6", "ledger", "viewer", "document", "2026-08", "deny", "deny", 900),
     ]);
   }
+  if (/\/authz\/servers\/[^/]+\/(policies|resources|scopes)\/[^/]+$/.test(path)) {
+    return answer(null);
+  }
   if (/\/authz\/servers\/[^/]+\/policies$/.test(path)) {
     return answer([
-      { policy_id: "p-editors", name: "editors", description: "Holds the editor role", policy_type: "role", policies: [], resources: [], scopes: [] },
-      { policy_id: "p-hours", name: "office hours", description: "Mon to Fri, 08:00 to 19:00", policy_type: "time", policies: [], resources: [], scopes: [] },
+      { policy_id: "p-editors", name: "editors", description: "Holds the editor role", policy_type: "role", policies: [], resources: [], scopes: [], decision: "unanimous", logic: "positive", policy_owner: "web-dashboard", roles: ["editor"] },
+      { policy_id: "p-hours", name: "office hours", description: "Mon to Fri, 08:00 to 19:00", policy_type: "time", policies: [], resources: [], scopes: [], decision: "unanimous", logic: "positive", policy_owner: "web-dashboard" },
       { policy_id: "p-org", name: "acting for acme", description: "", policy_type: "organization", policies: [], resources: [], scopes: [] },
       { policy_id: "p-gate", name: "edit archive", description: "All of the above, against the archive", policy_type: "aggregated", policies: ["p-editors", "p-hours", "p-org"], resources: ["res-1"], scopes: ["sc-1"] },
     ]);

@@ -8,6 +8,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
+import DangerDialog from "@/components/DangerDialog.vue";
 import AppHint from "@/components/AppHint.vue";
 import PageTabs from "@/components/PageTabs.vue";
 import {
@@ -17,7 +18,19 @@ import {
   protectClient,
   writeRelation,
 } from "@/services/authz";
-import { evaluate, listAuthzScopes, listPolicies, listResources } from "@/services/authz";
+import {
+  createAuthzScope,
+  eraseAuthzScope,
+  erasePolicy,
+  eraseResource,
+  evaluate,
+  listAuthzScopes,
+  listPolicies,
+  listResources,
+  reworkAuthzScope,
+  reworkPolicy,
+  reworkResource,
+} from "@/services/authz";
 import { ApiError } from "@/services/http";
 import { afterWrites } from "@/services/writes";
 import type {
@@ -245,17 +258,110 @@ async function simulate() {
 
 /// The four families of evaluator this build carries, plus the one shown
 /// unavailable so the palette reads as a place with room, not a closed set.
+/// The kinds this editor can author, each with the list its rule is spelled
+/// with. The engine holds more, and the graph draws every one it finds; a
+/// kind whose rule needs fields this drawer has no box for is not offered
+/// here, because a box that cannot say what the kind needs writes a rule
+/// nobody asked for.
 const EVALUATORS = [
-  { type: "role", family: "who" },
-  { type: "group", family: "who" },
-  { type: "attribute", family: "what" },
-  { type: "relationship", family: "owns" },
-  { type: "context", family: "narrows" },
-  { type: "time", family: "narrows" },
-  { type: "aggregated", family: "composes" },
+  { type: "role", family: "who", list: "roles" },
+  { type: "group", family: "who", list: "groups" },
+  { type: "user", family: "who", list: "users" },
+  { type: "client", family: "who", list: "clients" },
+  { type: "client-scope", family: "who", list: "client_scopes" },
+  { type: "aggregated", family: "composes", list: "" },
 ] as const;
 
-const drawer = ref<"" | "protect" | "policy" | "resource" | "relation" | "palette">("");
+/// What the rule's list is called for one kind.
+function listNameOf(kind: string): string {
+  return EVALUATORS.find((held) => held.type === kind)?.list ?? "";
+}
+
+const drawer = ref<"" | "protect" | "policy" | "resource" | "scope" | "relation" | "palette">("");
+
+/// The row being reworked, or empty for a new one. The drawers already hold
+/// the fields; what changes is whether the write creates or replaces, and
+/// which identity it replaces.
+const editing = ref("");
+/// The row waiting to be taken away, with what a person recognises it by.
+const erasing = ref<{ leaf: "policies" | "resources" | "scopes"; id: string; named: string } | null>(
+  null,
+);
+const scopeDraft = ref({ name: "", display_name: "" });
+
+function openNew(which: "policy" | "resource" | "scope") {
+  editing.value = "";
+  if (which === "resource") resourceDraft.value = { name: "", resource_type: "", uris: "", owner: "" };
+  if (which === "scope") scopeDraft.value = { name: "", display_name: "" };
+  drawer.value = which;
+}
+
+function openPolicy(held: PolicyRow) {
+  editing.value = held.policy_id;
+  const listed = listNameOf(held.policy_type);
+  const carried = listed ? ((held as unknown as Record<string, string[]>)[listed] ?? []) : [];
+  policyDraft.value = {
+    name: held.name,
+    policy_type: held.policy_type,
+    description: held.description,
+    terms: carried.join("\n"),
+  };
+  drawer.value = "policy";
+}
+
+function openResource(held: ResourceRow) {
+  editing.value = held.resource_id;
+  resourceDraft.value = {
+    name: held.name,
+    resource_type: "",
+    uris: "",
+    owner: "",
+  };
+  drawer.value = "resource";
+}
+
+function openScope(held: ScopeRow) {
+  editing.value = held.scope_id;
+  scopeDraft.value = { name: held.name, display_name: held.name };
+  drawer.value = "scope";
+}
+
+async function makeScope() {
+  const named = scopeDraft.value.name.trim();
+  if (!named) return;
+  const body = {
+    name: named,
+    display_name: scopeDraft.value.display_name.trim() || named,
+    description: "",
+  };
+  try {
+    if (editing.value) {
+      await reworkAuthzScope(realm.value, clientId.value, editing.value, body);
+    } else {
+      await createAuthzScope(realm.value, clientId.value, body);
+    }
+    drawer.value = "";
+    editing.value = "";
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
+/// Take one away, once the person has typed what it is called.
+async function eraseHeld() {
+  const held = erasing.value;
+  if (!held) return;
+  try {
+    if (held.leaf === "policies") await erasePolicy(realm.value, clientId.value, held.id, held.named);
+    if (held.leaf === "resources") await eraseResource(realm.value, clientId.value, held.id, held.named);
+    if (held.leaf === "scopes") await eraseAuthzScope(realm.value, clientId.value, held.id, held.named);
+    erasing.value = null;
+    await load();
+  } catch {
+    erasing.value = null;
+  }
+}
 const protectDraft = ref({ enforcement: "enforcing", strategy: "affirmative" });
 async function doProtect() {
   try {
@@ -275,20 +381,34 @@ async function doProtect() {
 const policyDraft = ref({ name: "", policy_type: "role", description: "", terms: "" });
 async function makePolicy() {
   if (!policyDraft.value.name.trim()) return;
-  const roles = policyDraft.value.terms
+  const named = policyDraft.value.terms
     .split(/[\n,]/)
     .map((held) => held.trim())
     .filter(Boolean);
   try {
-    await createPolicy(realm.value, clientId.value, {
+    // The whole of what a policy carries. A partial body is not an edit of
+    // some of the terms: the server takes the terms it is given, so anything
+    // left out is a term set to nothing.
+    const listed = listNameOf(policyDraft.value.policy_type);
+    const body: Record<string, unknown> = {
       name: policyDraft.value.name.trim(),
       description: policyDraft.value.description,
-      policy_type: policyDraft.value.policy_type,
+      decision: "unanimous",
       logic: "positive",
-      decision_strategy: "affirmative",
-      configs: roles.length ? { names: { Str: roles.join(",") } } : undefined,
-    });
+      policy_owner: clientId.value,
+      policies: [],
+      resources: [],
+      scopes: [],
+      policy_type: policyDraft.value.policy_type,
+    };
+    if (listed) body[listed] = named;
+    if (editing.value) {
+      await reworkPolicy(realm.value, clientId.value, editing.value, body);
+    } else {
+      await createPolicy(realm.value, clientId.value, body);
+    }
     drawer.value = "";
+    editing.value = "";
     policyDraft.value = { name: "", policy_type: "role", description: "", terms: "" };
     await load();
   } catch {
@@ -300,7 +420,7 @@ const resourceDraft = ref({ name: "", resource_type: "", uris: "", owner: "" });
 async function makeResource() {
   if (!resourceDraft.value.name.trim()) return;
   try {
-    await createResource(realm.value, clientId.value, {
+    const body = {
       name: resourceDraft.value.name.trim(),
       display_name: resourceDraft.value.name.trim(),
       description: "",
@@ -311,8 +431,14 @@ async function makeResource() {
         .filter(Boolean),
       resource_owner: resourceDraft.value.owner.trim() || clientId.value,
       user_managed_access: false,
-    });
+    };
+    if (editing.value) {
+      await reworkResource(realm.value, clientId.value, editing.value, body);
+    } else {
+      await createResource(realm.value, clientId.value, body);
+    }
     drawer.value = "";
+    editing.value = "";
     resourceDraft.value = { name: "", resource_type: "", uris: "", owner: "" };
     await load();
   } catch {
@@ -635,46 +761,95 @@ function nodeStroke(row: PolicyRow): string {
         </div>
       </aside>
     </div>
+    <div v-if="board === 'resources'" class="mt-3 flex justify-end">
+      <button type="button" class="sf-button sf-button-secondary" @click="openNew('resource')">
+        {{ say("authz-add-resource") }}
+      </button>
+    </div>
     <div v-if="board === 'resources'" class="sf-list mt-3 overflow-x-auto">
       <table class="sf-table">
         <thead>
           <tr>
               <th>{{ say("authz-column-name") }}</th>
               <th>{{ say("authz-column-id") }}</th>
+              <th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="held in resources" :key="held.resource_id">
               <td>{{ held.name }}</td>
               <td class="font-mono text-[10.5px] text-faint">{{ held.resource_id }}</td>
+              <td class="text-right whitespace-nowrap">
+                <button
+                  type="button"
+                  class="text-[11px] text-faint hover:text-ink"
+                  @click="openResource(held)"
+                >
+                  {{ say("authz-edit") }}
+                </button>
+                <button
+                  type="button"
+                  class="ml-3 text-[11px] text-faint hover:text-danger"
+                  @click="erasing = { leaf: 'resources', id: held.resource_id, named: held.name }"
+                >
+                  {{ say("authz-erase") }}
+                </button>
+              </td>
           </tr>
           <tr v-if="!resources.length">
-            <td colspan="2" class="text-muted">{{ say("authz-none-here") }}</td>
+            <td colspan="3" class="text-muted">{{ say("authz-none-here") }}</td>
           </tr>
         </tbody>
       </table>
     </div>
 
+    <div v-if="board === 'scopes'" class="mt-3 flex justify-end">
+      <button type="button" class="sf-button sf-button-secondary" @click="openNew('scope')">
+        {{ say("authz-add-scope") }}
+      </button>
+    </div>
     <div v-if="board === 'scopes'" class="sf-list mt-3 overflow-x-auto">
       <table class="sf-table">
         <thead>
           <tr>
               <th>{{ say("authz-column-name") }}</th>
               <th>{{ say("authz-column-id") }}</th>
+              <th></th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="held in scopes" :key="held.scope_id">
               <td>{{ held.name }}</td>
               <td class="font-mono text-[10.5px] text-faint">{{ held.scope_id }}</td>
+              <td class="text-right whitespace-nowrap">
+                <button
+                  type="button"
+                  class="text-[11px] text-faint hover:text-ink"
+                  @click="openScope(held)"
+                >
+                  {{ say("authz-edit") }}
+                </button>
+                <button
+                  type="button"
+                  class="ml-3 text-[11px] text-faint hover:text-danger"
+                  @click="erasing = { leaf: 'scopes', id: held.scope_id, named: held.name }"
+                >
+                  {{ say("authz-erase") }}
+                </button>
+              </td>
           </tr>
           <tr v-if="!scopes.length">
-            <td colspan="2" class="text-muted">{{ say("authz-none-here") }}</td>
+            <td colspan="3" class="text-muted">{{ say("authz-none-here") }}</td>
           </tr>
         </tbody>
       </table>
     </div>
 
+    <div v-if="board === 'policies'" class="mt-3 flex justify-end">
+      <button type="button" class="sf-button sf-button-secondary" @click="openNew('policy')">
+        {{ say("authz-add-policy") }}
+      </button>
+    </div>
     <div v-if="board === 'policies'" class="sf-list mt-3 overflow-x-auto">
       <table class="sf-table">
         <thead>
@@ -682,6 +857,7 @@ function nodeStroke(row: PolicyRow): string {
               <th>{{ say("authz-column-name") }}</th>
               <th>{{ say("authz-column-kind") }}</th>
               <th>{{ say("authz-column-about") }}</th>
+              <th></th>
           </tr>
         </thead>
         <tbody>
@@ -689,14 +865,35 @@ function nodeStroke(row: PolicyRow): string {
               <td>{{ held.name }}</td>
               <td>{{ held.policy_type }}</td>
               <td class="text-muted">{{ held.description || say('value-none') }}</td>
+              <td class="text-right whitespace-nowrap">
+                <button
+                  type="button"
+                  class="text-[11px] text-faint hover:text-ink"
+                  @click="openPolicy(held)"
+                >
+                  {{ say("authz-edit") }}
+                </button>
+                <button
+                  type="button"
+                  class="ml-3 text-[11px] text-faint hover:text-danger"
+                  @click="erasing = { leaf: 'policies', id: held.policy_id, named: held.name }"
+                >
+                  {{ say("authz-erase") }}
+                </button>
+              </td>
           </tr>
           <tr v-if="!unbound.length">
-            <td colspan="3" class="text-muted">{{ say("authz-none-here") }}</td>
+            <td colspan="4" class="text-muted">{{ say("authz-none-here") }}</td>
           </tr>
         </tbody>
       </table>
     </div>
 
+    <div v-if="board === 'permissions'" class="mt-3 flex justify-end">
+      <button type="button" class="sf-button sf-button-secondary" @click="openNew('policy')">
+        {{ say("authz-add-policy") }}
+      </button>
+    </div>
     <div v-if="board === 'permissions'" class="sf-list mt-3 overflow-x-auto">
       <table class="sf-table">
         <thead>
@@ -704,6 +901,7 @@ function nodeStroke(row: PolicyRow): string {
               <th>{{ say("authz-column-name") }}</th>
               <th>{{ say("authz-column-kind") }}</th>
               <th>{{ say("authz-column-binds") }}</th>
+              <th></th>
           </tr>
         </thead>
         <tbody>
@@ -711,9 +909,25 @@ function nodeStroke(row: PolicyRow): string {
               <td>{{ held.name }}</td>
               <td>{{ held.policy_type }}</td>
               <td class="text-muted">{{ held.resources.length + held.scopes.length }}</td>
+              <td class="text-right whitespace-nowrap">
+                <button
+                  type="button"
+                  class="text-[11px] text-faint hover:text-ink"
+                  @click="openPolicy(held)"
+                >
+                  {{ say("authz-edit") }}
+                </button>
+                <button
+                  type="button"
+                  class="ml-3 text-[11px] text-faint hover:text-danger"
+                  @click="erasing = { leaf: 'policies', id: held.policy_id, named: held.name }"
+                >
+                  {{ say("authz-erase") }}
+                </button>
+              </td>
           </tr>
           <tr v-if="!binding.length">
-            <td colspan="3" class="text-muted">{{ say("authz-none-here") }}</td>
+            <td colspan="4" class="text-muted">{{ say("authz-none-here") }}</td>
           </tr>
         </tbody>
       </table>
@@ -746,7 +960,7 @@ function nodeStroke(row: PolicyRow): string {
       </form>
     </AppDrawer>
 
-    <AppDrawer v-if="drawer === 'policy'" :title="say('authz-new-policy')" :subtitle="clientId" @close="drawer = ''">
+    <AppDrawer v-if="drawer === 'policy'" :title="editing ? say('authz-edit-policy') : say('authz-new-policy')" :subtitle="clientId" @close="drawer = ''">
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="makePolicy">
         <label class="block text-[11px] font-medium text-muted">
           {{ say("settings-name") }}
@@ -774,7 +988,7 @@ function nodeStroke(row: PolicyRow): string {
       </form>
     </AppDrawer>
 
-    <AppDrawer v-if="drawer === 'resource'" :title="say('authz-new-resource')" :subtitle="clientId" @close="drawer = ''">
+    <AppDrawer v-if="drawer === 'resource'" :title="editing ? say('authz-edit-resource') : say('authz-new-resource')" :subtitle="clientId" @close="drawer = ''">
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="makeResource">
         <label class="block text-[11px] font-medium text-muted">
           {{ say("settings-name") }}
@@ -795,6 +1009,42 @@ function nodeStroke(row: PolicyRow): string {
         <div>
           <button type="submit" class="sf-button sf-button-primary">
             {{ say("realm-create") }}
+          </button>
+        </div>
+      </form>
+    </AppDrawer>
+
+    <DangerDialog
+      :open="erasing !== null"
+      :title="say('authz-erase-title')"
+      :named="erasing?.named ?? ''"
+      :lede="say('authz-erase-lede')"
+      :facts="[]"
+      :warning="say('authz-erase-warning')"
+      :trail="say('authz-erase-trail')"
+      :confirm-label="say('authz-erase')"
+      @close="erasing = null"
+      @confirm="eraseHeld"
+    />
+
+    <AppDrawer
+      v-if="drawer === 'scope'"
+      :title="editing ? say('authz-edit-scope') : say('authz-new-scope')"
+      :subtitle="clientId"
+      @close="drawer = ''"
+    >
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="makeScope">
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("settings-name") }} <AppHint name="authz-scope-name-help" />
+          <input v-model="scopeDraft.name" class="sf-field mt-1 font-mono" spellcheck="false" />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-column-name") }}
+          <input v-model="scopeDraft.display_name" class="sf-field mt-1" />
+        </label>
+        <div>
+          <button type="submit" class="sf-button sf-button-primary">
+            {{ editing ? say("settings-save") : say("realm-create") }}
           </button>
         </div>
       </form>

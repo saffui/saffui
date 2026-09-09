@@ -10,6 +10,19 @@ export interface PolicyRow {
   /// Resource ids this policy binds, making it a permission.
   resources: string[];
   scopes: string[];
+  /// The rest of what a policy carries, sent back whole so an edit replaces
+  /// the terms rather than dropping the ones the screen does not show.
+  decision: string;
+  logic: string;
+  policy_owner: string;
+  /// The rule's own list, under the name its kind uses. Absent for a kind
+  /// that carries nothing of its own, and for the kinds this console does not
+  /// author yet.
+  roles?: string[];
+  groups?: string[];
+  users?: string[];
+  clients?: string[];
+  client_scopes?: string[];
 }
 
 /// Partial mirror of a stored resource row.

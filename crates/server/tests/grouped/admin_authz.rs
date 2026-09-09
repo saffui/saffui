@@ -445,3 +445,123 @@ async fn a_simulated_decision_is_the_engine_speaking() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// A resource and a scope are reworked in place, and neither can be reached
+/// through a resource server that does not hold it.
+///
+/// Editing in place is the whole point: a policy binds a resource by
+/// identity, so replacing the row under a new id would break the binding
+/// while looking on screen like a rename. And the server on the path has to
+/// be the one that holds it, or a caller with one protected client could edit
+/// another's surface by knowing an identifier.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_surface_is_reworked_in_place_and_never_through_another_server() {
+    let plane = Plane::with_actions(&[AdminAction::UmaRead, AdminAction::UmaWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let here = format!(
+        "/admin/realms/{REALM}/authz/servers/{}",
+        support::CONFIDENTIAL
+    );
+    let elsewhere = format!("/admin/realms/{REALM}/authz/servers/{}", support::OTHER);
+
+    for base in [&here, &elsewhere] {
+        let (status, told) = asked(&plane, Method::POST, base, &bearer, Some(protection())).await;
+        assert_eq!(status, StatusCode::CREATED, "{told}");
+    }
+
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &format!("{here}/resources"),
+        &bearer,
+        Some(json!({
+            "name": "invoice", "display_name": "Invoice", "description": "one bill",
+            "resource_uris": ["/invoices/*"], "resource_type": "urn:invoice",
+            "resource_owner": support::SUBJECT, "user_managed_access": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let resource_id = made["resource_id"].as_str().expect("an id").to_owned();
+
+    let reworked = json!({
+        "name": "invoice", "display_name": "Invoice, archived", "description": "one bill, kept",
+        "resource_uris": ["/invoices/*", "/archive/invoices/*"], "resource_type": "urn:invoice",
+        "resource_owner": support::SUBJECT, "user_managed_access": false,
+    });
+
+    // The other server does not hold it, and saying so is a not-found rather
+    // than a refusal: the caller learns nothing about what the neighbour holds.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{elsewhere}/resources/{resource_id}"),
+        &bearer,
+        Some(reworked.clone()),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a surface was edited through a stranger: {told}"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{here}/resources/{resource_id}"),
+        &bearer,
+        Some(reworked),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        told["resource_id"], resource_id,
+        "the identity moved: {told}"
+    );
+    assert_eq!(told["display_name"], "Invoice, archived", "{told}");
+    assert_eq!(
+        told["resource_uris"].as_array().expect("uris").len(),
+        2,
+        "{told}"
+    );
+
+    // And the listing agrees, which is what the screen reads.
+    let (status, listed) = asked(
+        &plane,
+        Method::GET,
+        &format!("{here}/resources"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let rows = listed.as_array().expect("a listing");
+    assert_eq!(rows.len(), 1, "an edit made a second row: {listed}");
+    assert_eq!(rows[0]["display_name"], "Invoice, archived", "{listed}");
+
+    // A scope goes the same way.
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &format!("{here}/scopes"),
+        &bearer,
+        Some(json!({ "name": "read", "display_name": "Read", "description": "look" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let scope_id = made["scope_id"].as_str().expect("an id").to_owned();
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{here}/scopes/{scope_id}"),
+        &bearer,
+        Some(json!({ "name": "read", "display_name": "Read, including archived", "description": "look" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["scope_id"], scope_id, "the identity moved: {told}");
+    assert_eq!(told["display_name"], "Read, including archived", "{told}");
+}

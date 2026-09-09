@@ -172,6 +172,40 @@ pub async fn resources(
         .map_err(|_| Unwritable::Backend)
 }
 
+/// Rework one resource in place. The identity does not move: a resource is
+/// named by the policies that bind it, and a new row under a new id would
+/// break those bindings while looking like an edit.
+pub async fn rework_resource(
+    transaction: &Transaction<'_>,
+    server_id: &str,
+    resource_id: &str,
+    by: &str,
+    asked: ResourceMutationModel,
+) -> Result<ResourceModel, Unwritable> {
+    server(transaction, server_id).await?;
+    let held = authz_surface::load_resource(transaction, resource_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .ok_or(Unwritable::NotFound)?;
+    // The resource has to belong to the server the path named, or a caller
+    // holding one server could edit another's by knowing an identifier.
+    if held.server_id != server_id {
+        return Err(Unwritable::NotFound);
+    }
+    let mut resource = asked.into_model(
+        held.resource_id.clone(),
+        held.server_id.clone(),
+        held.realm_id.clone(),
+        held.metadata.clone(),
+    );
+    resource.metadata.updated_by = Some(by.to_owned());
+    authz_surface::update_resource(transaction, &resource)
+        .await
+        .map_err(carried)?
+        .then_some(resource)
+        .ok_or(Unwritable::NotFound)
+}
+
 pub async fn remove_resource(
     transaction: &Transaction<'_>,
     resource_id: &str,
@@ -213,6 +247,37 @@ pub async fn scopes(
     authz_surface::scopes_of_server(transaction, server_id)
         .await
         .map_err(|_| Unwritable::Backend)
+}
+
+/// Rework one scope in place, for the same reason a resource is reworked in
+/// place: the permissions that bind it name it by identity.
+pub async fn rework_scope(
+    transaction: &Transaction<'_>,
+    server_id: &str,
+    scope_id: &str,
+    by: &str,
+    asked: ScopeMutationModel,
+) -> Result<ScopeModel, Unwritable> {
+    server(transaction, server_id).await?;
+    let held = authz_surface::load_scope(transaction, scope_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .ok_or(Unwritable::NotFound)?;
+    if held.server_id != server_id {
+        return Err(Unwritable::NotFound);
+    }
+    let mut scope = asked.into_model(
+        held.scope_id.clone(),
+        held.server_id.clone(),
+        held.realm_id.clone(),
+        held.metadata.clone(),
+    );
+    scope.metadata.updated_by = Some(by.to_owned());
+    authz_surface::update_scope(transaction, &scope)
+        .await
+        .map_err(carried)?
+        .then_some(scope)
+        .ok_or(Unwritable::NotFound)
 }
 
 pub async fn remove_scope(transaction: &Transaction<'_>, scope_id: &str) -> Result<(), Unwritable> {

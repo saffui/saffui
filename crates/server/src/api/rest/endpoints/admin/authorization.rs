@@ -135,9 +135,9 @@ pub async fn unprotect(
 /// The nested creations share one shape: the server off the path, a mutation
 /// off the body, a drawn identity back.
 macro_rules! surface {
-    ($create:ident, $list:ident, $delete:ident,
-     $mutation:ty, $create_call:ident, $list_call:ident, $delete_call:ident,
-     $missing:ident) => {
+    ($create:ident, $list:ident, $rework:ident, $delete:ident,
+     $mutation:ty, $create_call:ident, $list_call:ident, $rework_call:ident,
+     $delete_call:ident, $missing:ident) => {
         pub async fn $create(
             admin: web::ReqData<Admin>,
             pool: web::Data<Pool>,
@@ -185,6 +185,32 @@ macro_rules! surface {
             Ok(HttpResponse::Ok().json(found))
         }
 
+        pub async fn $rework(
+            admin: web::ReqData<Admin>,
+            pool: web::Data<Pool>,
+            tenancy: web::Data<Tenancy>,
+            path: web::Path<(String, String, String)>,
+            body: web::Json<$mutation>,
+        ) -> Result<HttpResponse, ApiError> {
+            let (realm_id, server_id, id) = path.into_inner();
+            let mut connection = pool.get().await.map_err(|_| internal())?;
+            let transaction = tenancy
+                .transaction(&mut connection, &within(&admin, &realm_id))
+                .await
+                .map_err(|_| internal())?;
+            let made = authz::$rework_call(
+                &transaction,
+                &server_id,
+                &id,
+                admin.context.principal.id(),
+                body.into_inner(),
+            )
+            .await
+            .map_err(|why| refused(why, ErrorCode::$missing))?;
+            transaction.commit().await.map_err(|_| internal())?;
+            Ok(HttpResponse::Ok().json(made))
+        }
+
         pub async fn $delete(
             admin: web::ReqData<Admin>,
             pool: web::Data<Pool>,
@@ -209,20 +235,24 @@ macro_rules! surface {
 surface!(
     add_resource,
     resources,
+    rework_resource,
     remove_resource,
     ResourceMutationModel,
     add_resource,
     resources,
+    rework_resource,
     remove_resource,
     ResourceNotFound
 );
 surface!(
     add_scope,
     scopes,
+    rework_scope,
     remove_scope,
     ScopeMutationModel,
     add_scope,
     scopes,
+    rework_scope,
     remove_scope,
     ScopeNotFound
 );

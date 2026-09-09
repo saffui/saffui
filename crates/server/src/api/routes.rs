@@ -997,6 +997,12 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::post().to(authorization::add_resource)),
         },
         AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/resources/{resource}",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::put().to(authorization::rework_resource)),
+        },
+        AdminRoute {
             method: Method::DELETE,
             pattern: "/admin/realms/{realm}/authz/servers/{client}/resources/{resource}",
             action: AdminAction::UmaWrite,
@@ -1013,6 +1019,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/authz/servers/{client}/scopes",
             action: AdminAction::UmaWrite,
             handler: Some(|| web::post().to(authorization::add_scope)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/authz/servers/{client}/scopes/{scope}",
+            action: AdminAction::UmaWrite,
+            handler: Some(|| web::put().to(authorization::rework_scope)),
         },
         AdminRoute {
             method: Method::DELETE,

@@ -26,6 +26,7 @@ const GROUPS: { label: string; items: { label: string; icon: any; leaf: string }
       { label: say("nav-groups"), icon: "groups", leaf: "groups" },
       { label: say("nav-organizations"), icon: "organizations", leaf: "organizations" },
       { label: say("nav-clients"), icon: "clients", leaf: "clients" },
+      { label: say("nav-agents"), icon: "server", leaf: "agents" },
       { label: say("nav-scopes"), icon: "scopes", leaf: "client-scopes" },
     ],
   },

@@ -296,6 +296,25 @@ async fn a_directory_row_is_read_at_the_door() {
     assert!(kept["configs"].get("bind_password").is_none());
     assert!(kept["configs"].get("bind_password_sealed").is_none());
 
+    let sealed_before: String = {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, REALM),
+            )
+            .await;
+        transaction
+            .query_one(
+                "SELECT configs->'bind_password_sealed'->>'Str' AS secret \
+                 FROM user_federations WHERE alias = 'directory'",
+                &[],
+            )
+            .await
+            .expect("the directory row")
+            .get("secret")
+    };
+
     // Rewriting bumps the one row rather than adding a second.
     let (status, kept) = asked(
         &plane,
@@ -313,6 +332,65 @@ async fn a_directory_row_is_read_at_the_door() {
     assert_eq!(status, StatusCode::OK, "{kept}");
     assert!(kept["metadata"]["version"].as_i64().unwrap_or(1) > 1);
     assert_eq!(kept["enabled"], false);
+    let sealed_after: String = {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, REALM),
+            )
+            .await;
+        transaction
+            .query_one(
+                "SELECT configs->'bind_password_sealed'->>'Str' AS secret \
+                 FROM user_federations WHERE alias = 'directory'",
+                &[],
+            )
+            .await
+            .expect("the directory row")
+            .get("secret")
+    };
+    assert_eq!(
+        sealed_after, sealed_before,
+        "the silent rewrite lost the bind secret"
+    );
+
+    let (status, kept) = asked(
+        &plane,
+        Method::PUT,
+        &base,
+        &bearer,
+        Some(json!({ "enabled": false, "configs": {
+            "url": { "Str": "ldap://elsewhere.example:1389" },
+            "danger_plaintext": { "Str": "true" },
+            "bind_dn": { "Str": "cn=admin,dc=example,dc=org" },
+            "users_dn": { "Str": "ou=users,dc=example,dc=org" },
+        } })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    let secret_after_move: Option<String> = {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, REALM),
+            )
+            .await;
+        transaction
+            .query_one(
+                "SELECT configs->'bind_password_sealed'->>'Str' AS secret \
+                 FROM user_federations WHERE alias = 'directory'",
+                &[],
+            )
+            .await
+            .expect("the directory row")
+            .get("secret")
+    };
+    assert!(
+        secret_after_move.is_none(),
+        "a new directory inherited the old directory's bind secret"
+    );
 
     let (status, _) = asked(&plane, Method::DELETE, &base, &bearer, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);

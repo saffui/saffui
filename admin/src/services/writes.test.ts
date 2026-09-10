@@ -39,6 +39,7 @@ const EXCUSED: Record<string, string> = {
   "clients/ClientDrawer.vue": "a drawer re-reads after its own writes, keeping its tabs",
   "users/UserDrawer.vue": "a drawer re-reads after its own writes, keeping its tabs",
   "federation/IdpDrawer.vue": "a drawer re-reads after its own writes, keeping its tabs",
+  "federation/DirectoryDrawer.vue": "its parent owns and refreshes the directory list",
 };
 
 function everyScreen(at: string, under = ""): string[] {

@@ -113,7 +113,19 @@ function decided(
 export function previewAnswer<T>(path: string, method = "GET"): T {
   const answer = (held: unknown) => held as T;
 
-  if (path.endsWith("/mail")) throw new ApiError(404, "nothing is configured");
+  if (path.endsWith("/mail")) {
+    if (method === "DELETE") return answer(undefined);
+    return answer({
+      host: "smtp.saffui.tg",
+      port: 587,
+      from_address: "no-reply@saffui.tg",
+      from_name: "saffui",
+      reply_to: "support@saffui.tg",
+      implicit_tls: false,
+      username: "no-reply@saffui.tg",
+      has_password: true,
+    });
+  }
   if (path.includes("/journal/verify")) {
     return answer({ holds: true, entries: 42, broken_at: null });
   }

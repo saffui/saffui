@@ -444,6 +444,15 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       total: 2,
     });
   }
+  if (path.endsWith("/export")) {
+    return answer({
+      format_version: 1,
+      exported_at: NOW,
+      sections: ["realm", "users"],
+      realm: { realm_id: "main" },
+      users: PEOPLE,
+    });
+  }
   if (path.endsWith("/keys")) {
     return answer({
       signing: [

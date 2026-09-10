@@ -17,6 +17,7 @@ import {
   getSms,
   getUssd,
   getRealmSettings,
+  exportRealm,
   keepFeatureWish,
   listRealmFeatures,
   lookAtRelay,
@@ -95,6 +96,7 @@ const mail = ref<MailBrief | null>(null);
 const sms = ref<SmsBrief | null>(null);
 const ussdHeld = ref(false);
 const failed = ref("");
+const exporting = ref(false);
 
 /// The editable copy the forms bind to; adopting a settings document resets
 /// it, so a save reflects what the server actually kept.
@@ -469,6 +471,25 @@ async function saveGroup() {
     );
     } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+async function downloadRealmExport() {
+  failed.value = "";
+  exporting.value = true;
+  try {
+    const exported = await exportRealm(realm.value);
+    const content = JSON.stringify(exported, null, 2);
+    const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${realm.value}-export.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  } finally {
+    exporting.value = false;
   }
 }
 
@@ -935,6 +956,39 @@ async function saveSmsTemplate() {
             >
               {{ say("settings-attr-add") }}
             </button>
+
+            <section class="mt-3 border-t border-border pt-4">
+              <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+                {{ say("settings-operations") }}
+              </div>
+              <div class="mt-2 rounded-lg border border-border bg-surface px-3 py-3">
+                <div class="flex flex-wrap items-center gap-3">
+                  <div class="min-w-0 flex-1">
+                    <div class="text-xs font-medium text-ink">{{ say("settings-export") }}</div>
+                    <p class="mt-1 text-[11px] leading-relaxed text-muted">
+                      {{ say("settings-export-lede") }}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    class="sf-button sf-button-secondary shrink-0 disabled:opacity-50"
+                    :disabled="exporting"
+                    @click="downloadRealmExport"
+                  >
+                    {{ say(exporting ? "settings-exporting" : "settings-export-action") }}
+                  </button>
+                </div>
+                <p class="mt-2 text-[10.5px] leading-relaxed text-faint">
+                  {{ say("settings-export-note") }}
+                </p>
+              </div>
+              <div class="mt-2 rounded-lg border border-warn/40 bg-warn/5 px-3 py-3">
+                <div class="text-xs font-medium text-ink">{{ say("settings-partial-import") }}</div>
+                <p class="mt-1 text-[11px] leading-relaxed text-muted">
+                  {{ say("settings-partial-import-unavailable") }}
+                </p>
+              </div>
+            </section>
 
             <div class="mt-4 rounded-lg border border-danger-line p-3">
               <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">

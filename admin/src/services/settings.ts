@@ -11,6 +11,10 @@ export async function getRealmSettings(realm: string): Promise<RealmSettings> {
   );
 }
 
+export async function exportRealm(realm: string): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>(adminPath(realm, "export"));
+}
+
 /// Rewrite the mentioned switches; the server leaves absent ones alone and
 /// answers the whole settings document back.
 export async function reshapeRealm(

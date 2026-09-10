@@ -14,6 +14,7 @@ import { getFlow, listFlows, setRequirement } from "@/services/flows";
 import type { ExecutionRow, FlowDetail, FlowRow, Requirement } from "@/models/flows";
 import { reorderFlow } from "@/services/flows";
 import { afterWrites } from "@/services/writes";
+import { flowIssues } from "./flowEditor";
 
 const NODE_W = 190;
 const NODE_H = 56;
@@ -32,6 +33,8 @@ const inner = ref(new Map<string, FlowDetail>());
 const catalogue = ref<FlowRow[]>([]);
 const failed = ref("");
 const selected = ref<ExecutionRow | null>(null);
+const loading = ref(false);
+let loadVersion = 0;
 
 const view = ref({ x: -60, y: -40, zoom: 1 });
 const dragging = ref<{ px: number; py: number; ox: number; oy: number } | null>(null);
@@ -62,9 +65,11 @@ const carrying = ref<{
 const hovered = ref<string | null>(null);
 
 async function load() {
+  const version = ++loadVersion;
+  loading.value = true;
   try {
-    held.value = await getFlow(realm.value, flowId.value);
-    const wanted = held.value.executions.flatMap((row) =>
+    const detail = await getFlow(realm.value, flowId.value);
+    const wanted = detail.executions.flatMap((row) =>
       row.step.kind === "sub_flow" ? [row.step.flow_id] : [],
     );
     const fetched = await Promise.all(
@@ -76,6 +81,8 @@ async function load() {
         }
       }),
     );
+    if (version !== loadVersion) return;
+    held.value = detail;
     inner.value = new Map(fetched.filter((held2) => held2 !== null));
     if (selected.value) {
       selected.value =
@@ -84,7 +91,10 @@ async function load() {
         ) ?? null;
     }
   } catch (refused) {
+    if (version !== loadVersion) return;
     failed.value = refused instanceof Error ? refused.message : String(refused);
+  } finally {
+    if (version === loadVersion) loading.value = false;
   }
 }
 onMounted(load);
@@ -436,6 +446,7 @@ async function changeRequirement(requirement: Requirement) {
 }
 
 const REQUIREMENTS: Requirement[] = ["required", "alternative", "disabled"];
+const issues = computed(() => (held.value ? flowIssues(held.value) : []));
 
 /// The whole drawing and the window onto it, both shrunk into a corner:
 /// enough to know where you stand, and one click to stand elsewhere.
@@ -511,6 +522,10 @@ function jumpTo(event: MouseEvent) {
         class="rounded border border-accent/40 px-1.5 py-0.5 text-[10px] text-accent"
         >{{ say("flows-built-in") }}</span
       >
+      <span v-if="loading" class="text-[10.5px] text-muted" aria-live="polite">{{ say("flow-loading") }}</span>
+      <span v-if="issues.length" class="rounded border border-warn/40 px-1.5 py-0.5 text-[10px] text-warn" role="status">
+        {{ say("flow-issues", { count: issues.length }) }}
+      </span>
       <div class="ml-auto flex items-center gap-1">
         <button
           type="button"
@@ -891,6 +906,32 @@ function jumpTo(event: MouseEvent) {
           </div>
         </template>
         <p v-else class="text-xs text-muted">{{ say("flow-pick") }}</p>
+        <div class="mt-5 border-t border-border pt-3">
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("flow-outline") }}
+          </div>
+          <div class="mt-1.5 flex max-h-44 flex-col gap-1 overflow-y-auto">
+            <button
+              v-for="row in flat.map((node) => node.row)"
+              :key="row.execution_id"
+              type="button"
+              class="rounded px-2 py-1.5 text-left text-[11px] hover:bg-surface-2"
+              :class="selected?.execution_id === row.execution_id && 'bg-surface-2 text-accent'"
+              @click="selected = row"
+              @keydown.enter.space.prevent="selected = row"
+            >
+              <span class="font-mono">{{ row.alias }}</span>
+              <span class="ml-1 text-faint">{{ stepName(row) }}</span>
+            </button>
+            <p v-if="!flat.length" class="text-[11px] text-muted">{{ say("flow-empty") }}</p>
+          </div>
+        </div>
+        <div v-if="issues.length" class="mt-4 border-t border-border pt-3">
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-warn uppercase">{{ say("flow-validation") }}</div>
+          <ul class="mt-1.5 space-y-1 text-[10.5px] text-warn">
+            <li v-for="issue in issues" :key="issue.executionId + issue.message">{{ issue.message }}</li>
+          </ul>
+        </div>
       </aside>
     </div>
   

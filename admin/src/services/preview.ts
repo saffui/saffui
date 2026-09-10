@@ -594,6 +594,13 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       },
     ]);
   }
+  if (path.endsWith("/spnego") && method === "DELETE") return answer(undefined);
+  if (path.endsWith("/spnego") && method !== "GET") {
+    return answer({ realm_id: "main", enabled: true, configs: { service_principal: { Str: "HTTP/id.example@EXAMPLE.ORG" } } });
+  }
+  if (path.endsWith("/spnego")) {
+    return answer({ realm_id: "main", enabled: true, configs: { service_principal: { Str: "HTTP/id.example@EXAMPLE.ORG" } } });
+  }
   if (path.endsWith("/iga/rules")) {
     return answer([
       { rule_id: "ru-1", when_attribute: "department", when_value: "finance", when_expr: null, roles: ["r-1"], priority: 10, enabled: true },

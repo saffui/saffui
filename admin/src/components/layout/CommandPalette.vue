@@ -24,6 +24,7 @@ const PAGES: { leaf: string; name: () => string }[] = [
   { leaf: "groups", name: () => say("nav-groups") },
   { leaf: "organizations", name: () => say("nav-organizations") },
   { leaf: "clients", name: () => say("nav-clients") },
+  { leaf: "agents", name: () => say("nav-agents") },
   { leaf: "client-scopes", name: () => say("nav-scopes") },
   { leaf: "authentication", name: () => say("nav-authentication") },
   { leaf: "authentication/actions", name: () => say("actions-title") },

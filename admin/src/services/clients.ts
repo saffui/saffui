@@ -33,6 +33,17 @@ export async function listAgents(realm: string): Promise<AgentBrief[]> {
   return api<AgentBrief[]>(adminPath(realm, "agents"));
 }
 
+export async function registerAgent(
+  realm: string,
+  body: { client_id: string; capabilities: string[]; session_seconds?: number },
+): Promise<AgentBrief> {
+  return api<AgentBrief>(adminPath(realm, "agents"), {
+    method: "POST",
+    json: body,
+    subject: say("subject-agent", { client: body.client_id }),
+  });
+}
+
 export async function reshapeAgent(
   realm: string,
   clientId: string,

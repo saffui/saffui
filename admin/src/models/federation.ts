@@ -57,6 +57,18 @@ export interface DirectoryRow {
   configs: Record<string, { Str?: string } | string> | null;
 }
 
+export interface DirectoryMutation {
+  enabled: boolean;
+  priority: number;
+  configs: Record<string, { Str: string }>;
+}
+
+export interface DirectoryImportReport {
+  imported: number;
+  refreshed: number;
+  walked: number;
+}
+
 /// One birthright rule, as `GET .../iga/rules` says it.
 export interface IgaRule {
   rule_id: string;

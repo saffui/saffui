@@ -464,6 +464,9 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       total: 2,
     });
   }
+  if (/\/federations\/[^/]+\/import$/.test(path)) {
+    return answer({ imported: 14, refreshed: 82, walked: 96 });
+  }
   if (path.includes("/import/preview") || path.endsWith("/import")) {
     return answer({
       realm_id: "main",
@@ -549,10 +552,23 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
           client_id: { Str: "ci-deployer" } } },
     ]);
   }
+  if (/\/federations\/[^/]+$/.test(path) && method !== "GET") {
+    return answer(null);
+  }
   if (path.endsWith("/federations")) {
     return answer([
-      { alias: "corp-ldap", enabled: true, priority: 10, configs: null },
-      { alias: "legacy-ad", enabled: false, priority: 20, configs: null },
+      { alias: "corp-ldap", enabled: true, priority: 10, configs: {
+        url: { Str: "ldaps://directory.example:636" }, bind_dn: { Str: "cn=reader,dc=example,dc=test" },
+        users_dn: { Str: "ou=people,dc=example,dc=test" }, user_filter: { Str: "(uid={username})" },
+        username_attribute: { Str: "uid" }, email_attribute: { Str: "mail" },
+        first_name_attribute: { Str: "givenName" }, last_name_attribute: { Str: "sn" },
+      } },
+      { alias: "legacy-ad", enabled: false, priority: 20, configs: {
+        url: { Str: "ldaps://legacy.example:636" }, bind_dn: { Str: "cn=sync,dc=legacy,dc=test" },
+        users_dn: { Str: "ou=users,dc=legacy,dc=test" }, user_filter: { Str: "(sAMAccountName={username})" },
+        username_attribute: { Str: "sAMAccountName" }, email_attribute: { Str: "mail" },
+        first_name_attribute: { Str: "givenName" }, last_name_attribute: { Str: "sn" },
+      } },
     ]);
   }
   if (path.endsWith("/iga/rules")) {

@@ -505,6 +505,24 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
         verified_at: null, closed_at: 1788700000, deadline_source: "GDPR art. 12(3), one month, extendable by two" },
     ]);
   }
+  if (/\/identity-providers\/[^/]+\/mappers\/[^/]+$/.test(path)) {
+    return answer(null);
+  }
+  if (/\/identity-providers\/[^/]+\/mappers$/.test(path)) {
+    if (method !== "GET") return answer(null);
+    return answer([
+      {
+        mapper_id: "m-1", realm_id: "main", provider_alias: "corp-okta",
+        name: "department", mapper_type: "oidc-user-attribute-idp-mapper",
+        configs: { claim: { Str: "department" }, "user.attribute": { Str: "department" }, syncMode: { Str: "import" } },
+      },
+      {
+        mapper_id: "m-2", realm_id: "main", provider_alias: "corp-okta",
+        name: "staff", mapper_type: "oidc-hardcoded-role-idp-mapper",
+        configs: { role: { Str: "role-staff" }, syncMode: { Str: "import" } },
+      },
+    ]);
+  }
   if (path.endsWith("/identity-providers")) {
     return answer([
       { internal_id: "i-1", provider_id: "corp-okta", name: "corp-okta", display_name: "Corp Okta", description: "", enabled: true, trust_email: true, configs: null },

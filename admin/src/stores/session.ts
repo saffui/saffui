@@ -59,7 +59,8 @@ export const useSession = defineStore("session", {
         try {
           return await renewal;
         } catch {
-          this.signOut();
+          if (this.refreshToken === held) this.signOut();
+          throw new Error("signed out");
         }
       }
       this.signOut();

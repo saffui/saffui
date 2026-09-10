@@ -23,14 +23,14 @@ export async function requeueDead(realm: string, eventId: number): Promise<void>
 }
 
 /// One committed happening, as the live feed speaks it.
-export interface LiveTold {
+export interface LiveEventSummary {
   event_id: number;
   kind: string;
   user_id: string;
   occurred_at: string;
 }
 
-export function parseLiveFrame(frame: string): LiveTold | null {
+export function parseLiveEventFrame(frame: string): LiveEventSummary | null {
   const id = frame
     .split("\n")
     .find((line) => line.startsWith("id: "))
@@ -43,20 +43,20 @@ export function parseLiveFrame(frame: string): LiveTold | null {
     .join("\n");
   if (!data) return null;
   try {
-    const told = JSON.parse(data) as LiveTold;
-    if (typeof told.event_id !== "number" && id) told.event_id = Number(id);
-    return typeof told.event_id === "number" ? told : null;
+    const event = JSON.parse(data) as LiveEventSummary;
+    if (typeof event.event_id !== "number" && id) event.event_id = Number(id);
+    return typeof event.event_id === "number" ? event : null;
   } catch {
     return null;
   }
 }
 
-/// Drink the realm's live feed until the signal aborts. EventSource cannot
+/// Stream the realm's live feed until the signal aborts. EventSource cannot
 /// carry a bearer, so this reads the stream by hand: fetch, then frames
 /// split on the blank line, `data:` lines parsed, comments dropped.
-export async function drinkEvents(
+export async function streamLiveEvents(
   realm: string,
-  onTold: (told: LiveTold) => void,
+  onEvent: (event: LiveEventSummary) => void,
   signal: AbortSignal,
   lastEventId?: number,
 ): Promise<void> {
@@ -83,8 +83,8 @@ export async function drinkEvents(
     while (at !== -1) {
       const frame = held.slice(0, at);
       held = held.slice(at + 2);
-      const told = parseLiveFrame(frame);
-      if (told) onTold(told);
+      const event = parseLiveEventFrame(frame);
+      if (event) onEvent(event);
       at = held.indexOf("\n\n");
     }
   }

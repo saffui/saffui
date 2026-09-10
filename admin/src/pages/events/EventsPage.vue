@@ -18,8 +18,8 @@ import {
   updateIdp,
 } from "@/services/federation";
 import { getRealmSettings, listSignInEvents } from "@/services/settings";
-import { drinkEvents, listDeadLetters, requeueDead } from "@/services/events";
-import type { DeadLetter, LiveTold } from "@/services/events";
+import { listDeadLetters, requeueDead, streamLiveEvents } from "@/services/events";
+import type { DeadLetter, LiveEventSummary } from "@/services/events";
 import { afterWrites } from "@/services/writes";
 import type { DeliveryProof, IdpRow } from "@/models/federation";
 import type { SignInEvent } from "@/models/events";
@@ -60,7 +60,7 @@ async function requeue(letter: DeadLetter) {
 /// The live feed: at most the last thirty frames, newest first, drunk
 /// while the switch is on and quietly dropped when it goes off.
 const watching = ref(false);
-const frames = ref<LiveTold[]>([]);
+const frames = ref<LiveEventSummary[]>([]);
 const feedFailed = ref("");
 const feedState = ref<"idle" | "connecting" | "live" | "reconnecting">("idle");
 const feedAttempt = ref(0);
@@ -97,7 +97,7 @@ async function startWatching() {
   while (!controller.signal.aborted) {
     feedState.value = feedAttempt.value === 0 ? "connecting" : "reconnecting";
     try {
-      await drinkEvents(
+      await streamLiveEvents(
         realm.value,
         (told) => {
           feedFailed.value = "";
@@ -332,9 +332,9 @@ async function prove(row: IdpRow) {
         {{ watching ? say("events-live-stop") : say("events-live-start") }}
       </button>
     </div>
-    <p v-if="feedFailed" class="mt-2 text-xs text-danger" role="alert">{{ feedFailed }}</p>
-    <p v-else-if="feedState === 'connecting'" class="mt-2 text-xs text-muted" role="status">{{ say("events-live-connecting") }}</p>
+    <p v-if="feedState === 'connecting'" class="mt-2 text-xs text-muted" role="status">{{ say("events-live-connecting") }}</p>
     <p v-else-if="feedState === 'reconnecting'" class="mt-2 text-xs text-warn" role="status">{{ say("events-live-reconnecting") }}</p>
+    <p v-else-if="feedFailed" class="mt-2 text-xs text-danger" role="alert">{{ feedFailed }}</p>
     <p v-else-if="!watching && !frames.length" class="mt-2 text-xs text-muted">
       {{ say("events-live-off") }}
     </p>

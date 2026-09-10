@@ -197,6 +197,37 @@ pub async fn retained(
         .collect())
 }
 
+/// Events after a live consumer's cursor, regardless of delivery state. The
+/// console watches committed changes, not connector delivery, so pending rows
+/// belong in this read as well.
+pub async fn list_events_after_id(
+    transaction: &Transaction<'_>,
+    event_id: i64,
+    limit: i64,
+) -> StoreResult<Vec<OutboxEvent>> {
+    Ok(transaction
+        .query(
+            "SELECT realm_id, event_id, kind, user_id, payload, attempts, occurred_at \
+             FROM event_outbox \
+             WHERE event_id > $1 \
+             ORDER BY event_id ASC LIMIT $2",
+            &[&event_id, &limit],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| OutboxEvent {
+            event_id: row.get("event_id"),
+            realm_id: row.get("realm_id"),
+            kind: row.get("kind"),
+            user_id: row.get("user_id"),
+            payload: row.get("payload"),
+            attempts: row.get("attempts"),
+            occurred_at: row.get("occurred_at"),
+        })
+        .collect())
+}
+
 pub async fn drop_delivered(
     transaction: &Transaction<'_>,
     before: DateTime<Utc>,

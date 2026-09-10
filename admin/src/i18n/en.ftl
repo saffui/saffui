@@ -178,9 +178,6 @@ org-no-domains = No domain is claimed.
 org-domain-verified = verified
 org-domain-pending = pending
 org-members = Members
-org-theme-title = Organization theme
-org-theme-lede = Overrides the realm theme for this organization. Empty values inherit.
-org-theme-inherit = Inherit realm theme
 
 settings-title = Realm settings
 settings-under = { $realm } · { $about }

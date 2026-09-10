@@ -178,9 +178,6 @@ org-no-domains = Aucun domaine revendiqué.
 org-domain-verified = vérifié
 org-domain-pending = en attente
 org-members = Membres
-org-theme-title = Thème de l’organisation
-org-theme-lede = Remplace le thème du realm pour cette organisation. Les valeurs vides héritent.
-org-theme-inherit = Hériter du thème du realm
 
 settings-title = Réglages du realm
 settings-under = { $realm } · { $about }

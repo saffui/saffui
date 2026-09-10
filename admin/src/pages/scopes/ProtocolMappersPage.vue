@@ -36,7 +36,12 @@ function open(row?: ProtocolMapper) {
   editorOpen.value = true;
   editor.value = row ?? null;
   draft.value = row
-    ? { name: row.name, protocol: row.protocol, mapper_type: row.mapper_type, configs: "{}" }
+    ? {
+        name: row.name,
+        protocol: row.protocol,
+        mapper_type: row.mapper_type,
+        configs: JSON.stringify(row.configs ?? {}, null, 2),
+      }
     : { name: "", protocol: "openid-connect", mapper_type: types[0], configs: "{}" };
 }
 

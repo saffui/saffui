@@ -331,7 +331,6 @@ decision-col-question = Question
 decision-col-reported = Reported
 decision-col-computed = Computed
 decision-col-duration = Duration
-nav-decision-journal = Decision journal
 authz-column-name = Name
 authz-column-id = Id
 authz-column-kind = Kind

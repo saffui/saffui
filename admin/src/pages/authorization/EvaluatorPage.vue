@@ -4,7 +4,7 @@
 // are put the way a resource server puts them, and the answers are the
 // engine's own, recorded in the same log as any live decision.
 import { computed, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
 import PageTabs from "@/components/PageTabs.vue";
@@ -269,6 +269,12 @@ function worded(value: unknown): string {
       >
         {{ copied ? say("evaluator-copied") : say("evaluator-copy") }}
       </button>
+      <RouterLink
+        :to="`/${realm}/decision-journal`"
+        class="rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:text-ink"
+      >
+        {{ say("decision-journal-title") }}
+      </RouterLink>
     </div>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
 

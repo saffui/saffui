@@ -44,4 +44,5 @@ export interface ProtocolMapper {
   name: string;
   protocol: string;
   mapper_type: string;
+  configs?: Record<string, unknown> | null;
 }

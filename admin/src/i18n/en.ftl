@@ -846,6 +846,7 @@ otp-digits-help = How many digits a code shows. Six is what every app expects.
 otp-period = Period, seconds
 otp-period-help = How long one code lives. Thirty is the ecosystem's clock.
 otp-algorithm = Digest
+otp-algorithm-warn = Most authenticator apps ignore this and compute SHA1 whatever the code says. They will enrol without complaint and then show codes that are never accepted. Only set this for a fleet you control.
 otp-algorithm-help = SHA1 is the one digest every authenticator app implements; a stronger one here enrols cleanly in apps that then generate codes that never match. Change only for a controlled fleet.
 otp-window = Drift window
 otp-window-help = How many steps either side of now a code is still accepted, at every login. Each step widens acceptance by one period each way.

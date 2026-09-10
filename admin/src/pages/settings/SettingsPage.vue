@@ -1578,6 +1578,9 @@ async function saveSmsTemplate() {
                   <option value="SHA256">SHA256</option>
                   <option value="SHA512">SHA512</option>
                 </select>
+                <span v-if="otp.algorithm !== 'SHA1'" class="mt-1 block text-[10.5px] text-warn">
+                  {{ say("otp-algorithm-warn") }}
+                </span>
               </label>
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("otp-window") }} <AppHint name="otp-window-help" />

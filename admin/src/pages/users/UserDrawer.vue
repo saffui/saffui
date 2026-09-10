@@ -157,9 +157,14 @@ const profile = ref({
   phone_number: "",
   enabled: true,
 });
+/// What an administrator may ask of an account, which is every action the
+/// login engine acts on but one: `reset-password` is the same thing as
+/// `update-password` at a login, and clearing either clears both, so offering
+/// the pair would be two buttons for one act.
 const REQUIRED_ACTIONS = [
   "update-password",
   "verify-email",
+  "verify-phone",
   "configure-totp",
   "configure-webauthn",
   "configure-recovery-codes",

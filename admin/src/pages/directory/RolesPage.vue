@@ -108,7 +108,7 @@ async function dropRole() {
 
 <template>
   <div>
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("roles-title") }}</h1>
 
       <div class="flex items-center gap-3">
@@ -126,7 +126,7 @@ async function dropRole() {
 
     <form
       v-if="making"
-      class="mt-3 flex max-w-xl items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      class="mt-3 flex max-w-xl flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
       @submit.prevent="makeRole"
     >
       <label class="flex-1 text-[11px] font-medium text-muted">
@@ -187,7 +187,7 @@ async function dropRole() {
       @close="opened = null"
     >
       <form class="flex flex-col gap-2 text-xs" @submit.prevent="saveRole">
-        <div class="grid grid-cols-2 gap-2">
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <label class="block text-[11px] font-medium text-muted">
             {{ say("directory-col-display") }}
             <input

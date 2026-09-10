@@ -85,6 +85,18 @@ pub fn routes() -> Vec<AdminRoute> {
             handler: Some(|| web::get().to(portability::export)),
         },
         AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/import/preview",
+            action: AdminAction::RealmImport,
+            handler: Some(|| web::post().to(portability::partial_preview)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/import",
+            action: AdminAction::RealmImport,
+            handler: Some(|| web::post().to(portability::partial_import)),
+        },
+        AdminRoute {
             method: Method::GET,
             pattern: "/admin/realms/{realm}",
             action: AdminAction::RealmRead,

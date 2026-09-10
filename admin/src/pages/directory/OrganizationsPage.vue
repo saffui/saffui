@@ -146,7 +146,7 @@ function joined(member: OrgMember): string {
 
 <template>
   <div>
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("organizations-title") }}</h1>
 
       <button
@@ -163,7 +163,7 @@ function joined(member: OrgMember): string {
 
     <form
       v-if="making"
-      class="mt-3 flex max-w-xl items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      class="mt-3 flex max-w-xl flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
       @submit.prevent="makeOrg"
     >
       <label class="flex-1 text-[11px] font-medium text-muted">

@@ -18,6 +18,8 @@ import {
   getUssd,
   getRealmSettings,
   exportRealm,
+  importPartialRealm,
+  previewPartialImport,
   keepFeatureWish,
   listRealmFeatures,
   lookAtRelay,
@@ -31,6 +33,7 @@ import {
   writeSms,
   writeUssd,
 } from "@/services/settings";
+import type { ImportCollisionPolicy, PartialImportReport } from "@/services/settings";
 import { deleteRealm } from "@/services/realms";
 import { countOf } from "@/services/overview";
 import { toastOk } from "@/services/toasts";
@@ -97,6 +100,14 @@ const sms = ref<SmsBrief | null>(null);
 const ussdHeld = ref(false);
 const failed = ref("");
 const exporting = ref(false);
+const importing = ref(false);
+const applyingImport = ref(false);
+const importFileName = ref("");
+const importDocument = ref<Record<string, unknown> | null>(null);
+const importReport = ref<PartialImportReport | null>(null);
+const importError = ref("");
+const importCollision = ref<ImportCollisionPolicy>("fail");
+let importPreviewSequence = 0;
 
 /// The editable copy the forms bind to; adopting a settings document resets
 /// it, so a save reflects what the server actually kept.
@@ -478,18 +489,88 @@ async function downloadRealmExport() {
   failed.value = "";
   exporting.value = true;
   try {
-    const exported = await exportRealm(realm.value);
+    const exported = await exportRealm(realm.value, false);
     const content = JSON.stringify(exported, null, 2);
     const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${realm.value}-export.json`;
+    link.download = `${realm.value}-configuration.json`;
     link.click();
     URL.revokeObjectURL(url);
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   } finally {
     exporting.value = false;
+  }
+}
+
+async function inspectPartialImport(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  importError.value = "";
+  importReport.value = null;
+  importDocument.value = null;
+  if (!file) return;
+  if (file.size > 8 * 1024 * 1024) {
+    importError.value = say("settings-partial-import-too-large");
+    return;
+  }
+  try {
+    const parsed: unknown = JSON.parse(await file.text());
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(say("settings-partial-import-invalid"));
+    }
+    importFileName.value = file.name;
+    importDocument.value = parsed as Record<string, unknown>;
+    await refreshPartialImportPreview();
+  } catch (refused) {
+    importError.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+async function refreshPartialImportPreview() {
+  if (!importDocument.value) return;
+  const sequence = ++importPreviewSequence;
+  importing.value = true;
+  importError.value = "";
+  try {
+    const report = await previewPartialImport(
+      realm.value,
+      importDocument.value,
+      importCollision.value,
+    );
+    if (sequence === importPreviewSequence) importReport.value = report;
+  } catch (refused) {
+    if (sequence === importPreviewSequence) {
+      importError.value = refused instanceof Error ? refused.message : String(refused);
+    }
+  } finally {
+    if (sequence === importPreviewSequence) importing.value = false;
+  }
+}
+
+watch(importCollision, () => {
+  if (importDocument.value) void refreshPartialImportPreview();
+});
+
+async function applyPartialImport() {
+  if (!importDocument.value || !importReport.value) return;
+  if (!window.confirm(say("settings-partial-import-confirm"))) return;
+  importError.value = "";
+  applyingImport.value = true;
+  try {
+    importReport.value = await importPartialRealm(
+      realm.value,
+      importDocument.value,
+      importCollision.value,
+    );
+    adopt(await getRealmSettings(realm.value));
+    toastOk(say("settings-partial-import-done"));
+  } catch (refused) {
+    importError.value = refused instanceof Error ? refused.message : String(refused);
+  } finally {
+    applyingImport.value = false;
   }
 }
 
@@ -893,7 +974,7 @@ async function saveSmsTemplate() {
           @change="markDirty"
         >
           <template v-if="group === 'general'">
-            <div class="grid grid-cols-[220px_1fr] items-center gap-y-2.5">
+            <div class="grid grid-cols-1 items-center gap-y-2.5 sm:grid-cols-[220px_1fr]">
               <span class="text-muted"
                 >{{ say("settings-name") }} <AppHint name="settings-name-fixed"
               /></span>
@@ -983,10 +1064,58 @@ async function saveSmsTemplate() {
                 </p>
               </div>
               <div class="mt-2 rounded-lg border border-warn/40 bg-warn/5 px-3 py-3">
-                <div class="text-xs font-medium text-ink">{{ say("settings-partial-import") }}</div>
-                <p class="mt-1 text-[11px] leading-relaxed text-muted">
-                  {{ say("settings-partial-import-unavailable") }}
-                </p>
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <div class="text-xs font-medium text-ink">{{ say("settings-partial-import") }}</div>
+                    <p class="mt-1 text-[11px] leading-relaxed text-muted">
+                      {{ say("settings-partial-import-lede") }}
+                    </p>
+                  </div>
+                  <label class="sf-button sf-button-secondary shrink-0 cursor-pointer">
+                    {{ say("settings-partial-import-select") }}
+                    <input
+                      type="file"
+                      accept="application/json,.json"
+                      class="sr-only"
+                      @change="inspectPartialImport"
+                    />
+                  </label>
+                </div>
+                <div v-if="importFileName" class="mt-3 border-t border-warn/20 pt-3">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <code class="min-w-0 truncate font-mono text-[10.5px] text-muted">{{ importFileName }}</code>
+                    <select v-model="importCollision" class="sf-field w-auto py-1 text-[11px]">
+                      <option value="fail">{{ say("settings-partial-import-fail") }}</option>
+                      <option value="skip">{{ say("settings-partial-import-skip") }}</option>
+                      <option value="overwrite">{{ say("settings-partial-import-overwrite") }}</option>
+                    </select>
+                  </div>
+                  <div v-if="importing" class="mt-2 text-[11px] text-muted">
+                    {{ say("settings-partial-import-previewing") }}
+                  </div>
+                  <div v-else-if="importReport" class="mt-2 space-y-2">
+                    <div class="grid grid-cols-1 gap-2 text-center text-[10.5px] sm:grid-cols-3">
+                      <div class="rounded border border-border px-2 py-1"><div class="font-mono text-ink">{{ Object.values(importReport.new).reduce((sum, value) => sum + value, 0) }}</div>{{ say("settings-partial-import-new") }}</div>
+                      <div class="rounded border border-border px-2 py-1"><div class="font-mono text-ink">{{ Object.values(importReport.overwritten).reduce((sum, value) => sum + value, 0) }}</div>{{ say("settings-partial-import-overwritten") }}</div>
+                      <div class="rounded border border-border px-2 py-1"><div class="font-mono text-ink">{{ importReport.collision_count }}</div>{{ say("settings-partial-import-collisions") }}</div>
+                    </div>
+                    <p v-if="importReport.collision_count" class="text-[10.5px] text-warn">
+                      {{ say("settings-partial-import-collision-warning") }}
+                    </p>
+                    <p v-if="importReport.collisions_truncated" class="text-[10.5px] text-warn">
+                      {{ say("settings-partial-import-collision-truncated") }}
+                    </p>
+                    <button
+                      type="button"
+                      class="sf-button sf-button-primary disabled:opacity-50"
+                      :disabled="applyingImport || (importCollision === 'fail' && importReport.collision_count > 0)"
+                      @click="applyPartialImport"
+                    >
+                      {{ say(applyingImport ? "settings-partial-import-applying" : "settings-partial-import-apply") }}
+                    </button>
+                  </div>
+                  <p v-if="importError" class="mt-2 text-[10.5px] text-danger">{{ importError }}</p>
+                </div>
               </div>
             </section>
 
@@ -1031,7 +1160,7 @@ async function saveSmsTemplate() {
               </select>
             </label>
             <div v-if="draft.client_registration !== 'disabled'" class="flex flex-col gap-3">
-              <div class="grid grid-cols-2 gap-3">
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label class="block text-[11px] font-medium text-muted">
                   {{ say("settings-max-clients") }} <AppHint name="settings-max-clients-help" />
                   <input
@@ -1069,7 +1198,7 @@ async function saveSmsTemplate() {
           </template>
 
           <template v-if="group === 'sessions'">
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-session-ceiling") }}
                 <AppHint name="settings-session-ceiling-help" />
@@ -1135,7 +1264,7 @@ async function saveSmsTemplate() {
             </AppToggle>
           </template>
           <template v-if="group === 'tokens'">
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-access-lifespan") }} <AppHint name="settings-access-lifespan-help" />
                 <input
@@ -1266,7 +1395,7 @@ async function saveSmsTemplate() {
               {{ say("settings-lockout-protected") }}
               <AppHint name="settings-lockout-protected-help" />
             </AppToggle>
-            <div v-if="draft.bf_protected" class="grid grid-cols-2 gap-3">
+            <div v-if="draft.bf_protected" class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-lockout-failures") }} <AppHint name="settings-lockout-failures-help" />
                 <input
@@ -1315,7 +1444,7 @@ async function saveSmsTemplate() {
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("settings-privacy-door") }} <AppHint name="settings-privacy-door-help" />
             </div>
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("settings-dsar-jurisdiction") }}
                 <select
@@ -1417,7 +1546,7 @@ async function saveSmsTemplate() {
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("otp-title") }} <AppHint name="otp-title-help" />
             </div>
-            <div class="grid grid-cols-4 gap-3">
+            <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("otp-digits") }} <AppHint name="otp-digits-help" />
                 <select
@@ -1465,7 +1594,7 @@ async function saveSmsTemplate() {
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("webauthn-title") }} <AppHint name="webauthn-title-help" />
             </div>
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("webauthn-rp-name") }} <AppHint name="webauthn-rp-name-help" />
                 <input
@@ -1494,7 +1623,7 @@ async function saveSmsTemplate() {
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("settings-password-policy") }} <AppHint name="settings-password-policy-help" />
             </div>
-            <div class="grid grid-cols-3 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <label
                 v-for="held in POLICY_NUMBERS"
                 :key="held[0]"
@@ -1593,7 +1722,7 @@ async function saveSmsTemplate() {
             {{ say("mail-templates-title") }} <AppHint name="mail-templates-title-help" />
           </div>
           <form class="mt-2 flex flex-col gap-3 text-xs" @submit.prevent="saveTemplate">
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("mail-templates-kind") }}
                 <select
@@ -1733,7 +1862,7 @@ async function saveSmsTemplate() {
 
         <div v-if="group === 'email'" class="mt-4 max-w-lg">
           <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveMail">
-            <div class="grid grid-cols-[1fr_110px] gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_110px]">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("mail-host") }} <AppHint name="mail-host-help" />
                 <input
@@ -1775,7 +1904,7 @@ async function saveSmsTemplate() {
                 :placeholder="say('settings-unset')"
               />
             </label>
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("mail-username") }} <AppHint name="mail-username-help" />
                 <input
@@ -1821,7 +1950,7 @@ async function saveSmsTemplate() {
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("mail-test-title") }} <AppHint name="mail-test-help" />
             </div>
-            <form class="mt-2 flex items-end gap-2 text-xs" @submit.prevent="testMail">
+            <form class="mt-2 flex flex-wrap items-end gap-2 text-xs" @submit.prevent="testMail">
               <label class="flex-1 text-[11px] font-medium text-muted">
                 {{ say("mail-test-to") }}
                 <input
@@ -1918,7 +2047,7 @@ async function saveSmsTemplate() {
                 placeholder="https://gateway.example/send"
               />
             </label>
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("sms-sender") }} <AppHint name="sms-sender-help" />
                 <input
@@ -1960,7 +2089,7 @@ async function saveSmsTemplate() {
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sms-test-title") }} <AppHint name="sms-test-help" />
             </div>
-            <form class="mt-2 flex items-end gap-2 text-xs" @submit.prevent="testSms">
+            <form class="mt-2 flex flex-wrap items-end gap-2 text-xs" @submit.prevent="testSms">
               <label class="flex-1 text-[11px] font-medium text-muted">
                 {{ say("sms-test-to") }}
                 <input
@@ -1986,7 +2115,7 @@ async function saveSmsTemplate() {
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sms-today-title") }} <AppHint name="sms-today-help" />
             </div>
-            <div class="mt-2 grid grid-cols-2 gap-3 xl:grid-cols-4">
+            <div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
               <div
                 v-for="count in todayCounts"
                 :key="count.label"
@@ -2005,7 +2134,7 @@ async function saveSmsTemplate() {
               {{ say("sms-brakes-title") }} <AppHint name="sms-brakes-help" />
             </div>
             <form class="mt-2 flex flex-col gap-3 text-xs" @submit.prevent="saveSmsBrakes">
-              <div class="grid grid-cols-2 gap-3">
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label class="block text-[11px] font-medium text-muted">
                   {{ say("sms-daily-cap") }} <AppHint name="sms-daily-cap-help" />
                   <input
@@ -2051,7 +2180,7 @@ async function saveSmsTemplate() {
               {{ say("sms-templates-title") }} <AppHint name="sms-templates-help" />
             </div>
             <form class="mt-2 flex flex-col gap-3 text-xs" @submit.prevent="saveSmsTemplate">
-              <div class="grid grid-cols-2 gap-3">
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label class="block text-[11px] font-medium text-muted">
                   {{ say("sms-template-kind") }}
                   <select
@@ -2099,7 +2228,7 @@ async function saveSmsTemplate() {
               {{ say("ussd-callback") }}
               <code class="font-mono text-[10.5px]">{{ ussdCallback }}</code>
             </p>
-            <form class="mt-2 flex items-end gap-2 text-xs" @submit.prevent="saveUssd">
+            <form class="mt-2 flex flex-wrap items-end gap-2 text-xs" @submit.prevent="saveUssd">
               <label class="flex-1 text-[11px] font-medium text-muted">
                 {{ say("ussd-secret") }} <AppHint name="ussd-secret-help" />
                 <input

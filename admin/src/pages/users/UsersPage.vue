@@ -150,12 +150,12 @@ async function makeUser() {
 
 <template>
   <div>
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("users-title") }}</h1>
 
       <button
         type="button"
-        class="ml-3 sf-button sf-button-primary"
+        class="sf-button sf-button-primary"
         @click="making = true"
       >
         {{ say("user-new") }}
@@ -250,7 +250,7 @@ async function makeUser() {
             spellcheck="false"
           />
         </label>
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label class="block text-[11px] font-medium text-muted">
             {{ say("users-col-email") }}
             <input

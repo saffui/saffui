@@ -14,6 +14,50 @@ use crate::entities::user::UserModel;
 /// The one document format this build writes and reads.
 pub const EXPORT_FORMAT: u32 = 1;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ImportCollisionPolicy {
+    #[default]
+    Skip,
+    Overwrite,
+    Fail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportCollision {
+    pub section: String,
+    pub identifier: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialImportCounts {
+    pub roles: usize,
+    pub groups: usize,
+    pub client_scopes: usize,
+    pub protocol_mappers: usize,
+    pub clients: usize,
+    pub organizations: usize,
+    pub flows: usize,
+    pub executions: usize,
+    pub required_actions: usize,
+    pub resource_servers: usize,
+    pub resources: usize,
+    pub authorization_scopes: usize,
+    pub policies: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PartialImportReport {
+    pub realm_id: String,
+    pub new: PartialImportCounts,
+    pub overwritten: PartialImportCounts,
+    pub skipped: PartialImportCounts,
+    pub collisions: Vec<ImportCollision>,
+    pub collision_count: usize,
+    pub collisions_truncated: bool,
+}
+
 /// A realm as a document: its configuration and its people, with every
 /// identifier verbatim, so an import is the same realm and not a copy of it.
 ///

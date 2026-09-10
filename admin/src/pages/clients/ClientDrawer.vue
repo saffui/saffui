@@ -372,7 +372,7 @@ async function dropScope(name: string) {
         </p>
       </div>
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveClient">
-        <div class="grid grid-cols-[140px_1fr] items-center gap-y-2">
+        <div class="grid grid-cols-1 items-center gap-y-2 sm:grid-cols-[140px_1fr]">
           <span class="text-muted">{{ say("clients-col-kind") }}</span>
           <span>{{ client.confidential ? say("clients-confidential") : say("clients-public") }}</span>
         </div>
@@ -695,7 +695,7 @@ async function dropScope(name: string) {
 
     <div v-if="tab === 'roles'" class="mt-4 flex flex-col gap-3">
       <p class="text-[11px] text-muted">{{ say("client-roles-lede") }}</p>
-      <form class="flex max-w-xl items-end gap-2 text-xs" @submit.prevent="makeClientRole">
+      <form class="flex max-w-xl flex-wrap items-end gap-2 text-xs" @submit.prevent="makeClientRole">
         <label class="flex-1 text-[11px] font-medium text-muted">
           {{ say("settings-name") }}
           <input

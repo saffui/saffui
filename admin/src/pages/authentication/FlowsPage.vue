@@ -51,7 +51,7 @@ function open(flow: FlowRow) {
 
 <template>
   <div>
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("flows-title") }}</h1>
       <router-link
         :to="`/${realm}/authentication/actions`"
@@ -66,7 +66,7 @@ function open(flow: FlowRow) {
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
     <form
-      class="mt-4 flex max-w-xl items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5"
+      class="mt-4 flex max-w-xl flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5"
       @submit.prevent="bindBrowser"
     >
       <label class="flex-1 text-[11px] font-medium text-muted">

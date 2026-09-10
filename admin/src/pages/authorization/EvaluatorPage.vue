@@ -254,7 +254,7 @@ function worded(value: unknown): string {
     </div>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
+    <div class="mt-4 grid min-w-0 gap-4 xl:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
       <form class="rounded-lg border border-border bg-surface p-4" @submit.prevent="ask">
         <div class="flex flex-wrap gap-1">
           <button

@@ -48,6 +48,7 @@ const GROUPS: { label: string; items: { label: string; icon: any; leaf: string }
       { label: say("nav-journal"), icon: "journal", leaf: "journal" },
       { label: say("nav-keys"), icon: "key", leaf: "keys" },
       { label: say("nav-governance"), icon: "governance", leaf: "governance" },
+      { label: say("nav-privacy"), icon: "governance", leaf: "privacy" },
       { label: say("nav-realm-sessions"), icon: "sessions", leaf: "sessions" },
     ],
   },
@@ -61,7 +62,8 @@ function target(leaf: string): string {
   return `/${realm()}/${leaf}`;
 }
 function active(leaf: string): boolean {
-  return route.path === target(leaf);
+  const current = target(leaf);
+  return route.path === current || route.path.startsWith(`${current}/`);
 }
 </script>
 

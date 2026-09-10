@@ -81,7 +81,7 @@ async function rework(row: RequiredActionRow, reshape: Partial<RequiredActionRow
 
 <template>
   <div>
-    <div class="flex items-center gap-3">
+    <div class="flex flex-wrap items-center gap-3">
       <button
         type="button"
         class="rounded-md border border-border px-2 py-1 text-xs text-muted hover:bg-surface-2"

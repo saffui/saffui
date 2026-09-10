@@ -7,6 +7,80 @@ use serde_json::{Value, json};
 
 const REALM: &str = support::REALM;
 
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_configuration_export_can_be_previewed_and_merged() {
+    let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export?include_users=false"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    assert_eq!(count(&document, "users"), 0, "{document}");
+    assert!(
+        !document["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .any(|section| section == "users")
+    );
+
+    let request = json!({ "document": document, "collision": "skip" });
+    let (status, preview) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/import/preview"),
+        &bearer,
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert!(preview["collision_count"].as_u64().unwrap_or(0) > 0);
+
+    let (status, applied) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/import"),
+        &bearer,
+        Some(request),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_partial_import_refuses_accounts() {
+    let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+
+    let (status, refused) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/import/preview"),
+        &bearer,
+        Some(json!({ "document": document, "collision": "fail" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+}
+
 /// Ask the plane, with a body or without one.
 async fn asked(
     plane: &Plane,

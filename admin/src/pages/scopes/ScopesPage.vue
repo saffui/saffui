@@ -121,7 +121,7 @@ async function unfold(scope: ClientScope) {
 
 <template>
   <div>
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("scopes-title") }}</h1>
       <button
         type="button"
@@ -140,10 +140,10 @@ async function unfold(scope: ClientScope) {
 
     <form
       v-if="making"
-      class="mt-3 flex max-w-2xl items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      class="mt-3 flex max-w-2xl flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
       @submit.prevent="makeScope"
     >
-      <label class="w-44 text-[11px] font-medium text-muted">
+      <label class="min-w-0 flex-1 text-[11px] font-medium text-muted sm:w-44 sm:flex-none">
         {{ say("settings-name") }} <AppHint name="scope-name-help" />
         <input
           v-model="newName"

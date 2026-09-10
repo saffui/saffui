@@ -126,7 +126,7 @@ function finishMaking() {
 
 <template>
   <div>
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("clients-title") }}</h1>
       <div class="flex items-center gap-3">
         <button

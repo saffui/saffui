@@ -236,7 +236,7 @@ function instant(epoch: number | null): string {
 <template>
   <div>
     <GovernanceTabs />
-    <div class="flex max-w-4xl items-center">
+    <div class="flex max-w-4xl flex-wrap items-center justify-between gap-3">
       <div>
         <h1 class="text-lg font-semibold tracking-tight">{{ say("privacy-title") }}</h1>
         <p class="mt-1 text-xs text-muted">{{ say("privacy-lede") }}</p>
@@ -295,7 +295,7 @@ function instant(epoch: number | null): string {
       </table>
     </div>
 
-    <div class="mt-8 flex max-w-4xl items-center">
+    <div class="mt-8 flex max-w-4xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("breach-title") }}
       </h2>
@@ -403,7 +403,7 @@ function instant(epoch: number | null): string {
       @close="openedBreach = null"
     >
       <div class="flex flex-col gap-3 text-xs">
-        <div class="grid grid-cols-[140px_1fr] items-baseline gap-y-2">
+        <div class="grid grid-cols-[minmax(100px,140px)_minmax(0,1fr)] items-baseline gap-x-3 gap-y-2">
           <span class="text-muted">{{ say("privacy-col-stage") }}</span>
           <span>{{ say(`breach-status-${openedBreach.status}`) }}</span>
           <span class="text-muted">{{ say("breach-col-severity") }}</span>
@@ -533,7 +533,7 @@ function instant(epoch: number | null): string {
       @close="opened = null"
     >
       <div class="flex flex-col gap-3 text-xs">
-        <div class="grid grid-cols-[140px_1fr] items-baseline gap-y-2">
+        <div class="grid grid-cols-[minmax(100px,140px)_minmax(0,1fr)] items-baseline gap-x-3 gap-y-2">
           <span class="text-muted">{{ say("privacy-col-kind") }}</span>
           <span class="font-mono">{{ opened.kind }}</span>
           <span class="text-muted">{{ say("privacy-col-stage") }}</span>

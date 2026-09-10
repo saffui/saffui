@@ -563,12 +563,12 @@ function nodeStroke(row: PolicyRow): string {
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col">
-    <div class="flex items-center gap-3">
+  <div class="flex min-h-full min-w-0 flex-col">
+    <div class="flex flex-wrap items-center gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("authz-title") }}</h1>
       <form
         v-if="board === 'models'"
-        class="ml-auto flex items-center gap-2"
+        class="flex flex-wrap items-center gap-2 xl:ml-auto"
         @submit.prevent="load"
       >
         <label class="text-[11px] text-muted">{{ say("authz-server") }}</label>
@@ -632,7 +632,7 @@ function nodeStroke(row: PolicyRow): string {
     <p v-if="failed" class="mt-2 text-xs text-danger" role="alert">{{ failed }}</p>
     <p v-if="unprotected" class="mt-2 text-xs text-muted">{{ say("authz-unprotected") }}</p>
 
-    <div v-if="board === 'models'" class="mt-3 flex min-h-0 flex-1 gap-3">
+    <div v-if="board === 'models'" class="mt-3 flex min-h-0 flex-1 flex-col gap-3 xl:flex-row">
       <div class="min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-surface">
         <svg
           class="h-full w-full cursor-grab active:cursor-grabbing"
@@ -732,7 +732,7 @@ function nodeStroke(row: PolicyRow): string {
         </svg>
       </div>
 
-      <aside class="flex w-72 shrink-0 flex-col gap-3">
+      <aside class="flex w-full shrink-0 flex-col gap-3 xl:w-72">
         <div class="rounded-lg border border-border bg-surface p-3">
           <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
             {{ say("authz-simulator") }}
@@ -864,7 +864,7 @@ function nodeStroke(row: PolicyRow): string {
           </span>
           <AppHint name="graph-tuples-help" />
         </div>
-        <form class="mt-2 grid grid-cols-3 gap-2" @submit.prevent="lookAtTuples">
+        <form class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3" @submit.prevent="lookAtTuples">
           <label class="block text-[11px] font-medium text-muted">
             {{ say("graph-object-type") }}
             <input
@@ -1219,7 +1219,7 @@ function nodeStroke(row: PolicyRow): string {
     <AppDrawer v-if="drawer === 'relation'" :title="say('authz-write-relation')" :subtitle="realm" @close="drawer = ''">
       <p class="text-[11px] text-muted">{{ say("authz-relation-lede") }}</p>
       <form class="mt-3 flex flex-col gap-3 text-xs" @submit.prevent="saveTuple(false)">
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label class="block text-[11px] font-medium text-muted">
             {{ say("authz-subject-type") }}
             <input v-model="tuple.subject_type" class="sf-field mt-1 font-mono" spellcheck="false" />
@@ -1233,7 +1233,7 @@ function nodeStroke(row: PolicyRow): string {
           {{ say("authz-relation-name") }} <AppHint name="authz-relation-help" />
           <input v-model="tuple.relation" placeholder="owner" class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label class="block text-[11px] font-medium text-muted">
             {{ say("authz-object-type") }}
             <input v-model="tuple.object_type" placeholder="document" class="sf-field mt-1 font-mono" spellcheck="false" />

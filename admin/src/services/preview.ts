@@ -444,7 +444,18 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       total: 2,
     });
   }
-  if (path.endsWith("/export")) {
+  if (path.includes("/import/preview") || path.endsWith("/import")) {
+    return answer({
+      realm_id: "main",
+      new: { roles: 2, groups: 1, clients: 1 },
+      overwritten: {},
+      skipped: {},
+      collisions: [],
+      collision_count: 0,
+      collisions_truncated: false,
+    });
+  }
+  if (path.includes("/export")) {
     return answer({
       format_version: 1,
       exported_at: NOW,

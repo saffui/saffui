@@ -58,6 +58,33 @@ pub async fn create_flow(
     Ok(())
 }
 
+/// Rewrite a flow without changing its identifier or built-in status.
+pub async fn update_flow(
+    transaction: &Transaction<'_>,
+    flow: &AuthenticationFlowModel,
+) -> StoreResult<bool> {
+    let top_level = flow.top_level.unwrap_or(false);
+    let set = WriteSet::update(
+        vec![
+            col("alias", &flow.alias),
+            col("provider_id", &flow.provider_id),
+            col("description", &flow.description),
+            col("top_level", &top_level),
+            col("updated_by", &flow.metadata.updated_by),
+        ],
+        vec![col("flow_id", &flow.flow_id)],
+    );
+    let statement = statement::update("authentication_flows", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    Ok(transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?
+        > 0)
+}
+
 /// One flow of this realm, by the identifier it was created with.
 pub async fn load_flow(
     transaction: &Transaction<'_>,
@@ -163,6 +190,42 @@ pub async fn create_execution(
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(())
+}
+
+/// Rewrite one flow step without changing its identifier.
+pub async fn update_execution(
+    transaction: &Transaction<'_>,
+    execution: &AuthenticationExecutionModel,
+) -> StoreResult<bool> {
+    let (authenticator, config_id, sub_flow_id) = match &execution.step {
+        ExecutionStep::Authenticator {
+            authenticator,
+            config_id,
+        } => (Some(authenticator.clone()), config_id.clone(), None),
+        ExecutionStep::SubFlow { flow_id } => (None, None, Some(flow_id.clone())),
+    };
+    let set = WriteSet::update(
+        vec![
+            col("alias", &execution.alias),
+            col("flow_id", &execution.flow_id),
+            col("priority", &execution.priority),
+            col("requirement", &execution.requirement),
+            col("authenticator", &authenticator),
+            col("config_id", &config_id),
+            col("sub_flow_id", &sub_flow_id),
+            col("updated_by", &execution.metadata.updated_by),
+        ],
+        vec![col("execution_id", &execution.execution_id)],
+    );
+    let statement = statement::update("authentication_executions", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    Ok(transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?
+        > 0)
 }
 
 /// The steps of one flow, in the order they run.

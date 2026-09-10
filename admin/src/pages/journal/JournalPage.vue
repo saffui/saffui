@@ -92,7 +92,7 @@ function instant(epoch: number): string {
 
 <template>
   <div>
-    <div class="flex items-center gap-3">
+    <div class="flex flex-wrap items-center gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("journal-title") }}</h1>
       <span
         v-if="chain"
@@ -163,7 +163,7 @@ function instant(epoch: number): string {
       {{ say("journal-anchors") }}
     </h2>
     <p class="mt-1 text-xs text-muted">{{ say("journal-anchors-lede") }}</p>
-    <form class="mt-2 flex max-w-2xl items-end gap-2" @submit.prevent="anchor">
+    <form class="mt-2 flex max-w-2xl flex-wrap items-end gap-2" @submit.prevent="anchor">
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("journal-witness") }}
         <input

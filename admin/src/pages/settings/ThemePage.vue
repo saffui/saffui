@@ -92,7 +92,7 @@ const sample = computed(() => {
 
 <template>
   <div>
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("theme-title") }}</h1>
       <div class="flex items-center gap-2">
         <button
@@ -133,7 +133,7 @@ const sample = computed(() => {
           <label
             v-for="token in TOKENS"
             :key="token"
-            class="grid grid-cols-[150px_1fr] items-center gap-2 text-xs"
+            class="grid grid-cols-1 items-center gap-2 text-xs sm:grid-cols-[150px_1fr]"
           >
             <span class="font-mono text-[10.5px] text-muted">--{{ token }}</span>
             <input

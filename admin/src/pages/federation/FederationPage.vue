@@ -156,7 +156,9 @@ async function drop() {
 
 <template>
   <div>
-    <h1 class="text-lg font-semibold tracking-tight">{{ say("federation-title") }}</h1>
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <h1 class="text-lg font-semibold tracking-tight">{{ say("federation-title") }}</h1>
+    </div>
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
     <h2 class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
@@ -219,7 +221,7 @@ async function drop() {
       </div>
     </div>
 
-    <div class="mt-6 flex max-w-3xl items-center">
+    <div class="mt-6 flex max-w-3xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("federation-platforms") }}
       </h2>

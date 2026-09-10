@@ -11,8 +11,59 @@ export async function getRealmSettings(realm: string): Promise<RealmSettings> {
   );
 }
 
-export async function exportRealm(realm: string): Promise<Record<string, unknown>> {
-  return api<Record<string, unknown>>(adminPath(realm, "export"));
+export async function exportRealm(
+  realm: string,
+  includeUsers = true,
+): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>(
+    `${adminPath(realm, "export")}?include_users=${includeUsers}`,
+  );
+}
+
+export type ImportCollisionPolicy = "skip" | "overwrite" | "fail";
+
+export interface PartialImportCollision {
+  section: string;
+  identifier: string;
+  reason: string;
+}
+
+export interface PartialImportCounts {
+  [section: string]: number;
+}
+
+export interface PartialImportReport {
+  realm_id: string;
+  new: PartialImportCounts;
+  overwritten: PartialImportCounts;
+  skipped: PartialImportCounts;
+  collisions: PartialImportCollision[];
+  collision_count: number;
+  collisions_truncated: boolean;
+}
+
+export async function previewPartialImport(
+  realm: string,
+  document: Record<string, unknown>,
+  collision: ImportCollisionPolicy,
+): Promise<PartialImportReport> {
+  return api<PartialImportReport>(adminPath(realm, "import/preview"), {
+    method: "POST",
+    json: { document, collision },
+    subject: say("settings-partial-import"),
+  });
+}
+
+export async function importPartialRealm(
+  realm: string,
+  document: Record<string, unknown>,
+  collision: ImportCollisionPolicy,
+): Promise<PartialImportReport> {
+  return api<PartialImportReport>(adminPath(realm, "import"), {
+    method: "POST",
+    json: { document, collision },
+    subject: say("settings-partial-import"),
+  });
 }
 
 /// Rewrite the mentioned switches; the server leaves absent ones alone and

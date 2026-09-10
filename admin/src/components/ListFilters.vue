@@ -50,11 +50,12 @@ function clearAll() {
 
 <template>
   <div class="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-surface p-2">
-    <div class="relative">
+    <div class="relative min-w-0 flex-1 md:flex-none">
       <input
         :value="search"
         class="h-[31px] w-full rounded border border-border bg-surface-2 pr-8 pl-2.5 text-[12.5px] text-ink placeholder:text-faint md:w-[300px]"
         :placeholder="placeholder"
+        :aria-label="placeholder"
         spellcheck="false"
         @input="emit('update:search', ($event.target as HTMLInputElement).value)"
       />
@@ -69,6 +70,7 @@ function clearAll() {
       v-for="choice in choices ?? []"
       :key="choice.name"
       :value="held[choice.name] ?? ''"
+      :aria-label="choice.label"
       class="h-[31px] min-w-[150px] rounded border border-border bg-surface-2 px-2.5 text-[12.5px] text-ink"
       @change="pick(choice.name, ($event.target as HTMLSelectElement).value)"
     >

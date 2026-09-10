@@ -94,7 +94,9 @@ function instant(epoch: number | null | undefined): string {
 
 <template>
   <div>
-    <h1 class="text-lg font-semibold tracking-tight">{{ say("realm-sessions-title") }}</h1>
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <h1 class="text-lg font-semibold tracking-tight">{{ say("realm-sessions-title") }}</h1>
+    </div>
 
     <p class="mt-1 text-xs text-muted">{{ say("realm-sessions-lede") }}</p>
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
@@ -149,7 +151,7 @@ function instant(epoch: number | null | undefined): string {
       </div>
 
       <p class="mt-2 text-[11px] text-muted">{{ say("realm-sessions-end-lede") }}</p>
-      <div class="mt-2 flex items-center gap-2">
+      <div class="mt-2 flex flex-wrap items-center gap-2">
         <input
           v-model="doomEndAll"
           :placeholder="realm"
@@ -177,7 +179,7 @@ function instant(epoch: number | null | undefined): string {
           {{ say("realm-cut-lift") }}
         </button>
       </p>
-      <div class="mt-2 flex items-center gap-2">
+      <div class="mt-2 flex flex-wrap items-center gap-2">
         <input
           v-model="doomCut"
           :placeholder="realm"

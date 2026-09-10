@@ -211,7 +211,7 @@ async function flipDefault(group: GroupRow) {
 
 <template>
   <div>
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("groups-title") }}</h1>
 
       <div class="flex items-center gap-3">
@@ -229,7 +229,7 @@ async function flipDefault(group: GroupRow) {
 
     <form
       v-if="making"
-      class="mt-3 flex max-w-xl items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      class="mt-3 flex max-w-xl flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
       @submit.prevent="makeGroup"
     >
       <label class="flex-1 text-[11px] font-medium text-muted">
@@ -247,7 +247,7 @@ async function flipDefault(group: GroupRow) {
           class="sf-field mt-1"
         />
       </label>
-      <label class="w-44 text-[11px] font-medium text-muted">
+      <label class="min-w-0 flex-1 text-[11px] font-medium text-muted sm:w-44 sm:flex-none">
         {{ say("group-parent") }} <AppHint name="group-parent-help" />
         <select
           v-model="newParent"
@@ -296,7 +296,7 @@ async function flipDefault(group: GroupRow) {
       @close="opened = null"
     >
       <form class="flex flex-col gap-2 text-xs" @submit.prevent="saveGroup">
-        <div class="grid grid-cols-2 gap-2">
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
           <label class="block text-[11px] font-medium text-muted">
             {{ say("settings-name") }}
             <input

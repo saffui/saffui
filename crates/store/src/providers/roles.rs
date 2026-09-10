@@ -444,6 +444,38 @@ pub async fn holders_of(
     Ok((direct, through_groups))
 }
 
+/// Direct holders with the stable identifier and the name shown to people.
+pub async fn named_holders_of(
+    transaction: &Transaction<'_>,
+    role_id: &str,
+) -> StoreResult<(Vec<(String, String)>, Vec<(String, String)>)> {
+    let direct = transaction
+        .query(
+            "SELECT users.user_id, users.user_name FROM users_roles \
+             JOIN users ON users.user_id = users_roles.user_id \
+             WHERE users_roles.role_id = $1 ORDER BY users.user_name ASC, users.user_id ASC",
+            &[&role_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| (row.get("user_id"), row.get("user_name")))
+        .collect();
+    let through_groups = transaction
+        .query(
+            "SELECT groups.group_id, groups.name FROM groups_roles \
+             JOIN groups ON groups.group_id = groups_roles.group_id \
+             WHERE groups_roles.role_id = $1 ORDER BY groups.name ASC, groups.group_id ASC",
+            &[&role_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| (row.get("group_id"), row.get("name")))
+        .collect();
+    Ok((direct, through_groups))
+}
+
 /// Who is in this group, and which roles it grants them.
 pub async fn group_membership(
     transaction: &Transaction<'_>,

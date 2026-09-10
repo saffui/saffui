@@ -56,7 +56,7 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
 pub async fn flows(
     transaction: &Transaction<'_>,
 ) -> Result<Vec<AuthenticationFlowModel>, Unwritable> {
-    auth_flows::top_level_flows(transaction)
+    auth_flows::list_flows(transaction)
         .await
         .map_err(|_| Unwritable::Backend)
 }

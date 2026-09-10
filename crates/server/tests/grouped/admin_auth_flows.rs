@@ -90,6 +90,29 @@ async fn a_flow_is_composed_and_guarded_over_the_plane() {
     );
     let flow_id = born["flow_id"].as_str().expect("an identity").to_owned();
 
+    let (status, nested) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(json!({
+            "alias": "nested",
+            "provider_id": "basic-flow",
+            "description": "inside another flow",
+            "top_level": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{nested}");
+    let (status, listed) = asked(&plane, Method::GET, &base, &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert!(
+        listed
+            .as_array()
+            .is_some_and(|flows| flows.iter().any(|flow| flow["alias"] == "nested")),
+        "a nested flow is absent: {listed}"
+    );
+
     let (status, told) = asked(
         &plane,
         Method::POST,

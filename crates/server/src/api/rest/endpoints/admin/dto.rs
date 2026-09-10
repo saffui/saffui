@@ -96,6 +96,8 @@ pub struct ClientBrief {
     pub web_origins: Vec<String>,
     pub redirect_uris: Vec<String>,
     pub post_logout_redirect_uris: Vec<String>,
+    pub backchannel_logout_uri: Option<String>,
+    pub frontchannel_logout_uri: Option<String>,
     pub description: String,
     pub client_uri: Option<String>,
     /// The grants held by an operator's say-so, read back off the same bag the
@@ -130,6 +132,8 @@ impl From<models::entities::client::ClientModel> for ClientBrief {
             web_origins: client.web_origins.unwrap_or_default(),
             redirect_uris: client.redirect_uris.unwrap_or_default(),
             post_logout_redirect_uris: client.post_logout_redirect_uris.unwrap_or_default(),
+            backchannel_logout_uri: client.backchannel_logout_uri,
+            frontchannel_logout_uri: client.frontchannel_logout_uri,
             description: client.description,
             client_uri: client.client_uri,
             device_grant: services::device::allows_device(&held),

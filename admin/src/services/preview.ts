@@ -372,7 +372,15 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
     ]);
   }
   if (/\/roles\/[^/]+\/holders$/.test(path)) {
-    return answer({ users: ["ada", "grace"], groups: ["finance"] });
+    return answer({
+      users: ["u-ada", "u-grace"],
+      groups: ["g-finance"],
+      user_details: [
+        { id: "u-ada", name: "ada" },
+        { id: "u-grace", name: "grace" },
+      ],
+      group_details: [{ id: "g-finance", name: "finance" }],
+    });
   }
   if (path.includes("/roles?")) {
     return answer({

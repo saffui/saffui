@@ -20,6 +20,7 @@ import type { RoleRow } from "@/models/directory";
 import AppToggle from "@/components/AppToggle.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppPicker from "@/components/AppPicker.vue";
+import AppStringList from "@/components/AppStringList.vue";
 import { useRouter } from "vue-router";
 import type { ClientBrief, ClientScope, ProtocolMapper } from "@/models/client";
 
@@ -98,9 +99,11 @@ const draft = ref({
   root: "",
   home: "",
   description: "",
-  origins: "",
-  redirects: "",
-  logouts: "",
+  origins: [] as string[],
+  redirects: [] as string[],
+  logouts: [] as string[],
+  backchannel: "",
+  frontchannel: "",
   deviceGrant: false,
   tokenExchange: false,
   cibaDelivery: "off",
@@ -117,9 +120,11 @@ function adoptClient() {
     root: held.root_url ?? "",
     home: held.client_uri ?? "",
     description: held.description ?? "",
-    origins: held.web_origins.join("\n"),
-    redirects: held.redirect_uris.join("\n"),
-    logouts: held.post_logout_redirect_uris.join("\n"),
+    origins: [...held.web_origins],
+    redirects: [...held.redirect_uris],
+    logouts: [...held.post_logout_redirect_uris],
+    backchannel: held.backchannel_logout_uri ?? "",
+    frontchannel: held.frontchannel_logout_uri ?? "",
     deviceGrant: held.device_grant,
     tokenExchange: held.token_exchange,
     cibaDelivery: held.ciba_delivery,
@@ -156,20 +161,19 @@ function tlsTouched(): { tls_san_dns?: string; tls_san_uri?: string; tls_subject
           : null;
   return standing ? { [standing]: "" } : {};
 }
-function lines(held: string): string[] {
-  return held
-    .split(/\n/)
-    .map((row) => row.trim())
-    .filter(Boolean);
+function clean(held: string[]): string[] {
+  return [...new Set(held.map((row) => row.trim()).filter(Boolean))];
 }
 async function saveClient() {
   try {
     await updateClient(props.realm, props.clientId, {
       name: draft.value.name || undefined,
       root_url: draft.value.root.trim(),
-      web_origins: lines(draft.value.origins),
-      redirect_uris: lines(draft.value.redirects),
-      post_logout_redirect_uris: lines(draft.value.logouts),
+      web_origins: clean(draft.value.origins),
+      redirect_uris: clean(draft.value.redirects),
+      post_logout_redirect_uris: clean(draft.value.logouts),
+      backchannel_logout_uri: draft.value.backchannel.trim(),
+      frontchannel_logout_uri: draft.value.frontchannel.trim(),
       description: draft.value.description,
       client_uri: draft.value.home.trim(),
       device_grant: draft.value.deviceGrant,
@@ -409,34 +413,56 @@ async function dropScope(name: string) {
             class="sf-field mt-1"
           ></textarea>
         </label>
-        <label class="block text-[11px] font-medium text-muted">
+        <div class="text-[11px] font-medium text-muted">
           {{ say("client-redirects") }} <AppHint name="client-redirects-help" />
-          <textarea
+          <AppStringList
             v-model="draft.redirects"
-            rows="3"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-[10.5px] text-ink"
-            spellcheck="false"
-          ></textarea>
-        </label>
-        <label class="block text-[11px] font-medium text-muted">
+            :input-label="say('client-redirects')"
+            :add-label="say('client-add-redirect')"
+            :remove-label="say('action-remove')"
+            placeholder="https://app.example/callback"
+          />
+        </div>
+        <div class="text-[11px] font-medium text-muted">
           {{ say("client-post-logout") }}
-          <textarea
+          <AppStringList
             v-model="draft.logouts"
-            rows="2"
-            class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2.5 py-1.5 font-mono text-[10.5px] text-ink"
-            spellcheck="false"
-          ></textarea>
-        </label>
-        <label class="block text-[11px] font-medium text-muted">
+            :input-label="say('client-post-logout')"
+            :add-label="say('client-add-logout')"
+            :remove-label="say('action-remove')"
+            placeholder="https://app.example/signed-out"
+          />
+        </div>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("client-frontchannel-logout") }}
+            <input
+              v-model="draft.frontchannel"
+              class="sf-field mt-1 font-mono"
+              spellcheck="false"
+              placeholder="https://app.example/logout/front"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("client-backchannel-logout") }}
+            <input
+              v-model="draft.backchannel"
+              class="sf-field mt-1 font-mono"
+              spellcheck="false"
+              placeholder="https://app.example/logout/back"
+            />
+          </label>
+        </div>
+        <div class="text-[11px] font-medium text-muted">
           {{ say("client-origins") }} <AppHint name="client-origins-help" />
-          <textarea
+          <AppStringList
             v-model="draft.origins"
-            rows="2"
-            :placeholder="say('policy-blacklist-hint')"
-            class="sf-field mt-1 font-mono"
-            spellcheck="false"
-          ></textarea>
-        </label>
+            :input-label="say('client-origins')"
+            :add-label="say('client-add-origin')"
+            :remove-label="say('action-remove')"
+            placeholder="https://app.example"
+          />
+        </div>
         <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("client-grants") }} <AppHint name="client-grants-help" />
         </div>

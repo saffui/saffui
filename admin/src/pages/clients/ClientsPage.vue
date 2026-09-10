@@ -7,6 +7,7 @@ import { createClient, listClients } from "@/services/clients";
 import { afterWrites } from "@/services/writes";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
+import AppStringList from "@/components/AppStringList.vue";
 import type { Page } from "@/models/paging";
 import type { ClientBrief } from "@/models/client";
 import ClientDrawer from "./ClientDrawer.vue";
@@ -58,10 +59,12 @@ const draft = ref({
   client_id: "",
   name: "",
   confidential: false,
-  redirects: "",
-  logouts: "",
+  redirects: [] as string[],
+  logouts: [] as string[],
+  backchannel: "",
+  frontchannel: "",
   root: "",
-  origins: "",
+  origins: [] as string[],
 });
 const bornSecret = ref("");
 function openMaking() {
@@ -73,16 +76,15 @@ function openMaking() {
     name: "",
     confidential: false,
     root: "",
-    origins: "",
-    redirects: "",
-    logouts: "",
+    origins: [],
+    redirects: [],
+    logouts: [],
+    backchannel: "",
+    frontchannel: "",
   };
 }
-function lines(held: string): string[] {
-  return held
-    .split(/\n/)
-    .map((row) => row.trim())
-    .filter(Boolean);
+function clean(held: string[]): string[] {
+  return [...new Set(held.map((row) => row.trim()).filter(Boolean))];
 }
 async function makeClient() {
   const asked = draft.value;
@@ -93,9 +95,11 @@ async function makeClient() {
       name: asked.name.trim() || asked.client_id.trim(),
       confidential: asked.confidential,
       root_url: asked.root.trim() || undefined,
-      web_origins: lines(asked.origins),
-      redirect_uris: lines(asked.redirects),
-      post_logout_redirect_uris: lines(asked.logouts),
+      web_origins: clean(asked.origins),
+      redirect_uris: clean(asked.redirects),
+      post_logout_redirect_uris: clean(asked.logouts),
+      backchannel_logout_uri: asked.backchannel.trim() || undefined,
+      frontchannel_logout_uri: asked.frontchannel.trim() || undefined,
     });
     await load();
     if (made.client_secret) {
@@ -252,36 +256,56 @@ function finishMaking() {
             spellcheck="false"
           />
         </label>
-        <label class="block text-[11px] font-medium text-muted">
+        <div class="text-[11px] font-medium text-muted">
           {{ say("client-redirects") }} <AppHint name="client-redirects-help" />
-          <textarea
+          <AppStringList
             v-model="draft.redirects"
-            rows="3"
-            :placeholder="say('policy-blacklist-hint')"
-            class="sf-field mt-1 font-mono"
-            spellcheck="false"
-          ></textarea>
-        </label>
-        <label class="block text-[11px] font-medium text-muted">
+            :input-label="say('client-redirects')"
+            :add-label="say('client-add-redirect')"
+            :remove-label="say('action-remove')"
+            placeholder="https://app.example/callback"
+          />
+        </div>
+        <div class="text-[11px] font-medium text-muted">
           {{ say("client-logouts") }} <AppHint name="client-logouts-help" />
-          <textarea
+          <AppStringList
             v-model="draft.logouts"
-            rows="2"
-            :placeholder="say('policy-blacklist-hint')"
-            class="sf-field mt-1 font-mono"
-            spellcheck="false"
-          ></textarea>
-        </label>
-        <label class="block text-[11px] font-medium text-muted">
+            :input-label="say('client-logouts')"
+            :add-label="say('client-add-logout')"
+            :remove-label="say('action-remove')"
+            placeholder="https://app.example/signed-out"
+          />
+        </div>
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("client-frontchannel-logout") }}
+            <input
+              v-model="draft.frontchannel"
+              class="sf-field mt-1 font-mono"
+              spellcheck="false"
+              placeholder="https://app.example/logout/front"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("client-backchannel-logout") }}
+            <input
+              v-model="draft.backchannel"
+              class="sf-field mt-1 font-mono"
+              spellcheck="false"
+              placeholder="https://app.example/logout/back"
+            />
+          </label>
+        </div>
+        <div class="text-[11px] font-medium text-muted">
           {{ say("client-origins") }} <AppHint name="client-origins-help" />
-          <textarea
+          <AppStringList
             v-model="draft.origins"
-            rows="2"
-            :placeholder="say('policy-blacklist-hint')"
-            class="sf-field mt-1 font-mono"
-            spellcheck="false"
-          ></textarea>
-        </label>
+            :input-label="say('client-origins')"
+            :add-label="say('client-add-origin')"
+            :remove-label="say('action-remove')"
+            placeholder="https://app.example"
+          />
+        </div>
         <p v-if="draft.confidential" class="text-[10.5px] text-warn">
           {{ say("client-secret-coming") }}
         </p>

@@ -12,6 +12,7 @@ export const useSession = defineStore("session", {
     realm: "",
     accessToken: "",
     refreshToken: "",
+    idToken: "",
     expiresAt: 0,
     displayName: "",
   }),
@@ -24,14 +25,20 @@ export const useSession = defineStore("session", {
       await clientFor(realm).login({
         redirectUri: returnUri(),
         scope: "openid profile admin",
+        extra: {
+          claims: JSON.stringify({
+            id_token: { preferred_username: { essential: true } },
+          }),
+        },
       });
     },
     adopt(realm: string, tokens: Tokens) {
       this.realm = realm;
       this.accessToken = tokens.access_token;
       this.refreshToken = tokens.refresh_token ?? "";
+      this.idToken = tokens.id_token ?? this.idToken;
       this.expiresAt = Date.now() + (tokens.expires_in - 15) * 1000;
-      this.displayName = subjectOf(tokens.access_token);
+      this.displayName = subjectOf(this.idToken || tokens.access_token);
     },
     async returned(query: URLSearchParams) {
       const realm = rememberedRealm();
@@ -68,6 +75,17 @@ export const useSession = defineStore("session", {
     },
     signOut() {
       this.$reset();
+    },
+    async logout() {
+      const realm = this.realm;
+      const idToken = this.idToken;
+      this.$reset();
+      if (!realm) return;
+      try {
+        await clientFor(realm).logout(idToken || undefined);
+      } catch {
+        // Local sign-out still stands when the server cannot be reached.
+      }
     },
     /// Dev-only stand-in so the shell can be reviewed with no server behind
     /// it. Refused outright in production builds.

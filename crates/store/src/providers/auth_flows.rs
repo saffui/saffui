@@ -128,7 +128,6 @@ pub async fn top_level_flows(
         .collect())
 }
 
-/// Remove a flow, and say whether there was one to remove.
 /// Every flow of this realm, nested ones included.
 pub async fn list_flows(
     transaction: &Transaction<'_>,
@@ -143,6 +142,7 @@ pub async fn list_flows(
         .collect())
 }
 
+/// Remove a flow, and say whether there was one to remove.
 pub async fn delete_flow(transaction: &Transaction<'_>, flow_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(

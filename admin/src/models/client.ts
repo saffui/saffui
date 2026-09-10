@@ -8,6 +8,8 @@ export interface ClientBrief {
   web_origins: string[];
   redirect_uris: string[];
   post_logout_redirect_uris: string[];
+  backchannel_logout_uri: string | null;
+  frontchannel_logout_uri: string | null;
   description: string;
   client_uri: string | null;
   /// The grants this client holds by an operator's say-so, read back off the

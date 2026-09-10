@@ -199,8 +199,14 @@ pub async fn update(
         web_origins: asked.web_origins.clone(),
         redirect_uris: asked.redirect_uris.clone(),
         post_logout_redirect_uris: asked.post_logout_redirect_uris.clone(),
-        backchannel_logout_uri: asked.backchannel_logout_uri.clone().map(Some),
-        frontchannel_logout_uri: asked.frontchannel_logout_uri.clone().map(Some),
+        backchannel_logout_uri: asked
+            .backchannel_logout_uri
+            .clone()
+            .map(|held| (!held.is_empty()).then_some(held)),
+        frontchannel_logout_uri: asked
+            .frontchannel_logout_uri
+            .clone()
+            .map(|held| (!held.is_empty()).then_some(held)),
         description: asked.description.clone(),
         client_uri: asked
             .client_uri
@@ -293,8 +299,14 @@ fn spec_of(asked: &ClientSpec) -> Result<Spec, ApiError> {
         web_origins: asked.web_origins.clone().unwrap_or_default(),
         redirect_uris: asked.redirect_uris.clone().unwrap_or_default(),
         post_logout_redirect_uris: asked.post_logout_redirect_uris.clone().unwrap_or_default(),
-        backchannel_logout_uri: asked.backchannel_logout_uri.clone(),
-        frontchannel_logout_uri: asked.frontchannel_logout_uri.clone(),
+        backchannel_logout_uri: asked
+            .backchannel_logout_uri
+            .clone()
+            .filter(|held| !held.is_empty()),
+        frontchannel_logout_uri: asked
+            .frontchannel_logout_uri
+            .clone()
+            .filter(|held| !held.is_empty()),
     })
 }
 

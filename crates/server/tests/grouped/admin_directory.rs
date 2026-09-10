@@ -142,6 +142,8 @@ async fn a_role_lives_and_dies_over_the_plane() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(held["users"][0], support::SUBJECT, "{held}");
+    assert_eq!(held["user_details"][0]["id"], support::SUBJECT, "{held}");
+    assert_eq!(held["user_details"][0]["name"], support::SUBJECT, "{held}");
 
     let (status, _) = asked(
         &plane,

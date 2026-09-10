@@ -39,6 +39,18 @@ async function turn() {
 const failed = ref("");
 const opened = ref<RoleRow | null>(null);
 const holders = ref<RoleHolders | null>(null);
+const heldUsers = computed(
+  () =>
+    holders.value?.user_details ??
+    holders.value?.users.map((id) => ({ id, name: id })) ??
+    [],
+);
+const heldGroups = computed(
+  () =>
+    holders.value?.group_details ??
+    holders.value?.groups.map((id) => ({ id, name: id })) ??
+    [],
+);
 
 async function load() {
   try {
@@ -216,15 +228,16 @@ async function dropRole() {
         <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("role-held-by-users") }}
         </div>
-        <p v-if="holders && !holders.users.length" class="mt-1.5 text-xs text-muted">
+        <p v-if="holders && !heldUsers.length" class="mt-1.5 text-xs text-muted">
           {{ say("directory-nobody") }}
         </p>
         <div class="mt-1.5 flex flex-wrap gap-1.5">
           <span
-            v-for="user in holders?.users ?? []"
-            :key="user"
-            class="rounded border border-border px-1.5 py-0.5 font-mono text-[11px]"
-            >{{ user }}</span
+            v-for="user in heldUsers"
+            :key="user.id"
+            :title="user.id"
+            class="rounded border border-border px-1.5 py-0.5 text-[11px]"
+            >{{ user.name }}</span
           >
         </div>
       </div>
@@ -232,15 +245,16 @@ async function dropRole() {
         <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("role-held-by-groups") }}
         </div>
-        <p v-if="holders && !holders.groups.length" class="mt-1.5 text-xs text-muted">
+        <p v-if="holders && !heldGroups.length" class="mt-1.5 text-xs text-muted">
           {{ say("directory-nobody") }}
         </p>
         <div class="mt-1.5 flex flex-wrap gap-1.5">
           <span
-            v-for="group in holders?.groups ?? []"
-            :key="group"
-            class="rounded border border-border px-1.5 py-0.5 font-mono text-[11px]"
-            >{{ group }}</span
+            v-for="group in heldGroups"
+            :key="group.id"
+            :title="group.id"
+            class="rounded border border-border px-1.5 py-0.5 text-[11px]"
+            >{{ group.name }}</span
           >
         </div>
       </div>

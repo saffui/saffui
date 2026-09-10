@@ -472,15 +472,49 @@ pub async fn revoke_role_from_user(
         .ok_or(Unwritable::NotFound)
 }
 
+#[derive(Debug, serde::Serialize)]
+pub struct Holder {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct RoleHolders {
+    pub users: Vec<String>,
+    pub groups: Vec<String>,
+    pub user_details: Vec<Holder>,
+    pub group_details: Vec<Holder>,
+}
+
 /// Who holds this role. The refusal a deletion answers with points here.
 pub async fn role_holders(
     transaction: &Transaction<'_>,
     role_id: &str,
-) -> Result<(Vec<String>, Vec<String>), Unwritable> {
+) -> Result<RoleHolders, Unwritable> {
     get_role(transaction, role_id).await?;
-    roles::holders_of(transaction, role_id)
+    let (users, groups) = roles::named_holders_of(transaction, role_id)
         .await
-        .map_err(|_| Unwritable::Backend)
+        .map_err(|_| Unwritable::Backend)?;
+    let user_details: Vec<_> = users
+        .into_iter()
+        .map(|(id, name)| Holder { id, name })
+        .collect();
+    let group_details: Vec<_> = groups
+        .into_iter()
+        .map(|(id, name)| Holder { id, name })
+        .collect();
+    Ok(RoleHolders {
+        users: user_details
+            .iter()
+            .map(|holder| holder.id.clone())
+            .collect(),
+        groups: group_details
+            .iter()
+            .map(|holder| holder.id.clone())
+            .collect(),
+        user_details,
+        group_details,
+    })
 }
 
 pub async fn add_user_to_group(

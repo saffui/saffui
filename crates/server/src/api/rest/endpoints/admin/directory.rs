@@ -291,10 +291,10 @@ pub async fn role_holders(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    let (users, groups) = directory::role_holders(&transaction, &role_id)
+    let holders = directory::role_holders(&transaction, &role_id)
         .await
         .map_err(|why| refused(why, ErrorCode::RoleAlreadyExists, ErrorCode::RoleNotFound))?;
-    Ok(HttpResponse::Ok().json(serde_json::json!({ "users": users, "groups": groups })))
+    Ok(HttpResponse::Ok().json(holders))
 }
 
 /// Who is in this group, and which roles it grants them.

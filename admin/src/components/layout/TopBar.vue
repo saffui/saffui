@@ -24,9 +24,9 @@ function flipTheme() {
   localStorage.setItem("sf-console-theme", dark.value ? "dark" : "light");
 }
 
-function signOut() {
-  session.signOut();
-  router.push("/login");
+async function signOut() {
+  await session.logout();
+  await router.push("/login");
 }
 
 /// Where the reader is, said from the route rather than kept in step by

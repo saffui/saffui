@@ -33,6 +33,8 @@ export interface OrganizationRow {
 export interface RoleHolders {
   users: string[];
   groups: string[];
+  user_details?: { id: string; name: string }[];
+  group_details?: { id: string; name: string }[];
 }
 
 /// Mirrors `GET .../groups/{group}/membership`.

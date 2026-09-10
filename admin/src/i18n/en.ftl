@@ -1433,3 +1433,7 @@ events-dead-col-attempts = Attempts
 events-dead-col-when = Happened
 events-dead-requeue = Requeue
 events-dead-subject = telling { $id }
+evaluator-running = Evaluating…
+evaluator-subject-required = Enter a subject before evaluating.
+evaluator-question-required = Complete the fields for this evaluation.
+evaluator-server-required = Select a decision server.

@@ -1433,3 +1433,7 @@ events-dead-col-attempts = Tentatives
 events-dead-col-when = Survenu
 events-dead-requeue = Remettre en file
 events-dead-subject = dire { $id }
+evaluator-running = Évaluation…
+evaluator-subject-required = Saisissez un sujet avant l’évaluation.
+evaluator-question-required = Complétez les champs de cette évaluation.
+evaluator-server-required = Sélectionnez un serveur de décision.

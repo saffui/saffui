@@ -713,6 +713,12 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       },
     ]);
   }
+  if (path.endsWith("/auth/flows") && method === "POST") {
+    return answer({ flow_id: "f-new", alias: "made", description: "", top_level: true, built_in: false });
+  }
+  if (/\/auth\/flows\/[^/]+$/.test(path) && method === "DELETE") {
+    return answer(null);
+  }
   if (path.endsWith("/auth/flows")) {
     return answer([
       { flow_id: "f-browser", alias: "browser", description: "The realm's own sign-in", top_level: true, built_in: true },

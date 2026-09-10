@@ -246,6 +246,9 @@ pub async fn create(
     provisioning::provision_browser_flow(&transaction, &tenant, &realm_id)
         .await
         .map_err(|_| internal())?;
+    provisioning::provision_offered_flows(&transaction, &tenant, &realm_id)
+        .await
+        .map_err(|_| internal())?;
     provisioning::provision_levels(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?;

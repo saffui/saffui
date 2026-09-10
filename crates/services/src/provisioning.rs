@@ -577,6 +577,181 @@ pub async fn provision_browser_flow(
     Ok(true)
 }
 
+/// The flows a realm is offered beyond the one it signs in with.
+///
+/// Made unbound, and unbound is the point: a realm runs the flow it binds,
+/// and nothing here changes how anybody signs in until somebody chooses one.
+/// What they save is the building, which is the part that goes wrong quietly:
+/// a second factor entered as an alternative rather than a requirement is a
+/// second factor anybody can decline.
+///
+/// Only shapes this build runs. The engine reads a step's requirement and
+/// nothing else, so a flow that would need "a second factor when the client
+/// asks for one" is not among these: the assurance level a login reaches is
+/// reported afterwards, never used to choose the steps.
+pub async fn provision_offered_flows(
+    transaction: &Transaction<'_>,
+    tenant: &str,
+    realm_id: &str,
+) -> StoreResult<u32> {
+    let mut made = 0;
+    // A password, then whatever second factor the person actually holds. The
+    // alternatives are a set: one that passes settles the others, and a person
+    // holding none of them is refused rather than admitted, which is what
+    // makes this a second factor and not a suggestion.
+    made += u32::from(
+        offer(
+            transaction,
+            tenant,
+            realm_id,
+            "two-factor",
+            "A password, then any second factor",
+            &[
+                ("password", "password", AuthenticatorRequirement::Required),
+                ("totp", "totp", AuthenticatorRequirement::Alternative),
+                ("sms-otp", "sms-otp", AuthenticatorRequirement::Alternative),
+                (
+                    "webauthn",
+                    "webauthn",
+                    AuthenticatorRequirement::Alternative,
+                ),
+                (
+                    "recovery-code",
+                    "recovery-code",
+                    AuthenticatorRequirement::Alternative,
+                ),
+            ],
+        )
+        .await?,
+    );
+
+    // A proven number is an identifier here, so a texted code is a way in
+    // rather than a second one. One required step: whoever reads the code on
+    // that handset is who signs in.
+    made += u32::from(
+        offer(
+            transaction,
+            tenant,
+            realm_id,
+            "phone-first",
+            "A texted code, against a proven number",
+            &[("sms-otp", "sms-otp", AuthenticatorRequirement::Required)],
+        )
+        .await?,
+    );
+
+    // A passkey alone. The description carries what it depends on, because the
+    // dependency is not in the flow: without passkey-only sign-in switched on
+    // for the realm, nobody is named before the step runs and it admits
+    // nobody. A flow that refuses everyone is worse than one nothing reaches.
+    made += u32::from(
+        offer(
+            transaction,
+            tenant,
+            realm_id,
+            "passwordless",
+            "A passkey alone. Needs passkey-only sign-in switched on for this realm",
+            &[("webauthn", "webauthn", AuthenticatorRequirement::Required)],
+        )
+        .await?,
+    );
+
+    // A mailed link alone, which is a sign-in rather than a second way past a
+    // password: `provision_mailed_login` is the other shape, and adds the link
+    // beside the password on the flow a realm already signs in by. Same
+    // dependency as the passkey one, for the same reason: the address door is
+    // what names the person, and it is shut unless the realm opened it.
+    made += u32::from(
+        offer(
+            transaction,
+            tenant,
+            realm_id,
+            "mailed-link",
+            "A mailed link alone. Needs signing in by address allowed for this realm",
+            &[(
+                "magic-link",
+                "magic-link",
+                AuthenticatorRequirement::Required,
+            )],
+        )
+        .await?,
+    );
+
+    // A domain-joined desktop hands a ticket and nobody types anything;
+    // everyone else types a password. Both are alternatives, and the one that
+    // passes settles the other, so a browser with no ticket is not held on a
+    // challenge it cannot answer.
+    //
+    // What it needs is said because neither half is in the flow: the realm
+    // must hold a ticket door, and the build must carry the kerberos feature.
+    // Without them the ticket half never passes, and the flow is the password
+    // one with a step that does nothing.
+    made += u32::from(
+        offer(
+            transaction,
+            tenant,
+            realm_id,
+            "desktop",
+            "A domain ticket, or a password. Needs a ticket door on the realm and a build carrying kerberos",
+            &[
+                ("kerberos", "kerberos", AuthenticatorRequirement::Alternative),
+                ("password", "password", AuthenticatorRequirement::Alternative),
+            ],
+        )
+        .await?,
+    );
+    Ok(made)
+}
+
+/// One offered flow and its steps, or nothing where the realm already holds a
+/// flow by that alias. Idempotent, because provisioning runs again on a realm
+/// that was half made.
+async fn offer(
+    transaction: &Transaction<'_>,
+    tenant: &str,
+    realm_id: &str,
+    alias: &str,
+    description: &str,
+    steps: &[(&str, &str, AuthenticatorRequirement)],
+) -> StoreResult<bool> {
+    if auth_flows::flow_by_alias(transaction, alias)
+        .await?
+        .is_some()
+    {
+        return Ok(false);
+    }
+    let metadata = AuditableModel::from_creator(tenant.to_owned(), PROVISIONER.to_owned());
+    let flow = AuthenticationFlowMutationModel {
+        alias: alias.to_owned(),
+        provider_id: "basic-flow".to_owned(),
+        description: description.to_owned(),
+        top_level: Some(true),
+        built_in: Some(true),
+    }
+    .into_model(alias.to_owned(), realm_id.to_owned(), metadata.clone());
+    auth_flows::create_flow(transaction, &flow).await?;
+
+    for (at, (step_alias, authenticator, requirement)) in steps.iter().enumerate() {
+        let execution = AuthenticationExecutionMutationModel {
+            alias: (*step_alias).to_owned(),
+            flow_id: alias.to_owned(),
+            priority: (at as i32 + 1) * 10,
+            step: ExecutionStep::Authenticator {
+                authenticator: (*authenticator).to_owned(),
+                config_id: None,
+            },
+            requirement: *requirement,
+        }
+        .into_model(
+            format!("{alias}-{step_alias}"),
+            realm_id.to_owned(),
+            metadata.clone(),
+        );
+        auth_flows::create_execution(transaction, &execution).await?;
+    }
+    Ok(true)
+}
+
 /// Offer a mailed link as an alternative to the password.
 ///
 /// Its own call, and never on by default. Accepting a link wherever a password

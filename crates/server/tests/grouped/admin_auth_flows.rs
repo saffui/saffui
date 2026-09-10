@@ -592,3 +592,74 @@ async fn the_flow_capabilities_split_where_they_should() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// The flow a realm runs cannot be deleted out from under it.
+///
+/// `/authorize` resolves the bound alias and refuses outright when it names
+/// no flow: there is no fallback. So a realm that lost the flow it bound has
+/// no sign-in at all, and the deletion that did it looked like an ordinary
+/// tidy-up. A client's binding was already refused; the realm's was not.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_flow_a_realm_runs_is_not_deleted_out_from_under_it() {
+    let plane = Plane::with_actions(&[
+        AdminAction::AuthFlowRead,
+        AdminAction::AuthFlowWrite,
+        AdminAction::RealmRead,
+        AdminAction::RealmWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let flows = format!("/admin/realms/{}/auth/flows", support::REALM);
+
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &flows,
+        &bearer,
+        Some(json!({
+            "alias": "phone-first",
+            "provider_id": "basic-flow",
+            "description": "A number, then a code",
+            "top_level": true,
+            "built_in": false,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let flow_id = made["flow_id"].as_str().expect("an identity").to_owned();
+
+    // Unbound, it is an ordinary flow and goes when asked.
+    let bound = format!("{flows}/{flow_id}");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        Some(json!({ "browser_flow": "phone-first" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let (status, told) = asked(&plane, Method::DELETE, &bound, &bearer, None).await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the realm's own sign-in was deleted out from under it: {told}"
+    );
+
+    // Bound elsewhere, it goes: the refusal is about this realm running it,
+    // not about the flow being somebody's favourite.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        Some(json!({ "browser_flow": "browser" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let (status, told) = asked(&plane, Method::DELETE, &bound, &bearer, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+}

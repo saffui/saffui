@@ -835,6 +835,12 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
     {
         println!("browser flow created");
     }
+    let offered = provisioning::provision_offered_flows(&transaction, tenant, realm)
+        .await
+        .map_err(unreadable)?;
+    if offered > 0 {
+        println!("{offered} flows offered, none bound");
+    }
     if wanted.magic_link
         && provisioning::provision_mailed_login(&transaction, tenant, realm)
             .await

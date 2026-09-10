@@ -47,6 +47,12 @@ function onAway(event: MouseEvent) {
 onMounted(() => document.addEventListener("click", onAway));
 onUnmounted(() => document.removeEventListener("click", onAway));
 
+/// Who is signed in, as the token said it. A token carrying neither a
+/// preferred name nor a subject, or one this browser could not read, leaves
+/// the store empty; saying so is better than a blank chip, which reads as a
+/// screen that failed to load rather than a token that named nobody.
+const signedInAs = computed(() => session.displayName || say("profile-unnamed"));
+
 function initials(name: string): string {
   return name.slice(0, 2).toUpperCase() || "?";
 }
@@ -107,9 +113,9 @@ function initials(name: string): string {
       >
         <span
           class="grid size-[22px] shrink-0 place-items-center rounded-[3px] bg-surface-3 text-[11px] font-semibold text-ink"
-          >{{ initials(session.displayName) }}</span
+          >{{ initials(signedInAs) }}</span
         >
-        <span class="hidden max-w-24 truncate sm:inline">{{ session.displayName }}</span>
+        <span class="hidden max-w-24 truncate sm:inline">{{ signedInAs }}</span>
         <AppIcon name="chevron" :size="13" class="rotate-90 text-faint" />
       </button>
 
@@ -118,7 +124,7 @@ function initials(name: string): string {
         class="absolute top-9 right-0 z-40 w-60 rounded-md border border-border bg-surface p-1 shadow-(--sf-shadow)"
       >
         <div class="px-2.5 pt-2 pb-1.5">
-          <p class="text-xs font-semibold">{{ session.displayName }}</p>
+          <p class="text-xs font-semibold">{{ signedInAs }}</p>
           <p class="font-mono text-[11.5px] text-faint">{{ say("profile-realm") }} {{ current }}</p>
         </div>
         <div class="my-1 border-t border-border"></div>

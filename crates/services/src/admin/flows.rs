@@ -113,6 +113,12 @@ async fn still_run(transaction: &Transaction<'_>, alias: &str) -> Result<bool, U
     if alias == RESTING_FLOW {
         return Ok(true);
     }
+    if auth_flows::alias_bound_to_the_realm(transaction, alias)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+    {
+        return Ok(true);
+    }
     auth_flows::alias_bound_to_a_client(transaction, alias)
         .await
         .map_err(|_| Unwritable::Backend)

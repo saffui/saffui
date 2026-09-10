@@ -4,6 +4,7 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
 import { createUser, listUsers } from "@/services/users";
+import { refusalOf } from "./names";
 import ListFilters, { type Choice } from "@/components/ListFilters.vue";
 import { afterWrites } from "@/services/writes";
 import AppDrawer from "@/components/AppDrawer.vue";
@@ -116,9 +117,12 @@ function flipAction(action: string) {
     ? born.value.actions.filter((held) => held !== action)
     : [...born.value.actions, action];
 }
+/// The server's own rule, asked before the round trip rather than after it.
+const nameRefusal = computed(() => refusalOf(born.value.user_name));
+
 async function makeUser() {
   const spec = born.value;
-  if (!spec.user_name.trim()) return;
+  if (nameRefusal.value) return;
   try {
     const made = await createUser(realm.value, {
       user_name: spec.user_name.trim(),
@@ -248,7 +252,11 @@ async function makeUser() {
             v-model="born.user_name"
             class="sf-field mt-1 font-mono"
             spellcheck="false"
+            :aria-invalid="nameRefusal !== null"
           />
+          <span v-if="nameRefusal" class="mt-1 block text-[10.5px] text-danger">
+            {{ say(`user-name-${nameRefusal}`) }}
+          </span>
         </label>
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label class="block text-[11px] font-medium text-muted">
@@ -312,6 +320,7 @@ async function makeUser() {
           <button
             type="submit"
             class="sf-button sf-button-primary"
+            :disabled="nameRefusal !== null"
           >
             {{ say("realm-create") }}
           </button>

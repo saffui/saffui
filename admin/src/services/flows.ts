@@ -6,6 +6,40 @@ export async function listFlows(realm: string): Promise<FlowRow[]> {
   return api<FlowRow[]>(adminPath(realm, "auth/flows"));
 }
 
+/// Make a flow. A realm is born with one, `browser`, and everything else is
+/// built here: a second factor before the client sees a session, a flow bound
+/// to one client, a copy to try a change on.
+export async function createFlow(
+  realm: string,
+  flow: { alias: string; description: string; top_level: boolean },
+): Promise<FlowRow> {
+  return api<FlowRow>(adminPath(realm, "auth/flows"), {
+    method: "POST",
+    json: {
+      alias: flow.alias,
+      // The only kind this build runs. A flow's provider decides how its
+      // steps are read, and nothing reads another.
+      provider_id: "basic-flow",
+      description: flow.description,
+      top_level: flow.top_level,
+      // What the realm was born with is built in; what somebody adds is not,
+      // and saying otherwise would let a deletion look refusable when it is
+      // not, or the reverse.
+      built_in: false,
+    },
+    subject: say("flows-subject", { flow: flow.alias }),
+  });
+}
+
+/// Take a flow away. The realm's own binding is checked by the server, which
+/// refuses to leave a realm with no flow to run.
+export async function deleteFlow(realm: string, flowId: string): Promise<void> {
+  await api<void>(adminPath(realm, `auth/flows/${encodeURIComponent(flowId)}`), {
+    method: "DELETE",
+    subject: say("flows-subject", { flow: flowId }),
+  });
+}
+
 export async function getFlow(realm: string, flowId: string): Promise<FlowDetail> {
   return api<FlowDetail>(adminPath(realm, `auth/flows/${encodeURIComponent(flowId)}`));
 }

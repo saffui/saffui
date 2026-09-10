@@ -321,6 +321,32 @@ pub async fn delete_execution(
 }
 
 /// Whether any client's login is bound to this alias by name.
+/// Whether the realm itself runs this flow for browser logins.
+///
+/// Told apart from a client's own binding because the two break differently:
+/// a client bound to a missing flow falls back to the realm's, and a realm
+/// bound to a missing one falls back to nothing. `/authorize` resolves the
+/// alias and refuses outright when it names no flow, so a realm that lost
+/// the flow it bound has no sign-in at all.
+pub async fn alias_bound_to_the_realm(
+    transaction: &Transaction<'_>,
+    alias: &str,
+) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM realms \
+                 WHERE tenant = current_setting('saffui.current_tenant', true) \
+                   AND realm_id = current_setting('saffui.current_realm', true) \
+                   AND browser_flow = $1 \
+             ) AS bound",
+            &[&alias],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get("bound"))
+}
+
 pub async fn alias_bound_to_a_client(
     transaction: &Transaction<'_>,
     alias: &str,

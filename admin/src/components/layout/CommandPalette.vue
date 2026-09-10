@@ -40,6 +40,7 @@ const PAGES: { leaf: string; name: () => string }[] = [
   { leaf: "sessions", name: () => say("nav-realm-sessions") },
   { leaf: "theme", name: () => say("nav-theme") },
   { leaf: "pages", name: () => say("nav-pages") },
+  { leaf: "spnego", name: () => say("nav-spnego") },
   { leaf: "token-preview", name: () => say("nav-preview") },
 ];
 

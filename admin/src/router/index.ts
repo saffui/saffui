@@ -63,6 +63,10 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/pages/settings/PagesPage.vue"),
       },
       {
+        path: "spnego",
+        component: () => import("@/pages/settings/SpnegoPage.vue"),
+      },
+      {
         path: "token-preview",
         component: () => import("@/pages/clients/TokenPreviewPage.vue"),
       },

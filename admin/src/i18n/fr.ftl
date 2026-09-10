@@ -331,7 +331,6 @@ decision-col-question = Question
 decision-col-reported = Rapportée
 decision-col-computed = Calculée
 decision-col-duration = Durée
-nav-decision-journal = Journal des décisions
 authz-column-name = Nom
 authz-column-id = Identifiant
 authz-column-kind = Type

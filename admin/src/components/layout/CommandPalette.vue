@@ -30,7 +30,6 @@ const PAGES: { leaf: string; name: () => string }[] = [
   { leaf: "authentication/actions", name: () => say("actions-title") },
   { leaf: "authorization", name: () => say("nav-authorization") },
   { leaf: "evaluator", name: () => say("nav-evaluator") },
-  { leaf: "decision-journal", name: () => say("nav-decision-journal") },
   { leaf: "federation", name: () => say("nav-federation") },
   { leaf: "governance", name: () => say("nav-governance") },
   { leaf: "privacy", name: () => say("nav-privacy") },

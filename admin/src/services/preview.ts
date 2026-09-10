@@ -253,6 +253,24 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       })),
     });
   }
+  if (/\/users\/[^/]+\/federated-identities$/.test(path)) {
+    return answer([
+      {
+        realm_id: "main", user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
+        provider_alias: "corp-okta", external_user_id: "00u-ada",
+        external_username: "ada@example.test", created_at: new Date((NOW - 86_400 * 20) * 1000).toISOString(),
+      },
+    ]);
+  }
+  if (/\/users\/[^/]+\/messages$/.test(path)) {
+    return answer({ deliveries: [
+      {
+        delivery_id: "delivery-1", user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
+        purpose: "verify_email", recipient: "ada@example.test",
+        attempted_at: new Date((NOW - 3600) * 1000).toISOString(), delivered: true, detail: null,
+      },
+    ] });
+  }
   if (/\/users\/[^/]+\/roles$/.test(path)) {
     return answer({
       roles: [

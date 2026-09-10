@@ -11,14 +11,18 @@ import {
   createOrganization,
   deleteOrganization,
   dropDomain,
+  forgetOrganizationTheme,
   getOrganization,
+  getOrganizationTheme,
   listOrganizationMembers,
   listOrganizations,
+  writeOrganizationTheme,
   verifyDomain,
 } from "@/services/directory";
 import AppHint from "@/components/AppHint.vue";
 import type { Page } from "@/models/paging";
 import type { OrganizationRow, OrgMember } from "@/models/directory";
+import type { RealmTheme } from "@/models/realm";
 import DirectoryTable from "./DirectoryTable.vue";
 
 const route = useRoute();
@@ -42,6 +46,11 @@ async function turn() {
 const failed = ref("");
 const opened = ref<OrganizationRow | null>(null);
 const members = ref<OrgMember[] | null>(null);
+const themeHalf = ref<"light" | "dark">("light");
+const orgTheme = ref<{ light: Record<string, string>; dark: Record<string, string> }>({ light: {}, dark: {} });
+const themeWorn = ref(false);
+const themeFailed = ref("");
+const THEME_TOKENS = ["brand-primary", "brand-on-primary", "bg", "surface", "ink", "muted", "border", "danger", "radius", "font-sans", "card-border-width", "card-shadow", "logo-display", "logo-radius", "field-bg"];
 
 async function load() {
   try {
@@ -130,10 +139,42 @@ async function open(org: OrganizationRow) {
   doomName.value = "";
   opened.value = org;
   members.value = null;
-  [opened.value, members.value] = await Promise.all([
+  const [organization, heldMembers, theme] = await Promise.all([
     getOrganization(realm.value, org.org_id),
     listOrganizationMembers(realm.value, org.org_id),
+    getOrganizationTheme(realm.value, org.org_id),
   ]);
+  opened.value = organization;
+  members.value = heldMembers;
+  orgTheme.value = { light: { ...theme?.light }, dark: { ...theme?.dark } };
+  themeWorn.value = theme !== null;
+}
+
+async function saveTheme() {
+  if (!opened.value) return;
+  themeFailed.value = "";
+  const theme: NonNullable<RealmTheme> = {};
+  for (const half of ["light", "dark"] as const) {
+    const values = Object.fromEntries(Object.entries(orgTheme.value[half]).filter(([, value]) => value.trim()));
+    if (Object.keys(values).length) theme[half] = values;
+  }
+  try {
+    await writeOrganizationTheme(realm.value, opened.value.org_id, theme);
+    themeWorn.value = true;
+  } catch (refused) {
+    themeFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+async function clearTheme() {
+  if (!opened.value) return;
+  try {
+    await forgetOrganizationTheme(realm.value, opened.value.org_id);
+    orgTheme.value = { light: {}, dark: {} };
+    themeWorn.value = false;
+  } catch (refused) {
+    themeFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
 }
 
 function joined(member: OrgMember): string {
@@ -324,6 +365,34 @@ function joined(member: OrgMember): string {
             <span class="ml-auto font-mono text-[10px] text-faint">{{ joined(member) }}</span>
           </div>
         </div>
+      </div>
+      <div class="mt-4 border-t border-border pt-4">
+        <div class="flex items-center gap-2">
+          <div>
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("org-theme-title") }}
+            </div>
+            <p class="mt-1 text-[11px] text-muted">{{ say("org-theme-lede") }}</p>
+          </div>
+          <button v-if="themeWorn" type="button" class="ml-auto text-[10.5px] text-danger hover:underline" @click="clearTheme">
+            {{ say("org-theme-inherit") }}
+          </button>
+        </div>
+        <div class="mt-2 flex gap-1">
+          <button v-for="which in ['light', 'dark'] as const" :key="which" type="button" class="rounded px-2 py-1 text-[10.5px] text-muted hover:bg-surface-2" :class="themeHalf === which && 'bg-surface-2 text-ink'" @click="themeHalf = which">
+            {{ say(`theme-half-${which}`) }}
+          </button>
+        </div>
+        <div class="mt-2 grid gap-1.5">
+          <label v-for="token in THEME_TOKENS" :key="token" class="grid grid-cols-[112px_1fr] items-center gap-2 text-[10.5px] text-muted">
+            <span class="font-mono">--{{ token }}</span>
+            <input v-model="orgTheme[themeHalf][token]" class="sf-field font-mono text-[10.5px]" :placeholder="say('theme-inherit')" spellcheck="false" />
+          </label>
+        </div>
+        <p v-if="themeFailed" class="mt-2 text-[10.5px] text-danger" role="alert">{{ themeFailed }}</p>
+        <button type="button" class="sf-button sf-button-secondary mt-2" @click="saveTheme">
+          {{ say("settings-save") }}
+        </button>
       </div>
       <div class="mt-4 rounded-lg border border-danger/40 p-3">
         <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">

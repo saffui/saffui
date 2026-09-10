@@ -31,6 +31,10 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/pages/scopes/ScopesPage.vue"),
       },
       {
+        path: "protocol-mappers",
+        component: () => import("@/pages/scopes/ProtocolMappersPage.vue"),
+      },
+      {
         path: "roles",
         component: () => import("@/pages/directory/RolesPage.vue"),
       },

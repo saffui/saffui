@@ -77,3 +77,36 @@ export async function detachMapperFromScope(
 export async function listRealmMappers(realm: string) {
   return api<import("@/models/client").ProtocolMapper[]>(adminPath(realm, "protocol-mappers"));
 }
+
+export type ProtocolMapperWrite = {
+  name: string;
+  protocol: string;
+  mapper_type: string;
+  configs: Record<string, unknown> | null;
+};
+
+export async function createRealmMapper(realm: string, body: ProtocolMapperWrite) {
+  return api<import("@/models/client").ProtocolMapper>(adminPath(realm, "protocol-mappers"), {
+    method: "POST",
+    json: body,
+    subject: say("subject-mapper", { mapper: body.name }),
+  });
+}
+
+export async function updateRealmMapper(
+  realm: string,
+  mapperId: string,
+  body: ProtocolMapperWrite,
+) {
+  return api<import("@/models/client").ProtocolMapper>(
+    adminPath(realm, `protocol-mappers/${encodeURIComponent(mapperId)}`),
+    { method: "PUT", json: body, subject: say("subject-mapper", { mapper: body.name }) },
+  );
+}
+
+export async function deleteRealmMapper(realm: string, mapperId: string): Promise<void> {
+  await api<void>(adminPath(realm, `protocol-mappers/${encodeURIComponent(mapperId)}`), {
+    method: "DELETE",
+    subject: say("subject-mapper", { mapper: mapperId }),
+  });
+}

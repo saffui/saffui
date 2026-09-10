@@ -219,6 +219,39 @@ async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
     transaction.commit().await.unwrap();
 }
 
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_late_failure_rolls_back_the_whole_realm_birth() {
+    let fixture = Fixture::empty().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
+        .await;
+    store::providers::tenants::create(&transaction, &tenant())
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+    services::provisioning::provision_realm(&transaction, &realm(), &console())
+        .await
+        .unwrap();
+    assert!(transaction.query_one("SELECT 1 / 0", &[]).await.is_err());
+    transaction.rollback().await.unwrap();
+
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
+        .await;
+    assert!(
+        store::providers::realms::load(&transaction, "main")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
 fn tenant() -> models::entities::tenant::TenantModel {
     models::entities::tenant::TenantCreateModel {
         tenant_id: "acme".into(),

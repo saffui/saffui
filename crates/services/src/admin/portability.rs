@@ -1317,7 +1317,10 @@ pub async fn import_realm(
 
     realms::create(transaction, &doc.realm)
         .await
-        .map_err(|_| Unportable::Backend)?;
+        .map_err(|why| match why {
+            store::error::StoreError::AlreadyExists => Unportable::AlreadyExists,
+            _ => Unportable::Backend,
+        })?;
     for action in &doc.required_actions {
         auth_flows::register_action(transaction, action)
             .await

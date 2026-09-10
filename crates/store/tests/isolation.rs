@@ -1,6 +1,6 @@
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{CryptoConfig, CryptoProvider};
-use pgcore::migrations::MigrationRunner;
+use pgcore::migrations::{Migration, MigrationRunner};
 use pgcore::tls::PgConnector;
 use store::schema::migrations;
 use tokio_postgres::{Client, Config, NoTls};
@@ -105,6 +105,67 @@ async fn the_schema_applies_and_stops() {
         "the schema reapplied {:?}",
         report.applied
     );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_global_realm_migration_refuses_existing_collisions() {
+    let _turn = DATABASE.lock().await;
+    let client = connect().await;
+    for colliding_realms in [
+        "('acme', 'acme-main', 'main', 'Main'), \
+         ('globex', 'globex-main', 'main', 'Main')",
+        "('acme', 'main', 'acme-main', 'Main'), \
+         ('globex', 'main', 'globex-main', 'Main')",
+    ] {
+        client
+            .batch_execute(
+                "DROP SCHEMA public CASCADE; \
+                 CREATE SCHEMA public; \
+                 GRANT ALL ON SCHEMA public TO CURRENT_USER;",
+            )
+            .await
+            .unwrap();
+
+        let mut before_global_names = migrations();
+        let global_names = before_global_names
+            .pop()
+            .expect("the global name migration");
+        let Migration::Sql(global_names) = global_names else {
+            panic!("the global name migration is not SQL");
+        };
+        assert_eq!(global_names.version, 96);
+        MigrationRunner::new(before_global_names)
+            .run(&config(), &PgConnector::disabled(), provider().digest())
+            .await
+            .unwrap();
+        client
+            .batch_execute(&format!(
+                "INSERT INTO tenants (tenant_id, display_name) \
+                 VALUES ('acme', 'Acme'), ('globex', 'Globex'); \
+                 INSERT INTO realms (tenant, realm_id, name, display_name) \
+                 VALUES {colliding_realms};"
+            ))
+            .await
+            .unwrap();
+
+        let _refused = MigrationRunner::new(migrations())
+            .run(&config(), &PgConnector::disabled(), provider().digest())
+            .await
+            .expect_err("colliding public realm identifiers were migrated");
+        let version: i32 = client
+            .query_one("SELECT max(version) FROM schema_migrations", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(version, 95, "the refused migration was recorded as applied");
+        let realms: i64 = client
+            .query_one("SELECT count(*) FROM realms", &[])
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(realms, 2, "the failed migration changed existing realms");
+    }
 }
 
 /// Security is on and forced on every table the schema creates.
@@ -463,6 +524,7 @@ async fn an_identifier_says_nothing_about_another_realm() {
     let client = migrated().await;
 
     for tenant in ["acme", "globex"] {
+        let realm = format!("{tenant}-main");
         client.batch_execute("BEGIN").await.unwrap();
         governed_by(&client, tenant).await;
         client
@@ -475,7 +537,7 @@ async fn an_identifier_says_nothing_about_another_realm() {
         client
             .execute(
                 "INSERT INTO realms (tenant, realm_id, name, display_name) VALUES ($1, $2, $2, $2)",
-                &[&tenant, &"main"],
+                &[&tenant, &realm],
             )
             .await
             .unwrap();
@@ -486,14 +548,14 @@ async fn an_identifier_says_nothing_about_another_realm() {
         client
             .execute(
                 "SELECT set_config('saffui.current_realm', $1, true)",
-                &[&"main"],
+                &[&realm],
             )
             .await
             .unwrap();
         client
             .execute(
                 "INSERT INTO users (tenant, realm_id, user_id, user_name) VALUES ($1, $2, $3, $3)",
-                &[&tenant, &"main", &"shared-id"],
+                &[&tenant, &realm, &"shared-id"],
             )
             .await
             .expect("the same identifier is free in each realm");
@@ -507,7 +569,7 @@ async fn an_identifier_says_nothing_about_another_realm() {
     client
         .execute(
             "SELECT set_config('saffui.current_realm', $1, true)",
-            &[&"main"],
+            &[&"acme-main"],
         )
         .await
         .unwrap();

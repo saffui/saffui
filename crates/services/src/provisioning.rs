@@ -101,9 +101,9 @@ pub async fn provision_realm(
 
 /// The realm's own row, and nothing else it needs.
 ///
-/// Apart from [`provision_realm`] because it runs somewhere else: a realm
-/// cannot be scoped to before it exists, so the row is written tenant wide and
-/// everything that belongs inside it is written after, scoped to it.
+/// Apart from [`provision_realm`] for callers that also seed the tenant. The
+/// transaction may already name the future realm: the realm row is tenant
+/// isolated, while its children are isolated by both settings.
 pub async fn provision_realm_row(
     transaction: &Transaction<'_>,
     tenant: &str,

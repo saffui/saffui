@@ -25,6 +25,10 @@ pub enum StoreError {
     #[error("the database operation failed")]
     Backend,
 
+    /// A globally addressed object already answers to this identifier.
+    #[error("this identifier is already in use")]
+    AlreadyExists,
+
     /// The realm has no chain, so nothing can be appended to it or verified.
     #[error("the realm has no audit chain")]
     NoChain,

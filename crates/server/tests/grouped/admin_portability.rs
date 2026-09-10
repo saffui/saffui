@@ -208,6 +208,70 @@ async fn the_other_birth_door_answers_to_the_same_rules() {
 
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn concurrent_imports_share_one_ceiling_count() {
+    let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    plane.cap_realms(2).await;
+
+    let left = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=import-left",
+        &bearer,
+        Some(document.clone()),
+    );
+    let right = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=import-right",
+        &bearer,
+        Some(document),
+    );
+    let (left, right) = tokio::join!(left, right);
+    let statuses = [left.0, right.0];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CREATED)
+            .count(),
+        1,
+        "{left:?} {right:?}"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::UNPROCESSABLE_ENTITY)
+            .count(),
+        1,
+        "{left:?} {right:?}"
+    );
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::tenant_wide(support::TENANT),
+        )
+        .await;
+    assert_eq!(
+        store::providers::tenants::count_realms(&transaction)
+            .await
+            .unwrap(),
+        2
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_crosses_as_a_document() {
     let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
     let bearer = plane.token(&support::claims());

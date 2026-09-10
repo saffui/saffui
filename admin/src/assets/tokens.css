@@ -161,6 +161,10 @@ body {
     white-space: nowrap;
     cursor: pointer;
   }
+  .sf-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
   .sf-button-primary {
     background: var(--sf-accent);
     color: var(--sf-accent-ink);
@@ -294,6 +298,8 @@ body {
     font-size: 12px;
   }
   .sf-field:focus {
-    border-color: var(--sf-accent-line);
+    border-color: var(--sf-accent);
+    outline: 2px solid var(--sf-accent-tint);
+    outline-offset: 1px;
   }
 }

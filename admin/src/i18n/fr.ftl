@@ -34,6 +34,7 @@ nav-features = Fonctions
 nav-portability = Portabilité
 
 topbar-search = Rechercher ou aller à
+nav-open = Ouvrir la navigation
 topbar-realm = Realm
 action-sign-out = Se déconnecter
 

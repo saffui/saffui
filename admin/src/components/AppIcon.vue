@@ -36,6 +36,7 @@ import {
   TriangleAlert,
   X,
   Trash2,
+  Menu,
   type LucideProps,
 } from "lucide-vue-next";
 import type { FunctionalComponent } from "vue";
@@ -76,6 +77,7 @@ const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
   danger: TriangleAlert,
   close: X,
   remove: Trash2,
+  menu: Menu,
 };
 
 const props = defineProps<{ name: keyof typeof GLYPHS; size?: number }>();

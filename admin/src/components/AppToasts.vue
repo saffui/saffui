@@ -4,7 +4,7 @@ import { dismissToast, toasts } from "@/services/toasts";
 </script>
 
 <template>
-  <div class="pointer-events-none fixed top-14 right-4 z-[60] flex w-80 flex-col gap-2">
+  <div class="pointer-events-none fixed top-14 right-4 z-[60] flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
     <TransitionGroup name="toast">
       <div
         v-for="held in toasts"

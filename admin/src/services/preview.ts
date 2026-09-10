@@ -656,6 +656,23 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       { subject_type: "group", subject_id: "editors", subject_relation: "member" },
     ]);
   }
+  if (path.endsWith("/authz/routes") && method === "GET") {
+    return answer([
+      {
+        route_id: "orders-read",
+        method: "GET",
+        path: "/api/orders/*",
+        server_id: "web-dashboard",
+        resource: "orders",
+        scope: "read",
+        action: "invoke",
+        priority: 10,
+        enabled: true,
+      },
+    ]);
+  }
+  if (path.includes("/authz/routes/") && method === "PUT") return answer({ route_id: path.split("/").pop() });
+  if (path.includes("/authz/routes/") && method === "DELETE") return answer(undefined);
   if (path.endsWith("/authz/evaluate")) {
     return answer({
       decision_id: "d-sim-1",

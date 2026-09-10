@@ -15,6 +15,7 @@ import PageTabs from "@/components/PageTabs.vue";
 import {
   createPolicy,
   createResource,
+  eraseAuthzRoute,
   eraseRelation,
   protectClient,
   writeRelation,
@@ -25,6 +26,7 @@ import {
   erasePolicy,
   eraseResource,
   evaluate,
+  listAuthzRoutes,
   listAuthzScopes,
   listPolicies,
   listResources,
@@ -34,6 +36,7 @@ import {
   reworkAuthzScope,
   reworkPolicy,
   reworkResource,
+  writeAuthzRoute,
 } from "@/services/authz";
 import { ApiError } from "@/services/http";
 import { afterWrites } from "@/services/writes";
@@ -43,6 +46,7 @@ import type {
   PolicyRow,
   ResourceRow,
   ScopeRow,
+  AuthzRoute,
 } from "@/models/authz";
 
 const NODE_W = 190;
@@ -63,14 +67,17 @@ const selected = ref<PolicyRow | null>(null);
 /// The design's boards. Each reads what `load` already holds, so moving
 /// between them costs nothing: the three listings were fetched together the
 /// moment a resource server was named.
-const BOARDS = ["models", "resources", "scopes", "policies", "permissions", "graph", "evaluator"];
+const BOARDS = ["models", "resources", "scopes", "policies", "permissions", "routes", "graph", "evaluator"];
 
 const board = computed(() => {
   const asked = String(route.query.board ?? "models");
   return BOARDS.includes(asked) ? asked : "models";
 });
 
-watch(board, (named) => named === "graph" && readGraph());
+watch(board, (named) => {
+  if (named === "graph") void readGraph();
+  if (named === "routes") void loadRoutes();
+});
 
 function boardAt(leaf: string): string {
   return leaf === "evaluator"
@@ -121,10 +128,14 @@ async function load() {
   }
 }
 onMounted(load);
+onMounted(() => board.value === "routes" && loadRoutes());
 // The graph is read where the rest of the page is read. Reading it at setup
 // would run before the session holds a token on a cold load.
 onMounted(() => board.value === "graph" && readGraph());
-afterWrites(load);
+afterWrites(() => {
+  void load();
+  if (board.value === "routes") void loadRoutes();
+});
 
 interface PlacedPolicy {
   row: PolicyRow;
@@ -286,7 +297,74 @@ function listNameOf(kind: string): string {
   return EVALUATORS.find((held) => held.type === kind)?.list ?? "";
 }
 
-const drawer = ref<"" | "protect" | "policy" | "resource" | "scope" | "relation" | "palette">("");
+const drawer = ref<"" | "protect" | "policy" | "resource" | "scope" | "relation" | "palette" | "route">("");
+const routes = ref<AuthzRoute[]>([]);
+const routeEditing = ref<AuthzRoute | null>(null);
+const routeDraft = ref<Omit<AuthzRoute, "route_id">>({
+  method: "GET",
+  path: "",
+  server_id: "web-dashboard",
+  resource: "",
+  scope: "",
+  action: "invoke",
+  priority: 100,
+  enabled: true,
+});
+
+async function loadRoutes() {
+  try {
+    routes.value = await listAuthzRoutes(realm.value);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+    routes.value = [];
+  }
+}
+
+function openRoute(route?: AuthzRoute) {
+  routeEditing.value = route ?? null;
+  routeDraft.value = route
+    ? { ...route }
+    : {
+        method: "GET",
+        path: "",
+        server_id: clientId.value,
+        resource: "",
+        scope: "",
+        action: "invoke",
+        priority: 100,
+        enabled: true,
+      };
+  drawer.value = "route";
+}
+
+async function saveRoute() {
+  const routeId = routeEditing.value?.route_id ?? crypto.randomUUID();
+  if (!routeDraft.value.path.trim() || !routeDraft.value.resource.trim() || !routeDraft.value.scope.trim()) return;
+  try {
+    await writeAuthzRoute(realm.value, routeId, {
+      ...routeDraft.value,
+      method: routeDraft.value.method.trim().toUpperCase(),
+      path: routeDraft.value.path.trim(),
+      server_id: routeDraft.value.server_id.trim(),
+      resource: routeDraft.value.resource.trim(),
+      scope: routeDraft.value.scope.trim(),
+      action: routeDraft.value.action.trim() || "invoke",
+    });
+    drawer.value = "";
+    await loadRoutes();
+  } catch {
+    // The API toast contains the refusal.
+  }
+}
+
+async function removeRoute(route: AuthzRoute) {
+  try {
+    await eraseAuthzRoute(realm.value, route.route_id);
+    await loadRoutes();
+  } catch {
+    // The API toast contains the refusal.
+  }
+}
 
 /// The row being reworked, or empty for a new one. The drawers already hold
 /// the fields; what changes is whether the write creates or replaces, and
@@ -631,6 +709,58 @@ function nodeStroke(row: PolicyRow): string {
 
     <p v-if="failed" class="mt-2 text-xs text-danger" role="alert">{{ failed }}</p>
     <p v-if="unprotected" class="mt-2 text-xs text-muted">{{ say("authz-unprotected") }}</p>
+
+    <div v-if="board === 'routes'" class="mt-3 min-w-0">
+      <div class="flex flex-wrap items-center gap-2">
+        <div>
+          <h2 class="text-sm font-semibold">{{ say("authz-routes-title") }}</h2>
+          <p class="mt-1 text-[11px] text-muted">{{ say("authz-routes-lede") }}</p>
+        </div>
+        <button type="button" class="sf-button sf-button-primary ml-auto" @click="openRoute()">
+          {{ say("authz-route-new") }}
+        </button>
+      </div>
+      <div class="sf-list mt-3 overflow-x-auto">
+        <table class="sf-table">
+          <thead>
+            <tr>
+              <th>{{ say("authz-route-method") }}</th>
+              <th>{{ say("authz-route-path") }}</th>
+              <th>{{ say("authz-route-server") }}</th>
+              <th>{{ say("authz-route-permission") }}</th>
+              <th>{{ say("authz-route-priority") }}</th>
+              <th>{{ say("authz-route-status") }}</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="route in routes" :key="route.route_id" class="border-b border-border/60 last:border-0">
+              <td class="font-mono text-[11px]">{{ route.method }}</td>
+              <td class="max-w-72 font-mono text-[11px] break-all">{{ route.path }}</td>
+              <td class="font-mono text-[11px]">{{ route.server_id }}</td>
+              <td class="font-mono text-[11px]">{{ route.resource }}:{{ route.scope }}</td>
+              <td class="font-mono text-[11px]">{{ route.priority }}</td>
+              <td>
+                <span :class="route.enabled ? 'text-ok' : 'text-muted'">
+                  {{ route.enabled ? say("authz-route-enabled") : say("authz-route-disabled") }}
+                </span>
+              </td>
+              <td class="text-right whitespace-nowrap">
+                <button type="button" class="text-xs text-accent hover:underline" @click="openRoute(route)">
+                  {{ say("authz-route-edit") }}
+                </button>
+                <button type="button" class="ml-3 text-xs text-danger hover:underline" @click="removeRoute(route)">
+                  {{ say("authz-route-delete") }}
+                </button>
+              </td>
+            </tr>
+            <tr v-if="!routes.length">
+              <td colspan="7" class="text-muted">{{ say("authz-routes-none") }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
 
     <div v-if="board === 'models'" class="mt-3 flex min-h-0 flex-1 flex-col gap-3 xl:flex-row">
       <div class="min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-surface">
@@ -1093,6 +1223,54 @@ function nodeStroke(row: PolicyRow): string {
       </table>
     </div>
 
+
+    <AppDrawer
+      v-if="drawer === 'route'"
+      :title="routeEditing ? say('authz-route-edit') : say('authz-route-new')"
+      :subtitle="routeEditing?.route_id ?? say('authz-route-generated')"
+      @close="drawer = ''"
+    >
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveRoute">
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-route-method") }}
+          <select v-model="routeDraft.method" class="sf-field mt-1 font-mono">
+            <option v-for="method in ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', '*']" :key="method" :value="method">
+              {{ method }}
+            </option>
+          </select>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-route-path") }}
+          <input v-model="routeDraft.path" placeholder="/api/orders/*" class="sf-field mt-1 font-mono" spellcheck="false" />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-route-server") }}
+          <input v-model="routeDraft.server_id" class="sf-field mt-1 font-mono" spellcheck="false" />
+        </label>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("authz-route-resource") }}
+            <input v-model="routeDraft.resource" class="sf-field mt-1 font-mono" spellcheck="false" />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("authz-route-scope") }}
+            <input v-model="routeDraft.scope" class="sf-field mt-1 font-mono" spellcheck="false" />
+          </label>
+        </div>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-route-action") }}
+          <input v-model="routeDraft.action" class="sf-field mt-1 font-mono" spellcheck="false" />
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-route-priority") }}
+          <input v-model.number="routeDraft.priority" type="number" min="0" class="sf-field mt-1 font-mono" />
+        </label>
+        <AppToggle v-model="routeDraft.enabled">{{ say("authz-route-enabled") }}</AppToggle>
+        <button type="submit" class="sf-button sf-button-primary justify-center">
+          {{ routeEditing ? say("settings-save") : say("realm-create") }}
+        </button>
+      </form>
+    </AppDrawer>
 
     <AppDrawer v-if="drawer === 'protect'" :title="say('authz-protect')" :subtitle="clientId" @close="drawer = ''">
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="doProtect">

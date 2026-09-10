@@ -7,6 +7,7 @@ import type {
   PolicyRow,
   ResourceRow,
   ScopeRow,
+  AuthzRoute,
 } from "@/models/authz";
 
 function server(realm: string, clientId: string, leaf: string): string {
@@ -23,6 +24,29 @@ export async function listResources(realm: string, clientId: string): Promise<Re
 
 export async function listAuthzScopes(realm: string, clientId: string): Promise<ScopeRow[]> {
   return api<ScopeRow[]>(server(realm, clientId, "scopes"));
+}
+
+export async function listAuthzRoutes(realm: string): Promise<AuthzRoute[]> {
+  return api<AuthzRoute[]>(adminPath(realm, "authz/routes"));
+}
+
+export async function writeAuthzRoute(
+  realm: string,
+  routeId: string,
+  body: Omit<AuthzRoute, "route_id">,
+): Promise<void> {
+  await api<void>(adminPath(realm, `authz/routes/${encodeURIComponent(routeId)}`), {
+    method: "PUT",
+    json: body,
+    subject: say("subject-authz-route", { route: routeId }),
+  });
+}
+
+export async function eraseAuthzRoute(realm: string, routeId: string): Promise<void> {
+  await api<void>(adminPath(realm, `authz/routes/${encodeURIComponent(routeId)}`), {
+    method: "DELETE",
+    subject: say("subject-authz-route", { route: routeId }),
+  });
 }
 
 export async function evaluate(

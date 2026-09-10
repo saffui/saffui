@@ -13,6 +13,8 @@ import {
   leaveGroup,
   liftLockout,
   listConsents,
+  listFederatedIdentities,
+  listMessageDeliveries,
   listEffectiveRoles,
   listMemberGroups,
   listMemberOrganizations,
@@ -48,7 +50,7 @@ import type {
 const props = defineProps<{ realm: string; userId: string }>();
 const emit = defineEmits<{ close: [] }>();
 
-const TABS = ["overview", "credentials", "sessions", "memberships", "consents"] as const;
+const TABS = ["overview", "credentials", "sessions", "memberships", "consents", "federated", "messages"] as const;
 const tab = ref<(typeof TABS)[number]>("overview");
 
 const user = ref<UserFull | null>(null);
@@ -58,6 +60,8 @@ const lockout = ref<Lockout | null>(null);
 const codesLeft = ref(0);
 const sessions = ref<SessionBrief[]>([]);
 const consents = ref<ConsentBrief[]>([]);
+const federated = ref<import("@/models/user").FederatedIdentity[]>([]);
+const messages = ref<import("@/models/user").MessageDelivery[]>([]);
 const roles = ref<RoleBrief[]>([]);
 
 /// Realm roles and client roles are the same table apart from whether a
@@ -187,6 +191,8 @@ async function load() {
       codesLeft.value,
       sessions.value,
       consents.value,
+      federated.value,
+      messages.value,
       roles.value,
       groups.value,
       organizations.value,
@@ -196,6 +202,8 @@ async function load() {
       countRecoveryCodes(props.realm, props.userId),
       listSessions(props.realm, props.userId),
       listConsents(props.realm, props.userId),
+      listFederatedIdentities(props.realm, props.userId),
+      listMessageDeliveries(props.realm, props.userId),
       listEffectiveRoles(props.realm, props.userId),
       listMemberGroups(props.realm, props.userId),
       listMemberOrganizations(props.realm, props.userId),
@@ -959,6 +967,31 @@ function instant(epoch: number | null | undefined): string {
             >{{ scope }}</span
           >
         </div>
+      </div>
+    </div>
+
+    <div v-if="tab === 'federated'" class="mt-4">
+      <p v-if="!federated.length" class="text-xs text-muted">{{ say("user-no-federated") }}</p>
+      <div v-for="link in federated" :key="link.provider_alias + link.external_user_id" class="mt-2 rounded-lg border border-border px-3 py-2.5 text-xs">
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-[11.5px]">{{ link.provider_alias }}</span>
+          <span class="ml-auto font-mono text-[10.5px] text-faint">{{ stamp(link.created_at) }}</span>
+        </div>
+        <div class="mt-1 font-mono text-[11px] text-muted">{{ link.external_username }} · {{ link.external_user_id }}</div>
+      </div>
+    </div>
+
+    <div v-if="tab === 'messages'" class="mt-4">
+      <p v-if="!messages.length" class="text-xs text-muted">{{ say("user-no-messages") }}</p>
+      <div v-for="delivery in messages" :key="delivery.delivery_id" class="mt-2 rounded-lg border border-border px-3 py-2.5 text-xs">
+        <div class="flex items-center gap-2">
+          <span class="font-mono text-[11.5px]">{{ delivery.purpose }}</span>
+          <span class="ml-auto" :class="delivery.delivered ? 'text-ok' : 'text-danger'">
+            {{ delivery.delivered ? say("user-message-delivered") : say("user-message-failed") }}
+          </span>
+        </div>
+        <div class="mt-1 text-[11px] text-muted">{{ delivery.recipient }} · {{ stamp(delivery.attempted_at) }}</div>
+        <div v-if="delivery.detail" class="mt-1 text-[11px] text-faint">{{ delivery.detail }}</div>
       </div>
     </div>
   </AppDrawer>

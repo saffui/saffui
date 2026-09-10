@@ -62,10 +62,29 @@ async function requeue(letter: DeadLetter) {
 const watching = ref(false);
 const frames = ref<LiveTold[]>([]);
 const feedFailed = ref("");
+const feedState = ref<"idle" | "connecting" | "live" | "reconnecting">("idle");
+const feedAttempt = ref(0);
 let pouring: AbortController | null = null;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+function waitForReconnect(controller: AbortController, delay: number): Promise<void> {
+  return new Promise((resolve) => {
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      resolve();
+    }, delay);
+    controller.signal.addEventListener("abort", () => {
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+      resolve();
+    }, { once: true });
+  });
+}
 function stopWatching() {
   pouring?.abort();
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
   pouring = null;
+  feedState.value = "idle";
   watching.value = false;
 }
 async function startWatching() {
@@ -74,23 +93,35 @@ async function startWatching() {
   const controller = new AbortController();
   pouring = controller;
   watching.value = true;
-  try {
-    await drinkEvents(
-      realm.value,
-      (told) => {
-        frames.value = [told, ...frames.value].slice(0, 30);
-      },
-      controller.signal,
-    );
-  } catch (refused) {
-    if (!controller.signal.aborted) {
+  let lastEventId: number | undefined;
+  while (!controller.signal.aborted) {
+    feedState.value = feedAttempt.value === 0 ? "connecting" : "reconnecting";
+    try {
+      await drinkEvents(
+        realm.value,
+        (told) => {
+          feedFailed.value = "";
+          lastEventId = Math.max(lastEventId ?? 0, told.event_id);
+          frames.value = [told, ...frames.value.filter((row) => row.event_id !== told.event_id)].slice(0, 30);
+          feedState.value = "live";
+          feedAttempt.value = 0;
+        },
+        controller.signal,
+        lastEventId,
+      );
+    } catch (refused) {
+      if (controller.signal.aborted) break;
       feedFailed.value = refused instanceof Error ? refused.message : String(refused);
     }
-  } finally {
-    if (pouring === controller) {
-      pouring = null;
-      watching.value = false;
-    }
+    if (controller.signal.aborted) break;
+    feedAttempt.value += 1;
+    const delay = Math.min(30_000, 500 * 2 ** Math.min(feedAttempt.value - 1, 6));
+    await waitForReconnect(controller, delay);
+  }
+  if (pouring === controller) {
+    pouring = null;
+    feedState.value = "idle";
+    watching.value = false;
   }
 }
 onUnmounted(stopWatching);
@@ -302,6 +333,8 @@ async function prove(row: IdpRow) {
       </button>
     </div>
     <p v-if="feedFailed" class="mt-2 text-xs text-danger" role="alert">{{ feedFailed }}</p>
+    <p v-else-if="feedState === 'connecting'" class="mt-2 text-xs text-muted" role="status">{{ say("events-live-connecting") }}</p>
+    <p v-else-if="feedState === 'reconnecting'" class="mt-2 text-xs text-warn" role="status">{{ say("events-live-reconnecting") }}</p>
     <p v-else-if="!watching && !frames.length" class="mt-2 text-xs text-muted">
       {{ say("events-live-off") }}
     </p>

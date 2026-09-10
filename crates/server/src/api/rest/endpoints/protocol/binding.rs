@@ -89,6 +89,23 @@ pub fn clear(response: &mut HttpResponseBuilder, named: &'static str, realm_id: 
     response.cookie(cookie);
 }
 
+/// Take one away from a response already built.
+///
+/// The same removal as `clear`, for the arms that answer with a response rather
+/// than a builder. A binding the server can no longer resume has to leave the
+/// browser with it: kept, it is offered again on every attempt, and every one of
+/// them is refused for the same reason the first was.
+pub fn strike(response: &mut actix_web::HttpResponse, named: &'static str, realm_id: &str) {
+    let cookie = Cookie::build(named, "")
+        .path(format!("/realms/{realm_id}"))
+        .http_only(true)
+        .secure(true)
+        .same_site(SameSite::Lax)
+        .max_age(Duration::seconds(0))
+        .finish();
+    let _ = response.add_cookie(&cookie);
+}
+
 /// Read one, or nothing.
 pub fn read(request: &HttpRequest, named: &str) -> Option<String> {
     request

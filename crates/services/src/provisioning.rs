@@ -640,18 +640,37 @@ pub async fn provision_offered_flows(
         .await?,
     );
 
-    // A passkey alone. The description carries what it depends on, because the
-    // dependency is not in the flow: without passkey-only sign-in switched on
-    // for the realm, nobody is named before the step runs and it admits
-    // nobody. A flow that refuses everyone is worse than one nothing reaches.
+    // A passkey, or a mailed link for somebody who has not enrolled one yet.
+    //
+    // The link is not a convenience, it is the way in. A passkey is enrolled
+    // through a required action, which is only reached once somebody has been
+    // admitted, so a realm bound to a key-only flow shuts out everyone who does
+    // not already hold a key, including the first person ever to sign in. Both
+    // halves are alternatives, and the one that passes settles the other.
+    //
+    // The description carries both dependencies, because neither is in the
+    // flow: without passkey-only sign-in nobody is named before the key step
+    // runs, and without signing in by address the link step never sends.
     made += u32::from(
         offer(
             transaction,
             tenant,
             realm_id,
             "passwordless",
-            "A passkey alone. Needs passkey-only sign-in switched on for this realm",
-            &[("webauthn", "webauthn", AuthenticatorRequirement::Required)],
+            "A passkey, or a mailed link for somebody with no passkey yet. Needs \
+             passkey-only sign-in and signing in by address on this realm",
+            &[
+                (
+                    "webauthn",
+                    "webauthn",
+                    AuthenticatorRequirement::Alternative,
+                ),
+                (
+                    "magic-link",
+                    "magic-link",
+                    AuthenticatorRequirement::Alternative,
+                ),
+            ],
         )
         .await?,
     );

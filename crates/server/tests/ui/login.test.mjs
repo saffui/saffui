@@ -599,3 +599,38 @@ test("the policy checklist ticks while the person types", async () => {
   page.signupForm.signup_password.fire("input");
   assert.deepEqual(met(), ["", "", ""], "the username with one capital passed");
 });
+
+// The key ceremony: what the page hands the browser, and the one thing it
+// deliberately drops on the way.
+test("a discoverable challenge is asked for modally, not through autofill", async () => {
+  const page = opened({
+    doors: "passkey",
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "webauthn",
+          // What the library hands back for a discoverable round: it forces
+          // conditional mediation, which is autofill and shows no dialogue.
+          asks: {
+            publicKey: { challenge: "abc", rpId: "id.test", allowCredentials: [] },
+            mediation: "conditional",
+          },
+        },
+      },
+    ],
+  });
+
+  await page.press("passkey-open");
+
+  assert.equal(page.ceremonies.length, 1, "the ceremony never started");
+  const asked = page.ceremonies[0];
+  assert.equal(asked.kind, "get");
+  assert.equal(
+    asked.asked.mediation,
+    undefined,
+    "conditional mediation waits on a field this page does not have, so nothing appears",
+  );
+  assert.equal(asked.asked.publicKey.challenge, "abc", "the challenge was not handed over");
+  assert.equal(page.element("key").hidden, false, "the waiting line was not shown");
+});

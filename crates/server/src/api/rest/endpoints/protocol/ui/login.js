@@ -495,10 +495,16 @@
           answered.webauthn_register = JSON.stringify(created.toJSON());
         });
     } else {
+      // The mediation the challenge carries is deliberately not passed on.
+      // A discoverable challenge arrives asking for conditional mediation,
+      // which is autofill: it shows no dialogue and waits for a passkey to be
+      // picked from a field marked for it. This page has no such field, and
+      // by here the fields are hidden anyway, so conditional mediation is a
+      // ceremony that never appears and never ends. Whoever pressed the
+      // button asked for the picker, so the browser is asked for it.
       asked = navigator.credentials
         .get({
           publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(options),
-          mediation: told.asks.mediation || undefined,
         })
         .then(function (got) {
           answered.webauthn = JSON.stringify(got.toJSON());

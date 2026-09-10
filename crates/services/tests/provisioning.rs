@@ -656,19 +656,41 @@ async fn a_realm_is_offered_flows_and_binds_none_of_them() {
         );
     }
 
-    // The passkey flow says what it depends on, because the dependency is not
-    // in the flow: without passkey-only sign-in, nobody is named before the
-    // step runs and it admits nobody. A flow that refuses everyone is worse
-    // than one nothing reaches, so the reason travels with it.
+    // The passkey flow keeps a way in for somebody holding no passkey. A key is
+    // enrolled through a required action, which is only reached once somebody
+    // has been admitted, so a key-only flow shuts out everyone who does not
+    // already hold one, including the first person ever to sign in.
+    let passkey = store::providers::auth_flows::executions_of(&transaction, "passwordless")
+        .await
+        .expect("the store answered");
+    for step in &passkey {
+        assert_eq!(
+            step.requirement,
+            models::entities::auth::AuthenticatorRequirement::Alternative,
+            "{} is the only way in, and a passkey cannot be enrolled without one",
+            step.alias
+        );
+    }
+    let ways: Vec<&str> = passkey.iter().map(|step| step.alias.as_str()).collect();
+    assert!(
+        ways.contains(&"webauthn") && ways.contains(&"magic-link"),
+        "the flow offers no way in for somebody with no passkey yet: {ways:?}"
+    );
+
+    // And it says what it depends on, because neither dependency is in the
+    // flow: without passkey-only sign-in nobody is named before the key step
+    // runs, and without signing in by address the link step never sends.
     let passkey = store::providers::auth_flows::flow_by_alias(&transaction, "passwordless")
         .await
         .expect("the store answered")
         .expect("it was offered");
-    assert!(
-        passkey.description.contains("passkey-only sign-in"),
-        "the flow does not say what it needs: {}",
-        passkey.description
-    );
+    for needed in ["passkey-only sign-in", "by address"] {
+        assert!(
+            passkey.description.contains(needed),
+            "the flow does not say it needs {needed}: {}",
+            passkey.description
+        );
+    }
 
     // And the mailed one says the same about the door that names the person.
     let mailed = store::providers::auth_flows::flow_by_alias(&transaction, "mailed-link")

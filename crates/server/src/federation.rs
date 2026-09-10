@@ -1,10 +1,13 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use crate::api::rest::endpoints::protocol::hosted::{Outward, PATIENCE, may_dial};
 use auth::login::directory::{Bound, Directory, DirectoryPerson};
+use config::serving::Egress;
 use crypto::secrecy::{ExposeSecret, SecretBox};
 use ldap3::{LdapConnAsync, Scope, SearchEntry};
 use services::federation::LdapSettings;
+use ureq::unversioned::resolver::DefaultResolver;
 
 /// The realm's directory, answered over LDAP. The one place in the
 /// workspace a directory protocol is spoken: the flow engine sees the port
@@ -500,6 +503,7 @@ pub async fn deliver_outbox(
     sealing: &crate::api::config::Sealing,
     origin: &config::serving::PublicOrigin,
     context: &store::tenancy::TenantContext,
+    egress: Egress,
     backoff_seconds: i64,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<Told, ()> {
@@ -616,7 +620,7 @@ pub async fn deliver_outbox(
                     }
                     services::caep::Delivery::Push => {
                         let bearer = opened_bearer(transaction, sealing, context, row).await;
-                        if !push_set(receiver, bearer.as_deref(), &set.token).await {
+                        if !push_set(receiver, bearer.as_deref(), &set.token, egress).await {
                             landed = false;
                         }
                     }
@@ -628,7 +632,7 @@ pub async fn deliver_outbox(
         if event.kind.starts_with("user.") {
             for (row, connector) in &connectors {
                 let bearer = opened_bearer(transaction, sealing, context, row).await;
-                if !push_one(connector, bearer.as_deref(), &event).await {
+                if !push_one(connector, bearer.as_deref(), &event, egress).await {
                     landed = false;
                 }
             }
@@ -663,7 +667,16 @@ pub async fn deliver_outbox(
                     landed = false;
                     continue;
                 };
-                if !push_json(hook, &signature, &event.kind, event.event_id, body.clone()).await {
+                if !push_json(
+                    hook,
+                    &signature,
+                    &event.kind,
+                    event.event_id,
+                    body.clone(),
+                    egress,
+                )
+                .await
+                {
                     landed = false;
                 }
             }
@@ -726,11 +739,19 @@ pub(crate) async fn opened_bearer(
 /// The synthetic telling, delivered now and answered with what the far
 /// side said: signed like any real one, so the consumer's verification is
 /// exercised too.
-async fn ask_webhook(hook: &services::webhook::Webhook, signature: &str, body: String) -> Proof {
+async fn ask_webhook(
+    hook: &services::webhook::Webhook,
+    signature: &str,
+    body: String,
+    egress: Egress,
+) -> Proof {
     let url = hook.url.clone();
     let signature = signature.to_owned();
     let answered = tokio::task::spawn_blocking(move || {
-        let agent = far_side_agent();
+        if !may_dial(&url, egress) {
+            return None;
+        }
+        let agent = far_side_agent(egress);
         match agent
             .post(&url)
             .header("content-type", "application/json")
@@ -809,12 +830,16 @@ pub(crate) async fn push_json(
     kind: &str,
     event_id: i64,
     body: String,
+    egress: Egress,
 ) -> bool {
     let url = hook.url.clone();
     let signature = signature.to_owned();
     let kind = kind.to_owned();
     tokio::task::spawn_blocking(move || {
-        let agent = far_side_agent();
+        if !may_dial(&url, egress) {
+            return false;
+        }
+        let agent = far_side_agent(egress);
         agent
             .post(&url)
             .header("content-type", "application/json")
@@ -830,30 +855,41 @@ pub(crate) async fn push_json(
 
 /// The agent every ask to a far side rides: a short global timeout, no
 /// redirects followed, the platform's own roots trusted.
-fn far_side_agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(std::time::Duration::from_secs(10)))
-        .max_redirects(0)
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .provider(ureq::tls::TlsProvider::NativeTls)
-                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                .build(),
-        )
-        .build()
-        .new_agent()
+fn far_side_agent(egress: Egress) -> ureq::Agent {
+    ureq::Agent::with_parts(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(PATIENCE))
+            .max_redirects(0)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .provider(ureq::tls::TlsProvider::NativeTls)
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build(),
+        ureq::unversioned::transport::DefaultConnector::new(),
+        Outward(DefaultResolver::default(), egress),
+    )
 }
 
 /// Hand one Security Event Token to one receiver, RFC 8935: a POST whose
 /// body is the token, acknowledged with a bare success.
-async fn push_set(receiver: &services::caep::Receiver, bearer: Option<&str>, set: &str) -> bool {
+async fn push_set(
+    receiver: &services::caep::Receiver,
+    bearer: Option<&str>,
+    set: &str,
+    egress: Egress,
+) -> bool {
     let Some(endpoint) = receiver.endpoint.clone() else {
         return false;
     };
     let bearer = bearer.map(str::to_owned);
     let set = set.to_owned();
     tokio::task::spawn_blocking(move || {
-        let agent = far_side_agent();
+        if !may_dial(&endpoint, egress) {
+            return false;
+        }
+        let agent = far_side_agent(egress);
         let mut asked = agent
             .post(&endpoint)
             .header("content-type", "application/secevent+jwt")
@@ -874,12 +910,16 @@ async fn push_one(
     connector: &services::outbound::Connector,
     bearer: Option<&str>,
     event: &store::providers::outbox::OutboxEvent,
+    egress: Egress,
 ) -> bool {
     let base = connector.base_url.clone();
     let bearer = bearer.unwrap_or_default().to_owned();
     let event = event.clone();
     tokio::task::spawn_blocking(move || {
-        let agent = far_side_agent();
+        if !may_dial(&base, egress) {
+            return false;
+        }
+        let agent = far_side_agent(egress);
         let authorization = format!("Bearer {bearer}");
         let found: Option<String> = agent
             .get(&format!(
@@ -892,6 +932,8 @@ async fn push_one(
             .and_then(|mut response| {
                 response
                     .body_mut()
+                    .with_config()
+                    .limit(64 * 1024)
                     .read_to_string()
                     .ok()
                     .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
@@ -972,6 +1014,7 @@ pub async fn prove_delivery(
     origin: &config::serving::PublicOrigin,
     context: &store::tenancy::TenantContext,
     alias: &str,
+    egress: Egress,
 ) -> Result<Proof, Unprovable> {
     let row = store::providers::brokering::provider_by_alias(transaction, alias)
         .await
@@ -984,7 +1027,7 @@ pub async fn prove_delivery(
         let connector = services::outbound::Connector::parse(&row)
             .map_err(|why| Unprovable::NotProvable(why.to_string()))?;
         let bearer = opened_bearer(transaction, sealing, context, &row).await;
-        return Ok(ask_scim_root(&connector, bearer.as_deref()).await);
+        return Ok(ask_scim_root(&connector, bearer.as_deref(), egress).await);
     }
     if services::webhook::is_webhook(&row) {
         let hook = services::webhook::Webhook::parse(&row)
@@ -1006,7 +1049,7 @@ pub async fn prove_delivery(
             .ok_or_else(|| {
                 Unprovable::NotProvable("the webhook's secret could not be opened".to_owned())
             })?;
-        return Ok(ask_webhook(&hook, &signature, body).await);
+        return Ok(ask_webhook(&hook, &signature, body, egress).await);
     }
     if services::caep::is_receiver(&row) {
         let receiver = services::caep::Receiver::parse(&row)
@@ -1046,7 +1089,7 @@ pub async fn prove_delivery(
         return Ok(match receiver.delivery {
             services::caep::Delivery::Push => {
                 let bearer = opened_bearer(transaction, sealing, context, &row).await;
-                push_verification(&receiver, bearer.as_deref(), &set.token).await
+                push_verification(&receiver, bearer.as_deref(), &set.token, egress).await
             }
             services::caep::Delivery::Poll => {
                 store::providers::caep_queue::queue(
@@ -1075,11 +1118,18 @@ pub async fn prove_delivery(
 /// Ask the SCIM root who it is, the way RFC 7644 lets anybody ask: GET
 /// ServiceProviderConfig with the bearer attached. Answering 2xx with a
 /// document naming its schemas proves the root and the bearer in one trip.
-async fn ask_scim_root(connector: &services::outbound::Connector, bearer: Option<&str>) -> Proof {
+async fn ask_scim_root(
+    connector: &services::outbound::Connector,
+    bearer: Option<&str>,
+    egress: Egress,
+) -> Proof {
     let asked = format!("{}/ServiceProviderConfig", connector.base_url);
     let authorization = bearer.map(|held| format!("Bearer {held}"));
     let answered = tokio::task::spawn_blocking(move || {
-        let agent = far_side_agent();
+        if !may_dial(&asked, egress) {
+            return Err("the endpoint is not allowed by egress policy".to_owned());
+        }
+        let agent = far_side_agent(egress);
         let mut asking = agent.get(&asked).header("accept", "application/scim+json");
         if let Some(authorization) = &authorization {
             asking = asking.header("authorization", authorization);
@@ -1087,7 +1137,12 @@ async fn ask_scim_root(connector: &services::outbound::Connector, bearer: Option
         match asking.call() {
             Ok(mut answer) => {
                 let status = answer.status().as_u16();
-                let body = answer.body_mut().read_to_string().unwrap_or_default();
+                let body = answer
+                    .body_mut()
+                    .with_config()
+                    .limit(64 * 1024)
+                    .read_to_string()
+                    .unwrap_or_default();
                 Ok((status, body))
             }
             Err(ureq::Error::StatusCode(code)) => Ok((code, String::new())),
@@ -1145,6 +1200,7 @@ async fn push_verification(
     receiver: &services::caep::Receiver,
     bearer: Option<&str>,
     set: &str,
+    egress: Egress,
 ) -> Proof {
     let Some(endpoint) = receiver.endpoint.clone() else {
         return Proof {
@@ -1157,7 +1213,10 @@ async fn push_verification(
     let authorization = bearer.map(|held| format!("Bearer {held}"));
     let set = set.to_owned();
     let answered = tokio::task::spawn_blocking(move || {
-        let agent = far_side_agent();
+        if !may_dial(&endpoint, egress) {
+            return Err("the endpoint is not allowed by egress policy".to_owned());
+        }
+        let agent = far_side_agent(egress);
         let mut asking = agent
             .post(&endpoint)
             .header("content-type", "application/secevent+jwt")

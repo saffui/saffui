@@ -2,6 +2,8 @@ import { defineStore } from "pinia";
 import { peek, type Tokens } from "saffui-js";
 import { clientFor, rememberRealm, rememberedRealm, returnUri } from "@/services/auth";
 
+let renewal: Promise<string> | null = null;
+
 /// Who is signed in, into which realm, holding what. Tokens live in memory
 /// only: a reload signs in again through the server's own session cookie,
 /// which is the durable thing.
@@ -41,12 +43,23 @@ export const useSession = defineStore("session", {
     async bearer(): Promise<string> {
       if (this.accessToken && Date.now() < this.expiresAt) return this.accessToken;
       if (this.refreshToken) {
+        const realm = this.realm;
+        const held = this.refreshToken;
+        if (!renewal) {
+          renewal = clientFor(realm)
+            .renew(held)
+            .then((renewed) => {
+              if (this.refreshToken === held) this.adopt(realm, renewed);
+              return this.accessToken;
+            })
+            .finally(() => {
+              renewal = null;
+            });
+        }
         try {
-          const renewed = await clientFor(this.realm).renew(this.refreshToken);
-          this.adopt(this.realm, renewed);
-          return this.accessToken;
+          return await renewal;
         } catch {
-          // A refusal here is a session that ended; fall through to sign-out.
+          this.signOut();
         }
       }
       this.signOut();

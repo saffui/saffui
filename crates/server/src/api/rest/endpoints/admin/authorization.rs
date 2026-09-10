@@ -223,13 +223,13 @@ macro_rules! surface {
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String, String)>,
         ) -> Result<HttpResponse, ApiError> {
-            let (realm_id, _server, id) = path.into_inner();
+            let (realm_id, server_id, id) = path.into_inner();
             let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
                 .transaction(&mut connection, &within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
-            authz::$delete_call(&transaction, &id)
+            authz::$delete_call(&transaction, &server_id, &id)
                 .await
                 .map_err(|why| refused(why, ErrorCode::$missing))?;
             transaction.commit().await.map_err(|_| internal())?;

@@ -216,8 +216,16 @@ pub async fn rework_resource(
 
 pub async fn remove_resource(
     transaction: &Transaction<'_>,
+    server_id: &str,
     resource_id: &str,
 ) -> Result<(), Unwritable> {
+    let held = authz_surface::load_resource(transaction, resource_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .ok_or(Unwritable::NotFound)?;
+    if held.server_id != server_id {
+        return Err(Unwritable::NotFound);
+    }
     authz_surface::delete_resource(transaction, resource_id)
         .await
         .map_err(carried)?
@@ -288,7 +296,18 @@ pub async fn rework_scope(
         .ok_or(Unwritable::NotFound)
 }
 
-pub async fn remove_scope(transaction: &Transaction<'_>, scope_id: &str) -> Result<(), Unwritable> {
+pub async fn remove_scope(
+    transaction: &Transaction<'_>,
+    server_id: &str,
+    scope_id: &str,
+) -> Result<(), Unwritable> {
+    let held = authz_surface::load_scope(transaction, scope_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .ok_or(Unwritable::NotFound)?;
+    if held.server_id != server_id {
+        return Err(Unwritable::NotFound);
+    }
     authz_surface::delete_scope(transaction, scope_id)
         .await
         .map_err(carried)?

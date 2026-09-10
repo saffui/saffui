@@ -210,6 +210,7 @@ pub async fn replay(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<crate::api::config::Sealing>,
+    egress: web::Data<config::serving::Egress>,
     path: web::Path<String>,
     body: web::Json<ReplayAsk>,
 ) -> Result<HttpResponse, ApiError> {
@@ -289,7 +290,15 @@ pub async fn replay(
             failed += 1;
             continue;
         };
-        if crate::federation::push_json(&hook, &signature, &event.kind, event.event_id, body).await
+        if crate::federation::push_json(
+            &hook,
+            &signature,
+            &event.kind,
+            event.event_id,
+            body,
+            **egress,
+        )
+        .await
         {
             delivered += 1;
         } else {

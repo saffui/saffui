@@ -1,10 +1,13 @@
 use chrono::{DateTime, Utc};
+use crypto::envelope::Envelope;
 use deadpool_postgres::Transaction;
 use models::entities::attributes;
+use models::entities::brokering::UserClaimSourceModel;
 use models::entities::keys::RealmSigningKeyView;
 use models::entities::user::{UserModel, address, profile};
 use serde_json::{Map, Value, json};
-use store::providers::{client_scopes, clients, sessions, users};
+use store::providers::{brokering, client_scopes, clients, sessions, users};
+use store::tenancy::TenantContext;
 
 use crate::token;
 use crate::token::issuance::Kind;
@@ -130,6 +133,7 @@ pub async fn claims_for(
     // proxy said it presented, or neither. A token naming one is refused here
     // without it.
     proofs: token::Proofs<'_>,
+    opener: &TokenOpener<'_>,
     now: DateTime<Utc>,
 ) -> Result<Answer, Untold> {
     let verified = token::verify_presented(
@@ -214,7 +218,7 @@ pub async fn claims_for(
     // theirs. Read after the realm's own claims, so a source only ever
     // speaks where the realm is silent, and bounded by what the token's
     // scopes stand for plus what was asked by name.
-    let sources = store::providers::brokering::claim_sources_of(transaction, &account)
+    let sources = sources_to_release(transaction, opener, &account)
         .await
         .map_err(|_| Untold::Unreadable)?;
     if !sources.is_empty()
@@ -275,6 +279,7 @@ pub fn claims_of_scope(scope: &str, held: &Map<String, Value>) -> Map<String, Va
 /// holds of this person and of what the client is entitled to be told.
 pub async fn asked_id_token_claims(
     transaction: &Transaction<'_>,
+    signing: &crate::grant::Signing<'_>,
     asked: Option<&Value>,
     client_id: &str,
     user_id: &str,
@@ -298,7 +303,7 @@ pub async fn asked_id_token_claims(
     // provider answers for is pointed at that provider, where this realm is
     // silent. The same ceiling as the release above; the mint writes these
     // last-if-absent, so no registered claim can be displaced.
-    let sources = store::providers::brokering::claim_sources_of(transaction, user_id)
+    let sources = sources_to_release(transaction, &TokenOpener::Loaded(signing), user_id)
         .await
         .map_err(|_| ())?;
     if !sources.is_empty() {
@@ -481,6 +486,46 @@ mod tests {
             !granted("profile_extended", "profile"),
             "a longer name that starts the same is not the same scope"
         );
+    }
+}
+
+/// What opens a held fetch token: the ring a minting already loaded, or what
+/// loading one takes, paid only by a person who holds a token.
+pub enum TokenOpener<'a> {
+    Loaded(&'a crate::grant::Signing<'a>),
+    Unloaded {
+        envelope: &'a Envelope,
+        tenant: &'a TenantContext,
+    },
+}
+
+/// A person's sources as a release reads them, the one read that opens their
+/// fetch tokens.
+async fn sources_to_release(
+    transaction: &Transaction<'_>,
+    opener: &TokenOpener<'_>,
+    user_id: &str,
+) -> store::error::StoreResult<Vec<UserClaimSourceModel>> {
+    match opener {
+        TokenOpener::Loaded(signing) => {
+            brokering::released_claim_sources_of(
+                transaction,
+                signing.ring,
+                signing.envelope,
+                user_id,
+            )
+            .await
+        }
+        TokenOpener::Unloaded { envelope, tenant } => {
+            let sources = brokering::claim_sources_of(transaction, user_id).await?;
+            if sources.iter().all(|source| source.endpoint_token.is_none()) {
+                return Ok(sources);
+            }
+            let ring =
+                store::keyring::load(transaction, envelope, &tenant.tenant, &tenant.realm_id)
+                    .await?;
+            brokering::released_claim_sources_of(transaction, &ring, envelope, user_id).await
+        }
     }
 }
 

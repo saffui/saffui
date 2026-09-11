@@ -589,6 +589,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V097__role_composites.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 98,
+            name: "claim_source_token_sealing",
+            sql: include_str!("../migrations/V098__claim_source_token_sealing.sql"),
+            transactional: true,
+        }),
     ]
 }
 

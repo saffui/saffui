@@ -1,13 +1,16 @@
 use chrono::{DateTime, Utc};
+use crypto::envelope::Envelope;
 use deadpool_postgres::Transaction;
 use models::entities::authz::IdentityProviderModel;
 use models::entities::brokering::{
     BrokerLoginState, FederatedIdentityModel, IdpMapperModel, RealmSpnegoModel,
     UserClaimSourceModel, UserFederationModel,
 };
+use secrecy::ExposeSecret;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
+use crate::keyring::RealmKeyring;
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
@@ -623,14 +626,43 @@ fn read_federation(row: Row) -> UserFederationModel {
 }
 
 const SOURCE_COLUMNS: &str = "tenant, realm_id, source_id, user_id, claims, kind, jwt, endpoint, \
-                              endpoint_token, created_by, created_at, updated_by, updated_at, \
-                              version";
+                              created_by, created_at, updated_by, updated_at, version";
 
-/// Record what another provider answers for about this person.
+const SOURCE_TOKEN_PURPOSE: &str = "claim-source-token";
+
+/// What a source read back carries in place of the fetch token it holds.
+pub const CONCEALED_TOKEN: &str = "**********";
+
+/// A fetch token on its way in, with the ring that seals it.
+pub struct TokenToSeal<'a> {
+    pub token: &'a str,
+    pub ring: &'a RealmKeyring,
+    pub envelope: &'a Envelope,
+}
+
+/// Record what another provider answers for about this person. The model's
+/// token field is never written: a fetch token arrives apart, to be sealed.
 pub async fn create_claim_source(
     transaction: &Transaction<'_>,
     source: &UserClaimSourceModel,
+    token: Option<TokenToSeal<'_>>,
 ) -> StoreResult<()> {
+    let (sealed, version) = match token {
+        None => (None, None),
+        Some(held) => (
+            Some(
+                held.ring
+                    .seal(
+                        held.envelope,
+                        SOURCE_TOKEN_PURPOSE,
+                        &source.source_id,
+                        held.token.as_bytes(),
+                    )
+                    .await?,
+            ),
+            Some(held.ring.active_version() as i32),
+        ),
+    };
     let set = WriteSet::insert(vec![
         col("tenant", &source.metadata.tenant),
         col("realm_id", &source.realm_id),
@@ -640,7 +672,8 @@ pub async fn create_claim_source(
         col("kind", &source.kind),
         col("jwt", &source.jwt),
         col("endpoint", &source.endpoint),
-        col("endpoint_token", &source.endpoint_token),
+        col("sealed_token", &sealed),
+        col("sealed_version", &version),
         col("created_by", &source.metadata.created_by),
     ]);
     transaction
@@ -654,13 +687,16 @@ pub async fn create_claim_source(
 }
 
 /// Every source answering for this person, oldest first, so which source a
-/// claim points at does not move between reads.
+/// claim points at does not move between reads. A held fetch token reads
+/// back as [`CONCEALED_TOKEN`], never as itself.
 pub async fn claim_sources_of(
     transaction: &Transaction<'_>,
     user_id: &str,
 ) -> StoreResult<Vec<UserClaimSourceModel>> {
     let statement = format!(
-        "SELECT {SOURCE_COLUMNS} FROM user_claim_sources \
+        "SELECT {SOURCE_COLUMNS}, \
+                (sealed_token IS NOT NULL OR endpoint_token IS NOT NULL) AS holds_token \
+         FROM user_claim_sources \
          WHERE user_id = $1 ORDER BY created_at ASC, source_id ASC"
     );
     Ok(transaction
@@ -668,8 +704,49 @@ pub async fn claim_sources_of(
         .await
         .map_err(|_| StoreError::Backend)?
         .into_iter()
-        .map(read_claim_source)
+        .map(|row| {
+            let held = row
+                .get::<_, bool>("holds_token")
+                .then(|| CONCEALED_TOKEN.to_owned());
+            read_claim_source(row, held)
+        })
         .collect())
+}
+
+/// The same sources with their fetch tokens opened, for the one answer a
+/// token goes into: the release to a relying party.
+pub async fn released_claim_sources_of(
+    transaction: &Transaction<'_>,
+    ring: &RealmKeyring,
+    envelope: &Envelope,
+    user_id: &str,
+) -> StoreResult<Vec<UserClaimSourceModel>> {
+    let statement = format!(
+        "SELECT {SOURCE_COLUMNS}, sealed_token, endpoint_token FROM user_claim_sources \
+         WHERE user_id = $1 ORDER BY created_at ASC, source_id ASC"
+    );
+    let rows = transaction
+        .query(statement.as_str(), &[&user_id])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let mut released = Vec::with_capacity(rows.len());
+    for row in rows {
+        let token = match row.get::<_, Option<Vec<u8>>>("sealed_token") {
+            Some(sealed) => {
+                let source_id: String = row.get("source_id");
+                let opened = ring
+                    .open(envelope, SOURCE_TOKEN_PURPOSE, &source_id, &sealed)
+                    .await?;
+                Some(
+                    String::from_utf8(opened.expose_secret().clone())
+                        .map_err(|_| StoreError::Backend)?,
+                )
+            }
+            None => row.get("endpoint_token"),
+        };
+        released.push(read_claim_source(row, token));
+    }
+    Ok(released)
 }
 
 /// Remove one source, and say whether it was there and this person's.
@@ -688,7 +765,7 @@ pub async fn delete_claim_source(
     Ok(removed > 0)
 }
 
-fn read_claim_source(row: Row) -> UserClaimSourceModel {
+fn read_claim_source(row: Row, endpoint_token: Option<String>) -> UserClaimSourceModel {
     UserClaimSourceModel {
         source_id: row.get("source_id"),
         realm_id: row.get("realm_id"),
@@ -697,7 +774,7 @@ fn read_claim_source(row: Row) -> UserClaimSourceModel {
         kind: row.get("kind"),
         jwt: row.get("jwt"),
         endpoint: row.get("endpoint"),
-        endpoint_token: row.get("endpoint_token"),
+        endpoint_token,
         metadata: models::auditable::AuditableModel {
             tenant: row.get("tenant"),
             created_by: row.get("created_by"),

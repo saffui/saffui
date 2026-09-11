@@ -111,6 +111,10 @@ pub async fn tell(
             key: proven.as_ref(),
             certificate: certificate.as_deref(),
         },
+        &userinfo::TokenOpener::Unloaded {
+            envelope: &sealing.envelope,
+            tenant: &context,
+        },
         now,
     )
     .await

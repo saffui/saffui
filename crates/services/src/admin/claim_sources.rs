@@ -1,3 +1,4 @@
+use crypto::envelope::Envelope;
 use crypto::provider::CryptoProvider;
 use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Transaction;
@@ -5,7 +6,8 @@ use models::auditable::AuditableModel;
 use models::entities::brokering::{
     ClaimSourceKind, UserClaimSourceModel, UserClaimSourceMutationModel,
 };
-use store::providers::{brokering, users};
+use store::providers::brokering::{self, CONCEALED_TOKEN, TokenToSeal};
+use store::providers::users;
 
 /// Why a source could not be written. Verified before writing; the store
 /// underneath flattens every refusal into a backend error.
@@ -102,9 +104,16 @@ fn check(
     Ok(())
 }
 
+/// Record a source. Its fetch token is sealed on the way in and never read
+/// back, not even by the answer to this write.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one source"
+)]
 pub async fn add(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
+    envelope: &Envelope,
     tenant: &str,
     realm_id: &str,
     by: &str,
@@ -122,6 +131,7 @@ pub async fn add(
         .rand()
         .fill(&mut bytes)
         .map_err(|_| Unwritable::Backend)?;
+    let token = asked.endpoint_token.filter(|held| !held.is_empty());
     let source = UserClaimSourceModel {
         source_id: format!("src-{}", BASE64URL_NOPAD.encode(&bytes)),
         realm_id: realm_id.to_owned(),
@@ -130,12 +140,24 @@ pub async fn add(
         kind: asked.kind,
         jwt: asked.jwt,
         endpoint: asked.endpoint,
-        endpoint_token: asked.endpoint_token,
+        endpoint_token: token.as_ref().map(|_| CONCEALED_TOKEN.to_owned()),
         metadata: AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     };
-    brokering::create_claim_source(transaction, &source)
-        .await
-        .map_err(|_| Unwritable::Backend)?;
+    match token.as_deref() {
+        None => brokering::create_claim_source(transaction, &source, None).await,
+        Some(token) => {
+            let ring = store::keyring::load(transaction, envelope, tenant, realm_id)
+                .await
+                .map_err(|_| Unwritable::Backend)?;
+            let sealing = TokenToSeal {
+                token,
+                ring: &ring,
+                envelope,
+            };
+            brokering::create_claim_source(transaction, &source, Some(sealing)).await
+        }
+    }
+    .map_err(|_| Unwritable::Backend)?;
     Ok(source)
 }
 

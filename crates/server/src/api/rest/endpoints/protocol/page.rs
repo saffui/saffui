@@ -322,10 +322,12 @@ async fn read_live_login(
 /// Where somebody is sent back to when the login a page was served for can no
 /// longer finish: the client's home page, or its root otherwise.
 fn find_way_back(client: &models::entities::client::ClientModel) -> Option<WayBack> {
+    // A self-registered client writes its own home page, and an address of any
+    // other scheme runs as script in the origin people type passwords into.
     let address = [client.client_uri.as_deref(), client.root_url.as_deref()]
         .into_iter()
         .flatten()
-        .find(|held| may_link_to(held))?;
+        .find(|held| commons::address::is_https_or_loopback(held))?;
     let name = [&client.display_name, &client.name]
         .into_iter()
         .find(|held| !held.trim().is_empty())
@@ -334,36 +336,6 @@ fn find_way_back(client: &models::entities::client::ClientModel) -> Option<WayBa
         address: address.to_owned(),
         name: name.clone(),
     })
-}
-
-/// Whether an address may be written into an anchor on the sign-in page.
-///
-/// A self-registered client writes its own home page, and an address of any
-/// other scheme runs as script in the origin people type passwords into. So
-/// https, and plain http only on a loopback host, which is a developer's own.
-fn may_link_to(address: &str) -> bool {
-    if address
-        .strip_prefix("https://")
-        .is_some_and(|rest| !rest.is_empty())
-    {
-        return true;
-    }
-    let Some(rest) = address.strip_prefix("http://") else {
-        return false;
-    };
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    // Whatever stands before an `@` is credentials, and the host is after it.
-    if authority.contains('@') {
-        return false;
-    }
-    let host = match authority.strip_prefix('[') {
-        Some(bracketed) => bracketed
-            .split_once(']')
-            .filter(|(_, after)| after.is_empty() || after.starts_with(':'))
-            .map(|(inner, _)| inner),
-        None => authority.split(':').next(),
-    };
-    matches!(host, Some("localhost" | "127.0.0.1" | "::1"))
 }
 
 /// What this realm says about tongues, read fresh; a realm that cannot be
@@ -716,8 +688,8 @@ const RESET_PAGE: &str = r#"<!doctype html>
 mod tests {
     use super::SCRIPT;
     use super::federated_doors;
+    use super::find_way_back;
     use super::i18n;
-    use super::{find_way_back, may_link_to};
     use models::auditable::AuditableModel;
     use models::entities::client::{ClientCreateModel, ClientModel};
 
@@ -736,40 +708,6 @@ mod tests {
         client.client_uri = home.map(str::to_owned);
         client.root_url = root.map(str::to_owned);
         client
-    }
-
-    /// Only an address that can be nothing but a page is written into the
-    /// sign-in page's anchor. Plain http is a developer's machine or nothing,
-    /// and a host is read the way a browser reads it, credentials and all.
-    #[test]
-    fn the_page_links_only_to_what_can_only_be_a_page() {
-        for offered in [
-            "https://app.example",
-            "https://app.example/home?from=login#top",
-            "http://localhost:8080/console/",
-            "http://localhost",
-            "http://127.0.0.1:3000",
-            "http://[::1]:8080/",
-        ] {
-            assert!(may_link_to(offered), "{offered} was refused");
-        }
-        for refused in [
-            "javascript:alert(1)",
-            "JAVASCRIPT:alert(1)",
-            " https://app.example",
-            "data:text/html,<script>alert(1)</script>",
-            "https://",
-            "",
-            "//app.example",
-            "http://app.example",
-            "http://localhost.evil.example/",
-            "http://localhost@evil.example/",
-            "http://localhost:8080@evil.example/",
-            "http://127.0.0.1.evil.example/",
-            "http://[::1].evil.example/",
-        ] {
-            assert!(!may_link_to(refused), "{refused} was offered");
-        }
     }
 
     /// The home page first, the root otherwise, and an address that could run

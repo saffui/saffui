@@ -45,10 +45,7 @@ fn text<'a>(bag: &'a AttributesMap, key: &str) -> Option<&'a str> {
 /// An endpoint an operator may point at: https, or loopback for a bench.
 fn addressed(bag: &AttributesMap, key: &'static str) -> Result<String, Unusable> {
     let given = text(bag, key).ok_or(Unusable::Missing(key))?;
-    let secure = given.starts_with("https://")
-        || given.starts_with("http://127.0.0.1")
-        || given.starts_with("http://localhost");
-    if !secure {
+    if !commons::address::is_https_or_loopback(given) {
         return Err(Unusable::Insecure(key));
     }
     Ok(given.to_owned())
@@ -630,4 +627,74 @@ fn hashed(provider: &dyn CryptoProvider, state: &str) -> Result<String, Unbroker
             .hash(HashAlg::Sha256, state.as_bytes())
             .map_err(|_| Unbrokered::Backend)?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use models::auditable::AuditableModel;
+    use models::entities::authz::IdentityProviderMutationModel;
+
+    const ENDPOINTS: [&str; 3] = ["authorization_endpoint", "token_endpoint", "jwks_uri"];
+
+    fn provider_with(endpoint: &str, address: &str) -> IdentityProviderModel {
+        let mut configs: AttributesMap = [
+            ("issuer", "https://idp.example"),
+            ("client_id", "saffui"),
+            ("authorization_endpoint", "https://idp.example/auth"),
+            ("token_endpoint", "https://idp.example/token"),
+            ("jwks_uri", "https://idp.example/certs"),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), AttributeValue::Str(value.to_owned())))
+        .collect();
+        configs.insert(endpoint.to_owned(), AttributeValue::Str(address.to_owned()));
+        IdentityProviderMutationModel {
+            provider_id: "upstream".into(),
+            name: "upstream".into(),
+            display_name: "Upstream".into(),
+            description: String::new(),
+            enabled: Some(true),
+            trust_email: Some(false),
+            configs: Some(configs),
+        }
+        .into_model(
+            "idp-1".into(),
+            "main".into(),
+            AuditableModel::from_creator("local".into(), "root".into()),
+        )
+    }
+
+    /// Every endpoint is dialled over https, or in clear only on this machine:
+    /// never on a host that merely begins like loopback, or hides behind one.
+    #[test]
+    fn plain_http_reaches_only_a_loopback_upstream() {
+        for endpoint in ENDPOINTS {
+            for accepted in [
+                "https://idp.example",
+                "http://localhost:8080/x",
+                "http://127.0.0.1:3000",
+                "http://[::1]:8080/",
+            ] {
+                let parsed = Upstream::parse(&provider_with(endpoint, accepted));
+                assert!(parsed.is_ok(), "{endpoint} at {accepted} was refused");
+            }
+            for refused in [
+                "http://localhost.evil.example/token",
+                "http://127.0.0.1.evil.example/token",
+                "http://localhost@evil.example/token",
+                "http://localhost:8080@evil.example/token",
+                "http://[::1].evil.example/token",
+                "http://idp.example",
+                "https://",
+                "javascript:alert(1)",
+            ] {
+                let parsed = Upstream::parse(&provider_with(endpoint, refused));
+                assert!(
+                    matches!(parsed, Err(Unusable::Insecure(named)) if named == endpoint),
+                    "{endpoint} at {refused} was not refused as insecure: {parsed:?}"
+                );
+            }
+        }
+    }
 }

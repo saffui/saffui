@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import { afterWrites } from "@/services/writes";
-import { useRoute } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 import { say } from "@/i18n";
 import {
   attachMapperToScope,
@@ -133,6 +133,9 @@ async function unfold(scope: ClientScope) {
       <span v-if="scopes.length" class="font-mono text-[11px] text-faint">{{
         scopes.length
       }}</span>
+      <RouterLink :to="`/${realm}/protocol-mappers`" class="text-xs text-muted hover:text-ink">
+        {{ say("mappers-title") }}
+      </RouterLink>
     </div>
     <p class="mt-1 text-xs text-muted">{{ say("scopes-lede") }}</p>
 

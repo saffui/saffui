@@ -280,6 +280,62 @@ async fn the_overview_answers_its_numbers_together() {
 
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn business_metrics_are_realm_scoped_and_windowed() {
+    let plane = Plane::with_actions(&[AdminAction::MetricsRead]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, told) = asked(
+        &plane,
+        Method::GET,
+        "/admin/realms/main/metrics?window_seconds=3600",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["window_seconds"], 3600);
+    for named in [
+        "total",
+        "permits",
+        "denials",
+        "indeterminate",
+        "disagreements",
+    ] {
+        assert!(told["decisions"][named].is_i64(), "{named}: {told}");
+    }
+    for named in [
+        "total",
+        "signed_in",
+        "sign_in_failed",
+        "signed_out",
+        "sms_throttled",
+    ] {
+        assert!(told["logins"][named].is_i64(), "{named}: {told}");
+    }
+
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        "/admin/realms/main/metrics?window_seconds=0",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, _) = asked(
+        &plane,
+        Method::GET,
+        "/admin/realms/nowhere/metrics",
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
     let plane = Plane::with_actions(&[AdminAction::RealmCreate]).await;
     let bearer = plane.token(&support::claims());

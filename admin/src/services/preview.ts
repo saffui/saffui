@@ -2,6 +2,7 @@
 // with no server behind it. Shapes mirror the real endpoints; the module is
 // only ever reached in dev builds and only under the "preview" bearer.
 import { ApiError } from "@/services/http";
+import type { ClientBrief, ClientDetail } from "@/models/client";
 import type { UserBrief } from "@/models/user";
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -65,15 +66,56 @@ const PEOPLE: UserBrief[] = [
   },
 ];
 
-const CLIENTS = [
-  { client_id: "web-dashboard", name: "Web dashboard", enabled: true, confidential: true, root_url: null, web_origins: [],
-    redirect_uris: ["https://app.acme.example/callback"], post_logout_redirect_uris: ["https://app.acme.example/"] },
-  { client_id: "kiosk-tv", name: "Lobby kiosk", enabled: true, confidential: false, root_url: null, web_origins: [],
-    redirect_uris: [], post_logout_redirect_uris: [] },
-  { client_id: "payments-api", name: "Payments API", enabled: true, confidential: true, root_url: null, web_origins: [],
-    redirect_uris: ["https://payments.acme.example/oauth/return"], post_logout_redirect_uris: [] },
-  { client_id: "counter-desk", name: "Counter desk", enabled: false, confidential: true, root_url: null, web_origins: [],
-    redirect_uris: ["https://counter.beta.example/back"], post_logout_redirect_uris: [] },
+const KEY_CAPABILITIES = {
+  signing_algorithms: ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"],
+  encryption_algorithms: ["RSA-OAEP", "RSA-OAEP-256", "RSA-OAEP-384", "RSA-OAEP-512", "ECDH-ES", "ECDH-ES+A128KW", "ECDH-ES+A192KW", "ECDH-ES+A256KW"],
+  encryption_methods: ["A128CBC-HS256", "A192CBC-HS384", "A256CBC-HS512", "A128GCM", "A192GCM", "A256GCM"],
+};
+
+function previewClient(
+  client: Pick<ClientBrief, "client_id" | "name" | "enabled" | "confidential" | "redirect_uris" | "post_logout_redirect_uris">,
+): ClientDetail {
+  return {
+    ...client,
+    root_url: null,
+    web_origins: [],
+    backchannel_logout_uri: null,
+    frontchannel_logout_uri: null,
+    description: "",
+    client_uri: null,
+    device_grant: false,
+    token_exchange: false,
+    ciba_delivery: "off",
+    ciba_notification_endpoint: null,
+    not_before: null,
+    tls_san_dns: null,
+    tls_san_uri: null,
+    tls_subject_dn: null,
+    key_configuration: {
+      authentication_method: client.confidential ? "client-secret" : "none",
+      jwks: null,
+      jwks_uri: null,
+      id_token_signed_response_alg: null,
+      userinfo_signed_response_alg: null,
+      request_object_signing_alg: null,
+      token_endpoint_auth_signing_alg: null,
+      id_token_encryption: null,
+      userinfo_encryption: null,
+      request_object_encryption: null,
+    },
+    key_capabilities: KEY_CAPABILITIES,
+  };
+}
+
+const CLIENTS: ClientDetail[] = [
+  previewClient({ client_id: "web-dashboard", name: "Web dashboard", enabled: true, confidential: true,
+    redirect_uris: ["https://app.acme.example/callback"], post_logout_redirect_uris: ["https://app.acme.example/"] }),
+  previewClient({ client_id: "kiosk-tv", name: "Lobby kiosk", enabled: true, confidential: false,
+    redirect_uris: [], post_logout_redirect_uris: [] }),
+  previewClient({ client_id: "payments-api", name: "Payments API", enabled: true, confidential: true,
+    redirect_uris: ["https://payments.acme.example/oauth/return"], post_logout_redirect_uris: [] }),
+  previewClient({ client_id: "counter-desk", name: "Counter desk", enabled: false, confidential: true,
+    redirect_uris: ["https://counter.beta.example/back"], post_logout_redirect_uris: [] }),
 ];
 
 function person(path: string): UserBrief | null {
@@ -113,7 +155,19 @@ function decided(
 export function previewAnswer<T>(path: string, method = "GET"): T {
   const answer = (held: unknown) => held as T;
 
-  if (path.endsWith("/mail")) throw new ApiError(404, "nothing is configured");
+  if (path.endsWith("/mail")) {
+    if (method === "DELETE") return answer(undefined);
+    return answer({
+      host: "smtp.saffui.tg",
+      port: 587,
+      from_address: "no-reply@saffui.tg",
+      from_name: "saffui",
+      reply_to: "support@saffui.tg",
+      implicit_tls: false,
+      username: "no-reply@saffui.tg",
+      has_password: true,
+    });
+  }
   if (path.includes("/journal/verify")) {
     return answer({ holds: true, entries: 42, broken_at: null });
   }
@@ -240,6 +294,24 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
         by: ["ada", "root", "ada", "linus", "root", "ada", "root"][at],
       })),
     });
+  }
+  if (/\/users\/[^/]+\/federated-identities$/.test(path)) {
+    return answer([
+      {
+        realm_id: "main", user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
+        provider_alias: "corp-okta", external_user_id: "00u-ada",
+        external_username: "ada@example.test", created_at: new Date((NOW - 86_400 * 20) * 1000).toISOString(),
+      },
+    ]);
+  }
+  if (/\/users\/[^/]+\/messages$/.test(path)) {
+    return answer({ deliveries: [
+      {
+        delivery_id: "delivery-1", user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
+        purpose: "verify_email", recipient: "ada@example.test",
+        attempted_at: new Date((NOW - 3600) * 1000).toISOString(), delivered: true, detail: null,
+      },
+    ] });
   }
   if (/\/users\/[^/]+\/roles$/.test(path)) {
     return answer({
@@ -452,6 +524,9 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       total: 2,
     });
   }
+  if (/\/federations\/[^/]+\/import$/.test(path)) {
+    return answer({ imported: 14, refreshed: 82, walked: 96 });
+  }
   if (path.includes("/import/preview") || path.endsWith("/import")) {
     return answer({
       realm_id: "main",
@@ -537,11 +612,54 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
           client_id: { Str: "ci-deployer" } } },
     ]);
   }
+  if (/\/federations\/[^/]+$/.test(path) && method !== "GET") {
+    return answer(null);
+  }
   if (path.endsWith("/federations")) {
     return answer([
-      { alias: "corp-ldap", enabled: true, priority: 10, configs: null },
-      { alias: "legacy-ad", enabled: false, priority: 20, configs: null },
+      { alias: "corp-ldap", enabled: true, priority: 10, configs: {
+        url: { Str: "ldaps://directory.example:636" }, bind_dn: { Str: "cn=reader,dc=example,dc=test" },
+        users_dn: { Str: "ou=people,dc=example,dc=test" }, user_filter: { Str: "(uid={username})" },
+        username_attribute: { Str: "uid" }, email_attribute: { Str: "mail" },
+        first_name_attribute: { Str: "givenName" }, last_name_attribute: { Str: "sn" },
+      } },
+      { alias: "legacy-ad", enabled: false, priority: 20, configs: {
+        url: { Str: "ldaps://legacy.example:636" }, bind_dn: { Str: "cn=sync,dc=legacy,dc=test" },
+        users_dn: { Str: "ou=users,dc=legacy,dc=test" }, user_filter: { Str: "(sAMAccountName={username})" },
+        username_attribute: { Str: "sAMAccountName" }, email_attribute: { Str: "mail" },
+        first_name_attribute: { Str: "givenName" }, last_name_attribute: { Str: "sn" },
+      } },
     ]);
+  }
+  if (/\/agents\/[^/]+$/.test(path) && method !== "GET") {
+    return answer({
+      client_id: "deploy-bot", name: "deploy-bot", enabled: true,
+      capabilities: ["deploy:read", "audit:read"], session_seconds: 900,
+      keyed: false, not_before: null,
+    });
+  }
+  if (path.endsWith("/agents") && method !== "GET") {
+    return answer({
+      client_id: "deploy-bot", name: "deploy-bot", enabled: true,
+      capabilities: ["deploy:read"], session_seconds: 900,
+      keyed: false, not_before: null,
+    });
+  }
+  if (path.endsWith("/agents")) {
+    return answer([
+      {
+        client_id: "deploy-bot", name: "deploy-bot", enabled: true,
+        capabilities: ["deploy:read", "audit:read"], session_seconds: 900,
+        keyed: false, not_before: null,
+      },
+    ]);
+  }
+  if (path.endsWith("/spnego") && method === "DELETE") return answer(undefined);
+  if (path.endsWith("/spnego") && method !== "GET") {
+    return answer({ realm_id: "main", enabled: true, configs: { service_principal: { Str: "HTTP/id.example@EXAMPLE.ORG" } } });
+  }
+  if (path.endsWith("/spnego")) {
+    return answer({ realm_id: "main", enabled: true, configs: { service_principal: { Str: "HTTP/id.example@EXAMPLE.ORG" } } });
   }
   if (path.endsWith("/iga/rules")) {
     return answer([
@@ -580,6 +698,23 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       { subject_type: "group", subject_id: "editors", subject_relation: "member" },
     ]);
   }
+  if (path.endsWith("/authz/routes") && method === "GET") {
+    return answer([
+      {
+        route_id: "orders-read",
+        method: "GET",
+        path: "/api/orders/*",
+        server_id: "web-dashboard",
+        resource: "orders",
+        scope: "read",
+        action: "invoke",
+        priority: 10,
+        enabled: true,
+      },
+    ]);
+  }
+  if (path.includes("/authz/routes/") && method === "PUT") return answer({ route_id: path.split("/").pop() });
+  if (path.includes("/authz/routes/") && method === "DELETE") return answer(undefined);
   if (path.endsWith("/authz/evaluate")) {
     return answer({
       decision_id: "d-sim-1",
@@ -753,6 +888,20 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       pending_requests: 3,
       queue: 0,
       slow_tail_millis: 42,
+    });
+  }
+  if (path.includes("/metrics")) {
+    const windowSeconds = Number(new URL(path, "http://preview.local").searchParams.get("window_seconds")) || 86400;
+    return answer({
+      window_seconds: windowSeconds,
+      since: new Date((NOW - windowSeconds) * 1000).toISOString(),
+      decisions: {
+        total: 4821, permits: 3910, denials: 846, indeterminate: 65,
+        disagreements: 3, average_duration_us: 1840, p95_duration_us: 6200,
+      },
+      logins: {
+        total: 923, signed_in: 781, sign_in_failed: 103, signed_out: 39, sms_throttled: 7,
+      },
     });
   }
   if (path === "/admin/features") {

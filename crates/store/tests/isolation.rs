@@ -127,14 +127,14 @@ async fn the_global_realm_migration_refuses_existing_collisions() {
             .await
             .unwrap();
 
+        // Every migration before the global name one, found by its number:
+        // later migrations follow it, so the last one is not it.
         let mut before_global_names = migrations();
-        let global_names = before_global_names
-            .pop()
+        let at = before_global_names
+            .iter()
+            .position(|migration| matches!(migration, Migration::Sql(held) if held.version == 96))
             .expect("the global name migration");
-        let Migration::Sql(global_names) = global_names else {
-            panic!("the global name migration is not SQL");
-        };
-        assert_eq!(global_names.version, 96);
+        before_global_names.truncate(at);
         MigrationRunner::new(before_global_names)
             .run(&config(), &PgConnector::disabled(), provider().digest())
             .await

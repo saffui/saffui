@@ -4,7 +4,7 @@
 // are put the way a resource server puts them, and the answers are the
 // engine's own, recorded in the same log as any live decision.
 import { computed, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
 import PageTabs from "@/components/PageTabs.vue";
@@ -39,6 +39,8 @@ function boardAt(leaf: string): string {
 }
 const realm = computed(() => String(route.params.realm));
 const failed = ref("");
+const running = ref(false);
+let runNumber = 0;
 
 /// The families, by the names people use for them, each tied to what this
 /// build actually runs. Role and attribute families are the same door, the
@@ -150,33 +152,49 @@ function question(): EvaluateQuestion | null {
 }
 
 async function ask() {
+  const currentRun = ++runNumber;
   failed.value = "";
   verdict.value = null;
   claims.value = null;
   copied.value = false;
-  if (!subject.value.trim()) return;
+  if (!subject.value.trim()) {
+    failed.value = say("evaluator-subject-required");
+    return;
+  }
+  const asked = asking.value === "token" ? null : question();
+  if (asking.value !== "token" && !asked) {
+    failed.value = say("evaluator-question-required");
+    return;
+  }
+  running.value = true;
   try {
     if (asking.value === "token") {
-      if (!clientId.value) return;
-      claims.value = (
-        await previewToken(realm.value, {
-          user_id: subject.value.trim(),
-          client_id: clientId.value,
-          scope: tokenScope.value.trim() || undefined,
-        })
-      ).claims;
+      if (!clientId.value) {
+        failed.value = say("evaluator-server-required");
+        return;
+      }
+      const result = await previewToken(realm.value, {
+        user_id: subject.value.trim(),
+        client_id: clientId.value,
+        scope: tokenScope.value.trim() || undefined,
+      });
+      if (currentRun !== runNumber) return;
+      claims.value = result.claims;
       return;
     }
-    const asked = question();
-    if (!asked) return;
-    verdict.value = await evaluate(
+    const result = await evaluate(
       realm.value,
       subject.value.trim(),
-      asked,
+      asked!,
       organization.value.trim() || undefined,
     );
+    if (currentRun !== runNumber) return;
+    verdict.value = result;
   } catch (refused) {
+    if (currentRun !== runNumber) return;
     failed.value = refused instanceof Error ? refused.message : String(refused);
+  } finally {
+    if (currentRun === runNumber) running.value = false;
   }
 }
 
@@ -251,6 +269,12 @@ function worded(value: unknown): string {
       >
         {{ copied ? say("evaluator-copied") : say("evaluator-copy") }}
       </button>
+      <RouterLink
+        :to="`/${realm}/decision-journal`"
+        class="rounded-md border border-border px-2.5 py-1.5 text-xs font-medium text-muted hover:text-ink"
+      >
+        {{ say("decision-journal-title") }}
+      </RouterLink>
     </div>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
 
@@ -390,9 +414,10 @@ function worded(value: unknown): string {
 
         <button
           type="submit"
-          class="sf-button sf-button-primary mt-4 w-full justify-center"
+          class="sf-button sf-button-primary mt-4 w-full justify-center disabled:cursor-not-allowed disabled:opacity-60"
+          :disabled="running"
         >
-          {{ say("evaluator-run") }}
+          {{ running ? say("evaluator-running") : say("evaluator-run") }}
         </button>
       </form>
 

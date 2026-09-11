@@ -1077,6 +1077,97 @@ async fn a_client_is_born_reshaped_and_retired_over_the_plane() {
     );
 }
 
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_clients_public_keys_and_supported_algorithms_are_managed_together() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&claims());
+    let base = format!("/admin/realms/{REALM}/clients");
+    let (status, born) = written(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        serde_json::json!({
+            "client_id": "signed-shop",
+            "confidential": true,
+            "redirect_uris": ["https://shop.example/cb"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    let (status, configured) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/signed-shop"),
+        &bearer,
+        serde_json::json!({
+            "key_configuration": {
+                "authentication_method": "client-secret",
+                "jwks": {
+                    "keys": [{
+                        "kty": "EC", "crv": "P-256", "x": "AQ", "y": "AQ", "kid": "one"
+                    }]
+                },
+                "id_token_signed_response_alg": "ES256",
+                "request_object_signing_alg": "ES256"
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{configured}");
+    assert_eq!(
+        configured["key_configuration"]["request_object_signing_alg"],
+        "ES256"
+    );
+    assert_eq!(
+        configured["key_capabilities"]["signing_algorithms"],
+        serde_json::json!([
+            "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512",
+            "EdDSA"
+        ])
+    );
+    assert!(
+        configured["key_capabilities"]["encryption_algorithms"]
+            .as_array()
+            .is_some_and(|algorithms| algorithms.iter().any(|algorithm| algorithm == "ECDH-ES")),
+        "{configured}"
+    );
+
+    let (status, listed) = fetched(&plane, Method::GET, &base, &bearer).await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    let listed_client = listed["items"]
+        .as_array()
+        .and_then(|clients| {
+            clients
+                .iter()
+                .find(|client| client["client_id"] == "signed-shop")
+        })
+        .expect("the configured client");
+    assert!(listed_client.get("key_configuration").is_none());
+    assert!(listed_client.get("key_capabilities").is_none());
+
+    let (status, refused) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/signed-shop"),
+        &bearer,
+        serde_json::json!({
+            "key_configuration": {
+                "authentication_method": "client-secret",
+                "jwks": {
+                    "keys": [{
+                        "kty": "EC", "crv": "P-256", "x": "AQ", "y": "AQ", "d": "AQ"
+                    }]
+                }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+}
+
 /// A person created over the plane, with a password, can sign in with it;
 /// reshaped and retired after. Reading people does not authorize writing them.
 #[tokio::test]

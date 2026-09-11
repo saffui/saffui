@@ -19,11 +19,13 @@ const field = ref<HTMLInputElement | null>(null);
 
 const PAGES: { leaf: string; name: () => string }[] = [
   { leaf: "overview", name: () => say("nav-overview") },
+  { leaf: "metrics", name: () => say("nav-metrics") },
   { leaf: "users", name: () => say("nav-users") },
   { leaf: "roles", name: () => say("nav-roles") },
   { leaf: "groups", name: () => say("nav-groups") },
   { leaf: "organizations", name: () => say("nav-organizations") },
   { leaf: "clients", name: () => say("nav-clients") },
+  { leaf: "agents", name: () => say("nav-agents") },
   { leaf: "client-scopes", name: () => say("nav-scopes") },
   { leaf: "authentication", name: () => say("nav-authentication") },
   { leaf: "authentication/actions", name: () => say("actions-title") },
@@ -39,6 +41,7 @@ const PAGES: { leaf: string; name: () => string }[] = [
   { leaf: "sessions", name: () => say("nav-realm-sessions") },
   { leaf: "theme", name: () => say("nav-theme") },
   { leaf: "pages", name: () => say("nav-pages") },
+  { leaf: "spnego", name: () => say("nav-spnego") },
   { leaf: "token-preview", name: () => say("nav-preview") },
 ];
 

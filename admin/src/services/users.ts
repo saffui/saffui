@@ -3,6 +3,7 @@ import { say } from "@/i18n";
 import type { Page } from "@/models/paging";
 import type {
   ConsentBrief,
+  FederatedIdentity,
   GroupBrief,
   Lockout,
   OrgBrief,
@@ -10,6 +11,7 @@ import type {
   SessionBrief,
   UserBrief,
   UserFull,
+  MessageDelivery,
 } from "@/models/user";
 
 export async function listUsers(
@@ -86,6 +88,25 @@ export async function listConsents(realm: string, userId: string): Promise<Conse
     adminPath(realm, `users/${encodeURIComponent(userId)}/consents`),
   );
   return told.consents;
+}
+
+export async function listFederatedIdentities(
+  realm: string,
+  userId: string,
+): Promise<FederatedIdentity[]> {
+  return api<FederatedIdentity[]>(
+    adminPath(realm, `users/${encodeURIComponent(userId)}/federated-identities`),
+  );
+}
+
+export async function listMessageDeliveries(
+  realm: string,
+  userId: string,
+): Promise<MessageDelivery[]> {
+  const told = await api<{ deliveries: MessageDelivery[] }>(
+    adminPath(realm, `users/${encodeURIComponent(userId)}/messages`),
+  );
+  return told.deliveries;
 }
 
 export async function listEffectiveRoles(realm: string, userId: string): Promise<RoleBrief[]> {

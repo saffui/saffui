@@ -67,6 +67,7 @@ str_enum! {
         IgaWrite => "iga:write",
         JournalRead => "journal:read",
         JournalWrite => "journal:write",
+        MetricsRead => "metrics:read",
         DsarRead => "dsar:read",
         DsarWrite => "dsar:write",
         BreachRead => "breach:read",

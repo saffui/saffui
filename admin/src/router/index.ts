@@ -15,6 +15,10 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/pages/overview/OverviewPage.vue"),
       },
       {
+        path: "metrics",
+        component: () => import("@/pages/metrics/MetricsPage.vue"),
+      },
+      {
         path: "users",
         component: () => import("@/pages/users/UsersPage.vue"),
       },
@@ -23,8 +27,16 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/pages/clients/ClientsPage.vue"),
       },
       {
+        path: "agents",
+        component: () => import("@/pages/clients/AgentsPage.vue"),
+      },
+      {
         path: "client-scopes",
         component: () => import("@/pages/scopes/ScopesPage.vue"),
+      },
+      {
+        path: "protocol-mappers",
+        component: () => import("@/pages/scopes/ProtocolMappersPage.vue"),
       },
       {
         path: "roles",
@@ -59,12 +71,20 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/pages/settings/PagesPage.vue"),
       },
       {
+        path: "spnego",
+        component: () => import("@/pages/settings/SpnegoPage.vue"),
+      },
+      {
         path: "token-preview",
         component: () => import("@/pages/clients/TokenPreviewPage.vue"),
       },
       {
         path: "evaluator",
         component: () => import("@/pages/authorization/EvaluatorPage.vue"),
+      },
+      {
+        path: "decision-journal",
+        component: () => import("@/pages/authorization/DecisionJournalPage.vue"),
       },
       {
         path: "authentication",

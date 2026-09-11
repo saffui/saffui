@@ -14,11 +14,9 @@ pub struct Told {
     pub occurred_at: String,
 }
 
-/// Hold LISTEN open on its own connection and hand every committed
-/// emission to the in-process subscribers. Best-effort by design, which is
-/// what a live feed is: a lagging watcher misses frames, the store misses
-/// nothing, and a dropped connection is retried for as long as the process
-/// stands.
+/// Hold LISTEN open on its own connection and hand every committed emission
+/// to in-process subscribers. A lagging watcher may miss broadcast frames;
+/// the admin stream repairs that gap from the outbox on reconnect.
 pub fn listen(
     config: deadpool_postgres::tokio_postgres::Config,
 ) -> tokio::sync::broadcast::Sender<Told> {

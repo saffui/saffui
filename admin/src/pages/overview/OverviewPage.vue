@@ -58,6 +58,10 @@ const BADGE = {
 function needs(held: string[]): string {
   return held.map((named) => say(`gateway-needs-${named}`)).join(", ");
 }
+
+function duration(micros: number | null): string {
+  return micros === null ? "··" : `${Math.round(micros)} µs`;
+}
 </script>
 
 <template>
@@ -89,8 +93,88 @@ function needs(held: string[]): string {
       </div>
     </div>
 
+    <section v-if="told?.businessMetrics" class="mt-6 rounded-lg border border-border bg-surface p-4">
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          {{ say("overview-business-metrics") }}
+        </h2>
+        <span class="font-mono text-[10.5px] text-faint">
+          {{ say("overview-metrics-window", { seconds: told.businessMetrics.window_seconds }) }}
+        </span>
+      </div>
+      <div class="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div class="rounded border border-border/70 px-3 py-2.5">
+          <div class="text-[11px] text-muted">{{ say("overview-decisions") }}</div>
+          <div class="mt-1 font-mono text-lg tabular-nums">{{ shown(told.businessMetrics.decisions.total) }}</div>
+          <div class="mt-1 text-[10.5px] text-faint">
+            {{ shown(told.businessMetrics.decisions.permits) }} {{ say("overview-permits") }} ·
+            {{ shown(told.businessMetrics.decisions.denials) }} {{ say("overview-denials") }}
+          </div>
+        </div>
+        <div class="rounded border border-border/70 px-3 py-2.5">
+          <div class="text-[11px] text-muted">{{ say("overview-disagreements") }}</div>
+          <div class="mt-1 font-mono text-lg tabular-nums">{{ shown(told.businessMetrics.decisions.disagreements) }}</div>
+          <div class="mt-1 text-[10.5px] text-faint">{{ shown(told.businessMetrics.decisions.indeterminate) }} {{ say("overview-indeterminate") }}</div>
+        </div>
+        <div class="rounded border border-border/70 px-3 py-2.5">
+          <div class="text-[11px] text-muted">{{ say("overview-logins") }}</div>
+          <div class="mt-1 font-mono text-lg tabular-nums">{{ shown(told.businessMetrics.logins.total) }}</div>
+          <div class="mt-1 text-[10.5px] text-faint">
+            {{ shown(told.businessMetrics.logins.signed_in) }} {{ say("overview-signed-in") }} ·
+            {{ shown(told.businessMetrics.logins.sign_in_failed) }} {{ say("overview-sign-in-failed") }}
+          </div>
+        </div>
+        <div class="rounded border border-border/70 px-3 py-2.5">
+          <div class="text-[11px] text-muted">{{ say("overview-decision-latency") }}</div>
+          <div class="mt-1 font-mono text-lg tabular-nums">{{ duration(told.businessMetrics.decisions.p95_duration_us) }}</div>
+          <div class="mt-1 text-[10.5px] text-faint">{{ say("overview-p95") }}</div>
+        </div>
+      </div>
+    </section>
+
     <div class="mt-6 flex flex-col gap-4 xl:flex-row xl:items-start">
       <div class="min-w-0 flex-1">
+        <section v-if="told" class="mt-1">
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("overview-sign-in-events") }}
+            </h2>
+            <router-link :to="`/${route.params.realm}/events`" class="text-[11px] text-accent hover:text-ink">
+              {{ say("overview-view-all") }}
+            </router-link>
+          </div>
+          <div v-if="told.signIns?.items.length" class="sf-list mt-2 overflow-x-auto">
+            <table class="sf-table">
+              <thead>
+                <tr>
+                  <th>{{ say("signin-col-kind") }}</th>
+                  <th>{{ say("signin-col-who") }}</th>
+                  <th>{{ say("signin-col-client") }}</th>
+                  <th>{{ say("signin-col-from") }}</th>
+                  <th class="text-right">{{ say("journal-col-when") }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="held in told.signIns.items" :key="held.id">
+                  <td>
+                    <span
+                      class="rounded border px-1.5 py-0.5 font-mono text-[10.5px]"
+                      :class="held.kind === 'sign_in_failed' ? 'border-danger/40 text-danger' : 'border-border text-muted'"
+                    >{{ held.kind }}</span>
+                  </td>
+                  <td class="font-mono text-[11px]">{{ held.user_id || "·" }}</td>
+                  <td class="font-mono text-[11px]">{{ held.client_id || "·" }}</td>
+                  <td class="font-mono text-[10.5px] text-faint">{{ held.ip || "·" }}</td>
+                  <td class="text-right font-mono text-[10.5px] text-faint">{{ instant(held.recorded_at) }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else class="rounded-lg border border-dashed border-border bg-surface px-4 py-5 text-xs text-muted">
+            {{ say("overview-sign-in-events-empty") }}
+          </div>
+        </section>
+
         <section v-if="told" class="mt-1">
           <div class="flex items-center gap-2">
             <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">

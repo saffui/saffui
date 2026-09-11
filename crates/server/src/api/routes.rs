@@ -5,9 +5,9 @@ use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
     agents, authorization, claim_sources, client_scopes, clients, compliance, credentials,
-    directory, events, features, federation, flows, idps, iga, journal, keys, mail, negotiation,
-    overview, portability, protocol_mappers, realm_keys, realms, rebac, recert, requests, sessions,
-    sms, users, ussd,
+    directory, events, features, federation, flows, idps, iga, journal, keys, mail, metrics,
+    negotiation, overview, portability, protocol_mappers, realm_keys, realms, rebac, recert,
+    requests, sessions, sms, users, ussd,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -125,6 +125,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/overview",
             action: AdminAction::RealmRead,
             handler: Some(|| web::get().to(overview::read)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/metrics",
+            action: AdminAction::MetricsRead,
+            handler: Some(|| web::get().to(metrics::read)),
         },
         AdminRoute {
             method: Method::GET,
@@ -1184,6 +1190,24 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/roles/{role}/composites",
+            action: AdminAction::RoleRead,
+            handler: Some(|| web::get().to(directory::composite_roles)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/roles/{role}/composites/{child_role}",
+            action: AdminAction::RoleWrite,
+            handler: Some(|| web::put().to(directory::add_composite_role)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/roles/{role}/composites/{child_role}",
+            action: AdminAction::RoleWrite,
+            handler: Some(|| web::delete().to(directory::remove_composite_role)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/groups",
             action: AdminAction::GroupRead,
             handler: Some(|| web::get().to(directory::list_groups)),
@@ -1475,6 +1499,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/events/stream",
             action: AdminAction::EventRead,
             handler: Some(|| web::get().to(events::stream)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/events/replay",
+            action: AdminAction::EventRead,
+            handler: Some(|| web::get().to(events::replay_live_events)),
         },
         AdminRoute {
             method: Method::GET,

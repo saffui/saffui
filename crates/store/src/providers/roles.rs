@@ -166,9 +166,10 @@ pub async fn update_group(transaction: &Transaction<'_>, group: &GroupModel) -> 
 /// role would go with it, and every holder would silently lose an entitlement
 /// rather than the deletion being told no.
 pub async fn role_still_held(transaction: &Transaction<'_>, role_id: &str) -> StoreResult<bool> {
+    lock_role_composites(transaction).await?;
     let row = transaction
         .query_one(
-            "SELECT EXISTS(SELECT 1 FROM users_roles WHERE role_id = $1)                  OR EXISTS(SELECT 1 FROM groups_roles WHERE role_id = $1)                  OR EXISTS(SELECT 1 FROM policies_roles WHERE role_id = $1)",
+            "SELECT EXISTS(SELECT 1 FROM users_roles WHERE role_id = $1)                  OR EXISTS(SELECT 1 FROM groups_roles WHERE role_id = $1)                  OR EXISTS(SELECT 1 FROM policies_roles WHERE role_id = $1)                  OR EXISTS(SELECT 1 FROM role_composites WHERE parent_role_id = $1 OR child_role_id = $1)",
             &[&role_id],
         )
         .await
@@ -257,6 +258,103 @@ pub async fn load(transaction: &Transaction<'_>, role_id: &str) -> StoreResult<O
 pub async fn delete(transaction: &Transaction<'_>, role_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM roles WHERE role_id = $1", &[&role_id])
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(removed > 0)
+}
+
+/// Serialize graph changes within one realm. Cycle checks must observe a
+/// stable graph, including when two requests add different edges concurrently.
+pub async fn lock_role_composites(transaction: &Transaction<'_>) -> StoreResult<()> {
+    transaction
+        .query_one(
+            "SELECT pg_advisory_xact_lock(hashtextextended(\
+             current_setting('saffui.current_tenant', true) || ':' || \
+             current_setting('saffui.current_realm', true), 0))",
+            &[],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// Roles directly contained by a composite role.
+pub async fn composite_children(
+    transaction: &Transaction<'_>,
+    parent_role_id: &str,
+) -> StoreResult<Vec<RoleModel>> {
+    // Read through the edge's identifiers rather than joined to it: both tables
+    // carry the realm's columns, and a join makes every one of them ambiguous.
+    let statement = format!(
+        "SELECT {ROLE_COLUMNS} FROM roles \
+         WHERE role_id IN (SELECT child_role_id FROM role_composites WHERE parent_role_id = $1) \
+         ORDER BY name ASC, role_id ASC"
+    );
+    Ok(transaction
+        .query(statement.as_str(), &[&parent_role_id])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_role)
+        .collect())
+}
+
+/// Whether the child already reaches the parent through composite edges.
+pub async fn composite_reaches(
+    transaction: &Transaction<'_>,
+    child_role_id: &str,
+    parent_role_id: &str,
+) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "WITH RECURSIVE descendants(role_id) AS ( \
+                 SELECT child_role_id FROM role_composites \
+                 WHERE parent_role_id = $1 \
+                 UNION \
+                 SELECT composites.child_role_id \
+                 FROM role_composites composites \
+                 JOIN descendants ON descendants.role_id = composites.parent_role_id \
+             ) \
+             SELECT EXISTS(SELECT 1 FROM descendants WHERE role_id = $2)",
+            &[&child_role_id, &parent_role_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get(0))
+}
+
+/// Add a composite edge. Repeating the same edge is idempotent.
+pub async fn add_composite(
+    transaction: &Transaction<'_>,
+    parent_role_id: &str,
+    child_role_id: &str,
+) -> StoreResult<()> {
+    transaction
+        .execute(
+            "INSERT INTO role_composites \
+             (tenant, realm_id, parent_role_id, child_role_id) \
+             VALUES (current_setting('saffui.current_tenant', true), \
+                     current_setting('saffui.current_realm', true), $1, $2) \
+             ON CONFLICT DO NOTHING",
+            &[&parent_role_id, &child_role_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// Remove a composite edge, and say whether there was one.
+pub async fn remove_composite(
+    transaction: &Transaction<'_>,
+    parent_role_id: &str,
+    child_role_id: &str,
+) -> StoreResult<bool> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM role_composites \
+             WHERE parent_role_id = $1 AND child_role_id = $2",
+            &[&parent_role_id, &child_role_id],
+        )
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(removed > 0)
@@ -548,13 +646,20 @@ pub async fn effective_roles(
              SELECT g.group_id, g.parent_id FROM groups g \
              JOIN standing s ON g.group_id = s.parent_id \
          ) \
-         SELECT {ROLE_COLUMNS} FROM roles \
-         WHERE role_id IN ( \
+         , granted(role_id) AS ( \
              SELECT role_id FROM users_roles WHERE user_id = $1 \
-             UNION ALL \
+             UNION \
              SELECT gr.role_id FROM groups_roles gr \
              JOIN standing s ON s.group_id = gr.group_id \
-         ) ORDER BY name ASC"
+         ) \
+         , effective(role_id) AS ( \
+             SELECT role_id FROM granted \
+             UNION \
+             SELECT composites.child_role_id FROM role_composites composites \
+             JOIN effective ON effective.role_id = composites.parent_role_id \
+         ) \
+         SELECT {ROLE_COLUMNS} FROM roles \
+         WHERE role_id IN (SELECT role_id FROM effective) ORDER BY name ASC"
     );
 
     Ok(transaction
@@ -563,6 +668,113 @@ pub async fn effective_roles(
         .map_err(|_| StoreError::Backend)?
         .into_iter()
         .map(read_role)
+        .collect())
+}
+
+/// Everyone standing in this group, directly or through a group below it: the
+/// people a role given to the group reaches, and a new parent above it.
+pub async fn members_at_or_below(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "WITH RECURSIVE below(group_id) AS ( \
+                 SELECT $1::text \
+                 UNION \
+                 SELECT g.group_id FROM groups g JOIN below b ON g.parent_id = b.group_id \
+             ) \
+             SELECT DISTINCT user_id FROM users_groups \
+             WHERE group_id IN (SELECT group_id FROM below) ORDER BY user_id",
+            &[&group_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
+/// Everyone who holds this role, however they came to: granted it, standing in
+/// a group that carries it, or holding a role it is placed under. The mirror of
+/// `effective_roles`, read from the role's side.
+pub async fn holders_of_role(
+    transaction: &Transaction<'_>,
+    role_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "WITH RECURSIVE above(role_id) AS ( \
+                 SELECT $1::text \
+                 UNION \
+                 SELECT c.parent_role_id FROM role_composites c \
+                 JOIN above a ON c.child_role_id = a.role_id \
+             ) \
+             , carrying(group_id) AS ( \
+                 SELECT group_id FROM groups_roles \
+                 WHERE role_id IN (SELECT role_id FROM above) \
+                 UNION \
+                 SELECT g.group_id FROM groups g JOIN carrying c ON g.parent_id = c.group_id \
+             ) \
+             SELECT user_id FROM users_roles WHERE role_id IN (SELECT role_id FROM above) \
+             UNION \
+             SELECT user_id FROM users_groups WHERE group_id IN (SELECT group_id FROM carrying) \
+             ORDER BY user_id",
+            &[&role_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
+/// These roles and every role placed below them: what somebody handed them
+/// comes to hold.
+pub async fn roles_reached_from(
+    transaction: &Transaction<'_>,
+    starting: &[String],
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "WITH RECURSIVE reached(role_id) AS ( \
+                 SELECT unnest($1::text[]) \
+                 UNION \
+                 SELECT c.child_role_id FROM role_composites c \
+                 JOIN reached r ON c.parent_role_id = r.role_id \
+             ) \
+             SELECT role_id FROM reached ORDER BY role_id",
+            &[&starting],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
+/// The roles carried by this group and by every group above it: what anyone
+/// standing in it holds through its groups.
+pub async fn roles_carried_at_or_above(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "WITH RECURSIVE above(group_id, parent_id) AS ( \
+                 SELECT group_id, parent_id FROM groups WHERE group_id = $1 \
+                 UNION \
+                 SELECT g.group_id, g.parent_id FROM groups g \
+                 JOIN above a ON g.group_id = a.parent_id \
+             ) \
+             SELECT DISTINCT role_id FROM groups_roles \
+             WHERE group_id IN (SELECT group_id FROM above) ORDER BY role_id",
+            &[&group_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get(0))
         .collect())
 }
 

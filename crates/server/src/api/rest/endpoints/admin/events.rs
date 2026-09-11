@@ -1,7 +1,9 @@
 //! The sign-in log, read side. Recording is the engine's, gated by the
 //! realm's events_enabled switch; this only pages through what it kept.
 
-use actix_web::{HttpResponse, web};
+use std::collections::VecDeque;
+
+use actix_web::{HttpRequest, HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use deadpool_postgres::Pool;
@@ -12,6 +14,36 @@ use crate::middleware::admin_guard::Admin;
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
+}
+
+const LIVE_EVENTS_REPLAY_LIMIT: i64 = 500;
+
+#[derive(serde::Deserialize)]
+pub struct LiveEventsReplayQuery {
+    pub after_event_id: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+fn live_events_replay_limit(asked: &LiveEventsReplayQuery) -> Result<i64, ApiError> {
+    let limit = asked.limit.unwrap_or(100);
+    if limit <= 0 {
+        return Err(ApiError::new(ErrorCode::BadRequest));
+    }
+    Ok(limit.min(LIVE_EVENTS_REPLAY_LIMIT))
+}
+
+fn to_live_event_summary(
+    tenant: &str,
+    event: &store::providers::outbox::OutboxEvent,
+) -> crate::live::Told {
+    crate::live::Told {
+        tenant: tenant.to_owned(),
+        realm: event.realm_id.clone(),
+        event_id: event.event_id,
+        kind: event.kind.clone(),
+        user_id: event.user_id.clone(),
+        occurred_at: event.occurred_at.to_rfc3339(),
+    }
 }
 
 pub async fn list_sign_ins(
@@ -69,12 +101,57 @@ pub async fn list_sign_ins(
     })))
 }
 
+/// Read committed event summaries after a live consumer's cursor. Delivery
+/// state is intentionally ignored: this is the console's event history, not
+/// a connector replay.
+pub async fn replay_live_events(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+    query: web::Query<LiveEventsReplayQuery>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let asked = query.into_inner();
+    let last_event_id = asked.after_event_id.unwrap_or(0);
+    if last_event_id < 0 {
+        return Err(ApiError::new(ErrorCode::BadRequest));
+    }
+    let limit = live_events_replay_limit(&asked)?;
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+    let stored_events =
+        store::providers::outbox::list_events_after_id(&transaction, last_event_id, limit + 1)
+            .await
+            .map_err(|_| internal())?;
+    let more = stored_events.len() as i64 > limit;
+    let items: Vec<_> = stored_events
+        .into_iter()
+        .take(limit as usize)
+        .map(|event| to_live_event_summary(&admin.context.tenant.tenant, &event))
+        .collect();
+    let next_event_id = items.last().map(|event| event.event_id);
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "items": items,
+        "next_event_id": next_event_id,
+        "more": more,
+    })))
+}
+
 /// The live feed: every committed emission of this realm, as it happens,
-/// over Server-Sent Events. Best-effort by contract: a watcher that lags
-/// misses frames and the store misses nothing, so the log below stays the
-/// place to ask what happened.
+/// over Server-Sent Events. A reconnect replays retained summaries after the
+/// client's last event id before returning to the broadcast feed.
 pub async fn stream(
     admin: web::ReqData<Admin>,
+    request: HttpRequest,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     feed: Option<web::Data<tokio::sync::broadcast::Sender<crate::live::Told>>>,
 ) -> HttpResponse {
@@ -85,10 +162,74 @@ pub async fn stream(
     let realm_id = path.into_inner();
     let tenant = admin.context.tenant.tenant.clone();
     let watching = feed.subscribe();
+    let last_event_id = request
+        .headers()
+        .get("last-event-id")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value >= 0)
+        .unwrap_or(0);
+    let mut replay_events = VecDeque::new();
+    let mut has_more_replay_events = false;
+    if last_event_id > 0 {
+        let Ok(mut connection) = pool.get().await else {
+            return HttpResponse::InternalServerError().finish();
+        };
+        let Ok(transaction) = tenancy
+            .transaction(&mut connection, &TenantContext::new(&tenant, &realm_id))
+            .await
+        else {
+            return HttpResponse::InternalServerError().finish();
+        };
+        let Ok(stored_events) = store::providers::outbox::list_events_after_id(
+            &transaction,
+            last_event_id,
+            LIVE_EVENTS_REPLAY_LIMIT + 1,
+        )
+        .await
+        else {
+            return HttpResponse::InternalServerError().finish();
+        };
+        has_more_replay_events = stored_events.len() as i64 > LIVE_EVENTS_REPLAY_LIMIT;
+        replay_events.extend(
+            stored_events
+                .into_iter()
+                .take(LIVE_EVENTS_REPLAY_LIMIT as usize)
+                .map(|event| to_live_event_summary(&tenant, &event)),
+        );
+    }
     let frames = futures_util::stream::unfold(
-        (watching, tenant, realm_id),
-        |(mut watching, tenant, realm_id)| async move {
+        (
+            watching,
+            tenant,
+            realm_id,
+            replay_events,
+            has_more_replay_events,
+        ),
+        |(mut watching, tenant, realm_id, mut replay_events, has_more_replay_events)| async move {
             loop {
+                if let Some(event) = replay_events.pop_front() {
+                    let body = serde_json::to_string(&event).unwrap_or_default();
+                    let framed = format!(
+                        "event: {}\nid: {}\ndata: {}\n\n",
+                        event.kind, event.event_id, body
+                    );
+                    let bytes: Result<actix_web::web::Bytes, std::convert::Infallible> =
+                        Ok(actix_web::web::Bytes::from(framed));
+                    return Some((
+                        bytes,
+                        (
+                            watching,
+                            tenant,
+                            realm_id,
+                            replay_events,
+                            has_more_replay_events,
+                        ),
+                    ));
+                }
+                if has_more_replay_events {
+                    return None;
+                }
                 let framed = tokio::select! {
                     told = watching.recv() => match told {
                         Ok(told) if told.tenant == tenant && told.realm == realm_id => {
@@ -106,7 +247,16 @@ pub async fn stream(
                 };
                 let bytes: Result<actix_web::web::Bytes, std::convert::Infallible> =
                     Ok(actix_web::web::Bytes::from(framed));
-                return Some((bytes, (watching, tenant, realm_id)));
+                return Some((
+                    bytes,
+                    (
+                        watching,
+                        tenant,
+                        realm_id,
+                        replay_events,
+                        has_more_replay_events,
+                    ),
+                ));
             }
         },
     );
@@ -312,4 +462,36 @@ pub async fn replay(
         "stopped_at": stopped_at,
         "more": more,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LiveEventsReplayQuery, live_events_replay_limit};
+
+    #[test]
+    fn live_events_replay_limit_is_bounded() {
+        assert_eq!(
+            live_events_replay_limit(&LiveEventsReplayQuery {
+                after_event_id: None,
+                limit: None
+            })
+            .unwrap(),
+            100
+        );
+        assert_eq!(
+            live_events_replay_limit(&LiveEventsReplayQuery {
+                after_event_id: None,
+                limit: Some(900)
+            })
+            .unwrap(),
+            500
+        );
+        assert!(
+            live_events_replay_limit(&LiveEventsReplayQuery {
+                after_event_id: None,
+                limit: Some(0)
+            })
+            .is_err()
+        );
+    }
 }

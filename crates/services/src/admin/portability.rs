@@ -219,6 +219,14 @@ async fn partial_plan(
     }
     ensure_no_users(document)?;
     validate_count("roles", document.roles.len())?;
+    validate_count(
+        "role composites",
+        document
+            .roles
+            .iter()
+            .map(|role| role.composites.len())
+            .sum(),
+    )?;
     validate_count("groups", document.groups.len())?;
     validate_count("client scopes", document.client_scopes.len())?;
     validate_count("protocol mappers", document.protocol_mappers.len())?;
@@ -732,6 +740,23 @@ pub async fn import_partial_realm(
         .map_err(|_| Unportable::Backend)?;
     }
 
+    for exported in &document.roles {
+        if matches!(
+            action(
+                &plan.roles,
+                &exported.role.role_id,
+                &exported.role.name,
+                policy,
+            )?,
+            PartialAction::Skip
+        ) {
+            continue;
+        }
+        for child_role_id in &exported.composites {
+            add_composite_checked(transaction, &exported.role.role_id, child_role_id).await?;
+        }
+    }
+
     let mut pending = document.groups.iter().collect::<Vec<_>>();
     let mut created_groups = HashSet::new();
     while !pending.is_empty() {
@@ -1050,9 +1075,16 @@ pub async fn export_realm(
         let (held_by_users, _) = roles::holders_of(transaction, &role.role_id)
             .await
             .map_err(|_| Unportable::Backend)?;
+        let composites = roles::composite_children(transaction, &role.role_id)
+            .await
+            .map_err(|_| Unportable::Backend)?
+            .into_iter()
+            .map(|child| child.role_id)
+            .collect();
         exported_roles.push(ExportedRole {
             role,
             held_by_users,
+            composites,
         });
     }
 
@@ -1223,6 +1255,28 @@ fn conditions_first(
     Ok(ordered)
 }
 
+async fn add_composite_checked(
+    transaction: &Transaction<'_>,
+    parent_role_id: &str,
+    child_role_id: &str,
+) -> Result<(), Unportable> {
+    roles::lock_role_composites(transaction)
+        .await
+        .map_err(|_| Unportable::Backend)?;
+    if parent_role_id == child_role_id
+        || roles::composite_reaches(transaction, child_role_id, parent_role_id)
+            .await
+            .map_err(|_| Unportable::Backend)?
+    {
+        return Err(Unportable::Invalid(
+            "role composites contain a cycle".to_owned(),
+        ));
+    }
+    roles::add_composite(transaction, parent_role_id, child_role_id)
+        .await
+        .map_err(|_| Unportable::Backend)
+}
+
 /// Point every row of the document at the realm it is being written into.
 ///
 /// The realm in the document is where it came from; the transaction is
@@ -1341,6 +1395,11 @@ pub async fn import_realm(
         roles::create(transaction, &exported.role)
             .await
             .map_err(|_| Unportable::Backend)?;
+    }
+    for exported in &doc.roles {
+        for child_role_id in &exported.composites {
+            add_composite_checked(transaction, &exported.role.role_id, child_role_id).await?;
+        }
     }
     for exported in &doc.groups {
         roles::create_group(transaction, &exported.group)

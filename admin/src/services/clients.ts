@@ -1,7 +1,13 @@
 import { say } from "@/i18n";
 import { adminPath, api } from "@/services/http";
 import type { Page } from "@/models/paging";
-import type { ClientBrief, ClientScope, ProtocolMapper } from "@/models/client";
+import type {
+  ClientBrief,
+  ClientDetail,
+  ClientKeyConfiguration,
+  ClientScope,
+  ProtocolMapper,
+} from "@/models/client";
 
 export async function listClients(
   realm: string,
@@ -33,6 +39,17 @@ export async function listAgents(realm: string): Promise<AgentBrief[]> {
   return api<AgentBrief[]>(adminPath(realm, "agents"));
 }
 
+export async function registerAgent(
+  realm: string,
+  body: { client_id: string; capabilities: string[]; session_seconds?: number },
+): Promise<AgentBrief> {
+  return api<AgentBrief>(adminPath(realm, "agents"), {
+    method: "POST",
+    json: body,
+    subject: say("subject-agent", { client: body.client_id }),
+  });
+}
+
 export async function reshapeAgent(
   realm: string,
   clientId: string,
@@ -45,8 +62,8 @@ export async function reshapeAgent(
   });
 }
 
-export async function getClient(realm: string, clientId: string): Promise<ClientBrief> {
-  return api<ClientBrief>(adminPath(realm, `clients/${encodeURIComponent(clientId)}`));
+export async function getClient(realm: string, clientId: string): Promise<ClientDetail> {
+  return api<ClientDetail>(adminPath(realm, `clients/${encodeURIComponent(clientId)}`));
 }
 
 /// The scopes attached to this client, each saying whether it is offered
@@ -94,12 +111,13 @@ export interface ClientSpec {
   tls_san_dns?: string;
   tls_san_uri?: string;
   tls_subject_dn?: string;
+  key_configuration?: ClientKeyConfiguration;
 }
 
 /// Creation answers the client, and for a confidential one the secret rides
 /// along exactly once as client_secret.
 export async function createClient(realm: string, spec: ClientSpec) {
-  return api<ClientBrief & { client_secret?: string }>(adminPath(realm, "clients"), {
+  return api<ClientDetail & { client_secret?: string }>(adminPath(realm, "clients"), {
     method: "POST",
     json: spec,
     subject: say("subject-client", { client: spec.client_id ?? spec.name ?? "" }),

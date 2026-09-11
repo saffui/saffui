@@ -583,6 +583,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V096__global_realm_names.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 97,
+            name: "role_composites",
+            sql: include_str!("../migrations/V097__role_composites.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -571,6 +571,9 @@ fn spec_of(metadata: &Metadata, now: DateTime<Utc>) -> Result<Spec, Refused> {
     if metadata.jwks.is_some() && metadata.jwks_uri.is_some() {
         return Err(Refused::Invalid("keys are published one way, not two"));
     }
+    if let Some(document) = &metadata.jwks {
+        admin_clients::check_public_jwks(document)?;
+    }
     let method = read_method(metadata.token_endpoint_auth_method.as_deref())?;
     // §9: a client signing its own assertions has to publish the keys they are
     // verified against, and one registering none could never authenticate.

@@ -1,5 +1,43 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientKeyConfiguration {
+    pub authentication_method: String,
+    pub jwks: Option<serde_json::Value>,
+    pub jwks_uri: Option<String>,
+    pub id_token_signed_response_alg: Option<crypto::provider::SignAlg>,
+    pub userinfo_signed_response_alg: Option<crypto::provider::SignAlg>,
+    pub request_object_signing_alg: Option<crypto::provider::SignAlg>,
+    pub token_endpoint_auth_signing_alg: Option<crypto::provider::SignAlg>,
+    pub id_token_encryption: Option<models::entities::client::JweRegistration>,
+    pub userinfo_encryption: Option<models::entities::client::JweRegistration>,
+    pub request_object_encryption: Option<models::entities::client::JweRegistration>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ClientKeyCapabilities {
+    pub signing_algorithms: Vec<crypto::provider::SignAlg>,
+    pub encryption_algorithms: Vec<models::entities::keys::JweAlgorithm>,
+    pub encryption_methods: Vec<models::entities::keys::JweEncryption>,
+}
+
+impl From<ClientKeyConfiguration> for services::admin::clients::KeyConfiguration {
+    fn from(configuration: ClientKeyConfiguration) -> Self {
+        Self {
+            authentication_method: configuration.authentication_method,
+            jwks: configuration.jwks,
+            jwks_uri: configuration.jwks_uri,
+            id_token_signed_response_alg: configuration.id_token_signed_response_alg,
+            userinfo_signed_response_alg: configuration.userinfo_signed_response_alg,
+            request_object_signing_alg: configuration.request_object_signing_alg,
+            token_endpoint_auth_signing_alg: configuration.token_endpoint_auth_signing_alg,
+            id_token_encryption: configuration.id_token_encryption,
+            userinfo_encryption: configuration.userinfo_encryption,
+            request_object_encryption: configuration.request_object_encryption,
+        }
+    }
+}
+
 /// A realm as a listing shows it.
 ///
 /// Its own shape rather than the stored record. A listing that answered with
@@ -115,6 +153,10 @@ pub struct ClientBrief {
     pub tls_san_dns: Option<String>,
     pub tls_san_uri: Option<String>,
     pub tls_subject_dn: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_configuration: Option<ClientKeyConfiguration>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_capabilities: Option<ClientKeyCapabilities>,
 }
 
 impl From<models::entities::client::ClientModel> for ClientBrief {
@@ -150,7 +192,42 @@ impl From<models::entities::client::ClientModel> for ClientBrief {
             tls_san_dns: bag(&held, "tls.san_dns"),
             tls_san_uri: bag(&held, "tls.san_uri"),
             tls_subject_dn: bag(&held, "tls.subject_dn"),
+            key_configuration: None,
+            key_capabilities: None,
         }
+    }
+}
+
+impl ClientBrief {
+    pub fn with_key_details(client: models::entities::client::ClientModel) -> Self {
+        let key_configuration = ClientKeyConfiguration {
+            authentication_method: if client.public_client == Some(true) {
+                "none".to_owned()
+            } else {
+                client
+                    .client_authenticator_type
+                    .clone()
+                    .unwrap_or_else(|| "client-secret".to_owned())
+            },
+            jwks: client.jwks.clone().filter(|_| client.jwks_uri.is_none()),
+            jwks_uri: client.jwks_uri.clone(),
+            id_token_signed_response_alg: client.id_token_signed_response_alg,
+            userinfo_signed_response_alg: client.userinfo_signed_response_alg,
+            request_object_signing_alg: client.request_object_signing_alg,
+            token_endpoint_auth_signing_alg: client.token_endpoint_auth_signing_alg,
+            id_token_encryption: client.id_token_encryption,
+            userinfo_encryption: client.userinfo_encryption,
+            request_object_encryption: client.request_object_encryption,
+        };
+        let key_capabilities = ClientKeyCapabilities {
+            signing_algorithms: crypto::provider::SignAlg::ALL.to_vec(),
+            encryption_algorithms: models::entities::keys::JweAlgorithm::ALL.to_vec(),
+            encryption_methods: models::entities::keys::JweEncryption::ALL.to_vec(),
+        };
+        let mut brief = Self::from(client);
+        brief.key_configuration = Some(key_configuration);
+        brief.key_capabilities = Some(key_capabilities);
+        brief
     }
 }
 
@@ -238,6 +315,7 @@ pub struct ClientSpec {
     pub tls_san_dns: Option<String>,
     pub tls_san_uri: Option<String>,
     pub tls_subject_dn: Option<String>,
+    pub key_configuration: Option<ClientKeyConfiguration>,
 }
 
 /// What the plane is asked to create or reshape a person as.

@@ -4,8 +4,11 @@ import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
+import AppIcon from "@/components/AppIcon.vue";
+import DirectoryDrawer from "./DirectoryDrawer.vue";
 import IdpDrawer from "./IdpDrawer.vue";
 import AppToggle from "@/components/AppToggle.vue";
+import PageTabs from "@/components/PageTabs.vue";
 import {
   createIdp,
   deleteIdp,
@@ -15,12 +18,15 @@ import {
   updateIdp,
 } from "@/services/federation";
 import type { DirectoryRow, IdpRow } from "@/models/federation";
+import { PROVIDER_CATALOG, type ProviderPreset } from "./providerCatalog";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
 const idps = ref<IdpRow[]>([]);
 const directories = ref<DirectoryRow[]>([]);
 const failed = ref("");
+const directoryOpen = ref(false);
+const directoryRow = ref<DirectoryRow | null>(null);
 
 async function load() {
   try {
@@ -63,17 +69,31 @@ const editing = ref<null | { alias: string | null }>(null);
 /// different fields, and one editor for both is how a form ends up writing a
 /// field the other kind does not have.
 const broker = ref<IdpRow | null>(null);
+const brokerPreset = ref<ProviderPreset | null>(null);
 const openingBroker = ref(false);
 
-function openBroker(row: IdpRow | null) {
+function openBroker(row: IdpRow | null, preset: ProviderPreset | null = null) {
   broker.value = row;
+  brokerPreset.value = preset;
   openingBroker.value = true;
 }
 
 async function brokerChanged() {
   openingBroker.value = false;
   broker.value = null;
+  brokerPreset.value = null;
   idps.value = await listIdps(realm.value);
+}
+
+function openDirectory(row: DirectoryRow | null) {
+  directoryRow.value = row;
+  directoryOpen.value = true;
+}
+
+async function directoryChanged() {
+  directoryOpen.value = false;
+  directoryRow.value = null;
+  directories.value = await listDirectories(realm.value);
 }
 const form = ref({
   alias: "",
@@ -88,6 +108,11 @@ const form = ref({
 });
 const saving = ref(false);
 const doomName = ref("");
+const TABS = ["idps", "directories", "platforms"] as const;
+const tab = computed(() => {
+  const asked = String(route.query.tab ?? "idps");
+  return TABS.includes(asked as (typeof TABS)[number]) ? asked : "idps";
+});
 
 function openCreate() {
   editing.value = { alias: null };
@@ -180,7 +205,15 @@ async function drop() {
     </div>
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div class="mt-5 flex items-center gap-3">
+    <PageTabs
+      class="mt-4"
+      :leaves="[...TABS]"
+      :at="tab"
+      saying="federation-tab"
+      :to="(leaf) => `/${realm}/federation?tab=${leaf}`"
+    />
+
+    <div v-if="tab === 'idps'" class="mt-5 flex items-center gap-3">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("federation-idps") }}
       </h2>
@@ -192,8 +225,9 @@ async function drop() {
         {{ say("federation-new-idp") }}
       </button>
     </div>
-    <p v-if="!brokers.length" class="mt-2 text-xs text-muted">{{ say("federation-no-idps") }}</p>
-    <div v-else class="sf-list mt-2 overflow-x-auto">
+    <template v-if="tab === 'idps'">
+      <p v-if="!brokers.length" class="mt-2 text-xs text-muted">{{ say("federation-no-idps") }}</p>
+      <div v-else class="sf-list mt-2 overflow-x-auto">
       <table class="sf-table">
         <thead>
           <tr>
@@ -226,31 +260,98 @@ async function drop() {
           </tr>
         </tbody>
       </table>
-    </div>
+      </div>
+    </template>
 
-    <h2 class="mt-6 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-      {{ say("federation-directories") }}
-    </h2>
-    <p v-if="!directories.length" class="mt-2 text-xs text-muted">
-      {{ say("federation-no-directories") }}
-    </p>
-    <div v-else class="mt-2 grid max-w-3xl gap-2">
-      <div
+    <section v-if="tab === 'idps'" class="mt-6">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          {{ say("federation-provider-catalogue") }}
+        </h2>
+        <span class="sf-badge ml-auto">{{ say("federation-provider-protocols") }}</span>
+      </div>
+      <div class="mt-2 grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-2.5">
+        <button
+          v-for="provider in PROVIDER_CATALOG"
+          :key="provider.id"
+          type="button"
+          :disabled="provider.availability === 'backend'"
+          class="group flex min-h-[68px] min-w-0 items-center gap-2.5 rounded-[5px] border bg-surface px-2.5 py-2 text-left transition-colors"
+          :class="
+            provider.availability === 'backend'
+              ? 'cursor-not-allowed border-border opacity-55'
+              : 'border-border hover:border-accent-line hover:bg-surface-2'
+          "
+          :title="
+            provider.availability === 'backend'
+              ? say('federation-provider-backend-gap')
+              : provider.availability === 'manual'
+                ? say('federation-provider-manual')
+                : provider.name
+          "
+          @click="openBroker(null, provider)"
+        >
+          <span
+            class="grid size-9 shrink-0 place-items-center rounded border"
+            :class="provider.logo ? 'border-black/10 bg-white' : 'border-border-strong bg-surface-2 text-muted'"
+          >
+            <img
+              v-if="provider.logo"
+              :src="provider.logo"
+              alt=""
+              aria-hidden="true"
+              decoding="async"
+              class="max-h-6 max-w-6 object-contain"
+            />
+            <AppIcon v-else-if="provider.glyph" :name="provider.glyph" :size="18" />
+          </span>
+          <span class="min-w-0">
+            <span class="block text-[12px] leading-4 font-medium text-ink">{{ provider.name }}</span>
+            <span class="mt-0.5 block text-[10px] leading-3.5 text-faint">{{ provider.protocol }}</span>
+          </span>
+        </button>
+      </div>
+      <p class="mt-2 text-[10.5px] leading-4 text-faint">
+        {{ say("federation-provider-gap-note") }}
+      </p>
+    </section>
+
+    <div v-if="tab === 'directories'" class="mt-5 flex max-w-3xl items-center gap-3">
+      <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("federation-directories") }}
+      </h2>
+      <button
+        type="button"
+        class="sf-button sf-button-secondary ml-auto"
+        @click="openDirectory(null)"
+      >
+        {{ say("federation-new-directory") }}
+      </button>
+    </div>
+    <template v-if="tab === 'directories'">
+      <p v-if="!directories.length" class="mt-2 text-xs text-muted">
+        {{ say("federation-no-directories") }}
+      </p>
+      <div v-else class="mt-2 grid max-w-3xl gap-2">
+      <button
         v-for="row in directories"
         :key="row.alias"
-        class="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+        type="button"
+        class="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-left text-xs hover:border-accent/50 hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+        @click="openDirectory(row)"
       >
-        <span class="font-mono text-[11.5px]">{{ row.alias }}</span>
-        <span class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted">
+        <span class="min-w-0 truncate font-mono text-[11.5px]">{{ row.alias }}</span>
+        <span class="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted">
           {{ say("federation-priority") }} {{ row.priority }}
         </span>
-        <span class="ml-auto text-[10.5px]" :class="row.enabled === false ? 'text-danger' : 'text-faint'">
+        <span class="ml-auto shrink-0 text-[10.5px]" :class="row.enabled === false ? 'text-danger' : 'text-faint'">
           {{ row.enabled === false ? say("users-disabled") : say("users-active") }}
         </span>
+      </button>
       </div>
-    </div>
+    </template>
 
-    <div class="mt-6 flex max-w-3xl flex-wrap items-center gap-2">
+    <div v-if="tab === 'platforms'" class="mt-5 flex max-w-3xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("federation-platforms") }}
       </h2>
@@ -262,10 +363,11 @@ async function drop() {
         {{ say("federation-add-platform") }}
       </button>
     </div>
-    <p v-if="!platforms.length" class="mt-2 text-xs text-muted">
-      {{ say("federation-no-platforms") }}
-    </p>
-    <div v-else class="mt-2 grid max-w-3xl gap-2">
+    <template v-if="tab === 'platforms'">
+      <p v-if="!platforms.length" class="mt-2 text-xs text-muted">
+        {{ say("federation-no-platforms") }}
+      </p>
+      <div v-else class="mt-2 grid max-w-3xl gap-2">
       <div
         v-for="row in platforms"
         :key="row.internal_id"
@@ -287,7 +389,8 @@ async function drop() {
         </div>
         <div class="mt-1 font-mono text-[10.5px] text-faint">{{ bagText(row, "issuer") }}</div>
       </div>
-    </div>
+      </div>
+    </template>
 
     <AppDrawer
       v-if="editing"
@@ -421,9 +524,19 @@ async function drop() {
       v-if="openingBroker"
       :realm="realm"
       :row="broker ?? undefined"
+      :preset="brokerPreset ?? undefined"
       @close="openingBroker = false"
       @saved="brokerChanged"
       @deleted="brokerChanged"
+    />
+
+    <DirectoryDrawer
+      v-if="directoryOpen"
+      :realm="realm"
+      :row="directoryRow ?? undefined"
+      @close="directoryOpen = false"
+      @saved="directoryChanged"
+      @deleted="directoryChanged"
     />
 </div>
 </template>

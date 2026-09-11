@@ -63,10 +63,20 @@ the queue, due at once, history kept.
 ## The live feed
 
 `GET /admin/realms/{realm}/events/stream` is Server-Sent Events, fed at
-commit through the database's own notify: what it speaks happened. It is
-best-effort by contract; a watcher that lags misses frames and the store
-misses nothing, so the feed is for eyes and the deliveries above are for
-systems.
+commit through the database's own notify. A reconnect sends `Last-Event-ID`;
+the stream first emits retained summaries after that cursor, then resumes
+live delivery. The replay is bounded to 500 frames per connection; if more
+remain, the connection closes after the batch and the client reconnects with
+the last received id. Events removed by retention cannot be replayed.
+
+For an explicit page of missed summaries:
+
+```
+GET /admin/realms/{realm}/events/replay?after_event_id=1200&limit=100
+```
+
+The response contains `items`, `next_event_id`, and `more`. It never includes
+event payloads, and the realm isolation is enforced by the admin transaction.
 
 ## Replaying a range
 

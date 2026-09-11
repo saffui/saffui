@@ -309,4 +309,42 @@ body {
     outline: 2px solid var(--sf-accent-tint);
     outline-offset: 1px;
   }
+
+  .sf-login-shell {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background-color: var(--sf-bg);
+    background-image: linear-gradient(var(--sf-grid-dot) 1px, transparent 1px),
+      linear-gradient(90deg, var(--sf-grid-dot) 1px, transparent 1px);
+    background-position: center;
+    background-size: 48px 48px;
+  }
+  .sf-login-shell::before,
+  .sf-login-shell::after {
+    position: absolute;
+    z-index: -1;
+    content: "";
+    pointer-events: none;
+    border: 1px solid var(--sf-border-strong);
+    border-radius: 999px;
+    opacity: 0.35;
+  }
+  .sf-login-shell::before {
+    width: 600px;
+    height: 600px;
+  }
+  .sf-login-shell::after {
+    width: 840px;
+    height: 840px;
+  }
+  .sf-login-card {
+    width: min(420px, calc(100vw - 32px));
+    padding: 34px 34px 26px;
+    border: 1px solid var(--sf-glass-line);
+    border-radius: 8px;
+    background: var(--sf-glass);
+    box-shadow: var(--sf-shadow);
+    backdrop-filter: blur(18px);
+  }
 }

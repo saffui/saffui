@@ -97,6 +97,9 @@ pub struct ExportedRealm {
 pub struct ExportedRole {
     pub role: RoleModel,
     pub held_by_users: Vec<String>,
+    /// Direct child roles included by this role.
+    #[serde(default)]
+    pub composites: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

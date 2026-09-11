@@ -37,8 +37,10 @@ const EXCUSED: Record<string, string> = {
   "settings/PagesPage.vue": "a form would discard what is being typed into it",
   "settings/ThemePage.vue": "a form would discard what is being typed into it",
   "clients/ClientDrawer.vue": "a drawer re-reads after its own writes, keeping its tabs",
+  "clients/ClientKeysTab.vue": "its parent refreshes the client after its writes",
   "users/UserDrawer.vue": "a drawer re-reads after its own writes, keeping its tabs",
   "federation/IdpDrawer.vue": "a drawer re-reads after its own writes, keeping its tabs",
+  "federation/DirectoryDrawer.vue": "its parent owns and refreshes the directory list",
 };
 
 function everyScreen(at: string, under = ""): string[] {

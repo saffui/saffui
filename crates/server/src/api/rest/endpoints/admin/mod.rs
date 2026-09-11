@@ -16,6 +16,7 @@ pub mod iga;
 pub mod journal;
 pub mod keys;
 pub mod mail;
+pub mod metrics;
 pub mod negotiation;
 pub mod overview;
 pub mod portability;

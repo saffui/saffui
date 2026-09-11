@@ -1,11 +1,45 @@
 #[allow(unused_imports)]
 use super::support;
 use super::support::Plane;
+use actix_web::http::{Method, StatusCode};
+use actix_web::{App, test};
 use models::entities::authz::AdminAction;
-use serde_json::json;
+use serde_json::{Value, json};
+use server::api::config::{Plane as Mounted, register};
 use store::tenancy::TenantContext;
 
 const REALM: &str = support::REALM;
+
+fn mounted(plane: &Plane) -> Mounted {
+    Mounted {
+        pool: plane.pool(),
+        tenancy: plane.tenancy(),
+        policy: server::middleware::admin_policy::AdminPolicy {
+            audiences: vec![support::AUDIENCE.to_owned()],
+            parties: vec![support::PARTY.to_owned()],
+            scope: support::SCOPE.to_owned(),
+        },
+        origin: support::origin(),
+        login_ui: support::login_ui(),
+        hops: config::proxying::Proxying::none(),
+        egress: config::serving::Egress::Outward,
+        sealing: support::sealing(),
+        ceiling: support::ceiling(),
+    }
+}
+
+async fn asked(plane: &Plane, method: Method, path: &str, bearer: &str) -> (StatusCode, Value) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let request = test::TestRequest::default()
+        .method(method)
+        .uri(path)
+        .insert_header(("authorization", format!("Bearer {bearer}")))
+        .to_request();
+    let response = test::call_service(&app, request).await;
+    let status = response.status();
+    let body = test::read_body(response).await;
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
 
 /// The live feed hears what the store commits, and only that: an emission
 /// inside a transaction says nothing until the commit speaks it, a rolled
@@ -81,5 +115,73 @@ async fn the_feed_speaks_at_commit_and_never_before() {
             .await
             .is_err(),
         "a rolled back emission was spoken"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_live_replay_answers_after_a_cursor_without_payloads() {
+    let plane = Plane::with_actions(&[AdminAction::EventRead]).await;
+    let bearer = plane.token(&support::claims());
+    let baseline = {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let baseline = transaction
+            .query_one("SELECT coalesce(max(event_id), 0) FROM event_outbox", &[])
+            .await
+            .unwrap()
+            .get::<_, i64>(0);
+        transaction.commit().await.unwrap();
+        baseline
+    };
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    store::providers::outbox::emit(
+        &transaction,
+        store::providers::outbox::USER_UPDATED,
+        "ada",
+        &json!({ "private": true }),
+    )
+    .await
+    .unwrap();
+    store::providers::outbox::emit(
+        &transaction,
+        store::providers::outbox::SESSION_REVOKED,
+        "ada",
+        &json!({ "private": true }),
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+
+    let (status, first_page) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/events/replay?after_event_id={baseline}&limit=1"),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first_page}");
+    assert_eq!(first_page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(first_page["more"], true);
+    assert!(first_page["items"][0].get("payload").is_none());
+
+    let cursor = first_page["next_event_id"].as_i64().unwrap();
+    let (status, second_page) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/events/replay?after_event_id={cursor}"),
+        &bearer,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second_page}");
+    assert_eq!(
+        second_page["items"][0]["kind"], "session.revoked",
+        "{second_page}"
     );
 }

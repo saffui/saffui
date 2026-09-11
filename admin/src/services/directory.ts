@@ -9,6 +9,7 @@ import type {
   RoleHolders,
   RoleRow,
 } from "@/models/directory";
+import type { RealmTheme } from "@/models/realm";
 
 function paged(leaf: string, first: number, max: number): string {
   return `${leaf}?first=${first}&max=${max}`;
@@ -83,6 +84,29 @@ export async function listOrganizationMembers(
   return api<OrgMember[]>(
     adminPath(realm, `organizations/${encodeURIComponent(orgId)}/members`),
   );
+}
+
+export async function getOrganizationTheme(realm: string, orgId: string): Promise<RealmTheme> {
+  return api<RealmTheme>(adminPath(realm, `organizations/${encodeURIComponent(orgId)}/theme`));
+}
+
+export async function writeOrganizationTheme(
+  realm: string,
+  orgId: string,
+  theme: NonNullable<RealmTheme>,
+): Promise<void> {
+  await api<void>(adminPath(realm, `organizations/${encodeURIComponent(orgId)}/theme`), {
+    method: "PUT",
+    json: theme,
+    subject: say("org-theme-title"),
+  });
+}
+
+export async function forgetOrganizationTheme(realm: string, orgId: string): Promise<void> {
+  await api<void>(adminPath(realm, `organizations/${encodeURIComponent(orgId)}/theme`), {
+    method: "DELETE",
+    subject: say("org-theme-title"),
+  });
 }
 
 export async function createGroup(

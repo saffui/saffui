@@ -152,6 +152,89 @@ pub async fn delete_role(transaction: &Transaction<'_>, role_id: &str) -> Result
         .ok_or(Unwritable::NotFound)
 }
 
+/// Roles included by a composite role.
+pub async fn composite_roles(
+    transaction: &Transaction<'_>,
+    role_id: &str,
+) -> Result<Vec<RoleModel>, Unwritable> {
+    get_role(transaction, role_id).await?;
+    roles::composite_children(transaction, role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+/// Include one role in another, preserving a finite role graph.
+pub async fn add_composite_role(
+    transaction: &Transaction<'_>,
+    parent_role_id: &str,
+    child_role_id: &str,
+) -> Result<(), Unwritable> {
+    roles::lock_role_composites(transaction)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    get_role(transaction, parent_role_id).await?;
+    get_role(transaction, child_role_id).await?;
+    let child_reaches_parent = roles::composite_reaches(transaction, child_role_id, parent_role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    if closes_composite_cycle(parent_role_id, child_role_id, child_reaches_parent) {
+        return Err(Unwritable::Invalid(
+            "a composite role cannot contain itself or one of its ancestors",
+        ));
+    }
+    store::providers::sod::hold_realm(transaction)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    roles::add_composite(transaction, parent_role_id, child_role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    let people = roles::holders_of_role(transaction, parent_role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    let arriving = roles::roles_reached_from(transaction, &[child_role_id.to_owned()])
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    weighed_everyone(transaction, &people, &arriving).await
+}
+
+fn closes_composite_cycle(
+    parent_role_id: &str,
+    child_role_id: &str,
+    child_reaches_parent: bool,
+) -> bool {
+    parent_role_id == child_role_id || child_reaches_parent
+}
+
+/// Remove one role from a composite role.
+pub async fn remove_composite_role(
+    transaction: &Transaction<'_>,
+    parent_role_id: &str,
+    child_role_id: &str,
+) -> Result<(), Unwritable> {
+    roles::lock_role_composites(transaction)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    get_role(transaction, parent_role_id).await?;
+    get_role(transaction, child_role_id).await?;
+    roles::remove_composite(transaction, parent_role_id, child_role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .then_some(())
+        .ok_or(Unwritable::NotFound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::closes_composite_cycle;
+
+    #[test]
+    fn composite_cycle_check_rejects_self_and_ancestor_edges() {
+        assert!(closes_composite_cycle("same", "same", false));
+        assert!(closes_composite_cycle("parent", "child", true));
+        assert!(!closes_composite_cycle("parent", "child", false));
+    }
+}
+
 /// Refuse a parent that does not exist, and a chain that would loop.
 ///
 /// The walk is what refuses the loop: from the asked parent up to a root,
@@ -249,17 +332,41 @@ pub async fn update_group(
         return Err(Unwritable::AlreadyExists);
     }
     check_parent(transaction, &asked.parent_id, Some(group_id)).await?;
+    // Moved under a new parent, the group's people stand in every group above
+    // it, and hold what those carry: a change to many people, weighed as one.
+    let new_parent = asked
+        .parent_id
+        .clone()
+        .filter(|parent| group.parent_id.as_ref() != Some(parent));
+    if new_parent.is_some() {
+        store::providers::sod::hold_realm(transaction)
+            .await
+            .map_err(|_| Unwritable::Backend)?;
+    }
     group.name = asked.name;
     group.display_name = asked.display_name;
     group.description = asked.description;
     group.is_default = asked.is_default;
     group.parent_id = asked.parent_id;
     group.metadata.updated_by = Some(by.to_owned());
-    roles::update_group(transaction, &group)
+    let group = roles::update_group(transaction, &group)
         .await
         .map_err(|_| Unwritable::Backend)?
         .then_some(group)
-        .ok_or(Unwritable::NotFound)
+        .ok_or(Unwritable::NotFound)?;
+    if let Some(parent) = new_parent {
+        let people = roles::members_at_or_below(transaction, group_id)
+            .await
+            .map_err(|_| Unwritable::Backend)?;
+        let carried = roles::roles_carried_at_or_above(transaction, &parent)
+            .await
+            .map_err(|_| Unwritable::Backend)?;
+        let arriving = roles::roles_reached_from(transaction, &carried)
+            .await
+            .map_err(|_| Unwritable::Backend)?;
+        weighed_everyone(transaction, &people, &arriving).await?;
+    }
+    Ok(group)
 }
 
 pub async fn delete_group(transaction: &Transaction<'_>, group_id: &str) -> Result<(), Unwritable> {
@@ -544,6 +651,21 @@ async fn weighed(transaction: &Transaction<'_>, user_id: &str) -> Result<(), Unw
     }
 }
 
+/// The same for a change that reaches many people at once. The realm is held
+/// before the write, where one person would be: a rival weighing either landed
+/// before it or waits for its commit.
+async fn weighed_everyone(
+    transaction: &Transaction<'_>,
+    people: &[String],
+    arriving: &[String],
+) -> Result<(), Unwritable> {
+    match crate::sod::weigh_everyone(transaction, people, arriving).await {
+        Ok(()) => Ok(()),
+        Err(crate::sod::Toxic::Refused(said)) => Err(Unwritable::Toxic(said)),
+        Err(crate::sod::Toxic::Backend) => Err(Unwritable::Backend),
+    }
+}
+
 pub async fn remove_user_from_group(
     transaction: &Transaction<'_>,
     group_id: &str,
@@ -566,9 +688,19 @@ pub async fn grant_role_to_group(
 ) -> Result<(), Unwritable> {
     get_group(transaction, group_id).await?;
     get_role(transaction, role_id).await?;
+    store::providers::sod::hold_realm(transaction)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
     roles::grant_to_group(transaction, group_id, role_id)
         .await
-        .map_err(|_| Unwritable::Backend)
+        .map_err(|_| Unwritable::Backend)?;
+    let people = roles::members_at_or_below(transaction, group_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    let arriving = roles::roles_reached_from(transaction, &[role_id.to_owned()])
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    weighed_everyone(transaction, &people, &arriving).await
 }
 
 pub async fn revoke_role_from_group(

@@ -463,3 +463,221 @@ async fn duties_separate_at_every_door_and_an_excuse_covers_exactly() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "no rule, nothing weighs");
 }
+
+/// A group of no role of its own, at the top or under another.
+async fn planted_group_under(plane: &Plane, group: &str, parent: Option<&str>) {
+    use models::auditable::AuditableModel;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let model = models::entities::authz::GroupModel {
+        group_id: group.into(),
+        realm_id: REALM.into(),
+        name: group.into(),
+        display_name: String::new(),
+        description: String::new(),
+        is_default: false,
+        parent_id: parent.map(str::to_owned),
+        metadata: AuditableModel::from_creator(support::TENANT.into(), "root".into()),
+    };
+    store::providers::roles::create_group(&transaction, &model)
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+}
+
+async fn parent_of(plane: &Plane, group: &str) -> Option<String> {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    store::providers::roles::load_group(&transaction, group)
+        .await
+        .unwrap()
+        .expect("the group")
+        .parent_id
+}
+
+/// A change that reaches many people at once is weighed for every one of them.
+/// A role given to a group reaches the people of the groups below it, a role
+/// placed under another reaches everyone holding the other and every role below
+/// it, and a group moved under a new parent hands its people what that carries.
+/// Each is refused where a grant to one of those people would be.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_change_reaching_many_people_is_weighed_for_each_of_them() {
+    let plane = Plane::with_actions(&[
+        AdminAction::IgaRead,
+        AdminAction::IgaWrite,
+        AdminAction::RoleWrite,
+        AdminAction::GroupWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    for role in ["payer", "approver", "bystander", "clerk"] {
+        planted_role(&plane, role).await;
+    }
+    let subject = support::SUBJECT;
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/iga/sod/rules/payments"),
+        &bearer,
+        Some(json!({ "roles": ["payer", "approver"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/roles/payer/holders/{subject}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // A role given to a group, reaching a person who stands only in a group
+    // below it.
+    planted_group_under(&plane, "desk", None).await;
+    planted_group_under(&plane, "night-desk", Some("desk")).await;
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/groups/night-desk/members/{subject}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/groups/desk/roles/approver"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a role given to a group handed a person the pair through the group above theirs"
+    );
+    let said = told["message"].as_str().unwrap_or_default().to_owned()
+        + told["detail"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("payments"),
+        "the refusal names the rule: {told}"
+    );
+    assert!(
+        !roles_of(&plane, subject).await.contains(&"approver".into()),
+        "the refused group grant landed anyway"
+    );
+    // The same door passes a role no rule names.
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/groups/desk/roles/bystander"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // The subject now holds `bystander` only through the groups; a composite
+    // edge under it still reaches them.
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/roles/bystander/composites/approver"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a composite edge missed a holder who holds the role only through a group"
+    );
+
+    // A role placed under another: nobody holds `clerk`, so placing `approver`
+    // under it passes; placing `clerk` under `payer` then reaches the subject,
+    // and `approver` arrives two steps down.
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/roles/clerk/composites/approver"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/roles/payer/composites/clerk"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a composite edge handed every holder of the role a pair two steps down"
+    );
+    assert!(
+        !roles_of(&plane, subject).await.contains(&"approver".into()),
+        "the refused composite edge landed anyway"
+    );
+
+    // A group moved under a new parent, whose own parent carries the other half.
+    planted_group_holding(&plane, "approvers", "approver").await;
+    planted_group_under(&plane, "approvals-team", Some("approvers")).await;
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/groups/night-desk"),
+        &bearer,
+        Some(json!({ "name": "night-desk", "parent_id": "approvals-team" })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a group moved under a new parent handed its people what the groups above carry"
+    );
+    assert_eq!(
+        parent_of(&plane, "night-desk").await.as_deref(),
+        Some("desk"),
+        "the refused move landed anyway"
+    );
+
+    // An exception covering exactly this pair lets the same change through.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/iga/sod/rules/payments/exceptions/{subject}"),
+        &bearer,
+        Some(json!({
+            "covered_roles": ["payer", "approver"],
+            "justification": "month end, two hats for a day",
+            "valid_until": (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/roles/payer/composites/clerk"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "the excused pair still refused"
+    );
+    assert!(roles_of(&plane, subject).await.contains(&"approver".into()));
+}

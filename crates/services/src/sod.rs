@@ -11,8 +11,8 @@ pub struct Offence {
 }
 
 /// Every enabled rule whose threshold this set of roles reaches. Members
-/// are literal role names, so a held role counts once and the count is
-/// exact; a disabled rule weighs nothing.
+/// are role identifiers, the same the effective set is read in, so a held
+/// role counts once and the count is exact; a disabled rule weighs nothing.
 pub fn offences(rules: &[SodRule], effective: &[String]) -> Vec<Offence> {
     rules
         .iter()
@@ -68,6 +68,49 @@ pub async fn weigh(transaction: &Transaction<'_>, user_id: &str) -> Result<(), T
     let rules = store::providers::sod::rules(transaction)
         .await
         .map_err(|_| Toxic::Backend)?;
+    weigh_against(transaction, &rules, user_id).await
+}
+
+/// Weigh everyone a change to many people at once reaches, inside the
+/// transaction that made it: a role given to a group, a role placed under
+/// another, a group moved under a new parent. The caller holds the realm first.
+///
+/// `arriving` is every role the change can newly put in somebody's hands. When
+/// no enabled rule names one of them, the change cannot have brought an offence
+/// about, and nobody is weighed: that is the common case, and it costs one read.
+pub async fn weigh_everyone(
+    transaction: &Transaction<'_>,
+    people: &[String],
+    arriving: &[String],
+) -> Result<(), Toxic> {
+    let rules = store::providers::sod::rules(transaction)
+        .await
+        .map_err(|_| Toxic::Backend)?;
+    let named = |role: &String| {
+        rules
+            .iter()
+            .filter(|rule| rule.enabled)
+            .any(|rule| rule.roles.contains(role))
+    };
+    if !arriving.iter().any(named) {
+        return Ok(());
+    }
+    for person in people {
+        weigh_against(transaction, &rules, person)
+            .await
+            .map_err(|toxic| match toxic {
+                Toxic::Refused(said) => Toxic::Refused(format!("{said}, for {person}")),
+                Toxic::Backend => Toxic::Backend,
+            })?;
+    }
+    Ok(())
+}
+
+async fn weigh_against(
+    transaction: &Transaction<'_>,
+    rules: &[SodRule],
+    user_id: &str,
+) -> Result<(), Toxic> {
     if !rules.iter().any(|rule| rule.enabled) {
         return Ok(());
     }
@@ -77,7 +120,7 @@ pub async fn weigh(transaction: &Transaction<'_>, user_id: &str) -> Result<(), T
         .into_iter()
         .map(|role| role.role_id)
         .collect();
-    let reached = offences(&rules, &effective);
+    let reached = offences(rules, &effective);
     if reached.is_empty() {
         return Ok(());
     }

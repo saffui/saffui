@@ -671,6 +671,113 @@ pub async fn effective_roles(
         .collect())
 }
 
+/// Everyone standing in this group, directly or through a group below it: the
+/// people a role given to the group reaches, and a new parent above it.
+pub async fn members_at_or_below(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "WITH RECURSIVE below(group_id) AS ( \
+                 SELECT $1::text \
+                 UNION \
+                 SELECT g.group_id FROM groups g JOIN below b ON g.parent_id = b.group_id \
+             ) \
+             SELECT DISTINCT user_id FROM users_groups \
+             WHERE group_id IN (SELECT group_id FROM below) ORDER BY user_id",
+            &[&group_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
+/// Everyone who holds this role, however they came to: granted it, standing in
+/// a group that carries it, or holding a role it is placed under. The mirror of
+/// `effective_roles`, read from the role's side.
+pub async fn holders_of_role(
+    transaction: &Transaction<'_>,
+    role_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "WITH RECURSIVE above(role_id) AS ( \
+                 SELECT $1::text \
+                 UNION \
+                 SELECT c.parent_role_id FROM role_composites c \
+                 JOIN above a ON c.child_role_id = a.role_id \
+             ) \
+             , carrying(group_id) AS ( \
+                 SELECT group_id FROM groups_roles \
+                 WHERE role_id IN (SELECT role_id FROM above) \
+                 UNION \
+                 SELECT g.group_id FROM groups g JOIN carrying c ON g.parent_id = c.group_id \
+             ) \
+             SELECT user_id FROM users_roles WHERE role_id IN (SELECT role_id FROM above) \
+             UNION \
+             SELECT user_id FROM users_groups WHERE group_id IN (SELECT group_id FROM carrying) \
+             ORDER BY user_id",
+            &[&role_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
+/// These roles and every role placed below them: what somebody handed them
+/// comes to hold.
+pub async fn roles_reached_from(
+    transaction: &Transaction<'_>,
+    starting: &[String],
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "WITH RECURSIVE reached(role_id) AS ( \
+                 SELECT unnest($1::text[]) \
+                 UNION \
+                 SELECT c.child_role_id FROM role_composites c \
+                 JOIN reached r ON c.parent_role_id = r.role_id \
+             ) \
+             SELECT role_id FROM reached ORDER BY role_id",
+            &[&starting],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
+/// The roles carried by this group and by every group above it: what anyone
+/// standing in it holds through its groups.
+pub async fn roles_carried_at_or_above(
+    transaction: &Transaction<'_>,
+    group_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "WITH RECURSIVE above(group_id, parent_id) AS ( \
+                 SELECT group_id, parent_id FROM groups WHERE group_id = $1 \
+                 UNION \
+                 SELECT g.group_id, g.parent_id FROM groups g \
+                 JOIN above a ON g.group_id = a.parent_id \
+             ) \
+             SELECT DISTINCT role_id FROM groups_roles \
+             WHERE group_id IN (SELECT group_id FROM above) ORDER BY role_id",
+            &[&group_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
 /// The role grants written against this person and no one else: the direct
 /// edges, without what a group confers. A review that offers to pull an
 /// edge has to name the edge it can pull.

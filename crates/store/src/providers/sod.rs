@@ -23,16 +23,44 @@ pub struct SodException {
 }
 
 const WEIGHING: i32 = 0x534F_4457;
+const WEIGHING_REALM: i32 = 0x534F_4452;
 
 /// One person's grants are weighed by one writer at a time. Transaction
 /// scoped, so two halves of a toxic pair cannot each pass a read taken
 /// before the other's write.
+///
+/// The realm is held too, shared: people are weighed side by side, and a change
+/// reaching many of them at once waits for every one of those weighings to land.
 pub async fn hold_person(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<()> {
+    transaction
+        .execute(
+            "SELECT pg_advisory_xact_lock_shared($1, \
+                 hashtext(current_setting('saffui.current_realm', true)))",
+            &[&WEIGHING_REALM],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
     transaction
         .execute(
             "SELECT pg_advisory_xact_lock($1, \
                  hashtext(current_setting('saffui.current_realm', true) || ':' || $2))",
             &[&WEIGHING, &user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
+/// Every person of the realm at once, for a change that reaches many of them:
+/// a role given to a group, a role placed under another, a group moved. One lock
+/// however many people the change reaches, and no person is weighed alongside
+/// it, so its weighing reads a world nobody else is changing.
+pub async fn hold_realm(transaction: &Transaction<'_>) -> StoreResult<()> {
+    transaction
+        .execute(
+            "SELECT pg_advisory_xact_lock($1, \
+                 hashtext(current_setting('saffui.current_realm', true)))",
+            &[&WEIGHING_REALM],
         )
         .await
         .map_err(|_| StoreError::Backend)?;

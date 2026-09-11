@@ -39,6 +39,7 @@ const GROUPS: { label: string; items: { label: string; icon: any; leaf: string }
       { label: say("nav-federation"), icon: "federation", leaf: "federation" },
       { label: say("nav-appearance"), icon: "appearance", leaf: "theme" },
       { label: say("nav-pages"), icon: "pages", leaf: "pages" },
+      { label: say("nav-spnego"), icon: "server", leaf: "spnego" },
       { label: say("nav-settings"), icon: "settings", leaf: "settings" },
     ],
   },

@@ -571,6 +571,29 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       } },
     ]);
   }
+  if (/\/agents\/[^/]+$/.test(path) && method !== "GET") {
+    return answer({
+      client_id: "deploy-bot", name: "deploy-bot", enabled: true,
+      capabilities: ["deploy:read", "audit:read"], session_seconds: 900,
+      keyed: false, not_before: null,
+    });
+  }
+  if (path.endsWith("/agents") && method !== "GET") {
+    return answer({
+      client_id: "deploy-bot", name: "deploy-bot", enabled: true,
+      capabilities: ["deploy:read"], session_seconds: 900,
+      keyed: false, not_before: null,
+    });
+  }
+  if (path.endsWith("/agents")) {
+    return answer([
+      {
+        client_id: "deploy-bot", name: "deploy-bot", enabled: true,
+        capabilities: ["deploy:read", "audit:read"], session_seconds: 900,
+        keyed: false, not_before: null,
+      },
+    ]);
+  }
   if (path.endsWith("/iga/rules")) {
     return answer([
       { rule_id: "ru-1", when_attribute: "department", when_value: "finance", when_expr: null, roles: ["r-1"], priority: 10, enabled: true },

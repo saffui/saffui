@@ -551,8 +551,36 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
   if (path.endsWith("/keys")) {
     return answer({
       signing: [
-        { kid: "sf-es256-2026-08", algorithm: "ES256", status: "active" },
-        { kid: "sf-rs256-2026-02", algorithm: "RS256", status: "retiring" },
+        {
+          kid: "sf-es256-2026-08",
+          realm_id: "main",
+          algorithm: "ES256",
+          key_type: "EC",
+          key_use: "sig",
+          status: "active",
+          priority: 12,
+          created_at: NOW - 86400 * 24,
+        },
+        {
+          kid: "sf-es256-2026-02",
+          realm_id: "main",
+          algorithm: "ES256",
+          key_type: "EC",
+          key_use: "sig",
+          status: "passive",
+          priority: 11,
+          created_at: NOW - 86400 * 180,
+        },
+        {
+          kid: "sf-rs256-2026-04",
+          realm_id: "main",
+          algorithm: "RS256",
+          key_type: "RSA",
+          key_use: "sig",
+          status: "active",
+          priority: 10,
+          created_at: NOW - 86400 * 120,
+        },
       ],
       encryption: [],
     });

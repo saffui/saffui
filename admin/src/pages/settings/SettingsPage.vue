@@ -52,6 +52,7 @@ import {
   smsTemplateIsValid,
   smsWrite,
 } from "./messaging";
+import { localeMutation, localeSelection, toggleLocale } from "./localizationForm";
 
 /// The deck's boards, in the deck's order. "User profile" is drawn there too
 /// and is not here: a declarative user profile is a server feature this build
@@ -170,6 +171,21 @@ const attrRows = ref<{ name: string; value: string }[]>([]);
 /// The realm's cut of the built tongues, and the silence answer.
 const offeredTongues = ref<string[]>([]);
 const defaultTongue = ref("");
+const effectiveDefaultTongue = computed(
+  () => defaultTongue.value || offeredTongues.value[0] || TONGUES[0],
+);
+const allTonguesOffered = computed(() => offeredTongues.value.length === TONGUES.length);
+
+function setTongue(tongue: string, enabled: boolean) {
+  const next = toggleLocale(
+    { offered: offeredTongues.value, fallback: defaultTongue.value },
+    tongue,
+    enabled,
+    TONGUES,
+  );
+  offeredTongues.value = next.offered;
+  defaultTongue.value = next.fallback;
+}
 
 const POLICY_NUMBERS = [
   ["min_length", "policy-min-length"],
@@ -269,7 +285,8 @@ function adopt(held: RealmSettings) {
     name,
     value: typeof value === "string" ? value : JSON.stringify(value),
   }));
-  offeredTongues.value = held.supported_locales ?? [...TONGUES];
+  const locales = localeSelection(held.supported_locales, held.default_locale, TONGUES);
+  offeredTongues.value = locales.offered;
   templates.value = JSON.parse(JSON.stringify(held.mail_templates ?? {}));
   smsTemplates.value = JSON.parse(JSON.stringify(held.sms_templates ?? {}));
   adoptSmsTemplate();
@@ -278,7 +295,7 @@ function adopt(held: RealmSettings) {
     perNumber: held.sms_per_number_cap ?? "",
     prefixes: (held.sms_blocked_prefixes ?? []).join("\n"),
   };
-  defaultTongue.value = held.default_locale ?? "";
+  defaultTongue.value = locales.fallback;
   otp.value = { ...(held.otp_policy ?? OTP_DEFAULTS) };
   webauthn.value = {
     rp_name: held.webauthn_policy?.rp_name ?? "",
@@ -413,15 +430,10 @@ function changesOf(which: Group): RealmUpdate {
     };
   }
   if (which === "localization") {
-    const offered = offeredTongues.value.filter((held) =>
-      (TONGUES as readonly string[]).includes(held),
+    return localeMutation(
+      { offered: offeredTongues.value, fallback: defaultTongue.value },
+      TONGUES,
     );
-    return {
-      // Every tongue checked reads as no restriction, which the server
-      // stores as none.
-      supported_locales: offered.length === TONGUES.length ? [] : offered,
-      default_locale: defaultTongue.value,
-    };
   }
   if (which === "security") {
     const changes: RealmUpdate = {
@@ -961,7 +973,7 @@ async function saveSmsTemplate() {
       <template v-if="settings">
         <form
           v-if="group !== 'email' && group !== 'phone' && group !== 'features'"
-          class="mt-4 flex max-w-lg flex-col gap-3 text-xs"
+          class="mt-4 flex w-full max-w-6xl flex-col gap-4 text-xs"
           @submit.prevent="saveGroup"
           @input="markDirty"
           @change="markDirty"
@@ -1669,41 +1681,78 @@ async function saveSmsTemplate() {
           </template>
 
           <template v-if="group === 'localization'">
-            <p class="text-[11px] text-muted">{{ say("locales-lede") }}</p>
-            <div class="mt-1 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-              {{ say("locales-offered") }} <AppHint name="locales-offered-help" />
+            <p class="max-w-3xl text-[11px] leading-5 text-muted">{{ say("locales-lede") }}</p>
+            <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <section class="min-w-0 rounded-lg border border-border bg-surface p-4">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+                      {{ say("locales-offered") }} <AppHint name="locales-offered-help" />
+                    </div>
+                    <p class="mt-1 text-[10.5px] leading-4 text-muted">
+                      {{ say("locales-build-count", { count: TONGUES.length }) }}
+                    </p>
+                  </div>
+                  <span class="rounded border border-border px-2 py-1 font-mono text-[10.5px] text-muted">
+                    {{ offeredTongues.length }}/{{ TONGUES.length }}
+                  </span>
+                </div>
+
+                <div class="mt-4 grid gap-2 sm:grid-cols-2">
+                  <div
+                    v-for="tongue in TONGUES"
+                    :key="tongue"
+                    class="rounded-md border p-3"
+                    :class="offeredTongues.includes(tongue) ? 'border-accent/50 bg-accent-tint' : 'border-border bg-surface-2'"
+                  >
+                    <AppToggle
+                      :model-value="offeredTongues.includes(tongue)"
+                      @update:model-value="setTongue(tongue, $event)"
+                    >
+                      <span class="font-medium text-ink">{{ say(`locale-${tongue}`) }}</span>
+                      <span class="ml-auto font-mono text-[10.5px] text-faint">{{ tongue }}</span>
+                    </AppToggle>
+                  </div>
+                </div>
+
+                <p v-if="!offeredTongues.length" class="mt-3 rounded border border-warn/40 bg-warn/5 px-3 py-2 text-[11px] text-warn">
+                  {{ say("locales-none-warning") }}
+                </p>
+              </section>
+
+              <aside class="rounded-lg border border-border bg-surface p-4">
+                <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+                  {{ say("locales-negotiation") }}
+                </div>
+                <ol class="mt-3 space-y-2 text-[11px] text-muted">
+                  <li class="flex gap-2"><span class="font-mono text-accent">01</span>{{ say("locales-order-request") }}</li>
+                  <li class="flex gap-2"><span class="font-mono text-accent">02</span>{{ say("locales-order-browser") }}</li>
+                  <li class="flex gap-2"><span class="font-mono text-accent">03</span>{{ say("locales-order-fallback") }}</li>
+                </ol>
+                <label class="mt-4 block border-t border-border pt-4 text-[11px] font-medium text-muted">
+                  {{ say("locales-default") }} <AppHint name="locales-default-help" />
+                  <select v-model="defaultTongue" class="sf-field mt-1" :disabled="!offeredTongues.length">
+                    <option value="">{{ say("locales-default-first") }}</option>
+                    <option v-for="tongue in offeredTongues" :key="tongue" :value="tongue">
+                      {{ tongue }} · {{ say(`locale-${tongue}`) }}
+                    </option>
+                  </select>
+                </label>
+                <dl class="mt-3 grid grid-cols-[1fr_auto] gap-2 text-[10.5px]">
+                  <dt class="text-faint">{{ say("locales-effective") }}</dt>
+                  <dd class="font-mono text-ink">{{ effectiveDefaultTongue }}</dd>
+                  <dt class="text-faint">{{ say("locales-restriction") }}</dt>
+                  <dd class="text-right text-ink">{{ say(allTonguesOffered ? "locales-all" : "locales-subset") }}</dd>
+                </dl>
+              </aside>
             </div>
-            <AppToggle
-              v-for="tongue in TONGUES"
-              :key="tongue"
-              :model-value="offeredTongues.includes(tongue)"
-              @update:model-value="
-                offeredTongues = offeredTongues.includes(tongue)
-                  ? offeredTongues.filter((held) => held !== tongue)
-                  : [...offeredTongues, tongue]
-              "
-            >
-              <span class="font-mono text-[11.5px]">{{ tongue }}</span>
-              <span class="text-muted">{{ say(`locale-${tongue}`) }}</span>
-            </AppToggle>
-            <label class="mt-2 block text-[11px] font-medium text-muted">
-              {{ say("locales-default") }} <AppHint name="locales-default-help" />
-              <select
-                v-model="defaultTongue"
-                class="sf-field mt-1"
-              >
-                <option value="">{{ say("locales-default-first") }}</option>
-                <option v-for="tongue in offeredTongues" :key="tongue" :value="tongue">
-                  {{ tongue }} · {{ say(`locale-${tongue}`) }}
-                </option>
-              </select>
-            </label>
           </template>
 
           <div class="mt-1 flex items-center gap-2">
             <button
               type="submit"
-              class="sf-button sf-button-primary"
+              class="sf-button sf-button-primary disabled:cursor-not-allowed disabled:opacity-50"
+              :disabled="group === 'localization' && !offeredTongues.length"
             >
               {{ say("settings-save") }}
             </button>
@@ -1715,7 +1764,7 @@ async function saveSmsTemplate() {
 
         <div
           v-if="group === 'email'"
-          class="mt-6 max-w-3xl rounded-lg border border-border bg-surface p-4"
+          class="mt-6 w-full max-w-6xl rounded-lg border border-border bg-surface p-4"
         >
           <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
             {{ say("mail-templates-title") }} <AppHint name="mail-templates-title-help" />
@@ -1789,7 +1838,7 @@ async function saveSmsTemplate() {
           </form>
         </div>
 
-        <div v-if="group === 'features'" class="mt-4 max-w-3xl">
+        <div v-if="group === 'features'" class="mt-4 w-full max-w-6xl">
           <p class="text-xs text-muted">{{ say("features-lede") }}</p>
 
           <template v-for="stage in LIFECYCLES" :key="stage">
@@ -1861,7 +1910,7 @@ async function saveSmsTemplate() {
 
         <div v-if="group === 'email'" class="mt-4 max-w-6xl">
           <form
-            class="max-w-3xl rounded-lg border border-border bg-surface p-4 text-xs"
+            class="w-full rounded-lg border border-border bg-surface p-4 text-xs"
             @submit.prevent="saveMail"
           >
             <div class="mb-3 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
@@ -2011,7 +2060,7 @@ async function saveSmsTemplate() {
             </div>
           </div>
 
-          <div v-if="mail" class="mt-4 max-w-4xl rounded-lg border border-border bg-surface p-4">
+          <div v-if="mail" class="mt-4 w-full rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("mail-refusals-title", { hours: refusalHours }) }}
               <AppHint name="mail-refusals-help" />
@@ -2045,7 +2094,7 @@ async function saveSmsTemplate() {
             {{ say("sms-intro") }}
           </p>
           <form
-            class="mt-3 flex max-w-3xl flex-col gap-3 rounded-lg border border-border bg-surface p-4 text-xs"
+            class="mt-3 flex w-full flex-col gap-3 rounded-lg border border-border bg-surface p-4 text-xs"
             @submit.prevent="saveSms"
           >
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
@@ -2098,7 +2147,7 @@ async function saveSmsTemplate() {
             </div>
           </form>
 
-          <div v-if="sms" class="mt-4 max-w-3xl rounded-lg border border-border bg-surface p-4">
+          <div v-if="sms" class="mt-4 w-full rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sms-test-title") }} <AppHint name="sms-test-help" />
             </div>
@@ -2124,7 +2173,7 @@ async function saveSmsTemplate() {
             </form>
           </div>
 
-          <div v-if="smsToday" class="mt-6 max-w-5xl">
+          <div v-if="smsToday" class="mt-6 w-full">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sms-today-title") }} <AppHint name="sms-today-help" />
             </div>
@@ -2142,7 +2191,7 @@ async function saveSmsTemplate() {
             </div>
           </div>
 
-          <div class="mt-6 max-w-3xl rounded-lg border border-border bg-surface p-4">
+          <div class="mt-6 w-full rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sms-brakes-title") }} <AppHint name="sms-brakes-help" />
             </div>
@@ -2188,7 +2237,7 @@ async function saveSmsTemplate() {
             </form>
           </div>
 
-          <div class="mt-6 max-w-5xl rounded-lg border border-border bg-surface p-4">
+          <div class="mt-6 w-full rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sms-templates-title") }} <AppHint name="sms-templates-help" />
             </div>
@@ -2250,7 +2299,7 @@ async function saveSmsTemplate() {
             </div>
           </div>
 
-          <div class="mt-6 max-w-3xl rounded-lg border border-border bg-surface p-4">
+          <div class="mt-6 w-full rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("ussd-title") }} <AppHint name="ussd-help" />
             </div>

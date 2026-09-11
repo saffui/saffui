@@ -113,6 +113,13 @@ export async function rotateKey(realm: string, algorithm: string): Promise<void>
   });
 }
 
+export async function disableRealmKey(realm: string, kid: string): Promise<void> {
+  await api<void>(`${adminPath(realm, "keys")}/${encodeURIComponent(kid)}`, {
+    method: "DELETE",
+    subject: say("subject-key-disable"),
+  });
+}
+
 export async function getRealmTheme(realm: string): Promise<RealmTheme> {
   return api<RealmTheme>(adminPath(realm, "theme"));
 }

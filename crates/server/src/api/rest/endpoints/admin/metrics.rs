@@ -11,6 +11,8 @@ use crate::middleware::admin_guard::Admin;
 
 const DEFAULT_WINDOW_SECONDS: i64 = 86_400;
 const MAX_WINDOW_SECONDS: i64 = 2_592_000;
+/// The most recent decisions the p95 is read from, whatever the window.
+const P95_SAMPLE: i64 = 10_000;
 
 #[derive(Debug, Deserialize)]
 pub struct MetricsQuery {
@@ -42,7 +44,7 @@ pub async fn read(
         .await
         .map_err(|_| internal())?;
 
-    let decisions = store::providers::metrics::decisions(&transaction, since)
+    let decisions = store::providers::metrics::decisions(&transaction, since, P95_SAMPLE)
         .await
         .map_err(|_| internal())?;
     let logins = store::providers::metrics::logins(&transaction, since.timestamp())
@@ -60,6 +62,7 @@ pub async fn read(
             "disagreements": decisions.disagreements,
             "average_duration_us": decisions.average_duration_us,
             "p95_duration_us": decisions.p95_duration_us,
+            "p95_sample": decisions.p95_sample,
         },
         "logins": {
             "total": logins.total,

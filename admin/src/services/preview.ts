@@ -898,7 +898,7 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       since: new Date((NOW - windowSeconds) * 1000).toISOString(),
       decisions: {
         total: 4821, permits: 3910, denials: 846, indeterminate: 65,
-        disagreements: 3, average_duration_us: 1840, p95_duration_us: 6200,
+        disagreements: 3, average_duration_us: 1840, p95_duration_us: 6200, p95_sample: 10000,
       },
       logins: {
         total: 923, signed_in: 781, sign_in_failed: 103, signed_out: 39, sms_throttled: 7,

@@ -25,6 +25,7 @@ vi.mock("@/services/http", () => ({
           disagreements: 1,
           average_duration_us: 200,
           p95_duration_us: 290,
+          p95_sample: 2,
         },
         logins: {
           total: 1,

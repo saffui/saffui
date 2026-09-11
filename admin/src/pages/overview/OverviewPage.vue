@@ -127,7 +127,12 @@ function duration(micros: number | null): string {
         <div class="rounded border border-border/70 px-3 py-2.5">
           <div class="text-[11px] text-muted">{{ say("overview-decision-latency") }}</div>
           <div class="mt-1 font-mono text-lg tabular-nums">{{ duration(told.businessMetrics.decisions.p95_duration_us) }}</div>
-          <div class="mt-1 text-[10.5px] text-faint">{{ say("overview-p95") }}</div>
+          <div class="mt-1 text-[10.5px] text-faint">
+            {{ say("overview-p95") }}
+            <template v-if="told.businessMetrics.decisions.total > told.businessMetrics.decisions.p95_sample">
+              · {{ say("metrics-p95-sample", { count: told.businessMetrics.decisions.p95_sample }) }}
+            </template>
+          </div>
         </div>
       </div>
     </section>

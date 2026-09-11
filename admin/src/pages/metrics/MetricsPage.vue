@@ -2,8 +2,8 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
+import AppHint from "@/components/AppHint.vue";
 import { readBusinessMetrics, type BusinessMetrics } from "@/services/overview";
-import { afterWrites } from "@/services/writes";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
@@ -29,7 +29,6 @@ async function load() {
 
 onMounted(load);
 watch(windowSeconds, load);
-afterWrites(load);
 
 function shown(value: number | null): string {
   return value === null ? "··" : new Intl.NumberFormat().format(value);
@@ -85,9 +84,16 @@ function latency(value: number | null): string {
           </div>
         </section>
         <section class="rounded-lg border border-border bg-surface p-4">
-          <div class="text-[11px] text-muted">{{ say("overview-decision-latency") }}</div>
+          <div class="text-[11px] text-muted">
+            {{ say("overview-decision-latency") }} <AppHint name="metrics-p95-help" />
+          </div>
           <div class="mt-2 font-mono text-2xl tabular-nums">{{ latency(metrics.decisions.p95_duration_us) }}</div>
-          <div class="mt-2 text-[10.5px] text-faint">{{ say("overview-p95") }}</div>
+          <div class="mt-2 text-[10.5px] text-faint">
+            {{ say("overview-p95") }}
+            <template v-if="metrics.decisions.total > metrics.decisions.p95_sample">
+              · {{ say("metrics-p95-sample", { count: metrics.decisions.p95_sample }) }}
+            </template>
+          </div>
         </section>
       </div>
 

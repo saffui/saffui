@@ -55,6 +55,9 @@ pub async fn put(
     by: &str,
     asked: UserFederationMutationModel,
 ) -> Result<UserFederationModel, Unwritable> {
+    let standing = brokering::federation(transaction, alias)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
     let mut federation = UserFederationModel {
         realm_id: realm_id.to_owned(),
         alias: alias.to_owned(),
@@ -63,6 +66,7 @@ pub async fn put(
         configs: asked.configs,
         metadata: AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     };
+    keep_bind_secret(standing.as_ref(), &mut federation);
     if let Some(bag) = federation.configs.as_ref() {
         check_bag(bag).map_err(|why| Unwritable::Invalid(why.to_string()))?;
     }
@@ -72,6 +76,35 @@ pub async fn put(
         .await
         .map_err(|_| Unwritable::Backend)?;
     get(transaction, alias).await
+}
+
+fn keep_bind_secret(standing: Option<&UserFederationModel>, rewritten: &mut UserFederationModel) {
+    let says_new = rewritten
+        .configs
+        .as_ref()
+        .is_some_and(|bag| bag.contains_key(CLEAR_BIND));
+    if says_new {
+        return;
+    }
+    let same_binding = ["url", "bind_dn"].into_iter().all(|key| {
+        standing
+            .and_then(|held| held.configs.as_ref())
+            .and_then(|bag| bag.get(key))
+            == rewritten.configs.as_ref().and_then(|bag| bag.get(key))
+    });
+    if !same_binding {
+        return;
+    }
+    let Some(sealed) = standing
+        .and_then(|held| held.configs.as_ref())
+        .and_then(|bag| bag.get(SEALED_BIND))
+    else {
+        return;
+    };
+    rewritten
+        .configs
+        .get_or_insert_with(Default::default)
+        .insert(SEALED_BIND.to_owned(), sealed.clone());
 }
 
 pub async fn delete(transaction: &Transaction<'_>, alias: &str) -> Result<(), Unwritable> {
@@ -108,4 +141,56 @@ async fn seal_bind(
         AttributeValue::Str(BASE64.encode(&sealed)),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use models::entities::attributes::AttributesMap;
+
+    fn row(configs: AttributesMap) -> UserFederationModel {
+        UserFederationModel {
+            realm_id: "main".into(),
+            alias: "directory".into(),
+            enabled: Some(true),
+            priority: 0,
+            configs: Some(configs),
+            metadata: AuditableModel::unassigned(),
+        }
+    }
+
+    #[test]
+    fn a_silent_rewrite_keeps_the_sealed_bind_secret() {
+        let sealed = AttributeValue::Str("sealed".into());
+        let connection = [
+            (
+                "url".into(),
+                AttributeValue::Str("ldaps://directory".into()),
+            ),
+            ("bind_dn".into(), AttributeValue::Str("cn=reader".into())),
+        ];
+        let mut held = AttributesMap::from(connection.clone());
+        held.insert(SEALED_BIND.into(), sealed.clone());
+        let standing = row(held);
+        let mut quiet = row(AttributesMap::from(connection));
+        keep_bind_secret(Some(&standing), &mut quiet);
+        assert_eq!(quiet.configs.unwrap().get(SEALED_BIND), Some(&sealed));
+
+        let clear = AttributeValue::Str("replacement".into());
+        let mut replacing = row(AttributesMap::from([(CLEAR_BIND.into(), clear.clone())]));
+        keep_bind_secret(Some(&standing), &mut replacing);
+        let bag = replacing.configs.unwrap();
+        assert_eq!(bag.get(CLEAR_BIND), Some(&clear));
+        assert!(!bag.contains_key(SEALED_BIND));
+
+        let mut moved = row(AttributesMap::from([
+            (
+                "url".into(),
+                AttributeValue::Str("ldaps://elsewhere".into()),
+            ),
+            ("bind_dn".into(), AttributeValue::Str("cn=reader".into())),
+        ]));
+        keep_bind_secret(Some(&standing), &mut moved);
+        assert!(!moved.configs.unwrap().contains_key(SEALED_BIND));
+    }
 }

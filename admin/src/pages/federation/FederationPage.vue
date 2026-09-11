@@ -4,6 +4,7 @@ import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
+import DirectoryDrawer from "./DirectoryDrawer.vue";
 import IdpDrawer from "./IdpDrawer.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import {
@@ -21,6 +22,8 @@ const realm = computed(() => String(route.params.realm));
 const idps = ref<IdpRow[]>([]);
 const directories = ref<DirectoryRow[]>([]);
 const failed = ref("");
+const directoryOpen = ref(false);
+const directoryRow = ref<DirectoryRow | null>(null);
 
 async function load() {
   try {
@@ -74,6 +77,17 @@ async function brokerChanged() {
   openingBroker.value = false;
   broker.value = null;
   idps.value = await listIdps(realm.value);
+}
+
+function openDirectory(row: DirectoryRow | null) {
+  directoryRow.value = row;
+  directoryOpen.value = true;
+}
+
+async function directoryChanged() {
+  directoryOpen.value = false;
+  directoryRow.value = null;
+  directories.value = await listDirectories(realm.value);
 }
 const form = ref({
   alias: "",
@@ -228,26 +242,37 @@ async function drop() {
       </table>
     </div>
 
-    <h2 class="mt-6 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-      {{ say("federation-directories") }}
-    </h2>
+    <div class="mt-6 flex max-w-3xl items-center gap-3">
+      <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("federation-directories") }}
+      </h2>
+      <button
+        type="button"
+        class="sf-button sf-button-secondary ml-auto"
+        @click="openDirectory(null)"
+      >
+        {{ say("federation-new-directory") }}
+      </button>
+    </div>
     <p v-if="!directories.length" class="mt-2 text-xs text-muted">
       {{ say("federation-no-directories") }}
     </p>
     <div v-else class="mt-2 grid max-w-3xl gap-2">
-      <div
+      <button
         v-for="row in directories"
         :key="row.alias"
-        class="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+        type="button"
+        class="flex min-w-0 items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-left text-xs hover:border-accent/50 hover:bg-surface-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent"
+        @click="openDirectory(row)"
       >
-        <span class="font-mono text-[11.5px]">{{ row.alias }}</span>
-        <span class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted">
+        <span class="min-w-0 truncate font-mono text-[11.5px]">{{ row.alias }}</span>
+        <span class="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted">
           {{ say("federation-priority") }} {{ row.priority }}
         </span>
-        <span class="ml-auto text-[10.5px]" :class="row.enabled === false ? 'text-danger' : 'text-faint'">
+        <span class="ml-auto shrink-0 text-[10.5px]" :class="row.enabled === false ? 'text-danger' : 'text-faint'">
           {{ row.enabled === false ? say("users-disabled") : say("users-active") }}
         </span>
-      </div>
+      </button>
     </div>
 
     <div class="mt-6 flex max-w-3xl flex-wrap items-center gap-2">
@@ -424,6 +449,15 @@ async function drop() {
       @close="openingBroker = false"
       @saved="brokerChanged"
       @deleted="brokerChanged"
+    />
+
+    <DirectoryDrawer
+      v-if="directoryOpen"
+      :realm="realm"
+      :row="directoryRow ?? undefined"
+      @close="directoryOpen = false"
+      @saved="directoryChanged"
+      @deleted="directoryChanged"
     />
 </div>
 </template>

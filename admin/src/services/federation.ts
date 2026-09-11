@@ -2,6 +2,8 @@ import { adminPath, api } from "@/services/http";
 import type {
   DeliveryProof,
   DirectoryRow,
+  DirectoryImportReport,
+  DirectoryMutation,
   IdpMutation,
   IdpMapperMutation,
   IdpMapperRow,
@@ -93,6 +95,37 @@ export async function proveDelivery(realm: string, alias: string): Promise<Deliv
 
 export async function listDirectories(realm: string): Promise<DirectoryRow[]> {
   return api<DirectoryRow[]>(adminPath(realm, "federations"));
+}
+
+function directoryPath(realm: string, alias: string, leaf = ""): string {
+  const base = `federations/${encodeURIComponent(alias)}`;
+  return adminPath(realm, leaf ? `${base}/${leaf}` : base);
+}
+
+export async function putDirectory(
+  realm: string,
+  alias: string,
+  body: DirectoryMutation,
+): Promise<DirectoryRow> {
+  return api<DirectoryRow>(directoryPath(realm, alias), {
+    method: "PUT",
+    json: body,
+    subject: alias,
+  });
+}
+
+export async function deleteDirectory(realm: string, alias: string): Promise<void> {
+  return api<void>(directoryPath(realm, alias), { method: "DELETE", subject: alias });
+}
+
+export async function importDirectory(
+  realm: string,
+  alias: string,
+): Promise<DirectoryImportReport> {
+  return api<DirectoryImportReport>(directoryPath(realm, alias, "import"), {
+    method: "POST",
+    subject: alias,
+  });
 }
 
 export async function listIgaRules(realm: string): Promise<IgaRule[]> {

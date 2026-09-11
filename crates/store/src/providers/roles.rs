@@ -283,11 +283,12 @@ pub async fn composite_children(
     transaction: &Transaction<'_>,
     parent_role_id: &str,
 ) -> StoreResult<Vec<RoleModel>> {
+    // Read through the edge's identifiers rather than joined to it: both tables
+    // carry the realm's columns, and a join makes every one of them ambiguous.
     let statement = format!(
         "SELECT {ROLE_COLUMNS} FROM roles \
-         JOIN role_composites ON role_composites.child_role_id = roles.role_id \
-         WHERE role_composites.parent_role_id = $1 \
-         ORDER BY roles.name ASC, roles.role_id ASC"
+         WHERE role_id IN (SELECT child_role_id FROM role_composites WHERE parent_role_id = $1) \
+         ORDER BY name ASC, role_id ASC"
     );
     Ok(transaction
         .query(statement.as_str(), &[&parent_role_id])

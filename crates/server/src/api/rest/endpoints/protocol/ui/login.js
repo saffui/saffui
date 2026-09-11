@@ -56,6 +56,9 @@
   document.getElementById("keep").hidden = doors.indexOf("remember") === -1;
   document.getElementById("forgot-row").hidden = doors.indexOf("reset") === -1;
   document.getElementById("signup-row").hidden = doors.indexOf("register") === -1;
+  // Offered only once the login has died behind the page.
+  const backRow = document.getElementById("back-row");
+  backRow.hidden = true;
   const passkeyOpen = document.getElementById("passkey-open");
   passkeyOpen.hidden = doors.indexOf("passkey") === -1;
   // Whether this realm's flow has a step that takes a printed code. The link
@@ -383,6 +386,9 @@
     }
     if (status === 404) {
       say(spoken("no-such-login"));
+      // Nothing on this page can finish the login any more, but the page was
+      // served while it was alive and still knows where it came from.
+      backRow.hidden = doors.indexOf("back") === -1;
       return;
     }
     if (told.status === "refused") {

@@ -1269,7 +1269,7 @@ user-recovery-ask = Demander une feuille neuve
 
 ## L'accueil du client, sa note, et les grants qu'un opérateur ouvre.
 client-home = URL d'accueil
-client-home-help = Où atterrit une personne qui ouvre cette application depuis une liste plutôt que depuis un lien. Métadonnée d'enregistrement, pas une redirection : rien n'y est jamais envoyé avec un code.
+client-home-help = Où atterrit une personne qui ouvre cette application depuis une liste plutôt que depuis un lien, et où la page de connexion la renvoie quand sa connexion a expiré. Proposée là seulement en https, ou en http sur cette machine. Métadonnée d'enregistrement, pas une redirection : rien n'y est jamais envoyé avec un code.
 client-description = Description
 client-grants = Grants détenus
 client-grants-help = Trois grants que personne n'hérite en les demandant. Chacun est lu sur la fiche du client à la porte : en fermer un le ferme aussi pour les appels déjà en vol, dès leur retour.

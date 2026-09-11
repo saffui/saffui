@@ -193,6 +193,30 @@ test("a sign-in nobody can find says so, and does not say it went wrong", async 
   assert.match(page.element("notice").textContent, /expired|never started/i);
 });
 
+// The server can no longer say which application a dead login came from: its
+// row is swept. The page was served while it was alive, and says it instead.
+test("a login that died behind the page offers the way back it was served with", async () => {
+  const page = opened({ doors: "back", rounds: [{ status: 404, told: {} }] });
+  assert.equal(page.element("back-row").hidden, true, "offered before anything went wrong");
+
+  await page.signIn();
+  assert.equal(page.element("back-row").hidden, false, "the way back stayed hidden");
+});
+
+test("a page served with no way back offers none when its login dies", async () => {
+  const page = opened({ rounds: [{ status: 404, told: {} }] });
+  await page.signIn();
+
+  assert.equal(page.element("back-row").hidden, true, "a link to nowhere was shown");
+});
+
+test("a refusal is not a dead login, and offers no way out of it", async () => {
+  const page = opened({ doors: "back", rounds: [{ told: { status: "refused" } }] });
+  await page.signIn();
+
+  assert.equal(page.element("back-row").hidden, true, "a wrong password sent somebody away");
+});
+
 test("an answer this build does not know still says something", async () => {
   const page = opened({ rounds: [{ told: { status: "a-status-from-a-later-build" } }] });
   await page.signIn();

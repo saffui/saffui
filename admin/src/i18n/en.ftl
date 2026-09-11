@@ -1269,7 +1269,7 @@ user-recovery-ask = Ask for a fresh sheet
 
 ## The client's home, its note, and the grants an operator turns on.
 client-home = Home URL
-client-home-help = Where a person lands when they open this application from a list rather than from a link. Registration metadata, not a redirect: nothing is ever sent here with a code on it.
+client-home-help = Where a person lands when they open this application from a list rather than from a link, and where the sign-in page sends them back when their sign-in expired. Offered there only over https, or http on this machine. Registration metadata, not a redirect: nothing is ever sent here with a code on it.
 client-description = Description
 client-grants = Grants held
 client-grants-help = Three grants nobody inherits by asking. Each is read from this client's own record at the door, so turning one off turns it off for calls already in flight as soon as they come back.

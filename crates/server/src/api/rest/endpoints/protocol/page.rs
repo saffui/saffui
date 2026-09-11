@@ -104,20 +104,21 @@ pub fn escaped(value: &str) -> String {
         .collect()
 }
 
-/// The tongue the login this browser holds asked for, OIDC Core §3.1.2.1:
-/// the client's `ui_locales` rode the login's notes, and it outranks the
-/// browser's own list, because the client knows what tongue its person chose
-/// in the application. Advisory, so anything unreadable here reads as no
-/// say, and the browser's list answers.
-async fn asked_tongue(
-    request: &actix_web::HttpRequest,
-    pool: &deadpool_postgres::Pool,
-    tenancy: &store::tenancy::Tenancy,
-    realm: &str,
-) -> (Option<String>, i18n::RealmTongues) {
-    let tongues = tongues_of_realm(pool, tenancy, realm).await;
-    let wanted = ui_locales_of_login(request, pool, tenancy, realm).await;
-    (wanted, tongues)
+/// What the login this browser holds says about the page shown for it. Every
+/// part is advisory: anything unreadable reads as nothing said.
+#[derive(Default)]
+struct LiveLogin {
+    /// The client's `ui_locales`, raw, OIDC Core §3.1.2.1. It outranks the
+    /// browser's own list, and the realm decides what of it is honoured.
+    ui_locales: Option<String>,
+    /// Where somebody goes back to if the login dies behind the page.
+    way_back: Option<WayBack>,
+}
+
+/// The application a login came from, as the page offers it back.
+struct WayBack {
+    address: String,
+    name: String,
 }
 
 /// Which optional doors this realm opens on the sign-in page, as the tokens
@@ -276,24 +277,93 @@ async fn offers_recovery_codes(
     false
 }
 
-/// The `ui_locales` the login carried, raw: the realm decides what of it is
-/// honoured, not this reader.
-async fn ui_locales_of_login(
+/// Read the login this browser holds, for the page shown for it.
+///
+/// Only a live one, and this is the last moment the server knows which
+/// application it came from: an expired row is swept, and the refusal that
+/// follows can no longer name one. So the way back is written into the page
+/// now, and the script shows it if the login dies behind the page.
+async fn read_live_login(
     request: &actix_web::HttpRequest,
     pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     realm: &str,
-) -> Option<String> {
-    let binding = super::binding::read(request, super::binding::AUTH_SESSION)?;
-    let mut connection = pool.get().await.ok()?;
-    let context = store::tenancy::resolve::realm_by_name(&connection, realm)
-        .await
-        .ok()?;
-    let transaction = tenancy.transaction(&mut connection, &context).await.ok()?;
-    let login = store::providers::login::resume(&transaction, &binding)
-        .await
-        .ok()??;
-    Some(login.notes.get("ui_locales")?.as_str()?.to_owned())
+) -> LiveLogin {
+    let Some(binding) = super::binding::read(request, super::binding::AUTH_SESSION) else {
+        return LiveLogin::default();
+    };
+    let Ok(mut connection) = pool.get().await else {
+        return LiveLogin::default();
+    };
+    let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, realm).await else {
+        return LiveLogin::default();
+    };
+    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+        return LiveLogin::default();
+    };
+    let Ok(Some(login)) = store::providers::login::resume(&transaction, &binding).await else {
+        return LiveLogin::default();
+    };
+    let ui_locales = login
+        .notes
+        .get("ui_locales")
+        .and_then(|held| held.as_str())
+        .map(str::to_owned);
+    let way_back = match store::providers::clients::load(&transaction, &login.client_id).await {
+        Ok(Some(client)) => find_way_back(&client),
+        _ => None,
+    };
+    LiveLogin {
+        ui_locales,
+        way_back,
+    }
+}
+
+/// Where somebody is sent back to when the login a page was served for can no
+/// longer finish: the client's home page, or its root otherwise.
+fn find_way_back(client: &models::entities::client::ClientModel) -> Option<WayBack> {
+    let address = [client.client_uri.as_deref(), client.root_url.as_deref()]
+        .into_iter()
+        .flatten()
+        .find(|held| may_link_to(held))?;
+    let name = [&client.display_name, &client.name]
+        .into_iter()
+        .find(|held| !held.trim().is_empty())
+        .unwrap_or(&client.client_id);
+    Some(WayBack {
+        address: address.to_owned(),
+        name: name.clone(),
+    })
+}
+
+/// Whether an address may be written into an anchor on the sign-in page.
+///
+/// A self-registered client writes its own home page, and an address of any
+/// other scheme runs as script in the origin people type passwords into. So
+/// https, and plain http only on a loopback host, which is a developer's own.
+fn may_link_to(address: &str) -> bool {
+    if address
+        .strip_prefix("https://")
+        .is_some_and(|rest| !rest.is_empty())
+    {
+        return true;
+    }
+    let Some(rest) = address.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // Whatever stands before an `@` is credentials, and the host is after it.
+    if authority.contains('@') {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed
+            .split_once(']')
+            .filter(|(_, after)| after.is_empty() || after.starts_with(':'))
+            .map(|(inner, _)| inner),
+        None => authority.split(':').next(),
+    };
+    matches!(host, Some("localhost" | "127.0.0.1" | "::1"))
 }
 
 /// What this realm says about tongues, read fresh; a realm that cannot be
@@ -328,7 +398,7 @@ pub(in crate::api) async fn tongues_of_realm(
 /// varies by the asking.
 fn page(
     request: &actix_web::HttpRequest,
-    wanted: Option<&str>,
+    live: &LiveLogin,
     tongues: &i18n::RealmTongues,
     doors: &str,
     idps: &str,
@@ -336,7 +406,7 @@ fn page(
     policy: Option<&models::entities::realm::PasswordPolicy>,
 ) -> HttpResponse {
     let tongue = tongues.negotiated(
-        wanted,
+        live.ui_locales.as_deref(),
         request
             .headers()
             .get("accept-language")
@@ -345,6 +415,16 @@ fn page(
     let body = match overrides {
         Some(spoken) => i18n::page_over(tongue, spoken),
         None => i18n::page_in(tongue).to_owned(),
+    };
+    // A door like the others, read off the body by the script, with the anchor
+    // it opens already written into the page.
+    let (doors, address, name) = match &live.way_back {
+        Some(back) => (
+            [doors, "back"].join(" ").trim().to_owned(),
+            back.address.as_str(),
+            back.name.as_str(),
+        ),
+        None => (doors.to_owned(), "", ""),
     };
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
@@ -355,14 +435,16 @@ fn page(
         .insert_header(("X-Frame-Options", "DENY"))
         .insert_header(("Referrer-Policy", "no-referrer"))
         .body(
-            body.replace("{doors}", &escaped(doors))
+            body.replace("{doors}", &escaped(&doors))
                 .replace("{idps}", idps)
                 .replace(
                     "{policy}",
                     &policy
                         .map(|held| i18n::policy_checklist(tongue, held))
                         .unwrap_or_default(),
-                ),
+                )
+                .replace("{back-address}", &escaped(address))
+                .replace("{back-name}", &escaped(name)),
         )
 }
 
@@ -511,11 +593,12 @@ pub async fn magic_link(
                 .map(|token| ("verify_email", token))
         });
     let Some((named, token)) = followed else {
-        let (wanted, tongues) = asked_tongue(&request, &pool, &tenancy, &realm).await;
+        let live = read_live_login(&request, &pool, &tenancy, &realm).await;
+        let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
         let (doors, idps, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
         return page(
             &request,
-            wanted.as_deref(),
+            &live,
             &tongues,
             &doors,
             &idps,
@@ -584,7 +667,7 @@ pub async fn reset_password(
         let (doors, idps, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
         return page(
             &request,
-            None,
+            &LiveLogin::default(),
             &tongues,
             &doors,
             &idps,
@@ -634,6 +717,98 @@ mod tests {
     use super::SCRIPT;
     use super::federated_doors;
     use super::i18n;
+    use super::{find_way_back, may_link_to};
+    use models::auditable::AuditableModel;
+    use models::entities::client::{ClientCreateModel, ClientModel};
+
+    fn client_at(home: Option<&str>, root: Option<&str>) -> ClientModel {
+        let mut client = ClientCreateModel {
+            name: "billing".into(),
+            display_name: "Billing".into(),
+            description: String::new(),
+            enabled: Some(true),
+        }
+        .into_model(
+            "billing-app".into(),
+            "main".into(),
+            AuditableModel::from_creator("local".into(), "root".into()),
+        );
+        client.client_uri = home.map(str::to_owned);
+        client.root_url = root.map(str::to_owned);
+        client
+    }
+
+    /// Only an address that can be nothing but a page is written into the
+    /// sign-in page's anchor. Plain http is a developer's machine or nothing,
+    /// and a host is read the way a browser reads it, credentials and all.
+    #[test]
+    fn the_page_links_only_to_what_can_only_be_a_page() {
+        for offered in [
+            "https://app.example",
+            "https://app.example/home?from=login#top",
+            "http://localhost:8080/console/",
+            "http://localhost",
+            "http://127.0.0.1:3000",
+            "http://[::1]:8080/",
+        ] {
+            assert!(may_link_to(offered), "{offered} was refused");
+        }
+        for refused in [
+            "javascript:alert(1)",
+            "JAVASCRIPT:alert(1)",
+            " https://app.example",
+            "data:text/html,<script>alert(1)</script>",
+            "https://",
+            "",
+            "//app.example",
+            "http://app.example",
+            "http://localhost.evil.example/",
+            "http://localhost@evil.example/",
+            "http://localhost:8080@evil.example/",
+            "http://127.0.0.1.evil.example/",
+            "http://[::1].evil.example/",
+        ] {
+            assert!(!may_link_to(refused), "{refused} was offered");
+        }
+    }
+
+    /// The home page first, the root otherwise, and an address that could run
+    /// as script is passed over rather than offered.
+    #[test]
+    fn the_way_back_is_the_home_page_then_the_root() {
+        let address = |home, root| find_way_back(&client_at(home, root)).map(|back| back.address);
+        assert_eq!(
+            address(
+                Some("https://app.example/home"),
+                Some("https://app.example")
+            ),
+            Some("https://app.example/home".to_owned())
+        );
+        assert_eq!(
+            address(None, Some("https://app.example")),
+            Some("https://app.example".to_owned())
+        );
+        assert_eq!(
+            address(Some("javascript:alert(1)"), Some("https://app.example")),
+            Some("https://app.example".to_owned()),
+            "an address that runs as script was offered"
+        );
+        assert_eq!(address(Some("javascript:alert(1)"), None), None);
+        assert_eq!(address(None, None), None);
+    }
+
+    /// Named as a person knows the application: its display name, its name,
+    /// and its identifier when it was given neither.
+    #[test]
+    fn the_way_back_is_named_as_a_person_knows_the_application() {
+        let mut client = client_at(Some("https://app.example"), None);
+        let name = |client: &ClientModel| find_way_back(client).map(|back| back.name);
+        assert_eq!(name(&client), Some("Billing".to_owned()));
+        client.display_name = " ".into();
+        assert_eq!(name(&client), Some("billing".to_owned()));
+        client.name = String::new();
+        assert_eq!(name(&client), Some("billing-app".to_owned()));
+    }
 
     /// The script reaches for the page by identifier, and a page that lost one
     /// hands it `null`. Every name it asks for has to be on every render of

@@ -30,7 +30,9 @@ const PAGE = readFileSync(join(ui, "login.html"), "utf8")
   })
   // What the server substitutes per request renders empty here, the way a
   // realm with nothing wired renders it.
-  .replace("{idps}", "");
+  .replace("{idps}", "")
+  .replace("{back-address}", "")
+  .replace("{back-name}", "");
 const SCRIPT = readFileSync(join(ui, "login.js"), "utf8");
 
 /// What the page says inside the element with that identifier, for the

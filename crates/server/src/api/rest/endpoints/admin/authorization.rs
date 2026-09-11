@@ -92,7 +92,7 @@ pub async fn server(
     Ok(HttpResponse::Ok().json(held))
 }
 
-pub async fn set_mode(
+pub async fn set_protection(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
@@ -106,12 +106,13 @@ pub async fn set_mode(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    let held = authz::set_mode(
+    let held = authz::set_protection(
         &transaction,
         &client_id,
         admin.context.principal.id(),
         asked.enforcement_mode,
         asked.decision_strategy,
+        asked.user_managed_access,
     )
     .await
     .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;

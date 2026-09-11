@@ -445,11 +445,11 @@ async fn the_surface_answers_by_type() {
     );
 }
 
-/// Rolling a policy out permissively changes what the server does with an
-/// answer, not what it protects.
+/// Rolling a policy out permissively, or opening sharing, changes what the
+/// server does with an answer, not what it protects.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn changing_the_mode_leaves_the_surface_alone() {
+async fn changing_the_protection_leaves_the_surface_alone() {
     let fixture = Fixture::with_user_and_client().await;
     let mut connection = fixture.connection().await;
     let transaction = fixture
@@ -472,11 +472,12 @@ async fn changing_the_mode_leaves_the_surface_alone() {
     let rolled_out = ResourceServerModel {
         enforcement_mode: PolicyEnforcementMode::Permissive,
         decision_strategy: DecisionStrategy::Affirmative,
+        user_managed_access: true,
         metadata: AuditableModel::from_updater("acme".to_owned(), "ada".to_owned()),
         ..server("app")
     };
     assert!(
-        authz_surface::set_server_mode(&transaction, &rolled_out)
+        authz_surface::set_server_protection(&transaction, &rolled_out)
             .await
             .unwrap()
     );
@@ -487,6 +488,10 @@ async fn changing_the_mode_leaves_the_surface_alone() {
         .unwrap();
     assert_eq!(loaded.enforcement_mode, PolicyEnforcementMode::Permissive);
     assert_eq!(loaded.decision_strategy, DecisionStrategy::Affirmative);
+    assert!(
+        loaded.user_managed_access,
+        "the sharing ceiling was not written"
+    );
     assert_eq!(loaded.metadata.version, 2);
     assert_eq!(loaded.metadata.updated_by.as_deref(), Some("ada"));
     assert_eq!(

@@ -67,11 +67,12 @@ pub async fn load_server(
         .map(read_server))
 }
 
-/// How much a server's decisions are allowed to refuse, and how answers combine.
+/// How much a server's decisions are allowed to refuse, how answers combine,
+/// and whether the people its resources belong to may share them.
 ///
-/// The mode is what a permissive rollout changes, so it is settable without
-/// rewriting the surface underneath it.
-pub async fn set_server_mode(
+/// Settable without rewriting the surface underneath: a permissive rollout
+/// changes the mode, closing sharing changes the ceiling.
+pub async fn set_server_protection(
     transaction: &Transaction<'_>,
     server: &ResourceServerModel,
 ) -> StoreResult<bool> {
@@ -79,6 +80,7 @@ pub async fn set_server_mode(
         vec![
             col("enforcement_mode", &server.enforcement_mode),
             col("decision_strategy", &server.decision_strategy),
+            col("user_managed_access", &server.user_managed_access),
             col("updated_by", &server.metadata.updated_by),
         ],
         vec![col("server_id", &server.server_id)],

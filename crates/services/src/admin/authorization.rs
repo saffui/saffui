@@ -115,18 +115,20 @@ pub async fn server(
         .ok_or(Unwritable::NotFound)
 }
 
-pub async fn set_mode(
+pub async fn set_protection(
     transaction: &Transaction<'_>,
     server_id: &str,
     by: &str,
     enforcement_mode: PolicyEnforcementMode,
     decision_strategy: DecisionStrategy,
+    user_managed_access: bool,
 ) -> Result<ResourceServerModel, Unwritable> {
     let mut held = server(transaction, server_id).await?;
     held.enforcement_mode = enforcement_mode;
     held.decision_strategy = decision_strategy;
+    held.user_managed_access = user_managed_access;
     held.metadata.updated_by = Some(by.to_owned());
-    authz_surface::set_server_mode(transaction, &held)
+    authz_surface::set_server_protection(transaction, &held)
         .await
         .map_err(carried)?
         .then_some(held)

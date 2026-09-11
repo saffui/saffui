@@ -994,7 +994,7 @@ pub fn routes() -> Vec<AdminRoute> {
             method: Method::PUT,
             pattern: "/admin/realms/{realm}/authz/servers/{client}",
             action: AdminAction::UmaWrite,
-            handler: Some(|| web::put().to(authorization::set_mode)),
+            handler: Some(|| web::put().to(authorization::set_protection)),
         },
         AdminRoute {
             method: Method::DELETE,

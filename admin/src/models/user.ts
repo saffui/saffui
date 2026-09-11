@@ -20,6 +20,25 @@ export interface UserFull extends UserBrief {
   identity_providers: string[];
 }
 
+export interface FederatedIdentity {
+  realm_id: string;
+  user_id: string;
+  provider_alias: string;
+  external_user_id: string;
+  external_username: string;
+  created_at: string;
+}
+
+export interface MessageDelivery {
+  delivery_id: string;
+  user_id: string;
+  purpose: string;
+  recipient: string;
+  attempted_at: string;
+  delivered: boolean;
+  detail: string | null;
+}
+
 /// Mirrors the `GET .../users/{user}/lockout` answer.
 export interface Lockout {
   failures: number;

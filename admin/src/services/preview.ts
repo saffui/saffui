@@ -2,6 +2,7 @@
 // with no server behind it. Shapes mirror the real endpoints; the module is
 // only ever reached in dev builds and only under the "preview" bearer.
 import { ApiError } from "@/services/http";
+import type { ClientBrief, ClientDetail } from "@/models/client";
 import type { UserBrief } from "@/models/user";
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -65,15 +66,56 @@ const PEOPLE: UserBrief[] = [
   },
 ];
 
-const CLIENTS = [
-  { client_id: "web-dashboard", name: "Web dashboard", enabled: true, confidential: true, root_url: null, web_origins: [],
-    redirect_uris: ["https://app.acme.example/callback"], post_logout_redirect_uris: ["https://app.acme.example/"] },
-  { client_id: "kiosk-tv", name: "Lobby kiosk", enabled: true, confidential: false, root_url: null, web_origins: [],
-    redirect_uris: [], post_logout_redirect_uris: [] },
-  { client_id: "payments-api", name: "Payments API", enabled: true, confidential: true, root_url: null, web_origins: [],
-    redirect_uris: ["https://payments.acme.example/oauth/return"], post_logout_redirect_uris: [] },
-  { client_id: "counter-desk", name: "Counter desk", enabled: false, confidential: true, root_url: null, web_origins: [],
-    redirect_uris: ["https://counter.beta.example/back"], post_logout_redirect_uris: [] },
+const KEY_CAPABILITIES = {
+  signing_algorithms: ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"],
+  encryption_algorithms: ["RSA-OAEP", "RSA-OAEP-256", "RSA-OAEP-384", "RSA-OAEP-512", "ECDH-ES", "ECDH-ES+A128KW", "ECDH-ES+A192KW", "ECDH-ES+A256KW"],
+  encryption_methods: ["A128CBC-HS256", "A192CBC-HS384", "A256CBC-HS512", "A128GCM", "A192GCM", "A256GCM"],
+};
+
+function previewClient(
+  client: Pick<ClientBrief, "client_id" | "name" | "enabled" | "confidential" | "redirect_uris" | "post_logout_redirect_uris">,
+): ClientDetail {
+  return {
+    ...client,
+    root_url: null,
+    web_origins: [],
+    backchannel_logout_uri: null,
+    frontchannel_logout_uri: null,
+    description: "",
+    client_uri: null,
+    device_grant: false,
+    token_exchange: false,
+    ciba_delivery: "off",
+    ciba_notification_endpoint: null,
+    not_before: null,
+    tls_san_dns: null,
+    tls_san_uri: null,
+    tls_subject_dn: null,
+    key_configuration: {
+      authentication_method: client.confidential ? "client-secret" : "none",
+      jwks: null,
+      jwks_uri: null,
+      id_token_signed_response_alg: null,
+      userinfo_signed_response_alg: null,
+      request_object_signing_alg: null,
+      token_endpoint_auth_signing_alg: null,
+      id_token_encryption: null,
+      userinfo_encryption: null,
+      request_object_encryption: null,
+    },
+    key_capabilities: KEY_CAPABILITIES,
+  };
+}
+
+const CLIENTS: ClientDetail[] = [
+  previewClient({ client_id: "web-dashboard", name: "Web dashboard", enabled: true, confidential: true,
+    redirect_uris: ["https://app.acme.example/callback"], post_logout_redirect_uris: ["https://app.acme.example/"] }),
+  previewClient({ client_id: "kiosk-tv", name: "Lobby kiosk", enabled: true, confidential: false,
+    redirect_uris: [], post_logout_redirect_uris: [] }),
+  previewClient({ client_id: "payments-api", name: "Payments API", enabled: true, confidential: true,
+    redirect_uris: ["https://payments.acme.example/oauth/return"], post_logout_redirect_uris: [] }),
+  previewClient({ client_id: "counter-desk", name: "Counter desk", enabled: false, confidential: true,
+    redirect_uris: ["https://counter.beta.example/back"], post_logout_redirect_uris: [] }),
 ];
 
 function person(path: string): UserBrief | null {

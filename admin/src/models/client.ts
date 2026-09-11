@@ -25,6 +25,37 @@ export interface ClientBrief {
   tls_san_dns: string | null;
   tls_san_uri: string | null;
   tls_subject_dn: string | null;
+  key_configuration?: ClientKeyConfiguration;
+  key_capabilities?: ClientKeyCapabilities;
+}
+
+export interface ClientDetail extends ClientBrief {
+  key_configuration: ClientKeyConfiguration;
+  key_capabilities: ClientKeyCapabilities;
+}
+
+export interface ClientEncryptionRegistration {
+  alg: string;
+  enc: string;
+}
+
+export interface ClientKeyConfiguration {
+  authentication_method: string;
+  jwks: Record<string, unknown> | null;
+  jwks_uri: string | null;
+  id_token_signed_response_alg: string | null;
+  userinfo_signed_response_alg: string | null;
+  request_object_signing_alg: string | null;
+  token_endpoint_auth_signing_alg: string | null;
+  id_token_encryption: ClientEncryptionRegistration | null;
+  userinfo_encryption: ClientEncryptionRegistration | null;
+  request_object_encryption: ClientEncryptionRegistration | null;
+}
+
+export interface ClientKeyCapabilities {
+  signing_algorithms: string[];
+  encryption_algorithms: string[];
+  encryption_methods: string[];
 }
 
 /// Mirrors `models::entities::client::ClientScopeModel`, plus the

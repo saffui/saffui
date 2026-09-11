@@ -9,7 +9,6 @@ import {
   getClient,
   listAttachedScopes,
   listClientMappers,
-  rotateClientSecret,
   updateClient,
   getAgent,
   reshapeAgent,
@@ -22,15 +21,16 @@ import AppHint from "@/components/AppHint.vue";
 import AppPicker from "@/components/AppPicker.vue";
 import AppStringList from "@/components/AppStringList.vue";
 import { useRouter } from "vue-router";
-import type { ClientBrief, ClientScope, ProtocolMapper } from "@/models/client";
+import type { ClientDetail, ClientScope, ProtocolMapper } from "@/models/client";
+import ClientKeysTab from "./ClientKeysTab.vue";
 
 const props = defineProps<{ realm: string; clientId: string }>();
 const emit = defineEmits<{ close: [] }>();
 
-const TABS = ["overview", "scopes", "mappers", "roles"] as const;
+const TABS = ["overview", "keys", "scopes", "mappers", "roles"] as const;
 const tab = ref<(typeof TABS)[number]>("overview");
 
-const client = ref<ClientBrief | null>(null);
+const client = ref<ClientDetail | null>(null);
 const scopes = ref<ClientScope[]>([]);
 const mappers = ref<ProtocolMapper[]>([]);
 const failed = ref("");
@@ -108,8 +108,6 @@ const draft = ref({
   tokenExchange: false,
   cibaDelivery: "off",
   cibaEndpoint: "",
-  tlsForm: "off" as "off" | "dns" | "uri" | "dn",
-  tlsValue: "",
 });
 function adoptClient() {
   const held = client.value;
@@ -129,37 +127,7 @@ function adoptClient() {
     tokenExchange: held.token_exchange,
     cibaDelivery: held.ciba_delivery,
     cibaEndpoint: held.ciba_notification_endpoint ?? "",
-    tlsForm:
-      held.tls_san_dns != null
-        ? "dns"
-        : held.tls_san_uri != null
-          ? "uri"
-          : held.tls_subject_dn != null
-            ? "dn"
-            : "off",
-    tlsValue: held.tls_san_dns ?? held.tls_san_uri ?? held.tls_subject_dn ?? "",
   };
-}
-
-/// The one TLS field this save touches, or none. Turning off clears the
-/// standing key with an empty string; the plane clears its siblings with
-/// any write, so one field is always enough.
-function tlsTouched(): { tls_san_dns?: string; tls_san_uri?: string; tls_subject_dn?: string } {
-  const value = draft.value.tlsValue.trim();
-  const keys = { dns: "tls_san_dns", uri: "tls_san_uri", dn: "tls_subject_dn" } as const;
-  if (draft.value.tlsForm !== "off" && value) {
-    return { [keys[draft.value.tlsForm]]: value };
-  }
-  const held = client.value;
-  const standing =
-    held?.tls_san_dns != null
-      ? "tls_san_dns"
-      : held?.tls_san_uri != null
-        ? "tls_san_uri"
-        : held?.tls_subject_dn != null
-          ? "tls_subject_dn"
-          : null;
-  return standing ? { [standing]: "" } : {};
 }
 function clean(held: string[]): string[] {
   return [...new Set(held.map((row) => row.trim()).filter(Boolean))];
@@ -180,19 +148,9 @@ async function saveClient() {
       token_exchange: draft.value.tokenExchange,
       ciba_delivery: draft.value.cibaDelivery,
       ciba_notification_endpoint: draft.value.cibaEndpoint.trim() || undefined,
-      ...tlsTouched(),
     });
     await load();
     adoptClient();
-  } catch {
-    // The toast already said.
-  }
-}
-
-const freshSecret = ref("");
-async function rotate() {
-  try {
-    freshSecret.value = await rotateClientSecret(props.realm, props.clientId);
   } catch {
     // The toast already said.
   }
@@ -229,12 +187,9 @@ async function ungrantCapability(held: string) {
   }
 }
 
-async function copyFreshSecret() {
-  try {
-    await navigator.clipboard.writeText(freshSecret.value);
-  } catch {
-    // Selectable by hand.
-  }
+async function refreshClient() {
+  await load();
+  adoptClient();
 }
 
 /// The client-wide cut, struck at now and lifted with 0; the plane refuses
@@ -489,36 +444,6 @@ async function dropScope(name: string) {
           />
         </label>
 
-        <div v-if="client.confidential">
-          <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-            {{ say("client-tls-title") }} <AppHint name="client-tls-help" />
-          </div>
-          <div class="mt-1.5 flex gap-2">
-            <select
-              v-model="draft.tlsForm"
-              class="sf-field"
-            >
-              <option value="off">{{ say("client-tls-off") }}</option>
-              <option value="dns">{{ say("client-tls-dns") }}</option>
-              <option value="uri">{{ say("client-tls-uri") }}</option>
-              <option value="dn">{{ say("client-tls-dn") }}</option>
-            </select>
-            <input
-              v-if="draft.tlsForm !== 'off'"
-              v-model="draft.tlsValue"
-              :placeholder="
-                draft.tlsForm === 'dns'
-                  ? 'till.example'
-                  : draft.tlsForm === 'uri'
-                    ? 'spiffe://till'
-                    : 'CN=till,O=Acme'
-              "
-              spellcheck="false"
-              class="min-w-0 flex-1 sf-field font-mono"
-            />
-          </div>
-        </div>
-
         <div>
           <button
             type="submit"
@@ -527,35 +452,6 @@ async function dropScope(name: string) {
             {{ say("settings-save") }}
           </button>
         </div>
-
-        <template v-if="client.confidential">
-          <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-            {{ say("client-secret-title") }} <AppHint name="client-secret-help" />
-          </div>
-          <div class="flex items-center gap-2">
-            <button
-              type="button"
-              class="rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2"
-              @click="rotate"
-            >
-              {{ say("client-rotate-secret") }}
-            </button>
-          </div>
-          <div
-            v-if="freshSecret"
-            class="flex items-center gap-2 rounded-md border border-warn/40 bg-surface-2 px-2.5 py-2"
-          >
-            <code class="min-w-0 flex-1 truncate font-mono text-[11px]">{{ freshSecret }}</code>
-            <button
-              type="button"
-              class="rounded border border-border px-2 py-0.5 text-[10.5px] text-muted hover:bg-surface-3"
-              @click="copyFreshSecret"
-            >
-              {{ say("action-copy") }}
-            </button>
-          </div>
-          <p v-if="freshSecret" class="text-[10.5px] text-warn">{{ say("settings-secret-once") }}</p>
-        </template>
 
         <div class="mt-2 rounded-lg border border-danger/40 p-3">
           <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">
@@ -609,6 +505,14 @@ async function dropScope(name: string) {
         </div>
       </form>
     </div>
+
+    <ClientKeysTab
+      v-if="tab === 'keys' && client"
+      class="mt-4"
+      :realm="props.realm"
+      :client="client"
+      @updated="refreshClient"
+    />
 
     <div v-if="tab === 'scopes'" class="mt-4 flex flex-col gap-5">
       <div>

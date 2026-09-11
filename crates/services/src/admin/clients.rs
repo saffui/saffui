@@ -1,10 +1,11 @@
+use crypto::jose::jwk::JwkSet;
 use crypto::password::storage::StoredPassword;
 use crypto::provider::SignAlg;
 use crypto::provider::{Argon2Params, CryptoProvider};
 use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
-use models::entities::client::{ClientCreateModel, ClientModel, Protocol};
+use models::entities::client::{ClientCreateModel, ClientModel, JweRegistration, Protocol};
 use models::paging::Page;
 use secrecy::{ExposeSecret, SecretBox};
 use store::providers::{client_scopes, clients};
@@ -61,6 +62,20 @@ pub struct Gates {
     /// RFC 8705's one name: what this client's certificate must carry to
     /// authenticate it. Unnamed leaves the standing name alone.
     pub tls_name: Option<TlsName>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyConfiguration {
+    pub authentication_method: String,
+    pub jwks: Option<serde_json::Value>,
+    pub jwks_uri: Option<String>,
+    pub id_token_signed_response_alg: Option<SignAlg>,
+    pub userinfo_signed_response_alg: Option<SignAlg>,
+    pub request_object_signing_alg: Option<SignAlg>,
+    pub token_endpoint_auth_signing_alg: Option<SignAlg>,
+    pub id_token_encryption: Option<JweRegistration>,
+    pub userinfo_encryption: Option<JweRegistration>,
+    pub request_object_encryption: Option<JweRegistration>,
 }
 
 /// The one name a certificate authenticates by. One variant holds one
@@ -184,6 +199,7 @@ pub struct Reshape {
     /// named, every token this client was minted before it is refused at the
     /// gate. Unnamed leaves the standing cut alone; 0 lifts it.
     pub not_before: Option<i32>,
+    pub key_configuration: Option<KeyConfiguration>,
 }
 
 /// Where a confidential client's secret comes from.
@@ -326,7 +342,7 @@ pub async fn update(
     reshape: &Reshape,
 ) -> Result<ClientModel, Unregistrable> {
     let client = get(transaction, client_id).await?;
-    let spec = Spec {
+    let mut spec = Spec {
         registered: Registered::of(&client),
         name: reshape.name.clone(),
         confidential: client.public_client != Some(true),
@@ -360,9 +376,21 @@ pub async fn update(
         description: reshape.description.clone(),
         gates: reshape.gates.clone(),
     };
-    let mut spec = spec;
     if let Some(home) = &reshape.client_uri {
         spec.registered.client_uri = home.clone();
+    }
+    if let Some(configuration) = &reshape.key_configuration {
+        check_key_configuration(&client, configuration)?;
+        spec.registered.jwks = configuration.jwks.clone();
+        spec.registered.jwks_uri = configuration.jwks_uri.clone();
+        spec.registered.id_token_signed_response_alg = configuration.id_token_signed_response_alg;
+        spec.registered.userinfo_signed_response_alg = configuration.userinfo_signed_response_alg;
+        spec.registered.request_object_signing_alg = configuration.request_object_signing_alg;
+        spec.registered.token_endpoint_auth_signing_alg =
+            configuration.token_endpoint_auth_signing_alg;
+        spec.registered.id_token_encryption = configuration.id_token_encryption;
+        spec.registered.userinfo_encryption = configuration.userinfo_encryption;
+        spec.registered.request_object_encryption = configuration.request_object_encryption;
     }
     let mut client = reshape_registered(transaction, client_id, &spec).await?;
     if let Some(at) = reshape.not_before {
@@ -393,6 +421,118 @@ pub async fn update(
         }
     }
     Ok(client)
+}
+
+fn authentication_method(client: &ClientModel) -> &str {
+    if client.public_client == Some(true) {
+        "none"
+    } else {
+        client
+            .client_authenticator_type
+            .as_deref()
+            .unwrap_or("client-secret")
+    }
+}
+
+fn check_key_configuration(
+    client: &ClientModel,
+    configuration: &KeyConfiguration,
+) -> Result<(), Unregistrable> {
+    if configuration.authentication_method != authentication_method(client) {
+        return Err(Unregistrable::Invalid(
+            "key configuration cannot change the authentication method",
+        ));
+    }
+    if configuration.jwks.is_some() && configuration.jwks_uri.is_some() {
+        return Err(Unregistrable::Invalid(
+            "keys are published one way, not two",
+        ));
+    }
+    if let Some(uri) = &configuration.jwks_uri {
+        let parsed = Url::parse(uri)
+            .map_err(|_| Unregistrable::Invalid("the JWKS URI is not an absolute URL"))?;
+        if parsed.scheme() != "https"
+            || parsed.host_str().is_none()
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(Unregistrable::Invalid(
+                "the JWKS URI is an https URL without credentials or a fragment",
+            ));
+        }
+    }
+    if let Some(document) = &configuration.jwks {
+        check_public_jwks(document)?;
+    }
+
+    let publishes_keys = configuration.jwks.is_some() || configuration.jwks_uri.is_some();
+    if configuration.authentication_method == "private-key-jwt" && !publishes_keys {
+        return Err(Unregistrable::Invalid(
+            "private key JWT authentication needs published keys",
+        ));
+    }
+    if configuration.request_object_signing_alg.is_some() && !publishes_keys {
+        return Err(Unregistrable::Invalid(
+            "signed request objects need published keys",
+        ));
+    }
+    if (configuration.id_token_encryption.is_some() || configuration.userinfo_encryption.is_some())
+        && !publishes_keys
+    {
+        return Err(Unregistrable::Invalid(
+            "encrypted responses need published client keys",
+        ));
+    }
+    if configuration.request_object_encryption.is_some()
+        && configuration.request_object_signing_alg.is_none()
+    {
+        return Err(Unregistrable::Invalid(
+            "an encrypted request object also needs a signing algorithm",
+        ));
+    }
+    if configuration.token_endpoint_auth_signing_alg.is_some()
+        && configuration.authentication_method != "private-key-jwt"
+    {
+        return Err(Unregistrable::Invalid(
+            "an asymmetric client assertion algorithm needs private key JWT authentication",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn check_public_jwks(document: &serde_json::Value) -> Result<(), Unregistrable> {
+    const MAX_BYTES: usize = 64 * 1024;
+    const MAX_KEYS: usize = 64;
+    let encoded = serde_json::to_vec(document)
+        .map_err(|_| Unregistrable::Invalid("the JWKS is not valid JSON"))?;
+    if encoded.len() > MAX_BYTES {
+        return Err(Unregistrable::Invalid("the JWKS is larger than 64 KiB"));
+    }
+    let map = document
+        .as_object()
+        .cloned()
+        .ok_or(Unregistrable::Invalid("the JWKS is not an object"))?;
+    let set = JwkSet::from_map(map)
+        .map_err(|_| Unregistrable::Invalid("the JWKS does not contain valid keys"))?;
+    let keys = set.keys();
+    if keys.is_empty() || keys.len() > MAX_KEYS {
+        return Err(Unregistrable::Invalid(
+            "the JWKS contains between one and 64 public keys",
+        ));
+    }
+    for key in keys {
+        if key.key_type() == "oct"
+            || ["d", "p", "q", "dp", "dq", "qi", "oth", "k"]
+                .iter()
+                .any(|name| key.parameter(name).is_some())
+        {
+            return Err(Unregistrable::Invalid(
+                "the JWKS contains private or symmetric key material",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The same, from a whole spec rather than from what a reshape named. RFC 7592
@@ -622,4 +762,95 @@ async fn keep_secret(
         .await
         .map_err(|_| Unregistrable::Unwritable)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client() -> ClientModel {
+        let mut client = ClientCreateModel {
+            name: "app".into(),
+            display_name: "App".into(),
+            description: String::new(),
+            enabled: Some(true),
+        }
+        .into_model(
+            "app".into(),
+            "main".into(),
+            AuditableModel::from_creator("acme".into(), "root".into()),
+        );
+        client.public_client = Some(false);
+        client.client_authenticator_type = Some("client-secret".into());
+        client
+    }
+
+    fn configuration() -> KeyConfiguration {
+        KeyConfiguration {
+            authentication_method: "client-secret".into(),
+            jwks: Some(serde_json::json!({
+                "keys": [{ "kty": "EC", "crv": "P-256", "x": "AQ", "y": "AQ", "kid": "one" }]
+            })),
+            jwks_uri: None,
+            id_token_signed_response_alg: Some(SignAlg::Es256),
+            userinfo_signed_response_alg: None,
+            request_object_signing_alg: Some(SignAlg::Es256),
+            token_endpoint_auth_signing_alg: None,
+            id_token_encryption: None,
+            userinfo_encryption: None,
+            request_object_encryption: None,
+        }
+    }
+
+    #[test]
+    fn a_public_jwks_is_accepted_but_private_material_is_not() {
+        let client = client();
+        let mut configured = configuration();
+        assert_eq!(check_key_configuration(&client, &configured), Ok(()));
+
+        configured.jwks = Some(serde_json::json!({
+            "keys": [{ "kty": "EC", "crv": "P-256", "x": "AQ", "y": "AQ", "d": "AQ" }]
+        }));
+        assert_eq!(
+            check_key_configuration(&client, &configured),
+            Err(Unregistrable::Invalid(
+                "the JWKS contains private or symmetric key material"
+            ))
+        );
+    }
+
+    #[test]
+    fn a_remote_key_set_is_https_and_carries_no_credentials() {
+        let client = client();
+        let mut configured = configuration();
+        configured.jwks = None;
+        configured.jwks_uri = Some("https://app.example/keys".into());
+        assert_eq!(check_key_configuration(&client, &configured), Ok(()));
+
+        for refused in [
+            "http://app.example/keys",
+            "https://user@app.example/keys",
+            "https://app.example/keys#old",
+        ] {
+            configured.jwks_uri = Some(refused.into());
+            assert!(check_key_configuration(&client, &configured).is_err());
+        }
+    }
+
+    #[test]
+    fn client_key_features_need_the_keys_they_consume() {
+        let client = client();
+        let mut configured = configuration();
+        configured.jwks = None;
+        configured.request_object_signing_alg = None;
+        assert_eq!(check_key_configuration(&client, &configured), Ok(()));
+
+        configured.request_object_signing_alg = Some(SignAlg::Es256);
+        assert_eq!(
+            check_key_configuration(&client, &configured),
+            Err(Unregistrable::Invalid(
+                "signed request objects need published keys"
+            ))
+        );
+    }
 }

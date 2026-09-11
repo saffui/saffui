@@ -37,6 +37,9 @@ pub enum Uncreatable {
     Invalid(&'static str),
     #[error("the store could not be written")]
     Unwritable,
+    /// The default groups would seat the person in breach of a separation.
+    #[error("{0}")]
+    Toxic(String),
 }
 
 pub async fn create(
@@ -96,6 +99,19 @@ pub async fn create(
         if !defaults.is_empty() {
             user.required_actions = Some(defaults);
         }
+    }
+    // Every newcomer is seated in the default groups: a set that breaks a
+    // separation refuses the person rather than seating them in breach.
+    store::providers::sod::hold_person(transaction, &user.user_id)
+        .await
+        .map_err(|_| Uncreatable::Unwritable)?;
+    match crate::sod::weigh_newcomer(transaction).await {
+        Ok(()) => {}
+        Err(crate::sod::Toxic::Refused(said)) => {
+            tracing::warn!(user = %user.user_name, %said, "a person was not created: separation of duties");
+            return Err(Uncreatable::Toxic(said));
+        }
+        Err(crate::sod::Toxic::Backend) => return Err(Uncreatable::Unwritable),
     }
     users::create(transaction, &user)
         .await

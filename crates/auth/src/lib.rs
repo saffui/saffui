@@ -5,3 +5,4 @@ pub mod organization;
 pub mod password;
 pub mod provenance;
 pub mod session_state;
+pub mod sod;

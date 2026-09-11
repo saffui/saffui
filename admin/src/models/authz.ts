@@ -39,6 +39,18 @@ export interface ScopeRow {
   name: string;
 }
 
+export interface AuthzRoute {
+  route_id: string;
+  method: string;
+  path: string;
+  server_id: string;
+  resource: string;
+  scope: string;
+  action: string;
+  priority: number;
+  enabled: boolean;
+}
+
 /// One decision the engine reached, as the log keeps it. `reported` is what
 /// the caller was told and `computed` what the evaluation reached: a
 /// permissive server is where the two part company.

@@ -22,12 +22,7 @@ const GROUPS: { label: string; items: { label: string; icon: any; leaf: string }
     items: [
       { label: say("nav-overview"), icon: "overview", leaf: "overview" },
       { label: say("nav-users"), icon: "users", leaf: "users" },
-      { label: say("nav-roles"), icon: "roles", leaf: "roles" },
-      { label: say("nav-groups"), icon: "groups", leaf: "groups" },
-      { label: say("nav-organizations"), icon: "organizations", leaf: "organizations" },
       { label: say("nav-clients"), icon: "clients", leaf: "clients" },
-      { label: say("nav-agents"), icon: "server", leaf: "agents" },
-      { label: say("nav-scopes"), icon: "scopes", leaf: "client-scopes" },
     ],
   },
   {
@@ -35,23 +30,23 @@ const GROUPS: { label: string; items: { label: string; icon: any; leaf: string }
     items: [
       { label: say("nav-authentication"), icon: "authentication", leaf: "authentication" },
       { label: say("nav-authorization"), icon: "authorization", leaf: "authorization" },
-      { label: say("nav-evaluator"), icon: "evaluator", leaf: "evaluator" },
       { label: say("nav-federation"), icon: "federation", leaf: "federation" },
       { label: say("nav-appearance"), icon: "appearance", leaf: "theme" },
-      { label: say("nav-pages"), icon: "pages", leaf: "pages" },
-      { label: say("nav-spnego"), icon: "server", leaf: "spnego" },
       { label: say("nav-settings"), icon: "settings", leaf: "settings" },
+    ],
+  },
+  {
+    label: say("nav-cap-observe"),
+    items: [
+      { label: say("nav-metrics"), icon: "activity", leaf: "metrics" },
+      { label: say("nav-events"), icon: "events", leaf: "events" },
     ],
   },
   {
     label: say("nav-cap-operate"),
     items: [
-      { label: say("nav-events"), icon: "events", leaf: "events" },
-      { label: say("nav-journal"), icon: "journal", leaf: "journal" },
       { label: say("nav-keys"), icon: "key", leaf: "keys" },
       { label: say("nav-governance"), icon: "governance", leaf: "governance" },
-      { label: say("nav-privacy"), icon: "governance", leaf: "privacy" },
-      { label: say("nav-realm-sessions"), icon: "sessions", leaf: "sessions" },
     ],
   },
   {

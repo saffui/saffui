@@ -19,6 +19,7 @@ const field = ref<HTMLInputElement | null>(null);
 
 const PAGES: { leaf: string; name: () => string }[] = [
   { leaf: "overview", name: () => say("nav-overview") },
+  { leaf: "metrics", name: () => say("nav-metrics") },
   { leaf: "users", name: () => say("nav-users") },
   { leaf: "roles", name: () => say("nav-roles") },
   { leaf: "groups", name: () => say("nav-groups") },

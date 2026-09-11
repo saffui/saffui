@@ -848,10 +848,11 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       slow_tail_millis: 42,
     });
   }
-  if (path.endsWith("/metrics")) {
+  if (path.includes("/metrics")) {
+    const windowSeconds = Number(new URL(path, "http://preview.local").searchParams.get("window_seconds")) || 86400;
     return answer({
-      window_seconds: 86400,
-      since: new Date((NOW - 86400) * 1000).toISOString(),
+      window_seconds: windowSeconds,
+      since: new Date((NOW - windowSeconds) * 1000).toISOString(),
       decisions: {
         total: 4821, permits: 3910, denials: 846, indeterminate: 65,
         disagreements: 3, average_duration_us: 1840, p95_duration_us: 6200,

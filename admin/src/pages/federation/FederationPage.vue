@@ -7,6 +7,7 @@ import AppDrawer from "@/components/AppDrawer.vue";
 import DirectoryDrawer from "./DirectoryDrawer.vue";
 import IdpDrawer from "./IdpDrawer.vue";
 import AppToggle from "@/components/AppToggle.vue";
+import PageTabs from "@/components/PageTabs.vue";
 import {
   createIdp,
   deleteIdp,
@@ -102,6 +103,11 @@ const form = ref({
 });
 const saving = ref(false);
 const doomName = ref("");
+const TABS = ["idps", "directories", "platforms"] as const;
+const tab = computed(() => {
+  const asked = String(route.query.tab ?? "idps");
+  return TABS.includes(asked as (typeof TABS)[number]) ? asked : "idps";
+});
 
 function openCreate() {
   editing.value = { alias: null };
@@ -194,7 +200,15 @@ async function drop() {
     </div>
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div class="mt-5 flex items-center gap-3">
+    <PageTabs
+      class="mt-4"
+      :leaves="[...TABS]"
+      :at="tab"
+      saying="federation-tab"
+      :to="(leaf) => `/${realm}/federation?tab=${leaf}`"
+    />
+
+    <div v-if="tab === 'idps'" class="mt-5 flex items-center gap-3">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("federation-idps") }}
       </h2>
@@ -206,8 +220,9 @@ async function drop() {
         {{ say("federation-new-idp") }}
       </button>
     </div>
-    <p v-if="!brokers.length" class="mt-2 text-xs text-muted">{{ say("federation-no-idps") }}</p>
-    <div v-else class="sf-list mt-2 overflow-x-auto">
+    <template v-if="tab === 'idps'">
+      <p v-if="!brokers.length" class="mt-2 text-xs text-muted">{{ say("federation-no-idps") }}</p>
+      <div v-else class="sf-list mt-2 overflow-x-auto">
       <table class="sf-table">
         <thead>
           <tr>
@@ -240,9 +255,10 @@ async function drop() {
           </tr>
         </tbody>
       </table>
-    </div>
+      </div>
+    </template>
 
-    <div class="mt-6 flex max-w-3xl items-center gap-3">
+    <div v-if="tab === 'directories'" class="mt-5 flex max-w-3xl items-center gap-3">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("federation-directories") }}
       </h2>
@@ -254,10 +270,11 @@ async function drop() {
         {{ say("federation-new-directory") }}
       </button>
     </div>
-    <p v-if="!directories.length" class="mt-2 text-xs text-muted">
-      {{ say("federation-no-directories") }}
-    </p>
-    <div v-else class="mt-2 grid max-w-3xl gap-2">
+    <template v-if="tab === 'directories'">
+      <p v-if="!directories.length" class="mt-2 text-xs text-muted">
+        {{ say("federation-no-directories") }}
+      </p>
+      <div v-else class="mt-2 grid max-w-3xl gap-2">
       <button
         v-for="row in directories"
         :key="row.alias"
@@ -273,9 +290,10 @@ async function drop() {
           {{ row.enabled === false ? say("users-disabled") : say("users-active") }}
         </span>
       </button>
-    </div>
+      </div>
+    </template>
 
-    <div class="mt-6 flex max-w-3xl flex-wrap items-center gap-2">
+    <div v-if="tab === 'platforms'" class="mt-5 flex max-w-3xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("federation-platforms") }}
       </h2>
@@ -287,10 +305,11 @@ async function drop() {
         {{ say("federation-add-platform") }}
       </button>
     </div>
-    <p v-if="!platforms.length" class="mt-2 text-xs text-muted">
-      {{ say("federation-no-platforms") }}
-    </p>
-    <div v-else class="mt-2 grid max-w-3xl gap-2">
+    <template v-if="tab === 'platforms'">
+      <p v-if="!platforms.length" class="mt-2 text-xs text-muted">
+        {{ say("federation-no-platforms") }}
+      </p>
+      <div v-else class="mt-2 grid max-w-3xl gap-2">
       <div
         v-for="row in platforms"
         :key="row.internal_id"
@@ -312,7 +331,8 @@ async function drop() {
         </div>
         <div class="mt-1 font-mono text-[10.5px] text-faint">{{ bagText(row, "issuer") }}</div>
       </div>
-    </div>
+      </div>
+    </template>
 
     <AppDrawer
       v-if="editing"

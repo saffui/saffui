@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 const asked: string[] = [];
+let metricsFeatureEnabled = true;
 
 vi.mock("@/services/http", () => ({
   adminPath: (realm: string, leaf: string) => `/admin/realms/${realm}/${leaf}`,
@@ -10,6 +11,8 @@ vi.mock("@/services/http", () => ({
     if (path.endsWith("/mail")) return { host: "", port: 0, has_password: false, implicit_tls: true };
     if (path.endsWith("/sms")) return { url: null, has_token: false };
     if (path.endsWith("/ussd")) return { has_secret: false };
+    if (path.includes("/sign-in-events")) return { items: [], first: 0, max: 7, total: 0 };
+    if (path.endsWith("/features")) return { items: [{ slug: "metrics", enabled: metricsFeatureEnabled }] };
     if (path.endsWith("/metrics")) {
       return {
         window_seconds: 86400,
@@ -45,6 +48,7 @@ const { readOverview } = await import("./overview");
 
 afterEach(() => {
   asked.length = 0;
+  metricsFeatureEnabled = true;
   vi.restoreAllMocks();
 });
 
@@ -62,5 +66,22 @@ describe("overview business metrics", () => {
 
     expect(asked).toContain("/admin/realms/main/metrics");
     expect(told.businessMetrics?.decisions.p95_duration_us).toBe(290);
+  });
+
+  test("does not ask for metrics while the realm feature is off", async () => {
+    metricsFeatureEnabled = false;
+
+    const told = await readOverview("main", {
+      strip: { users: 1, clients: 1, sessions: 1, pending_requests: 0 },
+      settings: {
+        client_registration: "closed",
+        registration_bounds: { trusted_hosts: [] },
+        verify_email: false,
+        reset_password_allowed: false,
+      } as never,
+    });
+
+    expect(asked).not.toContain("/admin/realms/main/metrics");
+    expect(told.businessMetrics).toBeNull();
   });
 });

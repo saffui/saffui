@@ -1,6 +1,8 @@
 import { adminPath, api, ApiError } from "@/services/http";
+import { listRealmFeatures, listSignInEvents } from "@/services/settings";
 import { listJournal, verifyChain } from "@/services/journal";
 import type { ChainVerified, JournalEntry } from "@/models/journal";
+import type { SignInEvent } from "@/models/events";
 import type { Page } from "@/models/paging";
 import type { RealmKeys } from "@/models/keys";
 import type { MailBrief } from "@/models/mail";
@@ -64,6 +66,7 @@ export interface OverviewTold {
   /// The newest journal entries, and whether the chain verifies whole.
   journal: JournalEntry[];
   chain: ChainVerified | null;
+  signIns: Page<SignInEvent> | null;
   businessMetrics: BusinessMetrics | null;
 }
 
@@ -86,6 +89,11 @@ export interface BusinessMetrics {
     signed_out: number;
     sms_throttled: number;
   };
+}
+
+export async function readBusinessMetrics(realm: string, windowSeconds?: number): Promise<BusinessMetrics> {
+  const query = windowSeconds === undefined ? "" : `?window_seconds=${windowSeconds}`;
+  return api<BusinessMetrics>(adminPath(realm, `metrics${query}`));
 }
 
 /// The counts and the settings the strip needs, which the standing store has
@@ -115,15 +123,20 @@ export async function readOverview(
       if (refused instanceof ApiError && refused.status < 500) return null;
       throw refused;
     });
-  const [keys, mail, sms, ussd, journal, chain, businessMetrics] = await Promise.all([
+  const [keys, mail, sms, ussd, journal, chain, signIns, features] = await Promise.all([
     api<RealmKeys>(adminPath(realm, "keys")),
     quietly(api<MailBrief>(adminPath(realm, "mail"))),
     quietly(api<SmsBrief>(adminPath(realm, "sms"))),
     quietly(api<{ has_secret: boolean }>(adminPath(realm, "ussd"))),
     quietly(listJournal(realm, 0, 5)),
     quietly(verifyChain(realm)),
-    quietly(api<BusinessMetrics>(adminPath(realm, "metrics"))),
+    settings.events_enabled ? quietly(listSignInEvents(realm, 0, 7)) : Promise.resolve(null),
+    quietly(listRealmFeatures(realm)),
   ]);
+  const businessMetrics =
+    features?.some((feature) => feature.slug === "metrics" && feature.enabled)
+      ? await quietly(readBusinessMetrics(realm))
+      : null;
 
   const attention: Attention[] = [];
   if (keys.signing.length === 0) {
@@ -186,6 +199,7 @@ export async function readOverview(
     attention,
     journal: journal?.items ?? [],
     chain,
+    signIns,
     businessMetrics,
   };
 }

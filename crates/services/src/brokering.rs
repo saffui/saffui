@@ -396,6 +396,17 @@ pub async fn apply_mappers(
                     tracing::warn!(rule = %rule.name, role_id, "an idp mapper names a role nobody holds anymore");
                     continue;
                 }
+                // A role that would put the person in breach of a separation
+                // is withheld and the sign-in goes on: the rule is the
+                // operator's to mend, as a role deleted since is.
+                match crate::sod::weigh_grant(transaction, user_id, role_id).await {
+                    Ok(()) => {}
+                    Err(crate::sod::Toxic::Refused(said)) => {
+                        tracing::warn!(rule = %rule.name, role_id, %said, "an idp mapper's role was withheld: separation of duties");
+                        continue;
+                    }
+                    Err(crate::sod::Toxic::Backend) => return Err(Unbrokered::Backend),
+                }
                 store::providers::roles::grant_to_user(transaction, user_id, role_id)
                     .await
                     .map_err(|_| Unbrokered::Backend)?;

@@ -28,6 +28,17 @@ pub async fn converge_person(
         sessions_closed: 0,
     };
     for (role, rule) in &change.grant {
+        // A rule-born role that would put the person in breach of a separation
+        // is withheld and kept off the ledger, so the next convergence weighs
+        // it again instead of taking it as granted.
+        match services::sod::weigh_grant(transaction, &person.user_id, role).await {
+            Ok(()) => {}
+            Err(services::sod::Toxic::Refused(said)) => {
+                tracing::warn!(user = %person.user_id, %role, %rule, %said, "a lifecycle grant was withheld: separation of duties");
+                continue;
+            }
+            Err(services::sod::Toxic::Backend) => return Err(()),
+        }
         roles::grant_to_user(transaction, &person.user_id, role)
             .await
             .map_err(|_| ())?;

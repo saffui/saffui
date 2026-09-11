@@ -116,6 +116,7 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
         AdminAction::IdpRead,
         AdminAction::IdpWrite,
         AdminAction::RoleWrite,
+        AdminAction::IgaWrite,
     ])
     .await;
     let bearer = plane.token(&support::claims());
@@ -503,6 +504,65 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
             "the upstream's own compact document is what is kept"
         );
     }
+
+    // A forced rule that would hand the person the other half of a separation
+    // withholds that role, not the sign-in: the arrival still lands.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(json!({ "name": "keeper" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let keeper = told["role_id"].as_str().expect("an identity").to_owned();
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/iga/sod/rules/custody"),
+        &bearer,
+        Some(json!({ "roles": [role_id, keeper] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &rules,
+        &bearer,
+        Some(
+            json!({ "name": "hold-keeper", "mapper_type": "oidc-hardcoded-role-idp-mapper",
+                     "configs": { "role": { "Str": keeper }, "syncMode": { "Str": "force" } } }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let cookie = opened_login(&plane).await;
+    let (status, _, _, _) = crossing(cookie).await;
+    assert_eq!(
+        status,
+        StatusCode::SEE_OTHER,
+        "a withheld role refused the sign-in"
+    );
+    let held: Vec<String> = {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::roles::effective_roles(&transaction, &linked)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|role| role.role_id)
+            .collect()
+    };
+    assert!(held.contains(&role_id), "the first half was taken away");
+    assert!(
+        !held.contains(&keeper),
+        "a mapper handed over the other half of a separation"
+    );
 }
 
 /// An upstream logout reaches down: the provider posts its logout token at

@@ -4,9 +4,11 @@ import { computed, onMounted, ref } from "vue";
 import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
+import AppPicker from "@/components/AppPicker.vue";
 import { say } from "@/i18n";
 import AppPaging from "@/components/AppPaging.vue";
 import {
+  addOrganizationMember,
   claimDomain,
   createOrganization,
   deleteOrganization,
@@ -16,14 +18,17 @@ import {
   getOrganizationTheme,
   listOrganizationMembers,
   listOrganizations,
+  removeOrganizationMember,
   writeOrganizationTheme,
   verifyDomain,
 } from "@/services/directory";
+import { listUsers } from "@/services/users";
 import AppHint from "@/components/AppHint.vue";
 import type { Page } from "@/models/paging";
 import type { OrganizationRow, OrgMember } from "@/models/directory";
 import type { RealmTheme } from "@/models/realm";
 import DirectoryTable from "./DirectoryTable.vue";
+import { organizationMemberPickerRows } from "@/pages/adminActionPickers";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
@@ -46,6 +51,9 @@ async function turn() {
 const failed = ref("");
 const opened = ref<OrganizationRow | null>(null);
 const members = ref<OrgMember[] | null>(null);
+const memberNames = ref<Record<string, string>>({});
+const memberPickerOpen = ref(false);
+const memberPickerRows = ref<{ id: string; label: string; held: boolean }[]>([]);
 const themeHalf = ref<"light" | "dark">("light");
 const orgTheme = ref<{ light: Record<string, string>; dark: Record<string, string> }>({ light: {}, dark: {} });
 const themeWorn = ref(false);
@@ -139,15 +147,56 @@ async function open(org: OrganizationRow) {
   doomName.value = "";
   opened.value = org;
   members.value = null;
-  const [organization, heldMembers, theme] = await Promise.all([
+  memberPickerOpen.value = false;
+  const [organization, heldMembers, theme, users] = await Promise.all([
     getOrganization(realm.value, org.org_id),
     listOrganizationMembers(realm.value, org.org_id),
     getOrganizationTheme(realm.value, org.org_id),
+    listUsers(realm.value, 0, 200).catch(() => null),
   ]);
   opened.value = organization;
   members.value = heldMembers;
+  memberNames.value = Object.fromEntries(
+    (users?.items ?? []).map((user) => [user.user_id, user.user_name]),
+  );
   orgTheme.value = { light: { ...theme?.light }, dark: { ...theme?.dark } };
   themeWorn.value = theme !== null;
+}
+
+async function openMemberPicker() {
+  if (!opened.value) return;
+  const users = await listUsers(realm.value, 0, 200);
+  memberNames.value = Object.fromEntries(
+    users.items.map((user) => [user.user_id, user.user_name]),
+  );
+  memberPickerRows.value = organizationMemberPickerRows(users.items, members.value ?? []);
+  memberPickerOpen.value = true;
+}
+
+async function refreshMembers() {
+  if (!opened.value) return;
+  members.value = await listOrganizationMembers(realm.value, opened.value.org_id);
+}
+
+async function addMember(userId: string) {
+  if (!opened.value) return;
+  try {
+    await addOrganizationMember(realm.value, opened.value.org_id, userId);
+    memberPickerOpen.value = false;
+    await refreshMembers();
+  } catch {
+    // The toast already said.
+  }
+}
+
+async function removeMember(userId: string) {
+  if (!opened.value) return;
+  try {
+    await removeOrganizationMember(realm.value, opened.value.org_id, userId);
+    await refreshMembers();
+  } catch {
+    // The toast already said.
+  }
 }
 
 async function saveTheme() {
@@ -345,9 +394,19 @@ function joined(member: OrgMember): string {
         </p>
       </div>
 
-      <div class="mt-4">
-        <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-          {{ say("org-members") }}
+      <div class="relative mt-4">
+        <div class="flex items-center gap-2">
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("org-members") }}
+          </div>
+          <AppHint name="org-add-member-help" />
+          <button
+            type="button"
+            class="ml-auto sf-button sf-button-secondary"
+            @click="openMemberPicker"
+          >
+            {{ say("org-add-member") }}
+          </button>
         </div>
         <p v-if="members && !members.length" class="mt-1.5 text-xs text-muted">
           {{ say("directory-nobody") }}
@@ -358,13 +417,32 @@ function joined(member: OrgMember): string {
             :key="member.user_id"
             class="flex items-center gap-2 rounded border border-border px-2 py-1.5 text-xs"
           >
-            <span class="font-mono text-[11px]">{{ member.user_id }}</span>
+            <span class="min-w-0 truncate font-medium" :title="member.user_id">
+              {{ memberNames[member.user_id] ?? member.user_id }}
+            </span>
             <span class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted">{{
               member.membership_type
             }}</span>
-            <span class="ml-auto font-mono text-[10px] text-faint">{{ joined(member) }}</span>
+            <span class="ml-auto shrink-0 font-mono text-[10px] text-faint">{{ joined(member) }}</span>
+            <span class="inline-flex shrink-0 items-center gap-1">
+              <AppHint name="org-remove-member-help" />
+              <button
+                type="button"
+                class="text-[10.5px] text-faint hover:text-danger"
+                @click="removeMember(member.user_id)"
+              >
+                {{ say("org-remove-member") }}
+              </button>
+            </span>
           </div>
         </div>
+        <AppPicker
+          v-if="memberPickerOpen"
+          :rows="memberPickerRows"
+          :title="say('org-add-member')"
+          @add="addMember"
+          @close="memberPickerOpen = false"
+        />
       </div>
       <div class="mt-4 border-t border-border pt-4">
         <div class="flex items-center gap-2">

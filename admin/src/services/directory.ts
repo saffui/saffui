@@ -27,6 +27,38 @@ export async function listRoleHolders(realm: string, roleId: string): Promise<Ro
   return api<RoleHolders>(adminPath(realm, `roles/${encodeURIComponent(roleId)}/holders`));
 }
 
+export async function listCompositeRoles(realm: string, roleId: string): Promise<RoleRow[]> {
+  return api<RoleRow[]>(adminPath(realm, `roles/${encodeURIComponent(roleId)}/composites`));
+}
+
+export async function addCompositeRole(
+  realm: string,
+  roleId: string,
+  childRoleId: string,
+): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `roles/${encodeURIComponent(roleId)}/composites/${encodeURIComponent(childRoleId)}`,
+    ),
+    { method: "PUT", subject: say("subject-role-composite", { role: roleId }) },
+  );
+}
+
+export async function removeCompositeRole(
+  realm: string,
+  roleId: string,
+  childRoleId: string,
+): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `roles/${encodeURIComponent(roleId)}/composites/${encodeURIComponent(childRoleId)}`,
+    ),
+    { method: "DELETE", subject: say("subject-role-composite", { role: roleId }) },
+  );
+}
+
 export async function listGroups(
   realm: string,
   first: number,
@@ -83,6 +115,34 @@ export async function listOrganizationMembers(
 ): Promise<OrgMember[]> {
   return api<OrgMember[]>(
     adminPath(realm, `organizations/${encodeURIComponent(orgId)}/members`),
+  );
+}
+
+export async function addOrganizationMember(
+  realm: string,
+  orgId: string,
+  userId: string,
+): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `organizations/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+    ),
+    { method: "PUT", subject: say("subject-org-member", { org: orgId }) },
+  );
+}
+
+export async function removeOrganizationMember(
+  realm: string,
+  orgId: string,
+  userId: string,
+): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `organizations/${encodeURIComponent(orgId)}/members/${encodeURIComponent(userId)}`,
+    ),
+    { method: "DELETE", subject: say("subject-org-member", { org: orgId }) },
   );
 }
 

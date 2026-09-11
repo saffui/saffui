@@ -5,18 +5,23 @@ import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppHint from "@/components/AppHint.vue";
+import AppPicker from "@/components/AppPicker.vue";
 import { say } from "@/i18n";
 import AppPaging from "@/components/AppPaging.vue";
 import {
+  addCompositeRole,
   createRole,
   deleteRole,
+  listCompositeRoles,
   listRoleHolders,
   listRoles,
+  removeCompositeRole,
   updateRole,
 } from "@/services/directory";
 import type { Page } from "@/models/paging";
 import type { RoleHolders, RoleRow } from "@/models/directory";
 import DirectoryTable from "./DirectoryTable.vue";
+import { compositeRolePickerRows } from "@/pages/adminActionPickers";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
@@ -39,6 +44,9 @@ async function turn() {
 const failed = ref("");
 const opened = ref<RoleRow | null>(null);
 const holders = ref<RoleHolders | null>(null);
+const composites = ref<RoleRow[] | null>(null);
+const compositePickerOpen = ref(false);
+const compositePickerRows = ref<{ id: string; label: string; held: boolean }[]>([]);
 const heldUsers = computed(
   () =>
     holders.value?.user_details ??
@@ -67,7 +75,52 @@ async function open(role: RoleRow) {
   draft.value = { display_name: role.display_name, description: role.description };
   doomName.value = "";
   holders.value = null;
-  holders.value = await listRoleHolders(realm.value, role.role_id);
+  composites.value = null;
+  compositePickerOpen.value = false;
+  [holders.value, composites.value] = await Promise.all([
+    listRoleHolders(realm.value, role.role_id),
+    listCompositeRoles(realm.value, role.role_id),
+  ]);
+}
+
+async function refreshRoleRelations() {
+  if (!opened.value) return;
+  [holders.value, composites.value] = await Promise.all([
+    listRoleHolders(realm.value, opened.value.role_id),
+    listCompositeRoles(realm.value, opened.value.role_id),
+  ]);
+}
+
+async function openCompositePicker() {
+  if (!opened.value) return;
+  const catalogue = await listRoles(realm.value, 0, 200);
+  compositePickerRows.value = compositeRolePickerRows(
+    catalogue.items,
+    opened.value.role_id,
+    composites.value ?? [],
+  );
+  compositePickerOpen.value = true;
+}
+
+async function addComposite(childRoleId: string) {
+  if (!opened.value) return;
+  try {
+    await addCompositeRole(realm.value, opened.value.role_id, childRoleId);
+    compositePickerOpen.value = false;
+    await refreshRoleRelations();
+  } catch {
+    // The toast already said.
+  }
+}
+
+async function removeComposite(childRoleId: string) {
+  if (!opened.value) return;
+  try {
+    await removeCompositeRole(realm.value, opened.value.role_id, childRoleId);
+    await refreshRoleRelations();
+  } catch {
+    // The toast already said.
+  }
 }
 
 const making = ref(false);
@@ -224,6 +277,49 @@ async function dropRole() {
           </button>
         </div>
       </form>
+      <div class="relative mt-4">
+        <div class="flex items-center gap-2">
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("role-composites") }}
+          </div>
+          <AppHint name="role-composites-help" />
+          <button
+            type="button"
+            class="ml-auto sf-button sf-button-secondary"
+            @click="openCompositePicker"
+          >
+            {{ say("role-composites-add") }}
+          </button>
+        </div>
+        <p v-if="composites && !composites.length" class="mt-1.5 text-xs text-muted">
+          {{ say("role-composites-none") }}
+        </p>
+        <div class="mt-1.5 flex flex-wrap gap-1.5">
+          <span
+            v-for="child in composites ?? []"
+            :key="child.role_id"
+            class="inline-flex items-center gap-1.5 rounded border border-border px-1.5 py-0.5 text-[11px]"
+            :title="child.description"
+          >
+            {{ child.display_name || child.name }}
+            <button
+              type="button"
+              class="text-faint hover:text-danger"
+              :aria-label="say('role-composites-remove', { role: child.name })"
+              @click="removeComposite(child.role_id)"
+            >
+              <AppIcon name="close" :size="11" />
+            </button>
+          </span>
+        </div>
+        <AppPicker
+          v-if="compositePickerOpen"
+          :rows="compositePickerRows"
+          :title="say('role-composites-add')"
+          @add="addComposite"
+          @close="compositePickerOpen = false"
+        />
+      </div>
       <div class="mt-4">
         <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("role-held-by-users") }}

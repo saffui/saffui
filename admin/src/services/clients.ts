@@ -84,6 +84,34 @@ export async function listClientMappers(
   );
 }
 
+export async function attachMapperToClient(
+  realm: string,
+  clientId: string,
+  mapperId: string,
+): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `clients/${encodeURIComponent(clientId)}/mappers/${encodeURIComponent(mapperId)}`,
+    ),
+    { method: "PUT", subject: say("subject-client-mapper", { client: clientId }) },
+  );
+}
+
+export async function detachMapperFromClient(
+  realm: string,
+  clientId: string,
+  mapperId: string,
+): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `clients/${encodeURIComponent(clientId)}/mappers/${encodeURIComponent(mapperId)}`,
+    ),
+    { method: "DELETE", subject: say("subject-client-mapper", { client: clientId }) },
+  );
+}
+
 /// Mirrors the server's ClientSpec.
 export interface ClientSpec {
   client_id?: string;

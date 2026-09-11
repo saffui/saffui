@@ -26,9 +26,11 @@ import {
   setUserPassword,
   readPasswordHistory,
   readCredentials,
+  revokeSessionGrant,
   type PasswordChange,
   type Credential,
   updateUser,
+  withdrawConsent,
 } from "@/services/users";
 import { listRoles, listGroups } from "@/services/directory";
 import { refusalOf } from "./names";
@@ -394,6 +396,22 @@ async function onCloseSession(sessionId: string) {
   await closeSession(props.realm, props.userId, sessionId);
   sessions.value = await listSessions(props.realm, props.userId);
 }
+async function onRevokeSessionGrant(sessionId: string, clientId: string) {
+  try {
+    await revokeSessionGrant(props.realm, props.userId, sessionId, clientId);
+    sessions.value = await listSessions(props.realm, props.userId);
+  } catch {
+    // The toast already said.
+  }
+}
+async function onWithdrawConsent(clientId: string) {
+  try {
+    await withdrawConsent(props.realm, props.userId, clientId);
+    consents.value = await listConsents(props.realm, props.userId);
+  } catch {
+    // The toast already said.
+  }
+}
 
 function instant(epoch: number | null | undefined): string {
   if (!epoch) return "";
@@ -412,7 +430,7 @@ function instant(epoch: number | null | undefined): string {
   >
     <p v-if="failed" class="text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div class="flex gap-1 border-b border-border pb-2">
+    <div class="flex flex-wrap gap-1 border-b border-border pb-2">
       <button
         v-for="held in TABS"
         :key="held"
@@ -814,13 +832,25 @@ function instant(epoch: number | null | undefined): string {
         <div class="mt-1 font-mono text-[10.5px] text-faint">
           {{ say("user-session-started") }} {{ instant(session.started_at) }}
         </div>
-        <div v-if="session.grants.length" class="mt-1.5 flex flex-wrap gap-1.5">
+        <div v-if="session.grants.length" class="mt-2 flex flex-col gap-1.5">
+          <div class="flex items-center gap-1 text-[10.5px] text-muted">
+            {{ say("user-session-grants") }}
+            <AppHint name="user-session-grant-revoke-help" />
+          </div>
           <span
             v-for="grant in session.grants"
             :key="grant.client_id"
-            class="rounded border border-border px-1.5 py-0.5 font-mono text-[10.5px] text-muted"
+            class="flex items-center gap-2 rounded border border-border px-2 py-1 font-mono text-[10.5px] text-muted"
           >
             {{ grant.client_id }}<template v-if="grant.offline"> &middot; offline</template>
+            <button
+              type="button"
+              class="ml-auto inline-flex items-center gap-1 font-sans text-[10.5px] text-faint hover:text-danger"
+              @click="onRevokeSessionGrant(session.session_id, grant.client_id)"
+            >
+              <AppIcon name="remove" :size="11" />
+              {{ say("user-session-grant-revoke") }}
+            </button>
           </span>
         </div>
       </div>
@@ -947,6 +977,10 @@ function instant(epoch: number | null | undefined): string {
     </div>
 
     <div v-if="tab === 'consents'" class="mt-4">
+      <p class="mb-3 flex items-center gap-1 text-[11px] text-muted">
+        {{ say("user-consent-withdraw-help") }}
+        <AppHint name="user-consent-withdraw-help" />
+      </p>
       <p v-if="!consents.length" class="text-xs text-muted">{{ say("user-no-consents") }}</p>
       <div
         v-for="consent in consents"
@@ -958,6 +992,13 @@ function instant(epoch: number | null | undefined): string {
           <span class="ml-auto font-mono text-[10.5px] text-faint">{{
             instant(consent.granted_at)
           }}</span>
+          <button
+            type="button"
+            class="text-[10.5px] text-faint hover:text-danger"
+            @click="onWithdrawConsent(consent.client_id)"
+          >
+            {{ say("user-consent-withdraw") }}
+          </button>
         </div>
         <div class="mt-1.5 flex flex-wrap gap-1.5">
           <span

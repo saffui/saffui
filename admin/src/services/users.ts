@@ -83,11 +83,40 @@ export async function closeSession(
   );
 }
 
+export async function revokeSessionGrant(
+  realm: string,
+  userId: string,
+  sessionId: string,
+  clientId: string,
+): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `users/${encodeURIComponent(userId)}/sessions/${encodeURIComponent(sessionId)}/grants/${encodeURIComponent(clientId)}`,
+    ),
+    { method: "DELETE", subject: say("subject-session-grant", { client: clientId }) },
+  );
+}
+
 export async function listConsents(realm: string, userId: string): Promise<ConsentBrief[]> {
   const told = await api<{ consents: ConsentBrief[] }>(
     adminPath(realm, `users/${encodeURIComponent(userId)}/consents`),
   );
   return told.consents;
+}
+
+export async function withdrawConsent(
+  realm: string,
+  userId: string,
+  clientId: string,
+): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `users/${encodeURIComponent(userId)}/consents/${encodeURIComponent(clientId)}`,
+    ),
+    { method: "DELETE", subject: say("subject-consent", { client: clientId }) },
+  );
 }
 
 export async function listFederatedIdentities(

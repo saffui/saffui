@@ -48,6 +48,7 @@ pub async fn add(
     let made = claim_sources::add(
         &transaction,
         sealing.provider.as_ref(),
+        &sealing.envelope,
         &admin.context.tenant.tenant,
         &realm_id,
         admin.context.principal.id(),

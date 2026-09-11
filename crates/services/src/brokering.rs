@@ -499,6 +499,7 @@ pub async fn keep_assertions(
                 format!("broker:{}", provider.provider_id),
             ),
         },
+        None,
     )
     .await
     .map_err(|_| Unbrokered::Backend)

@@ -106,7 +106,7 @@ pub async fn issue(
     let mut anchor = access.as_ref().map(|minted| minted.token_id.clone());
 
     if asked.id_token {
-        let mut extra = identity_claims(transaction, asked, established).await?;
+        let mut extra = identity_claims(transaction, signing, asked, established).await?;
         extra.insert("auth_time".into(), Value::from(established.auth_time));
         for (named, value) in [("nonce", established.nonce), ("acr", established.acr)] {
             if let Some(value) = value {
@@ -156,12 +156,14 @@ pub async fn issue(
 /// the token carries them itself.
 async fn identity_claims(
     transaction: &deadpool_postgres::Transaction<'_>,
+    signing: &Signing<'_>,
     asked: ResponseType,
     established: &Established<'_>,
 ) -> Result<Map<String, Value>, Unmintable> {
     let client_id = &established.client.client_id;
     let mut claims = crate::userinfo::asked_id_token_claims(
         transaction,
+        signing,
         established.claims,
         client_id,
         established.user_id,

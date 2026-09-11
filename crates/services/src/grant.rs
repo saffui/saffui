@@ -360,11 +360,12 @@ pub async fn workload(
 /// either.
 async fn claims_asked_of(
     transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
     asked: Option<&Value>,
     client_id: &str,
     user_id: &str,
 ) -> Result<Map<String, Value>, Ungranted> {
-    userinfo::asked_id_token_claims(transaction, asked, client_id, user_id)
+    userinfo::asked_id_token_claims(transaction, signing, asked, client_id, user_id)
         .await
         .map_err(|()| Ungranted::Unreadable)
 }
@@ -464,6 +465,7 @@ pub async fn authorization_code(
     // the login, and the request itself is what the client session keeps.
     let asked_of_person = claims_asked_of(
         transaction,
+        signing,
         code.claims.as_ref(),
         &client.client_id,
         &code.user_id,

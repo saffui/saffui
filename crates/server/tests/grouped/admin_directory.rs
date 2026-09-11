@@ -4,6 +4,8 @@ use super::support::Plane;
 use actix_web::http::{Method, StatusCode};
 use models::entities::authz::AdminAction;
 use serde_json::Value;
+use store::providers::roles;
+use store::tenancy::TenantContext;
 
 const REALM: &str = support::REALM;
 
@@ -173,6 +175,109 @@ async fn a_role_lives_and_dies_over_the_plane() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// Composite roles are transitive, idempotent, isolated by the admin scope,
+/// and cannot introduce a cycle.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn composite_roles_are_resolved_and_cycles_are_refused() {
+    let plane = Plane::with_actions(&[AdminAction::RoleRead, AdminAction::RoleWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/roles");
+
+    let mut ids = Vec::new();
+    for name in ["composite-parent", "composite-child", "composite-leaf"] {
+        let (status, role) = asked(
+            &plane,
+            Method::POST,
+            &base,
+            &bearer,
+            Some(serde_json::json!({ "name": name })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{role}");
+        ids.push(role["role_id"].as_str().unwrap().to_owned());
+    }
+    let parent = &ids[0];
+    let child = &ids[1];
+    let leaf = &ids[2];
+
+    for (from, to) in [(parent, child), (child, leaf)] {
+        let (status, body) = asked(
+            &plane,
+            Method::PUT,
+            &format!("{base}/{from}/composites/{to}"),
+            &bearer,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+    let (status, body) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{parent}/composites/{child}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let (status, children) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}/{parent}/composites"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{children}");
+    assert_eq!(children.as_array().map(Vec::len), Some(1), "{children}");
+    assert_eq!(children[0]["role_id"], child, "{children}");
+
+    let (status, body) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{leaf}/composites/{parent}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+
+    let (status, body) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{parent}/holders/{}", support::SUBJECT),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let effective = roles::effective_roles(&transaction, support::SUBJECT)
+        .await
+        .unwrap();
+    let names: Vec<_> = effective.iter().map(|role| role.name.as_str()).collect();
+    assert!(names.contains(&"composite-parent"), "{names:?}");
+    assert!(names.contains(&"composite-child"), "{names:?}");
+    assert!(names.contains(&"composite-leaf"), "{names:?}");
+    transaction.rollback().await.unwrap();
+
+    let (status, body) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("{base}/{child}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
 }
 
 /// Reading is not writing: the capability the route charges is the one the

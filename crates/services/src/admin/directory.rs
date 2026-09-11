@@ -152,6 +152,79 @@ pub async fn delete_role(transaction: &Transaction<'_>, role_id: &str) -> Result
         .ok_or(Unwritable::NotFound)
 }
 
+/// Roles included by a composite role.
+pub async fn composite_roles(
+    transaction: &Transaction<'_>,
+    role_id: &str,
+) -> Result<Vec<RoleModel>, Unwritable> {
+    get_role(transaction, role_id).await?;
+    roles::composite_children(transaction, role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+/// Include one role in another, preserving a finite role graph.
+pub async fn add_composite_role(
+    transaction: &Transaction<'_>,
+    parent_role_id: &str,
+    child_role_id: &str,
+) -> Result<(), Unwritable> {
+    roles::lock_role_composites(transaction)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    get_role(transaction, parent_role_id).await?;
+    get_role(transaction, child_role_id).await?;
+    let child_reaches_parent = roles::composite_reaches(transaction, child_role_id, parent_role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    if closes_composite_cycle(parent_role_id, child_role_id, child_reaches_parent) {
+        return Err(Unwritable::Invalid(
+            "a composite role cannot contain itself or one of its ancestors",
+        ));
+    }
+    roles::add_composite(transaction, parent_role_id, child_role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)
+}
+
+fn closes_composite_cycle(
+    parent_role_id: &str,
+    child_role_id: &str,
+    child_reaches_parent: bool,
+) -> bool {
+    parent_role_id == child_role_id || child_reaches_parent
+}
+
+/// Remove one role from a composite role.
+pub async fn remove_composite_role(
+    transaction: &Transaction<'_>,
+    parent_role_id: &str,
+    child_role_id: &str,
+) -> Result<(), Unwritable> {
+    roles::lock_role_composites(transaction)
+        .await
+        .map_err(|_| Unwritable::Backend)?;
+    get_role(transaction, parent_role_id).await?;
+    get_role(transaction, child_role_id).await?;
+    roles::remove_composite(transaction, parent_role_id, child_role_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .then_some(())
+        .ok_or(Unwritable::NotFound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::closes_composite_cycle;
+
+    #[test]
+    fn composite_cycle_check_rejects_self_and_ancestor_edges() {
+        assert!(closes_composite_cycle("same", "same", false));
+        assert!(closes_composite_cycle("parent", "child", true));
+        assert!(!closes_composite_cycle("parent", "child", false));
+    }
+}
+
 /// Refuse a parent that does not exist, and a chain that would loop.
 ///
 /// The walk is what refuses the loop: from the asked parent up to a root,

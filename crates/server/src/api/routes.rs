@@ -1184,6 +1184,24 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/roles/{role}/composites",
+            action: AdminAction::RoleRead,
+            handler: Some(|| web::get().to(directory::composite_roles)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/roles/{role}/composites/{child_role}",
+            action: AdminAction::RoleWrite,
+            handler: Some(|| web::put().to(directory::add_composite_role)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/roles/{role}/composites/{child_role}",
+            action: AdminAction::RoleWrite,
+            handler: Some(|| web::delete().to(directory::remove_composite_role)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/groups",
             action: AdminAction::GroupRead,
             handler: Some(|| web::get().to(directory::list_groups)),

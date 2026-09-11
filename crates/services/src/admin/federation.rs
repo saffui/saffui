@@ -55,6 +55,18 @@ pub async fn put(
     by: &str,
     asked: UserFederationMutationModel,
 ) -> Result<UserFederationModel, Unwritable> {
+    // The sealed secret is the server's to write, sealed here from a clear one
+    // or kept from the directory standing. One arriving from a caller would ride
+    // past the check that keeps a secret from following a directory elsewhere.
+    if asked
+        .configs
+        .as_ref()
+        .is_some_and(|bag| bag.contains_key(SEALED_BIND))
+    {
+        return Err(Unwritable::Invalid(
+            "a sealed bind secret is written by the server, never sent to it".into(),
+        ));
+    }
     let standing = brokering::federation(transaction, alias)
         .await
         .map_err(|_| Unwritable::Backend)?;

@@ -76,6 +76,8 @@ export interface ClientSpec {
   web_origins?: string[];
   redirect_uris?: string[];
   post_logout_redirect_uris?: string[];
+  backchannel_logout_uri?: string;
+  frontchannel_logout_uri?: string;
   description?: string;
   /// The client's home page. Named after the registration metadata it is.
   client_uri?: string;

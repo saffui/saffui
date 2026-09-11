@@ -195,6 +195,7 @@ pub async fn prove(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias) = path.into_inner();
@@ -204,22 +205,28 @@ pub async fn prove(
         .transaction(&mut connection, &context)
         .await
         .map_err(|_| internal())?;
-    let proof =
-        crate::federation::prove_delivery(&transaction, &sealing, &origin, &context, &alias)
-            .await
-            .map_err(|why| match why {
-                crate::federation::Unprovable::NoSuchProvider => {
-                    ApiError::new(ErrorCode::IdentityProviderNotFound)
-                }
-                crate::federation::Unprovable::Disabled => ApiError::with_detail(
-                    ErrorCode::ValidationError,
-                    "the connector is disabled".to_owned(),
-                ),
-                crate::federation::Unprovable::NotProvable(what) => {
-                    ApiError::with_detail(ErrorCode::ValidationError, what)
-                }
-                crate::federation::Unprovable::Backend => internal(),
-            })?;
+    let proof = crate::federation::prove_delivery(
+        &transaction,
+        &sealing,
+        &origin,
+        &context,
+        &alias,
+        **egress,
+    )
+    .await
+    .map_err(|why| match why {
+        crate::federation::Unprovable::NoSuchProvider => {
+            ApiError::new(ErrorCode::IdentityProviderNotFound)
+        }
+        crate::federation::Unprovable::Disabled => ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "the connector is disabled".to_owned(),
+        ),
+        crate::federation::Unprovable::NotProvable(what) => {
+            ApiError::with_detail(ErrorCode::ValidationError, what)
+        }
+        crate::federation::Unprovable::Backend => internal(),
+    })?;
     // A collector's proof is a queued row; the ask is only kept if this lands.
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({

@@ -61,16 +61,23 @@ function needs(held: string[]): string {
 </script>
 
 <template>
-  <div>
-    <h1 class="text-lg font-semibold tracking-tight">{{ say("overview-title") }}</h1>
+  <div class="mx-auto w-full max-w-[1440px]">
+    <div class="flex items-start justify-between gap-4">
+      <div>
+        <h1 class="text-lg font-semibold tracking-tight">{{ say("overview-title") }}</h1>
+      </div>
+      <span v-if="told" class="sf-badge sf-badge-ok shrink-0">{{ say("status-answering") }}</span>
+    </div>
 
-    <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
+    <p v-if="failed" class="mt-4 border-l-2 border-danger pl-2.5 text-xs leading-5 text-danger" role="alert">
+      {{ failed }}
+    </p>
 
-    <div class="mt-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
+    <div class="mt-5 grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 xl:grid-cols-4">
       <div
         v-for="card in CARDS"
         :key="card.name"
-        class="rounded-lg border border-border bg-surface p-4"
+        class="rounded-lg border border-border bg-surface p-3.5 sm:p-4"
       >
         <div class="flex items-center gap-2 text-[11px] font-medium text-muted">
           <AppIcon :name="card.icon" :size="13" class="text-faint" />
@@ -82,53 +89,56 @@ function needs(held: string[]): string {
       </div>
     </div>
 
-    <div class="mt-6 flex flex-col gap-4 xl:flex-row">
+    <div class="mt-6 flex flex-col gap-4 xl:flex-row xl:items-start">
       <div class="min-w-0 flex-1">
-    <section v-if="told && told.journal.length" class="mt-6">
-      <div class="flex items-center gap-2">
-        <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-          {{ say("overview-journal") }}
-        </h2>
-        <span
-          v-if="told.chain"
-          class="inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[10.5px]"
-          :class="told.chain.holds ? 'border-ok/40 text-ok' : 'border-danger/40 text-danger'"
-        >
-          {{
-            told.chain.holds
-              ? say("overview-chain-holds", { count: told.chain.entries })
-              : say("overview-chain-broken", { seq: told.chain.broken_at ?? 0 })
-          }}
-        </span>
-      </div>
-      <div class="sf-list mt-2 overflow-x-auto">
-        <table class="sf-table">
-          <tbody>
-            <tr
-              v-for="held in told.journal"
-              :key="held.seq"
-              class="border-b border-border/60 last:border-0"
+        <section v-if="told" class="mt-1">
+          <div class="flex items-center gap-2">
+            <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("overview-journal") }}
+            </h2>
+            <span
+              v-if="told.chain"
+              class="inline-flex items-center gap-1.5 rounded border px-1.5 py-0.5 text-[10.5px]"
+              :class="told.chain.holds ? 'border-ok/40 text-ok' : 'border-danger/40 text-danger'"
             >
-              <td class="font-mono text-[10.5px] text-faint">#{{ held.seq }}</td>
-              <td>{{ held.entry.actor }}</td>
-              <td class="font-mono text-[10.5px]">
-                {{ held.entry.method }} {{ held.entry.path || held.entry.pattern }}
-              </td>
-              <td>
-                <span
-                  class="font-mono text-[10.5px]"
-                  :class="held.entry.status < 400 ? 'text-ok' : 'text-danger'"
-                  >{{ held.entry.status }}</span
+              {{
+                told.chain.holds
+                  ? say("overview-chain-holds", { count: told.chain.entries })
+                  : say("overview-chain-broken", { seq: told.chain.broken_at ?? 0 })
+              }}
+            </span>
+          </div>
+          <div v-if="told.journal.length" class="sf-list mt-2 overflow-x-auto">
+            <table class="sf-table">
+              <tbody>
+                <tr
+                  v-for="held in told.journal"
+                  :key="held.seq"
+                  class="border-b border-border/60 last:border-0"
                 >
-              </td>
-              <td class="text-right font-mono text-[10.5px] text-faint">
-                {{ instant(held.recorded_at) }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+                  <td class="font-mono text-[10.5px] text-faint">#{{ held.seq }}</td>
+                  <td>{{ held.entry.actor }}</td>
+                  <td class="font-mono text-[10.5px]">
+                    {{ held.entry.method }} {{ held.entry.path || held.entry.pattern }}
+                  </td>
+                  <td>
+                    <span
+                      class="font-mono text-[10.5px]"
+                      :class="held.entry.status < 400 ? 'text-ok' : 'text-danger'"
+                      >{{ held.entry.status }}</span
+                    >
+                  </td>
+                  <td class="text-right font-mono text-[10.5px] text-faint">
+                    {{ instant(held.recorded_at) }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div v-else class="rounded-lg border border-dashed border-border bg-surface px-4 py-5 text-xs text-muted">
+            {{ say("overview-empty") }}
+          </div>
+        </section>
       </div>
 
       <div class="flex w-full shrink-0 flex-col gap-4 xl:w-[360px]">

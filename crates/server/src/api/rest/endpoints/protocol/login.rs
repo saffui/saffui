@@ -536,7 +536,13 @@ pub async fn answer(
         }
         Err(Unanswerable::NoSuchLogin) => {
             tracing::warn!("no such login");
-            tell(StatusCode::NOT_FOUND, "no-such-login")
+            // The binding goes with it. A login that cannot be resumed is one
+            // the browser must stop offering: the cookie outlives the row it
+            // names, so keeping it answers every later attempt with this same
+            // refusal until the window closes.
+            let mut response = tell(StatusCode::NOT_FOUND, "no-such-login");
+            binding::strike(&mut response, binding::AUTH_SESSION, &context.realm_id);
+            response
         }
         Err(_) => told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     }

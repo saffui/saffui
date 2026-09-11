@@ -224,6 +224,7 @@ async fn action_still_runs(transaction: &Transaction<'_>, action: AdminAction) -
         | AdminAction::UmaWrite
         | AdminAction::AuthzDecisionRead
         | AdminAction::AuthzDecisionWrite => Feature::Authorization,
+
         AdminAction::RebacRead | AdminAction::RebacWrite => Feature::RebacStore,
         AdminAction::OrgRead | AdminAction::OrgWrite => Feature::Organization,
         _ => return true,

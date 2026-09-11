@@ -372,7 +372,15 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
     ]);
   }
   if (/\/roles\/[^/]+\/holders$/.test(path)) {
-    return answer({ users: ["ada", "grace"], groups: ["finance"] });
+    return answer({
+      users: ["u-ada", "u-grace"],
+      groups: ["g-finance"],
+      user_details: [
+        { id: "u-ada", name: "ada" },
+        { id: "u-grace", name: "grace" },
+      ],
+      group_details: [{ id: "g-finance", name: "finance" }],
+    });
   }
   if (path.includes("/roles?")) {
     return answer({
@@ -444,6 +452,26 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       total: 2,
     });
   }
+  if (path.includes("/import/preview") || path.endsWith("/import")) {
+    return answer({
+      realm_id: "main",
+      new: { roles: 2, groups: 1, clients: 1 },
+      overwritten: {},
+      skipped: {},
+      collisions: [],
+      collision_count: 0,
+      collisions_truncated: false,
+    });
+  }
+  if (path.includes("/export")) {
+    return answer({
+      format_version: 1,
+      exported_at: NOW,
+      sections: ["realm", "users"],
+      realm: { realm_id: "main" },
+      users: PEOPLE,
+    });
+  }
   if (path.endsWith("/keys")) {
     return answer({
       signing: [
@@ -475,6 +503,24 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       { request_id: "d-3", user_id: "b74c2f90-15da-4e83-a6d1-8f30c5b91e2a", subject_identifier: "linus", kind: "objection", stage: "refused",
         reason: "duplicate of d-1", jurisdiction: "eu", received_at: 1788700000, due_at: 1788700000 + 2000000,
         verified_at: null, closed_at: 1788700000, deadline_source: "GDPR art. 12(3), one month, extendable by two" },
+    ]);
+  }
+  if (/\/identity-providers\/[^/]+\/mappers\/[^/]+$/.test(path)) {
+    return answer(null);
+  }
+  if (/\/identity-providers\/[^/]+\/mappers$/.test(path)) {
+    if (method !== "GET") return answer(null);
+    return answer([
+      {
+        mapper_id: "m-1", realm_id: "main", provider_alias: "corp-okta",
+        name: "department", mapper_type: "oidc-user-attribute-idp-mapper",
+        configs: { claim: { Str: "department" }, "user.attribute": { Str: "department" }, syncMode: { Str: "import" } },
+      },
+      {
+        mapper_id: "m-2", realm_id: "main", provider_alias: "corp-okta",
+        name: "staff", mapper_type: "oidc-hardcoded-role-idp-mapper",
+        configs: { role: { Str: "role-staff" }, syncMode: { Str: "import" } },
+      },
     ]);
   }
   if (path.endsWith("/identity-providers")) {
@@ -514,6 +560,26 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       { seq: 38, head_hash: "ab12", witness: "https://witness.example/log", receipt: "r-2026-09-01", anchored_at: NOW - 86_000 },
     ] });
   }
+  if (path.endsWith("/rebac/schema") && method === "PUT") {
+    return answer(null);
+  }
+  if (path.endsWith("/rebac/schema")) {
+    return answer({
+      revision: 4,
+      format: 1,
+      source:
+        "definition user {}\n\ndefinition group {\n    relation member: user | group#member\n}\n\n" +
+        "definition folder {\n    relation viewer: user | group#member\n    permission view = viewer\n}\n\n" +
+        "definition document {\n    relation parent: folder\n    relation owner: user\n" +
+        "    relation viewer: user | group#member\n    permission view = viewer + owner + view from parent\n}\n",
+    });
+  }
+  if (path.includes("/rebac/relations?")) {
+    return answer([
+      { subject_type: "user", subject_id: "ada", subject_relation: "" },
+      { subject_type: "group", subject_id: "editors", subject_relation: "member" },
+    ]);
+  }
   if (path.endsWith("/authz/evaluate")) {
     return answer({
       decision_id: "d-sim-1",
@@ -526,6 +592,22 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
         reasons: [
           { reason: "empty-binding", policy_id: "p-editors", kind: "role" },
           { reason: "dangling-condition", policy_id: "p-hours", condition: "office-hours" },
+        ],
+      },
+      // A relationship question also carries where the walk went, which is
+      // what the resolution tree renders.
+      walk: {
+        reached: true,
+        stopped: null,
+        cut: 0,
+        steps: [
+          { depth: 0, asked: "document:minutes#view", rule: "any: one part is enough", answered: true, note: null },
+          { depth: 1, asked: "document:minutes#viewer", rule: "direct: the edges stored against this relation", answered: false, note: null },
+          { depth: 1, asked: "document:minutes#owner", rule: "direct: the edges stored against this relation", answered: false, note: null },
+          { depth: 1, asked: "document:minutes#parent", rule: "arrow: follow a relation, then ask there", answered: true, note: null },
+          { depth: 2, asked: "folder:archive#view", rule: "computed: another member of the same object", answered: true, note: null },
+          { depth: 3, asked: "folder:archive#viewer", rule: "direct: the edges stored against this relation", answered: true, note: null },
+          { depth: 4, asked: "group:editors#member", rule: "direct: the edges stored against this relation", answered: true, note: null },
         ],
       },
     });
@@ -550,16 +632,19 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       decided("d-6", "ledger", "viewer", "document", "2026-08", "deny", "deny", 900),
     ]);
   }
+  if (/\/authz\/servers\/[^/]+\/(policies|resources|scopes)\/[^/]+$/.test(path)) {
+    return answer(null);
+  }
   if (/\/authz\/servers\/[^/]+\/policies$/.test(path)) {
     return answer([
-      { policy_id: "p-editors", name: "editors", description: "Holds the editor role", policy_type: "role", policies: [], resources: [], scopes: [] },
-      { policy_id: "p-hours", name: "office hours", description: "Mon to Fri, 08:00 to 19:00", policy_type: "time", policies: [], resources: [], scopes: [] },
+      { policy_id: "p-editors", name: "editors", description: "Holds the editor role", policy_type: "role", policies: [], resources: [], scopes: [], decision: "unanimous", logic: "positive", policy_owner: "web-dashboard", roles: ["editor"] },
+      { policy_id: "p-hours", name: "office hours", description: "Mon to Fri, 08:00 to 19:00", policy_type: "time", policies: [], resources: [], scopes: [], decision: "unanimous", logic: "positive", policy_owner: "web-dashboard" },
       { policy_id: "p-org", name: "acting for acme", description: "", policy_type: "organization", policies: [], resources: [], scopes: [] },
       { policy_id: "p-gate", name: "edit archive", description: "All of the above, against the archive", policy_type: "aggregated", policies: ["p-editors", "p-hours", "p-org"], resources: ["res-1"], scopes: ["sc-1"] },
     ]);
   }
   if (/\/authz\/servers\/[^/]+\/resources$/.test(path)) {
-    return answer([{ resource_id: "res-1", name: "doc archive" }]);
+    return answer([{ resource_id: "res-1", name: "doc archive", user_managed_access: true }]);
   }
   if (/\/authz\/servers\/[^/]+\/scopes$/.test(path)) {
     return answer([{ scope_id: "sc-1", name: "edit" }]);
@@ -627,6 +712,12 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
         priority: 10,
       },
     ]);
+  }
+  if (path.endsWith("/auth/flows") && method === "POST") {
+    return answer({ flow_id: "f-new", alias: "made", description: "", top_level: true, built_in: false });
+  }
+  if (/\/auth\/flows\/[^/]+$/.test(path) && method === "DELETE") {
+    return answer(null);
   }
   if (path.endsWith("/auth/flows")) {
     return answer([

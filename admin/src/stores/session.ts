@@ -2,6 +2,8 @@ import { defineStore } from "pinia";
 import { peek, type Tokens } from "saffui-js";
 import { clientFor, rememberRealm, rememberedRealm, returnUri } from "@/services/auth";
 
+let renewal: Promise<string> | null = null;
+
 /// Who is signed in, into which realm, holding what. Tokens live in memory
 /// only: a reload signs in again through the server's own session cookie,
 /// which is the durable thing.
@@ -10,6 +12,7 @@ export const useSession = defineStore("session", {
     realm: "",
     accessToken: "",
     refreshToken: "",
+    idToken: "",
     expiresAt: 0,
     displayName: "",
   }),
@@ -22,14 +25,20 @@ export const useSession = defineStore("session", {
       await clientFor(realm).login({
         redirectUri: returnUri(),
         scope: "openid profile admin",
+        extra: {
+          claims: JSON.stringify({
+            id_token: { preferred_username: { essential: true } },
+          }),
+        },
       });
     },
     adopt(realm: string, tokens: Tokens) {
       this.realm = realm;
       this.accessToken = tokens.access_token;
       this.refreshToken = tokens.refresh_token ?? "";
+      this.idToken = tokens.id_token ?? this.idToken;
       this.expiresAt = Date.now() + (tokens.expires_in - 15) * 1000;
-      this.displayName = subjectOf(tokens.access_token);
+      this.displayName = subjectOf(this.idToken || tokens.access_token);
     },
     async returned(query: URLSearchParams) {
       const realm = rememberedRealm();
@@ -41,12 +50,24 @@ export const useSession = defineStore("session", {
     async bearer(): Promise<string> {
       if (this.accessToken && Date.now() < this.expiresAt) return this.accessToken;
       if (this.refreshToken) {
+        const realm = this.realm;
+        const held = this.refreshToken;
+        if (!renewal) {
+          renewal = clientFor(realm)
+            .renew(held)
+            .then((renewed) => {
+              if (this.refreshToken === held) this.adopt(realm, renewed);
+              return this.accessToken;
+            })
+            .finally(() => {
+              renewal = null;
+            });
+        }
         try {
-          const renewed = await clientFor(this.realm).renew(this.refreshToken);
-          this.adopt(this.realm, renewed);
-          return this.accessToken;
+          return await renewal;
         } catch {
-          // A refusal here is a session that ended; fall through to sign-out.
+          if (this.refreshToken === held) this.signOut();
+          throw new Error("signed out");
         }
       }
       this.signOut();
@@ -54,6 +75,17 @@ export const useSession = defineStore("session", {
     },
     signOut() {
       this.$reset();
+    },
+    async logout() {
+      const realm = this.realm;
+      const idToken = this.idToken;
+      this.$reset();
+      if (!realm) return;
+      try {
+        await clientFor(realm).logout(idToken || undefined);
+      } catch {
+        // Local sign-out still stands when the server cannot be reached.
+      }
     },
     /// Dev-only stand-in so the shell can be reviewed with no server behind
     /// it. Refused outright in production builds.

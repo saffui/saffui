@@ -53,7 +53,13 @@ pub async fn create(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
     transaction
         .execute(statement::insert("realms", &set).as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(|error| {
+            if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) {
+                StoreError::AlreadyExists
+            } else {
+                StoreError::Backend
+            }
+        })?;
     Ok(())
 }
 

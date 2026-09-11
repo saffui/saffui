@@ -338,3 +338,88 @@ async fn the_client_may_ask_the_page_tongue_for_its_login() {
     let page = String::from_utf8(test::read_body(response).await.to_vec()).expect("a page");
     assert!(page.contains("<html lang=\"fr\">"), "the fallback lost");
 }
+
+/// Point the planted client's home page somewhere, under a display name.
+async fn reshape_home(plane: &Plane, home: Option<&str>, named: &str) {
+    let mut connection = plane.connection().await;
+    let within = store::tenancy::TenantContext::new(support::TENANT, support::REALM);
+    let transaction = plane.scoped(&mut connection, &within).await;
+    let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+        .await
+        .expect("the clients table")
+        .expect("a planted client");
+    client.client_uri = home.map(str::to_owned);
+    client.display_name = named.to_owned();
+    store::providers::clients::update(&transaction, &client)
+        .await
+        .expect("the clients table");
+    transaction.commit().await.expect("the client kept");
+}
+
+/// The page, as fetched for the login this binding names, or for none.
+async fn page_for(plane: &Plane, binding: Option<&str>) -> String {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let mut request =
+        test::TestRequest::get().uri(&format!("/realms/{REALM}/protocol/openid-connect/login"));
+    if let Some(binding) = binding {
+        request = request.insert_header((
+            "cookie",
+            format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+        ));
+    }
+    let response = test::call_service(&app, request.to_request()).await;
+    String::from_utf8(test::read_body(response).await.to_vec()).expect("a page")
+}
+
+fn doors_on(page: &str) -> Vec<String> {
+    let (_, after) = page
+        .split_once("data-doors=\"")
+        .expect("a body that says its doors");
+    let (doors, _) = after.split_once('"').expect("a closed attribute");
+    doors.split_whitespace().map(str::to_owned).collect()
+}
+
+/// The page served for a live login carries the way back to the application
+/// that started it, because once the login dies its row is swept and the
+/// refusal can no longer name one. Written escaped, and only to an address
+/// that can be nothing but a page.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_page_carries_the_way_back_to_the_application_its_login_came_from() {
+    let plane = Plane::with_actions(&[]).await;
+    reshape_home(&plane, Some("https://app.example/home"), "Billing <Ops>").await;
+
+    let binding = opened_login(&plane, "").await;
+    let page = page_for(&plane, Some(&binding)).await;
+    assert!(
+        doors_on(&page).contains(&"back".to_owned()),
+        "the script is never told there is a way back: {:?}",
+        doors_on(&page)
+    );
+    assert!(
+        page.contains(r#"<a id="back" href="https://app.example/home">"#),
+        "the page does not link to the application's home"
+    );
+    assert!(
+        page.contains(r#"<span id="back-name">Billing &lt;Ops&gt;</span>"#),
+        "the application's name reached the page unescaped"
+    );
+
+    // Outside any login there is no application to go back to.
+    let page = page_for(&plane, None).await;
+    assert!(!doors_on(&page).contains(&"back".to_owned()));
+    assert!(
+        page.contains(r#"<a id="back" href="">"#),
+        "an anchor was aimed"
+    );
+
+    // A home page that would run as script in this origin is not written.
+    reshape_home(&plane, Some("javascript:alert(document.cookie)"), "Billing").await;
+    let binding = opened_login(&plane, "").await;
+    let page = page_for(&plane, Some(&binding)).await;
+    assert!(!doors_on(&page).contains(&"back".to_owned()));
+    assert!(
+        !page.contains("javascript:"),
+        "an address that runs as script reached the sign-in page"
+    );
+}

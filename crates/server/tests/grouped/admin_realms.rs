@@ -334,6 +334,101 @@ async fn a_tenant_stops_at_the_ceiling_it_set_itself() {
 
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn concurrent_births_share_one_ceiling_count() {
+    let plane = Plane::with_actions(&[AdminAction::RealmCreate]).await;
+    let bearer = plane.token(&support::claims());
+    plane.cap_realms(2).await;
+
+    let left = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({
+            "name": "left", "display_name": "Left", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@left.test" },
+        })),
+    );
+    let right = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({
+            "name": "right", "display_name": "Right", "enabled": true,
+            "administrator": { "user_name": "root", "email": "root@right.test" },
+        })),
+    );
+    let (left, right) = tokio::join!(left, right);
+    let statuses = [left.0, right.0];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CREATED)
+            .count(),
+        1,
+        "{left:?} {right:?}"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::UNPROCESSABLE_ENTITY)
+            .count(),
+        1,
+        "{left:?} {right:?}"
+    );
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::tenant_wide(support::TENANT),
+        )
+        .await;
+    assert_eq!(
+        store::providers::tenants::count_realms(&transaction)
+            .await
+            .unwrap(),
+        2
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_failed_birth_leaves_no_realm_row() {
+    let plane = Plane::with_actions(&[AdminAction::RealmCreate]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, _) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms",
+        &bearer,
+        Some(serde_json::json!({
+            "name": "unfinished", "display_name": "Unfinished", "enabled": true,
+            "administrator": { "user_name": "", "email": "root@unfinished.test" },
+        })),
+    )
+    .await;
+    assert!(!status.is_success());
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::tenant_wide(support::TENANT),
+        )
+        .await;
+    assert!(
+        store::providers::realms::load(&transaction, "unfinished")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_is_created_ready_and_reshaped_in_place() {
     let plane = Plane::with_actions(&[
         AdminAction::RealmCreate,

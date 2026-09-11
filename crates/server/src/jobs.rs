@@ -114,7 +114,15 @@ pub fn deliver_outbox_events(
         ticking.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticking.tick().await;
-            deliver_every_realm(&pool, &tenancy, &sealing, &origin, every.as_secs() as i64).await;
+            deliver_every_realm_with_egress(
+                &pool,
+                &tenancy,
+                &sealing,
+                &origin,
+                every.as_secs() as i64,
+                config::serving::Egress::from_env().unwrap_or(config::serving::Egress::Outward),
+            )
+            .await;
         }
     }))
 }
@@ -125,6 +133,25 @@ pub async fn deliver_every_realm(
     sealing: &crate::api::config::Sealing,
     origin: &config::serving::PublicOrigin,
     backoff_seconds: i64,
+) {
+    deliver_every_realm_with_egress(
+        pool,
+        tenancy,
+        sealing,
+        origin,
+        backoff_seconds,
+        config::serving::Egress::Anywhere,
+    )
+    .await;
+}
+
+pub async fn deliver_every_realm_with_egress(
+    pool: &deadpool_postgres::Pool,
+    tenancy: &store::tenancy::Tenancy,
+    sealing: &crate::api::config::Sealing,
+    origin: &config::serving::PublicOrigin,
+    backoff_seconds: i64,
+    egress: config::serving::Egress,
 ) {
     let Ok(connection) = pool.get().await else {
         return;
@@ -156,6 +183,7 @@ pub async fn deliver_every_realm(
             sealing,
             origin,
             &realm,
+            egress,
             backoff_seconds,
             now,
         )

@@ -20,6 +20,7 @@ login-forgot = Forgot your password?
 login-magic-link = Get a link by email
 login-federated = Continue with { $provider }
 login-continue-with = Or continue with
+login-back = Back to
 login-error-rejected = Incorrect username or password. Check your details and try again.
 login-error-locked = Incorrect username or password. Check your details and try again.
 

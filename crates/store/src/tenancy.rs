@@ -287,10 +287,8 @@ pub mod resolve {
 
     /// One answer, or a refusal.
     ///
-    /// Two answers is a refusal and not a choice. A name is unique within a
-    /// tenant and nothing makes it unique across them, so picking the first row
-    /// would resolve a request to whichever the plan happened to return, and
-    /// serve one customer's realm to another customer's caller.
+    /// Two answers is still a refusal and not a choice. The schema prevents
+    /// them; keeping the guard makes a damaged or older schema fail closed.
     ///
     /// The tenant comes off the row that was found. Taking it from the request
     /// instead would let a caller name any tenant and have the realm looked up

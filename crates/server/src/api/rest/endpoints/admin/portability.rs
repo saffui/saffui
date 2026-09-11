@@ -3,7 +3,7 @@ use chrono::Utc;
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use deadpool_postgres::Pool;
-use models::entities::export::ExportedRealm;
+use models::entities::export::{ExportedRealm, ImportCollisionPolicy};
 use serde::Deserialize;
 use services::admin::portability::{self, Unportable};
 use store::tenancy::{Tenancy, TenantContext};
@@ -18,6 +18,7 @@ pub async fn export(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
+    options: web::Query<ExportOptions>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
     let mut connection = pool.get().await.map_err(|_| internal())?;
@@ -28,10 +29,24 @@ pub async fn export(
         )
         .await
         .map_err(|_| internal())?;
-    let document = portability::export_realm(&transaction, &realm_id, Utc::now())
+    let mut document = portability::export_realm(&transaction, &realm_id, Utc::now())
         .await
         .map_err(refused)?;
+    if !options.include_users {
+        document.users.clear();
+        document.sections.retain(|section| section != "users");
+    }
     Ok(HttpResponse::Ok().json(document))
+}
+
+#[derive(Deserialize)]
+pub struct ExportOptions {
+    #[serde(default = "default_true")]
+    pub include_users: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Where the document lands: under its own name unless the caller says
@@ -63,32 +78,31 @@ pub async fn import(
     let realm_id = landing
         .landed_as
         .unwrap_or_else(|| document.realm.realm_id.clone());
-    if realm_id.trim().is_empty() {
+    if !super::realms::usable_name(&realm_id) {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,
-            "a realm answers to a name",
+            "a realm name is 1 to 63 characters of a-z, A-Z, 0-9, - or _",
         ));
     }
     let tenant = admin.context.tenant.tenant.clone();
     let mut connection = pool.get().await.map_err(|_| internal())?;
 
-    // The ceiling first, tenant wide, before anything is written. An import
-    // is a realm arriving like any other, and a door that skipped the count
-    // would be the way past it.
-    let counting = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide(&tenant))
+    // The lock and the write share one transaction. Releasing it after the
+    // count would let two imports both pass one place below the ceiling.
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new(&tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
-    store::providers::tenants::hold_realms(&counting, &tenant)
+    store::providers::tenants::hold_realms(&transaction, &tenant)
         .await
         .map_err(|_| internal())?;
-    let named = store::providers::tenants::load(&counting)
+    let named = store::providers::tenants::load(&transaction)
         .await
         .map_err(|_| internal())?
         .and_then(|held| held.limits)
         .and_then(|limits| limits.max_realms);
     if let Some(ceiling) = ceiling.against(named)
-        && store::providers::tenants::count_realms(&counting)
+        && store::providers::tenants::count_realms(&transaction)
             .await
             .map_err(|_| internal())?
             >= ceiling
@@ -98,15 +112,6 @@ pub async fn import(
             format!("this tenant holds the {ceiling} realms it is allowed"),
         ));
     }
-    drop(counting);
-
-    let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
-        .await
-        .map_err(|_| internal())?;
     portability::import_realm(
         &transaction,
         &admin.context.tenant.tenant,
@@ -160,6 +165,99 @@ pub async fn import(
     Ok(HttpResponse::Created().json(answer))
 }
 
+#[derive(Deserialize)]
+pub struct PartialImportRequest {
+    pub document: ExportedRealm,
+    #[serde(default)]
+    pub collision: ImportCollisionPolicy,
+}
+
+pub async fn partial_preview(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+    body: web::Json<PartialImportRequest>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
+        )
+        .await
+        .map_err(|_| internal())?;
+    if store::providers::realms::load(&transaction, &realm_id)
+        .await
+        .map_err(|_| internal())?
+        .is_none()
+    {
+        return Err(ApiError::new(ErrorCode::RealmNotFound));
+    }
+    let request = body.into_inner();
+    let report = portability::preview_partial_import(
+        &transaction,
+        &realm_id,
+        &request.document,
+        request.collision,
+    )
+    .await
+    .map_err(refused)?;
+    Ok(HttpResponse::Ok().json(report))
+}
+
+pub async fn partial_import(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+    body: web::Json<PartialImportRequest>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let tenant = admin.context.tenant.tenant.clone();
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new(&tenant, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    if store::providers::realms::load(&transaction, &realm_id)
+        .await
+        .map_err(|_| internal())?
+        .is_none()
+    {
+        return Err(ApiError::new(ErrorCode::RealmNotFound));
+    }
+    let request = body.into_inner();
+    let policy = request.collision;
+    let report = portability::import_partial_realm(
+        &transaction,
+        &tenant,
+        &realm_id,
+        request.document,
+        policy,
+    )
+    .await
+    .map_err(refused)?;
+    store::tenant_chain::append(
+        &transaction,
+        &serde_json::json!({
+            "kind": "realm.partially_imported",
+            "occurred_at": chrono::Utc::now().timestamp() as f64,
+            "realm": realm_id,
+            "actor": admin.context.principal.id(),
+            "actor_realm": admin.context.tenant.realm_id,
+            "party": admin.context.presenter,
+            "collision": policy,
+            "report": report,
+        }),
+    )
+    .await
+    .map_err(|_| internal())?;
+    transaction.commit().await.map_err(|_| internal())?;
+    Ok(HttpResponse::Ok().json(report))
+}
+
 fn refused(why: Unportable) -> ApiError {
     match why {
         Unportable::NotFound => ApiError::new(ErrorCode::RealmNotFound),
@@ -173,6 +271,7 @@ fn refused(why: Unportable) -> ApiError {
             format!("the policies of {server} do not resolve in document order"),
         ),
         Unportable::Invalid(what) => ApiError::with_detail(ErrorCode::ValidationError, what),
+        Unportable::Partial(what) => ApiError::with_detail(ErrorCode::ValidationError, what),
         Unportable::Backend => internal(),
     }
 }

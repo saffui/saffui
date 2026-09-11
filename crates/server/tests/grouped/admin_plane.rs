@@ -933,6 +933,8 @@ async fn a_client_is_born_reshaped_and_retired_over_the_plane() {
             "name": "The shop",
             "confidential": true,
             "redirect_uris": ["https://shop.example/cb"],
+            "frontchannel_logout_uri": "https://shop.example/logout/front",
+            "backchannel_logout_uri": "https://shop.example/logout/back",
         }),
     )
     .await;
@@ -967,6 +969,14 @@ async fn a_client_is_born_reshaped_and_retired_over_the_plane() {
     assert_eq!(
         read["redirect_uris"],
         serde_json::json!(["https://shop.example/cb"])
+    );
+    assert_eq!(
+        read["frontchannel_logout_uri"],
+        "https://shop.example/logout/front"
+    );
+    assert_eq!(
+        read["backchannel_logout_uri"],
+        "https://shop.example/logout/back"
     );
 
     let (status, again) = written(
@@ -1007,6 +1017,20 @@ async fn a_client_is_born_reshaped_and_retired_over_the_plane() {
         reshaped["post_logout_redirect_uris"],
         serde_json::json!(["https://shop.example/bye"])
     );
+    let (status, cleared) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/shop"),
+        &bearer,
+        serde_json::json!({
+            "frontchannel_logout_uri": "",
+            "backchannel_logout_uri": "",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{cleared}");
+    assert!(cleared["frontchannel_logout_uri"].is_null(), "{cleared}");
+    assert!(cleared["backchannel_logout_uri"].is_null(), "{cleared}");
 
     let (status, rotated) = written(
         &plane,

@@ -41,17 +41,16 @@ async fn plant_schema(fixture: &Fixture, tenant: &str, realm: &str) {
     transaction.commit().await.unwrap();
 }
 
-/// The tenant leads the key. Left out of it, two tenants that both call a realm
-/// `main` share one schema row and one set of edges, and whichever writes last
-/// decides for both. This plants the identical realm name under two tenants and
-/// asserts each keeps its own.
+/// The tenant leads the key. Left out of it, matching schema and edge ids in
+/// two tenants would share one row and whichever writes last would decide for
+/// both.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn two_tenants_that_name_a_realm_alike_keep_their_own() {
+async fn two_tenants_keep_matching_relationships_apart() {
     let fixture = Fixture::empty().await;
     let owner = fixture.owner().await;
 
-    for tenant in ["acme", "globex"] {
+    for (tenant, realm) in [("acme", "acme-main"), ("globex", "globex-main")] {
         owner
             .execute(
                 "INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $1)",
@@ -62,16 +61,16 @@ async fn two_tenants_that_name_a_realm_alike_keep_their_own() {
         owner
             .execute(
                 "INSERT INTO realms (tenant, realm_id, name, display_name) \
-                 VALUES ($1, 'main', 'main', 'Main')",
-                &[&tenant],
+                 VALUES ($1, $2, $2, 'Main')",
+                &[&tenant, &realm],
             )
             .await
             .unwrap();
         owner
             .execute(
                 "INSERT INTO rebac_schemas (tenant, realm_id, format, source, compiled) \
-                 VALUES ($1, 'main', 1, 'definition user {}', '{}'::jsonb)",
-                &[&tenant],
+                 VALUES ($1, $2, 1, 'definition user {}', '{}'::jsonb)",
+                &[&tenant, &realm],
             )
             .await
             .unwrap();
@@ -79,8 +78,8 @@ async fn two_tenants_that_name_a_realm_alike_keep_their_own() {
             .execute(
                 "INSERT INTO rebac_tuples \
                      (tenant, realm_id, object_type, object_id, relation, subject_type, subject_id) \
-                 VALUES ($1, 'main', 'document', 'doc-1', 'viewer', 'user', 'ada')",
-                &[&tenant],
+                 VALUES ($1, $2, 'document', 'doc-1', 'viewer', 'user', 'ada')",
+                &[&tenant, &realm],
             )
             .await
             .unwrap();

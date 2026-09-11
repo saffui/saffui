@@ -146,6 +146,8 @@
     <p><a id="recover-back" href="#">{{recover-back}}</a></p>
   </div>
   <p id="notice" role="alert" hidden></p>
+  <!-- Written while the login was alive, shown if it dies behind the page. -->
+  <p id="back-row" hidden><a id="back" href="{back-address}">{{login-back}} <span id="back-name">{back-name}</span></a></p>
   <!-- Without a script, the outcome arrives as a fragment and these show themselves. -->
   <p id="refused" class="flash" role="alert">{{flash-refused}}</p>
   <p id="no-such-login" class="flash" role="alert">{{flash-no-such-login}}</p>

@@ -74,12 +74,12 @@ async function save() {
 
 <template>
   <div>
-    <div class="flex items-center gap-3">
+    <div class="flex flex-wrap items-center gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("pages-title") }}</h1>
       <span class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted">{{
         say("pages-said", { count: saidCount })
       }}</span>
-      <div class="ml-auto flex items-center gap-2">
+      <div class="ml-auto flex flex-wrap items-center gap-2">
         <a
           :href="`/realms/${realm}/protocol/openid-connect/login`"
           target="_blank"
@@ -102,7 +102,7 @@ async function save() {
     </p>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div class="mt-4 flex items-center gap-2">
+    <div class="mt-4 flex flex-wrap items-center gap-2">
       <div class="flex overflow-hidden rounded-md border border-border text-xs">
         <button
           v-for="held in ['en', 'fr'] as const"
@@ -120,7 +120,7 @@ async function save() {
       <input
         v-model="filter"
         :placeholder="say('palette-filter')"
-        class="w-64 sf-field"
+        class="w-full max-w-64 sf-field"
         spellcheck="false"
       />
     </div>

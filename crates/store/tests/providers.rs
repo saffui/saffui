@@ -345,7 +345,7 @@ async fn a_user_is_found_by_what_a_login_arrives_with() {
     let pool = pool().await;
     let tenancy = Tenancy::unpinned();
     plant_realm(&pool, &tenancy, "acme", "main").await;
-    plant_realm(&pool, &tenancy, "globex", "main").await;
+    plant_realm(&pool, &tenancy, "globex", "globex-main").await;
 
     let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
@@ -385,7 +385,10 @@ async fn a_user_is_found_by_what_a_login_arrives_with() {
     // The same name in another tenant's realm is a different user, and free.
     let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("globex", "main"))
+        .transaction(
+            &mut connection,
+            &TenantContext::new("globex", "globex-main"),
+        )
         .await
         .unwrap();
     assert!(users::load(&transaction, "ada").await.unwrap().is_none());
@@ -856,7 +859,7 @@ async fn credentials_belong_to_their_realm_and_to_their_user() {
     let pool = pool().await;
     let tenancy = Tenancy::unpinned();
     realm_with_user(&pool, &tenancy, "acme", "main").await;
-    realm_with_user(&pool, &tenancy, "globex", "main").await;
+    realm_with_user(&pool, &tenancy, "globex", "globex-main").await;
 
     // A second realm under the same tenant, so the read half of the rule is
     // exercised and not only the tenant half.
@@ -913,7 +916,10 @@ async fn credentials_belong_to_their_realm_and_to_their_user() {
 
     let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("globex", "main"))
+        .transaction(
+            &mut connection,
+            &TenantContext::new("globex", "globex-main"),
+        )
         .await
         .unwrap();
     assert!(

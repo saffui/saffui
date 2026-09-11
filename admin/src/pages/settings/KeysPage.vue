@@ -68,9 +68,9 @@ async function rotate() {
 
 <template>
   <div>
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("keys-title") }}</h1>
-      <form class="flex items-center gap-2" @submit.prevent="rotate">
+      <form class="flex flex-wrap items-center gap-2" @submit.prevent="rotate">
         <select
           v-model="algorithm"
           class="rounded-md border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs text-ink"
@@ -102,7 +102,7 @@ async function rotate() {
         <div
           v-for="key in keys.signing"
           :key="key.kid"
-          class="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+          class="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
         >
           <AppIcon name="key" :size="14" class="shrink-0 text-accent" />
           <span class="min-w-0 truncate font-mono text-[11.5px]">{{
@@ -120,7 +120,7 @@ async function rotate() {
             key.algorithm
           }}</span>
           <span
-            class="ml-auto rounded border px-1.5 py-0.5 text-[10.5px]"
+            class="rounded border px-1.5 py-0.5 text-[10.5px] sm:ml-auto"
             :class="
               key.status === 'active'
                 ? 'border-ok/40 text-ok'
@@ -139,7 +139,7 @@ async function rotate() {
           <div
             v-for="key in keys.encryption"
             :key="key.kid"
-            class="flex items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+            class="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
           >
             <AppIcon name="key" :size="14" class="shrink-0 text-faint" />
             <span class="min-w-0 truncate font-mono text-[11.5px]">{{
@@ -156,7 +156,7 @@ async function rotate() {
             <span class="rounded border border-border px-1.5 py-0.5 font-mono text-[10.5px]">{{
               key.algorithm
             }}</span>
-            <span class="ml-auto text-[10.5px] text-muted">{{ key.status }}</span>
+            <span class="text-[10.5px] text-muted sm:ml-auto">{{ key.status }}</span>
           </div>
         </div>
       </template>

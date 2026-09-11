@@ -284,10 +284,12 @@ async function prove(row: IdpRow) {
 
 <template>
   <div>
-    <h1 class="text-lg font-semibold tracking-tight">{{ say("events-title") }}</h1>
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <h1 class="text-lg font-semibold tracking-tight">{{ say("events-title") }}</h1>
+    </div>
     <p class="mt-1 text-xs text-muted">{{ say("events-lede") }}</p>
 
-    <div class="mt-5 flex max-w-3xl items-center">
+    <div class="mt-5 flex max-w-3xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("events-live") }}
       </h2>
@@ -384,7 +386,7 @@ async function prove(row: IdpRow) {
       @update:size="resize"
     />
 
-    <div class="mt-6 flex max-w-3xl items-center">
+    <div class="mt-6 flex max-w-3xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("events-receivers") }}
       </h2>
@@ -449,7 +451,7 @@ async function prove(row: IdpRow) {
       </div>
     </div>
 
-    <div class="mt-6 flex max-w-3xl items-center">
+    <div class="mt-6 flex max-w-3xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("events-connectors") }}
       </h2>
@@ -509,7 +511,7 @@ async function prove(row: IdpRow) {
       </div>
     </div>
 
-      <div class="mt-6 flex max-w-3xl items-center">
+      <div class="mt-6 flex max-w-3xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("events-webhooks") }}
       </h2>
@@ -568,7 +570,7 @@ async function prove(row: IdpRow) {
       </div>
     </div>
 
-    <div class="mt-6 flex max-w-3xl items-center">
+    <div class="mt-6 flex max-w-3xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("events-dead") }}
       </h2>

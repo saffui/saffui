@@ -463,7 +463,7 @@ function edgeWords(item: CampaignItem): string {
           {{ say("rule-mode-expr") }} <AppHint name="rule-mode-expr-help" />
         </label>
       </div>
-      <div v-if="ruleDraft.mode === 'attribute'" class="grid grid-cols-2 gap-3">
+      <div v-if="ruleDraft.mode === 'attribute'" class="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <label class="block text-[11px] font-medium text-muted">
           {{ say("rule-attribute") }}
           <input v-model="ruleDraft.when_attribute" placeholder="department" class="sf-field mt-1 font-mono" spellcheck="false" />
@@ -546,7 +546,7 @@ function edgeWords(item: CampaignItem): string {
     <h2 class="mt-6 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
       {{ say("iga-ledger") }}
     </h2>
-    <form class="mt-2 flex max-w-3xl items-end gap-2 text-xs" @submit.prevent="giveGrant">
+    <form class="mt-2 flex max-w-3xl flex-wrap items-end gap-2 text-xs" @submit.prevent="giveGrant">
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("authz-subject") }}
         <input
@@ -581,7 +581,7 @@ function edgeWords(item: CampaignItem): string {
         {{ say("iga-grant-give") }}
       </button>
     </form>
-    <form class="mt-2 flex max-w-md items-end gap-2" @submit.prevent="consult">
+    <form class="mt-2 flex max-w-md flex-wrap items-end gap-2" @submit.prevent="consult">
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("authz-subject") }}
         <input
@@ -642,7 +642,7 @@ function edgeWords(item: CampaignItem): string {
 
     <form
       v-if="makingSod"
-      class="mt-3 flex max-w-3xl items-end gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      class="mt-3 flex max-w-3xl flex-wrap items-end gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
       @submit.prevent="makeSodRule"
     >
       <label class="w-40 text-[11px] font-medium text-muted">
@@ -731,7 +731,7 @@ function edgeWords(item: CampaignItem): string {
           </div>
           <form
             v-if="excusing?.user_id === violation.user_id && excusing?.rule_id === violation.rule_id"
-            class="mt-2 flex items-end gap-2 border-t border-border/60 pt-2"
+            class="mt-2 flex flex-wrap items-end gap-2 border-t border-border/60 pt-2"
             @submit.prevent="giveExcuse"
           >
             <label class="flex-1 text-[11px] font-medium text-muted">
@@ -793,7 +793,7 @@ function edgeWords(item: CampaignItem): string {
 
     <form
       v-if="makingRequest"
-      class="mt-3 flex max-w-4xl items-end gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      class="mt-3 flex max-w-4xl flex-wrap items-end gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
       @submit.prevent="makeRequest"
     >
       <label class="w-36 text-[11px] font-medium text-muted">
@@ -859,7 +859,7 @@ function edgeWords(item: CampaignItem): string {
         </p>
         <form
           v-if="denying === request.request_id"
-          class="mt-2 flex items-end gap-2 border-t border-border/60 pt-2"
+          class="mt-2 flex flex-wrap items-end gap-2 border-t border-border/60 pt-2"
           @submit.prevent="deny(request.request_id)"
         >
           <label class="flex-1 text-[11px] font-medium text-muted">
@@ -887,7 +887,7 @@ function edgeWords(item: CampaignItem): string {
 
     <form
       v-if="makingCampaign"
-      class="mt-3 flex max-w-4xl items-end gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
+      class="mt-3 flex max-w-4xl flex-wrap items-end gap-3 rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
       @submit.prevent="makeCampaign"
     >
       <label class="flex-1 text-[11px] font-medium text-muted">
@@ -1003,7 +1003,7 @@ function edgeWords(item: CampaignItem): string {
           </table>
           <form
             v-if="decidingItem"
-            class="mt-2 flex items-end gap-2 border-t border-border/60 pt-2"
+            class="mt-2 flex flex-wrap items-end gap-2 border-t border-border/60 pt-2"
             @submit.prevent="decide(campaign.campaign_id, decidingItem, 'revoke')"
           >
             <label class="flex-1 text-[11px] font-medium text-muted">

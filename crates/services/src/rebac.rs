@@ -22,6 +22,33 @@ pub const CHECK: Budget = Budget {
     max_fanout: 1000,
 };
 
+/// One step the walk took, in the order it took it.
+///
+/// A check answers yes or no, which is all an enforcement point needs and
+/// nothing an author can learn from. This is the same walk saying where it
+/// went: the member it asked, what the schema told it to do there, and how
+/// that came out. Read with the depth as indentation, it is the resolution
+/// tree.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Step {
+    pub depth: u32,
+    /// `object_type:object_id#member`, the way a tuple is written.
+    pub asked: String,
+    /// What the schema said to do here, or absent where it said nothing.
+    pub rule: Option<String>,
+    /// How it came out. Absent where the walk stopped before answering.
+    pub answered: Option<bool>,
+    /// The one fact a reader would otherwise have to infer.
+    pub note: Option<String>,
+}
+
+/// How much of a walk is written down.
+///
+/// A budget allows a thousand queries, and a trace of a thousand steps is not
+/// something anybody reads. What is kept is the beginning, which is where the
+/// answer is decided; the rest is counted and said to have been cut.
+const TRACED: usize = 200;
+
 /// What is being asked about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Object<'a> {
@@ -325,9 +352,61 @@ pub async fn check(
         queries: 0,
         on_path: BTreeSet::new(),
         seen: BTreeMap::new(),
+        trace: None,
+        cut: 0,
     }
     .member(object, member, 0)
     .await
+}
+
+/// The same walk, and where it went.
+///
+/// Told apart from `check` so an enforcement point pays nothing for a trace it
+/// never reads: without one, no step is built and no string is formatted. The
+/// answer is the answer `check` gives, because it is the same walk.
+pub async fn explain(
+    transaction: &Transaction<'_>,
+    schema: &CompiledSchema,
+    object: Object<'_>,
+    member: &str,
+    subject: Subject<'_>,
+    budget: Budget,
+) -> (Result<bool, Unwalkable>, Vec<Step>, u32) {
+    if !schema.has_type(object.object_type) {
+        return (
+            Err(Unwalkable::UnknownType {
+                object_type: object.object_type.to_owned(),
+            }),
+            Vec::new(),
+            0,
+        );
+    }
+
+    let mut walk = Walk {
+        transaction,
+        schema,
+        subject,
+        budget,
+        queries: 0,
+        on_path: BTreeSet::new(),
+        seen: BTreeMap::new(),
+        trace: Some(Vec::new()),
+        cut: 0,
+    };
+    let answered = walk.member(object, member, 0).await;
+    (answered, walk.trace.unwrap_or_default(), walk.cut)
+}
+
+/// What a rule is called, for somebody reading the walk rather than the
+/// schema.
+fn named(rule: &Rule) -> &'static str {
+    match rule {
+        Rule::Direct { .. } => "direct: the edges stored against this relation",
+        Rule::Computed { .. } => "computed: another member of the same object",
+        Rule::Arrow { .. } => "arrow: follow a relation, then ask there",
+        Rule::Any { .. } => "any: one part is enough",
+        Rule::All { .. } => "all: every part must hold",
+    }
 }
 
 /// One question's walk: what it has answered, and what it is in the middle of.
@@ -344,9 +423,55 @@ struct Walk<'a> {
     /// only thing standing between a schema and that is a budget, which turns
     /// the blowup into a refusal the author cannot explain.
     seen: BTreeMap<(String, String, String), bool>,
+    /// Where the walk went, when somebody asked. None costs nothing.
+    trace: Option<Vec<Step>>,
+    /// Steps the trace did not keep, so a cut listing says it was cut.
+    cut: u32,
 }
 
 impl Walk<'_> {
+    /// Write down that the walk arrived here, and hand back where the step
+    /// sits so its answer can be filled in when it is known. None where
+    /// nobody asked for a trace, or where the trace is already full.
+    fn arriving(&mut self, at: &(String, String, String), depth: u32) -> Option<usize> {
+        let trace = self.trace.as_mut()?;
+        if trace.len() >= TRACED {
+            self.cut += 1;
+            return None;
+        }
+        trace.push(Step {
+            depth,
+            asked: format!("{}:{}#{}", at.0, at.1, at.2),
+            rule: None,
+            answered: None,
+            note: None,
+        });
+        Some(trace.len() - 1)
+    }
+
+    /// Fill in how a step came out. A step nobody kept is nothing to fill.
+    fn leaving(&mut self, at: Option<usize>, answered: Option<bool>, note: Option<&str>) {
+        let (Some(at), Some(trace)) = (at, self.trace.as_mut()) else {
+            return;
+        };
+        let Some(step) = trace.get_mut(at) else {
+            return;
+        };
+        step.answered = answered;
+        if let Some(note) = note {
+            step.note = Some(note.to_owned());
+        }
+    }
+
+    fn saying(&mut self, at: Option<usize>, rule: &str) {
+        let (Some(at), Some(trace)) = (at, self.trace.as_mut()) else {
+            return;
+        };
+        if let Some(step) = trace.get_mut(at) {
+            step.rule = Some(rule.to_owned());
+        }
+    }
+
     async fn member(
         &mut self,
         object: Object<'_>,
@@ -364,10 +489,17 @@ impl Walk<'_> {
             object.object_id.to_owned(),
             member.to_owned(),
         );
-        if let Some(answered) = self.seen.get(&here) {
-            return Ok(*answered);
+        let step = self.arriving(&here, depth);
+        if let Some(answered) = self.seen.get(&here).copied() {
+            self.leaving(step, Some(answered), Some("already walked"));
+            return Ok(answered);
         }
         if !self.on_path.insert(here.clone()) {
+            self.leaving(
+                step,
+                None,
+                Some("a ring: this member is already on the path"),
+            );
             return Err(Unwalkable::Ring {
                 object_type: here.0,
                 object_id: here.1,
@@ -379,14 +511,27 @@ impl Walk<'_> {
         // may reach objects of several types, and a member absent on one of
         // them is the ordinary case rather than a fault.
         let answer = match self.schema.lookup(object.object_type, member) {
-            None => Ok(false),
-            Some(rule) => self.rule(object, member, rule.clone(), depth).await,
+            None => {
+                self.saying(step, "nothing: the schema does not describe this member");
+                Ok(false)
+            }
+            Some(rule) => {
+                self.saying(step, named(rule));
+                self.rule(object, member, rule.clone(), depth).await
+            }
         };
 
         // Off the path whatever happened, so a partial failure does not leave a
         // member looking like it is still being walked.
         self.on_path.remove(&here);
-        let answer = answer?;
+        let answer = match answer {
+            Ok(answer) => answer,
+            Err(why) => {
+                self.leaving(step, None, Some("the walk stopped here"));
+                return Err(why);
+            }
+        };
+        self.leaving(step, Some(answer), None);
         self.seen.insert(here, answer);
         Ok(answer)
     }

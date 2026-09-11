@@ -58,6 +58,33 @@ pub async fn create_flow(
     Ok(())
 }
 
+/// Rewrite a flow without changing its identifier or built-in status.
+pub async fn update_flow(
+    transaction: &Transaction<'_>,
+    flow: &AuthenticationFlowModel,
+) -> StoreResult<bool> {
+    let top_level = flow.top_level.unwrap_or(false);
+    let set = WriteSet::update(
+        vec![
+            col("alias", &flow.alias),
+            col("provider_id", &flow.provider_id),
+            col("description", &flow.description),
+            col("top_level", &top_level),
+            col("updated_by", &flow.metadata.updated_by),
+        ],
+        vec![col("flow_id", &flow.flow_id)],
+    );
+    let statement = statement::update("authentication_flows", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    Ok(transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?
+        > 0)
+}
+
 /// One flow of this realm, by the identifier it was created with.
 pub async fn load_flow(
     transaction: &Transaction<'_>,
@@ -101,7 +128,6 @@ pub async fn top_level_flows(
         .collect())
 }
 
-/// Remove a flow, and say whether there was one to remove.
 /// Every flow of this realm, nested ones included.
 pub async fn list_flows(
     transaction: &Transaction<'_>,
@@ -116,6 +142,7 @@ pub async fn list_flows(
         .collect())
 }
 
+/// Remove a flow, and say whether there was one to remove.
 pub async fn delete_flow(transaction: &Transaction<'_>, flow_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
@@ -163,6 +190,42 @@ pub async fn create_execution(
         .await
         .map_err(|_| StoreError::Backend)?;
     Ok(())
+}
+
+/// Rewrite one flow step without changing its identifier.
+pub async fn update_execution(
+    transaction: &Transaction<'_>,
+    execution: &AuthenticationExecutionModel,
+) -> StoreResult<bool> {
+    let (authenticator, config_id, sub_flow_id) = match &execution.step {
+        ExecutionStep::Authenticator {
+            authenticator,
+            config_id,
+        } => (Some(authenticator.clone()), config_id.clone(), None),
+        ExecutionStep::SubFlow { flow_id } => (None, None, Some(flow_id.clone())),
+    };
+    let set = WriteSet::update(
+        vec![
+            col("alias", &execution.alias),
+            col("flow_id", &execution.flow_id),
+            col("priority", &execution.priority),
+            col("requirement", &execution.requirement),
+            col("authenticator", &authenticator),
+            col("config_id", &config_id),
+            col("sub_flow_id", &sub_flow_id),
+            col("updated_by", &execution.metadata.updated_by),
+        ],
+        vec![col("execution_id", &execution.execution_id)],
+    );
+    let statement = statement::update("authentication_executions", &set).replace(
+        " WHERE ",
+        ", updated_at = now(), version = version + 1 WHERE ",
+    );
+    Ok(transaction
+        .execute(statement.as_str(), &set.params())
+        .await
+        .map_err(|_| StoreError::Backend)?
+        > 0)
 }
 
 /// The steps of one flow, in the order they run.
@@ -258,6 +321,32 @@ pub async fn delete_execution(
 }
 
 /// Whether any client's login is bound to this alias by name.
+/// Whether the realm itself runs this flow for browser logins.
+///
+/// Told apart from a client's own binding because the two break differently:
+/// a client bound to a missing flow falls back to the realm's, and a realm
+/// bound to a missing one falls back to nothing. `/authorize` resolves the
+/// alias and refuses outright when it names no flow, so a realm that lost
+/// the flow it bound has no sign-in at all.
+pub async fn alias_bound_to_the_realm(
+    transaction: &Transaction<'_>,
+    alias: &str,
+) -> StoreResult<bool> {
+    let row = transaction
+        .query_one(
+            "SELECT EXISTS ( \
+                 SELECT 1 FROM realms \
+                 WHERE tenant = current_setting('saffui.current_tenant', true) \
+                   AND realm_id = current_setting('saffui.current_realm', true) \
+                   AND browser_flow = $1 \
+             ) AS bound",
+            &[&alias],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.get("bound"))
+}
+
 pub async fn alias_bound_to_a_client(
     transaction: &Transaction<'_>,
     alias: &str,

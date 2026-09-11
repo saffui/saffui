@@ -29,6 +29,7 @@ import {
   updateUser,
 } from "@/services/users";
 import { listRoles, listGroups } from "@/services/directory";
+import { refusalOf } from "./names";
 import AppToggle from "@/components/AppToggle.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppPicker from "@/components/AppPicker.vue";
@@ -156,9 +157,14 @@ const profile = ref({
   phone_number: "",
   enabled: true,
 });
+/// What an administrator may ask of an account, which is every action the
+/// login engine acts on but one: `reset-password` is the same thing as
+/// `update-password` at a login, and clearing either clears both, so offering
+/// the pair would be two buttons for one act.
 const REQUIRED_ACTIONS = [
   "update-password",
   "verify-email",
+  "verify-phone",
   "configure-totp",
   "configure-webauthn",
   "configure-recovery-codes",
@@ -216,7 +222,14 @@ onMounted(() => {
   void readTheCredentials();
 });
 
+/// The server's own rule, asked while typing. Only where the realm lets this
+/// name change at all: a field nobody can edit cannot be made wrong.
+const renameRefusal = computed(() =>
+  renameable.value ? refusalOf(profile.value.user_name) : null,
+);
+
 async function saveProfile() {
+  if (renameRefusal.value) return;
   if (emailWrong.value) {
     failed.value = say("user-email-shape");
     return;
@@ -407,7 +420,7 @@ function instant(epoch: number | null | undefined): string {
     <div v-if="tab === 'overview' && user" class="mt-4 flex flex-col gap-4">
       <div
         v-if="user"
-        class="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-lg border border-border bg-surface px-3 py-2.5 text-[11px]"
+        class="grid grid-cols-1 gap-x-4 gap-y-1.5 rounded-lg border border-border bg-surface px-3 py-2.5 text-[11px] sm:grid-cols-2"
       >
         <div class="flex items-center gap-1.5">
           <span class="text-muted">{{ say("user-identifier") }}</span>
@@ -456,7 +469,7 @@ function instant(epoch: number | null | undefined): string {
       </div>
 
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveProfile">
-        <div class="grid grid-cols-2 gap-3">
+        <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <label class="block text-[11px] font-medium text-muted">
             {{ say("users-col-username") }} <AppHint name="user-rename-help" />
             <input
@@ -464,8 +477,12 @@ function instant(epoch: number | null | undefined): string {
               class="sf-field mt-1 font-mono disabled:opacity-60"
               spellcheck="false"
               :disabled="!renameable"
+              :aria-invalid="renameRefusal !== null"
               :title="renameable ? undefined : say('user-rename-refused')"
             />
+            <span v-if="renameRefusal" class="mt-1 block text-[10.5px] text-danger">
+              {{ say(`user-name-${renameRefusal}`) }}
+            </span>
           </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("users-col-email") }}
@@ -661,7 +678,7 @@ function instant(epoch: number | null | undefined): string {
       <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("user-set-password") }} <AppHint name="user-set-password-help" />
       </div>
-      <form class="mt-2 flex items-end gap-2" @submit.prevent="savePassword">
+      <form class="mt-2 flex flex-wrap items-end gap-2" @submit.prevent="savePassword">
         <label class="flex-1 text-[11px] font-medium text-muted">
           {{ say("user-new-password") }}
           <span class="relative mt-1 block">

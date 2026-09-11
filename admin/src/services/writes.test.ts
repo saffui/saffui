@@ -38,6 +38,7 @@ const EXCUSED: Record<string, string> = {
   "settings/ThemePage.vue": "a form would discard what is being typed into it",
   "clients/ClientDrawer.vue": "a drawer re-reads after its own writes, keeping its tabs",
   "users/UserDrawer.vue": "a drawer re-reads after its own writes, keeping its tabs",
+  "federation/IdpDrawer.vue": "a drawer re-reads after its own writes, keeping its tabs",
 };
 
 function everyScreen(at: string, under = ""): string[] {

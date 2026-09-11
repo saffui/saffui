@@ -101,9 +101,16 @@ fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
 }
 
+fn realm_write(why: store::error::StoreError) -> ApiError {
+    match why {
+        store::error::StoreError::AlreadyExists => ApiError::new(ErrorCode::RealmAlreadyExists),
+        _ => internal(),
+    }
+}
+
 /// What a realm may be called: it becomes a path segment and the tail of an
 /// issuer, so only characters that survive both are taken.
-fn usable_name(name: &str) -> bool {
+pub(super) fn usable_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 63
         && name
@@ -118,11 +125,6 @@ fn usable_name(name: &str) -> bool {
 /// and the browser flow. A bare row would answer every login with an error
 /// and every scope request with nothing, and nothing about it would say so.
 ///
-/// Two transactions, because the row is written tenant wide and everything
-/// inside the realm is written scoped to it, which is how row security is
-/// told who is writing. A failure between the two leaves a realm that a
-/// second create refuses; `provision` heals such a realm, and so does the
-/// deployment's next start.
 /// What a realm needs at birth: the realm itself, and the one person who
 /// will be able to enter it.
 ///
@@ -172,7 +174,7 @@ pub async fn create(
 
     let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide(&tenant))
+        .transaction(&mut connection, &TenantContext::new(&tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     if store::providers::realms::load(&transaction, &realm_id)
@@ -213,13 +215,7 @@ pub async fn create(
     );
     store::providers::realms::create(&transaction, &realm)
         .await
-        .map_err(|_| internal())?;
-    transaction.commit().await.map_err(|_| internal())?;
-
-    let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new(&tenant, &realm_id))
-        .await
-        .map_err(|_| internal())?;
+        .map_err(realm_write)?;
     provisioning::provision_standard_scopes(&transaction, &tenant, &realm_id)
         .await
         .map_err(|_| internal())?;
@@ -248,6 +244,9 @@ pub async fn create(
     .await
     .map_err(|_| internal())?;
     provisioning::provision_browser_flow(&transaction, &tenant, &realm_id)
+        .await
+        .map_err(|_| internal())?;
+    provisioning::provision_offered_flows(&transaction, &tenant, &realm_id)
         .await
         .map_err(|_| internal())?;
     provisioning::provision_levels(&transaction, &realm_id)
@@ -855,4 +854,25 @@ pub async fn clear_theme(
     }
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::usable_name;
+
+    #[test]
+    fn realm_names_are_safe_path_segments() {
+        for accepted in ["main", "customer-42", "internal_ops"] {
+            assert!(usable_name(accepted), "{accepted}");
+        }
+        for refused in [
+            "",
+            "two words",
+            "path/part",
+            "réseau",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ] {
+            assert!(!usable_name(refused), "{refused}");
+        }
+    }
 }

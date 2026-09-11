@@ -213,19 +213,11 @@ fn start_totp(provider: &dyn CryptoProvider, realm: &RealmModel, subject: &UserM
         return Enrolment::Refused;
     }
     let encoded = BASE32_NOPAD.encode(&secret);
-    let issuer = if realm.display_name.is_empty() {
-        &realm.name
-    } else {
-        &realm.display_name
-    };
-    let otpauth = format!(
-        "otpauth://totp/{issuer}:{account}?secret={encoded}&issuer={issuer}\
-         &algorithm={algorithm}&digits={digits}&period={period}",
-        issuer = percent(issuer),
-        account = percent(&subject.user_name),
-        algorithm = policy.algorithm.as_str(),
-        digits = policy.digits,
-        period = policy.period,
+    let otpauth = otpauth_uri(
+        &policy,
+        issuer_of(Some(realm)),
+        &subject.user_name,
+        &encoded,
     );
     Enrolment::Asked {
         named: CONFIGURE_TOTP,
@@ -235,6 +227,38 @@ fn start_totp(provider: &dyn CryptoProvider, realm: &RealmModel, subject: &UserM
         },
         sending: None,
     }
+}
+
+/// What the app shows this enrolment under: the realm's own display name
+/// where it has one, and its name otherwise.
+fn issuer_of(realm: Option<&RealmModel>) -> &str {
+    match realm {
+        Some(held) if !held.display_name.is_empty() => &held.display_name,
+        Some(held) => &held.name,
+        None => "",
+    }
+}
+
+/// The URI an authenticator app scans, built once for both legs.
+///
+/// The leg that issues a secret and the leg that asks for the code again after
+/// a wrong one must advertise the same parameters against the same secret, or
+/// the app would be holding one enrolment while the server checked another.
+fn otpauth_uri(
+    policy: &models::entities::realm::OtpPolicy,
+    issuer: &str,
+    account: &str,
+    encoded: &str,
+) -> String {
+    format!(
+        "otpauth://totp/{issuer}:{account}?secret={encoded}&issuer={issuer}\
+         &algorithm={algorithm}&digits={digits}&period={period}",
+        issuer = percent(issuer),
+        account = percent(account),
+        algorithm = policy.algorithm.as_str(),
+        digits = policy.digits,
+        period = policy.period,
+    )
 }
 
 /// The otpauth URI as a scannable SVG. The image paints its own light ground,
@@ -274,11 +298,13 @@ async fn finish_totp(
     // The same policy the start leg wrote into the app's URI: read fresh
     // off the realm, because the parameters the app enrolled with are the
     // only ones its codes will ever match.
-    let policy = store::providers::realms::of_context(transaction)
+    let realm = store::providers::realms::of_context(transaction)
         .await
         .ok()
-        .flatten()
-        .and_then(|realm| realm.otp_policy)
+        .flatten();
+    let policy = realm
+        .as_ref()
+        .and_then(|held| held.otp_policy)
         .unwrap_or_default();
     let params = TotpParams {
         period: policy.period,
@@ -288,7 +314,30 @@ async fn finish_totp(
     let secret = SecretBox::new(Box::new(secret));
     let Ok(Some(step)) = totp_verify_step(provider.hmac(), &secret, code, params, policy.window)
     else {
-        return Enrolment::Refused;
+        // A wrong code is asked again, against the same secret. Refusing here
+        // would end the whole login, and the round after it draws a fresh
+        // secret: the app would still hold the one it scanned, and every code
+        // it ever showed would be refused. One mistyped digit is not a reason
+        // to make somebody enrol twice.
+        let otpauth = otpauth_uri(
+            &policy,
+            issuer_of(realm.as_ref()),
+            &subject.user_name,
+            encoded,
+        );
+        return Enrolment::Asked {
+            named: CONFIGURE_TOTP,
+            challenge: Challenge {
+                shown: json!({
+                    "secret": encoded,
+                    "otpauth": otpauth,
+                    "qr": qr_svg(&otpauth),
+                    "refused": true,
+                }),
+                remembered: state.clone(),
+            },
+            sending: None,
+        };
     };
 
     let Ok(parameters) = OtpParameters::totp(policy.digits, policy.period) else {
@@ -943,6 +992,39 @@ mod tests {
         assert!(
             drawn.contains("#ffffff"),
             "the light ground is the image's own"
+        );
+    }
+
+    /// Both legs advertise the same enrolment.
+    ///
+    /// The leg that issues the secret and the leg that asks again after a
+    /// wrong code build the URI from the same place. If they ever parted, an
+    /// app would hold one enrolment while the server checked another, and
+    /// every code it showed would be refused for a reason nobody could see.
+    #[test]
+    fn the_two_legs_advertise_the_same_enrolment() {
+        use models::entities::credentials::OtpAlgorithm;
+        use models::entities::realm::OtpPolicy;
+
+        let policy = OtpPolicy {
+            algorithm: OtpAlgorithm::Sha256,
+            digits: 8,
+            period: 60,
+            window: 1,
+        };
+        let issued = super::otpauth_uri(&policy, "Main Realm", "ada", "JBSWY3DPEHPK3PXP");
+        let asked_again = super::otpauth_uri(&policy, "Main Realm", "ada", "JBSWY3DPEHPK3PXP");
+        assert_eq!(issued, asked_again);
+
+        // What an app reads off it: the parameters this realm verifies by,
+        // and a label whose space cannot be mistaken for a separator.
+        assert!(issued.contains("algorithm=SHA256"), "{issued}");
+        assert!(issued.contains("digits=8"), "{issued}");
+        assert!(issued.contains("period=60"), "{issued}");
+        assert!(issued.contains("secret=JBSWY3DPEHPK3PXP"), "{issued}");
+        assert!(
+            issued.starts_with("otpauth://totp/Main%20Realm:ada?"),
+            "{issued}"
         );
     }
 }

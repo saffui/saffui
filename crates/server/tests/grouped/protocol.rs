@@ -1447,9 +1447,22 @@ async fn one_authorization_mints_one_code() {
         "admitted"
     );
 
-    let (status, told, _) = login_step(&plane, Some(&auth_session), answer).await;
+    let (status, told, set) = login_step(&plane, Some(&auth_session), answer).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(told["status"], "no-such-login");
+
+    // And the binding goes with it. The cookie outlives the row it names, so a
+    // browser still holding one answers every later attempt into this same
+    // refusal: the person sees a working sign-in page, types into it, and is
+    // told the login expired, for as long as the window stays open.
+    let struck = set.iter().find(|header| {
+        header.starts_with(&format!("{}=;", support::AUTH_SESSION_COOKIE))
+            && header.contains("Max-Age=0")
+    });
+    assert!(
+        struck.is_some(),
+        "the browser keeps a binding the server can no longer resume: {set:?}"
+    );
 }
 
 /// A login nobody opened is answered the way one that expired is, and the same
@@ -4690,7 +4703,9 @@ async fn a_required_authenticator_app_is_set_up_inside_the_login() {
         "{otpauth}"
     );
 
-    // A wrong code proves nothing: the instruction stands, nothing is kept.
+    // A wrong code is asked again, against the secret already scanned. Ending
+    // the login here would draw a fresh secret on the round after it, and the
+    // app would be left holding an enrolment the server no longer knows.
     let (status, told, _) = login_step(
         &plane,
         Some(&auth_session),
@@ -4701,27 +4716,24 @@ async fn a_required_authenticator_app_is_set_up_inside_the_login() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "challenge");
+    assert_eq!(told["execution"], "totp-register");
+    assert_eq!(
+        told["asks"]["refused"], true,
+        "the page says the code missed"
+    );
+    assert_eq!(
+        told["asks"]["secret"], secret,
+        "the second ask draws a secret the app never scanned"
+    );
     assert_eq!(
         plane.subject_owes().await,
         vec![RequiredAction::ConfigureTotp]
     );
     assert_eq!(plane.subject_totp_secrets().await, before);
 
-    // The right one, from a fresh login since the refused one is over.
-    let (_, _, opened) =
-        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
-    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
-    let (_, told, _) = login_step(
-        &plane,
-        Some(&auth_session),
-        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
-    )
-    .await;
-    let secret = told["asks"]["secret"]
-        .as_str()
-        .expect("a secret")
-        .to_owned();
+    // The right one, in the same login, from the same secret.
     let (status, admitted, _) = login_step(
         &plane,
         Some(&auth_session),

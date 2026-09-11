@@ -62,6 +62,10 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
 /// Declare a client a protected application. The identity is the client's own,
 /// which is what the schema holds by key: a server that is not a client is not
 /// a server.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one resource server"
+)]
 pub async fn protect(
     transaction: &Transaction<'_>,
     tenant: &str,
@@ -70,6 +74,10 @@ pub async fn protect(
     client_id: &str,
     enforcement_mode: PolicyEnforcementMode,
     decision_strategy: DecisionStrategy,
+    // Whether resources under this server may be shared by the people they
+    // belong to. The server is the ceiling: a resource cannot open what the
+    // server has closed.
+    user_managed_access: bool,
 ) -> Result<ResourceServerModel, Unwritable> {
     clients::load(transaction, client_id)
         .await
@@ -88,7 +96,7 @@ pub async fn protect(
         enforcement_mode,
         decision_strategy,
         remote_resource_management: false,
-        user_managed_access: false,
+        user_managed_access,
         metadata: AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     };
     authz_surface::create_server(transaction, &server)
@@ -172,10 +180,52 @@ pub async fn resources(
         .map_err(|_| Unwritable::Backend)
 }
 
+/// Rework one resource in place. The identity does not move: a resource is
+/// named by the policies that bind it, and a new row under a new id would
+/// break those bindings while looking like an edit.
+pub async fn rework_resource(
+    transaction: &Transaction<'_>,
+    server_id: &str,
+    resource_id: &str,
+    by: &str,
+    asked: ResourceMutationModel,
+) -> Result<ResourceModel, Unwritable> {
+    server(transaction, server_id).await?;
+    let held = authz_surface::load_resource(transaction, resource_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .ok_or(Unwritable::NotFound)?;
+    // The resource has to belong to the server the path named, or a caller
+    // holding one server could edit another's by knowing an identifier.
+    if held.server_id != server_id {
+        return Err(Unwritable::NotFound);
+    }
+    let mut resource = asked.into_model(
+        held.resource_id.clone(),
+        held.server_id.clone(),
+        held.realm_id.clone(),
+        held.metadata.clone(),
+    );
+    resource.metadata.updated_by = Some(by.to_owned());
+    authz_surface::update_resource(transaction, &resource)
+        .await
+        .map_err(carried)?
+        .then_some(resource)
+        .ok_or(Unwritable::NotFound)
+}
+
 pub async fn remove_resource(
     transaction: &Transaction<'_>,
+    server_id: &str,
     resource_id: &str,
 ) -> Result<(), Unwritable> {
+    let held = authz_surface::load_resource(transaction, resource_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .ok_or(Unwritable::NotFound)?;
+    if held.server_id != server_id {
+        return Err(Unwritable::NotFound);
+    }
     authz_surface::delete_resource(transaction, resource_id)
         .await
         .map_err(carried)?
@@ -215,7 +265,49 @@ pub async fn scopes(
         .map_err(|_| Unwritable::Backend)
 }
 
-pub async fn remove_scope(transaction: &Transaction<'_>, scope_id: &str) -> Result<(), Unwritable> {
+/// Rework one scope in place, for the same reason a resource is reworked in
+/// place: the permissions that bind it name it by identity.
+pub async fn rework_scope(
+    transaction: &Transaction<'_>,
+    server_id: &str,
+    scope_id: &str,
+    by: &str,
+    asked: ScopeMutationModel,
+) -> Result<ScopeModel, Unwritable> {
+    server(transaction, server_id).await?;
+    let held = authz_surface::load_scope(transaction, scope_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .ok_or(Unwritable::NotFound)?;
+    if held.server_id != server_id {
+        return Err(Unwritable::NotFound);
+    }
+    let mut scope = asked.into_model(
+        held.scope_id.clone(),
+        held.server_id.clone(),
+        held.realm_id.clone(),
+        held.metadata.clone(),
+    );
+    scope.metadata.updated_by = Some(by.to_owned());
+    authz_surface::update_scope(transaction, &scope)
+        .await
+        .map_err(carried)?
+        .then_some(scope)
+        .ok_or(Unwritable::NotFound)
+}
+
+pub async fn remove_scope(
+    transaction: &Transaction<'_>,
+    server_id: &str,
+    scope_id: &str,
+) -> Result<(), Unwritable> {
+    let held = authz_surface::load_scope(transaction, scope_id)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .ok_or(Unwritable::NotFound)?;
+    if held.server_id != server_id {
+        return Err(Unwritable::NotFound);
+    }
     authz_surface::delete_scope(transaction, scope_id)
         .await
         .map_err(carried)?
@@ -319,4 +411,128 @@ pub async fn prune_decisions(
     store::providers::authz_policies::prune_decisions(transaction, before)
         .await
         .map_err(|_| Unwritable::Backend)
+}
+
+/// Why a share was refused.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Unshareable {
+    /// The resource server does not allow its resources to be shared at all.
+    ServerHoldsIt,
+    /// This resource is not one of the shareable ones.
+    ResourceHoldsIt,
+    /// No relation graph is published, so a share would be a tuple nothing
+    /// walks.
+    NoSchema(String),
+    /// The graph does not describe the resource's own type, so a tuple on it
+    /// would be one the engine refuses at the door anyway.
+    UnknownType(String),
+    /// The graph describes the type but not this relation on it.
+    UnknownRelation {
+        relation: String,
+        on: String,
+    },
+    NotFound,
+    Backend,
+}
+
+/// Share one user-managed resource with somebody, as a relation on it.
+///
+/// The whole of this is its refusals. `user_managed_access` is a promise that
+/// a resource may be shared by the person it belongs to rather than only by an
+/// administrator, and a promise nothing checks is what the flag was before
+/// this: stored on the server, stored on the resource, read nowhere.
+///
+/// The server sets the ceiling and the resource moves under it, the same way a
+/// process bounds a realm's capabilities. A server that shares nothing cannot
+/// have one of its resources opened by a flag set further down.
+///
+/// The tuple is written on the resource's own identity: the object type is the
+/// resource's `resource_type` and the object id is its `resource_id`. That is
+/// the convention, and it is checked rather than assumed: a type the published
+/// graph does not describe is refused here instead of becoming a row the walk
+/// will not follow.
+pub async fn share_resource(
+    transaction: &Transaction<'_>,
+    server_id: &str,
+    resource_id: &str,
+    relation: &str,
+    with: &store::providers::rebac::Subject,
+    by: &str,
+) -> Result<(), Unshareable> {
+    let server = authz_surface::load_server(transaction, server_id)
+        .await
+        .map_err(|_| Unshareable::Backend)?
+        .ok_or(Unshareable::NotFound)?;
+    if !server.user_managed_access {
+        return Err(Unshareable::ServerHoldsIt);
+    }
+    let held = authz_surface::load_resource(transaction, resource_id)
+        .await
+        .map_err(|_| Unshareable::Backend)?
+        .ok_or(Unshareable::NotFound)?;
+    if held.server_id != server_id {
+        return Err(Unshareable::NotFound);
+    }
+    if !held.user_managed_access {
+        return Err(Unshareable::ResourceHoldsIt);
+    }
+
+    let schema = crate::rebac::schema_of(transaction)
+        .await
+        .map_err(|why| Unshareable::NoSchema(why.to_string()))?;
+    if !schema.has_type(&held.resource_type) {
+        return Err(Unshareable::UnknownType(held.resource_type.clone()));
+    }
+    if schema.lookup(&held.resource_type, relation).is_none() {
+        return Err(Unshareable::UnknownRelation {
+            relation: relation.to_owned(),
+            on: held.resource_type.clone(),
+        });
+    }
+
+    crate::rebac::relate(
+        transaction,
+        &held.resource_type,
+        &held.resource_id,
+        relation,
+        with,
+        Some(by),
+    )
+    .await
+    .map_err(|_| Unshareable::Backend)
+}
+
+/// Stop sharing. Refused on the same grounds, so a resource that stopped being
+/// user managed is not a resource whose shares can be quietly rearranged.
+pub async fn unshare_resource(
+    transaction: &Transaction<'_>,
+    server_id: &str,
+    resource_id: &str,
+    relation: &str,
+    with: &store::providers::rebac::Subject,
+) -> Result<(), Unshareable> {
+    let server = authz_surface::load_server(transaction, server_id)
+        .await
+        .map_err(|_| Unshareable::Backend)?
+        .ok_or(Unshareable::NotFound)?;
+    if !server.user_managed_access {
+        return Err(Unshareable::ServerHoldsIt);
+    }
+    let held = authz_surface::load_resource(transaction, resource_id)
+        .await
+        .map_err(|_| Unshareable::Backend)?
+        .ok_or(Unshareable::NotFound)?;
+    if held.server_id != server_id || !held.user_managed_access {
+        return Err(Unshareable::NotFound);
+    }
+    crate::rebac::unrelate(
+        transaction,
+        &held.resource_type,
+        &held.resource_id,
+        relation,
+        with,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|_| Unshareable::Backend)
 }

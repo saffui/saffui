@@ -56,7 +56,7 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
 pub async fn flows(
     transaction: &Transaction<'_>,
 ) -> Result<Vec<AuthenticationFlowModel>, Unwritable> {
-    auth_flows::top_level_flows(transaction)
+    auth_flows::list_flows(transaction)
         .await
         .map_err(|_| Unwritable::Backend)
 }
@@ -111,6 +111,12 @@ pub async fn create_flow(
 /// client is bound to its alias by name.
 async fn still_run(transaction: &Transaction<'_>, alias: &str) -> Result<bool, Unwritable> {
     if alias == RESTING_FLOW {
+        return Ok(true);
+    }
+    if auth_flows::alias_bound_to_the_realm(transaction, alias)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+    {
         return Ok(true);
     }
     auth_flows::alias_bound_to_a_client(transaction, alias)

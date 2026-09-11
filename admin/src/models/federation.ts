@@ -21,6 +21,25 @@ export interface IdpMutation {
   configs: Record<string, { Str: string }>;
 }
 
+export interface IdpMapperRow {
+  mapper_id: string;
+  realm_id: string;
+  provider_alias: string;
+  name: string;
+  mapper_type: IdpMapperType;
+  configs: Record<string, { Str?: string } | string> | null;
+}
+
+export type IdpMapperType =
+  | "oidc-user-attribute-idp-mapper"
+  | "oidc-hardcoded-role-idp-mapper";
+
+export interface IdpMapperMutation {
+  name: string;
+  mapper_type: IdpMapperType;
+  configs: Record<string, { Str: string }>;
+}
+
 /// What `POST .../identity-providers/{alias}/prove` answers: whether the
 /// pipe held, how it was exercised, and the far side's words.
 export interface DeliveryProof {

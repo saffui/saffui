@@ -14,6 +14,7 @@ const paletteOpen = ref(false);
 const profileOpen = ref(false);
 const tongues = offeredTongues();
 const tongue = tongueInForce();
+const emit = defineEmits<{ "toggle-nav": [] }>();
 
 const current = computed(() => String(route.params.realm ?? session.realm ?? "main"));
 
@@ -23,9 +24,9 @@ function flipTheme() {
   localStorage.setItem("sf-console-theme", dark.value ? "dark" : "light");
 }
 
-function signOut() {
-  session.signOut();
-  router.push("/login");
+async function signOut() {
+  await session.logout();
+  await router.push("/login");
 }
 
 /// Where the reader is, said from the route rather than kept in step by
@@ -46,6 +47,12 @@ function onAway(event: MouseEvent) {
 onMounted(() => document.addEventListener("click", onAway));
 onUnmounted(() => document.removeEventListener("click", onAway));
 
+/// Who is signed in, as the token said it. A token carrying neither a
+/// preferred name nor a subject, or one this browser could not read, leaves
+/// the store empty; saying so is better than a blank chip, which reads as a
+/// screen that failed to load rather than a token that named nobody.
+const signedInAs = computed(() => session.displayName || say("profile-unnamed"));
+
 function initials(name: string): string {
   return name.slice(0, 2).toUpperCase() || "?";
 }
@@ -53,10 +60,18 @@ function initials(name: string): string {
 
 <template>
   <header
-    class="flex h-[46px] shrink-0 items-center gap-[18px] border-b border-border bg-surface px-[18px]"
+    class="flex h-[46px] shrink-0 items-center gap-3 border-b border-border bg-surface px-3 md:gap-[18px] md:px-[18px]"
   >
+    <button
+      type="button"
+      class="grid size-8 shrink-0 place-items-center rounded text-muted hover:bg-neutral-tint hover:text-ink md:hidden"
+      :aria-label="say('nav-open')"
+      @click="emit('toggle-nav')"
+    >
+      <AppIcon name="menu" :size="16" />
+    </button>
     <div class="flex min-w-0 flex-1 items-center gap-1.5 text-[13px]">
-      <span class="shrink-0 text-faint">{{ current }}</span>
+      <span class="hidden shrink-0 font-mono text-[11px] text-faint sm:inline">{{ current }}</span>
       <span v-for="crumb in trail" :key="crumb" class="flex items-center gap-1.5">
         <span class="text-faint">/</span>
         <span class="truncate text-ink">{{ crumb }}</span>
@@ -65,11 +80,12 @@ function initials(name: string): string {
 
     <button
       type="button"
-      class="flex h-7 w-[320px] shrink-0 items-center gap-[7px] rounded bg-surface-2 px-2.5 text-left text-[13px] text-faint hover:bg-surface-3"
+      class="flex h-8 w-8 shrink-0 items-center gap-[7px] rounded bg-surface-2 px-2.5 text-left text-[13px] text-faint hover:bg-surface-3 sm:w-[min(320px,28vw)]"
+      :aria-label="say('topbar-search')"
       @click="paletteOpen = true"
     >
       <AppIcon name="search" :size="13" />
-      <span class="truncate">{{ say("topbar-search") }}</span>
+      <span class="hidden truncate sm:inline">{{ say("topbar-search") }}</span>
     </button>
 
     <div class="relative ml-auto flex shrink-0 items-center gap-2.5" data-profile-menu>
@@ -83,7 +99,7 @@ function initials(name: string): string {
       </button>
       <button
         type="button"
-        class="flex h-7 items-center rounded px-2 text-[12px] text-muted uppercase hover:bg-neutral-tint hover:text-ink"
+        class="hidden h-7 items-center rounded px-2 text-[12px] text-muted uppercase hover:bg-neutral-tint hover:text-ink sm:flex"
         :aria-label="say('profile-tongue')"
         @click="pinTongue(tongues.find((held) => held !== tongue) ?? tongue)"
       >
@@ -97,9 +113,9 @@ function initials(name: string): string {
       >
         <span
           class="grid size-[22px] shrink-0 place-items-center rounded-[3px] bg-surface-3 text-[11px] font-semibold text-ink"
-          >{{ initials(session.displayName) }}</span
+          >{{ initials(signedInAs) }}</span
         >
-        <span class="max-w-24 truncate">{{ session.displayName }}</span>
+        <span class="hidden max-w-24 truncate sm:inline">{{ signedInAs }}</span>
         <AppIcon name="chevron" :size="13" class="rotate-90 text-faint" />
       </button>
 
@@ -108,10 +124,9 @@ function initials(name: string): string {
         class="absolute top-9 right-0 z-40 w-60 rounded-md border border-border bg-surface p-1 shadow-(--sf-shadow)"
       >
         <div class="px-2.5 pt-2 pb-1.5">
-          <p class="text-xs font-semibold">{{ session.displayName }}</p>
+          <p class="text-xs font-semibold">{{ signedInAs }}</p>
           <p class="font-mono text-[11.5px] text-faint">{{ say("profile-realm") }} {{ current }}</p>
         </div>
-        <div class="my-1 border-t border-border"></div>
         <div class="my-1 border-t border-border"></div>
         <button
           type="button"

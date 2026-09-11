@@ -30,7 +30,9 @@ const PAGE = readFileSync(join(ui, "login.html"), "utf8")
   })
   // What the server substitutes per request renders empty here, the way a
   // realm with nothing wired renders it.
-  .replace("{idps}", "");
+  .replace("{idps}", "")
+  .replace("{back-address}", "")
+  .replace("{back-name}", "");
 const SCRIPT = readFileSync(join(ui, "login.js"), "utf8");
 
 /// What the page says inside the element with that identifier, for the
@@ -146,6 +148,8 @@ export function opened({ rounds = [], fetching = true, doors = "", policy = [] }
   }
 
   const answers = [...rounds];
+  /// What the page handed the browser's key ceremony, in order.
+  const ceremonies = [];
   const context = {
     document: {
       getElementById: element,
@@ -158,6 +162,26 @@ export function opened({ rounds = [], fetching = true, doors = "", policy = [] }
       assign: (where) => went.push(where),
     },
     window: {},
+    // Enough of the key ceremony to see what the page asks the browser for.
+    // The options go through the browser's own JSON parsing in life, which
+    // here is the identity: what matters to a test is the shape handed over,
+    // not the byte arrays it would become.
+    PublicKeyCredential: {
+      parseRequestOptionsFromJSON: (held) => held,
+      parseCreationOptionsFromJSON: (held) => held,
+    },
+    navigator: {
+      credentials: {
+        get: (asked) => {
+          ceremonies.push({ kind: "get", asked });
+          return new Promise(() => {});
+        },
+        create: (asked) => {
+          ceremonies.push({ kind: "create", asked });
+          return new Promise(() => {});
+        },
+      },
+    },
     JSON,
     Promise,
     console,
@@ -182,6 +206,7 @@ export function opened({ rounds = [], fetching = true, doors = "", policy = [] }
   return {
     sent,
     went,
+    ceremonies,
     element,
     form,
     /// Fill the form and press Continue, as a person does.

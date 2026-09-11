@@ -773,10 +773,14 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
     let unreadable = |reason: store::error::StoreError| format!("the store refused: {reason:?}");
 
     let mut connection = plane.pool.get().await.map_err(|e| e.to_string())?;
-    // Tenant wide first: a realm cannot be scoped to before it exists.
+    // The realm row is tenant isolated, so this transaction may name the
+    // future realm and keep its whole birth atomic.
     let transaction = plane
         .tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide(&wanted.tenant))
+        .transaction(
+            &mut connection,
+            &TenantContext::new(&wanted.tenant, &wanted.realm),
+        )
         .await
         .map_err(|e| e.to_string())?;
     if provisioning::provision_tenant(&transaction, &wanted.tenant, &wanted.tenant)
@@ -787,20 +791,15 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
     }
     if provisioning::provision_realm_row(&transaction, &wanted.tenant, &wanted.realm)
         .await
-        .map_err(unreadable)?
+        .map_err(|reason| match reason {
+            store::error::StoreError::AlreadyExists => {
+                format!("realm {} is already used by another tenant", wanted.realm)
+            }
+            _ => unreadable(reason),
+        })?
     {
         println!("realm {} created", wanted.realm);
     }
-    transaction.commit().await.map_err(|e| e.to_string())?;
-
-    let transaction = plane
-        .tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&wanted.tenant, &wanted.realm),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
     let (tenant, realm) = (wanted.tenant.as_str(), wanted.realm.as_str());
     provisioning::provision_standard_scopes(&transaction, tenant, realm)
         .await
@@ -835,6 +834,12 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
         .map_err(unreadable)?
     {
         println!("browser flow created");
+    }
+    let offered = provisioning::provision_offered_flows(&transaction, tenant, realm)
+        .await
+        .map_err(unreadable)?;
+    if offered > 0 {
+        println!("{offered} flows offered, none bound");
     }
     if wanted.magic_link
         && provisioning::provision_mailed_login(&transaction, tenant, realm)

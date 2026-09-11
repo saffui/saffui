@@ -8,8 +8,7 @@ use store::providers::{realms, tenants};
 use store::tenancy::{TenantContext, resolve};
 use support::Fixture;
 
-/// Plant a second tenant holding a realm of the same name, which is what makes
-/// a name ambiguous rather than merely taken.
+/// Plant a second tenant and one globally distinct realm.
 async fn rival_tenant(fixture: &Fixture, tenant_id: &str, realm_name: &str, region: Option<&str>) {
     let mut connection = fixture.connection().await;
     let transaction = fixture
@@ -91,21 +90,72 @@ async fn a_realm_carries_its_tenant_and_its_residency_back() {
     );
 }
 
-/// Two answers is a refusal, not a choice.
+/// A public realm name cannot be claimed by another tenant.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn a_name_two_tenants_use_is_refused() {
+async fn a_name_is_unique_across_tenants() {
     let fixture = Fixture::with_user().await;
-    rival_tenant(&fixture, "globex", "main", None).await;
-    let connection = fixture.connection().await;
-
-    match resolve::realm_by_name(&connection, "main").await {
-        Err(StoreError::Ambiguous { asked, count }) => {
-            assert_eq!(asked, "main");
-            assert_eq!(count, 2);
-        }
-        other => panic!("an ambiguous name resolved to {other:?}"),
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::tenant_wide("globex"))
+        .await;
+    let tenant: models::entities::tenant::TenantModel = TenantCreateModel {
+        tenant_id: "globex".into(),
+        display_name: "Globex".into(),
+        region: None,
+        limits: None,
+        created_by: Some("root".into()),
     }
+    .into();
+    tenants::create(&transaction, &tenant).await.unwrap();
+    let realm = RealmCreateModel {
+        name: "main".into(),
+        display_name: "Main".into(),
+        enabled: true,
+    }
+    .into_model(
+        "globex-main".into(),
+        AuditableModel::from_creator("globex".into(), "root".into()),
+    );
+
+    assert_eq!(
+        realms::create(&transaction, &realm).await,
+        Err(StoreError::AlreadyExists)
+    );
+}
+
+/// Token realm ids use the same public namespace as issuer names.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_id_is_unique_across_tenants() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::tenant_wide("globex"))
+        .await;
+    let tenant: models::entities::tenant::TenantModel = TenantCreateModel {
+        tenant_id: "globex".into(),
+        display_name: "Globex".into(),
+        region: None,
+        limits: None,
+        created_by: Some("root".into()),
+    }
+    .into();
+    tenants::create(&transaction, &tenant).await.unwrap();
+    let realm = RealmCreateModel {
+        name: "globex-main".into(),
+        display_name: "Globex Main".into(),
+        enabled: true,
+    }
+    .into_model(
+        "main".into(),
+        AuditableModel::from_creator("globex".into(), "root".into()),
+    );
+
+    assert_eq!(
+        realms::create(&transaction, &realm).await,
+        Err(StoreError::AlreadyExists)
+    );
 }
 
 #[tokio::test]

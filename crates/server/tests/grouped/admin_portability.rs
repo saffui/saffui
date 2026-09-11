@@ -7,6 +7,80 @@ use serde_json::{Value, json};
 
 const REALM: &str = support::REALM;
 
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_configuration_export_can_be_previewed_and_merged() {
+    let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export?include_users=false"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    assert_eq!(count(&document, "users"), 0, "{document}");
+    assert!(
+        !document["sections"]
+            .as_array()
+            .expect("sections")
+            .iter()
+            .any(|section| section == "users")
+    );
+
+    let request = json!({ "document": document, "collision": "skip" });
+    let (status, preview) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/import/preview"),
+        &bearer,
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert!(preview["collision_count"].as_u64().unwrap_or(0) > 0);
+
+    let (status, applied) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/import"),
+        &bearer,
+        Some(request),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_partial_import_refuses_accounts() {
+    let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+
+    let (status, refused) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/import/preview"),
+        &bearer,
+        Some(json!({ "document": document, "collision": "fail" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
+}
+
 /// Ask the plane, with a body or without one.
 async fn asked(
     plane: &Plane,
@@ -130,6 +204,70 @@ async fn the_other_birth_door_answers_to_the_same_rules() {
     assert_eq!(rows.len(), 1, "the arrival left no trace above the realms");
     let envelope: serde_json::Value = rows[0].get("envelope");
     assert_eq!(envelope["kind"], "realm.imported", "{envelope}");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn concurrent_imports_share_one_ceiling_count() {
+    let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    plane.cap_realms(2).await;
+
+    let left = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=import-left",
+        &bearer,
+        Some(document.clone()),
+    );
+    let right = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=import-right",
+        &bearer,
+        Some(document),
+    );
+    let (left, right) = tokio::join!(left, right);
+    let statuses = [left.0, right.0];
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::CREATED)
+            .count(),
+        1,
+        "{left:?} {right:?}"
+    );
+    assert_eq!(
+        statuses
+            .iter()
+            .filter(|status| **status == StatusCode::UNPROCESSABLE_ENTITY)
+            .count(),
+        1,
+        "{left:?} {right:?}"
+    );
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::tenant_wide(support::TENANT),
+        )
+        .await;
+    assert_eq!(
+        store::providers::tenants::count_realms(&transaction)
+            .await
+            .unwrap(),
+        2
+    );
 }
 
 #[tokio::test]

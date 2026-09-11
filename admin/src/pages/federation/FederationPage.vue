@@ -4,6 +4,7 @@ import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
+import IdpDrawer from "./IdpDrawer.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import {
   createIdp,
@@ -56,6 +57,24 @@ function bagText(row: IdpRow, key: string): string {
 }
 
 const editing = ref<null | { alias: string | null }>(null);
+
+/// The broker being opened, or a new one. Held apart from `editing`, which
+/// belongs to the trusted platforms below: the two are different shapes with
+/// different fields, and one editor for both is how a form ends up writing a
+/// field the other kind does not have.
+const broker = ref<IdpRow | null>(null);
+const openingBroker = ref(false);
+
+function openBroker(row: IdpRow | null) {
+  broker.value = row;
+  openingBroker.value = true;
+}
+
+async function brokerChanged() {
+  openingBroker.value = false;
+  broker.value = null;
+  idps.value = await listIdps(realm.value);
+}
 const form = ref({
   alias: "",
   displayName: "",
@@ -156,12 +175,23 @@ async function drop() {
 
 <template>
   <div>
-    <h1 class="text-lg font-semibold tracking-tight">{{ say("federation-title") }}</h1>
+    <div class="flex flex-wrap items-center justify-between gap-3">
+      <h1 class="text-lg font-semibold tracking-tight">{{ say("federation-title") }}</h1>
+    </div>
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <h2 class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-      {{ say("federation-idps") }}
-    </h2>
+    <div class="mt-5 flex items-center gap-3">
+      <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("federation-idps") }}
+      </h2>
+      <button
+        type="button"
+        class="sf-button sf-button-secondary ml-auto"
+        @click="openBroker(null)"
+      >
+        {{ say("federation-new-idp") }}
+      </button>
+    </div>
     <p v-if="!brokers.length" class="mt-2 text-xs text-muted">{{ say("federation-no-idps") }}</p>
     <div v-else class="sf-list mt-2 overflow-x-auto">
       <table class="sf-table">
@@ -177,7 +207,8 @@ async function drop() {
           <tr
             v-for="row in brokers"
             :key="row.internal_id"
-            class="border-b border-border/60 last:border-0"
+            class="cursor-pointer border-b border-border/60 last:border-0 hover:bg-surface-2"
+            @click="openBroker(row)"
           >
             <td>{{ row.display_name || row.name }}</td>
             <td class="font-mono text-[11.5px]">{{ row.provider_id }}</td>
@@ -219,7 +250,7 @@ async function drop() {
       </div>
     </div>
 
-    <div class="mt-6 flex max-w-3xl items-center">
+    <div class="mt-6 flex max-w-3xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("federation-platforms") }}
       </h2>
@@ -385,5 +416,14 @@ async function drop() {
         </div>
       </form>
     </AppDrawer>
-  </div>
+  
+    <IdpDrawer
+      v-if="openingBroker"
+      :realm="realm"
+      :row="broker ?? undefined"
+      @close="openingBroker = false"
+      @saved="brokerChanged"
+      @deleted="brokerChanged"
+    />
+</div>
 </template>

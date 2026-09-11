@@ -287,6 +287,7 @@ a { color: var(--ink); }
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--danger) 7%, transparent);
 }
+#back-row { margin: 10px 0 0; font-size: 14px; }
 .told { margin: 1rem 0 0; }
 [hidden], .flash { display: none; }
 /* The fragment names the outcome, and the element it names shows itself. */

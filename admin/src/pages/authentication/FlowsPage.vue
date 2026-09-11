@@ -3,7 +3,10 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
-import { listFlows } from "@/services/flows";
+import DangerDialog from "@/components/DangerDialog.vue";
+import AppToggle from "@/components/AppToggle.vue";
+import AppDrawer from "@/components/AppDrawer.vue";
+import { createFlow, deleteFlow, listFlows } from "@/services/flows";
 import { getRealmSettings, reshapeRealm } from "@/services/settings";
 import { afterWrites } from "@/services/writes";
 import type { FlowRow } from "@/models/flows";
@@ -31,6 +34,51 @@ afterWrites(load);
 
 const topLevel = computed(() => flows.value.filter((flow) => flow.top_level));
 
+/// A new flow, or none being made. A realm is born with one and everything
+/// else is built here.
+const making = ref(false);
+const draft = ref({ alias: "", description: "", top_level: true });
+const draftRefusal = computed(() => {
+  const alias = draft.value.alias.trim();
+  if (!alias) return "empty";
+  // The alias is what a realm binds and what a URL carries, so it is spelled
+  // the way the built-in one is rather than however somebody types.
+  if (!/^[a-z][a-z0-9-]*$/u.test(alias)) return "shape";
+  if (flows.value.some((held) => held.alias === alias)) return "taken";
+  return null;
+});
+
+async function makeFlow() {
+  if (draftRefusal.value) return;
+  try {
+    await createFlow(realm.value, {
+      alias: draft.value.alias.trim(),
+      description: draft.value.description.trim(),
+      top_level: draft.value.top_level,
+    });
+    making.value = false;
+    draft.value = { alias: "", description: "", top_level: true };
+    await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
+/// The flow waiting to be taken away, with what a person recognises it by.
+const doomed = ref<FlowRow | null>(null);
+
+async function dropFlow() {
+  const held = doomed.value;
+  if (!held) return;
+  try {
+    await deleteFlow(realm.value, held.flow_id);
+    doomed.value = null;
+    await load();
+  } catch {
+    doomed.value = null;
+  }
+}
+
 async function bindBrowser() {
   failed.value = "";
   try {
@@ -51,7 +99,7 @@ function open(flow: FlowRow) {
 
 <template>
   <div>
-    <div class="flex items-center justify-between">
+    <div class="flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("flows-title") }}</h1>
       <router-link
         :to="`/${realm}/authentication/actions`"
@@ -66,7 +114,7 @@ function open(flow: FlowRow) {
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
     <form
-      class="mt-4 flex max-w-xl items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5"
+      class="mt-4 flex max-w-xl flex-wrap items-end gap-2 rounded-lg border border-border bg-surface px-3 py-2.5"
       @submit.prevent="bindBrowser"
     >
       <label class="flex-1 text-[11px] font-medium text-muted">
@@ -90,7 +138,17 @@ function open(flow: FlowRow) {
     </form>
     <p class="mt-2 max-w-xl text-[10.5px] text-faint">{{ say("flows-hooks-note") }}</p>
 
-    <div class="sf-list mt-4 overflow-x-auto">
+    <div class="mt-5 flex items-center gap-3">
+      <span class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("flows-all") }}
+      </span>
+      <AppHint name="flows-all-help" />
+      <button type="button" class="sf-button sf-button-secondary ml-auto" @click="making = true">
+        {{ say("flows-new") }}
+      </button>
+    </div>
+
+    <div class="sf-list mt-2 overflow-x-auto">
       <table class="sf-table">
         <thead>
           <tr>
@@ -120,6 +178,14 @@ function open(flow: FlowRow) {
                   class="rounded border border-accent/40 px-1.5 py-0.5 text-[10px] text-accent"
                   >{{ say("flows-built-in") }}</span
                 >
+                <button
+                  v-if="!flow.built_in"
+                  type="button"
+                  class="text-[11px] text-faint hover:text-danger"
+                  @click.stop="doomed = flow"
+                >
+                  {{ say("flows-remove") }}
+                </button>
                 <span
                   v-if="flow.alias === browserFlow"
                   class="rounded border border-ok/40 px-1.5 py-0.5 text-[10px] text-ok"
@@ -131,5 +197,46 @@ function open(flow: FlowRow) {
         </tbody>
       </table>
     </div>
-  </div>
+  
+    <AppDrawer v-if="making" :title="say('flows-new')" :subtitle="realm" @close="making = false">
+      <form class="flex flex-col gap-3 text-xs" @submit.prevent="makeFlow">
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("flows-col-alias") }} <AppHint name="flows-alias-help" />
+          <input v-model="draft.alias" class="sf-field mt-1 font-mono" spellcheck="false" />
+          <span v-if="draftRefusal" class="mt-1 block text-[10.5px] text-danger">
+            {{ say(`flows-alias-${draftRefusal}`) }}
+          </span>
+        </label>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("scopes-col-description") }}
+          <input v-model="draft.description" class="sf-field mt-1" />
+        </label>
+        <AppToggle v-model="draft.top_level">
+          {{ say("flows-top-level") }} <AppHint name="flows-top-level-help" />
+        </AppToggle>
+        <div>
+          <button
+            type="submit"
+            class="sf-button sf-button-primary"
+            :disabled="draftRefusal !== null"
+          >
+            {{ say("realm-create") }}
+          </button>
+        </div>
+      </form>
+    </AppDrawer>
+
+    <DangerDialog
+      :open="doomed !== null"
+      :title="say('flows-remove-title')"
+      :named="doomed?.alias ?? ''"
+      :lede="say('flows-remove-lede')"
+      :facts="[]"
+      :warning="say('flows-remove-warning')"
+      :trail="say('flows-remove-trail')"
+      :confirm-label="say('flows-remove')"
+      @close="doomed = null"
+      @confirm="dropFlow"
+    />
+</div>
 </template>

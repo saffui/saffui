@@ -3,6 +3,8 @@ import type {
   DeliveryProof,
   DirectoryRow,
   IdpMutation,
+  IdpMapperMutation,
+  IdpMapperRow,
   IdpRow,
   IgaGrant,
   IgaRule,
@@ -32,6 +34,51 @@ export async function deleteIdp(realm: string, alias: string): Promise<void> {
   return api<void>(adminPath(realm, `identity-providers/${encodeURIComponent(alias)}`), {
     method: "DELETE",
     subject: alias,
+  });
+}
+
+function mapperPath(realm: string, alias: string, mapperId?: string): string {
+  const base = `identity-providers/${encodeURIComponent(alias)}/mappers`;
+  return adminPath(realm, mapperId ? `${base}/${encodeURIComponent(mapperId)}` : base);
+}
+
+export async function listIdpMappers(realm: string, alias: string): Promise<IdpMapperRow[]> {
+  return api<IdpMapperRow[]>(mapperPath(realm, alias));
+}
+
+export async function createIdpMapper(
+  realm: string,
+  alias: string,
+  body: IdpMapperMutation,
+): Promise<IdpMapperRow> {
+  return api<IdpMapperRow>(mapperPath(realm, alias), {
+    method: "POST",
+    json: body,
+    subject: body.name,
+  });
+}
+
+export async function updateIdpMapper(
+  realm: string,
+  alias: string,
+  mapperId: string,
+  body: IdpMapperMutation,
+): Promise<IdpMapperRow> {
+  return api<IdpMapperRow>(mapperPath(realm, alias, mapperId), {
+    method: "PUT",
+    json: body,
+    subject: body.name,
+  });
+}
+
+export async function deleteIdpMapper(
+  realm: string,
+  alias: string,
+  mapperId: string,
+): Promise<void> {
+  return api<void>(mapperPath(realm, alias, mapperId), {
+    method: "DELETE",
+    subject: mapperId,
   });
 }
 

@@ -6,7 +6,7 @@ use models::entities::client::{ClientScopeModel, Protocol};
 use services::authorize::granted_scope;
 use services::provisioning::{
     ADMIN_SCOPE, ADMINISTRATOR_ROLE, AdminConsole, provision_admin_console,
-    provision_realm_administration,
+    provision_offered_flows, provision_realm_administration,
 };
 use store::providers::client_scopes;
 use store::providers::roles;
@@ -217,6 +217,39 @@ async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
         .await
         .expect("provisioning is idempotent");
     transaction.commit().await.unwrap();
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_late_failure_rolls_back_the_whole_realm_birth() {
+    let fixture = Fixture::empty().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
+        .await;
+    store::providers::tenants::create(&transaction, &tenant())
+        .await
+        .unwrap();
+    transaction.commit().await.unwrap();
+
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+    services::provisioning::provision_realm(&transaction, &realm(), &console())
+        .await
+        .unwrap();
+    assert!(transaction.query_one("SELECT 1 / 0", &[]).await.is_err());
+    transaction.rollback().await.unwrap();
+
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
+        .await;
+    assert!(
+        store::providers::realms::load(&transaction, "main")
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 fn tenant() -> models::entities::tenant::TenantModel {
@@ -548,5 +581,153 @@ async fn a_provisioned_administrator_holds_the_whole_plane() {
         held,
         vec![AdminAction::UserRead],
         "provisioning widened a role the operator narrowed"
+    );
+}
+
+/// A realm is offered more than the flow it signs in by, and binds none of
+/// them.
+///
+/// The offered flows exist so an operator does not build a second factor by
+/// hand, which is the part that goes wrong quietly: entered as an alternative
+/// rather than a requirement, a second factor is one anybody can decline. They
+/// are made unbound on purpose, so nothing about how a realm signs in changes
+/// because the realm was created.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_is_offered_flows_and_binds_none_of_them() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    let made = provision_offered_flows(&transaction, "acme", "main")
+        .await
+        .expect("the flows are made");
+    assert_eq!(made, 5, "a realm was offered something else");
+
+    // Running again offers nothing twice: provisioning runs on a realm that
+    // was half made, and a second flow by the same alias is not a repair.
+    let again = provision_offered_flows(&transaction, "acme", "main")
+        .await
+        .expect("it runs again");
+    assert_eq!(again, 0, "provisioning made the same flow twice");
+
+    for alias in [
+        "two-factor",
+        "phone-first",
+        "passwordless",
+        "mailed-link",
+        "desktop",
+    ] {
+        let flow = store::providers::auth_flows::flow_by_alias(&transaction, alias)
+            .await
+            .expect("the store answered")
+            .unwrap_or_else(|| panic!("{alias} was not offered"));
+        assert_eq!(
+            flow.top_level,
+            Some(true),
+            "{alias} cannot be bound as a sign-in"
+        );
+    }
+
+    // What makes the second factor a second factor: the password is required
+    // and every other way is an alternative, so a person holding none of them
+    // is refused rather than let through on the password alone.
+    let steps = store::providers::auth_flows::executions_of(&transaction, "two-factor")
+        .await
+        .expect("the store answered");
+    let requirement = |alias: &str| {
+        steps
+            .iter()
+            .find(|held| held.alias == alias)
+            .map(|held| held.requirement)
+    };
+    assert_eq!(
+        requirement("password"),
+        Some(models::entities::auth::AuthenticatorRequirement::Required),
+        "the password is not required"
+    );
+    for second in ["totp", "sms-otp", "webauthn", "recovery-code"] {
+        assert_eq!(
+            requirement(second),
+            Some(models::entities::auth::AuthenticatorRequirement::Alternative),
+            "{second} is not a way past the password"
+        );
+    }
+
+    // The passkey flow keeps a way in for somebody holding no passkey. A key is
+    // enrolled through a required action, which is only reached once somebody
+    // has been admitted, so a key-only flow shuts out everyone who does not
+    // already hold one, including the first person ever to sign in.
+    let passkey = store::providers::auth_flows::executions_of(&transaction, "passwordless")
+        .await
+        .expect("the store answered");
+    for step in &passkey {
+        assert_eq!(
+            step.requirement,
+            models::entities::auth::AuthenticatorRequirement::Alternative,
+            "{} is the only way in, and a passkey cannot be enrolled without one",
+            step.alias
+        );
+    }
+    let ways: Vec<&str> = passkey.iter().map(|step| step.alias.as_str()).collect();
+    assert!(
+        ways.contains(&"webauthn") && ways.contains(&"magic-link"),
+        "the flow offers no way in for somebody with no passkey yet: {ways:?}"
+    );
+
+    // And it says what it depends on, because neither dependency is in the
+    // flow: without passkey-only sign-in nobody is named before the key step
+    // runs, and without signing in by address the link step never sends.
+    let passkey = store::providers::auth_flows::flow_by_alias(&transaction, "passwordless")
+        .await
+        .expect("the store answered")
+        .expect("it was offered");
+    for needed in ["passkey-only sign-in", "by address"] {
+        assert!(
+            passkey.description.contains(needed),
+            "the flow does not say it needs {needed}: {}",
+            passkey.description
+        );
+    }
+
+    // And the mailed one says the same about the door that names the person.
+    let mailed = store::providers::auth_flows::flow_by_alias(&transaction, "mailed-link")
+        .await
+        .expect("the store answered")
+        .expect("it was offered");
+    assert!(
+        mailed.description.contains("by address"),
+        "the flow does not say what it needs: {}",
+        mailed.description
+    );
+
+    // The desktop flow offers two ways in rather than requiring either: a
+    // browser with no ticket types a password, and the password passing
+    // settles the ticket step rather than leaving the login held open.
+    let desktop = store::providers::auth_flows::executions_of(&transaction, "desktop")
+        .await
+        .expect("the store answered");
+    for step in &desktop {
+        assert_eq!(
+            step.requirement,
+            models::entities::auth::AuthenticatorRequirement::Alternative,
+            "{} is not a way in but a demand",
+            step.alias
+        );
+    }
+    assert_eq!(desktop.len(), 2, "the desktop flow lost a way in");
+
+    // A texted code is the whole of the phone-first flow: a proven number is
+    // an identifier here, so the code is a way in and not a second one.
+    let texted = store::providers::auth_flows::executions_of(&transaction, "phone-first")
+        .await
+        .expect("the store answered");
+    assert_eq!(texted.len(), 1, "phone-first carries more than the code");
+    assert_eq!(
+        texted[0].requirement,
+        models::entities::auth::AuthenticatorRequirement::Required,
+        "the code can be declined"
     );
 }

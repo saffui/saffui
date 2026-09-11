@@ -254,7 +254,7 @@ function worded(value: unknown): string {
     </div>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
 
-    <div class="mt-4 grid gap-4 xl:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
+    <div class="mt-4 grid min-w-0 gap-4 xl:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
       <form class="rounded-lg border border-border bg-surface p-4" @submit.prevent="ask">
         <div class="flex flex-wrap gap-1">
           <button
@@ -417,6 +417,51 @@ function worded(value: unknown): string {
             >
             <span class="ml-auto font-mono text-[10.5px] text-faint">{{ verdict.decision_id }}</span>
           </div>
+
+          <template v-if="verdict.walk">
+            <div class="mt-4 flex items-center gap-2">
+              <span class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+                {{ say("graph-walk-title") }}
+              </span>
+              <AppHint name="graph-walk-help" />
+              <span v-if="verdict.walk.stopped" class="text-[11px] text-warn">
+                {{ verdict.walk.stopped }}
+              </span>
+            </div>
+            <ol class="mt-2 flex flex-col gap-0.5">
+              <li
+                v-for="(step, at) in verdict.walk.steps"
+                :key="`${at}-${step.asked}`"
+                class="flex items-baseline gap-2 text-[11px]"
+                :style="{ paddingLeft: `${step.depth * 14}px` }"
+              >
+                <span
+                  class="w-14 shrink-0 text-right text-[10px]"
+                  :class="
+                    step.answered === null
+                      ? 'text-faint'
+                      : step.answered
+                        ? 'text-ok'
+                        : 'text-muted'
+                  "
+                >
+                  {{
+                    step.answered === null
+                      ? ""
+                      : step.answered
+                        ? say("graph-walk-reached")
+                        : say("graph-walk-missed")
+                  }}
+                </span>
+                <span class="font-mono text-ink">{{ step.asked }}</span>
+                <span class="truncate text-faint">{{ step.rule }}</span>
+                <span v-if="step.note" class="text-faint italic">{{ step.note }}</span>
+              </li>
+            </ol>
+            <p v-if="verdict.walk.cut > 0" class="mt-2 text-[10.5px] text-faint">
+              {{ say("graph-walk-cut", { held: verdict.walk.cut }) }}
+            </p>
+          </template>
           <div class="mt-3 grid gap-2 sm:grid-cols-2">
             <div class="rounded-md border border-border px-3 py-2">
               <div class="text-[10px] font-semibold tracking-[0.08em] text-faint uppercase">

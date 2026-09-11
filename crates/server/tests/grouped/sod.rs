@@ -681,3 +681,353 @@ async fn a_change_reaching_many_people_is_weighed_for_each_of_them() {
     );
     assert!(roles_of(&plane, subject).await.contains(&"approver".into()));
 }
+
+/// A default group carrying these roles: the seat every newcomer takes.
+async fn planted_default_group(plane: &Plane, group: &str, carried: &[&str]) {
+    use models::auditable::AuditableModel;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let model = models::entities::authz::GroupModel {
+        group_id: group.into(),
+        realm_id: REALM.into(),
+        name: group.into(),
+        display_name: String::new(),
+        description: String::new(),
+        is_default: true,
+        parent_id: None,
+        metadata: AuditableModel::from_creator(support::TENANT.into(), "root".into()),
+    };
+    store::providers::roles::create_group(&transaction, &model)
+        .await
+        .unwrap();
+    for role in carried {
+        store::providers::roles::grant_to_group(&transaction, group, role)
+            .await
+            .unwrap();
+    }
+    transaction.commit().await.unwrap();
+}
+
+async fn somebody_named(plane: &Plane, name: &str) -> bool {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    store::providers::users::load_by_name(&transaction, name)
+        .await
+        .unwrap()
+        .is_some()
+}
+
+/// Default groups seat every newcomer in the same roles, so a set that breaks
+/// a separation refuses the newcomer at the doors that make one, and nothing
+/// of the person is left behind: the plane's and the provisioner's alike.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_newcomer_is_refused_when_the_default_groups_break_a_separation() {
+    let plane = Plane::with_actions(&[
+        AdminAction::IgaRead,
+        AdminAction::IgaWrite,
+        AdminAction::UserRead,
+        AdminAction::UserWrite,
+        AdminAction::ScimRead,
+        AdminAction::ScimWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    for role in ["payer", "approver", "desk"] {
+        planted_role(&plane, role).await;
+    }
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/iga/sod/rules/payments"),
+        &bearer,
+        Some(json!({ "roles": ["payer", "approver"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::roles::add_composite(&transaction, "desk", "approver")
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    // One half by default is no breach: the newcomer lands.
+    planted_default_group(&plane, "everyone", &["payer"]).await;
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/users"),
+        &bearer,
+        Some(json!({ "user_name": "first-comer" })),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {told}");
+
+    // Both halves by default, the second one step down a composite: every
+    // newcomer would be seated in breach.
+    planted_default_group(&plane, "desks-by-default", &["desk"]).await;
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/users"),
+        &bearer,
+        Some(json!({ "user_name": "second-comer" })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "the plane made a newcomer the default groups put in breach: {told}"
+    );
+    let said = told["message"].as_str().unwrap_or_default().to_owned()
+        + told["detail"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("payments"),
+        "the refusal names the rule: {told}"
+    );
+    assert!(
+        !somebody_named(&plane, "second-comer").await,
+        "the refused newcomer was left behind"
+    );
+
+    // The provisioner's door answers the same, in its own vocabulary.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/realms/{REALM}/scim/v2/Users"),
+        &bearer,
+        Some(json!({
+            "schemas": [services::scim::USER_SCHEMA],
+            "userName": "third-comer",
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a provisioner made a newcomer the default groups put in breach: {told}"
+    );
+    assert!(
+        !somebody_named(&plane, "third-comer").await,
+        "the refused newcomer was left behind"
+    );
+}
+
+async fn identifier_of(plane: &Plane, name: &str) -> String {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    store::providers::users::load_by_name(&transaction, name)
+        .await
+        .unwrap()
+        .expect("somebody by that name")
+        .user_id
+}
+
+/// A provisioner seating somebody in a group hands them what it carries, so a
+/// membership that would put them in breach refuses the whole request, added
+/// or replaced alike, while a group carrying nothing a rule names still seats
+/// the same person.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_provisioned_membership_that_breaks_a_separation_is_refused() {
+    let plane = Plane::with_actions(&[
+        AdminAction::IgaRead,
+        AdminAction::IgaWrite,
+        AdminAction::RoleWrite,
+        AdminAction::ScimRead,
+        AdminAction::ScimWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    for role in ["payer", "approver", "bystander"] {
+        planted_role(&plane, role).await;
+    }
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/iga/sod/rules/payments"),
+        &bearer,
+        Some(json!({ "roles": ["payer", "approver"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let subject = support::SUBJECT;
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/roles/payer/holders/{subject}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    planted_group_holding(&plane, "approvers", "approver").await;
+    planted_group_holding(&plane, "readers", "bystander").await;
+    let member = identifier_of(&plane, subject).await;
+    let scim = format!("/realms/{REALM}/scim/v2/Groups");
+
+    let (status, told) = asked(
+        &plane,
+        Method::PATCH,
+        &format!("{scim}/approvers"),
+        &bearer,
+        Some(json!({
+            "schemas": [services::scim::PATCH_SCHEMA],
+            "Operations": [{ "op": "add", "path": "members", "value": [{ "value": member }] }],
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a provisioner's add seated somebody in breach: {told}"
+    );
+    assert!(
+        !roles_of(&plane, subject).await.contains(&"approver".into()),
+        "the refused add landed anyway"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{scim}/approvers"),
+        &bearer,
+        Some(json!({
+            "schemas": [services::scim::GROUP_SCHEMA],
+            "displayName": "approvers",
+            "members": [{ "value": member }],
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a provisioner's replace seated somebody in breach: {told}"
+    );
+    assert!(
+        !roles_of(&plane, subject).await.contains(&"approver".into()),
+        "the refused replace landed anyway"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::PATCH,
+        &format!("{scim}/readers"),
+        &bearer,
+        Some(json!({
+            "schemas": [services::scim::PATCH_SCHEMA],
+            "Operations": [{ "op": "add", "path": "members", "value": [{ "value": member }] }],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(
+        roles_of(&plane, subject)
+            .await
+            .contains(&"bystander".into())
+    );
+}
+
+/// A partial import that would seat somebody in breach, here by handing a group
+/// the other half, is refused whole, and nothing of it lands.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_partial_import_that_breaks_a_separation_is_refused_whole() {
+    let plane = Plane::with_actions(&[
+        AdminAction::IgaRead,
+        AdminAction::IgaWrite,
+        AdminAction::RoleWrite,
+        AdminAction::GroupWrite,
+        AdminAction::RealmExport,
+        AdminAction::RealmImport,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    for role in ["payer", "approver"] {
+        planted_role(&plane, role).await;
+    }
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/iga/sod/rules/payments"),
+        &bearer,
+        Some(json!({ "roles": ["payer", "approver"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let subject = support::SUBJECT;
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/roles/payer/holders/{subject}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    planted_group_under(&plane, "desk", None).await;
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/groups/desk/members/{subject}"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, mut document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export?include_users=false"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    let desk = document["groups"]
+        .as_array_mut()
+        .expect("groups")
+        .iter_mut()
+        .find(|held| held["group"]["group_id"] == "desk")
+        .expect("the desk in the document");
+    desk["grants"]
+        .as_array_mut()
+        .expect("grants")
+        .push(json!("approver"));
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/import"),
+        &bearer,
+        Some(json!({ "document": document, "collision": "overwrite" })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "an import seated somebody in breach: {told}"
+    );
+    let said = told["message"].as_str().unwrap_or_default().to_owned()
+        + told["detail"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("payments"),
+        "the refusal names the rule: {told}"
+    );
+    assert!(
+        !roles_of(&plane, subject).await.contains(&"approver".into()),
+        "the refused import landed anyway"
+    );
+}

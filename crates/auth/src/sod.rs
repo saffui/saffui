@@ -106,6 +106,90 @@ pub async fn weigh_everyone(
     Ok(())
 }
 
+/// Weigh one role before it is handed to one person, for the doors that
+/// withhold a role rather than refuse a change: an identity provider's mapper
+/// at a sign-in, a lifecycle rule. Only an offence the role itself would bring
+/// counts; one the person already stands in is not this grant's to settle.
+///
+/// The person is held only once an enabled rule names a role that would
+/// arrive, so a grant no rule concerns costs a read and takes no lock.
+pub async fn weigh_grant(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    role_id: &str,
+) -> Result<(), Toxic> {
+    let rules = store::providers::sod::rules(transaction)
+        .await
+        .map_err(|_| Toxic::Backend)?;
+    let named = |role: &String| {
+        rules
+            .iter()
+            .filter(|rule| rule.enabled)
+            .any(|rule| rule.roles.contains(role))
+    };
+    let arriving = store::providers::roles::roles_reached_from(transaction, &[role_id.to_owned()])
+        .await
+        .map_err(|_| Toxic::Backend)?;
+    if !arriving.iter().any(named) {
+        return Ok(());
+    }
+    store::providers::sod::hold_person(transaction, user_id)
+        .await
+        .map_err(|_| Toxic::Backend)?;
+    let held: Vec<String> = store::providers::roles::effective_roles(transaction, user_id)
+        .await
+        .map_err(|_| Toxic::Backend)?
+        .into_iter()
+        .map(|role| role.role_id)
+        .collect();
+    let new: Vec<String> = arriving
+        .into_iter()
+        .filter(|role| !held.contains(role))
+        .collect();
+    let world: Vec<String> = held.iter().chain(new.iter()).cloned().collect();
+    let brought: Vec<Offence> = offences(&rules, &world)
+        .into_iter()
+        .filter(|offence| offence.held.iter().any(|role| new.contains(role)))
+        .collect();
+    if brought.is_empty() {
+        return Ok(());
+    }
+    let standing = store::providers::sod::exceptions_of(transaction, user_id)
+        .await
+        .map_err(|_| Toxic::Backend)?;
+    let now = Utc::now();
+    match brought
+        .into_iter()
+        .find(|offence| !excused(offence, &standing, now))
+    {
+        Some(offence) => Err(Toxic::Refused(words(&offence))),
+        None => Ok(()),
+    }
+}
+
+/// Weigh what the default groups hand every newcomer, before anyone is made.
+/// Each receives the same roles and none holds an exception yet, so one
+/// reading answers for all of them, and a set that breaks a separation refuses
+/// the person instead of seating them in breach. The caller holds the realm.
+pub async fn weigh_newcomer(transaction: &Transaction<'_>) -> Result<(), Toxic> {
+    let rules = store::providers::sod::rules(transaction)
+        .await
+        .map_err(|_| Toxic::Backend)?;
+    if !rules.iter().any(|rule| rule.enabled) {
+        return Ok(());
+    }
+    let carried = store::providers::roles::roles_of_default_groups(transaction)
+        .await
+        .map_err(|_| Toxic::Backend)?;
+    let reached = store::providers::roles::roles_reached_from(transaction, &carried)
+        .await
+        .map_err(|_| Toxic::Backend)?;
+    match offences(&rules, &reached).first() {
+        Some(offence) => Err(Toxic::Refused(words(offence))),
+        None => Ok(()),
+    }
+}
+
 async fn weigh_against(
     transaction: &Transaction<'_>,
     rules: &[SodRule],

@@ -322,6 +322,7 @@ fn refused(why: Uncreatable) -> ApiError {
         Uncreatable::NotFound => ApiError::new(ErrorCode::UserNotFound),
         Uncreatable::Invalid(what) => ApiError::with_detail(ErrorCode::ValidationError, what),
         Uncreatable::Unwritable => internal(),
+        Uncreatable::Toxic(said) => ApiError::with_detail(ErrorCode::ValidationError, said),
     }
 }
 

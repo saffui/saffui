@@ -723,6 +723,17 @@ pub async fn import_partial_realm(
             plan.report.collision_count
         )));
     }
+    // One change to many people: the role graph and the realm are held in the
+    // order a composite edit holds them, and whoever the import reaches is
+    // weighed once it has written.
+    roles::lock_role_composites(transaction)
+        .await
+        .map_err(|_| Unportable::Backend)?;
+    store::providers::sod::hold_realm(transaction)
+        .await
+        .map_err(|_| Unportable::Backend)?;
+    let mut reached_groups: Vec<String> = Vec::new();
+    let mut composite_edges: Vec<(String, String)> = Vec::new();
 
     for exported in &document.roles {
         match action(
@@ -754,6 +765,7 @@ pub async fn import_partial_realm(
         }
         for child_role_id in &exported.composites {
             add_composite_checked(transaction, &exported.role.role_id, child_role_id).await?;
+            composite_edges.push((exported.role.role_id.clone(), child_role_id.clone()));
         }
     }
 
@@ -789,6 +801,7 @@ pub async fn import_partial_realm(
             .map_err(|_| Unportable::Backend)?;
             created_groups.insert(exported.group.group_id.clone());
             if !matches!(group_action, PartialAction::Skip) {
+                reached_groups.push(exported.group.group_id.clone());
                 for role_id in &exported.grants {
                     roles::grant_to_group(transaction, &exported.group.group_id, role_id)
                         .await
@@ -1038,7 +1051,52 @@ pub async fn import_partial_realm(
         }
     }
 
+    weigh_import(transaction, &reached_groups, &composite_edges).await?;
     Ok(plan.report)
+}
+
+/// Weigh everyone a partial import reached: the people standing in a group it
+/// wrote, who hold what the group and those above it carry, and the holders of
+/// a role it placed another under. A breach refuses the whole import.
+async fn weigh_import(
+    transaction: &Transaction<'_>,
+    reached_groups: &[String],
+    composite_edges: &[(String, String)],
+) -> Result<(), Unportable> {
+    let mut people: Vec<String> = Vec::new();
+    let mut arriving: Vec<String> = Vec::new();
+    for group_id in reached_groups {
+        people.extend(
+            roles::members_at_or_below(transaction, group_id)
+                .await
+                .map_err(|_| Unportable::Backend)?,
+        );
+        arriving.extend(
+            roles::roles_carried_at_or_above(transaction, group_id)
+                .await
+                .map_err(|_| Unportable::Backend)?,
+        );
+    }
+    for (parent, child) in composite_edges {
+        people.extend(
+            roles::holders_of_role(transaction, parent)
+                .await
+                .map_err(|_| Unportable::Backend)?,
+        );
+        arriving.push(child.clone());
+    }
+    people.sort_unstable();
+    people.dedup();
+    let arriving = roles::roles_reached_from(transaction, &arriving)
+        .await
+        .map_err(|_| Unportable::Backend)?;
+    match crate::sod::weigh_everyone(transaction, &people, &arriving).await {
+        Ok(()) => Ok(()),
+        Err(crate::sod::Toxic::Refused(said)) => Err(Unportable::Invalid(format!(
+            "the import would break a separation of duties: {said}"
+        ))),
+        Err(crate::sod::Toxic::Backend) => Err(Unportable::Backend),
+    }
 }
 
 /// The realm as a document, read whole inside one transaction so no section

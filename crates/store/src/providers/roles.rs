@@ -753,6 +753,28 @@ pub async fn roles_reached_from(
         .collect())
 }
 
+/// The roles the default groups carry, with those of every group above them:
+/// what each newcomer holds through the groups they are seated in at birth.
+pub async fn roles_of_default_groups(transaction: &Transaction<'_>) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "WITH RECURSIVE above(group_id, parent_id) AS ( \
+                 SELECT group_id, parent_id FROM groups WHERE is_default \
+                 UNION \
+                 SELECT g.group_id, g.parent_id FROM groups g \
+                 JOIN above a ON g.group_id = a.parent_id \
+             ) \
+             SELECT DISTINCT role_id FROM groups_roles \
+             WHERE group_id IN (SELECT group_id FROM above) ORDER BY role_id",
+            &[],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect())
+}
+
 /// The roles carried by this group and by every group above it: what anyone
 /// standing in it holds through its groups.
 pub async fn roles_carried_at_or_above(

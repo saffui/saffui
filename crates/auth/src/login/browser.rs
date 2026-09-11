@@ -707,6 +707,19 @@ async fn named_subject(
             continue;
         };
         let shadow = shadow_row(provider, tenant, held.alias, &person, now)?;
+        // Seated in the default groups like any newcomer: a set that breaks a
+        // separation leaves the person unmirrored, refused as nobody known.
+        store::providers::sod::hold_person(transaction, &shadow.user_id)
+            .await
+            .map_err(|_| Unanswerable::Unreadable)?;
+        match crate::sod::weigh_newcomer(transaction).await {
+            Ok(()) => {}
+            Err(crate::sod::Toxic::Refused(said)) => {
+                tracing::warn!(directory = held.alias, %said, "a directory person was not mirrored: separation of duties");
+                return Ok(None);
+            }
+            Err(crate::sod::Toxic::Backend) => return Err(Unanswerable::Unreadable),
+        }
         users::create(transaction, &shadow)
             .await
             .map_err(|_| Unanswerable::Unreadable)?;

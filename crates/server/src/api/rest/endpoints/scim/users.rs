@@ -221,6 +221,19 @@ pub async fn create(
     };
     asserted.apply(&mut person);
 
+    // The same seat every newcomer takes: default groups that break a
+    // separation refuse the person, and the provisioner hears why.
+    if store::providers::sod::hold_person(&transaction, &person.user_id)
+        .await
+        .is_err()
+    {
+        return unavailable();
+    }
+    match services::sod::weigh_newcomer(&transaction).await {
+        Ok(()) => {}
+        Err(services::sod::Toxic::Refused(said)) => return refused(&Refusal::invalid(said)),
+        Err(services::sod::Toxic::Backend) => return unavailable(),
+    }
     if users::create(&transaction, &person).await.is_err() {
         return unavailable();
     }

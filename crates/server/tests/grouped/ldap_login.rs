@@ -737,3 +737,113 @@ async fn an_import_mirrors_everybody_once() {
         StatusCode::OK
     );
 }
+
+/// A directory person is seated in the default groups like any newcomer, so a
+/// set that breaks a separation leaves them unmirrored: the first sign-in is
+/// refused as one nobody here answers to, and no shadow carries the breach.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG) and a directory (SAFFUI_TEST_LDAP)"]
+async fn a_directory_person_is_not_mirrored_into_a_breach() {
+    use models::auditable::AuditableModel;
+    use store::tenancy::TenantContext;
+
+    let Some(url) = directory_url() else {
+        eprintln!("SAFFUI_TEST_LDAP unset; the journey has no directory to cross");
+        return;
+    };
+    let plane = Plane::with_actions(&[
+        AdminAction::IdpRead,
+        AdminAction::IdpWrite,
+        AdminAction::IgaRead,
+        AdminAction::IgaWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/federations/directory"),
+        &bearer,
+        Some(json!({
+            "configs": {
+                "url": { "Str": url },
+                "danger_plaintext": { "Str": "true" },
+                "bind_dn": { "Str": "cn=admin,dc=example,dc=org" },
+                "bind_password": { "Str": "adminpw" },
+                "users_dn": { "Str": "ou=users,dc=example,dc=org" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        for role in ["payer", "approver"] {
+            let model = models::entities::authz::RoleMutationModel {
+                name: role.into(),
+                description: String::new(),
+                display_name: String::new(),
+                client_id: None,
+                admin_actions: None,
+            }
+            .into_model(
+                role.into(),
+                REALM.into(),
+                AuditableModel::from_creator(support::TENANT.into(), "root".into()),
+            );
+            store::providers::roles::create(&transaction, &model)
+                .await
+                .unwrap();
+        }
+        let everyone = models::entities::authz::GroupModel {
+            group_id: "everyone".into(),
+            realm_id: REALM.into(),
+            name: "everyone".into(),
+            display_name: String::new(),
+            description: String::new(),
+            is_default: true,
+            parent_id: None,
+            metadata: AuditableModel::from_creator(support::TENANT.into(), "root".into()),
+        };
+        store::providers::roles::create_group(&transaction, &everyone)
+            .await
+            .unwrap();
+        for role in ["payer", "approver"] {
+            store::providers::roles::grant_to_group(&transaction, "everyone", role)
+                .await
+                .unwrap();
+        }
+        transaction.commit().await.unwrap();
+    }
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/iga/sod/rules/payments"),
+        &bearer,
+        Some(json!({ "roles": ["payer", "approver"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let cookie = opened_login(&plane).await;
+    assert_eq!(
+        answered(&plane, &cookie, "fedora", "wilderness").await,
+        StatusCode::UNAUTHORIZED,
+        "the directory's person was admitted into a breach"
+    );
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    assert!(
+        store::providers::users::load_by_name(&transaction, "fedora")
+            .await
+            .unwrap()
+            .is_none(),
+        "a shadow was left behind to carry the breach"
+    );
+}

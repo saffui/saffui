@@ -218,6 +218,27 @@ pub async fn patch(
         Ok(None) => return refused(&Refusal::not_found()),
         Err(_) => return unavailable(),
     };
+    let seats = folded.iter().any(|change| {
+        matches!(
+            change,
+            GroupPatch::AddMembers(_) | GroupPatch::ReplaceMembers(_)
+        )
+    });
+    let standing_before = if seats {
+        if store::providers::sod::hold_realm(&transaction)
+            .await
+            .is_err()
+        {
+            return unavailable();
+        }
+        match roles::group_membership(&transaction, &group_id).await {
+            Ok((standing, _)) => standing,
+            Err(_) => return unavailable(),
+        }
+    } else {
+        Vec::new()
+    };
+    let mut seated: Vec<String> = Vec::new();
 
     for change in folded {
         let landed = match change {
@@ -227,6 +248,7 @@ pub async fn patch(
                 roles::update_group(&transaction, &group).await.map(|_| ())
             }
             GroupPatch::AddMembers(people) => {
+                seated.extend(people.iter().cloned());
                 let mut outcome = Ok(());
                 for user_id in people {
                     if let Err(why) = roles::add_to_group(&transaction, &user_id, &group_id).await {
@@ -251,6 +273,7 @@ pub async fn patch(
                 outcome.map(|_| ())
             }
             GroupPatch::ReplaceMembers(people) => {
+                seated.extend(people.iter().cloned());
                 let mut outcome = roles::group_membership(&transaction, &group_id)
                     .await
                     .map(|(standing, _)| standing);
@@ -285,6 +308,9 @@ pub async fn patch(
         if landed.is_err() {
             return unavailable();
         }
+    }
+    if let Err(answer) = weigh_seated(&transaction, &group_id, &standing_before, seated).await {
+        return answer;
     }
 
     let shown = match roles::load_group(&transaction, &group_id).await {
@@ -351,6 +377,12 @@ pub async fn replace(
             Some(wanted) => wanted,
             None => return refused(&Refusal::invalid("members is an array of values")),
         };
+        if store::providers::sod::hold_realm(&transaction)
+            .await
+            .is_err()
+        {
+            return unavailable();
+        }
         let Ok((standing, _)) = roles::group_membership(&transaction, &group_id).await else {
             return unavailable();
         };
@@ -370,6 +402,9 @@ pub async fn replace(
                 return unavailable();
             }
         }
+        if let Err(answer) = weigh_seated(&transaction, &group_id, &standing, wanted).await {
+            return answer;
+        }
     }
 
     let shown = match roles::load_group(&transaction, &group_id).await {
@@ -383,6 +418,38 @@ pub async fn replace(
         return unavailable();
     }
     answered(StatusCode::OK, shown)
+}
+
+/// Weigh the people a write seats in this group anew: they now hold what the
+/// group and those above it carry. SCIM applies a request whole or not at all,
+/// so one breach refuses all of it. Members already standing are not weighed,
+/// the write handing them nothing they did not hold.
+async fn weigh_seated(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    group_id: &str,
+    standing_before: &[String],
+    seated: Vec<String>,
+) -> Result<(), HttpResponse> {
+    let mut newcomers: Vec<String> = seated
+        .into_iter()
+        .filter(|user_id| !standing_before.contains(user_id))
+        .collect();
+    newcomers.sort_unstable();
+    newcomers.dedup();
+    if newcomers.is_empty() {
+        return Ok(());
+    }
+    let carried = roles::roles_carried_at_or_above(transaction, group_id)
+        .await
+        .map_err(|_| unavailable())?;
+    let arriving = roles::roles_reached_from(transaction, &carried)
+        .await
+        .map_err(|_| unavailable())?;
+    match services::sod::weigh_everyone(transaction, &newcomers, &arriving).await {
+        Ok(()) => Ok(()),
+        Err(services::sod::Toxic::Refused(said)) => Err(refused(&Refusal::invalid(said))),
+        Err(services::sod::Toxic::Backend) => Err(unavailable()),
+    }
 }
 
 pub async fn delete(

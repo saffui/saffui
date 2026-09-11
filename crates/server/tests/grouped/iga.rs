@@ -320,3 +320,168 @@ async fn a_whole_working_life_converges_by_itself() {
         "the backfill missed ada: {held:?}"
     );
 }
+
+/// A rule-born role that would put somebody in breach of a separation is
+/// withheld at convergence and kept off the ledger, so the next convergence
+/// weighs it again; what else the rules say still lands.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_lifecycle_grant_that_breaks_a_separation_is_withheld() {
+    let plane = Plane::with_actions(&[
+        AdminAction::IgaRead,
+        AdminAction::IgaWrite,
+        AdminAction::RoleRead,
+        AdminAction::RoleWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    for role in ["staff", "payer", "approver"] {
+        planted_role(&plane, role).await;
+    }
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/iga/sod/rules/payments"),
+        &bearer,
+        Some(json!({ "roles": ["payer", "approver"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!(
+            "/admin/realms/{REALM}/roles/payer/holders/{}",
+            support::SUBJECT
+        ),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // Everybody is staff and, by an ill-drawn rule, an approver too.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/iga/rules/everyone"),
+        &bearer,
+        Some(json!({ "when_attribute": "*", "roles": ["staff", "approver"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/iga/converge"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let held = roles_of(&plane, support::SUBJECT).await;
+    assert!(
+        held.contains(&"staff".to_string()),
+        "the rest of the rule was withheld too: {held:?}"
+    );
+    assert!(
+        !held.contains(&"approver".to_string()),
+        "a lifecycle rule handed over the other half of a separation: {held:?}"
+    );
+    let ledger = {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let person = store::providers::users::load_by_name(&transaction, support::SUBJECT)
+            .await
+            .unwrap()
+            .expect("the subject");
+        store::providers::birthright::governed_of(&transaction, &person.user_id)
+            .await
+            .unwrap()
+    };
+    assert!(
+        !ledger.iter().any(|(role, _)| role == "approver"),
+        "a withheld role was written on the ledger: {ledger:?}"
+    );
+}
+
+/// A breach the person already stands in is not a rule-born grant's to
+/// settle: a role the offence does not involve is still handed over, even one
+/// another separation names, or one old breach would freeze everything else.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_standing_breach_does_not_withhold_an_unrelated_grant() {
+    let plane = Plane::with_actions(&[
+        AdminAction::IgaRead,
+        AdminAction::IgaWrite,
+        AdminAction::RoleRead,
+        AdminAction::RoleWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    for role in ["payer", "approver", "keeper", "auditor"] {
+        planted_role(&plane, role).await;
+    }
+    for (rule, roles) in [
+        ("payments", json!(["payer", "approver"])),
+        ("custody", json!(["keeper", "auditor"])),
+    ] {
+        let (status, told) = asked(
+            &plane,
+            Method::PUT,
+            &format!("/admin/realms/{REALM}/iga/sod/rules/{rule}"),
+            &bearer,
+            Some(json!({ "roles": roles })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{told}");
+    }
+    // A breach from before the separation was weighed anywhere, written as
+    // such a door once did.
+    {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let person = store::providers::users::load_by_name(&transaction, support::SUBJECT)
+            .await
+            .unwrap()
+            .expect("the subject");
+        for role in ["payer", "approver"] {
+            store::providers::roles::grant_to_user(&transaction, &person.user_id, role)
+                .await
+                .unwrap();
+        }
+        transaction.commit().await.unwrap();
+    }
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/iga/rules/vault"),
+        &bearer,
+        Some(json!({ "when_attribute": "*", "roles": ["keeper"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/iga/converge"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(
+        roles_of(&plane, support::SUBJECT)
+            .await
+            .contains(&"keeper".to_string()),
+        "a standing breach withheld a role it does not involve"
+    );
+}

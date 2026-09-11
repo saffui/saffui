@@ -752,3 +752,98 @@ async fn a_resource_is_shared_only_where_it_is_user_managed_and_the_graph_says_h
         "the share outlived being taken back: {verdict}"
     );
 }
+
+/// Sharing closes and reopens on the server itself. The PUT used to take the
+/// flag and drop it, so a server opened at birth stayed open whatever its
+/// caller was told.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_server_closes_and_reopens_sharing_in_place() {
+    let plane = Plane::with_actions(&[
+        AdminAction::UmaRead,
+        AdminAction::UmaWrite,
+        AdminAction::RebacWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!(
+        "/admin/realms/{REALM}/authz/servers/{}",
+        support::CONFIDENTIAL
+    );
+    let protection = |shareable: bool| {
+        json!({
+            "enforcement_mode": "enforcing",
+            "decision_strategy": "unanimous",
+            "user_managed_access": shareable,
+        })
+    };
+
+    let (status, told) = asked(&plane, Method::POST, &base, &bearer, Some(protection(true))).await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/rebac/schema"),
+        &bearer,
+        Some(json!({
+            "source": "definition user {}\n\ndefinition invoice {\n    relation viewer: user\n}\n"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/resources"),
+        &bearer,
+        Some(json!({
+            "name": "shared", "display_name": "shared", "description": "",
+            "resource_uris": [], "resource_type": "invoice",
+            "resource_owner": support::SUBJECT, "user_managed_access": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let shares = format!(
+        "{base}/resources/{}/shares",
+        made["resource_id"].as_str().expect("an id")
+    );
+    let share = |reader: &str| json!({ "relation": "viewer", "subject_type": "user", "subject_id": reader });
+
+    let (status, told) = asked(&plane, Method::PUT, &base, &bearer, Some(protection(false))).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (_, held) = asked(&plane, Method::GET, &base, &bearer, None).await;
+    assert_eq!(
+        held["user_managed_access"], false,
+        "the closed ceiling was not kept: {held}"
+    );
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &shares,
+        &bearer,
+        Some(share("first-reader")),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a closed server let a resource be shared: {told}"
+    );
+
+    let (status, told) = asked(&plane, Method::PUT, &base, &bearer, Some(protection(true))).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &shares,
+        &bearer,
+        Some(share("second-reader")),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "a reopened server still refused to share: {told}"
+    );
+}

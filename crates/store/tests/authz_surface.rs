@@ -476,7 +476,7 @@ async fn changing_the_mode_leaves_the_surface_alone() {
         ..server("app")
     };
     assert!(
-        authz_surface::set_server_mode(&transaction, &rolled_out)
+        authz_surface::set_server_protection(&transaction, &rolled_out)
             .await
             .unwrap()
     );

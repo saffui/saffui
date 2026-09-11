@@ -991,7 +991,7 @@ pub async fn import_partial_realm(
         match server_action {
             PartialAction::New => authz_surface::create_server(transaction, &exported.server).await,
             PartialAction::Overwrite => {
-                authz_surface::set_server_mode(transaction, &exported.server)
+                authz_surface::set_server_protection(transaction, &exported.server)
                     .await
                     .map(|_| ())
             }

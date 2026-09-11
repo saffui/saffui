@@ -848,6 +848,19 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       slow_tail_millis: 42,
     });
   }
+  if (path.endsWith("/metrics")) {
+    return answer({
+      window_seconds: 86400,
+      since: new Date((NOW - 86400) * 1000).toISOString(),
+      decisions: {
+        total: 4821, permits: 3910, denials: 846, indeterminate: 65,
+        disagreements: 3, average_duration_us: 1840, p95_duration_us: 6200,
+      },
+      logins: {
+        total: 923, signed_in: 781, sign_in_failed: 103, signed_out: 39, sms_throttled: 7,
+      },
+    });
+  }
   if (path === "/admin/features") {
     return answer([
       { slug: "kerberos", lifecycle: "stable", compiled: false, enabled: false, doc: "SPNEGO desktop tickets at the LDAP front; links the system Kerberos libraries." },

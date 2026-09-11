@@ -234,7 +234,7 @@ async fn composite_roles_are_resolved_and_cycles_are_refused() {
     .await;
     assert_eq!(status, StatusCode::OK, "{children}");
     assert_eq!(children.as_array().map(Vec::len), Some(1), "{children}");
-    assert_eq!(children[0]["role_id"], child, "{children}");
+    assert_eq!(children[0]["role_id"], child.as_str(), "{children}");
 
     let (status, body) = asked(
         &plane,

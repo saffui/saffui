@@ -64,6 +64,28 @@ export interface OverviewTold {
   /// The newest journal entries, and whether the chain verifies whole.
   journal: JournalEntry[];
   chain: ChainVerified | null;
+  businessMetrics: BusinessMetrics | null;
+}
+
+export interface BusinessMetrics {
+  window_seconds: number;
+  since: string;
+  decisions: {
+    total: number;
+    permits: number;
+    denials: number;
+    indeterminate: number;
+    disagreements: number;
+    average_duration_us: number | null;
+    p95_duration_us: number | null;
+  };
+  logins: {
+    total: number;
+    signed_in: number;
+    sign_in_failed: number;
+    signed_out: number;
+    sms_throttled: number;
+  };
 }
 
 /// The counts and the settings the strip needs, which the standing store has
@@ -93,13 +115,14 @@ export async function readOverview(
       if (refused instanceof ApiError && refused.status < 500) return null;
       throw refused;
     });
-  const [keys, mail, sms, ussd, journal, chain] = await Promise.all([
+  const [keys, mail, sms, ussd, journal, chain, businessMetrics] = await Promise.all([
     api<RealmKeys>(adminPath(realm, "keys")),
     quietly(api<MailBrief>(adminPath(realm, "mail"))),
     quietly(api<SmsBrief>(adminPath(realm, "sms"))),
     quietly(api<{ has_secret: boolean }>(adminPath(realm, "ussd"))),
     quietly(listJournal(realm, 0, 5)),
     quietly(verifyChain(realm)),
+    quietly(api<BusinessMetrics>(adminPath(realm, "metrics"))),
   ]);
 
   const attention: Attention[] = [];
@@ -163,5 +186,6 @@ export async function readOverview(
     attention,
     journal: journal?.items ?? [],
     chain,
+    businessMetrics,
   };
 }

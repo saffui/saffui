@@ -5,9 +5,9 @@ use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
     agents, authorization, claim_sources, client_scopes, clients, compliance, credentials,
-    directory, events, features, federation, flows, idps, iga, journal, keys, mail, negotiation,
-    overview, portability, protocol_mappers, realm_keys, realms, rebac, recert, requests, sessions,
-    sms, users, ussd,
+    directory, events, features, federation, flows, idps, iga, journal, keys, mail, metrics,
+    negotiation, overview, portability, protocol_mappers, realm_keys, realms, rebac, recert,
+    requests, sessions, sms, users, ussd,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -125,6 +125,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/overview",
             action: AdminAction::RealmRead,
             handler: Some(|| web::get().to(overview::read)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/metrics",
+            action: AdminAction::MetricsRead,
+            handler: Some(|| web::get().to(metrics::read)),
         },
         AdminRoute {
             method: Method::GET,

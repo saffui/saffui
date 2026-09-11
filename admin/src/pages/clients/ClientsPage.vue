@@ -11,6 +11,7 @@ import AppStringList from "@/components/AppStringList.vue";
 import type { Page } from "@/models/paging";
 import type { ClientBrief } from "@/models/client";
 import ClientDrawer from "./ClientDrawer.vue";
+import ClientTabs from "./ClientTabs.vue";
 
 
 const route = useRoute();
@@ -142,6 +143,8 @@ function finishMaking() {
         </button>
       </div>
     </div>
+
+    <ClientTabs class="mt-3" />
 
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 

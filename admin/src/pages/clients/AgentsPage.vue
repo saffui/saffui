@@ -19,6 +19,7 @@ import {
   emptyAgentDraft,
   type AgentDraft,
 } from "./agentForms";
+import ClientTabs from "./ClientTabs.vue";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
@@ -79,6 +80,7 @@ async function save() {
         {{ say("agents-new") }}
       </button>
     </div>
+    <ClientTabs class="mt-3" />
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
     <p v-if="!agents.length" class="mt-5 text-xs text-muted">{{ say("agents-none") }}</p>
     <div v-else class="sf-list mt-5 overflow-x-auto">

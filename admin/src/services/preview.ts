@@ -10,6 +10,14 @@ const NOW = Math.floor(Date.now() / 1000);
 /// Revoking in the preview has to show, or the button would look broken here
 /// and nowhere else.
 const TAKEN_AWAY = new Set<string>();
+const ORGANIZATION_MEMBERS = new Set([
+  "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
+  "3d1e7a86-9f04-42bb-8e57-c6b2d09fa715",
+]);
+const SESSION_GRANTS = new Set(["web-dashboard", "kiosk-tv"]);
+const CONSENTS = new Set(["web-dashboard"]);
+const COMPOSITE_ROLES = new Set(["r-2"]);
+const CLIENT_MAPPERS = new Set(["m-1", "m-2"]);
 
 const PEOPLE: UserBrief[] = [
   {
@@ -117,6 +125,18 @@ const CLIENTS: ClientDetail[] = [
     redirect_uris: ["https://payments.acme.example/oauth/return"], post_logout_redirect_uris: [] }),
   previewClient({ client_id: "counter-desk", name: "Counter desk", enabled: false, confidential: true,
     redirect_uris: ["https://counter.beta.example/back"], post_logout_redirect_uris: [] }),
+];
+
+const REALM_MAPPERS = [
+  { mapper_id: "m-1", name: "audience for payments", protocol: "openid-connect", mapper_type: "audience" },
+  { mapper_id: "m-2", name: "department claim", protocol: "openid-connect", mapper_type: "user-attribute" },
+  { mapper_id: "m-3", name: "email claims", protocol: "openid-connect", mapper_type: "user-property" },
+];
+
+const PREVIEW_ROLES = [
+  { role_id: "r-1", name: "auditor", display_name: "Auditor", description: "Reads the journal", client_id: null },
+  { role_id: "r-2", name: "reader", display_name: "Reader", description: "", client_id: "web-dashboard" },
+  { role_id: "r-3", name: "payments-officer", display_name: "Payments officer", description: "May move money", client_id: "payments-api" },
 ];
 
 function person(path: string): UserBrief | null {
@@ -277,6 +297,14 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
     TAKEN_AWAY.add(path.split("/").pop() ?? "");
     return answer(null);
   }
+  if (/\/users\/[^/]+\/sessions\/[^/]+\/grants\/[^/]+$/.test(path) && method === "DELETE") {
+    SESSION_GRANTS.delete(decodeURIComponent(path.split("/").pop() ?? ""));
+    return answer(undefined);
+  }
+  if (/\/users\/[^/]+\/consents\/[^/]+$/.test(path) && method === "DELETE") {
+    CONSENTS.delete(decodeURIComponent(path.split("/").pop() ?? ""));
+    return answer(undefined);
+  }
   if (/\/users\/[^/]+\/credentials$/.test(path)) {
     const iso = (days: number) => new Date((NOW - 86_400 * days) * 1000).toISOString();
     return answer({
@@ -371,7 +399,7 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
         grants: [
           { client_id: "web-dashboard", offline: false, expiration: NOW + 1800 },
           { client_id: "kiosk-tv", offline: true, expiration: NOW + 86_400 * 20 },
-        ],
+        ].filter((grant) => SESSION_GRANTS.has(grant.client_id)),
       },
     ]);
   }
@@ -383,7 +411,7 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
           scopes: ["openid", "profile", "email"],
           granted_at: NOW - 86_400 * 12,
         },
-      ],
+      ].filter((consent) => CONSENTS.has(consent.client_id)),
     });
   }
   const who = person(path);
@@ -417,11 +445,14 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       { client_scope_id: "cs-3", name: "payments:write", description: "Move money", protocol: "openid-connect", default_scope: false, optional: true },
     ]);
   }
+  if (/\/clients\/[^/]+\/mappers\/[^/]+$/.test(path) && method !== "GET") {
+    const mapperId = decodeURIComponent(path.split("/").pop() ?? "");
+    if (method === "PUT") CLIENT_MAPPERS.add(mapperId);
+    if (method === "DELETE") CLIENT_MAPPERS.delete(mapperId);
+    return answer(undefined);
+  }
   if (/\/clients\/[^/]+\/mappers$/.test(path)) {
-    return answer([
-      { mapper_id: "m-1", name: "audience for payments", protocol: "openid-connect", mapper_type: "audience" },
-      { mapper_id: "m-2", name: "department claim", protocol: "openid-connect", mapper_type: "user-attribute" },
-    ]);
+    return answer(REALM_MAPPERS.filter((mapper) => CLIENT_MAPPERS.has(mapper.mapper_id)));
   }
   if (/\/clients\/[^/?]+$/.test(path)) {
     const found = CLIENTS.find((held) => path.endsWith(`/${held.client_id}`));
@@ -444,6 +475,18 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       { client_scope_id: "cs-3", name: "payments:write", description: "Move money", protocol: "openid-connect", default_scope: false },
     ]);
   }
+  if (path.endsWith("/protocol-mappers")) {
+    return answer(REALM_MAPPERS);
+  }
+  if (/\/roles\/[^/]+\/composites\/[^/]+$/.test(path) && method !== "GET") {
+    const roleId = decodeURIComponent(path.split("/").pop() ?? "");
+    if (method === "PUT") COMPOSITE_ROLES.add(roleId);
+    if (method === "DELETE") COMPOSITE_ROLES.delete(roleId);
+    return answer(undefined);
+  }
+  if (/\/roles\/[^/]+\/composites$/.test(path)) {
+    return answer(PREVIEW_ROLES.filter((role) => COMPOSITE_ROLES.has(role.role_id)));
+  }
   if (/\/roles\/[^/]+\/holders$/.test(path)) {
     return answer({
       users: ["u-ada", "u-grace"],
@@ -457,11 +500,7 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
   }
   if (path.includes("/roles?")) {
     return answer({
-      items: [
-        { role_id: "r-1", name: "auditor", display_name: "Auditor", description: "Reads the journal", client_id: null },
-        { role_id: "r-2", name: "reader", display_name: "Reader", description: "", client_id: "web-dashboard" },
-        { role_id: "r-3", name: "payments-officer", display_name: "Payments officer", description: "May move money", client_id: "payments-api" },
-      ],
+      items: PREVIEW_ROLES,
       first: 0,
       max: 50,
       total: 3,
@@ -494,11 +533,19 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       total: 2,
     });
   }
+  if (/\/organizations\/[^/]+\/members\/[^/]+$/.test(path) && method !== "GET") {
+    const userId = decodeURIComponent(path.split("/").pop() ?? "");
+    if (method === "PUT") ORGANIZATION_MEMBERS.add(userId);
+    if (method === "DELETE") ORGANIZATION_MEMBERS.delete(userId);
+    return answer(undefined);
+  }
   if (/\/organizations\/[^/]+\/members$/.test(path)) {
     return answer([
       { user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40", membership_type: "unmanaged", roles: [], joined_at: "2026-07-02T09:00:00Z" },
       { user_id: "3d1e7a86-9f04-42bb-8e57-c6b2d09fa715", membership_type: "managed", roles: ["org-admin"], joined_at: "2026-08-11T14:00:00Z" },
-    ]);
+      { user_id: "b74c2f90-15da-4e83-a6d1-8f30c5b91e2a", membership_type: "unmanaged", roles: [], joined_at: "2026-09-11T09:00:00Z" },
+      { user_id: "9e05b3c7-42af-4610-b8d2-7c1e6f4a83d5", membership_type: "unmanaged", roles: [], joined_at: "2026-09-11T09:00:00Z" },
+    ].filter((member) => ORGANIZATION_MEMBERS.has(member.user_id)));
   }
   if (/\/organizations\/[^/?]+$/.test(path) && !path.endsWith("/theme")) {
     return answer({

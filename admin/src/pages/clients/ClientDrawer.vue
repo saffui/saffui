@@ -3,8 +3,10 @@ import { computed, onMounted, ref } from "vue";
 import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
 import {
+  attachMapperToClient,
   attachScope,
   deleteClient,
+  detachMapperFromClient,
   detachScope,
   getClient,
   listAttachedScopes,
@@ -13,7 +15,7 @@ import {
   getAgent,
   reshapeAgent,
 } from "@/services/clients";
-import { listScopeCatalogue } from "@/services/scopes";
+import { listRealmMappers, listScopeCatalogue } from "@/services/scopes";
 import { createRole, deleteRole, listRoles } from "@/services/directory";
 import type { RoleRow } from "@/models/directory";
 import AppToggle from "@/components/AppToggle.vue";
@@ -23,6 +25,7 @@ import AppStringList from "@/components/AppStringList.vue";
 import { useRouter } from "vue-router";
 import type { ClientDetail, ClientScope, ProtocolMapper } from "@/models/client";
 import ClientKeysTab from "./ClientKeysTab.vue";
+import { clientMapperPickerRows } from "@/pages/adminActionPickers";
 
 const props = defineProps<{ realm: string; clientId: string }>();
 const emit = defineEmits<{ close: [] }>();
@@ -33,6 +36,8 @@ const tab = ref<(typeof TABS)[number]>("overview");
 const client = ref<ClientDetail | null>(null);
 const scopes = ref<ClientScope[]>([]);
 const mappers = ref<ProtocolMapper[]>([]);
+const mapperPickerOpen = ref(false);
+const mapperPickerRows = ref<{ id: string; label: string; held: boolean }[]>([]);
 const failed = ref("");
 
 /// The roles this client is the audience of, apart from the realm's own.
@@ -257,6 +262,31 @@ async function pickAdd(name: string) {
 async function dropScope(name: string) {
   await detachScope(props.realm, props.clientId, name);
   scopes.value = await listAttachedScopes(props.realm, props.clientId);
+}
+
+async function openMapperPicker() {
+  const catalogue = await listRealmMappers(props.realm);
+  mapperPickerRows.value = clientMapperPickerRows(catalogue, mappers.value);
+  mapperPickerOpen.value = true;
+}
+
+async function attachMapper(mapperId: string) {
+  try {
+    await attachMapperToClient(props.realm, props.clientId, mapperId);
+    mapperPickerOpen.value = false;
+    mappers.value = await listClientMappers(props.realm, props.clientId);
+  } catch {
+    // The toast already said.
+  }
+}
+
+async function detachMapper(mapperId: string) {
+  try {
+    await detachMapperFromClient(props.realm, props.clientId, mapperId);
+    mappers.value = await listClientMappers(props.realm, props.clientId);
+  } catch {
+    // The toast already said.
+  }
 }
 </script>
 
@@ -597,7 +627,26 @@ async function dropScope(name: string) {
       </div>
     </div>
 
-    <div v-if="tab === 'mappers'" class="mt-4">
+    <div v-if="tab === 'mappers'" class="relative mt-4">
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <p class="min-w-0 flex-1 text-[11px] text-muted">
+          {{ say("client-mappers-lede") }}
+          <RouterLink
+            :to="`/${props.realm}/protocol-mappers`"
+            class="text-accent hover:underline"
+          >
+            {{ say("client-mappers-catalogue") }}
+          </RouterLink>
+        </p>
+        <AppHint name="client-mapper-attach-help" />
+        <button
+          type="button"
+          class="sf-button sf-button-secondary"
+          @click="openMapperPicker"
+        >
+          {{ say("client-mapper-attach") }}
+        </button>
+      </div>
       <p v-if="!mappers.length" class="text-xs text-muted">{{ say("mappers-none") }}</p>
       <div v-else class="overflow-x-auto rounded-lg border border-border">
         <table class="sf-table">
@@ -605,6 +654,7 @@ async function dropScope(name: string) {
             <tr>
               <th>{{ say("mappers-col-name") }}</th>
               <th>{{ say("mappers-col-type") }}</th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -617,10 +667,27 @@ async function dropScope(name: string) {
               <td class="font-mono text-[10.5px] text-muted">
                 {{ mapper.mapper_type }}
               </td>
+              <td class="text-right">
+                <button
+                  type="button"
+                  class="inline-flex items-center gap-1 text-[10.5px] text-faint hover:text-danger"
+                  @click="detachMapper(mapper.mapper_id)"
+                >
+                  <AppIcon name="remove" :size="11" />
+                  {{ say("client-mapper-detach") }}
+                </button>
+              </td>
             </tr>
           </tbody>
         </table>
       </div>
+      <AppPicker
+        v-if="mapperPickerOpen"
+        :rows="mapperPickerRows"
+        :title="say('client-mapper-attach')"
+        @add="attachMapper"
+        @close="mapperPickerOpen = false"
+      />
     </div>
 
     <div v-if="tab === 'roles'" class="mt-4 flex flex-col gap-3">

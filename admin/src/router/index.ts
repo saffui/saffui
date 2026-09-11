@@ -75,6 +75,10 @@ const routes: RouteRecordRaw[] = [
         component: () => import("@/pages/authorization/EvaluatorPage.vue"),
       },
       {
+        path: "decision-journal",
+        component: () => import("@/pages/authorization/DecisionJournalPage.vue"),
+      },
+      {
         path: "authentication",
         component: () => import("@/pages/authentication/FlowsPage.vue"),
       },

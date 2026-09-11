@@ -5,7 +5,7 @@
 // binding resources) drawn against their resources. The simulator asks the
 // server's own engine and lights the nodes the trace names.
 import { computed, onMounted, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
 import DangerDialog from "@/components/DangerDialog.vue";
@@ -644,6 +644,12 @@ function nodeStroke(row: PolicyRow): string {
   <div class="flex min-h-full min-w-0 flex-col">
     <div class="flex flex-wrap items-center gap-3">
       <h1 class="text-lg font-semibold tracking-tight">{{ say("authz-title") }}</h1>
+      <RouterLink
+        :to="`/${realm}/decision-journal`"
+        class="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted hover:text-ink"
+      >
+        {{ say("decision-journal-title") }}
+      </RouterLink>
       <form
         v-if="board === 'models'"
         class="flex flex-wrap items-center gap-2 xl:ml-auto"

@@ -30,6 +30,17 @@ export interface LiveEventSummary {
   occurred_at: string;
 }
 
+/// The feed's frames with one more, newest first and at most `kept` of them.
+/// A frame already shown keeps its place: arriving twice is not happening twice.
+export function withLiveEvent(
+  frames: LiveEventSummary[],
+  told: LiveEventSummary,
+  kept = 30,
+): LiveEventSummary[] {
+  if (frames.some((row) => row.event_id === told.event_id)) return frames;
+  return [told, ...frames].slice(0, kept);
+}
+
 export function parseLiveEventFrame(frame: string): LiveEventSummary | null {
   const id = frame
     .split("\n")

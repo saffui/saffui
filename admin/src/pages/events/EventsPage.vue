@@ -18,7 +18,7 @@ import {
   updateIdp,
 } from "@/services/federation";
 import { getRealmSettings, listSignInEvents } from "@/services/settings";
-import { listDeadLetters, requeueDead, streamLiveEvents } from "@/services/events";
+import { listDeadLetters, requeueDead, streamLiveEvents, withLiveEvent } from "@/services/events";
 import type { DeadLetter, LiveEventSummary } from "@/services/events";
 import { afterWrites } from "@/services/writes";
 import type { DeliveryProof, IdpRow } from "@/models/federation";
@@ -102,7 +102,7 @@ async function startWatching() {
         (told) => {
           feedFailed.value = "";
           lastEventId = Math.max(lastEventId ?? 0, told.event_id);
-          frames.value = [told, ...frames.value.filter((row) => row.event_id !== told.event_id)].slice(0, 30);
+          frames.value = withLiveEvent(frames.value, told);
           feedState.value = "live";
           feedAttempt.value = 0;
         },

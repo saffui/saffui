@@ -62,7 +62,8 @@ pub async fn get(
     let found = registry::get(&transaction, &client_id)
         .await
         .map_err(refused)?;
-    Ok(HttpResponse::Ok().json(ClientBrief::with_key_details(found)))
+    let signs_with = response_signing_algorithms(&transaction).await?;
+    Ok(HttpResponse::Ok().json(ClientBrief::with_key_details(found, signs_with)))
 }
 
 /// Register a client. A confidential one is answered with its secret, this
@@ -103,10 +104,11 @@ pub async fn create(
     )
     .await
     .map_err(refused)?;
+    let signs_with = response_signing_algorithms(&transaction).await?;
     transaction.commit().await.map_err(|_| internal())?;
 
-    let mut told =
-        serde_json::to_value(ClientBrief::with_key_details(client)).map_err(|_| internal())?;
+    let mut told = serde_json::to_value(ClientBrief::with_key_details(client, signs_with))
+        .map_err(|_| internal())?;
     if let (Some(secret), Some(map)) = (secret, told.as_object_mut()) {
         map.insert("client_secret".into(), json!(secret));
     }
@@ -220,8 +222,19 @@ pub async fn update(
     let client = registry::update(&transaction, &client_id, &reshape)
         .await
         .map_err(refused)?;
+    let signs_with = response_signing_algorithms(&transaction).await?;
     transaction.commit().await.map_err(|_| internal())?;
-    Ok(HttpResponse::Ok().json(ClientBrief::with_key_details(client)))
+    Ok(HttpResponse::Ok().json(ClientBrief::with_key_details(client, signs_with)))
+}
+
+/// What the realm signs responses with, read in the answer's own transaction so
+/// the console is offered exactly what the next issuance will accept.
+async fn response_signing_algorithms(
+    transaction: &deadpool_postgres::Transaction<'_>,
+) -> Result<Vec<crypto::provider::SignAlg>, ApiError> {
+    services::realm::active_signing_algorithms(transaction)
+        .await
+        .map_err(|_| internal())
 }
 
 /// A not-before cut revokes the past. A cut in the future would refuse every

@@ -7,6 +7,7 @@ import { rotateClientSecret, updateClient } from "@/services/clients";
 import {
   clientKeyConfiguration,
   clientKeyDraft,
+  responseSigningChoices,
   type ClientKeyDraft,
 } from "./clientKeyForm";
 
@@ -172,24 +173,32 @@ async function copyFreshSecret() {
       </div>
       <div class="mt-2 grid gap-3 sm:grid-cols-2">
         <label class="text-[11px] font-medium text-muted">
-          {{ say("client-keys-id-token-signing") }}
+          {{ say("client-keys-id-token-signing") }} <AppHint name="client-keys-response-signing-help" />
           <select v-model="draft.idTokenSigning" class="sf-field mt-1 font-mono">
             <option value="">{{ say("client-keys-realm-default") }}</option>
-            <option v-for="algorithm in client.key_capabilities.signing_algorithms" :key="algorithm" :value="algorithm">{{ algorithm }}</option>
+            <option
+              v-for="choice in responseSigningChoices(client.key_capabilities.response_signing_algorithms, draft.idTokenSigning)"
+              :key="choice.algorithm"
+              :value="choice.algorithm"
+            >{{ choice.held ? choice.algorithm : `${choice.algorithm} · ${say("client-keys-no-active-key")}` }}</option>
           </select>
         </label>
         <label class="text-[11px] font-medium text-muted">
-          {{ say("client-keys-userinfo-signing") }}
+          {{ say("client-keys-userinfo-signing") }} <AppHint name="client-keys-response-signing-help" />
           <select v-model="draft.userinfoSigning" class="sf-field mt-1 font-mono">
             <option value="">{{ say("client-keys-unsigned") }}</option>
-            <option v-for="algorithm in client.key_capabilities.signing_algorithms" :key="algorithm" :value="algorithm">{{ algorithm }}</option>
+            <option
+              v-for="choice in responseSigningChoices(client.key_capabilities.response_signing_algorithms, draft.userinfoSigning)"
+              :key="choice.algorithm"
+              :value="choice.algorithm"
+            >{{ choice.held ? choice.algorithm : `${choice.algorithm} · ${say("client-keys-no-active-key")}` }}</option>
           </select>
         </label>
         <label class="text-[11px] font-medium text-muted">
           {{ say("client-keys-request-signing") }}
           <select v-model="draft.requestObjectSigning" class="sf-field mt-1 font-mono">
             <option value="">{{ say("settings-unset") }}</option>
-            <option v-for="algorithm in client.key_capabilities.signing_algorithms" :key="algorithm" :value="algorithm">{{ algorithm }}</option>
+            <option v-for="algorithm in client.key_capabilities.client_signing_algorithms" :key="algorithm" :value="algorithm">{{ algorithm }}</option>
           </select>
         </label>
         <label class="text-[11px] font-medium text-muted">
@@ -200,7 +209,7 @@ async function copyFreshSecret() {
             class="sf-field mt-1 font-mono disabled:opacity-50"
           >
             <option value="">{{ say("settings-unset") }}</option>
-            <option v-for="algorithm in client.key_capabilities.signing_algorithms" :key="algorithm" :value="algorithm">{{ algorithm }}</option>
+            <option v-for="algorithm in client.key_capabilities.client_signing_algorithms" :key="algorithm" :value="algorithm">{{ algorithm }}</option>
           </select>
         </label>
       </div>

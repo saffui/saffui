@@ -21,6 +21,19 @@ export interface ClientKeyDraft {
   requestObjectEncryptionMethod: string;
 }
 
+/// What a response to this client can be signed with: the realm's own active
+/// algorithms, plus the one already asked for when the realm no longer holds a
+/// key for it, flagged, so a choice that cannot work shows instead of vanishing.
+export function responseSigningChoices(
+  held: string[],
+  current: string,
+): { algorithm: string; held: boolean }[] {
+  const choices = held.map((algorithm) => ({ algorithm, held: true }));
+  return current && !held.includes(current)
+    ? [...choices, { algorithm: current, held: false }]
+    : choices;
+}
+
 export type ClientKeyFormResult =
   | { configuration: ClientKeyConfiguration; error: null }
   | { configuration: null; error: "jwks" | "pair" | "request-signature" | "source" };

@@ -176,7 +176,7 @@ async function disable(key: RealmKeyView) {
                       <button v-if="key.status === 'passive'" type="button" class="rounded border px-2 py-1 text-[10.5px]" :class="confirming === key.kid ? 'border-danger-line text-danger' : 'border-border text-muted hover:bg-surface-2'" :disabled="disabling === key.kid" @click="disable(key)">
                         {{ say(confirming === key.kid ? "keys-disable-confirm" : "keys-disable") }}
                       </button>
-                      <span v-else class="text-[10.5px] text-faint">—</span>
+                      <span v-else class="text-[10.5px] text-faint">{{ say("value-none") }}</span>
                     </td>
                   </tr>
                 </tbody>
@@ -212,7 +212,7 @@ async function disable(key: RealmKeyView) {
                     </td>
                     <td class="font-mono text-[10.5px]">enc</td>
                     <td><span class="rounded border px-1.5 py-0.5 text-[10px]" :class="statusClass(key.status)">{{ key.status }}</span></td>
-                    <td>—</td>
+                    <td>{{ say("value-none") }}</td>
                   </tr>
                 </tbody>
               </table>

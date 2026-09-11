@@ -45,6 +45,13 @@ import type { SmsBrief, SmsToday } from "@/models/sms";
 import { OTP_DEFAULTS, OWASP_HASHING } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
 import { JURISDICTIONS } from "@/services/compliance";
+import {
+  mailWrite,
+  previewSms,
+  smsPlaceholder,
+  smsTemplateIsValid,
+  smsWrite,
+} from "./messaging";
 
 /// The deck's boards, in the deck's order. "User profile" is drawn there too
 /// and is not here: a declarative user profile is a server feature this build
@@ -787,18 +794,7 @@ async function askTheRelay() {
 }
 
 async function saveMail() {
-  const asked = mailForm.value;
-  await writeMail(realm.value, {
-    host: asked.host,
-    port: asked.port,
-    from_address: asked.from_address,
-    from_name: asked.from_name,
-    reply_to: asked.reply_to || null,
-    implicit_tls: asked.implicit_tls,
-    username: asked.username || null,
-    // Blank keeps the held password; typed replaces it.
-    password: asked.password || null,
-  });
+  await writeMail(realm.value, mailWrite(mailForm.value));
   mail.value = await getMail(realm.value);
 }
 
@@ -824,13 +820,7 @@ async function removeMail() {
 const smsForm = ref({ url: "", sender: "", token: "" });
 
 async function saveSms() {
-  const asked = smsForm.value;
-  await writeSms(realm.value, {
-    url: asked.url.trim(),
-    sender: asked.sender.trim(),
-    // Blank keeps the held token; typed replaces it.
-    token: asked.token || null,
-  });
+  await writeSms(realm.value, smsWrite(smsForm.value));
   sms.value = await getSms(realm.value);
 }
 
@@ -915,9 +905,11 @@ async function saveSmsBrakes() {
 
 const SMS_KINDS = ["sms_otp", "verify_phone", "ciba_doorbell"] as const;
 const smsTemplates = ref<Record<string, Record<string, string>>>({});
-const smsTplKind = ref<string>("sms_otp");
+const smsTplKind = ref<(typeof SMS_KINDS)[number]>("sms_otp");
 const smsTplTongue = ref("en");
 const smsTplBody = ref("");
+const smsTplValid = computed(() => smsTemplateIsValid(smsTplKind.value, smsTplBody.value));
+const smsTplPreview = computed(() => previewSms(smsTplKind.value, smsTplBody.value));
 
 function adoptSmsTemplate() {
   smsTplBody.value = smsTemplates.value[smsTplKind.value]?.[smsTplTongue.value] ?? "";
@@ -925,6 +917,7 @@ function adoptSmsTemplate() {
 watch([smsTplKind, smsTplTongue], adoptSmsTemplate);
 
 async function saveSmsTemplate() {
+  if (!smsTplValid.value) return;
   const next = JSON.parse(JSON.stringify(smsTemplates.value)) as typeof smsTemplates.value;
   if (smsTplBody.value.trim()) {
     next[smsTplKind.value] = {
@@ -967,7 +960,7 @@ async function saveSmsTemplate() {
 
       <template v-if="settings">
         <form
-          v-if="group !== 'email' && group !== 'features'"
+          v-if="group !== 'email' && group !== 'phone' && group !== 'features'"
           class="mt-4 flex max-w-lg flex-col gap-3 text-xs"
           @submit.prevent="saveGroup"
           @input="markDirty"
@@ -1720,7 +1713,10 @@ async function saveSmsTemplate() {
           </div>
         </form>
 
-        <div v-if="group === 'email'" class="mt-6 max-w-lg">
+        <div
+          v-if="group === 'email'"
+          class="mt-6 max-w-3xl rounded-lg border border-border bg-surface p-4"
+        >
           <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
             {{ say("mail-templates-title") }} <AppHint name="mail-templates-title-help" />
           </div>
@@ -1863,8 +1859,15 @@ async function saveSmsTemplate() {
           />
         </div>
 
-        <div v-if="group === 'email'" class="mt-4 max-w-lg">
-          <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveMail">
+        <div v-if="group === 'email'" class="mt-4 max-w-6xl">
+          <form
+            class="max-w-3xl rounded-lg border border-border bg-surface p-4 text-xs"
+            @submit.prevent="saveMail"
+          >
+            <div class="mb-3 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("mail-server-title") }}
+            </div>
+            <div class="flex flex-col gap-3">
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_110px]">
               <label class="block text-[11px] font-medium text-muted">
                 {{ say("mail-host") }} <AppHint name="mail-host-help" />
@@ -1931,7 +1934,7 @@ async function saveSmsTemplate() {
             <AppToggle v-model="mailForm.implicit_tls">
               {{ say("mail-implicit-tls") }} <AppHint name="mail-implicit-tls-help" />
             </AppToggle>
-            <div class="mt-1 flex items-center gap-2">
+            <div class="mt-1 flex flex-wrap items-center gap-2">
               <button
                 type="submit"
                 class="sf-button sf-button-primary"
@@ -1947,9 +1950,10 @@ async function saveSmsTemplate() {
                 {{ say("mail-forget") }}
               </button>
             </div>
+            </div>
           </form>
 
-          <div v-if="mail" class="mt-4">
+          <div v-if="mail" class="mt-4 rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("mail-test-title") }} <AppHint name="mail-test-help" />
             </div>
@@ -2007,7 +2011,7 @@ async function saveSmsTemplate() {
             </div>
           </div>
 
-          <div v-if="mail" class="mt-5">
+          <div v-if="mail" class="mt-4 max-w-4xl rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("mail-refusals-title", { hours: refusalHours }) }}
               <AppHint name="mail-refusals-help" />
@@ -2036,11 +2040,17 @@ async function saveSmsTemplate() {
           </div>
         </div>
 
-        <div v-if="group === 'phone'" class="mt-4 max-w-lg">
-          <p class="text-[11px] text-muted">
+        <div v-if="group === 'phone'" class="mt-4 max-w-6xl">
+          <p class="max-w-3xl text-[11px] leading-5 text-muted">
             {{ say("sms-intro") }}
           </p>
-          <form class="mt-3 flex flex-col gap-3 text-xs" @submit.prevent="saveSms">
+          <form
+            class="mt-3 flex max-w-3xl flex-col gap-3 rounded-lg border border-border bg-surface p-4 text-xs"
+            @submit.prevent="saveSms"
+          >
+            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("sms-gateway-title") }}
+            </div>
             <label class="block text-[11px] font-medium text-muted">
               {{ say("sms-url") }} <AppHint name="sms-url-help" />
               <input
@@ -2088,7 +2098,7 @@ async function saveSmsTemplate() {
             </div>
           </form>
 
-          <div v-if="sms" class="mt-4">
+          <div v-if="sms" class="mt-4 max-w-3xl rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sms-test-title") }} <AppHint name="sms-test-help" />
             </div>
@@ -2114,15 +2124,15 @@ async function saveSmsTemplate() {
             </form>
           </div>
 
-          <div v-if="smsToday" class="mt-6">
+          <div v-if="smsToday" class="mt-6 max-w-5xl">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sms-today-title") }} <AppHint name="sms-today-help" />
             </div>
-            <div class="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div class="mt-2 grid grid-cols-[repeat(2,minmax(0,1fr))] gap-3 2xl:grid-cols-[repeat(4,minmax(0,1fr))]">
               <div
                 v-for="count in todayCounts"
                 :key="count.label"
-                class="rounded-lg border border-border bg-surface px-3 py-2.5"
+                class="min-w-0 overflow-hidden rounded-lg border border-border bg-surface px-3 py-2.5"
               >
                 <div class="text-[10.5px] text-faint">{{ count.label }}</div>
                 <div class="mt-0.5 font-mono text-base text-ink tabular-nums">
@@ -2132,7 +2142,7 @@ async function saveSmsTemplate() {
             </div>
           </div>
 
-          <div class="mt-6">
+          <div class="mt-6 max-w-3xl rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sms-brakes-title") }} <AppHint name="sms-brakes-help" />
             </div>
@@ -2178,11 +2188,12 @@ async function saveSmsTemplate() {
             </form>
           </div>
 
-          <div class="mt-6">
+          <div class="mt-6 max-w-5xl rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("sms-templates-title") }} <AppHint name="sms-templates-help" />
             </div>
-            <form class="mt-2 flex flex-col gap-3 text-xs" @submit.prevent="saveSmsTemplate">
+            <div class="mt-2 grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+            <form class="flex flex-col gap-3 text-xs" @submit.prevent="saveSmsTemplate">
               <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label class="block text-[11px] font-medium text-muted">
                   {{ say("sms-template-kind") }}
@@ -2214,16 +2225,32 @@ async function saveSmsTemplate() {
                 ></textarea>
                 <span class="text-[10px] text-faint">{{ smsTplBody.length }}/160</span>
               </label>
+              <p v-if="!smsTplValid" class="text-[11px] text-warn" role="alert">
+                {{ say("sms-template-missing", { placeholder: smsPlaceholder(smsTplKind) }) }}
+              </p>
               <button
                 type="submit"
+                :disabled="!smsTplValid"
                 class="w-fit sf-button sf-button-primary"
               >
                 {{ say("settings-save") }}
               </button>
             </form>
+            <div class="min-w-0 rounded-lg border border-border bg-surface-2 p-3">
+              <div class="text-[10.5px] font-semibold tracking-[0.08em] text-faint uppercase">
+                {{ say("sms-template-preview") }}
+              </div>
+              <div class="mt-3 max-w-[240px] rounded-xl rounded-tl-sm bg-accent-tint px-3 py-2 text-[11px] leading-5 text-ink">
+                {{ smsTplPreview || say("sms-template-preview-empty") }}
+              </div>
+              <div class="mt-2 font-mono text-[10px] text-faint">
+                {{ smsForm.sender || say("sms-template-preview-sender") }}
+              </div>
+            </div>
+            </div>
           </div>
 
-          <div class="mt-6">
+          <div class="mt-6 max-w-3xl rounded-lg border border-border bg-surface p-4">
             <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("ussd-title") }} <AppHint name="ussd-help" />
             </div>

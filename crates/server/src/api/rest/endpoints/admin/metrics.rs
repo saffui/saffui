@@ -95,12 +95,12 @@ mod tests {
             .unwrap(),
             MAX_WINDOW_SECONDS
         );
+        let refused = window_seconds(&MetricsQuery {
+            window_seconds: Some(0),
+        })
+        .unwrap_err();
         assert_eq!(
-            window_seconds(&MetricsQuery {
-                window_seconds: Some(0),
-            })
-            .unwrap_err()
-            .status,
+            actix_web::ResponseError::status_code(&refused),
             actix_web::http::StatusCode::BAD_REQUEST
         );
     }

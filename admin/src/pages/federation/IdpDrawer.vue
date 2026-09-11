@@ -25,12 +25,13 @@ import {
   oidcDraft,
   oidcMutation,
 } from "./forms";
+import { presetDraft, type ProviderPreset } from "./providerCatalog";
 
-const props = defineProps<{ realm: string; row?: IdpRow }>();
+const props = defineProps<{ realm: string; row?: IdpRow; preset?: ProviderPreset }>();
 const emit = defineEmits<{ close: []; saved: []; deleted: [] }>();
 
 const current = ref<"configuration" | "mappers">("configuration");
-const draft = ref(props.row ? oidcDraft(props.row) : emptyOidcDraft());
+const draft = ref(props.row ? oidcDraft(props.row) : presetDraft(props.preset));
 const saving = ref(false);
 const doomName = ref("");
 const mappers = ref<IdpMapperRow[]>([]);

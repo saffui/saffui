@@ -4,6 +4,7 @@ import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
+import AppIcon from "@/components/AppIcon.vue";
 import DirectoryDrawer from "./DirectoryDrawer.vue";
 import IdpDrawer from "./IdpDrawer.vue";
 import AppToggle from "@/components/AppToggle.vue";
@@ -17,6 +18,7 @@ import {
   updateIdp,
 } from "@/services/federation";
 import type { DirectoryRow, IdpRow } from "@/models/federation";
+import { PROVIDER_CATALOG, type ProviderPreset } from "./providerCatalog";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
@@ -67,16 +69,19 @@ const editing = ref<null | { alias: string | null }>(null);
 /// different fields, and one editor for both is how a form ends up writing a
 /// field the other kind does not have.
 const broker = ref<IdpRow | null>(null);
+const brokerPreset = ref<ProviderPreset | null>(null);
 const openingBroker = ref(false);
 
-function openBroker(row: IdpRow | null) {
+function openBroker(row: IdpRow | null, preset: ProviderPreset | null = null) {
   broker.value = row;
+  brokerPreset.value = preset;
   openingBroker.value = true;
 }
 
 async function brokerChanged() {
   openingBroker.value = false;
   broker.value = null;
+  brokerPreset.value = null;
   idps.value = await listIdps(realm.value);
 }
 
@@ -257,6 +262,59 @@ async function drop() {
       </table>
       </div>
     </template>
+
+    <section v-if="tab === 'idps'" class="mt-6">
+      <div class="flex flex-wrap items-center gap-2">
+        <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          {{ say("federation-provider-catalogue") }}
+        </h2>
+        <span class="sf-badge ml-auto">{{ say("federation-provider-protocols") }}</span>
+      </div>
+      <div class="mt-2 grid grid-cols-[repeat(auto-fit,minmax(160px,1fr))] gap-2.5">
+        <button
+          v-for="provider in PROVIDER_CATALOG"
+          :key="provider.id"
+          type="button"
+          :disabled="provider.availability === 'backend'"
+          class="group flex min-h-[68px] min-w-0 items-center gap-2.5 rounded-[5px] border bg-surface px-2.5 py-2 text-left transition-colors"
+          :class="
+            provider.availability === 'backend'
+              ? 'cursor-not-allowed border-border opacity-55'
+              : 'border-border hover:border-accent-line hover:bg-surface-2'
+          "
+          :title="
+            provider.availability === 'backend'
+              ? say('federation-provider-backend-gap')
+              : provider.availability === 'manual'
+                ? say('federation-provider-manual')
+                : provider.name
+          "
+          @click="openBroker(null, provider)"
+        >
+          <span
+            class="grid size-9 shrink-0 place-items-center rounded border"
+            :class="provider.logo ? 'border-black/10 bg-white' : 'border-border-strong bg-surface-2 text-muted'"
+          >
+            <img
+              v-if="provider.logo"
+              :src="provider.logo"
+              alt=""
+              aria-hidden="true"
+              decoding="async"
+              class="max-h-6 max-w-6 object-contain"
+            />
+            <AppIcon v-else-if="provider.glyph" :name="provider.glyph" :size="18" />
+          </span>
+          <span class="min-w-0">
+            <span class="block text-[12px] leading-4 font-medium text-ink">{{ provider.name }}</span>
+            <span class="mt-0.5 block text-[10px] leading-3.5 text-faint">{{ provider.protocol }}</span>
+          </span>
+        </button>
+      </div>
+      <p class="mt-2 text-[10.5px] leading-4 text-faint">
+        {{ say("federation-provider-gap-note") }}
+      </p>
+    </section>
 
     <div v-if="tab === 'directories'" class="mt-5 flex max-w-3xl items-center gap-3">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
@@ -466,6 +524,7 @@ async function drop() {
       v-if="openingBroker"
       :realm="realm"
       :row="broker ?? undefined"
+      :preset="brokerPreset ?? undefined"
       @close="openingBroker = false"
       @saved="brokerChanged"
       @deleted="brokerChanged"

@@ -1,7 +1,7 @@
 //! The sign-in log, read side. Recording is the engine's, gated by the
 //! realm's events_enabled switch; this only pages through what it kept.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 use actix_web::{HttpRequest, HttpResponse, web};
 use commons::error::ErrorCode;
@@ -198,6 +198,9 @@ pub async fn stream(
                 .map(|event| to_live_event_summary(&tenant, &event)),
         );
     }
+    // The feed is subscribed before the store is read, so nothing committed
+    // between the two is lost; what lands in both is said once, by the replay.
+    let replayed: HashSet<i64> = replay_events.iter().map(|event| event.event_id).collect();
     let frames = futures_util::stream::unfold(
         (
             watching,
@@ -205,8 +208,16 @@ pub async fn stream(
             realm_id,
             replay_events,
             has_more_replay_events,
+            replayed,
         ),
-        |(mut watching, tenant, realm_id, mut replay_events, has_more_replay_events)| async move {
+        |(
+            mut watching,
+            tenant,
+            realm_id,
+            mut replay_events,
+            has_more_replay_events,
+            mut replayed,
+        )| async move {
             loop {
                 if let Some(event) = replay_events.pop_front() {
                     let body = serde_json::to_string(&event).unwrap_or_default();
@@ -224,6 +235,7 @@ pub async fn stream(
                             realm_id,
                             replay_events,
                             has_more_replay_events,
+                            replayed,
                         ),
                     ));
                 }
@@ -233,6 +245,9 @@ pub async fn stream(
                 let framed = tokio::select! {
                     told = watching.recv() => match told {
                         Ok(told) if told.tenant == tenant && told.realm == realm_id => {
+                            if replayed.remove(&told.event_id) {
+                                continue;
+                            }
                             let body = serde_json::to_string(&told).unwrap_or_default();
                             format!("event: {}\nid: {}\ndata: {}\n\n", told.kind, told.event_id, body)
                         }
@@ -255,6 +270,7 @@ pub async fn stream(
                         realm_id,
                         replay_events,
                         has_more_replay_events,
+                        replayed,
                     ),
                 ));
             }

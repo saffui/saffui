@@ -33,6 +33,7 @@ const EXCUSED: Record<string, string> = {
   "login/LoginPage.vue": "a sign-in screen reads nothing of the realm",
   "login/ReturnPage.vue": "the return leg spends a code, once",
   "clients/TokenPreviewPage.vue": "a tool mints when asked, not when something else writes",
+  "metrics/MetricsPage.vue": "no console write moves a reading of sign-ins and decisions; it is read when asked",
   "settings/SettingsPage.vue": "a form would discard what is being typed into it",
   "settings/PagesPage.vue": "a form would discard what is being typed into it",
   "settings/ThemePage.vue": "a form would discard what is being typed into it",

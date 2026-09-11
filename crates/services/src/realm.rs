@@ -1,5 +1,6 @@
+use crypto::provider::SignAlg;
 use deadpool_postgres::Transaction;
-use models::entities::keys::{KeyUse, RealmSigningKeyView};
+use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKeyView};
 use models::entities::realm::RealmModel;
 use models::paging::Page;
 use store::providers::{realm_keys, realms};
@@ -18,6 +19,24 @@ pub async fn published_keys(
     realm_keys::published(transaction, KeyUse::Sig)
         .await
         .map_err(|_| Unreadable)
+}
+
+/// The algorithms this realm signs responses with: those of its active signing
+/// keys. A key in retreat still verifies what it signed and signs nothing new,
+/// so a response asked for in its algorithm alone could never be sent.
+pub async fn active_signing_algorithms(
+    transaction: &Transaction<'_>,
+) -> Result<Vec<SignAlg>, Unreadable> {
+    let mut held: Vec<SignAlg> = realm_keys::published(transaction, KeyUse::Sig)
+        .await
+        .map_err(|_| Unreadable)?
+        .into_iter()
+        .filter(|key| key.status == KeyStatus::Active)
+        .map(|key| key.algorithm)
+        .collect();
+    held.sort_unstable_by_key(|algorithm| algorithm.name());
+    held.dedup();
+    Ok(held)
 }
 
 /// The keys a caller may encrypt to, in the order the realm would rather they

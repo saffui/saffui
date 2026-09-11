@@ -504,8 +504,13 @@ async fn a_client_that_asked_for_a_signature_is_answered_with_one() {
         "{published}"
     );
 
-    // §5.3.2 again: an algorithm this realm holds no key for is not answered
-    // in the clear. A client about to read a signature would get none.
+    // What discovery names is what the realm signs with, and registration
+    // refuses the rest: a client registered for a signature the realm cannot
+    // make would be refused at every userinfo it ever asked for.
+    assert!(
+        !named.iter().any(|held| held.as_str() == Some("PS512")),
+        "{published}"
+    );
     let response = test::call_service(
         &app,
         test::TestRequest::post()
@@ -522,11 +527,30 @@ async fn a_client_that_asked_for_a_signature_is_answered_with_one() {
             .to_request(),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::CREATED);
-    let held: Value = test::read_body_json(response).await;
-    let unsignable = held["client_id"].as_str().unwrap().to_owned();
-    let secret = held["client_secret"].as_str().unwrap().to_owned();
-    let (_, access) = granted_to(&plane, &unsignable, &secret, here).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let refused: Value = test::read_body_json(response).await;
+    assert_eq!(refused["error"], "invalid_client_metadata", "{refused}");
+
+    // A realm can still lose the key a client registered against. Asked then,
+    // §5.3.2 still holds: the answer is not given in the clear.
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let mut stranded = store::providers::clients::load(&transaction, &client_id)
+            .await
+            .expect("the clients table")
+            .expect("the registered client");
+        stranded.userinfo_signed_response_alg = Some(crypto::provider::SignAlg::Ps512);
+        store::providers::clients::update(&transaction, &stranded)
+            .await
+            .expect("the clients table");
+        transaction.commit().await.expect("the client kept");
+    }
     let response = test::call_service(
         &app,
         test::TestRequest::get()

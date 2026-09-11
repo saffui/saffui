@@ -1121,12 +1121,83 @@ async fn a_clients_public_keys_and_supported_algorithms_are_managed_together() {
         configured["key_configuration"]["request_object_signing_alg"],
         "ES256"
     );
+    // What the realm signs responses with is what its active keys sign with;
+    // what the client signs its own requests with is its keys' business.
     assert_eq!(
-        configured["key_capabilities"]["signing_algorithms"],
+        configured["key_capabilities"]["response_signing_algorithms"],
+        serde_json::json!(["ES256"])
+    );
+    assert_eq!(
+        configured["key_capabilities"]["client_signing_algorithms"],
         serde_json::json!([
             "RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512",
             "EdDSA"
         ])
+    );
+
+    // A key that only verifies signs nothing new: an identity token asked for
+    // in its algorithm alone is refused where it is written, and not offered.
+    plane
+        .publish_passive_key(&support::SigningKey::generate_rsa("retired-rsa"))
+        .await;
+    let asking = |alg: &str| {
+        serde_json::json!({
+            "key_configuration": {
+                "authentication_method": "client-secret",
+                "jwks": {
+                    "keys": [{
+                        "kty": "EC", "crv": "P-256", "x": "AQ", "y": "AQ", "kid": "one"
+                    }]
+                },
+                "id_token_signed_response_alg": alg,
+                "request_object_signing_alg": "ES256"
+            }
+        })
+    };
+    let (status, refused) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/signed-shop"),
+        &bearer,
+        asking("RS256"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "an identity token only a retired key could sign was accepted: {refused}"
+    );
+    let (status, kept) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/signed-shop"),
+        &bearer,
+        asking("ES256"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{kept}");
+    assert_eq!(
+        kept["key_capabilities"]["response_signing_algorithms"],
+        serde_json::json!(["ES256"]),
+        "a retired key was offered to sign responses"
+    );
+
+    // An active key of that algorithm makes it a choice.
+    plane
+        .publish_key(&support::SigningKey::generate_rsa("active-rsa"))
+        .await;
+    let (status, moved) = written(
+        &plane,
+        Method::PUT,
+        &format!("{base}/signed-shop"),
+        &bearer,
+        asking("RS256"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{moved}");
+    assert_eq!(
+        moved["key_capabilities"]["response_signing_algorithms"],
+        serde_json::json!(["ES256", "RS256"])
     );
     assert!(
         configured["key_capabilities"]["encryption_algorithms"]

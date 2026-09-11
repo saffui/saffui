@@ -81,6 +81,8 @@ export interface BusinessMetrics {
     disagreements: number;
     average_duration_us: number | null;
     p95_duration_us: number | null;
+    /// How many of the window's most recent decisions the p95 was read from.
+    p95_sample: number;
   };
   logins: {
     total: number;

@@ -313,6 +313,14 @@ async fn metadata_this_provider_cannot_honour_is_refused() {
             json!({"redirect_uris": ["https://app.example/cb"], "id_token_signed_response_alg": "none"}),
         ),
         (
+            "an identity token signed in an algorithm the realm holds no key for",
+            json!({"redirect_uris": ["https://app.example/cb"], "id_token_signed_response_alg": "PS512"}),
+        ),
+        (
+            "userinfo signed in an algorithm the realm holds no key for",
+            json!({"redirect_uris": ["https://app.example/cb"], "userinfo_signed_response_alg": "EdDSA"}),
+        ),
+        (
             "an encryption method naming nothing to encrypt to",
             json!({
                 "redirect_uris": ["https://app.example/cb"],

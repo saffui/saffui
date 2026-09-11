@@ -67,7 +67,8 @@ const PEOPLE: UserBrief[] = [
 ];
 
 const KEY_CAPABILITIES = {
-  signing_algorithms: ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"],
+  response_signing_algorithms: ["ES256", "RS256"],
+  client_signing_algorithms: ["RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"],
   encryption_algorithms: ["RSA-OAEP", "RSA-OAEP-256", "RSA-OAEP-384", "RSA-OAEP-512", "ECDH-ES", "ECDH-ES+A128KW", "ECDH-ES+A192KW", "ECDH-ES+A256KW"],
   encryption_methods: ["A128CBC-HS256", "A192CBC-HS384", "A256CBC-HS512", "A128GCM", "A192GCM", "A256GCM"],
 };
@@ -897,7 +898,7 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       since: new Date((NOW - windowSeconds) * 1000).toISOString(),
       decisions: {
         total: 4821, permits: 3910, denials: 846, indeterminate: 65,
-        disagreements: 3, average_duration_us: 1840, p95_duration_us: 6200,
+        disagreements: 3, average_duration_us: 1840, p95_duration_us: 6200, p95_sample: 10000,
       },
       logins: {
         total: 923, signed_in: 781, sign_in_failed: 103, signed_out: 39, sms_throttled: 7,

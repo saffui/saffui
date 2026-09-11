@@ -12,6 +12,8 @@ pub struct DecisionMetrics {
     pub disagreements: i64,
     pub average_duration_us: Option<f64>,
     pub p95_duration_us: Option<f64>,
+    /// How many of the window's decisions the p95 was read from.
+    pub p95_sample: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,9 +25,13 @@ pub struct LoginMetrics {
     pub sms_throttled: i64,
 }
 
+/// The window's decisions, counted whole, with the p95 read from the
+/// `p95_sample` most recent of them: a percentile sorts every row it reads, and
+/// a month of a busy realm's decisions is a sort nobody should pay for a reading.
 pub async fn decisions(
     transaction: &Transaction<'_>,
     since: DateTime<Utc>,
+    p95_sample: i64,
 ) -> StoreResult<DecisionMetrics> {
     let row = transaction
         .query_one(
@@ -35,10 +41,14 @@ pub async fn decisions(
                     count(*) FILTER (WHERE computed = 'indeterminate')::bigint AS indeterminate, \
                     count(*) FILTER (WHERE reported <> computed)::bigint AS disagreements, \
                     avg(duration_us)::double precision AS average_duration_us, \
-                    percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_us)::double precision \
-                        AS p95_duration_us \
+                    (SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_us) \
+                         FROM (SELECT duration_us FROM authz_decisions \
+                               WHERE occurred_at >= $1 \
+                               ORDER BY occurred_at DESC LIMIT $2) recent \
+                    )::double precision AS p95_duration_us, \
+                    least(count(*), $2)::bigint AS p95_sample \
              FROM authz_decisions WHERE occurred_at >= $1",
-            &[&since],
+            &[&since, &p95_sample],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
@@ -50,6 +60,7 @@ pub async fn decisions(
         disagreements: row.get("disagreements"),
         average_duration_us: row.get("average_duration_us"),
         p95_duration_us: row.get("p95_duration_us"),
+        p95_sample: row.get("p95_sample"),
     })
 }
 

@@ -53,7 +53,10 @@ export interface ClientKeyConfiguration {
 }
 
 export interface ClientKeyCapabilities {
-  signing_algorithms: string[];
+  /// What the realm can sign a response with: its active keys' algorithms.
+  response_signing_algorithms: string[];
+  /// What the client may sign its own requests and assertions with.
+  client_signing_algorithms: string[];
   encryption_algorithms: string[];
   encryption_methods: string[];
 }

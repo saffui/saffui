@@ -185,6 +185,7 @@ pub async fn register(
     now: DateTime<Utc>,
 ) -> Result<Registration, Refused> {
     let mut spec = spec_of(metadata, now)?;
+    check_response_signing(transaction, &spec).await?;
     check_sector(metadata, sector)?;
     // Vetted by nobody, so the person it asks for is the one who decides.
     if realm.registration_bounds.requires_consent {
@@ -282,6 +283,7 @@ pub async fn amend(
     metadata: &Metadata,
 ) -> Result<ClientModel, Refused> {
     let mut spec = spec_of(metadata, client.registered_at.unwrap_or_else(Utc::now))?;
+    check_response_signing(transaction, &spec).await?;
     spec.confidential = client.public_client != Some(true);
     let amended = admin_clients::reshape_registered(transaction, &client.client_id, &spec).await?;
     Ok(amended)
@@ -457,6 +459,31 @@ fn read_encryption(
         })
         .transpose()?;
     Ok(Some(JweRegistration::new(alg, enc)))
+}
+
+/// A response signed in an algorithm the realm holds no active key for is one
+/// it can never send: refused at registration, not at every sign-in after it.
+async fn check_response_signing(transaction: &Transaction<'_>, spec: &Spec) -> Result<(), Refused> {
+    let asked = [
+        spec.registered.id_token_signed_response_alg,
+        spec.registered.userinfo_signed_response_alg,
+    ];
+    if asked.iter().all(Option::is_none) {
+        return Ok(());
+    }
+    let held = crate::realm::active_signing_algorithms(transaction)
+        .await
+        .map_err(|_| Refused::Unwritable)?;
+    if asked
+        .into_iter()
+        .flatten()
+        .any(|algorithm| !held.contains(&algorithm))
+    {
+        return Err(Refused::Invalid(
+            "an algorithm this realm holds no active key to sign with",
+        ));
+    }
+    Ok(())
 }
 
 fn read_alg(named: Option<&String>) -> Result<Option<SignAlg>, Refused> {

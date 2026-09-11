@@ -380,7 +380,10 @@ pub async fn update(
         spec.registered.client_uri = home.clone();
     }
     if let Some(configuration) = &reshape.key_configuration {
-        check_key_configuration(&client, configuration)?;
+        let realm_signs_with = crate::realm::active_signing_algorithms(transaction)
+            .await
+            .map_err(|_| Unregistrable::Unwritable)?;
+        check_key_configuration(&client, configuration, &realm_signs_with)?;
         spec.registered.jwks = configuration.jwks.clone();
         spec.registered.jwks_uri = configuration.jwks_uri.clone();
         spec.registered.id_token_signed_response_alg = configuration.id_token_signed_response_alg;
@@ -437,10 +440,26 @@ fn authentication_method(client: &ClientModel) -> &str {
 fn check_key_configuration(
     client: &ClientModel,
     configuration: &KeyConfiguration,
+    realm_signs_with: &[SignAlg],
 ) -> Result<(), Unregistrable> {
     if configuration.authentication_method != authentication_method(client) {
         return Err(Unregistrable::Invalid(
             "key configuration cannot change the authentication method",
+        ));
+    }
+    // A response this client asks to have signed is signed with an active key
+    // of that algorithm and nothing else, at every sign-in: one the realm does
+    // not hold is a configuration that saves cleanly and never works.
+    if [
+        configuration.id_token_signed_response_alg,
+        configuration.userinfo_signed_response_alg,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|algorithm| !realm_signs_with.contains(&algorithm))
+    {
+        return Err(Unregistrable::Invalid(
+            "the realm holds no active key to sign responses with that algorithm",
         ));
     }
     if configuration.jwks.is_some() && configuration.jwks_uri.is_some() {
@@ -802,17 +821,52 @@ mod tests {
         }
     }
 
+    /// A response is signed with an active key of the algorithm the client
+    /// asked for and nothing else, so an algorithm the realm holds no active
+    /// key for is refused where it is written rather than at every sign-in.
+    #[test]
+    fn a_response_algorithm_the_realm_cannot_sign_with_is_refused() {
+        let client = client();
+        let mut configured = configuration();
+        assert_eq!(
+            check_key_configuration(&client, &configured, &[SignAlg::Es256]),
+            Ok(())
+        );
+        assert!(
+            check_key_configuration(&client, &configured, &[SignAlg::Rs256]).is_err(),
+            "identity tokens asked in an algorithm the realm holds no key for"
+        );
+
+        configured.id_token_signed_response_alg = None;
+        configured.userinfo_signed_response_alg = Some(SignAlg::EdDsa);
+        assert!(
+            check_key_configuration(&client, &configured, &[SignAlg::Es256]).is_err(),
+            "userinfo asked in an algorithm the realm holds no key for"
+        );
+
+        // What the client signs its own requests with is its keys' business.
+        configured.userinfo_signed_response_alg = None;
+        configured.request_object_signing_alg = Some(SignAlg::Ps512);
+        assert_eq!(
+            check_key_configuration(&client, &configured, &[SignAlg::Es256]),
+            Ok(())
+        );
+    }
+
     #[test]
     fn a_public_jwks_is_accepted_but_private_material_is_not() {
         let client = client();
         let mut configured = configuration();
-        assert_eq!(check_key_configuration(&client, &configured), Ok(()));
+        assert_eq!(
+            check_key_configuration(&client, &configured, &SignAlg::ALL),
+            Ok(())
+        );
 
         configured.jwks = Some(serde_json::json!({
             "keys": [{ "kty": "EC", "crv": "P-256", "x": "AQ", "y": "AQ", "d": "AQ" }]
         }));
         assert_eq!(
-            check_key_configuration(&client, &configured),
+            check_key_configuration(&client, &configured, &SignAlg::ALL),
             Err(Unregistrable::Invalid(
                 "the JWKS contains private or symmetric key material"
             ))
@@ -825,7 +879,10 @@ mod tests {
         let mut configured = configuration();
         configured.jwks = None;
         configured.jwks_uri = Some("https://app.example/keys".into());
-        assert_eq!(check_key_configuration(&client, &configured), Ok(()));
+        assert_eq!(
+            check_key_configuration(&client, &configured, &SignAlg::ALL),
+            Ok(())
+        );
 
         for refused in [
             "http://app.example/keys",
@@ -833,7 +890,7 @@ mod tests {
             "https://app.example/keys#old",
         ] {
             configured.jwks_uri = Some(refused.into());
-            assert!(check_key_configuration(&client, &configured).is_err());
+            assert!(check_key_configuration(&client, &configured, &SignAlg::ALL).is_err());
         }
     }
 
@@ -843,11 +900,14 @@ mod tests {
         let mut configured = configuration();
         configured.jwks = None;
         configured.request_object_signing_alg = None;
-        assert_eq!(check_key_configuration(&client, &configured), Ok(()));
+        assert_eq!(
+            check_key_configuration(&client, &configured, &SignAlg::ALL),
+            Ok(())
+        );
 
         configured.request_object_signing_alg = Some(SignAlg::Es256);
         assert_eq!(
-            check_key_configuration(&client, &configured),
+            check_key_configuration(&client, &configured, &SignAlg::ALL),
             Err(Unregistrable::Invalid(
                 "signed request objects need published keys"
             ))

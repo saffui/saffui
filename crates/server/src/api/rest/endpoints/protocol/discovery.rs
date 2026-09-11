@@ -64,22 +64,17 @@ pub async fn published(
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
         return refused(StatusCode::INTERNAL_SERVER_ERROR);
     };
-    let Ok(keys) = services::realm::published_keys(&transaction).await else {
+    // From the keys this realm signs with, not from the build's catalogue. A
+    // realm holding one EC key advertising RS256 sends every client that reads
+    // it to a signature it will never see, and registration refuses what is
+    // not in this list, so what is advertised is what a client may ask for.
+    let Ok(signs_with) = services::realm::active_signing_algorithms(&transaction).await else {
         return refused(StatusCode::INTERNAL_SERVER_ERROR);
     };
-
-    // From the keys this realm actually holds, not from the build's catalogue. A
-    // realm holding one EC key advertising RS256 sends every client that reads
-    // it to a signature it will never see.
-    let mut algorithms: Vec<String> = keys
+    let algorithms: Vec<&str> = signs_with
         .iter()
-        .filter_map(|key| match serde_json::to_value(key.algorithm) {
-            Ok(Value::String(named)) => Some(named),
-            _ => None,
-        })
+        .map(|algorithm| algorithm.name())
         .collect();
-    algorithms.sort_unstable();
-    algorithms.dedup();
 
     // What the realm calls its authentication levels, weakest first. A realm
     // mapping nothing omits this and the `acr` claim with it: an empty list
@@ -232,11 +227,8 @@ pub async fn published(
             // issue requests on somebody else's behalf.
             "require_request_uri_registration": true,
             // §5.3.2: what a client may register to be answered with, which
-            // is every algorithm this build signs at.
-            "userinfo_signing_alg_values_supported": SignAlg::ALL
-                .iter()
-                .map(|algorithm| algorithm.name())
-                .collect::<Vec<_>>(),
+            // is what the realm's active keys sign, the same as identity tokens.
+            "userinfo_signing_alg_values_supported": algorithms,
             // §2 of the registration spec: what a client may register to be
             // encrypted to. Asymmetric only, because the key is one the client
             // published: a shared-secret family has no key here to use.

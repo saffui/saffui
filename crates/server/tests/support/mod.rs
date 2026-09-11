@@ -1495,6 +1495,18 @@ impl Plane {
         reason = "only the protocol suite signs with a second algorithm"
     )]
     pub async fn publish_key(&self, key: &SigningKey) {
+        self.publish_key_as(key, KeyStatus::Active).await;
+    }
+
+    /// Publish a key that is still published but signs nothing new, the way a
+    /// rotated one stays behind.
+    #[allow(dead_code, reason = "only the admin suite retires a key")]
+    pub async fn publish_passive_key(&self, key: &SigningKey) {
+        self.publish_key_as(key, KeyStatus::Passive).await;
+    }
+
+    #[allow(dead_code, reason = "only the suites that publish a key reach it")]
+    async fn publish_key_as(&self, key: &SigningKey, status: KeyStatus) {
         let mut connection = self.connection().await;
         let transaction = self
             .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
@@ -1512,7 +1524,7 @@ impl Plane {
                 kid: key.kid.clone(),
                 algorithm: key.algorithm(),
                 key_use: KeyUse::Sig,
-                status: KeyStatus::Active,
+                status,
                 priority: 10,
                 private_pem: key.private_pem(),
                 public_jwk: serde_json::to_value(key.public().as_ref()).expect("a public jwk"),

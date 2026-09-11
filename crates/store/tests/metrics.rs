@@ -42,7 +42,7 @@ async fn metrics_are_aggregated_inside_the_current_realm() {
         .unwrap();
     }
 
-    let decisions = metrics::decisions(&transaction, Utc::now() - Duration::hours(1))
+    let decisions = metrics::decisions(&transaction, Utc::now() - Duration::hours(1), 10_000)
         .await
         .unwrap();
     assert_eq!(decisions.total, 2);
@@ -52,6 +52,34 @@ async fn metrics_are_aggregated_inside_the_current_realm() {
     assert_eq!(decisions.disagreements, 1);
     assert_eq!(decisions.average_duration_us, Some(200.0));
     assert_eq!(decisions.p95_duration_us, Some(290.0));
+    assert_eq!(decisions.p95_sample, 2);
+
+    // A slow decision half an hour older: counted in the window, and left out
+    // of a p95 read from the two most recent.
+    transaction
+        .execute(
+            "INSERT INTO authz_decisions
+                 (tenant, realm_id, decision_id, subject_type, subject_id, resource_kind,
+                  action, reported, computed, detail, duration_us, occurred_at)
+             VALUES
+                 ('acme', 'main', 'slow-1', 'user', 'ada', 'resource', 'read',
+                  'permit', 'permit', '{}'::jsonb, 5000, now() - interval '30 minutes')",
+            &[],
+        )
+        .await
+        .unwrap();
+    let since = Utc::now() - Duration::hours(1);
+    let recent = metrics::decisions(&transaction, since, 2).await.unwrap();
+    assert_eq!(recent.total, 3, "the window counts every decision");
+    assert_eq!(recent.p95_sample, 2);
+    assert_eq!(
+        recent.p95_duration_us,
+        Some(290.0),
+        "the p95 read an older decision past its sample"
+    );
+    let whole = metrics::decisions(&transaction, since, 3).await.unwrap();
+    assert_eq!(whole.p95_sample, 3);
+    assert_eq!(whole.p95_duration_us, Some(4530.0));
 
     let logins = metrics::logins(&transaction, (Utc::now() - Duration::hours(1)).timestamp())
         .await

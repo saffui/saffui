@@ -16,7 +16,11 @@ pub struct ClientKeyConfiguration {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ClientKeyCapabilities {
-    pub signing_algorithms: Vec<crypto::provider::SignAlg>,
+    /// What the realm can sign a response to this client with: the algorithms
+    /// of its active keys, the only ones issuance will use.
+    pub response_signing_algorithms: Vec<crypto::provider::SignAlg>,
+    /// What the client may sign its own requests and assertions with.
+    pub client_signing_algorithms: Vec<crypto::provider::SignAlg>,
     pub encryption_algorithms: Vec<models::entities::keys::JweAlgorithm>,
     pub encryption_methods: Vec<models::entities::keys::JweEncryption>,
 }
@@ -199,7 +203,10 @@ impl From<models::entities::client::ClientModel> for ClientBrief {
 }
 
 impl ClientBrief {
-    pub fn with_key_details(client: models::entities::client::ClientModel) -> Self {
+    pub fn with_key_details(
+        client: models::entities::client::ClientModel,
+        response_signing_algorithms: Vec<crypto::provider::SignAlg>,
+    ) -> Self {
         let key_configuration = ClientKeyConfiguration {
             authentication_method: if client.public_client == Some(true) {
                 "none".to_owned()
@@ -220,7 +227,8 @@ impl ClientBrief {
             request_object_encryption: client.request_object_encryption,
         };
         let key_capabilities = ClientKeyCapabilities {
-            signing_algorithms: crypto::provider::SignAlg::ALL.to_vec(),
+            response_signing_algorithms,
+            client_signing_algorithms: crypto::provider::SignAlg::ALL.to_vec(),
             encryption_algorithms: models::entities::keys::JweAlgorithm::ALL.to_vec(),
             encryption_methods: models::entities::keys::JweEncryption::ALL.to_vec(),
         };

@@ -355,6 +355,51 @@ async fn a_directory_row_is_read_at_the_door() {
         "the silent rewrite lost the bind secret"
     );
 
+    // A sealed secret is the server's to write. One sent, here the directory's
+    // own copied onto a new address, is refused: it would follow the directory
+    // elsewhere past the check that stops exactly that.
+    let (status, refused) = asked(
+        &plane,
+        Method::PUT,
+        &base,
+        &bearer,
+        Some(json!({ "enabled": false, "configs": {
+            "url": { "Str": "ldap://elsewhere.example:1389" },
+            "danger_plaintext": { "Str": "true" },
+            "bind_dn": { "Str": "cn=admin,dc=example,dc=org" },
+            "bind_password_sealed": { "Str": sealed_before.clone() },
+            "users_dn": { "Str": "ou=users,dc=example,dc=org" },
+        } })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a sealed secret sent by a caller was taken: {refused}"
+    );
+    let still_kept: String = {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, REALM),
+            )
+            .await;
+        transaction
+            .query_one(
+                "SELECT configs->'url'->>'Str' AS url FROM user_federations \
+                 WHERE alias = 'directory'",
+                &[],
+            )
+            .await
+            .expect("the directory row")
+            .get("url")
+    };
+    assert_eq!(
+        still_kept, "ldap://directory.example:1389",
+        "the refused write moved the directory anyway"
+    );
+
     let (status, kept) = asked(
         &plane,
         Method::PUT,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { clientKeyConfiguration, clientKeyDraft } from "./clientKeyForm";
+import { clientKeyConfiguration, clientKeyDraft, responseSigningChoices } from "./clientKeyForm";
 import type { ClientKeyConfiguration } from "@/models/client";
 
 const current: ClientKeyConfiguration = {
@@ -57,5 +57,25 @@ describe("client key form", () => {
       request_object_signing_alg: null,
       id_token_encryption: null,
     });
+  });
+});
+
+describe("the algorithms a response can be signed with", () => {
+  test("are the realm's own, nothing from the build's catalogue", () => {
+    expect(responseSigningChoices(["ES256", "RS256"], "")).toEqual([
+      { algorithm: "ES256", held: true },
+      { algorithm: "RS256", held: true },
+    ]);
+  });
+
+  test("keep a choice the realm no longer holds a key for, flagged", () => {
+    expect(responseSigningChoices(["ES256"], "EdDSA")).toEqual([
+      { algorithm: "ES256", held: true },
+      { algorithm: "EdDSA", held: false },
+    ]);
+  });
+
+  test("list a held choice once", () => {
+    expect(responseSigningChoices(["ES256"], "ES256")).toEqual([{ algorithm: "ES256", held: true }]);
   });
 });

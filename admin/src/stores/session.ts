@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { peek, type Tokens } from "saffui-js";
 import { clientFor, rememberRealm, rememberedRealm, returnUri } from "@/services/auth";
+import { getUser } from "@/services/users";
 
 let renewal: Promise<string> | null = null;
 
@@ -15,6 +16,7 @@ export const useSession = defineStore("session", {
     idToken: "",
     expiresAt: 0,
     displayName: "",
+    userId: "",
   }),
   getters: {
     signedIn: (state) => state.accessToken !== "" && Date.now() < state.expiresAt,
@@ -38,7 +40,18 @@ export const useSession = defineStore("session", {
       this.refreshToken = tokens.refresh_token ?? "";
       this.idToken = tokens.id_token ?? this.idToken;
       this.expiresAt = Date.now() + (tokens.expires_in - 15) * 1000;
-      this.displayName = subjectOf(this.idToken || tokens.access_token);
+      const identity = identityOf(this.idToken || tokens.access_token);
+      this.userId = identity.id;
+      this.displayName = identity.name;
+      if (identity.id && !identity.name) void this.loadName(realm, identity.id);
+    },
+    async loadName(realm: string, userId: string) {
+      try {
+        const user = await getUser(realm, userId);
+        if (this.realm === realm && this.userId === userId) this.displayName = user.user_name;
+      } catch {
+        // The account menu remains anonymous if this realm denies the read.
+      }
     },
     async returned(query: URLSearchParams) {
       const realm = rememberedRealm();
@@ -95,15 +108,19 @@ export const useSession = defineStore("session", {
       this.accessToken = "preview";
       this.expiresAt = Date.now() + 3_600_000;
       this.displayName = "ada";
+      this.userId = "ada";
     },
   },
 });
 
-function subjectOf(token: string): string {
+function identityOf(token: string): { id: string; name: string } {
   try {
     const claims = peek(token);
-    return String(claims.preferred_username ?? claims.sub ?? "");
+    return {
+      id: typeof claims.sub === "string" ? claims.sub : "",
+      name: typeof claims.preferred_username === "string" ? claims.preferred_username : "",
+    };
   } catch {
-    return "";
+    return { id: "", name: "" };
   }
 }

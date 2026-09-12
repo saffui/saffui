@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 const renew = vi.fn();
 const login = vi.fn();
 const logout = vi.fn();
+const getUser = vi.fn();
+
+vi.mock("@/services/users", () => ({ getUser }));
 
 vi.mock("saffui-js", () => ({
   peek: (token: string) =>
@@ -24,9 +27,24 @@ beforeEach(() => {
   renew.mockReset();
   login.mockReset();
   logout.mockReset();
+  getUser.mockReset();
 });
 
 describe("session identity", () => {
+  test("resolves the account name when the ID token only names its ID", async () => {
+    getUser.mockResolvedValue({ user_name: "admin" });
+    const session = useSession();
+    session.adopt("main", {
+      access_token: "access",
+      expires_in: 3600,
+      token_type: "Bearer",
+    });
+    expect(session.displayName).toBe("");
+    expect(session.userId).toBe("person-id");
+    await vi.waitFor(() => expect(session.displayName).toBe("admin"));
+    expect(getUser).toHaveBeenCalledWith("main", "person-id");
+  });
+
   test("asks for and displays the username from the ID token", async () => {
     const session = useSession();
     await session.login("main");

@@ -2547,6 +2547,41 @@ async fn logging_out_ends_the_login_and_what_hangs_off_it() {
     );
 }
 
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn logout_event_names_the_client_that_vouched_for_it() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.record_login_events().await;
+    let session = signed_in_once(&plane).await;
+    let (_, landing) = authorize_signed_in(&plane, &asking_for(&[]), &session).await;
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let hint = granted["id_token"].as_str().expect("an identity token");
+    let (status, _, _) = logout(&plane, &[("id_token_hint", hint)], Some(&session)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let event = plane.last_logout_event().await;
+    assert_eq!(event.session_id.as_deref(), Some(session.as_str()));
+    assert_eq!(event.user_id.as_deref(), Some(support::SUBJECT));
+    assert_eq!(event.client_id.as_deref(), Some(support::CONFIDENTIAL));
+}
+
 /// Idempotent. No cookie, an unknown session, an already-ended one: all succeed.
 /// Reporting "no such session" would answer a question about somebody else's
 /// login to whoever asks, and a user clicking twice has still achieved theirs.

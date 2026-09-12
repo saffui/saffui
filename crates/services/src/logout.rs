@@ -63,6 +63,7 @@ pub async fn end_session(
         if !vouched && !requested.confirmed {
             return EndedAt::Confirm;
         }
+        let session = sessions::load(transaction, session_id).await.ok().flatten();
         // Transitioned, not deleted. The row is the record of a login, and a
         // session that ended is not a session that never happened.
         let _ = sessions::set_state(transaction, session_id, UserSessionState::LoggedOut).await;
@@ -75,7 +76,13 @@ pub async fn end_session(
                 &store::providers::login_events::LoginEventWrite {
                     kind: "signed_out",
                     session_id: Some(session_id),
-                    user_id: claim(hint.as_ref(), "sub").as_deref(),
+                    user_id: session.as_ref().map(|held| held.user_id.as_str()),
+                    client_id: vouched
+                        .then(|| claim(hint.as_ref(), "azp"))
+                        .flatten()
+                        .as_deref(),
+                    ip: session.as_ref().and_then(|held| held.ip_address.as_deref()),
+                    user_agent: session.as_ref().and_then(|held| held.user_agent.as_deref()),
                     ..Default::default()
                 },
             )

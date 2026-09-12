@@ -11,6 +11,10 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: "", redirect: (to) => `/${to.params.realm as string}/overview` },
       {
+        path: "profile",
+        component: () => import("@/pages/profile/ProfilePage.vue"),
+      },
+      {
         path: "overview",
         component: () => import("@/pages/overview/OverviewPage.vue"),
       },

@@ -23,6 +23,18 @@ export interface PolicyRow {
   users?: string[];
   clients?: string[];
   client_scopes?: string[];
+  not_before?: number | null;
+  not_on_or_after?: number | null;
+  year?: number | null;
+  year_end?: number | null;
+  month?: number | null;
+  month_end?: number | null;
+  day_of_month?: number | null;
+  day_of_month_end?: number | null;
+  hour?: number | null;
+  hour_end?: number | null;
+  minute?: number | null;
+  minute_end?: number | null;
 }
 
 /// Partial mirror of a stored resource row.

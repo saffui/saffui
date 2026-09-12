@@ -4,11 +4,39 @@ vi.mock("@/stores/session", () => ({
   useSession: () => ({ bearer: async () => "admin-token", signOut: vi.fn() }),
 }));
 
-const { evaluate } = await import("@/services/authz");
+const { createPolicy, evaluate } = await import("@/services/authz");
+const { emptyTimeDraft, timeWindowFrom } = await import("@/pages/authorization/timePolicy");
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("authorization evaluator transport", () => {
+  test("sends a time policy in the backend's flat policy document", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response("{}", { status: 201 }));
+    vi.stubGlobal("fetch", fetch);
+    const draft = emptyTimeDraft();
+    draft.hour = "9";
+    draft.hour_end = "17";
+    await createPolicy("main", "console", {
+      name: "office-hours",
+      description: "",
+      decision: "unanimous",
+      logic: "positive",
+      policy_owner: "console",
+      policies: [],
+      resources: [],
+      scopes: [],
+      policy_type: "time",
+      ...timeWindowFrom(draft),
+    });
+    expect(fetch).toHaveBeenCalledWith(
+      "/admin/realms/main/authz/servers/console/policies",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"hour_end":17'),
+      }),
+    );
+  });
+
   test("keeps RBAC, ABAC and ReBAC questions in the backend contract", async () => {
     const fetch = vi.fn().mockImplementation(
       () => new Response(

@@ -108,7 +108,7 @@ const form = ref({
 });
 const saving = ref(false);
 const doomName = ref("");
-const TABS = ["idps", "directories", "platforms"] as const;
+const TABS = ["idps", "brokers", "directories", "platforms"] as const;
 const tab = computed(() => {
   const asked = String(route.query.tab ?? "idps");
   return TABS.includes(asked as (typeof TABS)[number]) ? asked : "idps";
@@ -213,7 +213,7 @@ async function drop() {
       :to="(leaf) => `/${realm}/federation?tab=${leaf}`"
     />
 
-    <div v-if="tab === 'idps'" class="mt-5 flex items-center gap-3">
+    <div v-if="tab === 'brokers'" class="mt-5 flex items-center gap-3">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
         {{ say("federation-idps") }}
       </h2>
@@ -225,7 +225,7 @@ async function drop() {
         {{ say("federation-new-idp") }}
       </button>
     </div>
-    <template v-if="tab === 'idps'">
+    <template v-if="tab === 'brokers'">
       <p v-if="!brokers.length" class="mt-2 text-xs text-muted">{{ say("federation-no-idps") }}</p>
       <div v-else class="sf-list mt-2 overflow-x-auto">
       <table class="sf-table">

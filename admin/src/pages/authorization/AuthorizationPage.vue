@@ -48,6 +48,7 @@ import type {
   ScopeRow,
   AuthzRoute,
 } from "@/models/authz";
+import { emptyTimeDraft, timeDraftFrom, timeWindowFrom, TIME_FIELDS } from "./timePolicy";
 
 const NODE_W = 190;
 const NODE_H = 56;
@@ -289,6 +290,7 @@ const EVALUATORS = [
   { type: "user", family: "who", list: "users" },
   { type: "client", family: "who", list: "clients" },
   { type: "client-scope", family: "who", list: "client_scopes" },
+  { type: "time", family: "when", list: "" },
   { type: "aggregated", family: "composes", list: "" },
 ] as const;
 
@@ -431,6 +433,11 @@ async function lookAtTuples() {
 
 function openNew(which: "policy" | "resource" | "scope") {
   editing.value = "";
+  if (which === "policy") {
+    policyDraft.value = { name: "", policy_type: "role", description: "", terms: "" };
+    timeDraft.value = emptyTimeDraft();
+    timeFailed.value = false;
+  }
   if (which === "resource") resourceDraft.value = { name: "", resource_type: "", uris: "", owner: "", shareable: false };
   if (which === "scope") scopeDraft.value = { name: "", display_name: "" };
   drawer.value = which;
@@ -446,6 +453,7 @@ function openPolicy(held: PolicyRow) {
     description: held.description,
     terms: carried.join("\n"),
   };
+  timeDraft.value = timeDraftFrom(held as unknown as Record<string, unknown>);
   drawer.value = "policy";
 }
 
@@ -521,6 +529,8 @@ async function doProtect() {
 }
 
 const policyDraft = ref({ name: "", policy_type: "role", description: "", terms: "" });
+const timeDraft = ref(emptyTimeDraft());
+const timeFailed = ref(false);
 async function makePolicy() {
   if (!policyDraft.value.name.trim()) return;
   const named = policyDraft.value.terms
@@ -544,6 +554,15 @@ async function makePolicy() {
       policy_type: policyDraft.value.policy_type,
     };
     if (listed) body[listed] = named;
+    if (policyDraft.value.policy_type === "time") {
+      const window = timeWindowFrom(timeDraft.value);
+      if (!window) {
+        timeFailed.value = true;
+        return;
+      }
+      Object.assign(body, window);
+    }
+    timeFailed.value = false;
     if (editing.value) {
       await reworkPolicy(realm.value, clientId.value, editing.value, body);
     } else {
@@ -552,6 +571,7 @@ async function makePolicy() {
     drawer.value = "";
     editing.value = "";
     policyDraft.value = { name: "", policy_type: "role", description: "", terms: "" };
+    timeDraft.value = emptyTimeDraft();
     await load();
   } catch {
     // The toast already said.
@@ -1323,7 +1343,19 @@ function nodeStroke(row: PolicyRow): string {
           {{ say("scopes-col-description") }}
           <input v-model="policyDraft.description" class="sf-field mt-1" />
         </label>
-        <label class="block text-[11px] font-medium text-muted">
+        <div v-if="policyDraft.policy_type === 'time'" class="grid gap-3 sm:grid-cols-2">
+          <label v-for="field in ['not_before', 'not_on_or_after'] as const" :key="field" class="block text-[11px] font-medium text-muted">
+            {{ say(`authz-time-${field}`) }}
+            <input v-model="timeDraft[field]" type="datetime-local" class="sf-field mt-1" />
+          </label>
+          <label v-for="field in TIME_FIELDS" :key="field" class="block text-[11px] font-medium text-muted">
+            {{ say(`authz-time-${field}`) }}
+            <input v-model="timeDraft[field]" type="number" min="0" step="1" class="sf-field mt-1 font-mono" />
+          </label>
+          <p class="sm:col-span-2 text-[10.5px] text-muted">{{ say('authz-time-utc') }}</p>
+          <p v-if="timeFailed" class="sm:col-span-2 text-[11px] text-danger" role="alert">{{ say('authz-time-invalid') }}</p>
+        </div>
+        <label v-else class="block text-[11px] font-medium text-muted">
           {{ say("authz-terms") }} <AppHint name="authz-terms-help" />
           <textarea v-model="policyDraft.terms" rows="2" :placeholder="say('policy-blacklist-hint')" class="sf-field mt-1 font-mono" spellcheck="false"></textarea>
         </label>

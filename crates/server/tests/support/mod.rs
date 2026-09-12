@@ -1114,6 +1114,44 @@ impl Plane {
         .collect()
     }
 
+    #[allow(
+        dead_code,
+        reason = "only the protocol suite checks logout event context"
+    )]
+    pub async fn record_login_events(&self) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .unwrap()
+            .expect("a realm");
+        realm.events_enabled = Some(true);
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+    }
+
+    #[allow(
+        dead_code,
+        reason = "only the protocol suite checks logout event context"
+    )]
+    pub async fn last_logout_event(&self) -> store::providers::login_events::LoginEvent {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::login_events::list(&transaction, 0, 100, false)
+            .await
+            .unwrap()
+            .0
+            .into_iter()
+            .find(|event| event.kind == "signed_out")
+            .expect("a logout event")
+    }
+
     /// Add another authenticator app to the subject.
     #[allow(dead_code, reason = "only the protocol suite enrols another app")]
     pub async fn enrol_totp(&self, credential_id: &str, secret: &str) {

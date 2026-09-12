@@ -128,6 +128,13 @@ function initials(name: string): string {
           <p class="font-mono text-[11.5px] text-faint">{{ say("profile-realm") }} {{ current }}</p>
         </div>
         <div class="my-1 border-t border-border"></div>
+        <router-link
+          :to="`/${current}/profile`"
+          class="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-xs text-ink hover:bg-surface-2"
+          @click="profileOpen = false"
+        >
+          {{ say("profile-view") }}
+        </router-link>
         <button
           type="button"
           class="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-xs text-danger hover:bg-surface-2"

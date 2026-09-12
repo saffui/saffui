@@ -40,6 +40,7 @@ import type {
   SodViolation,
 } from "@/services/governance";
 import AppHint from "@/components/AppHint.vue";
+import UserSubjectField from "@/components/UserSubjectField.vue";
 import GovernanceTabs from "./GovernanceTabs.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import type { IgaGrant, IgaRule } from "@/models/federation";
@@ -549,11 +550,11 @@ function edgeWords(item: CampaignItem): string {
     <form class="mt-2 flex max-w-3xl flex-wrap items-end gap-2 text-xs" @submit.prevent="giveGrant">
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("authz-subject") }}
-        <input
+        <UserSubjectField
           v-model="grantDraft.user_id"
-          placeholder="ada"
+          :realm="realm"
+          id-only
           class="sf-field mt-1 font-mono"
-          spellcheck="false"
         />
       </label>
       <label class="flex-1 text-[11px] font-medium text-muted">
@@ -584,10 +585,11 @@ function edgeWords(item: CampaignItem): string {
     <form class="mt-2 flex max-w-md flex-wrap items-end gap-2" @submit.prevent="consult">
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("authz-subject") }}
-        <input
+        <UserSubjectField
           v-model="askedUser"
+          :realm="realm"
+          id-only
           class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs text-ink"
-          spellcheck="false"
         />
       </label>
       <button
@@ -798,7 +800,7 @@ function edgeWords(item: CampaignItem): string {
     >
       <label class="w-36 text-[11px] font-medium text-muted">
         {{ say("authz-subject") }}
-        <input v-model="requestDraft.user_id" placeholder="ada" class="sf-field mt-1 font-mono" spellcheck="false" />
+        <UserSubjectField v-model="requestDraft.user_id" :realm="realm" id-only class="sf-field mt-1 font-mono" />
       </label>
       <label class="w-36 text-[11px] font-medium text-muted">
         {{ say("iga-grant-role") }}
@@ -908,7 +910,7 @@ function edgeWords(item: CampaignItem): string {
       </label>
       <label class="w-36 text-[11px] font-medium text-muted">
         {{ say("cert-reviewer") }}
-        <input v-model="campaignDraft.reviewer_id" placeholder="ada" class="sf-field mt-1 font-mono" spellcheck="false" />
+        <UserSubjectField v-model="campaignDraft.reviewer_id" :realm="realm" id-only class="sf-field mt-1 font-mono" />
       </label>
       <button type="submit" class="sf-button sf-button-primary">
         {{ say("realm-create") }}

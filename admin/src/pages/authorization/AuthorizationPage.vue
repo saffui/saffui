@@ -5,12 +5,13 @@
 // binding resources) drawn against their resources. The simulator asks the
 // server's own engine and lights the nodes the trace names.
 import { computed, onMounted, ref, watch } from "vue";
-import { RouterLink, useRoute } from "vue-router";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
 import DangerDialog from "@/components/DangerDialog.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppToggle from "@/components/AppToggle.vue";
+import UserSubjectField from "@/components/UserSubjectField.vue";
 import PageTabs from "@/components/PageTabs.vue";
 import {
   createPolicy,
@@ -48,6 +49,8 @@ import type {
   ScopeRow,
   AuthzRoute,
 } from "@/models/authz";
+import type { ClientBrief } from "@/models/client";
+import { authorizationClients, selectedClient } from "./authorizationClients";
 import { emptyTimeDraft, timeDraftFrom, timeWindowFrom, TIME_FIELDS } from "./timePolicy";
 
 const NODE_W = 190;
@@ -56,8 +59,12 @@ const GAP_X = 80;
 const GAP_Y = 22;
 
 const route = useRoute();
+const router = useRouter();
 const realm = computed(() => String(route.params.realm));
-const clientId = ref("web-dashboard");
+const clientId = ref("");
+const clients = ref<ClientBrief[]>([]);
+let clientLoad = 0;
+let resourceLoad = 0;
 const policies = ref<PolicyRow[]>([]);
 const resources = ref<ResourceRow[]>([]);
 const scopes = ref<ScopeRow[]>([]);
@@ -81,9 +88,15 @@ watch(board, (named) => {
 });
 
 function boardAt(leaf: string): string {
+  const client = clientId.value ? `&client=${encodeURIComponent(clientId.value)}` : "";
   return leaf === "evaluator"
-    ? `/${realm.value}/evaluator`
-    : `/${realm.value}/authorization?board=${leaf}`;
+    ? `/${realm.value}/evaluator${clientId.value ? `?client=${encodeURIComponent(clientId.value)}` : ""}`
+    : `/${realm.value}/authorization?board=${leaf}${client}`;
+}
+
+function chooseClient() {
+  void router.replace({ query: { ...route.query, client: clientId.value || undefined } });
+  void load();
 }
 
 /// A policy that binds a resource or a scope is a permission; one that binds
@@ -99,25 +112,36 @@ const unbound = computed(() =>
 const view = ref({ x: -40, y: -200, zoom: 0.95 });
 const dragging = ref<{ px: number; py: number; ox: number; oy: number } | null>(null);
 
-const subject = ref("ada");
+const subject = ref("");
 const askedPolicy = ref("");
 const verdict = ref<EvaluateAnswer | null>(null);
 const litPolicies = ref<Set<string>>(new Set());
 
 async function load() {
+  const current = ++resourceLoad;
   failed.value = "";
   unprotected.value = false;
   verdict.value = null;
   litPolicies.value = new Set();
   selected.value = null;
+  policies.value = [];
+  resources.value = [];
+  scopes.value = [];
+  askedPolicy.value = "";
+  if (!clientId.value) return;
   try {
-    [policies.value, resources.value, scopes.value] = await Promise.all([
+    const [foundPolicies, foundResources, foundScopes] = await Promise.all([
       listPolicies(realm.value, clientId.value),
       listResources(realm.value, clientId.value),
       listAuthzScopes(realm.value, clientId.value),
     ]);
+    if (current !== resourceLoad) return;
+    policies.value = foundPolicies;
+    resources.value = foundResources;
+    scopes.value = foundScopes;
     askedPolicy.value = policies.value[0]?.policy_id ?? "";
   } catch (refused) {
+    if (current !== resourceLoad) return;
     if (refused instanceof ApiError && refused.status === 404) {
       unprotected.value = true;
       policies.value = [];
@@ -128,7 +152,28 @@ async function load() {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
-onMounted(load);
+async function loadClients() {
+  const current = ++clientLoad;
+  ++resourceLoad;
+  clientId.value = "";
+  clients.value = [];
+  policies.value = [];
+  resources.value = [];
+  scopes.value = [];
+  unprotected.value = false;
+  failed.value = "";
+  try {
+    const found = await authorizationClients(realm.value);
+    if (current !== clientLoad) return;
+    clients.value = found;
+    clientId.value = selectedClient(found, String(route.query.client ?? ""));
+    await load();
+  } catch (refused) {
+    if (current === clientLoad) failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+onMounted(loadClients);
+watch(realm, loadClients);
 onMounted(() => board.value === "routes" && loadRoutes());
 // The graph is read where the rest of the page is read. Reading it at setup
 // would run before the session holds a token on a cold load.
@@ -671,24 +716,33 @@ function nodeStroke(row: PolicyRow): string {
         {{ say("decision-journal-title") }}
       </RouterLink>
       <form
-        v-if="board === 'models'"
+        v-if="board !== 'routes' && board !== 'graph'"
         class="flex flex-wrap items-center gap-2 xl:ml-auto"
         @submit.prevent="load"
       >
-        <label class="text-[11px] text-muted">{{ say("authz-server") }}</label>
-        <input
+        <label for="authorization-client" class="text-[11px] text-muted">{{ say("authz-server") }}</label>
+        <select
+          id="authorization-client"
           v-model="clientId"
           class="w-44 rounded-md border border-border bg-surface-2 px-2 py-1 font-mono text-xs text-ink"
-          spellcheck="false"
-        />
+          :disabled="!clients.length"
+          @change="chooseClient"
+        >
+          <option v-if="!clients.length" value="">{{ say("authz-no-clients") }}</option>
+          <option v-for="client in clients" :key="client.client_id" :value="client.client_id">
+            {{ client.client_id }}
+          </option>
+        </select>
         <button
           type="submit"
+          :disabled="!clientId"
           class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
         >
           {{ say("authz-load") }}
         </button>
         <button
           type="button"
+          :disabled="!clientId"
           class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
           @click="drawer = 'protect'"
         >
@@ -696,6 +750,7 @@ function nodeStroke(row: PolicyRow): string {
         </button>
         <button
           type="button"
+          :disabled="!clientId || unprotected"
           class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
           @click="drawer = 'policy'"
         >
@@ -703,6 +758,7 @@ function nodeStroke(row: PolicyRow): string {
         </button>
         <button
           type="button"
+          :disabled="!clientId || unprotected"
           class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
           @click="drawer = 'resource'"
         >
@@ -896,10 +952,11 @@ function nodeStroke(row: PolicyRow): string {
           <form class="mt-2 flex flex-col gap-2 text-xs" @submit.prevent="simulate">
             <label class="text-[11px] font-medium text-muted">
               {{ say("authz-subject") }}
-              <input
+              <UserSubjectField
                 v-model="subject"
+                :realm="realm"
+                :placeholder="say('subject-username-or-id')"
                 class="mt-1 w-full rounded-md border border-border bg-surface-2 px-2 py-1.5 font-mono text-xs text-ink"
-                spellcheck="false"
               />
             </label>
             <label class="text-[11px] font-medium text-muted">
@@ -1442,7 +1499,14 @@ function nodeStroke(row: PolicyRow): string {
           </label>
           <label class="block text-[11px] font-medium text-muted">
             {{ say("authz-subject-id") }}
-            <input v-model="tuple.subject_id" placeholder="ada" class="sf-field mt-1 font-mono" spellcheck="false" />
+            <UserSubjectField
+              v-if="tuple.subject_type === 'user'"
+              v-model="tuple.subject_id"
+              :realm="realm"
+              id-only
+              class="sf-field mt-1 font-mono"
+            />
+            <input v-else v-model="tuple.subject_id" class="sf-field mt-1 font-mono" spellcheck="false" />
           </label>
         </div>
         <label class="block text-[11px] font-medium text-muted">

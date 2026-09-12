@@ -510,7 +510,7 @@ pub async fn evaluate(
         .await
         .map_err(|_| internal())?;
 
-    let person = store::providers::users::load(&transaction, &subject)
+    let person = store::providers::users::load_by_id_or_name(&transaction, &subject)
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;

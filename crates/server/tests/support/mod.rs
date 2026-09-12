@@ -1080,6 +1080,28 @@ impl Plane {
             .unwrap_or_default()
     }
 
+    #[allow(
+        dead_code,
+        reason = "the admin suites distinguish username from user id"
+    )]
+    pub async fn rename_subject(&self, name: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        let mut user = store::providers::users::load(&transaction, SUBJECT)
+            .await
+            .unwrap()
+            .expect("the subject");
+        user.user_name = name.to_owned();
+        assert!(
+            store::providers::users::update(&transaction, &user)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+    }
+
     /// The keys the subject holds, by identifier.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn subject_keys(&self) -> Vec<Vec<u8>> {

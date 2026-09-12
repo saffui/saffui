@@ -53,7 +53,11 @@ pub async fn preview(
         .await
         .map_err(|_| internal())?;
     let scope = asked.scope.unwrap_or_else(|| "openid".to_owned());
-    let rows = services::mappers::preview(&transaction, &asked.client_id, &asked.user_id, &scope)
+    let user = store::providers::users::load_by_id_or_name(&transaction, &asked.user_id)
+        .await
+        .map_err(|_| internal())?
+        .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;
+    let rows = services::mappers::preview(&transaction, &asked.client_id, &user.user_id, &scope)
         .await
         .map_err(|()| ApiError::new(ErrorCode::UserNotFound))?;
     Ok(HttpResponse::Ok().json(serde_json::json!({ "claims": rows, "scope": scope })))

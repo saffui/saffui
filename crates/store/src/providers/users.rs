@@ -69,6 +69,17 @@ pub async fn load_by_name(
     one(transaction, "user_name = $1", user_name).await
 }
 
+/// Resolve an exact account id first, then an exact username in this realm.
+pub async fn load_by_id_or_name(
+    transaction: &Transaction<'_>,
+    named: &str,
+) -> StoreResult<Option<UserModel>> {
+    if let Some(user) = load(transaction, named).await? {
+        return Ok(Some(user));
+    }
+    load_by_name(transaction, named).await
+}
+
 /// One user by address.
 ///
 /// A realm that allows two users to share an address has no single answer here,

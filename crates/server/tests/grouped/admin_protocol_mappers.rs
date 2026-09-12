@@ -360,3 +360,26 @@ async fn the_preview_names_each_claims_author() {
         "{found}"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn token_preview_accepts_the_exact_username_and_user_id() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::UserRead]).await;
+    let bearer = plane.token(&support::claims());
+    plane.rename_subject("ada-renamed").await;
+    for named in [support::SUBJECT, "ada-renamed"] {
+        let (status, told) = asked(
+            &plane,
+            Method::POST,
+            &format!("/admin/realms/{REALM}/preview-token"),
+            &bearer,
+            Some(json!({
+                "user_id": named,
+                "client_id": support::CONFIDENTIAL,
+                "scope": "openid",
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{named}: {told}");
+    }
+}

@@ -50,6 +50,33 @@ fn protection() -> Value {
     json!({ "enforcement_mode": "enforcing", "decision_strategy": "unanimous" })
 }
 
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn evaluator_accepts_the_exact_username_and_user_id() {
+    let plane = Plane::with_actions(&[AdminAction::AuthzDecisionWrite]).await;
+    let bearer = plane.token(&support::claims());
+    plane.rename_subject("ada-renamed").await;
+    for named in [support::SUBJECT, "ada-renamed"] {
+        let (status, told) = asked(
+            &plane,
+            Method::POST,
+            &format!("/admin/realms/{REALM}/authz/evaluate"),
+            &bearer,
+            Some(json!({
+                "subject": named,
+                "question": {
+                    "kind": "relationship",
+                    "object_type": "document",
+                    "object_id": "one",
+                    "relation": "viewer",
+                },
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{named}: {told}");
+    }
+}
+
 /// The surface, end to end: protect a client, hang a resource, a scope and a
 /// policy off it, and take it down bindings first.
 #[tokio::test]

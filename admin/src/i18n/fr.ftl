@@ -1475,6 +1475,8 @@ passwordless-title = Sans mot de passe
 passwordless-title-help = Se connecter avec une passkey seule, sans identifiant demandé d'abord. La clé nomme la personne ; les réglages passkey du realm ci-dessus façonnent toujours la cérémonie.
 passwordless-enable = Connexion par passkey seule
 passwordless-enable-help = Affiche une porte « se connecter avec une passkey » sur la page de connexion. Le défi ne nomme aucune crédential ; l'authentificateur découvre la sienne, et seule une clé enrôlée ici nomme quelqu'un.
+passwordless-flow-blocked = Le flux navigateur actif doit permettre à WebAuthn d'admettre seul avant d'activer le sans mot de passe.
+passwordless-open-flow = Configurer le flux navigateur
 passwordless-fixed-line = Les termes de la cérémonie sont fixés par le build : vérification utilisateur exigée, et la clé doit être découvrable. Les clés enrôlées avant ce build peuvent devoir être ré-enrôlées pour être trouvées.
 
 ## Les mots des pages hébergées, et la préversion de jeton.

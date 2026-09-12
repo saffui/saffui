@@ -44,7 +44,9 @@ import type { MailBrief, MailRefusal, RelayReport } from "@/models/mail";
 import type { SmsBrief, SmsToday } from "@/models/sms";
 import { OTP_DEFAULTS, OWASP_HASHING } from "@/models/realm";
 import type { MailTemplate, PasswordPolicy, RealmSettings, RealmUpdate } from "@/models/realm";
+import type { ExecutionRow } from "@/models/flows";
 import { JURISDICTIONS } from "@/services/compliance";
+import { getFlow, listFlows } from "@/services/flows";
 import {
   mailWrite,
   previewSms,
@@ -53,7 +55,11 @@ import {
   smsWrite,
 } from "./messaging";
 import { localeMutation, localeSelection, toggleLocale } from "./localizationForm";
-import { sessionSettingsChanges, tokenSettingsChanges } from "./realmSettingsChanges";
+import {
+  passwordlessFlowCompatible,
+  sessionSettingsChanges,
+  tokenSettingsChanges,
+} from "./realmSettingsChanges";
 
 /// The deck's boards, in the deck's order. "User profile" is drawn there too
 /// and is not here: a declarative user profile is a server feature this build
@@ -211,6 +217,31 @@ const otp = ref({ ...OTP_DEFAULTS });
 /// The key ceremony's face: shown name, subdomain reach.
 const webauthn = ref({ rp_name: "", allow_subdomains: false });
 const passwordless = ref(false);
+const passwordlessReady = ref<boolean | null>(null);
+
+async function inspectPasswordlessFlow(held: RealmSettings) {
+  passwordlessReady.value = null;
+  const alias = held.browser_flow || "browser";
+  const flow = (await listFlows(realm.value)).find((row) => row.alias === alias);
+  if (!flow) {
+    passwordlessReady.value = false;
+    return;
+  }
+  const found = new Map<string, ExecutionRow[]>();
+  const read = async (flowId: string, reading = new Set<string>()): Promise<void> => {
+    if (reading.has(flowId) || found.has(flowId)) return;
+    reading.add(flowId);
+    const detail = await getFlow(realm.value, flowId);
+    found.set(flowId, detail.executions);
+    await Promise.all(
+      detail.executions.flatMap((row) =>
+        row.step.kind === "sub_flow" ? [read(row.step.flow_id, new Set(reading))] : [],
+      ),
+    );
+  };
+  await read(flow.flow_id);
+  passwordlessReady.value = passwordlessFlowCompatible(flow.flow_id, found);
+}
 
 /// The password policy, spread into fields; the hashing block rides along
 /// untouched because the server requires it whole.
@@ -325,7 +356,9 @@ function adopt(held: RealmSettings) {
 
 onMounted(async () => {
   try {
-    adopt(await getRealmSettings(realm.value));
+    const held = await getRealmSettings(realm.value);
+    adopt(held);
+    await inspectPasswordlessFlow(held);
     try {
       mail.value = await getMail(realm.value);
       mailForm.value = {
@@ -476,6 +509,10 @@ function changesOf(which: Group): RealmUpdate {
 
 async function saveGroup() {
   failed.value = "";
+  if (group.value === "credentials" && passwordless.value && passwordlessReady.value !== true) {
+    failed.value = say("passwordless-flow-blocked");
+    return;
+  }
   try {
     adopt(
       await reshapeRealm(
@@ -1608,9 +1645,26 @@ async function saveSmsTemplate() {
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
               {{ say("passwordless-title") }} <AppHint name="passwordless-title-help" />
             </div>
-            <AppToggle v-model="passwordless">
+            <AppToggle
+              v-model="passwordless"
+              :disabled="!passwordless && passwordlessReady !== true"
+            >
               {{ say("passwordless-enable") }} <AppHint name="passwordless-enable-help" />
             </AppToggle>
+            <div
+              v-if="passwordlessReady !== true"
+              class="flex flex-wrap items-center gap-2 rounded-md border border-warn/40 bg-warn/5 px-3 py-2 text-[11px] text-muted"
+              role="status"
+            >
+              <span>{{ say("passwordless-flow-blocked") }}</span>
+              <button
+                type="button"
+                class="font-medium text-accent hover:underline"
+                @click="router.push(`/${realm}/authentication`)"
+              >
+                {{ say("passwordless-open-flow") }}
+              </button>
+            </div>
             <p class="text-[10.5px] text-faint">{{ say("passwordless-fixed-line") }}</p>
 
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">

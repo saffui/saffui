@@ -1475,6 +1475,8 @@ passwordless-title = Passwordless
 passwordless-title-help = Signing in with a passkey alone, no username asked first. The key names the person; the realm's passkey settings above still shape the ceremony.
 passwordless-enable = Sign in by passkey alone
 passwordless-enable-help = Shows a sign-in-with-a-passkey door on the login page. The challenge names no credentials; the authenticator discovers its own, and only a key enrolled here names anyone.
+passwordless-flow-blocked = The active browser flow must let WebAuthn admit by itself before passwordless can be enabled.
+passwordless-open-flow = Configure the browser flow
 passwordless-fixed-line = The ceremony's terms are fixed by the build: user verification required, and the key must be discoverable. Keys enrolled before this build may need re-enrolling to be found.
 
 ## Hosted page wording, and the token preview.

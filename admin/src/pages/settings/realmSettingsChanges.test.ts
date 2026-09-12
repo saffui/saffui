@@ -1,7 +1,63 @@
 import { describe, expect, test } from "vitest";
-import { sessionSettingsChanges, tokenSettingsChanges } from "./realmSettingsChanges";
+import {
+  passwordlessFlowCompatible,
+  sessionSettingsChanges,
+  tokenSettingsChanges,
+} from "./realmSettingsChanges";
+import type { ExecutionRow } from "@/models/flows";
 
 describe("realm settings boards", () => {
+  const step = (
+    authenticator: string,
+    requirement: ExecutionRow["requirement"],
+  ): ExecutionRow => ({
+    execution_id: `${authenticator}-${requirement}`,
+    alias: authenticator,
+    flow_id: "browser",
+    priority: 10,
+    step: { kind: "authenticator", authenticator, config_id: null },
+    requirement,
+  });
+
+  test("only offers passwordless where WebAuthn can admit by itself", () => {
+    const compatible = (...executions: ExecutionRow[]) =>
+      passwordlessFlowCompatible("browser", new Map([["browser", executions]]));
+    expect(compatible(step("password", "required"))).toBe(false);
+    expect(
+      compatible(
+        step("password", "alternative"),
+        step("webauthn", "alternative"),
+      ),
+    ).toBe(true);
+    expect(compatible(step("password", "required"), step("webauthn", "required"))).toBe(false);
+    expect(compatible(step("webauthn", "disabled"))).toBe(false);
+  });
+
+  test("reads a nested WebAuthn path without following a flow cycle", () => {
+    const nested: ExecutionRow = {
+      ...step("nested", "alternative"),
+      step: { kind: "sub_flow", flow_id: "passkeys" },
+    };
+    expect(
+      passwordlessFlowCompatible(
+        "browser",
+        new Map([
+          ["browser", [step("password", "alternative"), nested]],
+          ["passkeys", [{ ...step("webauthn", "required"), flow_id: "passkeys" }]],
+        ]),
+      ),
+    ).toBe(true);
+    expect(
+      passwordlessFlowCompatible(
+        "browser",
+        new Map([
+          ["browser", [nested]],
+          ["passkeys", [{ ...nested, flow_id: "passkeys", step: { kind: "sub_flow", flow_id: "browser" } }]],
+        ]),
+      ),
+    ).toBe(false);
+  });
+
   test("keeps remember-me with the session settings", () => {
     expect(
       sessionSettingsChanges({

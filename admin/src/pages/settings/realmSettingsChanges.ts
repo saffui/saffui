@@ -1,4 +1,5 @@
 import type { RealmUpdate } from "@/models/realm";
+import type { ExecutionRow } from "@/models/flows";
 
 type NumericField = string | number;
 
@@ -58,4 +59,20 @@ export function tokenSettingsChanges(values: TokenSettingsValues): RealmUpdate {
     revoke_refresh_token: values.revoke_refresh_token,
     require_pushed_authorization_requests: values.require_pushed_authorization_requests,
   };
+}
+
+export function passwordlessFlowCompatible(
+  flowId: string,
+  flows: ReadonlyMap<string, ExecutionRow[]>,
+  visited = new Set<string>(),
+): boolean {
+  if (visited.has(flowId)) return false;
+  const nextVisited = new Set(visited).add(flowId);
+  const executions = flows.get(flowId) ?? [];
+  const active = executions.filter((row) => row.requirement !== "disabled");
+  const supports = (row: ExecutionRow) =>
+    row.step.kind === "authenticator"
+      ? row.step.authenticator === "webauthn"
+      : passwordlessFlowCompatible(row.step.flow_id, flows, nextVisited);
+  return active.some(supports) && active.filter((row) => row.requirement === "required").every(supports);
 }

@@ -42,7 +42,12 @@
         <input name="recovery_code" autocomplete="one-time-code" spellcheck="false">
       </label>
     </div>
-    <p id="key" hidden>{{passkey-waiting}}</p>
+    <div id="key" hidden>
+      <div class="key-mark" aria-hidden="true"></div>
+      <h2>{{passkey-title}}</h2>
+      <p>{{passkey-waiting}}</p>
+      <p class="key-privacy">{{passkey-privacy}}</p>
+    </div>
     <div id="texted" hidden>
       <p><span id="texted-note"></span>{{sms-sent}}</p>
       <label>{{sms-code}}
@@ -63,10 +68,14 @@
       </label>
     </div>
     <div id="app" hidden>
-      <p>{{enroll-add}}</p>
-      <img id="qr" alt="{{enroll-title}}" hidden>
-      <p><a id="otpauth" href="">{{enroll-open}}</a></p>
-      <p>{{enroll-secret-label}}: <code id="secret"></code></p>
+      <h2>{{enroll-title}}</h2>
+      <p class="panel-lede">{{enroll-add}}</p>
+      <div id="qr-frame" class="qr-frame"><img id="qr" alt="{{enroll-title}}" hidden></div>
+      <p class="app-open"><a id="otpauth" href="">{{enroll-open}}</a></p>
+      <details>
+        <summary>{{enroll-secret-label}}</summary>
+        <code id="secret"></code>
+      </details>
       <label>{{enroll-code}}
         <input name="totp_register" inputmode="numeric" autocomplete="one-time-code">
       </label>

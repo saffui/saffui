@@ -876,24 +876,9 @@ async fn totp(
     let Ok(held) = held else {
         return Outcome::Failed;
     };
-    let Some(credential) = held.into_iter().next() else {
+    if held.is_empty() {
         return Outcome::Failed;
-    };
-    let Some(OtpCredentialData {
-        algorithm,
-        parameters: OtpParameters::Totp { digits, period },
-    }) = credential.otp
-    else {
-        // A row that says `totp` and holds a counter is one no verifier reads,
-        // and reading it as the nearest thing it has is how a credential of one
-        // kind gets checked as another.
-        return Outcome::Failed;
-    };
-
-    let Ok(secret) = BASE32_NOPAD.decode(credential.secret.expose().as_bytes()) else {
-        return Outcome::Failed;
-    };
-    let secret = SecretBox::new(Box::new(secret));
+    }
 
     // The credential keeps its own shape; the drift window is the realm's
     // one live knob over codes already enrolled.
@@ -904,27 +889,45 @@ async fn totp(
         .and_then(|realm| realm.otp_policy)
         .unwrap_or_default()
         .window;
-    let step = totp_verify_step(
-        provider.hmac(),
-        &secret,
-        code,
-        TotpParams {
-            period,
-            digits,
-            hash: algorithm.hash(),
-        },
-        window,
-    );
-    let Ok(Some(step)) = step else {
-        return Outcome::Failed;
-    };
+    let mut matched = Vec::new();
+    for credential in held {
+        let Some(OtpCredentialData {
+            algorithm,
+            parameters: OtpParameters::Totp { digits, period },
+        }) = credential.otp
+        else {
+            continue;
+        };
+        let Ok(secret) = BASE32_NOPAD.decode(credential.secret.expose().as_bytes()) else {
+            continue;
+        };
+        let secret = SecretBox::new(Box::new(secret));
+        if let Ok(Some(step)) = totp_verify_step(
+            provider.hmac(),
+            &secret,
+            code,
+            TotpParams {
+                period,
+                digits,
+                hash: algorithm.hash(),
+            },
+            window,
+        ) {
+            matched.push((credential.credential_id, step));
+        }
+    }
 
-    // Spent before the step is called a success. RFC 6238 §5.2 refuses a code
-    // presented twice, and a failure to record one hands out a login whose code
-    // stays replayable for the rest of the window.
-    match credentials::consume_otp_step(transaction, &credential.credential_id, step as i64).await {
-        Ok(true) => Outcome::Passed,
-        _ => Outcome::Failed,
+    let mut consumed = false;
+    for (credential_id, step) in matched {
+        consumed |= matches!(
+            credentials::consume_otp_step(transaction, &credential_id, step as i64).await,
+            Ok(true)
+        );
+    }
+    if consumed {
+        Outcome::Passed
+    } else {
+        Outcome::Failed
     }
 }
 

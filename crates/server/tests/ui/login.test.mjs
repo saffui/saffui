@@ -349,6 +349,7 @@ test("an enrolment without an image keeps the image hidden", async () => {
   await page.signIn();
 
   assert.equal(page.element("qr").hidden, true);
+  assert.equal(page.element("qr-frame").hidden, true);
 });
 
 test("a rejected authenticator code keeps the enrolment and explains the retry", async () => {

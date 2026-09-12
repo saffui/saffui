@@ -42,6 +42,7 @@ enroll-submit = Activer
 ## 4 — Clé de sécurité / passkey
 passkey-title = Clé de sécurité
 passkey-waiting = Touchez votre clé, ou utilisez cet appareil.
+passkey-privacy = Votre empreinte ou votre visage reste sur cet appareil.
 passkey-error = La clé n'a pas répondu. Réessayez, ou utilisez un code.
 passkey-use-totp = Utiliser un code à la place
 passkey-add-title = Ajouter une clé à ce compte

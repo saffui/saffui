@@ -8,6 +8,7 @@ import AppIcon from "@/components/AppIcon.vue";
 import DirectoryDrawer from "./DirectoryDrawer.vue";
 import IdpDrawer from "./IdpDrawer.vue";
 import AppToggle from "@/components/AppToggle.vue";
+import AppHint from "@/components/AppHint.vue";
 import PageTabs from "@/components/PageTabs.vue";
 import {
   createIdp,
@@ -329,6 +330,19 @@ async function drop() {
       </button>
     </div>
     <template v-if="tab === 'directories'">
+      <div class="mt-3 max-w-3xl rounded-lg border border-border bg-surface px-3 py-3 text-xs">
+        <div class="flex flex-wrap items-center gap-2">
+          <h3 class="font-semibold text-ink">{{ say("spnego-title") }}</h3>
+          <AppHint name="federation-kerberos-help" />
+          <router-link
+            :to="`/${realm}/spnego`"
+            class="ml-auto font-medium text-accent hover:underline"
+          >
+            {{ say("federation-kerberos-open") }}
+          </router-link>
+        </div>
+        <p class="mt-1 text-[11px] leading-4 text-muted">{{ say("federation-kerberos-lede") }}</p>
+      </div>
       <p v-if="!directories.length" class="mt-2 text-xs text-muted">
         {{ say("federation-no-directories") }}
       </p>
@@ -353,7 +367,7 @@ async function drop() {
 
     <div v-if="tab === 'platforms'" class="mt-5 flex max-w-3xl flex-wrap items-center gap-2">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-        {{ say("federation-platforms") }}
+        {{ say("federation-platforms") }} <AppHint name="federation-platforms-help" />
       </h2>
       <button
         type="button"

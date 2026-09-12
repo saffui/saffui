@@ -19,6 +19,7 @@ const CONSENTS = new Set(["web-dashboard"]);
 const COMPOSITE_ROLES = new Set(["r-2"]);
 const CLIENT_MAPPERS = new Set(["m-1", "m-2"]);
 const REMOVED_REALM_KEYS = new Set<string>();
+const REALM_SETTINGS_CHANGES: Record<string, unknown> = {};
 
 const PEOPLE: UserBrief[] = [
   {
@@ -1042,7 +1043,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
   if (/\/admin\/realms\/[^/?]+(\?.*)?$/.test(path)) {
     // GET and PUT both land here in preview: the same settings document,
     // which is exactly what the real PUT answers back.
-    return answer({
+    const held = {
       realm_id: "main",
       name: "main",
       display_name: "Main",
@@ -1107,7 +1108,13 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         max_lockout_seconds: 900,
         reset_seconds: 900,
       },
-    });
+      ...REALM_SETTINGS_CHANGES,
+    };
+    if (method === "PUT" && body && typeof body === "object" && !Array.isArray(body)) {
+      Object.assign(REALM_SETTINGS_CHANGES, body);
+      Object.assign(held, body);
+    }
+    return answer(held);
   }
   throw new ApiError(404, "the preview world does not hold this");
 }

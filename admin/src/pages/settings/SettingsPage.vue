@@ -53,6 +53,7 @@ import {
   smsWrite,
 } from "./messaging";
 import { localeMutation, localeSelection, toggleLocale } from "./localizationForm";
+import { sessionSettingsChanges, tokenSettingsChanges } from "./realmSettingsChanges";
 
 /// The deck's boards, in the deck's order. "User profile" is drawn there too
 /// and is not here: a declarative user profile is a server feature this build
@@ -396,7 +397,6 @@ function changesOf(which: Group): RealmUpdate {
       duplicated_email_allowed: held.duplicated_email_allowed,
       edit_user_name_allowed: held.edit_user_name_allowed,
       reset_password_allowed: held.reset_password_allowed,
-      remember_me: held.remember_me,
       client_registration: held.client_registration,
       registration_bounds: {
         max_clients: whole(held.bounds_max_clients) ?? null,
@@ -409,25 +409,10 @@ function changesOf(which: Group): RealmUpdate {
     };
   }
   if (which === "sessions") {
-    return {
-      access_token_lifespan: whole(held.access_token_lifespan),
-      refresh_token_lifespan: whole(held.refresh_token_lifespan),
-      session_max_lifespan: whole(held.session_max_lifespan) ?? 0,
-      access_code_lifespan: whole(held.access_code_lifespan),
-      access_code_lifespan_login: whole(held.access_code_lifespan_login),
-      access_code_lifespan_user_action: whole(held.access_code_lifespan_user_action),
-      action_tokens_lifespan: whole(held.action_tokens_lifespan),
-      device_code_lifespan: whole(held.device_code_lifespan),
-      device_poll_interval: whole(held.device_poll_interval),
-      ciba_expiry: whole(held.ciba_expiry),
-      ciba_interval: whole(held.ciba_interval),
-      revoke_refresh_token: held.revoke_refresh_token,
-      refresh_token_max_reuse: whole(held.refresh_token_max_reuse),
-      offline_session_lifespan: whole(held.offline_session_lifespan),
-      offline_session_max_lifespan: whole(held.offline_session_max_lifespan) ?? 0,
-      max_offline_grants: whole(held.max_offline_grants) ?? 0,
-      require_pushed_authorization_requests: held.require_pushed_authorization_requests,
-    };
+    return sessionSettingsChanges(held);
+  }
+  if (which === "tokens") {
+    return tokenSettingsChanges(held);
   }
   if (which === "localization") {
     return localeMutation(

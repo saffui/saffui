@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { SIDE_NAV_GROUPS } from "./sideNav";
 
@@ -19,5 +20,11 @@ describe("realm navigation", () => {
     const leaves = SIDE_NAV_GROUPS.flatMap((group) => group.items.map((item) => item.leaf));
 
     expect(new Set(leaves).size).toBe(leaves.length);
+  });
+
+  test("renders the realm dialog outside the transformed navigation rail", () => {
+    const source = readFileSync(new URL("./RealmSelector.vue", import.meta.url), "utf8");
+
+    expect(source).toMatch(/<Teleport to="body">[\s\S]*v-if="making"/);
   });
 });

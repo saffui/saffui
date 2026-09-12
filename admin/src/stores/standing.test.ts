@@ -34,7 +34,10 @@ describe("the one reading the bar and the overview share", () => {
     const standing = useStanding();
     await Promise.all([standing.read("main"), standing.read("main")]);
 
-    expect(asked.sort()).toEqual(["/admin/realms/main", "/admin/realms/main/overview"]);
+    expect(asked.sort()).toEqual([
+      "/admin/realms/main/overview",
+      "/admin/realms/main?briefRepresentation=false",
+    ]);
     expect(standing.held?.users).toBe(1);
     expect(standing.settings?.edit_user_name_allowed).toBe(true);
   });
@@ -67,6 +70,19 @@ describe("the one reading the bar and the overview share", () => {
 
     await standing.read("main", true);
     expect(asked.length).toBe(2);
+  });
+
+  test("a write landing during the first read queues one fresh reading", async () => {
+    const standing = useStanding();
+
+    await Promise.all([
+      standing.read("main"),
+      standing.read("main", true),
+      standing.read("main", true),
+    ]);
+
+    expect(asked.filter((path) => path.endsWith("/overview"))).toHaveLength(2);
+    expect(asked.filter((path) => path.includes("briefRepresentation=false"))).toHaveLength(2);
   });
 
   test("another realm is another reading", async () => {

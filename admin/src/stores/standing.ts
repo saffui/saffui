@@ -1,5 +1,6 @@
 import { defineStore } from "pinia";
 import { adminPath, api } from "@/services/http";
+import { getRealmSettings } from "@/services/settings";
 import type { RealmSettings } from "@/models/realm";
 
 /// What the realm looks like right now, read once and shared.
@@ -21,7 +22,7 @@ interface Standing {
 /// The reading in flight, shared rather than dropped. Two callers on the same
 /// navigation are the normal case, and the second one needs the answer as
 /// much as the first.
-let inFlight: { realm: string; asked: Promise<void> } | null = null;
+let inFlight: { realm: string; asked: Promise<void>; again: boolean } | null = null;
 
 export const useStanding = defineStore("standing", {
   state: () => ({
@@ -37,18 +38,27 @@ export const useStanding = defineStore("standing", {
     /// Read the realm's numbers and its settings in one go.
     async read(realm: string, again = false) {
       if (!again && this.realm === realm && this.held) return;
-      if (inFlight?.realm === realm) return inFlight.asked;
-      const asked = this.ask(realm).finally(() => {
-        if (inFlight?.asked === asked) inFlight = null;
+      if (inFlight?.realm === realm) {
+        if (again) inFlight.again = true;
+        return inFlight.asked;
+      }
+      const flight = { realm, asked: Promise.resolve(), again: false };
+      flight.asked = (async () => {
+        do {
+          flight.again = false;
+          await this.ask(realm);
+        } while (flight.again);
+      })().finally(() => {
+        if (inFlight === flight) inFlight = null;
       });
-      inFlight = { realm, asked };
-      return asked;
+      inFlight = flight;
+      return flight.asked;
     },
     async ask(realm: string) {
       try {
         const [held, settings] = await Promise.all([
           api<Standing>(adminPath(realm, "overview")),
-          api<RealmSettings>(`/admin/realms/${encodeURIComponent(realm)}`),
+          getRealmSettings(realm),
         ]);
         this.held = held;
         this.settings = settings;

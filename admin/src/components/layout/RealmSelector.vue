@@ -240,13 +240,16 @@ onUnmounted(() => document.removeEventListener("click", onAway));
         </button>
       </div>
 
-    <div v-if="making" class="fixed inset-0 z-50 flex items-start justify-center">
-      <div class="absolute inset-0 bg-black/45" @click="making = false"></div>
+    <Teleport to="body">
+      <div v-if="making" class="fixed inset-0 z-[60] flex items-start justify-center overflow-y-auto p-4">
+        <div class="absolute inset-0 bg-black/45" aria-hidden="true" @click="making = false"></div>
 
-      <div
-        v-if="born"
-        class="relative mt-24 w-[540px] max-w-full rounded-lg border border-glass-line bg-glass shadow-(--sf-shadow) backdrop-blur-xl"
-      >
+        <div
+          v-if="born"
+          class="relative my-20 w-[540px] max-w-full rounded-lg border border-glass-line bg-glass shadow-(--sf-shadow) backdrop-blur-xl"
+          role="dialog"
+          aria-modal="true"
+        >
         <div class="flex h-[66px] items-center gap-3 px-[18px]">
           <span
             class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-ok-tint text-ok"
@@ -289,13 +292,15 @@ onUnmounted(() => document.removeEventListener("click", onAway));
             {{ say("action-done") }}
           </button>
         </div>
-      </div>
+        </div>
 
-      <form
-        v-else
-        class="relative mt-24 w-[540px] max-w-full rounded-lg border border-glass-line bg-glass shadow-(--sf-shadow) backdrop-blur-xl"
-        @submit.prevent="submitRealm"
-      >
+        <form
+          v-else
+          class="relative my-20 w-[540px] max-w-full rounded-lg border border-glass-line bg-glass shadow-(--sf-shadow) backdrop-blur-xl"
+          role="dialog"
+          aria-modal="true"
+          @submit.prevent="submitRealm"
+        >
         <div class="flex h-[66px] items-center gap-3 px-[18px]">
           <span
             class="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-accent-tint text-accent"
@@ -392,7 +397,8 @@ onUnmounted(() => document.removeEventListener("click", onAway));
             {{ say(makeMode === "new" ? "realm-create" : "realm-import-submit") }}
           </button>
         </div>
-      </form>
-    </div>
+        </form>
+      </div>
+    </Teleport>
   </div>
 </template>

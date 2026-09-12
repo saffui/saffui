@@ -22,4 +22,17 @@ describe("preview answers", () => {
       previewAnswer("/admin/realms/main/events/replay", "POST", { dry_run: false }),
     ).toMatchObject({ dry_run: false, delivered: 31, failed: 1 });
   });
+
+  test("reads back realm setting changes", () => {
+    previewAnswer("/admin/realms/main", "PUT", {
+      edit_user_name_allowed: true,
+      remember_me: false,
+    });
+
+    expect(
+      previewAnswer<{ edit_user_name_allowed: boolean; remember_me: boolean }>(
+        "/admin/realms/main?briefRepresentation=false",
+      ),
+    ).toMatchObject({ edit_user_name_allowed: true, remember_me: false });
+  });
 });

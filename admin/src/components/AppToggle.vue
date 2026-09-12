@@ -6,19 +6,23 @@ const on = defineModel<boolean>({ required: true });
 
 <template>
   <label class="flex cursor-pointer items-center gap-2 text-xs">
-    <button
-      type="button"
+    <input
+      v-model="on"
+      type="checkbox"
       role="switch"
       :aria-checked="on"
-      class="relative h-4.5 w-8 shrink-0 rounded-full border transition-colors"
+      class="peer sr-only"
+    />
+    <span
+      aria-hidden="true"
+      class="relative h-4.5 w-8 shrink-0 rounded-full border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-accent/60"
       :class="on ? 'border-accent bg-accent' : 'border-border bg-surface-2'"
-      @click="on = !on"
     >
       <span
         class="absolute top-1/2 size-3 -translate-y-1/2 rounded-full transition-[left]"
         :class="on ? 'left-[calc(100%-0.875rem)] bg-accent-ink' : 'left-0.5 bg-muted'"
       ></span>
-    </button>
+    </span>
     <slot />
   </label>
 </template>

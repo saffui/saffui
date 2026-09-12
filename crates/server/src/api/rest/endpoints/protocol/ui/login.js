@@ -416,6 +416,7 @@
       return;
     }
     if (told.execution === "totp-register" && told.asks) {
+      say(told.asks.refused ? spoken("totp-error") : "");
       const qr = document.getElementById("qr");
       qr.hidden = !told.asks.qr;
       if (told.asks.qr) {

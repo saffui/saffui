@@ -351,6 +351,36 @@ test("an enrolment without an image keeps the image hidden", async () => {
   assert.equal(page.element("qr").hidden, true);
 });
 
+test("a rejected authenticator code keeps the enrolment and explains the retry", async () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+  const challenge = {
+    status: "challenge",
+    execution: "totp-register",
+    asks: {
+      secret: "JBSWY3DP",
+      otpauth: "otpauth://totp/main:ada?secret=JBSWY3DP",
+      qr: svg,
+    },
+  };
+  const page = opened({
+    rounds: [
+      { told: challenge },
+      { told: { ...challenge, asks: { ...challenge.asks, refused: true } } },
+    ],
+  });
+  await page.signIn();
+
+  page.form.totp_register.value = "123456";
+  page.form.fire("submit");
+  await page.settle();
+
+  assert.match(page.element("notice").textContent, /code rejected/i);
+  assert.equal(page.element("notice").hidden, false);
+  assert.equal(page.element("secret").textContent, "JBSWY3DP");
+  assert.equal(page.element("qr").hidden, false);
+  assert.equal(page.element("qr").src, "data:image/svg+xml;utf8," + encodeURIComponent(svg));
+});
+
 // The registration half: opened by its door, shaped by the realm's say, and
 // the sentence shown is the one the server's answer names.
 test("a realm registering by address hides the name and says check your mail", async () => {

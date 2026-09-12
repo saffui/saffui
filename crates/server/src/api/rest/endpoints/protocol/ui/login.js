@@ -416,8 +416,10 @@
       return;
     }
     if (told.execution === "totp-register" && told.asks) {
+      say(told.asks.refused ? spoken("totp-error") : "");
       const qr = document.getElementById("qr");
       qr.hidden = !told.asks.qr;
+      document.getElementById("qr-frame").hidden = !told.asks.qr;
       if (told.asks.qr) {
         qr.src = "data:image/svg+xml;utf8," + encodeURIComponent(told.asks.qr);
       }

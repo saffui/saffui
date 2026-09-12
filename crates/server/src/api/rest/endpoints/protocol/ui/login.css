@@ -175,7 +175,7 @@ button:focus-visible {
   border-color: var(--border);
 }
 
-#key, #app > p { color: var(--muted); font-size: 14px; }
+#key, #app .panel-lede { color: var(--muted); font-size: 14px; }
 #keep {
   display: flex;
   align-items: center;
@@ -202,6 +202,21 @@ button:focus-visible {
   cursor: pointer;
 }
 #passkey-open:hover { color: var(--ink); border-color: var(--muted); }
+
+#key { text-align: center; padding: 12px 4px 4px; }
+#key h2, #app h2 { margin: 0 0 6px; color: var(--ink); font-size: 19px; }
+#key p { margin: 6px 0; }
+.key-mark {
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 14px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, transparent 28%, var(--brand-primary) 30% 33%, transparent 35%),
+    radial-gradient(circle, transparent 46%, color-mix(in srgb, var(--brand-primary) 55%, transparent) 48% 51%, transparent 53%);
+}
+#key .key-privacy { margin-top: 14px; font-size: 12px; }
 
 /* The realm's other ways in. Empty when no browsable provider is wired,
    and the section hides itself rather than promising one. */
@@ -261,18 +276,32 @@ button:focus-visible {
   display: block;
   width: 176px;
   height: 176px;
-  margin: 8px auto;
-  border-radius: 6px;
+  margin: auto;
+}
+.qr-frame {
+  width: fit-content;
+  min-width: 176px;
+  min-height: 176px;
+  margin: 18px auto 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .08);
 }
 #app code {
-  display: inline-block;
-  padding: 2px 6px;
+  display: block;
+  margin-top: 8px;
+  padding: 8px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 13px;
   word-break: break-all;
 }
+#app .app-open { margin: 0 0 14px; text-align: center; font-size: 13px; }
+#app details { color: var(--muted); font-size: 13px; }
+#app summary { cursor: pointer; }
 a { color: var(--ink); }
 
 #asking-scopes { margin: .5rem 0 0; padding-left: 1.25rem; font-size: 14.5px; }

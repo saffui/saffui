@@ -2724,6 +2724,47 @@ async fn a_second_factor_is_asked_for_and_answered() {
     assert_eq!(admitted["status"], "admitted");
 }
 
+/// Every enrolled app remains usable; storage order must not silently select
+/// one and reject valid codes from the others.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn every_enrolled_authenticator_app_can_answer() {
+    const OTHER_SECRETS: [&str; 2] = [
+        "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ",
+        "MFRGGZDFMZTWQ2LKNNWG23TPOI======",
+    ];
+    let plane = Plane::with_actions(&[]).await;
+    let first_code = current_code();
+    let (second_secret, second_code) = OTHER_SECRETS
+        .into_iter()
+        .map(|secret| (secret, code_for(secret.trim_end_matches('='))))
+        .find(|(_, code)| code != &first_code)
+        .expect("one of two independent apps shows another code");
+    plane
+        .enrol_totp("zzzz-second-totp", second_secret.trim_end_matches('='))
+        .await;
+    plane
+        .bind_browser_flow(support::CONFIDENTIAL, support::STRONG_FLOW)
+        .await;
+
+    let (_, _, opened) =
+        authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "totp": second_code,
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["status"], "admitted", "the second app was ignored");
+}
+
 /// RFC 6238 §5.2: a code accepted once is refused when presented again. Without
 /// it, intercepting one code buys the whole acceptance window to reuse it.
 #[tokio::test]

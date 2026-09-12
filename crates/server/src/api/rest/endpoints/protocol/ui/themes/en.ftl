@@ -42,6 +42,7 @@ enroll-submit = Turn on
 ## 4 — Security key / passkey
 passkey-title = Security key
 passkey-waiting = Touch your key, or use this device.
+passkey-privacy = Your fingerprint or face stays on this device.
 passkey-error = The key did not respond. Try again, or use a code.
 passkey-use-totp = Use a code instead
 passkey-add-title = Add a key to this account

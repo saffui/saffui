@@ -1114,6 +1114,31 @@ impl Plane {
         .collect()
     }
 
+    /// Add another authenticator app to the subject.
+    #[allow(dead_code, reason = "only the protocol suite enrols another app")]
+    pub async fn enrol_totp(&self, credential_id: &str, secret: &str) {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        store::providers::credentials::create(
+            &transaction,
+            &models::entities::credentials::CredentialModel::otp(
+                credential_id.to_owned(),
+                REALM.into(),
+                SUBJECT.into(),
+                models::entities::credentials::CredentialSecret::new(secret.to_owned()),
+                models::entities::credentials::OtpAlgorithm::Sha1,
+                models::entities::credentials::OtpParameters::totp(6, 30)
+                    .expect("a usable time step"),
+                AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned()),
+            ),
+        )
+        .await
+        .expect("the credential table");
+        transaction.commit().await.unwrap();
+    }
+
     /// Register where a client is posted a logout token.
     #[allow(dead_code, reason = "only the protocol suite is told")]
     pub async fn register_backchannel(&self, client_id: &str, uri: &str) {

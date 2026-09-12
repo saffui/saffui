@@ -74,6 +74,18 @@ export async function listDisagreements(realm: string, limit = 100): Promise<Dec
   return api<DecisionRow[]>(adminPath(realm, `authz/decisions/disagreements?limit=${limit}`));
 }
 
+export async function pruneDecisionsBefore(
+  realm: string,
+  before: Date,
+): Promise<{ removed: number }> {
+  const query = new URLSearchParams({ before: before.toISOString() });
+  return api<{ removed: number }>(`${adminPath(realm, "authz/decisions")}?${query}`, {
+    method: "DELETE",
+    quiet: true,
+    subject: say("subject-decisions-prune"),
+  });
+}
+
 /// Protect a client: give it a decision point and a strategy.
 export async function protectClient(
   realm: string,

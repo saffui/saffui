@@ -18,6 +18,7 @@ const SESSION_GRANTS = new Set(["web-dashboard", "kiosk-tv"]);
 const CONSENTS = new Set(["web-dashboard"]);
 const COMPOSITE_ROLES = new Set(["r-2"]);
 const CLIENT_MAPPERS = new Set(["m-1", "m-2"]);
+const REMOVED_REALM_KEYS = new Set<string>();
 
 const PEOPLE: UserBrief[] = [
   {
@@ -173,7 +174,7 @@ function decided(
   };
 }
 
-export function previewAnswer<T>(path: string, method = "GET"): T {
+export function previewAnswer<T>(path: string, method = "GET", body?: unknown): T {
   const answer = (held: unknown) => held as T;
 
   if (path.endsWith("/mail")) {
@@ -575,6 +576,17 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
   if (/\/federations\/[^/]+\/import$/.test(path)) {
     return answer({ imported: 14, refreshed: 82, walked: 96 });
   }
+  if (path.startsWith("/admin/realms/import?") && method === "POST") {
+    const query = new URL(path, "http://preview.local").searchParams;
+    const name = query.get("as") ?? "imported";
+    const administrator = query.get("administrator");
+    return answer({
+      realm_id: name,
+      ...(administrator
+        ? { administrator: { user_name: administrator, password: "preview-import-password" } }
+        : {}),
+    });
+  }
   if (path.includes("/import/preview") || path.endsWith("/import")) {
     return answer({
       realm_id: "main",
@@ -594,6 +606,10 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       realm: { realm_id: "main" },
       users: PEOPLE,
     });
+  }
+  if (/\/keys\/[^/]+$/.test(path) && method === "DELETE") {
+    REMOVED_REALM_KEYS.add(decodeURIComponent(path.split("/").pop() ?? ""));
+    return answer(undefined);
   }
   if (path.endsWith("/keys")) {
     return answer({
@@ -628,7 +644,7 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
           priority: 10,
           created_at: NOW - 86400 * 120,
         },
-      ],
+      ].filter((key) => !REMOVED_REALM_KEYS.has(key.kid)),
       encryption: [],
     });
   }
@@ -686,6 +702,8 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
           jwks_uri: { Str: "https://token.actions.githubusercontent.com/.well-known/jwks" },
           audience: { Str: "https://id.acme.example" }, subject_patterns: { Str: "repo:acme/deploy:* repo:acme/api:ref:refs/heads/main" },
           client_id: { Str: "ci-deployer" } } },
+      { internal_id: "i-5", provider_id: "audit-webhook", name: "audit-webhook", display_name: "Audit webhook", description: "", enabled: true, trust_email: false,
+        configs: { kind: { Str: "webhook" }, url: { Str: "https://siem.example/hooks/saffui" }, filter: { Str: "*" }, secret: { Str: "**********" } } },
     ]);
   }
   if (/\/federations\/[^/]+$/.test(path) && method !== "GET") {
@@ -828,6 +846,15 @@ export function previewAnswer<T>(path: string, method = "GET"): T {
       { event_id: 812, kind: "user.updated", user_id: "mira", attempts: 8,
         occurred_at: new Date((NOW - 5400) * 1000).toISOString() },
     ]);
+  }
+  if (path.includes("/authz/decisions?") && method === "DELETE") {
+    return answer({ removed: 184 });
+  }
+  if (path.endsWith("/events/replay") && method === "POST") {
+    const request = body as { dry_run?: boolean } | undefined;
+    return request?.dry_run === false
+      ? answer({ dry_run: false, delivered: 31, failed: 1, stopped_at: 432, more: false })
+      : answer({ dry_run: true, would_deliver: 32, stopped_at: 432, more: false });
   }
   if (path.includes("/authz/decisions/disagreements")) {
     return answer([

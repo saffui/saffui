@@ -3,11 +3,12 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import AppHint from "@/components/AppHint.vue";
 import AppIcon from "@/components/AppIcon.vue";
+import DangerDialog from "@/components/DangerDialog.vue";
 import { say } from "@/i18n";
 import type { RealmKeys, RealmKeyView } from "@/models/keys";
 import { disableRealmKey, getRealmKeys, rotateKey } from "@/services/settings";
 import { afterWrites } from "@/services/writes";
-import { groupKeys, keyCreatedAt, publishedKeyCount } from "./keyPresentation";
+import { groupKeys, keyCanBeRemoved, keyCreatedAt, publishedKeyCount } from "./keyPresentation";
 
 const ALGORITHMS = [
   "ES256",
@@ -32,7 +33,7 @@ const failed = ref("");
 const algorithm = ref<string>("ES256");
 const rotating = ref(false);
 const disabling = ref("");
-const confirming = ref("");
+const pendingKey = ref<RealmKeyView | null>(null);
 const shown = ref(new Set<string>());
 const signingGroups = computed(() => groupKeys(keys.value?.signing ?? []));
 const encryptionGroups = computed(() => groupKeys(keys.value?.encryption ?? []));
@@ -91,15 +92,12 @@ async function rotate() {
 }
 
 async function disable(key: RealmKeyView) {
-  if (confirming.value !== key.kid) {
-    confirming.value = key.kid;
-    return;
-  }
+  if (disabling.value) return;
   disabling.value = key.kid;
   failed.value = "";
   try {
     await disableRealmKey(realm.value, key.kid);
-    confirming.value = "";
+    pendingKey.value = null;
     await load();
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
@@ -173,9 +171,12 @@ async function disable(key: RealmKeyView) {
                     <td><span class="rounded border px-1.5 py-0.5 text-[10px]" :class="statusClass(key.status)">{{ key.status }}</span></td>
                     <td class="whitespace-nowrap text-[10.5px] text-muted">{{ created(key) }}</td>
                     <td class="text-right">
-                      <button v-if="key.status === 'passive'" type="button" class="rounded border px-2 py-1 text-[10.5px]" :class="confirming === key.kid ? 'border-danger-line text-danger' : 'border-border text-muted hover:bg-surface-2'" :disabled="disabling === key.kid" @click="disable(key)">
-                        {{ say(confirming === key.kid ? "keys-disable-confirm" : "keys-disable") }}
-                      </button>
+                      <span v-if="keyCanBeRemoved(key)" class="inline-flex items-center gap-1.5">
+                        <AppHint name="keys-disable-help" />
+                        <button type="button" class="rounded border border-border px-2 py-1 text-[10.5px] text-muted hover:bg-surface-2 hover:text-danger" :disabled="disabling === key.kid" @click="pendingKey = key">
+                          {{ say("keys-disable") }}
+                        </button>
+                      </span>
                       <span v-else class="text-[10.5px] text-faint">{{ say("value-none") }}</span>
                     </td>
                   </tr>
@@ -212,7 +213,15 @@ async function disable(key: RealmKeyView) {
                     </td>
                     <td class="font-mono text-[10.5px]">enc</td>
                     <td><span class="rounded border px-1.5 py-0.5 text-[10px]" :class="statusClass(key.status)">{{ key.status }}</span></td>
-                    <td>{{ say("value-none") }}</td>
+                    <td class="text-right">
+                      <span v-if="keyCanBeRemoved(key)" class="inline-flex items-center gap-1.5">
+                        <AppHint name="keys-disable-help" />
+                        <button type="button" class="rounded border border-border px-2 py-1 text-[10.5px] text-muted hover:bg-surface-2 hover:text-danger" :disabled="disabling === key.kid" @click="pendingKey = key">
+                          {{ say("keys-disable") }}
+                        </button>
+                      </span>
+                      <span v-else class="text-[10.5px] text-faint">{{ say("value-none") }}</span>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -253,5 +262,22 @@ async function disable(key: RealmKeyView) {
         </form>
       </aside>
     </div>
+
+    <DangerDialog
+      v-if="pendingKey"
+      :open="pendingKey !== null"
+      :title="say('keys-disable-title')"
+      :named="pendingKey.kid"
+      :lede="say('keys-disable-lede')"
+      :facts="[
+        { value: pendingKey.algorithm, label: say('keys-algorithm') },
+        { value: pendingKey.status, label: say('keys-status') },
+      ]"
+      :warning="say('keys-disable-warning')"
+      :confirm-label="say('keys-disable-confirm')"
+      :failed="failed"
+      @close="pendingKey = null"
+      @confirm="disable(pendingKey)"
+    />
   </div>
 </template>

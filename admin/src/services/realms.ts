@@ -17,6 +17,11 @@ export interface RealmBorn extends RealmBrief {
   administrator: { user_name: string; password: string };
 }
 
+export interface ImportedRealm {
+  realm_id: string;
+  administrator?: { user_name: string; password: string };
+}
+
 /// Create a realm. The server seeds it ready: scopes, console, key and flow
 /// arrive with it, and so does its first administrator, because this
 /// session's token was minted by another realm and will never reach the new
@@ -35,6 +40,19 @@ export async function createRealm(
       administrator: { user_name: administrator.userName, email: administrator.email },
     },
     subject: say("subject-realm", { realm: name }),
+  });
+}
+
+export async function importRealm(
+  document: unknown,
+  options: { as: string; administrator?: string },
+): Promise<ImportedRealm> {
+  const query = new URLSearchParams({ as: options.as });
+  if (options.administrator) query.set("administrator", options.administrator);
+  return api<ImportedRealm>(`/admin/realms/import?${query}`, {
+    method: "POST",
+    json: document,
+    subject: say("subject-realm", { realm: options.as }),
   });
 }
 

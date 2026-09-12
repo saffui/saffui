@@ -2,7 +2,10 @@
 import { onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
-import { listDecisions, listDisagreements } from "@/services/authz";
+import AppHint from "@/components/AppHint.vue";
+import DangerDialog from "@/components/DangerDialog.vue";
+import { listDecisions, listDisagreements, pruneDecisionsBefore } from "@/services/authz";
+import { toastOk } from "@/services/toasts";
 import { afterWrites } from "@/services/writes";
 import type { DecisionRow } from "@/models/authz";
 
@@ -12,6 +15,10 @@ const decisions = ref<DecisionRow[]>([]);
 const disagreements = ref<DecisionRow[]>([]);
 const failed = ref("");
 const loading = ref(false);
+const pruneDate = ref("");
+const pruneOpen = ref(false);
+const pruneFailed = ref("");
+const pruning = ref(false);
 
 function instant(millis: number | null): string {
   return millis ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(millis)) : "";
@@ -34,6 +41,30 @@ async function load() {
 
 onMounted(load);
 afterWrites(load);
+
+function openPruneDialog() {
+  if (!pruneDate.value) return;
+  pruneFailed.value = "";
+  pruneOpen.value = true;
+}
+
+async function pruneDecisions() {
+  if (!pruneDate.value || pruning.value) return;
+  pruning.value = true;
+  pruneFailed.value = "";
+  try {
+    const before = new Date(`${pruneDate.value}T00:00:00.000Z`);
+    const result = await pruneDecisionsBefore(realm(), before);
+    toastOk(say("decisions-prune-done", { count: result.removed }));
+    pruneOpen.value = false;
+    pruneDate.value = "";
+    await load();
+  } catch (refused) {
+    pruneFailed.value = refused instanceof Error ? refused.message : String(refused);
+  } finally {
+    pruning.value = false;
+  }
+}
 </script>
 
 <template>
@@ -48,6 +79,23 @@ afterWrites(load);
       </button>
     </div>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
+
+    <section class="mt-5 rounded-lg border border-danger/35 bg-surface p-3">
+      <div class="flex flex-wrap items-end gap-3">
+        <label class="min-w-56 flex-1 text-[11px] font-medium text-muted">
+          {{ say("decisions-prune-before") }} <AppHint name="decisions-prune-help" />
+          <input v-model="pruneDate" type="date" class="sf-field mt-1 font-mono" />
+        </label>
+        <button
+          type="button"
+          class="sf-button sf-button-danger disabled:opacity-40"
+          :disabled="!pruneDate"
+          @click="openPruneDialog"
+        >
+          {{ say("decisions-prune") }}
+        </button>
+      </div>
+    </section>
 
     <section class="mt-5">
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
@@ -115,5 +163,18 @@ afterWrites(load);
         </table>
       </div>
     </section>
+
+    <DangerDialog
+      :open="pruneOpen"
+      :title="say('decisions-prune-title')"
+      :named="pruneDate"
+      :lede="say('decisions-prune-lede')"
+      :facts="[{ value: pruneDate, label: say('decisions-prune-limit') }]"
+      :aside="say('decisions-prune-aside')"
+      :confirm-label="say('decisions-prune-confirm')"
+      :failed="pruneFailed"
+      @close="pruneOpen = false"
+      @confirm="pruneDecisions"
+    />
   </div>
 </template>

@@ -11,8 +11,9 @@ import AppIcon from "@/components/AppIcon.vue";
 import AppHint from "@/components/AppHint.vue";
 import { say } from "@/i18n";
 import { useSession } from "@/stores/session";
-import { createRealm, listRealms, type RealmBorn } from "@/services/realms";
+import { createRealm, importRealm, listRealms } from "@/services/realms";
 import type { RealmBrief } from "@/models/realm";
+import { realmNameFromImportDocument } from "./realmImportForm";
 
 const session = useSession();
 const route = useRoute();
@@ -38,9 +39,19 @@ const newDisplay = ref("");
 const newAdmin = ref("");
 const newEmail = ref("");
 const makeFailed = ref("");
+const makeMode = ref<"new" | "import">("new");
+const importDocument = ref<unknown>(null);
+const importFileName = ref("");
+const importName = ref("");
+const importAdmin = ref("");
+const makingBusy = ref(false);
 /// What the birth answered with, held until the person dismisses it. This is
 /// the only moment the password exists anywhere a human can read it.
-const born = ref<RealmBorn | null>(null);
+const born = ref<{
+  realm_id: string;
+  name: string;
+  administrator?: { user_name: string; password: string };
+} | null>(null);
 const copied = ref(false);
 
 function openMaking() {
@@ -51,17 +62,41 @@ function openMaking() {
   newAdmin.value = "";
   newEmail.value = "";
   makeFailed.value = "";
+  makeMode.value = "new";
+  importDocument.value = null;
+  importFileName.value = "";
+  importName.value = "";
+  importAdmin.value = "";
   born.value = null;
   copied.value = false;
+  makingBusy.value = false;
 }
 
 async function copyPassword() {
-  if (!born.value) return;
+  if (!born.value?.administrator) return;
   try {
     await navigator.clipboard.writeText(born.value.administrator.password);
     copied.value = true;
   } catch {
     // The box stays selectable; copying by hand still works.
+  }
+}
+
+async function readImportFile(event: Event) {
+  makeFailed.value = "";
+  importDocument.value = null;
+  const file = (event.target as HTMLInputElement).files?.[0];
+  if (!file) {
+    importFileName.value = "";
+    return;
+  }
+  importFileName.value = file.name;
+  try {
+    const document = JSON.parse(await file.text()) as unknown;
+    importDocument.value = document;
+    importName.value = realmNameFromImportDocument(document);
+  } catch {
+    makeFailed.value = say("realm-import-invalid");
   }
 }
 
@@ -93,6 +128,48 @@ async function makeRealm() {
     });
   } catch (refused) {
     makeFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+async function importCompleteRealm() {
+  makeFailed.value = "";
+  const name = importName.value.trim();
+  if (!importDocument.value) {
+    makeFailed.value = say("realm-import-file-required");
+    return;
+  }
+  if (!usableName(name)) {
+    makeFailed.value = say("realm-new-bad-name");
+    return;
+  }
+  const administrator = importAdmin.value.trim();
+  if (administrator && !usableName(administrator)) {
+    makeFailed.value = say("realm-new-bad-admin");
+    return;
+  }
+  try {
+    const imported = await importRealm(importDocument.value, {
+      as: name,
+      administrator: administrator || undefined,
+    });
+    born.value = {
+      realm_id: imported.realm_id,
+      name,
+      administrator: imported.administrator,
+    };
+  } catch (refused) {
+    makeFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+async function submitRealm() {
+  if (makingBusy.value) return;
+  makingBusy.value = true;
+  try {
+    if (makeMode.value === "import") await importCompleteRealm();
+    else await makeRealm();
+  } finally {
+    makingBusy.value = false;
   }
 }
 
@@ -184,8 +261,8 @@ onUnmounted(() => document.removeEventListener("click", onAway));
           </span>
         </div>
         <div class="flex flex-col gap-3.5 px-[18px] pb-1">
-          <p class="text-[13px] text-ink">{{ say("realm-born-lede") }}</p>
-          <div class="flex flex-col gap-1.5">
+          <p class="text-[13px] text-ink">{{ say(born.administrator ? "realm-born-lede" : "realm-import-born-lede") }}</p>
+          <div v-if="born.administrator" class="flex flex-col gap-1.5">
             <span class="text-[11.5px] text-faint">{{ say("realm-born-credential") }}</span>
             <div class="flex flex-col gap-1 rounded-md bg-surface-2 px-3 py-2.5">
               <span class="font-mono text-[12px] text-muted"
@@ -196,7 +273,7 @@ onUnmounted(() => document.removeEventListener("click", onAway));
               }}</span>
             </div>
           </div>
-          <div class="flex items-center gap-2 rounded-md bg-warn-tint px-3 py-2.5">
+          <div v-if="born.administrator" class="flex items-center gap-2 rounded-md bg-warn-tint px-3 py-2.5">
             <AppIcon name="danger" :size="13" class="shrink-0 text-warn" />
             <span class="text-[12px] text-muted">{{ say("realm-born-once") }}</span>
           </div>
@@ -205,7 +282,7 @@ onUnmounted(() => document.removeEventListener("click", onAway));
           <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint">{{
             say("realm-born-trail")
           }}</span>
-          <button type="button" class="sf-button sf-button-secondary" @click="copyPassword">
+          <button v-if="born.administrator" type="button" class="sf-button sf-button-secondary" @click="copyPassword">
             {{ copied ? say("action-copied") : say("action-copy") }}
           </button>
           <button type="button" class="sf-button sf-button-primary" @click="making = false">
@@ -217,7 +294,7 @@ onUnmounted(() => document.removeEventListener("click", onAway));
       <form
         v-else
         class="relative mt-24 w-[540px] max-w-full rounded-lg border border-glass-line bg-glass shadow-(--sf-shadow) backdrop-blur-xl"
-        @submit.prevent="makeRealm"
+        @submit.prevent="submitRealm"
       >
         <div class="flex h-[66px] items-center gap-3 px-[18px]">
           <span
@@ -226,8 +303,8 @@ onUnmounted(() => document.removeEventListener("click", onAway));
             <AppIcon name="plus" :size="15" />
           </span>
           <span class="min-w-0 flex-1">
-            <span class="block text-[15px] text-ink">{{ say("realm-new") }}</span>
-            <span class="block text-[12px] text-faint">{{ say("realm-new-lede") }}</span>
+            <span class="block text-[15px] text-ink">{{ say(makeMode === "new" ? "realm-new" : "realm-import") }}</span>
+            <span class="block text-[12px] text-faint">{{ say(makeMode === "new" ? "realm-new-lede" : "realm-import-lede") }}</span>
           </span>
           <button
             type="button"
@@ -239,7 +316,20 @@ onUnmounted(() => document.removeEventListener("click", onAway));
           </button>
         </div>
         <div class="flex flex-col gap-3.5 px-[18px] pb-1">
-          <div class="flex gap-3">
+          <div class="flex rounded-md border border-border bg-surface-2 p-1">
+            <button
+              v-for="mode in ['new', 'import'] as const"
+              :key="mode"
+              type="button"
+              class="flex-1 rounded px-2 py-1 text-[11.5px] text-muted"
+              :class="makeMode === mode && 'bg-surface text-ink'"
+              :disabled="makingBusy"
+              @click="makeMode = mode; makeFailed = ''"
+            >
+              {{ say(mode === "new" ? "realm-new-blank" : "realm-import-from-export") }}
+            </button>
+          </div>
+          <div v-if="makeMode === 'new'" class="flex gap-3">
             <label class="flex flex-1 flex-col gap-1.5">
               <span class="text-[11.5px] text-faint">
                 {{ say("settings-name") }} <AppHint name="realm-new-name-help" />
@@ -253,7 +343,7 @@ onUnmounted(() => document.removeEventListener("click", onAway));
               <input v-model="newDisplay" class="sf-field" />
             </label>
           </div>
-          <div class="flex flex-col gap-1.5 rounded-md bg-neutral-tint px-3 py-2.5">
+          <div v-if="makeMode === 'new'" class="flex flex-col gap-1.5 rounded-md bg-neutral-tint px-3 py-2.5">
             <span class="text-[11.5px] text-faint">{{ say("realm-new-admin-lede") }}</span>
             <div class="flex gap-3">
               <input
@@ -270,11 +360,26 @@ onUnmounted(() => document.removeEventListener("click", onAway));
               />
             </div>
           </div>
+          <div v-else class="flex flex-col gap-3 rounded-md bg-neutral-tint px-3 py-2.5">
+            <label class="flex flex-col gap-1.5 text-[11.5px] text-faint">
+              <span>{{ say("realm-import-file") }} <AppHint name="realm-import-help" /></span>
+              <input type="file" accept="application/json,.json" class="min-w-0 w-full text-[11.5px] text-muted file:mr-3 file:rounded file:border file:border-border file:bg-surface file:px-2 file:py-1 file:text-ink" :disabled="makingBusy" @change="readImportFile" />
+              <span v-if="importFileName" class="truncate font-mono text-[10.5px]">{{ importFileName }}</span>
+            </label>
+            <label class="flex flex-col gap-1.5 text-[11.5px] text-faint">
+              {{ say("settings-name") }}
+              <input v-model="importName" class="sf-field font-mono" spellcheck="false" />
+            </label>
+            <label class="flex flex-col gap-1.5 text-[11.5px] text-faint">
+              <span>{{ say("realm-import-admin") }} <AppHint name="realm-import-admin-help" /></span>
+              <input v-model="importAdmin" class="sf-field font-mono" spellcheck="false" :placeholder="say('realm-new-admin-name')" />
+            </label>
+          </div>
           <p v-if="makeFailed" class="text-[12px] text-danger" role="alert">{{ makeFailed }}</p>
         </div>
         <div class="flex h-14 items-center gap-3 px-[18px]">
           <span class="min-w-0 flex-1 truncate font-mono text-[11.5px] text-faint">{{
-            say("realm-new-trail")
+            say(makeMode === "new" ? "realm-new-trail" : "realm-import-trail")
           }}</span>
           <button
             type="button"
@@ -283,8 +388,8 @@ onUnmounted(() => document.removeEventListener("click", onAway));
           >
             {{ say("action-cancel") }}
           </button>
-          <button type="submit" class="sf-button sf-button-primary">
-            {{ say("realm-create") }}
+          <button type="submit" class="sf-button sf-button-primary disabled:opacity-40" :disabled="makingBusy">
+            {{ say(makeMode === "new" ? "realm-create" : "realm-import-submit") }}
           </button>
         </div>
       </form>

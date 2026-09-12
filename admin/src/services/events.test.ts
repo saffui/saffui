@@ -1,5 +1,19 @@
 import { describe, expect, test } from "vitest";
-import { parseLiveEventFrame, withLiveEvent } from "./events";
+import { connectorRedeliveryRange, parseLiveEventFrame, withLiveEvent } from "./events";
+
+describe("connector redelivery range", () => {
+  test("accepts an inclusive safe integer range", () => {
+    expect(connectorRedeliveryRange("12", "42")).toEqual({ fromEventId: 12, toEventId: 42 });
+    expect(connectorRedeliveryRange("12", "")).toEqual({ fromEventId: 12 });
+  });
+
+  test("rejects incomplete, reversed and unsafe ranges", () => {
+    expect(connectorRedeliveryRange("", "")).toBeNull();
+    expect(connectorRedeliveryRange("42", "12")).toBeNull();
+    expect(connectorRedeliveryRange("1.5", "2")).toBeNull();
+    expect(connectorRedeliveryRange("9007199254740992", "")).toBeNull();
+  });
+});
 
 describe("live event frames", () => {
   test("reads the SSE id and JSON data without requiring EventSource", () => {

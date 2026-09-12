@@ -22,6 +22,47 @@ export async function requeueDead(realm: string, eventId: number): Promise<void>
   });
 }
 
+export interface ConnectorRedeliveryResult {
+  dry_run: boolean;
+  would_deliver?: number;
+  delivered?: number;
+  failed?: number;
+  stopped_at: number | null;
+  more: boolean;
+}
+
+export function connectorRedeliveryRange(
+  from: string,
+  to: string,
+): { fromEventId: number; toEventId?: number } | null {
+  if (!/^\d+$/.test(from)) return null;
+  const fromEventId = Number(from);
+  if (!Number.isSafeInteger(fromEventId)) return null;
+  if (!to) return { fromEventId };
+  if (!/^\d+$/.test(to)) return null;
+  const toEventId = Number(to);
+  if (!Number.isSafeInteger(toEventId) || toEventId < fromEventId) return null;
+  return { fromEventId, toEventId };
+}
+
+export async function redeliverToConnector(
+  realm: string,
+  alias: string,
+  range: { fromEventId: number; toEventId?: number },
+  options: { dryRun: boolean },
+): Promise<ConnectorRedeliveryResult> {
+  return api<ConnectorRedeliveryResult>(adminPath(realm, "events/replay"), {
+    method: "POST",
+    json: {
+      connector: alias,
+      from_event_id: range.fromEventId,
+      ...(range.toEventId === undefined ? {} : { to_event_id: range.toEventId }),
+      dry_run: options.dryRun,
+    },
+    subject: say("subject-connector-redelivery", { connector: alias }),
+  });
+}
+
 /// One committed happening, as the live feed speaks it.
 export interface LiveEventSummary {
   event_id: number;

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { groupKeys, keyCreatedAt, publishedKeyCount } from "./keyPresentation";
+import { groupKeys, keyCanBeRemoved, keyCreatedAt, publishedKeyCount } from "./keyPresentation";
 
 describe("realm key presentation", () => {
   test("groups algorithms and leads each group with its highest priority", () => {
@@ -21,6 +21,12 @@ describe("realm key presentation", () => {
         { kid: "disabled", algorithm: "ES256", status: "disabled" },
       ]),
     ).toBe(2);
+  });
+
+  test("offers removal only for keys no longer active", () => {
+    expect(keyCanBeRemoved({ kid: "active", algorithm: "ES256", status: "active" })).toBe(false);
+    expect(keyCanBeRemoved({ kid: "passive", algorithm: "ES256", status: "passive" })).toBe(true);
+    expect(keyCanBeRemoved({ kid: "disabled", algorithm: "ES256", status: "disabled" })).toBe(false);
   });
 
   test("reads backend epoch seconds without accepting invalid dates", () => {

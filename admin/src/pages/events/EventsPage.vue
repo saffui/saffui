@@ -18,8 +18,19 @@ import {
   updateIdp,
 } from "@/services/federation";
 import { getRealmSettings, listSignInEvents } from "@/services/settings";
-import { listDeadLetters, requeueDead, streamLiveEvents, withLiveEvent } from "@/services/events";
-import type { DeadLetter, LiveEventSummary } from "@/services/events";
+import {
+  connectorRedeliveryRange,
+  listDeadLetters,
+  redeliverToConnector,
+  requeueDead,
+  streamLiveEvents,
+  withLiveEvent,
+} from "@/services/events";
+import type {
+  ConnectorRedeliveryResult,
+  DeadLetter,
+  LiveEventSummary,
+} from "@/services/events";
 import { afterWrites } from "@/services/writes";
 import type { DeliveryProof, IdpRow } from "@/models/federation";
 import type { SignInEvent } from "@/models/events";
@@ -151,6 +162,78 @@ function instant(epoch: number): string {
 const receivers = computed(() => idps.value.filter((row) => kindOf(row).startsWith("caep")));
 const connectors = computed(() => idps.value.filter((row) => kindOf(row) === "scim-outbound"));
 const webhooks = computed(() => idps.value.filter((row) => kindOf(row) === "webhook"));
+
+const redelivery = ref<{
+  alias: string;
+  from: string;
+  to: string;
+  result: ConnectorRedeliveryResult | null;
+  simulatedRange: string;
+  failed: string;
+} | null>(null);
+const redelivering = ref(false);
+
+function redeliveryRangeKey(): string {
+  if (!redelivery.value) return "";
+  return `${redelivery.value.from}:${redelivery.value.to}`;
+}
+
+const canRedeliver = computed(
+  () =>
+    redelivery.value?.result?.dry_run === true &&
+    redelivery.value.simulatedRange === redeliveryRangeKey(),
+);
+
+function openRedelivery(row: IdpRow) {
+  if (redelivering.value) return;
+  redelivery.value = {
+    alias: row.provider_id,
+    from: "",
+    to: "",
+    result: null,
+    simulatedRange: "",
+    failed: "",
+  };
+}
+
+async function submitRedelivery(dryRun: boolean) {
+  const draft = redelivery.value;
+  if (!draft) return;
+  const range = connectorRedeliveryRange(draft.from, draft.to);
+  if (!range) {
+    draft.failed = say("connector-redeliver-invalid-range");
+    return;
+  }
+  if (redelivering.value) return;
+  const requestedRange = redeliveryRangeKey();
+  redelivering.value = true;
+  draft.failed = "";
+  try {
+    const result = await redeliverToConnector(
+      realm.value,
+      draft.alias,
+      range,
+      { dryRun },
+    );
+    if (redelivery.value !== draft) return;
+    draft.result = result;
+    draft.simulatedRange = dryRun ? requestedRange : "";
+  } catch (refused) {
+    draft.failed = refused instanceof Error ? refused.message : String(refused);
+  } finally {
+    redelivering.value = false;
+  }
+}
+
+function continueRedelivery() {
+  if (
+    redelivery.value?.result?.stopped_at === null ||
+    redelivery.value?.result?.stopped_at === undefined
+  ) return;
+  redelivery.value.from = String(redelivery.value.result.stopped_at);
+  redelivery.value.result = null;
+  redelivery.value.simulatedRange = "";
+}
 
 function bagText(row: IdpRow, key: string): string {
   const held = row.configs?.[key];
@@ -440,7 +523,7 @@ async function prove(row: IdpRow) {
         :key="row.internal_id"
         class="rounded-lg border border-border bg-surface px-3 py-2.5 text-xs"
       >
-        <div class="flex items-center gap-2">
+        <div class="flex flex-wrap items-center gap-2">
           <button
             type="button"
             class="font-medium hover:text-accent"
@@ -586,8 +669,70 @@ async function prove(row: IdpRow) {
           >
             {{ proving === row.provider_id ? say("connector-proving") : say("connector-prove") }}
           </button>
+          <span class="inline-flex items-center gap-1">
+            <AppHint name="connector-redeliver-help" />
+            <button
+              type="button"
+              class="rounded-md border border-border px-2 py-0.5 text-[10.5px] text-muted hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+              :disabled="redelivering"
+              @click="openRedelivery(row)"
+            >
+              {{ say("connector-redeliver") }}
+            </button>
+          </span>
         </div>
         <div class="mt-1 font-mono text-[10.5px] text-faint">{{ bagText(row, "url") }}</div>
+        <form
+          v-if="redelivery?.alias === row.provider_id"
+          class="mt-2 rounded-md border border-border bg-surface-2 p-2.5"
+          @submit.prevent="submitRedelivery(true)"
+        >
+          <div class="grid gap-2 sm:grid-cols-2">
+            <label class="text-[10.5px] text-muted">
+              {{ say("connector-redeliver-from") }}
+              <input v-model="redelivery.from" type="number" min="0" required class="sf-field mt-1 font-mono" :disabled="redelivering" />
+            </label>
+            <label class="text-[10.5px] text-muted">
+              {{ say("connector-redeliver-to") }}
+              <input v-model="redelivery.to" type="number" min="0" class="sf-field mt-1 font-mono" :disabled="redelivering" />
+            </label>
+          </div>
+          <p v-if="redelivery.failed" class="mt-2 text-[10.5px] text-danger" role="alert">
+            {{ redelivery.failed }}
+          </p>
+          <div v-if="redelivery.result" class="mt-2 flex flex-wrap items-center gap-2 text-[10.5px] text-muted" role="status">
+            <template v-if="redelivery.result.dry_run">
+              {{ say("connector-redeliver-would", { count: redelivery.result.would_deliver ?? 0 }) }}
+            </template>
+            <template v-else>
+              {{ say("connector-redeliver-done", { delivered: redelivery.result.delivered ?? 0, failed: redelivery.result.failed ?? 0 }) }}
+            </template>
+            <button
+              v-if="redelivery.result.more"
+              type="button"
+              class="text-accent hover:underline"
+              @click="continueRedelivery"
+            >
+              {{ say("connector-redeliver-continue", { id: redelivery.result.stopped_at ?? 0 }) }}
+            </button>
+          </div>
+          <div class="mt-2 flex flex-wrap justify-end gap-2">
+            <button type="button" class="sf-button sf-button-secondary" @click="redelivery = null">
+              {{ say("action-cancel") }}
+            </button>
+            <button type="submit" class="sf-button sf-button-secondary" :disabled="redelivering">
+              {{ say("connector-redeliver-simulate") }}
+            </button>
+            <button
+              type="button"
+              class="sf-button sf-button-primary disabled:opacity-40"
+              :disabled="redelivering || !canRedeliver"
+              @click="submitRedelivery(false)"
+            >
+              {{ say("connector-redeliver-send") }}
+            </button>
+          </div>
+        </form>
         <p
           v-if="proofs[row.provider_id]"
           class="mt-1.5 text-[10.5px]"

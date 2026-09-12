@@ -5,8 +5,10 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
-import { listClients, previewToken, type PreviewedClaim } from "@/services/clients";
+import UserSubjectField from "@/components/UserSubjectField.vue";
+import { previewToken, type PreviewedClaim } from "@/services/clients";
 import type { ClientBrief } from "@/models/client";
+import { authorizationClients, selectedClient } from "@/pages/authorization/authorizationClients";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
@@ -20,8 +22,8 @@ const askedScope = ref("");
 
 onMounted(async () => {
   try {
-    clients.value = (await listClients(realm.value, 0, 100)).items;
-    clientId.value = clients.value[0]?.client_id ?? "";
+    clients.value = await authorizationClients(realm.value);
+    clientId.value = selectedClient(clients.value, String(route.query.client ?? ""));
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -63,11 +65,11 @@ function worded(value: unknown): string {
     <form class="mt-4 flex max-w-3xl items-end gap-2 text-xs" @submit.prevent="ask">
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("signin-col-who") }}
-        <input
+        <UserSubjectField
           v-model="userId"
-          placeholder="ada"
+          :realm="realm"
+          :placeholder="say('subject-username-or-id')"
           class="sf-field mt-1 font-mono"
-          spellcheck="false"
         />
       </label>
       <label class="flex-1 text-[11px] font-medium text-muted">
@@ -76,6 +78,7 @@ function worded(value: unknown): string {
           v-model="clientId"
           class="sf-field mt-1 font-mono"
         >
+          <option value="" disabled>{{ say("authz-pick-client") }}</option>
           <option v-for="held in clients" :key="held.client_id" :value="held.client_id">
             {{ held.client_id }}
           </option>

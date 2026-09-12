@@ -7,6 +7,7 @@ import { computed, onMounted, ref } from "vue";
 import { RouterLink, useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
+import UserSubjectField from "@/components/UserSubjectField.vue";
 import PageTabs from "@/components/PageTabs.vue";
 import {
   evaluate,
@@ -16,7 +17,7 @@ import {
   listPolicies,
   listResources,
 } from "@/services/authz";
-import { listClients, previewToken, type PreviewedClaim } from "@/services/clients";
+import { previewToken, type PreviewedClaim } from "@/services/clients";
 import { afterWrites } from "@/services/writes";
 import type {
   DecisionRow,
@@ -27,15 +28,17 @@ import type {
   ScopeRow,
 } from "@/models/authz";
 import type { ClientBrief } from "@/models/client";
+import { authorizationClients, selectedClient } from "./authorizationClients";
 
 const route = useRoute();
 
 /// The evaluator keeps its own sidebar entry and is also a board of the
 /// authorization screen, so both paths lead here.
 function boardAt(leaf: string): string {
+  const client = clientId.value ? `&client=${encodeURIComponent(clientId.value)}` : "";
   return leaf === "evaluator"
     ? `/${realm.value}/evaluator`
-    : `/${realm.value}/authorization?board=${leaf}`;
+    : `/${realm.value}/authorization?board=${leaf}${client}`;
 }
 const realm = computed(() => String(route.params.realm));
 const failed = ref("");
@@ -116,8 +119,8 @@ async function loadServer() {
 
 onMounted(async () => {
   try {
-    clients.value = (await listClients(realm.value, 0, 100)).items;
-    clientId.value = clients.value[0]?.client_id ?? "";
+    clients.value = await authorizationClients(realm.value);
+    clientId.value = selectedClient(clients.value, String(route.query.client ?? ""));
     await loadServer();
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
@@ -296,10 +299,10 @@ function worded(value: unknown): string {
 
         <label class="mt-3 block text-[11px] font-medium text-muted">
           {{ say("evaluator-subject") }}
-          <input
+          <UserSubjectField
             v-model="subject"
-            placeholder="ada"
-            spellcheck="false"
+            :realm="realm"
+            :placeholder="say('subject-username-or-id')"
             class="sf-field mt-1 font-mono"
           />
         </label>
@@ -323,6 +326,7 @@ function worded(value: unknown): string {
             class="sf-field mt-1 font-mono"
             @change="loadServer"
           >
+            <option value="" disabled>{{ say("authz-pick-client") }}</option>
             <option v-for="held in clients" :key="held.client_id" :value="held.client_id">
               {{ held.client_id }}
             </option>

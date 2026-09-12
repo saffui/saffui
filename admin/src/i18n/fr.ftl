@@ -539,6 +539,7 @@ authz-server-shareable-help = Le plafond de toutes les ressources sous ce serveu
 authz-title = Autorisation
 authz-server = Serveur de ressources
 authz-no-clients = Aucun client dans ce realm
+authz-pick-client = Sélectionner un client
 subject-username-or-id = Nom d’utilisateur ou ID
 authz-load = Charger
 authz-unprotected = Ce client n'est pas protégé. Le protéger ouvre la surface de politiques.

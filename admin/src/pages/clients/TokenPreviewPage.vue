@@ -8,7 +8,7 @@ import AppHint from "@/components/AppHint.vue";
 import UserSubjectField from "@/components/UserSubjectField.vue";
 import { previewToken, type PreviewedClaim } from "@/services/clients";
 import type { ClientBrief } from "@/models/client";
-import { authorizationClients } from "@/pages/authorization/authorizationClients";
+import { authorizationClients, selectedClient } from "@/pages/authorization/authorizationClients";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
@@ -23,7 +23,7 @@ const askedScope = ref("");
 onMounted(async () => {
   try {
     clients.value = await authorizationClients(realm.value);
-    clientId.value = clients.value[0]?.client_id ?? "";
+    clientId.value = selectedClient(clients.value, String(route.query.client ?? ""));
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
@@ -78,6 +78,7 @@ function worded(value: unknown): string {
           v-model="clientId"
           class="sf-field mt-1 font-mono"
         >
+          <option value="" disabled>{{ say("authz-pick-client") }}</option>
           <option v-for="held in clients" :key="held.client_id" :value="held.client_id">
             {{ held.client_id }}
           </option>

@@ -539,6 +539,7 @@ authz-server-shareable-help = The ceiling for every resource under this server. 
 authz-title = Authorization
 authz-server = Resource server
 authz-no-clients = No clients in this realm
+authz-pick-client = Select a client
 subject-username-or-id = Username or ID
 authz-load = Load
 authz-unprotected = This client is not protected. Protecting it opens the policy surface.

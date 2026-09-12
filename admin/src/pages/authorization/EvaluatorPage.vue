@@ -35,9 +35,10 @@ const route = useRoute();
 /// The evaluator keeps its own sidebar entry and is also a board of the
 /// authorization screen, so both paths lead here.
 function boardAt(leaf: string): string {
+  const client = clientId.value ? `&client=${encodeURIComponent(clientId.value)}` : "";
   return leaf === "evaluator"
     ? `/${realm.value}/evaluator`
-    : `/${realm.value}/authorization?board=${leaf}`;
+    : `/${realm.value}/authorization?board=${leaf}${client}`;
 }
 const realm = computed(() => String(route.params.realm));
 const failed = ref("");
@@ -325,6 +326,7 @@ function worded(value: unknown): string {
             class="sf-field mt-1 font-mono"
             @change="loadServer"
           >
+            <option value="" disabled>{{ say("authz-pick-client") }}</option>
             <option v-for="held in clients" :key="held.client_id" :value="held.client_id">
               {{ held.client_id }}
             </option>

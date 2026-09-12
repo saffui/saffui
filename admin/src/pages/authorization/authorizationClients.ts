@@ -12,7 +12,6 @@ export async function authorizationClients(realm: string): Promise<ClientBrief[]
 }
 
 export function selectedClient(clients: ClientBrief[], requested: string): string {
-  return clients.some((client) => client.client_id === requested)
-    ? requested
-    : (clients[0]?.client_id ?? "");
+  if (clients.some((client) => client.client_id === requested)) return requested;
+  return clients.length === 1 ? clients[0].client_id : "";
 }

@@ -316,9 +316,7 @@ pub async fn answer_step(
                 .subject_asked()
                 .is_some_and(|wanted| wanted != subject.user_id)
             {
-                login::finish(transaction, &login.session_id)
-                    .await
-                    .map_err(|_| Unanswerable::Unreadable)?;
+                finish_login(transaction, &login.session_id).await?;
                 return Ok(Step::SentBack {
                     error: "login_required",
                     login: Box::new(login.clone()),
@@ -371,9 +369,7 @@ pub async fn answer_step(
                     // no to this client. That is the client's answer, not a
                     // refused login.
                     Some(false) => {
-                        login::finish(transaction, &login.session_id)
-                            .await
-                            .map_err(|_| Unanswerable::Unreadable)?;
+                        finish_login(transaction, &login.session_id).await?;
                         return Ok(Step::SentBack {
                             error: "access_denied",
                             login: Box::new(login.clone()),
@@ -586,9 +582,7 @@ async fn admit(
     // The login in progress is over, here and not in the caller. Leaving it
     // would let the same answer mint a second code for one authorization, and
     // a guarantee split across two crates is one somebody forgets to hold.
-    login::finish(transaction, &login.session_id)
-        .await
-        .map_err(|_| Unanswerable::Unreadable)?;
+    finish_login(transaction, &login.session_id).await?;
 
     Ok(Admission {
         // Handed back rather than left behind: the row is gone, and what the
@@ -601,6 +595,19 @@ async fn admit(
         auth_time: now.timestamp(),
         remember_me: remembering,
     })
+}
+
+/// End the login in progress, or refuse when another round already ended it.
+///
+/// Two rounds can both resume a login, since it is read without a lock. Only
+/// the one whose delete removed it answers the client; the other is answered
+/// as if it came a moment later, so one authorization never gets two answers.
+async fn finish_login(transaction: &Transaction<'_>, session_id: &str) -> Result<(), Unanswerable> {
+    login::finish(transaction, session_id)
+        .await
+        .map_err(|_| Unanswerable::Unreadable)?
+        .then_some(())
+        .ok_or(Unanswerable::NoSuchLogin)
 }
 
 fn noted<'a>(notes: &'a Value, named: &str) -> Option<&'a str> {

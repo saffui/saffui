@@ -358,6 +358,26 @@ pub async fn recent(
         .collect()
 }
 
+/// The decisions one trace made, newest first: what joins a decision to the
+/// writes and requests around it.
+pub async fn decisions_of_trace(
+    transaction: &Transaction<'_>,
+    trace_id: &str,
+    limit: i64,
+) -> StoreResult<Vec<AuthzDecisionRecord>> {
+    let statement = format!(
+        "SELECT {DECISION_COLUMNS} FROM authz_decisions WHERE trace_id = $1 \
+         ORDER BY occurred_at DESC LIMIT $2"
+    );
+    transaction
+        .query(statement.as_str(), &[&trace_id, &limit])
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_decision)
+        .collect()
+}
+
 /// Decisions whose reported answer is not what was computed.
 ///
 /// The two an auditor is looking for, in one read: a denial the caller never

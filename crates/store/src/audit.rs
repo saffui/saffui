@@ -224,26 +224,32 @@ pub struct JournalEntry {
     pub envelope: Value,
 }
 
-/// The newest entries first, one page at a time. The chain is verified by
-/// [`verify`], not here: a listing is for reading, and it reads what stands.
+/// The newest entries first, one page at a time, of one trace when one is
+/// named. The chain is verified by [`verify`], not here: a listing is for
+/// reading, and it reads what stands.
 pub async fn list_entries(
     transaction: &Transaction<'_>,
     first: i64,
     max: i64,
     count: bool,
+    trace: Option<&str>,
 ) -> StoreResult<(Vec<JournalEntry>, Option<i64>)> {
     let rows = transaction
         .query(
             "SELECT seq, recorded_at, envelope FROM audit_events \
+             WHERE ($3::text IS NULL OR trace_id = $3) \
              ORDER BY seq DESC OFFSET $1 LIMIT $2",
-            &[&first, &max],
+            &[&first, &max, &trace],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
     let total = if count {
         Some(
             transaction
-                .query_one("SELECT count(*) FROM audit_events", &[])
+                .query_one(
+                    "SELECT count(*) FROM audit_events WHERE ($1::text IS NULL OR trace_id = $1)",
+                    &[&trace],
+                )
                 .await
                 .map_err(|_| StoreError::Backend)?
                 .get::<_, i64>(0),

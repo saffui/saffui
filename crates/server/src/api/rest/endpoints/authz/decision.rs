@@ -85,6 +85,12 @@ pub async fn ask(
         }
     };
 
+    // The caller's own trace when it names one, the request's otherwise, so a
+    // decision always lands where the writes of the same request can find it.
+    let trace = asked
+        .trace_id
+        .clone()
+        .or_else(crate::otel::current_trace_id);
     let answer = decide(
         &transaction,
         &journal,
@@ -95,7 +101,7 @@ pub async fn ask(
                 .as_ref()
                 .map_or(asked.action.as_str(), |route| route.action.as_str()),
             decision_id: &asked.decision_id,
-            trace_id: asked.trace_id.as_deref(),
+            trace_id: trace.as_deref(),
         },
     )
     .await

@@ -205,6 +205,73 @@ pub async fn subjects(
     Ok(HttpResponse::Ok().json(told))
 }
 
+/// What a listing of edges may be narrowed to. An empty value is no filter.
+#[derive(Deserialize)]
+pub struct TupleQuery {
+    pub object_type: Option<String>,
+    pub relation: Option<String>,
+    pub subject_type: Option<String>,
+    pub subject_id: Option<String>,
+}
+
+fn named(held: &Option<String>) -> Option<&str> {
+    held.as_deref().filter(|value| !value.is_empty())
+}
+
+/// Every edge written in the realm, a page at a time, narrowed by what the
+/// query names: what stands, never what the engine derives from it.
+pub async fn list_tuples(
+    admin: web::ReqData<Admin>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<String>,
+    paging: web::Query<models::paging::PagingParams>,
+    asked: web::Query<TupleQuery>,
+) -> Result<HttpResponse, ApiError> {
+    let realm_id = path.into_inner();
+    let window = paging
+        .window()
+        .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
+    let mut connection = pool.get().await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .transaction(&mut connection, &within(&admin, &realm_id))
+        .await
+        .map_err(|_| internal())?;
+    let held = store::providers::rebac::tuples(
+        &transaction,
+        store::providers::rebac::TupleFilter {
+            object_type: named(&asked.object_type),
+            relation: named(&asked.relation),
+            subject_type: named(&asked.subject_type),
+            subject_id: named(&asked.subject_id),
+        },
+        window.first,
+        window.max,
+    )
+    .await
+    .map_err(|_| internal())?;
+    let items: Vec<_> = held
+        .into_iter()
+        .map(|tuple| {
+            json!({
+                "object_type": tuple.object_type,
+                "object_id": tuple.object_id,
+                "relation": tuple.relation,
+                "subject_type": tuple.subject.subject_type,
+                "subject_id": tuple.subject.subject_id,
+                "subject_relation": (!tuple.subject.subject_relation.is_empty())
+                    .then_some(tuple.subject.subject_relation),
+                "created_at": tuple.created_at,
+            })
+        })
+        .collect();
+    Ok(HttpResponse::Ok().json(json!({
+        "items": items,
+        "first": window.first,
+        "max": window.max,
+    })))
+}
+
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
 }

@@ -12,6 +12,8 @@ export interface JournalEntry {
     pattern: string | null;
     path: string;
     status: number;
+    /// The trace the write ran in, when one was open.
+    trace_id?: string | null;
   };
 }
 

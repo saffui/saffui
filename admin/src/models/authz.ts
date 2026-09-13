@@ -66,6 +66,23 @@ export interface AuthzRoute {
 /// One decision the engine reached, as the log keeps it. `reported` is what
 /// the caller was told and `computed` what the evaluation reached: a
 /// permissive server is where the two part company.
+/// Mirrors `GET .../rebac/tuples`: one edge as written.
+export interface TupleRow {
+  object_type: string;
+  object_id: string;
+  relation: string;
+  subject_type: string;
+  subject_id: string;
+  subject_relation: string | null;
+  created_at: string;
+}
+
+export interface TuplePage {
+  items: TupleRow[];
+  first: number;
+  max: number;
+}
+
 export interface DecisionRow {
   decision_id: string;
   subject_type: string;

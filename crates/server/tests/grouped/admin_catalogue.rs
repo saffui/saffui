@@ -325,3 +325,112 @@ async fn the_last_capabilities_split_where_they_should() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// The realm's edges list a page at a time in key order, narrow by what the
+/// query names, and answer only a reader of the graph.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realms_edges_list_a_page_at_a_time_and_narrow() {
+    let plane = Plane::with_actions(&[AdminAction::RebacRead, AdminAction::RebacWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/rebac/schema"),
+        &bearer,
+        Some(json!({
+            "source": "definition user {}\n\ndefinition group {\n    relation member: user | group#member\n}\n\ndefinition folder {\n    relation viewer: user | group#member\n}\n"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    for (object_id, subject_type, subject_id, subject_relation) in [
+        ("plans", "user", "ada", ""),
+        ("plans", "user", "grace", ""),
+        ("roadmap", "group", "eng", "member"),
+    ] {
+        let (status, told) = asked(
+            &plane,
+            Method::POST,
+            &format!("/admin/realms/{REALM}/rebac/relations"),
+            &bearer,
+            Some(json!({
+                "object_type": "folder",
+                "object_id": object_id,
+                "relation": "viewer",
+                "subject_type": subject_type,
+                "subject_id": subject_id,
+                "subject_relation": subject_relation,
+            })),
+        )
+        .await;
+        assert!(status.is_success(), "{told}");
+    }
+
+    let tuples = |query: &str| format!("/admin/realms/{REALM}/rebac/tuples{query}");
+    let edges = |page: &Value| {
+        page["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .map(|item| {
+                format!(
+                    "{}:{}",
+                    item["object_id"].as_str().unwrap_or_default(),
+                    item["subject_id"].as_str().unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let (status, page) = asked(
+        &plane,
+        Method::GET,
+        &tuples("?first=0&max=2"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert_eq!(edges(&page), vec!["plans:ada", "plans:grace"], "{page}");
+    let (_, page) = asked(
+        &plane,
+        Method::GET,
+        &tuples("?first=2&max=2"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(edges(&page), vec!["roadmap:eng"], "{page}");
+    assert_eq!(page["items"][0]["subject_relation"], "member", "{page}");
+    assert!(page["items"][0]["created_at"].is_string(), "{page}");
+    let (_, page) = asked(
+        &plane,
+        Method::GET,
+        &tuples("?subject_type=group"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(edges(&page), vec!["roadmap:eng"], "{page}");
+    let (_, page) = asked(
+        &plane,
+        Method::GET,
+        &tuples("?subject_id=ada&relation=viewer"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(edges(&page), vec!["plans:ada"], "{page}");
+    let (_, page) = asked(&plane, Method::GET, &tuples("?object_type="), &bearer, None).await;
+    assert_eq!(
+        edges(&page).len(),
+        3,
+        "an empty filter narrowed the listing: {page}"
+    );
+    drop(plane);
+
+    let writer = Plane::with_actions(&[AdminAction::RebacWrite]).await;
+    let bearer = writer.token(&support::claims());
+    let (status, told) = asked(&writer, Method::GET, &tuples(""), &bearer, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{told}");
+}

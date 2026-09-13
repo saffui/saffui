@@ -5,8 +5,10 @@ export async function listJournal(
   realm: string,
   first: number,
   max: number,
+  trace = "",
 ): Promise<JournalPage> {
-  return api<JournalPage>(`${adminPath(realm, "journal")}?first=${first}&max=${max}`);
+  const narrowed = trace ? `&trace_id=${encodeURIComponent(trace)}` : "";
+  return api<JournalPage>(`${adminPath(realm, "journal")}?first=${first}&max=${max}${narrowed}`);
 }
 
 export async function verifyChain(realm: string): Promise<ChainVerified> {

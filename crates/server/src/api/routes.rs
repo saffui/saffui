@@ -1160,6 +1160,12 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/rebac/tuples",
+            action: AdminAction::RebacRead,
+            handler: Some(|| web::get().to(rebac::list_tuples)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/roles",
             action: AdminAction::RoleRead,
             handler: Some(|| web::get().to(directory::list_roles)),

@@ -10,6 +10,7 @@ import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
 import DangerDialog from "@/components/DangerDialog.vue";
 import AppHint from "@/components/AppHint.vue";
+import AppPaging from "@/components/AppPaging.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import UserSubjectField from "@/components/UserSubjectField.vue";
 import PageTabs from "@/components/PageTabs.vue";
@@ -31,6 +32,7 @@ import {
   listAuthzScopes,
   listPolicies,
   listResources,
+  listTuples,
   publishRebacSchema,
   readRebacSchema,
   readRelations,
@@ -48,6 +50,7 @@ import type {
   ResourceRow,
   ScopeRow,
   AuthzRoute,
+  TupleRow,
 } from "@/models/authz";
 import type { ClientBrief } from "@/models/client";
 import { authorizationClients, selectedClient } from "./authorizationClients";
@@ -86,7 +89,10 @@ const board = computed(() => {
 });
 
 watch(board, (named) => {
-  if (named === "graph") void readGraph();
+  if (named === "graph") {
+    void readGraph();
+    void readRealmEdges();
+  }
   if (named === "routes") void loadRoutes();
 });
 
@@ -187,10 +193,16 @@ watch(realm, loadClients);
 onMounted(() => board.value === "routes" && loadRoutes());
 // The graph is read where the rest of the page is read. Reading it at setup
 // would run before the session holds a token on a cold load.
-onMounted(() => board.value === "graph" && readGraph());
+onMounted(() => {
+  if (board.value === "graph") {
+    void readGraph();
+    void readRealmEdges();
+  }
+});
 afterWrites(() => {
   void load();
   if (board.value === "routes") void loadRoutes();
+  if (board.value === "graph") void readRealmEdges();
 });
 
 interface PlacedPolicy {
@@ -443,6 +455,31 @@ const schemaFailed = ref("");
 const lookingAt = ref({ object_type: "", object_id: "", relation: "" });
 const tuples = ref<{ subject_type: string; subject_id: string; subject_relation: string }[]>([]);
 const tuplesFailed = ref("");
+
+/// Every edge the realm holds, a page at a time.
+const realmEdges = ref<TupleRow[]>([]);
+const realmEdgesFirst = ref(0);
+const realmEdgesSize = ref(25);
+const realmEdgesFailed = ref("");
+
+async function readRealmEdges() {
+  realmEdgesFailed.value = "";
+  try {
+    realmEdges.value = (
+      await listTuples(realm.value, realmEdgesFirst.value, realmEdgesSize.value)
+    ).items;
+  } catch (refused) {
+    realmEdges.value = [];
+    realmEdgesFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+function resizeRealmEdges(asked: number) {
+  realmEdgesSize.value = asked;
+  realmEdgesFirst.value = 0;
+  void readRealmEdges();
+}
+watch(realmEdgesFirst, readRealmEdges);
 
 async function readGraph() {
   schemaFailed.value = "";
@@ -1151,6 +1188,49 @@ function nodeStroke(row: PolicyRow): string {
         </div>
         <p v-if="tuplesFailed" class="mt-2 text-[11px] text-danger" role="alert">
           {{ tuplesFailed }}
+        </p>
+
+        <div class="mt-5 flex items-center gap-2">
+          <span class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("graph-edges-title") }}
+          </span>
+          <AppHint name="graph-edges-help" />
+        </div>
+        <div class="sf-list mt-2 overflow-x-auto">
+          <table class="sf-table">
+            <thead>
+              <tr>
+                <th>{{ say("graph-col-object") }}</th>
+                <th>{{ say("graph-relation") }}</th>
+                <th>{{ say("graph-subject") }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="held in realmEdges"
+                :key="`${held.object_type}:${held.object_id}#${held.relation}@${held.subject_type}:${held.subject_id}#${held.subject_relation ?? ''}`"
+              >
+                <td class="font-mono text-[10.5px]">{{ held.object_type }}:{{ held.object_id }}</td>
+                <td class="font-mono text-[10.5px]">{{ held.relation }}</td>
+                <td class="font-mono text-[10.5px]">
+                  {{ held.subject_type }}:{{ held.subject_id }}<template v-if="held.subject_relation">#{{ held.subject_relation }}</template>
+                </td>
+              </tr>
+              <tr v-if="!realmEdges.length">
+                <td colspan="3" class="text-muted">{{ say("graph-edges-none") }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <AppPaging
+            :first="realmEdgesFirst"
+            :count="realmEdges.length"
+            :size="realmEdgesSize"
+            @update:first="realmEdgesFirst = $event"
+            @update:size="resizeRealmEdges"
+          />
+        </div>
+        <p v-if="realmEdgesFailed" class="mt-2 text-[11px] text-danger" role="alert">
+          {{ realmEdgesFailed }}
         </p>
       </div>
     </div>

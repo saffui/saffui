@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { computed, onMounted, ref, watch } from "vue";
+import { RouterLink, useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
 import DangerDialog from "@/components/DangerDialog.vue";
@@ -11,6 +11,8 @@ import type { DecisionRow } from "@/models/authz";
 
 const route = useRoute();
 const realm = () => String(route.params.realm);
+/// The one trace the recent decisions are narrowed to, from the journal's link.
+const trace = computed(() => String(route.query.trace ?? ""));
 const decisions = ref<DecisionRow[]>([]);
 const disagreements = ref<DecisionRow[]>([]);
 const failed = ref("");
@@ -29,7 +31,7 @@ async function load() {
   failed.value = "";
   try {
     [decisions.value, disagreements.value] = await Promise.all([
-      listDecisions(realm()),
+      listDecisions(realm(), 100, trace.value),
       listDisagreements(realm()),
     ]);
   } catch (refused) {
@@ -41,6 +43,7 @@ async function load() {
 
 onMounted(load);
 afterWrites(load);
+watch(trace, load);
 
 function openPruneDialog() {
   if (!pruneDate.value) return;
@@ -101,6 +104,12 @@ async function pruneDecisions() {
       <h2 class="text-[11px] font-semibold tracking-[0.08em] text-muted uppercase">
         {{ say("decision-journal-recent") }}
       </h2>
+      <p v-if="trace" class="mt-2 text-xs text-muted">
+        {{ say("decision-journal-trace", { trace }) }}
+        <RouterLink :to="`/${realm()}/decision-journal`" class="ml-2 text-accent">
+          {{ say("journal-trace-clear") }}
+        </RouterLink>
+      </p>
       <div v-if="!decisions.length" class="mt-2 rounded-lg border border-border bg-surface px-3 py-4 text-xs text-muted">
         {{ say("decision-journal-empty") }}
       </div>
@@ -114,6 +123,7 @@ async function pruneDecisions() {
               <th>{{ say("decision-col-reported") }}</th>
               <th>{{ say("decision-col-computed") }}</th>
               <th>{{ say("decision-col-duration") }}</th>
+              <th>{{ say("decision-col-trace") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -130,6 +140,16 @@ async function pruneDecisions() {
                 </span>
               </td>
               <td class="font-mono text-[10.5px] text-faint">{{ row.duration_us }}µs</td>
+              <td>
+                <RouterLink
+                  v-if="row.trace_id"
+                  :to="{ path: `/${realm()}/journal`, query: { trace: row.trace_id } }"
+                  class="font-mono text-[10.5px] text-accent"
+                  :title="row.trace_id"
+                >
+                  {{ row.trace_id.slice(0, 8) }}
+                </RouterLink>
+              </td>
             </tr>
           </tbody>
         </table>

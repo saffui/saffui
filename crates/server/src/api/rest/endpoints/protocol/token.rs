@@ -358,6 +358,7 @@ pub async fn ask(
                 _ => {}
             }
 
+            let trace = crate::otel::current_trace_id();
             grant::token_exchange(
                 &transaction,
                 &grant::Signing {
@@ -380,6 +381,7 @@ pub async fn ask(
                     audience: asked.audience.as_deref(),
                     capabilities: asked.capabilities.as_deref(),
                     keys: &keys,
+                    trace_id: trace.as_deref(),
                 },
                 request
                     .app_data::<web::Data<services::pdp::Journal>>()

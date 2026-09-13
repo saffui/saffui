@@ -823,6 +823,32 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         "    relation viewer: user | group#member\n    permission view = viewer + owner + view from parent\n}\n",
     });
   }
+  if (path.includes("/rebac/tuples?")) {
+    return answer({
+      items: [
+        {
+          object_type: "document",
+          object_id: "roadmap",
+          relation: "owner",
+          subject_type: "user",
+          subject_id: "ada",
+          subject_relation: null,
+          created_at: "2026-09-10T08:00:00Z",
+        },
+        {
+          object_type: "folder",
+          object_id: "plans",
+          relation: "viewer",
+          subject_type: "group",
+          subject_id: "editors",
+          subject_relation: "member",
+          created_at: "2026-09-11T08:00:00Z",
+        },
+      ],
+      first: 0,
+      max: 25,
+    });
+  }
   if (path.includes("/rebac/relations?")) {
     return answer([
       { subject_type: "user", subject_id: "ada", subject_relation: "" },

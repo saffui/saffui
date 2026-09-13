@@ -1,13 +1,14 @@
 import { say } from "@/i18n";
 import { adminPath, api } from "@/services/http";
 import type {
+  AuthzRoute,
+  DecisionRow,
   EvaluateAnswer,
   EvaluateQuestion,
-  DecisionRow,
   PolicyRow,
   ResourceRow,
   ScopeRow,
-  AuthzRoute,
+  TuplePage,
 } from "@/models/authz";
 
 function server(realm: string, clientId: string, leaf: string): string {
@@ -64,8 +65,9 @@ export async function evaluate(
 }
 
 /// What the engine decided lately, newest first.
-export async function listDecisions(realm: string, limit = 100): Promise<DecisionRow[]> {
-  return api<DecisionRow[]>(adminPath(realm, `authz/decisions?limit=${limit}`));
+export async function listDecisions(realm: string, limit = 100, trace = ""): Promise<DecisionRow[]> {
+  const narrowed = trace ? `&trace_id=${encodeURIComponent(trace)}` : "";
+  return api<DecisionRow[]>(adminPath(realm, `authz/decisions?limit=${limit}${narrowed}`));
 }
 
 /// Only the decisions where what was reported and what was computed parted
@@ -297,4 +299,9 @@ export async function eraseRelation(
     json: edge,
     subject: say("subject-relation", { relation: edge.relation }),
   });
+}
+
+/// Every edge written in the realm, a page at a time.
+export async function listTuples(realm: string, first: number, max: number): Promise<TuplePage> {
+  return api<TuplePage>(`${adminPath(realm, "rebac/tuples")}?first=${first}&max=${max}`);
 }

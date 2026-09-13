@@ -5,19 +5,28 @@ use commons::http::ApiError;
 use data_encoding::HEXLOWER;
 use deadpool_postgres::Pool;
 use models::paging::PagingParams;
+use serde::Deserialize;
 use store::tenancy::Tenancy;
 
 use crate::middleware::admin_guard::Admin;
 
+/// The one trace a listing is narrowed to, when one is named.
+#[derive(Debug, Deserialize)]
+pub struct TraceNamed {
+    pub trace_id: Option<String>,
+}
+
 /// The realm's audit journal, newest first: what the plane did, as the
 /// chain recorded it. Read only; the chain's single writer is the store's
-/// own append, and nothing here can rewrite what stands.
+/// own append, and nothing here can rewrite what stands. Narrowed to one
+/// trace, it is the writes a request made, beside the decisions it asked for.
 pub async fn list_entries(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     paging: web::Query<PagingParams>,
+    trace: web::Query<TraceNamed>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
     let window = paging
@@ -33,6 +42,7 @@ pub async fn list_entries(
         window.first,
         window.max,
         paging.count.unwrap_or(false),
+        trace.trace_id.as_deref().filter(|named| !named.is_empty()),
     )
     .await
     .map_err(|_| internal())?;

@@ -547,3 +547,166 @@ async fn a_trace_joins_the_log_line_and_the_journal_row() {
         verified.broken_at
     );
 }
+
+/// One trace finds its own decisions and its own writes and nothing else: a
+/// decision asked without naming a trace records the request's, one that
+/// names a trace keeps its own, and both reads narrow to the trace asked.
+#[cfg(feature = "otel")]
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_trace_finds_its_own_decisions_and_writes() {
+    use models::entities::authz::AdminAction;
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::prelude::*;
+
+    const TRACE: &str = "2cafe00dfeed55667788990011223344";
+    let inside = format!("00-{TRACE}-b7ad6b7169203331-01");
+
+    let plane = Plane::with_actions(&[
+        AdminAction::UserWrite,
+        AdminAction::AuthzDecisionRead,
+        AdminAction::JournalRead,
+    ])
+    .await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        services::rebac::publish(
+            &transaction,
+            "definition user {}
+             definition document {
+                 relation owner: user
+                 permission view = owner
+             }",
+            Some("root"),
+        )
+        .await
+        .unwrap();
+        services::rebac::relate(
+            &transaction,
+            "document",
+            "doc",
+            "owner",
+            &store::providers::rebac::Subject {
+                subject_type: "user".into(),
+                subject_id: support::SUBJECT.into(),
+                subject_relation: String::new(),
+            },
+            Some("root"),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+    }
+    server::otel::install_propagation();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_simple_exporter(exporter)
+        .build();
+    let _scope = tracing::subscriber::set_default(
+        tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("the-test"))),
+    );
+    let app = test::init_service(observed().configure(register(&mounted(&plane)))).await;
+    let bearer = plane.token(&support::claims());
+
+    for (decision_id, traced, named) in [
+        ("inside-the-trace", true, None),
+        ("outside-any-trace", false, None),
+        ("naming-its-own", true, Some("a-trace-the-caller-named")),
+    ] {
+        let mut body = serde_json::json!({
+            "kind": "relationship",
+            "object_type": "document",
+            "object_id": "doc",
+            "relation": "view",
+            "action": "view",
+            "decision_id": decision_id,
+        });
+        if let Some(named) = named {
+            body["trace_id"] = serde_json::json!(named);
+        }
+        let mut asking = test::TestRequest::post()
+            .uri("/authz/decision")
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .set_json(body);
+        if traced {
+            asking = asking.insert_header(("traceparent", inside.as_str()));
+        }
+        let response = test::call_service(&app, asking.to_request()).await;
+        assert_eq!(response.status(), StatusCode::OK, "{decision_id}");
+    }
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/admin/realms/{}/users", support::REALM))
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .insert_header(("traceparent", inside.as_str()))
+            .set_json(serde_json::json!({ "user_name": "traced-person" }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/admin/realms/{}/users", support::REALM))
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .set_json(serde_json::json!({ "user_name": "untraced-person" }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let read = |leaf: String| {
+        test::TestRequest::get()
+            .uri(&format!("/admin/realms/{}/{leaf}", support::REALM))
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .to_request()
+    };
+    let decided: serde_json::Value =
+        test::call_and_read_body_json(&app, read(format!("authz/decisions?trace_id={TRACE}")))
+            .await;
+    let found: Vec<&str> = decided
+        .as_array()
+        .expect("decisions")
+        .iter()
+        .filter_map(|row| row["decision_id"].as_str())
+        .collect();
+    assert_eq!(
+        found,
+        vec!["inside-the-trace"],
+        "a decision the request made is not its trace's alone: {decided}"
+    );
+    let decided: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        read("authz/decisions?trace_id=a-trace-the-caller-named".to_owned()),
+    )
+    .await;
+    assert_eq!(decided.as_array().map(Vec::len), Some(1), "{decided}");
+    assert_eq!(
+        decided[0]["decision_id"], "naming-its-own",
+        "the trace a caller named was not kept: {decided}"
+    );
+
+    let journalled: serde_json::Value =
+        test::call_and_read_body_json(&app, read(format!("journal?trace_id={TRACE}"))).await;
+    let entries = journalled["items"].as_array().expect("entries");
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry["entry"]["kind"] == "admin.write"),
+        "the trace's write was not found: {journalled}"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["entry"]["trace_id"] == TRACE),
+        "an entry of another trace came back: {journalled}"
+    );
+}

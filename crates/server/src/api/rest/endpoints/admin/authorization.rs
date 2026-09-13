@@ -371,6 +371,8 @@ pub async fn remove_policy(
 pub struct Window {
     #[serde(default = "hundred")]
     pub limit: i64,
+    /// The one trace the decisions are narrowed to, when one is named.
+    pub trace_id: Option<String>,
 }
 
 fn hundred() -> i64 {
@@ -391,9 +393,14 @@ pub async fn decisions(
         .transaction(&mut connection, &within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
-    let found = store::providers::authz_policies::recent(&transaction, window.limit.clamp(1, 1000))
-        .await
-        .map_err(|_| internal())?;
+    let limit = window.limit.clamp(1, 1000);
+    let found = match window.trace_id.as_deref().filter(|named| !named.is_empty()) {
+        Some(trace) => {
+            store::providers::authz_policies::decisions_of_trace(&transaction, trace, limit).await
+        }
+        None => store::providers::authz_policies::recent(&transaction, limit).await,
+    }
+    .map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(found))
 }
 
@@ -577,6 +584,7 @@ pub async fn evaluate(
         },
     };
 
+    let trace = crate::otel::current_trace_id();
     let answer = services::pdp::decide(
         &transaction,
         &journal,
@@ -585,7 +593,7 @@ pub async fn evaluate(
             resource,
             action: "simulated",
             decision_id: &decision_id,
-            trace_id: None,
+            trace_id: trace.as_deref(),
         },
     )
     .await

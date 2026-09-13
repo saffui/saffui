@@ -127,7 +127,6 @@ async fn the_chain_does_not_fork_under_racing_writers() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
     let plane = Plane::with_actions(&[]).await;
-    let now = chrono::Utc::now();
     {
         let mut connection = plane.connection().await;
         let transaction = plane.scoped(&mut connection, &within()).await;
@@ -146,16 +145,6 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
             .await
             .expect("an emission");
         }
-        // Due since the epoch, said in the database's own clock: the runner
-        // and the database do not share one in CI, and a seed timed on the
-        // wrong side of the skew is a seed the claim never sees.
-        transaction
-            .execute(
-                "UPDATE event_outbox SET next_attempt_at = to_timestamp(0)",
-                &[],
-            )
-            .await
-            .expect("the seed backdated");
         transaction.commit().await.expect("the seed kept");
     }
 
@@ -166,10 +155,10 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
     let mut second_connection = plane.connection().await;
     let second = plane.scoped(&mut second_connection, &within()).await;
 
-    let first_claim = store::providers::outbox::due(&first, 20, 60, now)
+    let first_claim = store::providers::outbox::due(&first, 20, 60)
         .await
         .expect("the first claim");
-    let second_claim = store::providers::outbox::due(&second, 20, 60, now)
+    let second_claim = store::providers::outbox::due(&second, 20, 60)
         .await
         .expect("the second claim");
     assert_eq!(first_claim.len(), 20, "the first pump was short-changed");
@@ -200,7 +189,7 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
 
     let mut connection = plane.connection().await;
     let transaction = plane.scoped(&mut connection, &within()).await;
-    let refreed = store::providers::outbox::due(&transaction, 30, 60, now)
+    let refreed = store::providers::outbox::due(&transaction, 30, 60)
         .await
         .expect("the after-crash claim");
     assert_eq!(

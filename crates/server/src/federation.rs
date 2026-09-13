@@ -569,7 +569,7 @@ pub async fn deliver_outbox(
     };
     let issuer = origin.issuer(&context.realm_id);
 
-    let due = store::providers::outbox::due(transaction, DELIVERY_CEILING, backoff_seconds, now)
+    let due = store::providers::outbox::due(transaction, DELIVERY_CEILING, backoff_seconds)
         .await
         .map_err(|_| ())?;
     for event in due {

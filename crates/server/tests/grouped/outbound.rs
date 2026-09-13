@@ -231,6 +231,57 @@ async fn a_change_here_lands_in_the_provisioned_app() {
     .await;
 }
 
+/// A change is due from the instant the database stamped it, and a pass whose
+/// host clock runs behind that database still sends it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_host_clock_behind_the_database_does_not_hold_back_a_due_change() {
+    let plane = Plane::with_actions(&[]).await;
+    let realm = store::tenancy::TenantContext::new(support::TENANT, REALM);
+    let stamped: chrono::DateTime<chrono::Utc> = {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &realm).await;
+        // Only this test's change counts: the planted world emits its own.
+        transaction
+            .execute("DELETE FROM event_outbox", &[])
+            .await
+            .expect("a clean outbox");
+        store::providers::outbox::emit(
+            &transaction,
+            store::providers::outbox::USER_UPDATED,
+            support::SUBJECT,
+            &json!({ "user_name": support::SUBJECT, "enabled": false }),
+        )
+        .await
+        .expect("an emission");
+        let stamped = transaction
+            .query_one("SELECT next_attempt_at FROM event_outbox", &[])
+            .await
+            .expect("the change")
+            .get(0);
+        transaction.commit().await.expect("the change kept");
+        stamped
+    };
+
+    // The host reads 71 ms earlier than the database that stamped the change.
+    let host_now = stamped - chrono::Duration::milliseconds(71);
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &realm).await;
+    let told = server::federation::deliver_outbox(
+        &transaction,
+        &support::sealing(),
+        &support::origin(),
+        &realm,
+        config::serving::Egress::Anywhere,
+        1,
+        host_now,
+    )
+    .await
+    .expect("a pass");
+    transaction.commit().await.expect("the pass kept");
+    assert_eq!(told.delivered, 1, "the due change was left pending");
+}
+
 /// The prove button's whole journey for a connector: the SCIM root it names
 /// is asked for its ServiceProviderConfig, bearer attached, and the far
 /// side's answer comes back as a status and words. A bearer the root

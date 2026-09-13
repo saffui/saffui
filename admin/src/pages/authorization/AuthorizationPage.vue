@@ -453,7 +453,7 @@ const schemaFailed = ref("");
 
 /// One object's tuples, looked at rather than walked.
 const lookingAt = ref({ object_type: "", object_id: "", relation: "" });
-const tuples = ref<{ subject_type: string; subject_id: string; subject_relation: string }[]>([]);
+const tuples = ref<{ subject_type: string; subject_id: string; subject_relation: string | null }[]>([]);
 const tuplesFailed = ref("");
 
 /// Every edge the realm holds, a page at a time.
@@ -554,9 +554,9 @@ function openResource(held: ResourceRow) {
   editing.value = held.resource_id;
   resourceDraft.value = {
     name: held.name,
-    resource_type: "",
-    uris: "",
-    owner: "",
+    resource_type: held.resource_type,
+    uris: held.resource_uris.join("\n"),
+    owner: held.resource_owner,
     shareable: held.user_managed_access ?? false,
   };
   drawer.value = "resource";
@@ -676,7 +676,7 @@ async function makePolicy() {
 const resourceDraft = ref({ name: "", resource_type: "", uris: "", owner: "", shareable: false });
 async function makeResource() {
   if (!canWrite.value) return;
-  if (!resourceDraft.value.name.trim()) return;
+  if (!resourceDraft.value.name.trim() || !resourceDraft.value.resource_type.trim()) return;
   try {
     const body = {
       name: resourceDraft.value.name.trim(),
@@ -1174,7 +1174,7 @@ function nodeStroke(row: PolicyRow): string {
               </tr>
             </thead>
             <tbody>
-              <tr v-for="held in tuples" :key="held.subject_type + held.subject_id + held.subject_relation">
+              <tr v-for="held in tuples" :key="held.subject_type + held.subject_id + (held.subject_relation ?? '')">
                 <td class="font-mono text-[10.5px]">{{ held.subject_type }}:{{ held.subject_id }}</td>
                 <td class="text-muted">
                   {{ held.subject_relation || say("value-none") }}
@@ -1529,11 +1529,11 @@ function nodeStroke(row: PolicyRow): string {
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="makeResource">
         <label class="block text-[11px] font-medium text-muted">
           {{ say("settings-name") }}
-          <input v-model="resourceDraft.name" class="sf-field mt-1 font-mono" spellcheck="false" />
+          <input v-model="resourceDraft.name" required class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-resource-type") }} <AppHint name="authz-resource-type-help" />
-          <input v-model="resourceDraft.resource_type" placeholder="document" class="sf-field mt-1 font-mono" spellcheck="false" />
+          <input v-model="resourceDraft.resource_type" required placeholder="document" class="sf-field mt-1 font-mono" spellcheck="false" />
         </label>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-resource-uris") }} <AppHint name="authz-resource-uris-help" />

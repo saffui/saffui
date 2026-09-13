@@ -266,7 +266,7 @@ export async function readRelations(
     object_id: objectId,
     relation,
   });
-  return api<{ subject_type: string; subject_id: string; subject_relation: string }[]>(
+  return api<{ subject_type: string; subject_id: string; subject_relation: string | null }[]>(
     `${adminPath(realm, "rebac/relations")}?${asked}`,
   );
 }

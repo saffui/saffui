@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppPaging from "@/components/AppPaging.vue";
 import { listJournal, verifyChain } from "@/services/journal";
@@ -14,6 +14,8 @@ import type { ChainVerified, JournalPage as Held } from "@/models/journal";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
+/// The one trace the writes are narrowed to, from a decision's link.
+const trace = computed(() => String(route.query.trace ?? ""));
 const first = ref(0);
 const size = ref(25);
 function resize(asked: number) {
@@ -49,7 +51,7 @@ async function load() {
   try {
     readsToo.value = (await getRealmSettings(realm.value)).admin_events_enabled ?? false;
     [page.value, chain.value] = await Promise.all([
-      listJournal(realm.value, first.value, size.value),
+      listJournal(realm.value, first.value, size.value, trace.value),
       verifyChain(realm.value),
     ]);
     const held = await api<{ anchors: typeof anchors.value }>(
@@ -63,6 +65,10 @@ async function load() {
 onMounted(load);
 afterWrites(load);
 watch(first, load);
+watch(trace, () => {
+  first.value = 0;
+  void load();
+});
 
 async function anchor() {
   if (!witness.value.trim() || !receipt.value.trim()) return;
@@ -113,6 +119,12 @@ function instant(epoch: number): string {
       </AppToggle>
     </div>
     <p v-if="failed" class="mt-3 text-xs text-danger" role="alert">{{ failed }}</p>
+    <p v-if="trace" class="mt-3 text-xs text-muted">
+      {{ say("journal-trace", { trace }) }}
+      <RouterLink :to="`/${realm}/journal`" class="ml-2 text-accent">
+        {{ say("journal-trace-clear") }}
+      </RouterLink>
+    </p>
 
     <div v-if="page" class="sf-list mt-4 overflow-x-auto">
       <table class="sf-table">
@@ -122,6 +134,7 @@ function instant(epoch: number): string {
             <th>{{ say("journal-col-actor") }}</th>
             <th>{{ say("journal-col-what") }}</th>
             <th>{{ say("journal-col-status") }}</th>
+            <th>{{ say("journal-col-trace") }}</th>
             <th class="px-3 py-2 text-right font-medium">{{ say("journal-col-when") }}</th>
           </tr>
         </thead>
@@ -142,6 +155,16 @@ function instant(epoch: number): string {
                 :class="held.entry.status < 400 ? 'text-ok' : 'text-danger'"
                 >{{ held.entry.status }}</span
               >
+            </td>
+            <td>
+              <RouterLink
+                v-if="held.entry.trace_id"
+                :to="{ path: `/${realm}/decision-journal`, query: { trace: held.entry.trace_id } }"
+                class="font-mono text-[10.5px] text-accent"
+                :title="held.entry.trace_id"
+              >
+                {{ held.entry.trace_id.slice(0, 8) }}
+              </RouterLink>
             </td>
             <td class="text-right font-mono text-[10.5px] text-faint">
               {{ instant(held.recorded_at) }}

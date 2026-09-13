@@ -873,3 +873,228 @@ async fn a_server_closes_and_reopens_sharing_in_place() {
         "a reopened server still refused to share: {told}"
     );
 }
+
+/// A blank name or type is refused in words before the store is asked, and a
+/// name the server already holds answers as that kind's conflict. Neither
+/// comes back as an internal error.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_blank_or_taken_name_is_refused_in_words() {
+    let plane = Plane::with_actions(&[
+        AdminAction::UmaRead,
+        AdminAction::UmaWrite,
+        AdminAction::RoleRead,
+        AdminAction::RoleWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!(
+        "/admin/realms/{REALM}/authz/servers/{}",
+        support::CONFIDENTIAL
+    );
+    let (status, _) = asked(&plane, Method::POST, &base, &bearer, Some(protection())).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let resources = format!("{base}/resources");
+    let resource = |name: &str, kind: &str| {
+        json!({
+            "name": name, "display_name": "", "description": "",
+            "resource_uris": [], "resource_type": kind,
+            "resource_owner": "app", "user_managed_access": false,
+        })
+    };
+    let says = |told: &Value, words: &str| {
+        told["message"]
+            .as_str()
+            .is_some_and(|held| held.contains(words))
+    };
+
+    // Blank is refused in its own words, and nothing is written.
+    for (body, words) in [
+        (resource("orders", "  "), "resource type cannot be blank"),
+        (
+            resource(" ", "urn:app:orders"),
+            "resource name cannot be blank",
+        ),
+    ] {
+        let (status, told) = asked(&plane, Method::POST, &resources, &bearer, Some(body)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+        assert!(says(&told, words), "{told}");
+    }
+    let (_, listed) = asked(&plane, Method::GET, &resources, &bearer, None).await;
+    assert_eq!(listed.as_array().map(Vec::len), Some(0), "{listed}");
+
+    // A name the server holds is a conflict, asked for anew or reworked into.
+    let (status, orders) = asked(
+        &plane,
+        Method::POST,
+        &resources,
+        &bearer,
+        Some(resource("orders", "urn:app:orders")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{orders}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &resources,
+        &bearer,
+        Some(resource("orders", "urn:app:orders")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(told["error_code"], "resource.already_exists", "{told}");
+    let (status, invoices) = asked(
+        &plane,
+        Method::POST,
+        &resources,
+        &bearer,
+        Some(resource("invoices", "urn:app:invoices")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{invoices}");
+    let invoices = format!(
+        "{resources}/{}",
+        invoices["resource_id"].as_str().expect("an identity")
+    );
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &invoices,
+        &bearer,
+        Some(resource("orders", "urn:app:invoices")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(told["error_code"], "resource.already_exists", "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &invoices,
+        &bearer,
+        Some(resource("invoices", "")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(says(&told, "resource type cannot be blank"), "{told}");
+
+    // The same for a scope.
+    let scopes = format!("{base}/scopes");
+    let scope = |name: &str| json!({ "name": name, "display_name": "", "description": "" });
+    let (status, told) = asked(&plane, Method::POST, &scopes, &bearer, Some(scope(""))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(says(&told, "scope name cannot be blank"), "{told}");
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &scopes,
+        &bearer,
+        Some(scope("orders:read")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &scopes,
+        &bearer,
+        Some(scope("orders:read")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(told["error_code"], "scope.already_exists", "{told}");
+    let (status, writes) = asked(
+        &plane,
+        Method::POST,
+        &scopes,
+        &bearer,
+        Some(scope("orders:write")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{writes}");
+    let writes = format!(
+        "{scopes}/{}",
+        writes["scope_id"].as_str().expect("an identity")
+    );
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &writes,
+        &bearer,
+        Some(scope("orders:read")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(told["error_code"], "scope.already_exists", "{told}");
+    let (status, told) = asked(&plane, Method::PUT, &writes, &bearer, Some(scope(" "))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(says(&told, "scope name cannot be blank"), "{told}");
+
+    // And for a policy.
+    let (_, editor) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(json!({ "name": "editor" })),
+    )
+    .await;
+    let editor_id = editor["role_id"].as_str().expect("an identity").to_owned();
+    let policies = format!("{base}/policies");
+    let policy = |name: &str| {
+        json!({
+            "name": name, "description": "",
+            "decision": "unanimous", "logic": "positive",
+            "policy_owner": "app",
+            "policies": [], "resources": [], "scopes": [],
+            "policy_type": "role", "roles": [editor_id.clone()],
+        })
+    };
+    let (status, told) = asked(&plane, Method::POST, &policies, &bearer, Some(policy(" "))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(says(&told, "policy name cannot be blank"), "{told}");
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &policies,
+        &bearer,
+        Some(policy("editors-only")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &policies,
+        &bearer,
+        Some(policy("editors-only")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(told["error_code"], "policy.already_exists", "{told}");
+    let (status, writers) = asked(
+        &plane,
+        Method::POST,
+        &policies,
+        &bearer,
+        Some(policy("writers-only")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{writers}");
+    let writers = format!(
+        "{policies}/{}",
+        writers["policy_id"].as_str().expect("an identity")
+    );
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &writers,
+        &bearer,
+        Some(policy("editors-only")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(told["error_code"], "policy.already_exists", "{told}");
+    let (status, told) = asked(&plane, Method::PUT, &writers, &bearer, Some(policy(""))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(says(&told, "policy name cannot be blank"), "{told}");
+}

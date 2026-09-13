@@ -352,6 +352,9 @@ fn refused(why: Unwritable) -> ApiError {
     match why {
         Unwritable::AlreadyExists => ApiError::new(ErrorCode::AuthFlowAlreadyExists),
         Unwritable::ActionExists => ApiError::new(ErrorCode::RequiredActionAlreadyExists),
+        Unwritable::PositionTaken(what) => {
+            ApiError::with_detail(ErrorCode::AuthExecutionAlreadyExists, what)
+        }
         Unwritable::NotFound => ApiError::new(ErrorCode::AuthFlowNotFound),
         Unwritable::NoSuchExecution => ApiError::new(ErrorCode::AuthExecutionNotFound),
         Unwritable::NoSuchAction => ApiError::new(ErrorCode::RequiredActionNotFound),

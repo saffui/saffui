@@ -125,6 +125,10 @@ pub async fn reshape(
 fn refused(why: Refused) -> ApiError {
     match why {
         Refused::AlreadyExists => ApiError::new(ErrorCode::ClientAlreadyExists),
+        Refused::AccountTaken(name) => ApiError::with_detail(
+            ErrorCode::UserAlreadyExists,
+            format!("the account {name} already exists"),
+        ),
         Refused::NotFound => ApiError::new(ErrorCode::ClientNotFound),
         Refused::Invalid(said) => ApiError::with_detail(ErrorCode::ValidationError, said),
         Refused::Unwritable => internal(),

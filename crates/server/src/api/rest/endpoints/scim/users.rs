@@ -12,6 +12,7 @@ use models::entities::credentials::{CredentialModel, CredentialSecret, Credentia
 use models::entities::user::{UserModel, profile};
 use serde_json::Value;
 use services::scim::{self, AssertedUser, Matched, Refusal, UserPatch, list_response, shown_user};
+use store::error::StoreError;
 use store::providers::{credentials, roles, users};
 use store::query::list_query::ListQuery;
 use store::tenancy::Tenancy;
@@ -168,15 +169,6 @@ pub async fn create(
         return unavailable();
     };
 
-    match users::load_by_name(&transaction, &user_name).await {
-        Ok(Some(_)) => {
-            return refused(&Refusal::uniqueness(format!(
-                "userName {user_name} is already taken"
-            )));
-        }
-        Ok(None) => {}
-        Err(_) => return unavailable(),
-    }
     if let Some(external) = &asserted.external_id {
         match users::load_by_attribute(&transaction, scim::EXTERNAL_ID, external).await {
             Ok(Some(_)) => {
@@ -234,8 +226,15 @@ pub async fn create(
         Err(services::sod::Toxic::Refused(said)) => return refused(&Refusal::invalid(said)),
         Err(services::sod::Toxic::Backend) => return unavailable(),
     }
-    if users::create(&transaction, &person).await.is_err() {
-        return unavailable();
+    match users::create(&transaction, &person).await {
+        Ok(()) => {}
+        Err(StoreError::AlreadyExists) => {
+            return refused(&Refusal::uniqueness(format!(
+                "userName {} is already taken",
+                person.user_name
+            )));
+        }
+        Err(_) => return unavailable(),
     }
     if store::providers::roles::join_default_groups(&transaction, &person.user_id)
         .await

@@ -6,6 +6,7 @@ use models::auditable::AuditableModel;
 use models::entities::attributes::AttributeValue;
 use models::entities::authz::{IdentityProviderModel, IdentityProviderMutationModel};
 use models::entities::brokering::{IdpMapperModel, IdpMapperMutationModel};
+use store::error::StoreError;
 use store::keyring::RealmKeyring;
 use store::providers::{brokering, roles};
 
@@ -143,14 +144,6 @@ pub async fn create_provider(
             "an alias rides a path segment: no spaces, no slashes".to_owned(),
         ));
     }
-    if brokering::provider_by_alias(transaction, &asked.provider_id)
-        .await
-        .map_err(|_| Unwritable::Backend)?
-        .is_some()
-    {
-        return Err(Unwritable::AlreadyExists);
-    }
-
     let mut provider = asked.into_model(
         drawn(crypto)?,
         realm_id.to_owned(),
@@ -174,7 +167,10 @@ pub async fn create_provider(
     seal_secret(ring, envelope, &mut provider).await?;
     brokering::create_provider(transaction, &provider)
         .await
-        .map_err(|_| Unwritable::Backend)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Unwritable::AlreadyExists,
+            _ => Unwritable::Backend,
+        })?;
     conceal(&mut provider);
     Ok(provider)
 }

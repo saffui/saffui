@@ -42,6 +42,7 @@ fn carried(why: StoreError) -> Unwritable {
         StoreError::AlreadyExists => Unwritable::Taken,
         StoreError::PolicyIsACondition { .. } => Unwritable::StillRead(why.to_string()),
         StoreError::UnboundMember { .. }
+        | StoreError::RepeatedMember { .. }
         | StoreError::EmptyPolicy { .. }
         | StoreError::UnconditionalPermission
         | StoreError::UnappliedPermission
@@ -96,13 +97,6 @@ pub async fn protect(
         .await
         .map_err(|_| Unwritable::Backend)?
         .ok_or(Unwritable::NoSuchClient)?;
-    if authz_surface::load_server(transaction, client_id)
-        .await
-        .map_err(|_| Unwritable::Backend)?
-        .is_some()
-    {
-        return Err(Unwritable::AlreadyProtected);
-    }
     let server = ResourceServerModel {
         server_id: client_id.to_owned(),
         realm_id: realm_id.to_owned(),
@@ -114,7 +108,10 @@ pub async fn protect(
     };
     authz_surface::create_server(transaction, &server)
         .await
-        .map_err(carried)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Unwritable::AlreadyProtected,
+            refused => carried(refused),
+        })?;
     Ok(server)
 }
 

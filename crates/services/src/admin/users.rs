@@ -6,6 +6,7 @@ use models::entities::user::{RequiredAction, UserCreateModel, UserModel, profile
 use models::paging::Page;
 use models::sessions::login_failure::UserLoginFailure;
 use secrecy::SecretBox;
+use store::error::StoreError;
 use store::providers::{auth_flows, login, users};
 use store::query::list_query::ListQuery;
 
@@ -55,13 +56,6 @@ pub async fn create(
     if let Some(email) = &spec.email {
         check_mail(email)?;
         check_unclaimed(transaction, email, None).await?;
-    }
-    if users::load_by_name(transaction, user_name)
-        .await
-        .map_err(|_| Uncreatable::Unwritable)?
-        .is_some()
-    {
-        return Err(Uncreatable::AlreadyExists);
     }
     let email = spec.email.clone().unwrap_or_default();
     let mut user = UserCreateModel {
@@ -115,7 +109,10 @@ pub async fn create(
     }
     users::create(transaction, &user)
         .await
-        .map_err(|_| Uncreatable::Unwritable)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Uncreatable::AlreadyExists,
+            _ => Uncreatable::Unwritable,
+        })?;
     store::providers::roles::join_default_groups(transaction, &user.user_id)
         .await
         .map_err(|_| Uncreatable::Unwritable)?;
@@ -160,13 +157,6 @@ pub async fn update(
             return Err(Uncreatable::Invalid("this realm does not rename accounts"));
         }
         check_name(renamed)?;
-        if users::load_by_name(transaction, renamed)
-            .await
-            .map_err(|_| Uncreatable::Unwritable)?
-            .is_some()
-        {
-            return Err(Uncreatable::AlreadyExists);
-        }
         user.user_name = renamed.to_owned();
     }
     if let Some(email) = &spec.email {
@@ -190,7 +180,10 @@ pub async fn update(
     apply_attributes(&mut user, spec);
     users::update(transaction, &user)
         .await
-        .map_err(|_| Uncreatable::Unwritable)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Uncreatable::AlreadyExists,
+            _ => Uncreatable::Unwritable,
+        })?;
     Ok(user)
 }
 

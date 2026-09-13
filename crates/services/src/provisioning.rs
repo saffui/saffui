@@ -125,7 +125,8 @@ pub async fn provision_realm_row(
     Ok(true)
 }
 
-/// The scopes a client can be attached to, and nothing attached yet.
+/// The scopes a client can be attached to, and nothing attached yet, handed
+/// back as the identifiers their names are held under.
 ///
 /// Which clients hold which is a registration decision. This only makes the
 /// decision possible: a scope that does not exist cannot be granted, so a realm
@@ -134,14 +135,17 @@ pub async fn provision_standard_scopes(
     transaction: &Transaction<'_>,
     tenant: &str,
     realm_id: &str,
-) -> StoreResult<()> {
+) -> StoreResult<Vec<String>> {
     let metadata = AuditableModel::from_creator(tenant.to_owned(), "system".to_owned());
 
+    let mut held = Vec::with_capacity(STANDARD_SCOPES.len());
     for (name, default, description) in STANDARD_SCOPES {
-        if client_scopes::load_scope(transaction, name)
-            .await?
-            .is_some()
+        // By name: an operator who removed one and made it again under a drawn
+        // identifier has made the standard one, and it is the one attached.
+        if let Some(standing) =
+            client_scopes::load_scope_by_name(transaction, Protocol::OpenId, name).await?
         {
+            held.push(standing.client_scope_id);
             continue;
         }
         client_scopes::create_scope(
@@ -158,8 +162,9 @@ pub async fn provision_standard_scopes(
             },
         )
         .await?;
+        held.push(name.to_owned());
     }
-    Ok(())
+    Ok(held)
 }
 
 /// Give a realm its admin scope and a console entitled to it./// Give a realm its admin scope and a console entitled to it.

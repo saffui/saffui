@@ -4,6 +4,7 @@ use models::auditable::AuditableModel;
 use models::entities::authz::{GroupModel, GroupMutationModel, RoleModel, RoleMutationModel};
 use models::entities::organization::{OrganizationModel, OrganizationMutationModel};
 use models::paging::Page;
+use store::error::StoreError;
 use store::providers::{organizations, roles};
 use store::query::list_query::ListQuery;
 
@@ -57,6 +58,15 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
     Ok(crypto::provider::uuid_from(bytes))
 }
 
+/// A name the write found held: by a request that got there first, or by one
+/// no lookup could see. Anything else the store refused stays an internal error.
+fn refuse_taken_name(why: StoreError) -> Unwritable {
+    match why {
+        StoreError::AlreadyExists => Unwritable::AlreadyExists,
+        _ => Unwritable::Backend,
+    }
+}
+
 pub async fn create_role(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
@@ -66,10 +76,9 @@ pub async fn create_role(
     asked: RoleMutationModel,
 ) -> Result<RoleModel, Unwritable> {
     check_name(&asked.name)?;
-    if roles::load_by_name(transaction, &asked.name)
+    if roles::is_role_name_taken(transaction, &asked.name)
         .await
         .map_err(|_| Unwritable::Backend)?
-        .is_some()
     {
         return Err(Unwritable::AlreadyExists);
     }
@@ -80,7 +89,7 @@ pub async fn create_role(
     );
     roles::create(transaction, &role)
         .await
-        .map_err(|_| Unwritable::Backend)?;
+        .map_err(refuse_taken_name)?;
     Ok(role)
 }
 
@@ -116,10 +125,9 @@ pub async fn update_role(
     check_name(&asked.name)?;
     let mut role = get_role(transaction, role_id).await?;
     if role.name != asked.name
-        && roles::load_by_name(transaction, &asked.name)
+        && roles::is_role_name_taken(transaction, &asked.name)
             .await
             .map_err(|_| Unwritable::Backend)?
-            .is_some()
     {
         return Err(Unwritable::AlreadyExists);
     }
@@ -132,7 +140,7 @@ pub async fn update_role(
     role.metadata.updated_by = Some(by.to_owned());
     roles::update(transaction, &role)
         .await
-        .map_err(|_| Unwritable::Backend)?
+        .map_err(refuse_taken_name)?
         .then_some(role)
         .ok_or(Unwritable::NotFound)
 }
@@ -276,13 +284,6 @@ pub async fn create_group(
     asked: GroupMutationModel,
 ) -> Result<GroupModel, Unwritable> {
     check_name(&asked.name)?;
-    if roles::load_group_by_name(transaction, &asked.name)
-        .await
-        .map_err(|_| Unwritable::Backend)?
-        .is_some()
-    {
-        return Err(Unwritable::AlreadyExists);
-    }
     check_parent(transaction, &asked.parent_id, None).await?;
     let group = asked.into_model(
         draw(provider)?,
@@ -291,7 +292,7 @@ pub async fn create_group(
     );
     roles::create_group(transaction, &group)
         .await
-        .map_err(|_| Unwritable::Backend)?;
+        .map_err(refuse_taken_name)?;
     Ok(group)
 }
 
@@ -323,14 +324,6 @@ pub async fn update_group(
 ) -> Result<GroupModel, Unwritable> {
     check_name(&asked.name)?;
     let mut group = get_group(transaction, group_id).await?;
-    if group.name != asked.name
-        && roles::load_group_by_name(transaction, &asked.name)
-            .await
-            .map_err(|_| Unwritable::Backend)?
-            .is_some()
-    {
-        return Err(Unwritable::AlreadyExists);
-    }
     check_parent(transaction, &asked.parent_id, Some(group_id)).await?;
     // Moved under a new parent, the group's people stand in every group above
     // it, and hold what those carry: a change to many people, weighed as one.
@@ -351,7 +344,7 @@ pub async fn update_group(
     group.metadata.updated_by = Some(by.to_owned());
     let group = roles::update_group(transaction, &group)
         .await
-        .map_err(|_| Unwritable::Backend)?
+        .map_err(refuse_taken_name)?
         .then_some(group)
         .ok_or(Unwritable::NotFound)?;
     if let Some(parent) = new_parent {
@@ -399,13 +392,6 @@ pub async fn create_organization(
     asked: OrganizationMutationModel,
 ) -> Result<OrganizationModel, Unwritable> {
     check_name(&asked.name)?;
-    if organizations::load_by_name(transaction, &asked.name)
-        .await
-        .map_err(|_| Unwritable::Backend)?
-        .is_some()
-    {
-        return Err(Unwritable::AlreadyExists);
-    }
     let org = asked.into_model(
         draw(provider)?,
         realm_id.to_owned(),
@@ -413,7 +399,7 @@ pub async fn create_organization(
     );
     organizations::create(transaction, &org)
         .await
-        .map_err(|_| Unwritable::Backend)?;
+        .map_err(refuse_taken_name)?;
     Ok(org)
 }
 
@@ -455,7 +441,13 @@ pub async fn claim_organization_domain(
     get_organization(transaction, org_id).await?;
     organizations::claim_domain(transaction, org_id, domain, challenge)
         .await
-        .map_err(|_| Unwritable::AlreadyExists)
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Unwritable::AlreadyExists,
+            // The one other rule a claim can break is its organization's key:
+            // the organization went away after it was read.
+            StoreError::BrokenRule { .. } => Unwritable::NotFound,
+            _ => Unwritable::Backend,
+        })
 }
 
 /// Mark a claimed domain proven. The proof itself happened outside: the
@@ -500,14 +492,6 @@ pub async fn update_organization(
 ) -> Result<OrganizationModel, Unwritable> {
     check_name(&asked.name)?;
     let mut org = get_organization(transaction, org_id).await?;
-    if org.name != asked.name
-        && organizations::load_by_name(transaction, &asked.name)
-            .await
-            .map_err(|_| Unwritable::Backend)?
-            .is_some()
-    {
-        return Err(Unwritable::AlreadyExists);
-    }
     org.name = asked.name;
     org.display_name = asked.display_name;
     org.description = asked.description;
@@ -517,7 +501,7 @@ pub async fn update_organization(
     org.metadata.updated_by = Some(by.to_owned());
     organizations::update(transaction, &org)
         .await
-        .map_err(|_| Unwritable::Backend)?
+        .map_err(refuse_taken_name)?
         .then_some(org)
         .ok_or(Unwritable::NotFound)
 }

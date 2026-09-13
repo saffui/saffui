@@ -710,3 +710,105 @@ async fn a_trace_finds_its_own_decisions_and_writes() {
         "an entry of another trace came back: {journalled}"
     );
 }
+
+/// A simulation records the trace it ran in: the caller's own when the
+/// request names one, and none of that one when it does not.
+#[cfg(feature = "otel")]
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_simulated_decision_records_the_trace_it_ran_in() {
+    use models::entities::authz::AdminAction;
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::prelude::*;
+
+    const TRACE: &str = "4cafe00dfeed55667788990011223344";
+    let inside = format!("00-{TRACE}-b7ad6b7169203331-01");
+
+    let plane = Plane::with_actions(&[
+        AdminAction::AuthzDecisionRead,
+        AdminAction::AuthzDecisionWrite,
+    ])
+    .await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        services::rebac::publish(
+            &transaction,
+            "definition user {}
+             definition document {
+                 relation owner: user
+                 permission view = owner
+             }",
+            Some("root"),
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+    }
+    server::otel::install_propagation();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_simple_exporter(exporter)
+        .build();
+    let _scope = tracing::subscriber::set_default(
+        tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("the-test"))),
+    );
+    let app = test::init_service(observed().configure(register(&mounted(&plane)))).await;
+    let bearer = plane.token(&support::claims());
+
+    let mut simulated = Vec::new();
+    for traced in [true, false] {
+        let mut asking = test::TestRequest::post()
+            .uri(&format!("/admin/realms/{}/authz/evaluate", support::REALM))
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .set_json(serde_json::json!({
+                "subject": support::SUBJECT,
+                "question": {
+                    "kind": "relationship",
+                    "object_type": "document",
+                    "object_id": "doc",
+                    "relation": "view",
+                },
+            }));
+        if traced {
+            asking = asking.insert_header(("traceparent", inside.as_str()));
+        }
+        let answered: serde_json::Value =
+            test::call_and_read_body_json(&app, asking.to_request()).await;
+        simulated.push(
+            answered["decision_id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("no decision id: {answered}"))
+                .to_owned(),
+        );
+    }
+
+    let decided: serde_json::Value = test::call_and_read_body_json(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/admin/realms/{}/authz/decisions?trace_id={TRACE}",
+                support::REALM
+            ))
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .to_request(),
+    )
+    .await;
+    let found: Vec<&str> = decided
+        .as_array()
+        .expect("decisions")
+        .iter()
+        .filter_map(|row| row["decision_id"].as_str())
+        .collect();
+    assert_eq!(
+        found,
+        vec![simulated[0].as_str()],
+        "the simulation did not record the trace it ran in: {decided}"
+    );
+}

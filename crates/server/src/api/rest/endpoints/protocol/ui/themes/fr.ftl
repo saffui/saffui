@@ -38,6 +38,7 @@ enroll-step-2 = 2. Saisissez le code affiché.
 enroll-secret-label = Ou saisissez cette clé à la main
 enroll-code = Code affiché par l'application
 enroll-submit = Activer
+enroll-later = Plus tard
 
 ## 4 — Clé de sécurité / passkey
 passkey-title = Clé de sécurité

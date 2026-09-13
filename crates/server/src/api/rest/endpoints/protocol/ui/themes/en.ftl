@@ -38,6 +38,7 @@ enroll-step-2 = 2. Enter the code it shows.
 enroll-secret-label = Or type this key by hand
 enroll-code = Code from the app
 enroll-submit = Turn on
+enroll-later = Not now
 
 ## 4 — Security key / passkey
 passkey-title = Security key

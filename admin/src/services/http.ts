@@ -11,6 +11,8 @@ const HINTS: Record<string, string> = {
   "user.password.current_mismatch": "toast-hint-current-password",
   "user.locked_out": "toast-hint-locked-out",
   "user.password.not_held_here": "toast-hint-password-not-held",
+  "account.reauthentication_required": "toast-hint-sign-in-again",
+  "account.last_factor": "toast-hint-last-factor",
 };
 
 /// One door to the admin API: bearer attached, JSON both ways. A refusal is

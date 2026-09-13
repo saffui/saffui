@@ -178,6 +178,39 @@ function decided(
 export function previewAnswer<T>(path: string, method = "GET", body?: unknown): T {
   const answer = (held: unknown) => held as T;
 
+  if (path.endsWith("/account/credentials") && method === "GET") {
+    return answer({
+      password: true,
+      apps: [
+        {
+          id: "preview-app",
+          kind: "totp",
+          label: null,
+          created_at: "2026-09-01T09:00:00Z",
+          kept_because: null,
+        },
+      ],
+      keys: [
+        {
+          id: "cHJldmlldy1rZXk",
+          label: "laptop",
+          enrolled_at: "2026-09-05T09:00:00Z",
+          last_used_at: null,
+          kept_because: null,
+        },
+      ],
+      recovery_codes: 8,
+      fresh_until: Math.floor(Date.now() / 1000) + 300,
+    });
+  }
+  if (
+    method === "DELETE" &&
+    (path.includes("/account/credentials/") ||
+      path.includes("/account/keys/") ||
+      path.endsWith("/account/recovery-codes"))
+  ) {
+    return answer(undefined);
+  }
   if (path.endsWith("/account/password")) {
     return answer({ ended_sessions: 1 });
   }

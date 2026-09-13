@@ -8,3 +8,10 @@ export const OWN_FACTORS = [
 ] as const;
 
 export type OwnFactor = (typeof OWN_FACTORS)[number];
+
+/// Whether the sign-in behind a page may still remove a factor, against the
+/// moment the server gave. A page left open past it asks for a new sign-in
+/// first, rather than sending a removal the server will refuse.
+export function freshEnough(freshUntil: number | null, nowSeconds: number): boolean {
+  return freshUntil !== null && freshUntil >= nowSeconds;
+}

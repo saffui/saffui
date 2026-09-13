@@ -19,3 +19,55 @@ export async function changeOwnPassword(
     subject: say("subject-own-password"),
   });
 }
+
+/// An authenticator app the person holds, as the plane shows it: no secret.
+export interface OwnApp {
+  id: string;
+  kind: string;
+  label: string | null;
+  created_at: string | null;
+  /// Why it has to stay, in the server's words, or null when it may go.
+  kept_because: string | null;
+}
+
+export interface OwnKey {
+  id: string;
+  label: string;
+  enrolled_at: string | null;
+  last_used_at: string | null;
+  kept_because: string | null;
+}
+
+export interface OwnFactors {
+  password: boolean;
+  apps: OwnApp[];
+  keys: OwnKey[];
+  recovery_codes: number;
+  /// Until when, in epoch seconds, the sign-in behind this page may remove a factor.
+  fresh_until: number | null;
+}
+
+export async function listOwnFactors(realm: string): Promise<OwnFactors> {
+  return api<OwnFactors>(adminPath(realm, "account/credentials"));
+}
+
+export async function removeOwnApp(realm: string, id: string): Promise<void> {
+  await api<void>(adminPath(realm, `account/credentials/${encodeURIComponent(id)}`), {
+    method: "DELETE",
+    subject: say("subject-own-factor"),
+  });
+}
+
+export async function removeOwnKey(realm: string, id: string): Promise<void> {
+  await api<void>(adminPath(realm, `account/keys/${encodeURIComponent(id)}`), {
+    method: "DELETE",
+    subject: say("subject-own-factor"),
+  });
+}
+
+export async function removeOwnRecoveryCodes(realm: string): Promise<void> {
+  await api<void>(adminPath(realm, "account/recovery-codes"), {
+    method: "DELETE",
+    subject: say("subject-own-factor"),
+  });
+}

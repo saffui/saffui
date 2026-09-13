@@ -8,6 +8,9 @@ import { wroteSomething } from "@/services/writes";
 const HINTS: Record<string, string> = {
   forbidden: "toast-hint-forbidden",
   unauthorized: "toast-hint-unauthorized",
+  "user.password.current_mismatch": "toast-hint-current-password",
+  "user.locked_out": "toast-hint-locked-out",
+  "user.password.not_held_here": "toast-hint-password-not-held",
 };
 
 /// One door to the admin API: bearer attached, JSON both ways. A refusal is

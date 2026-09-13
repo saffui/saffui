@@ -4,14 +4,13 @@ import facebookLogo from "@/assets/idp/facebook.svg";
 import githubLogo from "@/assets/idp/github.svg";
 import gitlabLogo from "@/assets/idp/gitlab.svg";
 import googleLogo from "@/assets/idp/google.svg";
-import instagramLogo from "@/assets/idp/instagram.svg";
 import linkedinLogo from "@/assets/idp/linkedin.svg";
 import microsoftLogo from "@/assets/idp/microsoft.svg";
 import oktaLogo from "@/assets/idp/okta.svg";
 import paypalLogo from "@/assets/idp/paypal.svg";
 import stackoverflowLogo from "@/assets/idp/stackoverflow.svg";
 import xLogo from "@/assets/idp/x.svg";
-import { emptyOidcDraft, type OidcDraft } from "./forms";
+import { emptyProviderDraft, type ProviderDraft } from "./forms";
 
 export type ProviderAvailability = "ready" | "manual" | "backend";
 
@@ -22,7 +21,7 @@ export interface ProviderPreset {
   glyph?: "preview" | "server";
   protocol: string;
   availability: ProviderAvailability;
-  draft?: Partial<OidcDraft>;
+  draft?: Partial<ProviderDraft>;
 }
 
 export const PROVIDER_CATALOG: ProviderPreset[] = [
@@ -49,7 +48,29 @@ export const PROVIDER_CATALOG: ProviderPreset[] = [
     availability: "manual",
     draft: { scope: "openid email profile", algorithms: "RS256" },
   },
-  { id: "github", name: "GitHub", logo: githubLogo, protocol: "OAuth 2.0", availability: "backend" },
+  {
+    id: "github",
+    name: "GitHub",
+    logo: githubLogo,
+    protocol: "OAuth 2.0",
+    availability: "ready",
+    draft: {
+      protocol: "oauth2",
+      authorizationEndpoint: "https://github.com/login/oauth/authorize",
+      tokenEndpoint: "https://github.com/login/oauth/access_token",
+      userinfoEndpoint: "https://api.github.com/user",
+      scope: "read:user user:email",
+      tokenAuth: "client_secret_post",
+      subjectPointer: "/id",
+      usernamePointer: "/login",
+      emailPointer: "/email",
+      emailsEndpoint: "https://api.github.com/user/emails",
+      emailsListPointer: "",
+      emailsAddressPointer: "/email",
+      emailsVerifiedPointer: "/verified",
+      emailsPrimaryPointer: "/primary",
+    },
+  },
   {
     id: "gitlab",
     name: "GitLab",
@@ -65,7 +86,29 @@ export const PROVIDER_CATALOG: ProviderPreset[] = [
       algorithms: "RS256",
     },
   },
-  { id: "bitbucket", name: "Bitbucket", logo: bitbucketLogo, protocol: "OAuth 2.0", availability: "backend" },
+  {
+    id: "bitbucket",
+    name: "Bitbucket",
+    logo: bitbucketLogo,
+    protocol: "OAuth 2.0",
+    availability: "ready",
+    draft: {
+      protocol: "oauth2",
+      authorizationEndpoint: "https://bitbucket.org/site/oauth2/authorize",
+      tokenEndpoint: "https://bitbucket.org/site/oauth2/access_token",
+      userinfoEndpoint: "https://api.bitbucket.org/2.0/user",
+      scope: "",
+      tokenAuth: "client_secret_basic",
+      pkce: false,
+      subjectPointer: "/uuid",
+      usernamePointer: "/username",
+      emailsEndpoint: "https://api.bitbucket.org/2.0/user/emails",
+      emailsListPointer: "/values",
+      emailsAddressPointer: "/email",
+      emailsVerifiedPointer: "/is_confirmed",
+      emailsPrimaryPointer: "/is_primary",
+    },
+  },
   {
     id: "okta",
     name: "Okta",
@@ -89,9 +132,41 @@ export const PROVIDER_CATALOG: ProviderPreset[] = [
       algorithms: "RS256",
     },
   },
-  { id: "twitter", name: "Twitter / X", logo: xLogo, protocol: "OAuth 2.0", availability: "backend" },
-  { id: "instagram", name: "Instagram", logo: instagramLogo, protocol: "OAuth 2.0", availability: "backend" },
-  { id: "linkedin", name: "LinkedIn", logo: linkedinLogo, protocol: "OpenID Connect", availability: "backend" },
+  {
+    id: "twitter",
+    name: "Twitter / X",
+    logo: xLogo,
+    protocol: "OAuth 2.0",
+    availability: "ready",
+    draft: {
+      protocol: "oauth2",
+      authorizationEndpoint: "https://x.com/i/oauth2/authorize",
+      tokenEndpoint: "https://api.x.com/2/oauth2/token",
+      userinfoEndpoint: "https://api.x.com/2/users/me",
+      scope: "users.read tweet.read",
+      tokenAuth: "client_secret_basic",
+      subjectPointer: "/data/id",
+      usernamePointer: "/data/username",
+    },
+  },
+  {
+    id: "linkedin",
+    name: "LinkedIn",
+    logo: linkedinLogo,
+    protocol: "OpenID Connect",
+    availability: "ready",
+    draft: {
+      protocol: "oidc",
+      issuer: "https://www.linkedin.com",
+      authorizationEndpoint: "https://www.linkedin.com/oauth/v2/authorization",
+      tokenEndpoint: "https://www.linkedin.com/oauth/v2/accessToken",
+      jwksUri: "https://www.linkedin.com/oauth/openid/jwks",
+      scope: "openid profile email",
+      algorithms: "RS256",
+      tokenAuth: "client_secret_post",
+      pkce: false,
+    },
+  },
   {
     id: "apple",
     name: "Apple",
@@ -120,8 +195,8 @@ export const PROVIDER_CATALOG: ProviderPreset[] = [
   { id: "saml", name: "SAML 2.0", glyph: "server", protocol: "Metadata XML", availability: "backend" },
 ];
 
-export function presetDraft(preset?: ProviderPreset): OidcDraft {
-  const empty = emptyOidcDraft();
+export function presetDraft(preset?: ProviderPreset): ProviderDraft {
+  const empty = emptyProviderDraft();
   if (!preset) return empty;
   return {
     ...empty,

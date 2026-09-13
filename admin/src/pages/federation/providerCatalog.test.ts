@@ -32,9 +32,30 @@ describe("identity provider catalogue", () => {
     expect(draft.scope.split(" ")).toContain("openid");
   });
 
-  test("does not present OAuth-only providers as operational", () => {
-    for (const id of ["github", "twitter", "bitbucket", "instagram", "stackoverflow"]) {
+  test("keeps out of reach only the providers the broker cannot serve", () => {
+    for (const id of ["stackoverflow", "paypal", "saml"]) {
       expect(PROVIDER_CATALOG.find((provider) => provider.id === id)?.availability).toBe("backend");
     }
+    for (const id of ["github", "bitbucket", "twitter", "linkedin"]) {
+      expect(PROVIDER_CATALOG.find((provider) => provider.id === id)?.availability).toBe("ready");
+    }
+    expect(PROVIDER_CATALOG.some((provider) => provider.id === "instagram")).toBe(false);
+  });
+
+  test("prefills the plain OAuth 2.0 providers by their stable subject", () => {
+    for (const [id, subject] of [
+      ["github", "/id"],
+      ["bitbucket", "/uuid"],
+      ["twitter", "/data/id"],
+    ]) {
+      const draft = presetDraft(PROVIDER_CATALOG.find((provider) => provider.id === id));
+      expect(draft.protocol).toBe("oauth2");
+      expect(draft.subjectPointer).toBe(subject);
+      expect(draft.userinfoEndpoint).toMatch(/^https:\/\//);
+    }
+    const linkedin = presetDraft(PROVIDER_CATALOG.find((provider) => provider.id === "linkedin"));
+    expect(linkedin.protocol).toBe("oidc");
+    expect(linkedin.tokenAuth).toBe("client_secret_post");
+    expect(linkedin.pkce).toBe(false);
   });
 });

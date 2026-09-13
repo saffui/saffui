@@ -17,6 +17,7 @@ import { deleteSpnego, getSpnego, putSpnego } from "@/services/negotiation";
 import { keepAnswer, REALM } from "./answers";
 
 const PROVIDER = "contract-oidc";
+const PLAIN = "contract-oauth2";
 const HOOK = "contract-hook";
 const DIRECTORY = "contract-ldap";
 
@@ -66,6 +67,35 @@ describe("federation", () => {
     expect(mappers.some((held) => held.mapper_id === mapper.mapper_id)).toBe(true);
     await deleteIdpMapper(REALM, PROVIDER, mapper.mapper_id);
     await deleteIdp(REALM, PROVIDER);
+  });
+
+  test("keeps a plain OAuth 2.0 provider asked through its account API", async () => {
+    const provider = {
+      provider_id: PLAIN,
+      name: PLAIN,
+      display_name: "Contract account API",
+      description: "",
+      enabled: false,
+      trust_email: true,
+      configs: {
+        protocol: { Str: "oauth2" },
+        authorization_endpoint: { Str: "https://git.example.test/login/oauth/authorize" },
+        token_endpoint: { Str: "https://git.example.test/login/oauth/access_token" },
+        userinfo_endpoint: { Str: "https://api.git.example.test/user" },
+        client_id: { Str: "saffui" },
+        client_secret: { Str: "an-upstream-secret" },
+        scope: { Str: "read:user user:email" },
+        token_auth: { Str: "client_secret_post" },
+        subject_pointer: { Str: "/id" },
+        username_pointer: { Str: "/login" },
+        emails_endpoint: { Str: "https://api.git.example.test/user/emails" },
+      },
+    };
+    await keepAnswer(createIdp, REALM, provider);
+    await keepAnswer(updateIdp, REALM, PLAIN, { ...provider, display_name: "Account API" });
+    const providers = await keepAnswer(listIdps, REALM);
+    expect(providers.some((held) => held.provider_id === PLAIN)).toBe(true);
+    await deleteIdp(REALM, PLAIN);
   });
 
   test("keeps a webhook connector and simulates a redelivery to it", async () => {

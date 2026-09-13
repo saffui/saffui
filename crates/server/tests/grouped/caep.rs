@@ -250,21 +250,46 @@ async fn what_happens_here_is_signalled_there() {
     walked(&plane).await;
     let (_, _, set) = heard.recv().await.expect("a push");
     let claims = plane.claims_of(&set).await;
-    assert_eq!(
-        claims["events"][CREDENTIAL_CHANGE]["credential_type"], "password",
-        "{claims}"
-    );
+    let event = &claims["events"][CREDENTIAL_CHANGE];
+    assert_eq!(event["credential_type"], "password", "{claims}");
+    assert_eq!(event["change_type"], "update", "{claims}");
 
-    // A key is a credential too: enrolling one for ada is a credential-change,
-    // and so is revoking it on the admin plane.
-    plane.enrol_passkey(json!({}), b"ada-key".to_vec()).await;
+    // An administrator taking an app away revokes it, and an app is an app in
+    // the profile's words whichever algorithm it runs.
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &format!(
+            "/admin/realms/{REALM}/users/{}/credentials/cred-totp",
+            support::SUBJECT
+        ),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    walked(&plane).await;
+    let (_, _, set) = heard.try_recv().expect("the removal was pushed");
+    let claims = plane.claims_of(&set).await;
+    let event = &claims["events"][CREDENTIAL_CHANGE];
+    assert_eq!(event["credential_type"], "app", "{claims}");
+    assert_eq!(event["change_type"], "revoke", "{claims}");
+
+    // A key is named by where its browser said it lives: enrolled for ada as
+    // one carried to the device, then revoked on the admin plane.
+    plane
+        .enrol_passkey(
+            json!({}),
+            b"ada-key".to_vec(),
+            Some(models::entities::credentials::AuthenticatorAttachment::CrossPlatform),
+        )
+        .await;
     walked(&plane).await;
     let (_, _, set) = heard.try_recv().expect("the enrolment was pushed");
     let claims = plane.claims_of(&set).await;
-    assert_eq!(
-        claims["events"][CREDENTIAL_CHANGE]["credential_type"], "webauthn",
-        "{claims}"
-    );
+    let event = &claims["events"][CREDENTIAL_CHANGE];
+    assert_eq!(event["credential_type"], "fido2-roaming", "{claims}");
+    assert_eq!(event["change_type"], "create", "{claims}");
     let revoking = format!(
         "/admin/realms/{REALM}/users/{}/keys/{}",
         support::SUBJECT,
@@ -275,10 +300,9 @@ async fn what_happens_here_is_signalled_there() {
     walked(&plane).await;
     let (_, _, set) = heard.try_recv().expect("the revocation was pushed");
     let claims = plane.claims_of(&set).await;
-    assert_eq!(
-        claims["events"][CREDENTIAL_CHANGE]["credential_type"], "webauthn",
-        "{claims}"
-    );
+    let event = &claims["events"][CREDENTIAL_CHANGE];
+    assert_eq!(event["credential_type"], "fido2-roaming", "{claims}");
+    assert_eq!(event["change_type"], "revoke", "{claims}");
     assert_eq!(claims["sub_id"]["sub"], support::SUBJECT, "{claims}");
 
     // The same key again is one ada no longer holds: nothing goes, nothing is said.

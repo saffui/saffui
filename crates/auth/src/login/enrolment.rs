@@ -5,7 +5,9 @@ use crypto::provider::CryptoProvider;
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
-use models::entities::credentials::{CredentialModel, CredentialSecret, OtpParameters};
+use models::entities::credentials::{
+    AuthenticatorAttachment, CredentialModel, CredentialSecret, OtpParameters,
+};
 use models::entities::realm::RealmModel;
 use models::entities::user::{RequiredAction, UserModel};
 use secrecy::SecretBox;
@@ -624,6 +626,7 @@ async fn finish(
             // counter is the high-water mark of *use*, and this key has not
             // been used yet.
             sign_count: 0,
+            attachment: read_reported_attachment(answered),
             enrolled_at: None,
             last_used_at: None,
         },
@@ -645,6 +648,20 @@ async fn finish(
         Ok(true) => Enrolment::Settled,
         _ => Enrolment::Refused,
     }
+}
+
+/// Where the browser said the key it made lives, when it said.
+///
+/// Read off the posted JSON because the parsed credential has no field for it.
+/// Nothing signs it, so it names the key to receivers and never decides whether
+/// the key is trusted.
+fn read_reported_attachment(answered: &str) -> Option<AuthenticatorAttachment> {
+    serde_json::from_str::<Value>(answered)
+        .ok()?
+        .get("authenticatorAttachment")?
+        .as_str()?
+        .parse()
+        .ok()
 }
 
 /// Mail a link, or say a recent one is still good for it.

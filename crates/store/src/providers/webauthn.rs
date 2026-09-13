@@ -1,8 +1,13 @@
 use deadpool_postgres::Transaction;
+use models::entities::credentials::{AuthenticatorAttachment, CredentialChange};
 use serde_json::Value;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
+
+/// A key's type in a credential change: the word the flows and the admin
+/// listing already use for a passkey.
+pub const CREDENTIAL_TYPE: &str = "webauthn";
 
 /// One enrolled authenticator.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,6 +20,8 @@ pub struct EnrolledCredential {
     /// Public key, transports and flags, as serialised.
     pub passkey: Value,
     pub sign_count: i64,
+    /// Where the browser said the key lives, when it said.
+    pub attachment: Option<AuthenticatorAttachment>,
     /// Stamped by the store on enrolment; whatever a caller sets is ignored.
     pub enrolled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -28,21 +35,30 @@ pub async fn enrol(
     let written = transaction
         .execute(
             "INSERT INTO webauthn_credentials \
-                 (tenant, realm_id, credential_id, user_id, label, passkey, sign_count) \
+                 (tenant, realm_id, credential_id, user_id, label, passkey, sign_count, \
+                  attachment) \
              SELECT current_setting('saffui.current_tenant', true), \
-                    current_setting('saffui.current_realm', true), $1, $2, $3, $4, $5",
+                    current_setting('saffui.current_realm', true), $1, $2, $3, $4, $5, $6",
             &[
                 &credential.credential_id,
                 &credential.user_id,
                 &credential.label,
                 &credential.passkey,
                 &credential.sign_count,
+                &credential.attachment,
             ],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
     if written > 0 {
-        announce_key_change(transaction, &credential.user_id).await?;
+        announce_key_change(
+            transaction,
+            &credential.user_id,
+            CredentialChange::Create,
+            credential.attachment,
+            &credential.passkey,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -54,8 +70,8 @@ pub async fn by_id(
 ) -> StoreResult<Option<EnrolledCredential>> {
     Ok(transaction
         .query_opt(
-            "SELECT credential_id, user_id, label, passkey, sign_count, enrolled_at, \
-                    last_used_at \
+            "SELECT credential_id, user_id, label, passkey, sign_count, attachment, \
+                    enrolled_at, last_used_at \
              FROM webauthn_credentials WHERE credential_id = $1",
             &[&credential_id],
         )
@@ -74,8 +90,8 @@ pub async fn of_user(
 ) -> StoreResult<Vec<EnrolledCredential>> {
     Ok(transaction
         .query(
-            "SELECT credential_id, user_id, label, passkey, sign_count, enrolled_at, \
-                    last_used_at \
+            "SELECT credential_id, user_id, label, passkey, sign_count, attachment, \
+                    enrolled_at, last_used_at \
              FROM webauthn_credentials WHERE user_id = $1 \
              ORDER BY enrolled_at ASC, credential_id ASC",
             &[&user_id],
@@ -110,7 +126,8 @@ pub async fn record_use(
     Ok(advanced > 0)
 }
 
-/// Revoke one of this user's keys, and say whether there was one to revoke.
+/// Revoke one of this user's keys at an administrator's hand, and say whether
+/// there was one to revoke.
 ///
 /// The user is part of the question, not a nicety: a caller naming a user and
 /// an identifier must not reach past that user, however it learned the name.
@@ -120,29 +137,81 @@ pub async fn revoke(
     user_id: &str,
     credential_id: &[u8],
 ) -> StoreResult<bool> {
+    remove_key(
+        transaction,
+        user_id,
+        credential_id,
+        CredentialChange::Revoke,
+    )
+    .await
+}
+
+/// Delete one of this user's keys at their own hand. It reaches exactly as far
+/// as [`revoke`]; only what a receiver is told differs.
+pub async fn delete(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    credential_id: &[u8],
+) -> StoreResult<bool> {
+    remove_key(
+        transaction,
+        user_id,
+        credential_id,
+        CredentialChange::Delete,
+    )
+    .await
+}
+
+async fn remove_key(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    credential_id: &[u8],
+    change: CredentialChange,
+) -> StoreResult<bool> {
     let removed = transaction
-        .execute(
-            "DELETE FROM webauthn_credentials WHERE user_id = $1 AND credential_id = $2",
+        .query_opt(
+            "DELETE FROM webauthn_credentials WHERE user_id = $1 AND credential_id = $2 \
+             RETURNING attachment, passkey",
             &[&user_id, &credential_id],
         )
         .await
         .map_err(|_| StoreError::Backend)?;
-    if removed == 0 {
+    let Some(row) = removed else {
         return Ok(false);
-    }
-    announce_key_change(transaction, user_id).await?;
+    };
+    announce_key_change(
+        transaction,
+        user_id,
+        change,
+        row.get("attachment"),
+        &row.get::<_, Value>("passkey"),
+    )
+    .await?;
     Ok(true)
 }
 
-/// Announce that this person's keys changed, in the transaction that changed
-/// them. The other credentials' store announces theirs; a key's type is
-/// `webauthn`, the word the flows and the admin listing already use.
-async fn announce_key_change(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<()> {
+/// Announce a change to this person's keys, in the transaction that made it.
+///
+/// A receiver is told what it takes to name the key in its own words: where the
+/// browser said the key lives, and the backup flag the stored key keeps, the
+/// only hint left for a key enrolled before attachments were recorded.
+async fn announce_key_change(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    change: CredentialChange,
+    attachment: Option<AuthenticatorAttachment>,
+    passkey: &Value,
+) -> StoreResult<()> {
     super::outbox::emit(
         transaction,
         super::outbox::CREDENTIAL_CHANGED,
         user_id,
-        &serde_json::json!({ "credential_type": "webauthn" }),
+        &serde_json::json!({
+            "credential_type": CREDENTIAL_TYPE,
+            "change_type": change,
+            "attachment": attachment,
+            "backup_eligible": passkey["cred"]["backup_eligible"].as_bool(),
+        }),
     )
     .await
 }
@@ -154,6 +223,7 @@ fn read(row: Row) -> EnrolledCredential {
         label: row.get("label"),
         passkey: row.get("passkey"),
         sign_count: row.get("sign_count"),
+        attachment: row.get("attachment"),
         enrolled_at: row.get("enrolled_at"),
         last_used_at: row.get("last_used_at"),
     }

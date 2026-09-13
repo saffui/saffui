@@ -595,6 +595,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V098__claim_source_token_sealing.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 99,
+            name: "passkey_attachment",
+            sql: include_str!("../migrations/V099__passkey_attachment.sql"),
+            transactional: true,
+        }),
     ]
 }
 

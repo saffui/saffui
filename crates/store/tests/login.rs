@@ -1,5 +1,6 @@
 mod support;
 
+use models::entities::credentials::AuthenticatorAttachment;
 use store::providers::login::{self, AuthSession};
 use store::providers::webauthn::{self, EnrolledCredential};
 use store::tenancy::TenantContext;
@@ -25,6 +26,7 @@ fn credential(id: &[u8], user: &str, label: &str) -> EnrolledCredential {
         label: label.to_owned(),
         passkey: serde_json::json!({"kty": "EC", "alg": -7}),
         sign_count: 0,
+        attachment: None,
         enrolled_at: None,
         last_used_at: None,
     }
@@ -423,15 +425,15 @@ async fn a_user_presents_what_they_enrolled() {
     );
 }
 
-/// The credential types announced for a person, oldest first.
-async fn announced_credential_types(
+/// What was announced about a person's credentials, oldest first.
+async fn announced_credential_changes(
     transaction: &deadpool_postgres::Transaction<'_>,
     user_id: &str,
-) -> Vec<String> {
+) -> Vec<serde_json::Value> {
     transaction
         .query(
-            "SELECT coalesce(payload->>'credential_type', '') FROM event_outbox \
-             WHERE kind = $1 AND user_id = $2 ORDER BY event_id",
+            "SELECT payload FROM event_outbox WHERE kind = $1 AND user_id = $2 \
+             ORDER BY event_id",
             &[&store::providers::outbox::CREDENTIAL_CHANGED, &user_id],
         )
         .await
@@ -441,24 +443,58 @@ async fn announced_credential_types(
         .collect()
 }
 
-/// A key arriving or leaving is announced once, and revoking a key the person
-/// does not hold announces nothing.
+/// A key arriving or leaving is announced once, with what happened and where
+/// its browser said it lives. A removal that finds no key of that person's
+/// announces nothing, and an administrator's revocation and a holder's own
+/// removal say different things.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn a_key_enrolled_or_revoked_is_announced_once() {
+async fn a_key_enrolled_or_removed_is_announced_once_with_what_happened() {
     let fixture = Fixture::with_user().await;
     let mut connection = fixture.connection().await;
     let transaction = fixture
         .scoped(&mut connection, &TenantContext::new("acme", "main"))
         .await;
 
-    webauthn::enrol(&transaction, &credential(b"key-1", "ada", "yubikey"))
+    webauthn::enrol(
+        &transaction,
+        &EnrolledCredential {
+            attachment: Some(AuthenticatorAttachment::CrossPlatform),
+            passkey: serde_json::json!({ "cred": { "backup_eligible": false } }),
+            ..credential(b"key-1", "ada", "yubikey")
+        },
+    )
+    .await
+    .unwrap();
+    webauthn::enrol(&transaction, &credential(b"key-2", "ada", "phone"))
         .await
         .unwrap();
     assert_eq!(
-        announced_credential_types(&transaction, "ada").await,
-        ["webauthn"],
-        "the enrolment was not announced exactly once"
+        announced_credential_changes(&transaction, "ada").await,
+        [
+            serde_json::json!({
+                "credential_type": "webauthn",
+                "change_type": "create",
+                "attachment": "cross-platform",
+                "backup_eligible": false,
+            }),
+            serde_json::json!({
+                "credential_type": "webauthn",
+                "change_type": "create",
+                "attachment": null,
+                "backup_eligible": null,
+            }),
+        ],
+        "each enrolment was not announced once with what it knew"
+    );
+    assert_eq!(
+        webauthn::by_id(&transaction, b"key-1")
+            .await
+            .unwrap()
+            .expect("the key")
+            .attachment,
+        Some(AuthenticatorAttachment::CrossPlatform),
+        "the reported attachment was not kept"
     );
 
     assert!(
@@ -467,20 +503,22 @@ async fn a_key_enrolled_or_revoked_is_announced_once() {
             .unwrap()
     );
     assert!(
-        !webauthn::revoke(&transaction, "ada", b"key-9")
+        !webauthn::delete(&transaction, "ada", b"key-9")
             .await
             .unwrap()
     );
     assert!(
-        announced_credential_types(&transaction, "grace")
+        announced_credential_changes(&transaction, "grace")
             .await
             .is_empty(),
         "a key grace never held was announced as gone"
     );
     assert_eq!(
-        announced_credential_types(&transaction, "ada").await,
-        ["webauthn"],
-        "a revocation that removed nothing was announced"
+        announced_credential_changes(&transaction, "ada")
+            .await
+            .len(),
+        2,
+        "a removal that removed nothing was announced"
     );
 
     assert!(
@@ -488,10 +526,29 @@ async fn a_key_enrolled_or_revoked_is_announced_once() {
             .await
             .unwrap()
     );
+    assert!(
+        webauthn::delete(&transaction, "ada", b"key-2")
+            .await
+            .unwrap()
+    );
+    let told = announced_credential_changes(&transaction, "ada").await;
     assert_eq!(
-        announced_credential_types(&transaction, "ada").await,
-        ["webauthn", "webauthn"],
-        "the revocation was not announced exactly once"
+        told[2..],
+        [
+            serde_json::json!({
+                "credential_type": "webauthn",
+                "change_type": "revoke",
+                "attachment": "cross-platform",
+                "backup_eligible": false,
+            }),
+            serde_json::json!({
+                "credential_type": "webauthn",
+                "change_type": "delete",
+                "attachment": null,
+                "backup_eligible": null,
+            }),
+        ],
+        "the removals were not announced once each with who removed them"
     );
 }
 

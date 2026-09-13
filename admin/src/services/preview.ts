@@ -447,7 +447,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         {
           client_id: "web-dashboard",
           scopes: ["openid", "profile", "email"],
-          granted_at: NOW - 86_400 * 12,
+          granted_at: new Date((NOW - 86_400 * 12) * 1000).toISOString(),
         },
       ].filter((consent) => CONSENTS.has(consent.client_id)),
     });
@@ -851,7 +851,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
   }
   if (path.includes("/rebac/relations?")) {
     return answer([
-      { subject_type: "user", subject_id: "ada", subject_relation: "" },
+      { subject_type: "user", subject_id: "ada", subject_relation: null },
       { subject_type: "group", subject_id: "editors", subject_relation: "member" },
     ]);
   }
@@ -945,7 +945,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
     ]);
   }
   if (/\/authz\/servers\/[^/]+\/resources$/.test(path)) {
-    return answer([{ resource_id: "res-1", name: "doc archive", user_managed_access: true }]);
+    return answer([{ resource_id: "res-1", name: "doc archive", resource_type: "document", resource_uris: ["/archive/*"], resource_owner: "web-dashboard", user_managed_access: true }]);
   }
   if (/\/authz\/servers\/[^/]+\/scopes$/.test(path)) {
     return answer([{ scope_id: "sc-1", name: "edit" }]);

@@ -11,6 +11,7 @@
     "build": "vue-tsc -b && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "contract": "vitest run --config vitest.contract.config.ts && vue-tsc -p tsconfig.contract.json",
     "lint": "oxlint src"
   },
   "dependencies": {

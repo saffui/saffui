@@ -16,7 +16,7 @@ describe("protocol mapper transport", () => {
       return new Response(JSON.stringify({ mapper_id: "m-1", name: "department", protocol: "openid-connect", mapper_type: "oidc-usermodel-attribute-mapper" }), { status: 200, headers: { "content-type": "application/json" } });
     });
     vi.stubGlobal("fetch", fetch);
-    const body = { name: "department", protocol: "openid-connect", mapper_type: "oidc-usermodel-attribute-mapper", configs: { "claim.name": "department" } };
+    const body = { name: "department", protocol: "openid-connect", mapper_type: "oidc-usermodel-attribute-mapper", configs: { "claim.name": { Str: "department" } } };
 
     await listRealmMappers("north/east");
     await createRealmMapper("north/east", body);

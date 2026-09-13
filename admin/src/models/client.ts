@@ -78,5 +78,12 @@ export interface ProtocolMapper {
   name: string;
   protocol: string;
   mapper_type: string;
-  configs?: Record<string, unknown> | null;
+  configs?: Record<string, AttributeValue> | null;
 }
+
+/// A stored setting, tagged with its kind the way the server writes one.
+export type AttributeValue =
+  | { Str: string }
+  | { Int: number }
+  | { Bool: boolean }
+  | { ListStr: string[] };

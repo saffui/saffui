@@ -15,8 +15,13 @@ function server(realm: string, clientId: string, leaf: string): string {
   return adminPath(realm, `authz/servers/${encodeURIComponent(clientId)}/${leaf}`);
 }
 
+/// The policies this build can read. The server also names one whose rule it
+/// cannot, and the canvas has nothing to draw for that one yet.
 export async function listPolicies(realm: string, clientId: string): Promise<PolicyRow[]> {
-  return api<PolicyRow[]>(server(realm, clientId, "policies"));
+  const listed = await api<(PolicyRow | { policy_id: string; unreadable: true })[]>(
+    server(realm, clientId, "policies"),
+  );
+  return listed.filter((row): row is PolicyRow => !("unreadable" in row));
 }
 
 export async function listResources(realm: string, clientId: string): Promise<ResourceRow[]> {
@@ -261,7 +266,7 @@ export async function readRelations(
     object_id: objectId,
     relation,
   });
-  return api<{ subject_type: string; subject_id: string; subject_relation: string }[]>(
+  return api<{ subject_type: string; subject_id: string; subject_relation: string | null }[]>(
     `${adminPath(realm, "rebac/relations")}?${asked}`,
   );
 }

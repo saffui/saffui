@@ -186,10 +186,9 @@ async fn a_protected_application_lives_over_the_plane() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(
-        listed.as_array().is_some_and(|held| !held.is_empty()),
-        "{listed}"
-    );
+    // Listed the way its own door wrote it, not wrapped in how storage read it.
+    assert_eq!(listed[0]["policy_id"], policy["policy_id"], "{listed}");
+    assert_eq!(listed[0]["name"], "editors-only", "{listed}");
 
     let (status, _) = asked(&plane, Method::DELETE, &base, &bearer, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);

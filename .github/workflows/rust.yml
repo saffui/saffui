@@ -381,6 +381,18 @@ jobs:
             exit 1
           fi
 
+      # The console contract runs the console's own service calls against the
+      # plane below, so this job holds the console's packages too.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: console packages
+        run: pnpm install --frozen-lockfile
+
       - name: test both planes end to end
         run: |
           set -o pipefail

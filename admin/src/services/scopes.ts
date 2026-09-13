@@ -1,6 +1,6 @@
 import { say } from "@/i18n";
 import { adminPath, api } from "@/services/http";
-import type { ClientScope, ProtocolMapper } from "@/models/client";
+import type { AttributeValue, ClientScope, ProtocolMapper } from "@/models/client";
 
 /// The realm's scope catalogue.
 export async function listScopeCatalogue(realm: string): Promise<ClientScope[]> {
@@ -82,7 +82,7 @@ export type ProtocolMapperWrite = {
   name: string;
   protocol: string;
   mapper_type: string;
-  configs: Record<string, unknown> | null;
+  configs: Record<string, AttributeValue> | null;
 };
 
 export async function createRealmMapper(realm: string, body: ProtocolMapperWrite) {

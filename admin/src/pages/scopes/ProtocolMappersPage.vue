@@ -46,9 +46,9 @@ function open(row?: ProtocolMapper) {
 }
 
 async function save() {
-  let configs: Record<string, unknown> | null;
+  let configs: ProtocolMapperWrite["configs"];
   try {
-    configs = JSON.parse(draft.value.configs) as Record<string, unknown>;
+    configs = JSON.parse(draft.value.configs) as ProtocolMapperWrite["configs"];
   } catch {
     failed.value = say("mappers-config-invalid");
     return;

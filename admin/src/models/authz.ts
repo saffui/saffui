@@ -41,6 +41,9 @@ export interface PolicyRow {
 export interface ResourceRow {
   resource_id: string;
   name: string;
+  resource_type: string;
+  resource_uris: string[];
+  resource_owner: string;
   /// Whether this resource may be shared as a relation on it. The server it
   /// belongs to is the ceiling; this cannot open what that has closed.
   user_managed_access?: boolean;

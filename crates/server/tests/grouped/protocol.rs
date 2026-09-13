@@ -614,37 +614,35 @@ async fn nothing_about_a_code_is_readable_from_a_refusal() {
     assert_eq!(unknown["error"], "invalid_grant");
 }
 
+/// A code spent by the confidential client, offering the verifier when given.
+async fn spend_code_as_confidential(
+    plane: &Plane,
+    code: &str,
+    verifier: Option<&str>,
+) -> (StatusCode, serde_json::Value) {
+    let mut form = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code),
+        ("redirect_uri", REDIRECT),
+    ];
+    if let Some(verifier) = verifier {
+        form.push(("code_verifier", verifier));
+    }
+    asking(
+        plane,
+        support::REALM,
+        &form,
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await
+}
+
 /// The proof RFC 7636 describes, and the two ways of not having it.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_challenge_is_answered_or_the_code_is_not_spent() {
     let plane = Plane::with_actions(&[]).await;
     let (verifier, challenge) = pkce_pair();
-
-    let spend = |code: String, verifier: Option<String>| {
-        let plane = &plane;
-        async move {
-            let mut form = vec![
-                ("grant_type".to_owned(), "authorization_code".to_owned()),
-                ("code".to_owned(), code),
-                ("redirect_uri".to_owned(), REDIRECT.to_owned()),
-            ];
-            if let Some(verifier) = verifier {
-                form.push(("code_verifier".to_owned(), verifier));
-            }
-            let borrowed: Vec<(&str, &str)> = form
-                .iter()
-                .map(|(key, value)| (key.as_str(), value.as_str()))
-                .collect();
-            asking(
-                plane,
-                support::REALM,
-                &borrowed,
-                Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
-            )
-            .await
-        }
-    };
 
     let held = plane
         .mint_code(
@@ -655,7 +653,9 @@ async fn a_challenge_is_answered_or_the_code_is_not_spent() {
         )
         .await;
     assert_eq!(
-        spend(held, Some(verifier.clone())).await.0,
+        spend_code_as_confidential(&plane, &held, Some(&verifier))
+            .await
+            .0,
         StatusCode::OK,
         "the verifier the challenge was built from was refused"
     );
@@ -680,7 +680,9 @@ async fn a_challenge_is_answered_or_the_code_is_not_spent() {
             )
             .await;
         assert_eq!(
-            spend(code, offered).await.1["error"],
+            spend_code_as_confidential(&plane, &code, offered.as_deref())
+                .await
+                .1["error"],
             "invalid_grant",
             "{label}"
         );
@@ -699,10 +701,46 @@ async fn a_challenge_is_answered_or_the_code_is_not_spent() {
         )
         .await;
     assert_eq!(
-        spend(unknown, Some(verifier)).await.1["error"],
+        spend_code_as_confidential(&plane, &unknown, Some(&verifier))
+            .await
+            .1["error"],
         "invalid_grant",
         "an unknown challenge method was treated as plain"
     );
+}
+
+/// RFC 9700 §4.8.2: a code minted without a challenge spends without a
+/// verifier and is refused with one, since the client that sends a verifier
+/// began its login with a challenge. An empty verifier is no verifier
+/// (RFC 6749 §3.2).
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_verifier_for_a_code_minted_without_a_challenge_is_refused() {
+    let plane = Plane::with_actions(&[]).await;
+    let (verifier, _) = pkce_pair();
+
+    let bare = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    let (status, body) = spend_code_as_confidential(&plane, &bare, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let blank = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    let (status, body) = spend_code_as_confidential(&plane, &blank, Some("")).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an empty verifier was taken for one: {body}"
+    );
+
+    let downgraded = plane
+        .mint_code(support::CONFIDENTIAL, REDIRECT, "openid", None)
+        .await;
+    let (status, body) = spend_code_as_confidential(&plane, &downgraded, Some(&verifier)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_grant");
 }
 
 /// A public client authenticates with nothing, so the challenge is the whole of

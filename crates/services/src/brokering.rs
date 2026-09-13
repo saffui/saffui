@@ -282,7 +282,11 @@ pub async fn decide_link(
         &spec,
     )
     .await
-    .map_err(|_| Unbrokered::Refused)?;
+    .map_err(|why| match why {
+        // A store that could not write is not a refusal the person should hear.
+        crate::admin::users::Uncreatable::Unwritable => Unbrokered::Backend,
+        _ => Unbrokered::Refused,
+    })?;
     remember(transaction, provider, arrival, &made.user_id, now).await?;
     Ok((made.user_id, true))
 }

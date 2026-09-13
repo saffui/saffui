@@ -596,6 +596,16 @@ pub async fn rotate_secret(
 }
 
 pub async fn remove(transaction: &Transaction<'_>, client_id: &str) -> Result<bool, Unregistrable> {
+    // Its service account leaves with it, rather than keep grants nobody answers
+    // for and a name the next client under this identifier could not take.
+    if let Some(account) = store::providers::users::load_service_account(transaction, client_id)
+        .await
+        .map_err(|_| Unregistrable::Unwritable)?
+    {
+        store::providers::users::delete(transaction, &account.user_id)
+            .await
+            .map_err(|_| Unregistrable::Unwritable)?;
+    }
     clients::delete(transaction, client_id)
         .await
         .map_err(|_| Unregistrable::Unwritable)

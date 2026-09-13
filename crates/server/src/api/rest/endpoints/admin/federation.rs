@@ -142,11 +142,12 @@ pub async fn import(
         &directory,
     )
     .await
-    .map_err(|_| {
-        ApiError::with_detail(
+    .map_err(|why| match why {
+        crate::federation::Unimported::Unwalked => ApiError::with_detail(
             ErrorCode::ValidationError,
             "the directory could not be walked".to_owned(),
-        )
+        ),
+        crate::federation::Unimported::Unwritten => internal(),
     })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({

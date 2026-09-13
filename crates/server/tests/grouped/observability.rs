@@ -711,8 +711,8 @@ async fn a_trace_finds_its_own_decisions_and_writes() {
     );
 }
 
-/// A simulation records the trace it ran in: the caller's own when the
-/// request names one, and none of that one when it does not.
+/// A simulation records the trace it ran in, and one asked outside that
+/// trace is not found by it.
 #[cfg(feature = "otel")]
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]

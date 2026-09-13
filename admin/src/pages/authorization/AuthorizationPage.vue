@@ -1629,7 +1629,7 @@ function nodeStroke(row: PolicyRow): string {
             {{ say("authz-write") }}
           </button>
           <button type="button" class="rounded-md border border-danger/40 px-3 py-1.5 text-xs text-danger hover:bg-surface-2" @click="saveTuple(true)">
-            {{ say("authz-erase") }}
+            {{ say("authz-relation-erase") }}
           </button>
           <span v-if="tupleWritten" class="text-[11px] text-ok">{{ say("authz-tuple-kept") }}</span>
         </div>

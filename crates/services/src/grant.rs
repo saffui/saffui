@@ -644,6 +644,11 @@ pub async fn authorization_code(
 /// A public client authenticates with nothing, so this is the whole of its
 /// proof. A code from one carrying no challenge is one anybody who intercepted
 /// the redirect can spend.
+///
+/// A verifier offered for a code minted without a challenge is refused whoever
+/// the client is (RFC 9700 §4.8.2): the client began its login with a
+/// challenge, so the code it holds came from another login, or lost its
+/// challenge on the way.
 fn verify_code_challenge(
     provider: &dyn CryptoProvider,
     client: &ClientModel,
@@ -651,9 +656,9 @@ fn verify_code_challenge(
     verifier: Option<&str>,
 ) -> Result<(), Ungranted> {
     let Some(challenge) = code.code_challenge.as_deref() else {
-        return match client.public_client {
-            Some(true) => Err(Ungranted::InvalidGrant),
-            _ => Ok(()),
+        return match (verifier, client.public_client) {
+            (Some(_), _) | (None, Some(true)) => Err(Ungranted::InvalidGrant),
+            (None, _) => Ok(()),
         };
     };
     let verifier = verifier.ok_or(Ungranted::InvalidGrant)?;

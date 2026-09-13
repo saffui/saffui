@@ -249,7 +249,7 @@ pub async fn ask(
                 &grant::Redeeming {
                     code,
                     redirect_uri: asked.redirect_uri.as_deref(),
-                    code_verifier: asked.code_verifier.as_deref(),
+                    code_verifier: asked.code_verifier.as_deref().filter(|it| !it.is_empty()),
                 },
                 now,
             )

@@ -99,6 +99,41 @@ mod exporting {
         }
     }
 
+    /// The span one proxied check runs in, tied into the trace of the request
+    /// being weighed when the headers the proxy handed over name one. That
+    /// request's trace, not the proxy's call to this door, is the one its
+    /// decision belongs to.
+    pub fn open_check_span(headers: &std::collections::HashMap<String, String>) -> tracing::Span {
+        let span = tracing::info_span!("mesh-check", trace_id = tracing::field::Empty);
+        let parent = TraceContextPropagator::new().extract(&Proxied(headers));
+        if parent.span().span_context().is_valid()
+            && let Err(why) = span.set_parent(parent)
+        {
+            tracing::debug!(%why, "a proxied request's trace context could not be tied");
+        }
+        let settled = span.context().span().span_context().trace_id();
+        if settled != opentelemetry::trace::TraceId::INVALID {
+            span.record(
+                "trace_id",
+                tracing::field::display(format!("{settled:032x}")),
+            );
+        }
+        span
+    }
+
+    /// The W3C headers of a proxied request, as the proxy handed them over.
+    struct Proxied<'request>(&'request std::collections::HashMap<String, String>);
+
+    impl opentelemetry::propagation::Extractor for Proxied<'_> {
+        fn get(&self, key: &str) -> Option<&str> {
+            self.0.get(key).map(String::as_str)
+        }
+
+        fn keys(&self) -> Vec<&str> {
+            self.0.keys().map(String::as_str).collect()
+        }
+    }
+
     /// Build the pipeline against the named collector, and hand back the
     /// layer that feeds it. The ratio is parent-based: a request arriving
     /// inside a sampled trace stays sampled.
@@ -154,10 +189,16 @@ mod exporting {
 }
 
 #[cfg(feature = "otel")]
-pub use exporting::{Telemetry, current_trace_id, install_propagation, start};
+pub use exporting::{Telemetry, current_trace_id, install_propagation, open_check_span, start};
 
 /// The build without the machinery: no request ever belongs to a trace.
 #[cfg(not(feature = "otel"))]
 pub fn current_trace_id() -> Option<String> {
     None
+}
+
+/// The build without the machinery: a check runs in no span at all.
+#[cfg(not(feature = "otel"))]
+pub fn open_check_span(_: &std::collections::HashMap<String, String>) -> tracing::Span {
+    tracing::Span::none()
 }

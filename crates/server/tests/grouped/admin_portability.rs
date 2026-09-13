@@ -855,3 +855,60 @@ fn document_with_only(document: &Value, section: &str, rows: Value) -> Value {
     narrowed[section] = rows;
     narrowed
 }
+
+/// A partial document carrying required actions is planned and imported, each
+/// matched against the registrations the realm already holds.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_partial_import_plans_the_required_actions_it_carries() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmExport,
+        AdminAction::RealmImport,
+        AdminAction::RequiredActionWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/auth/required-actions"),
+        &bearer,
+        Some(json!({
+            "provider_id": "totp",
+            "action": "configure-totp",
+            "name": "configure-totp",
+            "display_name": "Configure TOTP",
+            "description": "",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export?include_users=false"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    assert_eq!(count(&document, "required_actions"), 1, "{document}");
+    let carried = document_with_only(
+        &document,
+        "required_actions",
+        document["required_actions"].clone(),
+    );
+
+    for path in ["import/preview", "import"] {
+        let (status, report) = asked(
+            &plane,
+            Method::POST,
+            &format!("/admin/realms/{REALM}/{path}"),
+            &bearer,
+            Some(json!({ "document": carried, "collision": "skip" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{path}: {report}");
+        assert_eq!(report["skipped"]["required_actions"], 1, "{path}: {report}");
+    }
+}

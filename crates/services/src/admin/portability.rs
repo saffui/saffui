@@ -108,9 +108,11 @@ async fn existing(
     if ids.is_empty() && names.is_empty() {
         return Ok(Existing::default());
     }
+    // Text on both sides: a name kept in an enum column, a required action's,
+    // neither binds nor reads as a string otherwise.
     let statement = format!(
-        "SELECT {id_column}, {name_column} FROM {table} \
-         WHERE {id_column} = ANY($1) OR {name_column} = ANY($2)"
+        "SELECT {id_column}, {name_column}::text AS {name_column} FROM {table} \
+         WHERE {id_column} = ANY($1) OR {name_column}::text = ANY($2)"
     );
     let rows = transaction
         .query(statement.as_str(), &[&ids, &names])

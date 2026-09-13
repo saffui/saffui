@@ -822,6 +822,10 @@ pub async fn assemble_evidence_pack(
                 "delivery_receipts".to_owned(),
                 format!("{} days", crate::housekeeping::RECEIPTS_KEPT_DAYS),
             ),
+            (
+                "delivered_events".to_owned(),
+                format!("{} days", crate::housekeeping::DELIVERED_EVENTS_KEPT_DAYS),
+            ),
         ],
     })
 }

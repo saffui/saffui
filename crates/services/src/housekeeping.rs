@@ -1,18 +1,22 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use store::providers::{
-    backchannel, caep_queue, deliveries, devices, dpop, form_post, login, oidc, one_time_tokens,
-    pushed, replay, sessions, sms, ussd,
+    backchannel, brokering, caep_queue, deliveries, devices, dpop, form_post, login, oidc,
+    one_time_tokens, outbox, pushed, replay, sessions, sms, ussd,
 };
 
-/// How long a receipt is kept. One nobody looked at for a month is one nobody
-/// is going to, and it names an address.
 /// How long the sign-in log looks back. A window, not an archive: long
 /// enough to answer "who signed in this month", short enough that enabling
 /// the log is not enabling a dossier.
 pub const LOGIN_EVENTS_KEPT_DAYS: i64 = 30;
 
+/// How long a receipt is kept. One nobody looked at for a month is one nobody
+/// is going to, and it names an address.
 pub const RECEIPTS_KEPT_DAYS: i64 = 30;
+
+/// How far back a redelivery can reach: a delivered event leaves the outbox after
+/// this, while a dead one waits for an operator and a pending one is still owed.
+pub const DELIVERED_EVENTS_KEPT_DAYS: i32 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the sweep could not run")]
@@ -34,10 +38,14 @@ pub struct Swept {
     pub form_post_landings: u64,
     pub dpop_proofs: u64,
     pub security_events: u64,
+    /// Delivered outbox events past the replay window.
+    pub delivered_events: u64,
     /// Sign-in log rows past the retention window.
     pub login_events: u64,
     pub backchannel_requests: u64,
     pub device_codes: u64,
+    /// Brokered logins that ran out before the upstream sent anyone back.
+    pub broker_login_states: u64,
     pub sessions: u64,
     /// Client grants that ran out under logins still standing.
     pub client_sessions: u64,
@@ -58,9 +66,11 @@ impl Swept {
             + self.form_post_landings
             + self.dpop_proofs
             + self.security_events
+            + self.delivered_events
             + self.login_events
             + self.backchannel_requests
             + self.device_codes
+            + self.broker_login_states
             + self.sessions
             + self.client_sessions
     }
@@ -71,15 +81,19 @@ impl Swept {
         self.assertions += other.assertions;
         self.logins_in_progress += other.logins_in_progress;
         self.one_time_tokens += other.one_time_tokens;
+        self.sms_counters += other.sms_counters;
+        self.ussd_anchors += other.ussd_anchors;
         self.replayed += other.replayed;
         self.delivery_receipts += other.delivery_receipts;
         self.pushed_requests += other.pushed_requests;
         self.form_post_landings += other.form_post_landings;
         self.dpop_proofs += other.dpop_proofs;
         self.security_events += other.security_events;
+        self.delivered_events += other.delivered_events;
         self.login_events += other.login_events;
         self.backchannel_requests += other.backchannel_requests;
         self.device_codes += other.device_codes;
+        self.broker_login_states += other.broker_login_states;
         self.sessions += other.sessions;
         self.client_sessions += other.client_sessions;
     }
@@ -137,6 +151,12 @@ pub async fn drop_expired_rows(
         security_events: caep_queue::drop_expired(transaction, now)
             .await
             .map_err(failed)?,
+        delivered_events: outbox::drop_delivered_older_than(
+            transaction,
+            DELIVERED_EVENTS_KEPT_DAYS,
+        )
+        .await
+        .map_err(failed)?,
         login_events: store::providers::login_events::drop_older_than(
             transaction,
             (now - chrono::Duration::days(LOGIN_EVENTS_KEPT_DAYS)).timestamp(),
@@ -147,6 +167,9 @@ pub async fn drop_expired_rows(
             .await
             .map_err(failed)?,
         device_codes: devices::drop_expired(transaction, now)
+            .await
+            .map_err(failed)?,
+        broker_login_states: brokering::drop_expired_login_states(transaction, now)
             .await
             .map_err(failed)?,
         // Before the logins, so this pass counts only what ended early: what

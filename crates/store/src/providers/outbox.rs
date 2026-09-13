@@ -230,14 +230,17 @@ pub async fn list_events_after_id(
         .collect())
 }
 
-pub async fn drop_delivered(
+/// Take away delivered tellings older than the window, on the database's clock
+/// that stamped them. Dead and pending ones are never this sweep's to take.
+pub async fn drop_delivered_older_than(
     transaction: &Transaction<'_>,
-    before: DateTime<Utc>,
+    days: i32,
 ) -> StoreResult<u64> {
     transaction
         .execute(
-            "DELETE FROM event_outbox WHERE state = 'delivered' AND occurred_at <= $1",
-            &[&before],
+            "DELETE FROM event_outbox WHERE state = 'delivered' \
+             AND occurred_at <= now() - make_interval(days => $1)",
+            &[&days],
         )
         .await
         .map_err(|_| StoreError::Backend)

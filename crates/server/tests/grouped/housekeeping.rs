@@ -250,3 +250,190 @@ async fn a_client_grant_that_ran_out_goes_before_its_login_does() {
         "the sweep took other than the ended grant"
     );
 }
+
+/// A delivered event leaves once it is older than the replay window. A younger
+/// one stays, and so do a dead and a pending one of the same age.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_delivered_event_leaves_when_its_replay_window_closes() {
+    let plane = Plane::with_actions(&[]).await;
+    let kept = services::housekeeping::DELIVERED_EVENTS_KEPT_DAYS;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    // Only this test's events count: the planted world emits its own.
+    transaction
+        .execute("DELETE FROM event_outbox", &[])
+        .await
+        .expect("a clean outbox");
+    for (kind, state, days) in [
+        ("sweep-old-delivered", "delivered", kept + 1),
+        ("sweep-young-delivered", "delivered", kept - 1),
+        ("sweep-old-dead", "dead", kept + 1),
+        ("sweep-old-pending", "pending", kept + 1),
+    ] {
+        store::providers::outbox::emit(
+            &transaction,
+            kind,
+            support::SUBJECT,
+            &serde_json::json!({}),
+        )
+        .await
+        .expect("an emission");
+        // Aged on the database's clock, the one that stamped the event.
+        transaction
+            .execute(
+                &format!(
+                    "UPDATE event_outbox SET state = '{state}', \
+                     occurred_at = now() - make_interval(days => {days}) WHERE kind = $1"
+                ),
+                &[&kind],
+            )
+            .await
+            .expect("an event aged");
+    }
+    transaction.commit().await.expect("the seed kept");
+
+    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+        .await
+        .expect("the realms were listed");
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let left: Vec<String> = transaction
+        .query("SELECT kind FROM event_outbox ORDER BY kind", &[])
+        .await
+        .expect("a census")
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(
+        left,
+        vec![
+            "sweep-old-dead".to_owned(),
+            "sweep-old-pending".to_owned(),
+            "sweep-young-delivered".to_owned(),
+        ],
+        "the sweep took other than the delivered event past the window"
+    );
+    assert_eq!(swept.delivered_events, 1, "{swept:?}");
+}
+
+/// A brokered login the upstream never answered leaves its state behind: the
+/// sweep takes it once it has run out, and one still waiting stays.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_broker_login_state_that_ran_out_is_taken_away() {
+    let plane = Plane::with_actions(&[]).await;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    // Ends stamped from the host's clock, as opening a brokered login does.
+    let now = chrono::Utc::now();
+    for (state_hash, expires_at) in [
+        ("sweep-ran-out", now - chrono::Duration::minutes(1)),
+        ("sweep-still-waiting", now + chrono::Duration::hours(1)),
+    ] {
+        transaction
+            .execute(
+                "INSERT INTO broker_login_states \
+                     (tenant, realm_id, state_hash, provider_alias, auth_session, \
+                      code_verifier, nonce, expires_at) \
+                 VALUES ($1, $2, $3, 'upstream', 'an-auth-session', 'a-verifier', 'a-nonce', $4)",
+                &[&support::TENANT, &support::REALM, &state_hash, &expires_at],
+            )
+            .await
+            .expect("a login state planted");
+    }
+    transaction.commit().await.expect("the states kept");
+
+    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+        .await
+        .expect("the realms were listed");
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let left: Vec<String> = transaction
+        .query(
+            "SELECT state_hash FROM broker_login_states ORDER BY state_hash",
+            &[],
+        )
+        .await
+        .expect("a census")
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect();
+    assert_eq!(
+        left,
+        vec!["sweep-still-waiting".to_owned()],
+        "the sweep took other than the state that ran out"
+    );
+    assert_eq!(swept.broker_login_states, 1, "{swept:?}");
+}
+
+/// A pass over several realms reports what each of them gave up: a stale text
+/// counter and a spent anchor in two realms are two of each, not none.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_pass_counts_the_text_counters_and_anchors_of_every_realm() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.plant_realm("second").await;
+    let now = chrono::Utc::now();
+    for realm in [support::REALM, "second"] {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, realm))
+            .await;
+        transaction
+            .execute(
+                "INSERT INTO sms_velocity (tenant, realm_id, recipient, hour, sent) \
+                 VALUES ($1, $2, '+22890000000', $3, 1)",
+                &[&support::TENANT, &realm, &(now - chrono::Duration::days(3))],
+            )
+            .await
+            .expect("a stale text counter");
+        transaction
+            .execute(
+                "INSERT INTO ussd_sessions \
+                     (tenant, realm_id, session_id, user_id, anchored, expires_at) \
+                 VALUES ($1, $2, 'sweep-anchor', $3, $4, $5)",
+                &[
+                    &support::TENANT,
+                    &realm,
+                    &support::SUBJECT,
+                    &b"a-digest".as_slice(),
+                    &(now - chrono::Duration::minutes(1)),
+                ],
+            )
+            .await
+            .expect("a spent anchor");
+        transaction.commit().await.expect("the seed kept");
+    }
+
+    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+        .await
+        .expect("the realms were listed");
+    assert_eq!(
+        (swept.sms_counters, swept.ussd_anchors),
+        (2, 2),
+        "a realm's text counters or anchors went uncounted: {swept:?}"
+    );
+}

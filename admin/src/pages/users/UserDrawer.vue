@@ -990,7 +990,7 @@ function instant(epoch: number | null | undefined): string {
         <div class="flex items-center gap-2">
           <span class="font-mono text-[11.5px]">{{ consent.client_id }}</span>
           <span class="ml-auto font-mono text-[10.5px] text-faint">{{
-            instant(consent.granted_at)
+            stamp(consent.granted_at)
           }}</span>
           <button
             type="button"

@@ -72,7 +72,7 @@ export interface SessionBrief {
 export interface ConsentBrief {
   client_id: string;
   scopes: string[];
-  granted_at: number;
+  granted_at: string;
 }
 
 /// One row of `GET .../users/{user}/roles`.

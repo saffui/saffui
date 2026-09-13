@@ -447,7 +447,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         {
           client_id: "web-dashboard",
           scopes: ["openid", "profile", "email"],
-          granted_at: NOW - 86_400 * 12,
+          granted_at: new Date((NOW - 86_400 * 12) * 1000).toISOString(),
         },
       ].filter((consent) => CONSENTS.has(consent.client_id)),
     });

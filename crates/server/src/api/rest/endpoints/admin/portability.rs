@@ -33,8 +33,7 @@ pub async fn export(
         .await
         .map_err(refused)?;
     if !options.include_users {
-        document.users.clear();
-        document.sections.retain(|section| section != "users");
+        portability::remove_people_from_document(&mut document);
     }
     Ok(HttpResponse::Ok().json(document))
 }

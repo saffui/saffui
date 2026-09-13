@@ -461,3 +461,207 @@ async fn the_portability_capabilities_split_where_they_should() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+/// A configuration export carries no people, so it carries nobody's grants or
+/// memberships either, and it lands whole beside its original under another
+/// name.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_configuration_export_lands_beside_its_original() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmExport,
+        AdminAction::RealmImport,
+        AdminAction::GroupWrite,
+        AdminAction::OrgWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    join_a_group_and_an_organization(&plane, &bearer).await;
+
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export?include_users=false"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    let nobody_named = |section: &str, field: &str| {
+        document[section]
+            .as_array()
+            .expect("a section")
+            .iter()
+            .all(|row| row[field].as_array().is_some_and(Vec::is_empty))
+    };
+    assert!(nobody_named("roles", "held_by_users"), "{document}");
+    assert!(nobody_named("groups", "members"), "{document}");
+    assert!(nobody_named("organizations", "members"), "{document}");
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=configured",
+        &bearer,
+        Some(document),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+
+    // What landed holds the group and the organization, and nobody in them.
+    let landed = {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &TenantContext::new(support::TENANT, "configured"),
+            )
+            .await;
+        services::admin::portability::export_realm(&transaction, "configured", chrono::Utc::now())
+            .await
+            .expect("what landed exports")
+    };
+    assert!(
+        landed
+            .groups
+            .iter()
+            .any(|held| held.group.name == "editors" && held.members.is_empty())
+    );
+    assert!(
+        landed
+            .organizations
+            .iter()
+            .any(|held| held.organization.name == "acme-org" && held.members.is_empty())
+    );
+    assert!(
+        landed
+            .roles
+            .iter()
+            .all(|held| held.held_by_users.is_empty())
+    );
+}
+
+/// A document whose grants or memberships name people it does not carry is
+/// refused in words, each kind in turn, and nothing of it lands.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_document_naming_people_it_leaves_behind_is_refused() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmExport,
+        AdminAction::RealmImport,
+        AdminAction::GroupWrite,
+        AdminAction::OrgWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    join_a_group_and_an_organization(&plane, &bearer).await;
+
+    let (status, mut document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    let people: Vec<String> = document["users"]
+        .as_array()
+        .expect("the accounts")
+        .iter()
+        .filter_map(|user| user["user_id"].as_str().map(str::to_owned))
+        .collect();
+    document["users"] = json!([]);
+
+    // Each check names its own kind and a person left behind, and the next is
+    // reached once the one before it has nobody left to name.
+    for (kind, section, field) in [
+        ("role ", "roles", "held_by_users"),
+        ("group ", "groups", "members"),
+        ("organization ", "organizations", "members"),
+    ] {
+        let (status, told) = asked(
+            &plane,
+            Method::POST,
+            "/admin/realms/import?as=orphaned",
+            &bearer,
+            Some(document.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+        let said = told["message"].as_str().unwrap_or_default();
+        assert!(
+            said.starts_with(kind)
+                && said.contains("does not carry")
+                && people.iter().any(|person| said.contains(person.as_str())),
+            "expected a {kind}refusal naming a person left behind: {told}"
+        );
+        for row in document[section].as_array_mut().expect("a section") {
+            row[field] = json!([]);
+        }
+    }
+
+    // Nothing of the refused attempts landed: the name is still free.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=orphaned",
+        &bearer,
+        Some(document),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+}
+
+/// Ada already holds the planted role; she joins a group named editors and an
+/// organization named acme-org, so all three kinds of membership are in play.
+async fn join_a_group_and_an_organization(plane: &Plane, bearer: &str) {
+    let (status, group) = asked(
+        plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/groups"),
+        bearer,
+        Some(json!({ "name": "editors", "description": "", "parent_id": null })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{group}");
+    let group_id = group["group_id"].as_str().expect("an identity").to_owned();
+    let (status, told) = asked(
+        plane,
+        Method::PUT,
+        &format!(
+            "/admin/realms/{REALM}/groups/{group_id}/members/{}",
+            support::SUBJECT
+        ),
+        bearer,
+        None,
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {told}");
+    let (status, organization) = asked(
+        plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/organizations"),
+        bearer,
+        Some(json!({ "name": "acme-org" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{organization}");
+    let org_id = organization["org_id"]
+        .as_str()
+        .expect("an identity")
+        .to_owned();
+    let (status, told) = asked(
+        plane,
+        Method::PUT,
+        &format!(
+            "/admin/realms/{REALM}/organizations/{org_id}/members/{}",
+            support::SUBJECT
+        ),
+        bearer,
+        None,
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {told}");
+}

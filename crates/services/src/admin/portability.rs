@@ -1403,6 +1403,67 @@ fn retarget(doc: &mut ExportedRealm, tenant: &str, realm_id: &str) {
     }
 }
 
+/// A document without people carries nobody's grants or memberships either:
+/// each would name someone the realm it lands in never holds.
+pub fn remove_people_from_document(document: &mut ExportedRealm) {
+    document.users.clear();
+    document.sections.retain(|section| section != "users");
+    for role in &mut document.roles {
+        role.held_by_users.clear();
+    }
+    for group in &mut document.groups {
+        group.members.clear();
+    }
+    for organization in &mut document.organizations {
+        organization.members.clear();
+    }
+}
+
+/// Every person a grant or a membership names has to arrive with the document:
+/// the realm it lands in holds nobody else, and writing the grant anyway fails
+/// on a key with nothing to say about why.
+fn refuse_people_not_carried(doc: &ExportedRealm) -> Result<(), Unportable> {
+    let carried: HashSet<&str> = doc.users.iter().map(|user| user.user_id.as_str()).collect();
+    let left_behind = |user_id: &str| !carried.contains(user_id);
+    for exported in &doc.roles {
+        if let Some(user_id) = exported
+            .held_by_users
+            .iter()
+            .find(|held| left_behind(held.as_str()))
+        {
+            return Err(Unportable::Invalid(format!(
+                "role {} is held by {user_id}, whom the document does not carry",
+                exported.role.name
+            )));
+        }
+    }
+    for exported in &doc.groups {
+        if let Some(user_id) = exported
+            .members
+            .iter()
+            .find(|member| left_behind(member.as_str()))
+        {
+            return Err(Unportable::Invalid(format!(
+                "group {} counts {user_id} as a member, whom the document does not carry",
+                exported.group.name
+            )));
+        }
+    }
+    for exported in &doc.organizations {
+        if let Some(member) = exported
+            .members
+            .iter()
+            .find(|member| left_behind(&member.user_id))
+        {
+            return Err(Unportable::Invalid(format!(
+                "organization {} counts {} as a member, whom the document does not carry",
+                exported.organization.name, member.user_id
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Write the document back as rows, in dependency order, inside the one
 /// transaction the caller opened for the target realm. Nothing commits
 /// here: a realm is wholly present or wholly absent.
@@ -1418,6 +1479,7 @@ pub async fn import_realm(
             doc.format_version
         )));
     }
+    refuse_people_not_carried(&doc)?;
     if realms::load(transaction, realm_id)
         .await
         .map_err(|_| Unportable::Backend)?

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { createRealm, listRealms } from "@/services/realms";
+import { createRealm, importRealm, listRealms } from "@/services/realms";
+import { exportRealm } from "@/services/settings";
 import { keepAnswer, REALM } from "./answers";
 
 describe("realms", () => {
@@ -10,5 +11,10 @@ describe("realms", () => {
       userName: "contract-admin",
       email: "contract-admin@example.test",
     });
+  });
+
+  test("imports the realm's configuration beside it under another name", async () => {
+    const configuration = await exportRealm(REALM, false);
+    await keepAnswer(importRealm, configuration, { as: "contract-imported" });
   });
 });

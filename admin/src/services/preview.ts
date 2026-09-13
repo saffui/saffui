@@ -942,6 +942,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       { policy_id: "p-hours", name: "office hours", description: "Mon to Fri, 08:00 to 19:00", policy_type: "time", policies: [], resources: [], scopes: [], decision: "unanimous", logic: "positive", policy_owner: "web-dashboard" },
       { policy_id: "p-org", name: "acting for acme", description: "", policy_type: "organization", policies: [], resources: [], scopes: [] },
       { policy_id: "p-gate", name: "edit archive", description: "All of the above, against the archive", policy_type: "aggregated", policies: ["p-editors", "p-hours", "p-org"], resources: ["res-1"], scopes: ["sc-1"] },
+      { policy_id: "p-risk", unreadable: true },
     ]);
   }
   if (/\/authz\/servers\/[^/]+\/resources$/.test(path)) {

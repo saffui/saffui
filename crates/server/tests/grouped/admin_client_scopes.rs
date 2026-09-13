@@ -59,7 +59,7 @@ async fn a_scope_lives_and_dies_over_the_plane() {
     let base = format!("/admin/realms/{REALM}/client-scopes");
     let client = support::CONFIDENTIAL;
 
-    // The provisioned world already owns this name: the pre-check answers for
+    // The provisioned world already owns this name, and the write answers for
     // rows the plane did not write.
     let (status, told) = asked(
         &plane,
@@ -497,5 +497,62 @@ async fn a_new_client_carries_the_catalogue_defaults() {
             .iter()
             .all(|scope| scope["name"] != "employment"),
         "an unmade default still reached the next client: {held}"
+    );
+}
+
+/// A new client takes the standard scope that holds its name, even one an
+/// operator made again under a drawn identifier.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_new_client_takes_the_standard_scope_holding_its_name() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/client-scopes");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/profile"),
+        &bearer,
+        Some(json!({ "name": "profile-before" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(json!({ "name": "profile" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/clients"),
+        &bearer,
+        Some(json!({ "client_id": "newcomer", "redirect_uris": ["https://newcomer.example/cb"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let (status, held) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/clients/newcomer/scopes"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    let names: Vec<&str> = held
+        .as_array()
+        .expect("attachments")
+        .iter()
+        .filter_map(|scope| scope["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"profile") && !names.contains(&"profile-before"),
+        "{held}"
     );
 }

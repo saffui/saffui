@@ -176,7 +176,7 @@ pub async fn claim_domain(
             &[&org_id, &domain, &challenge],
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 

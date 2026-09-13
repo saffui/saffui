@@ -2,6 +2,7 @@ use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::client::{ClientScopeModel, ClientScopeMutationModel};
+use store::error::StoreError;
 use store::providers::{client_scopes, clients};
 
 /// Why a scope could not be written. The store underneath flattens every
@@ -76,14 +77,6 @@ pub async fn create_scope(
     asked: ClientScopeMutationModel,
 ) -> Result<ClientScopeModel, Unwritable> {
     check_name(&asked.name)?;
-    if client_scopes::load_scope_by_name(transaction, asked.protocol, &asked.name)
-        .await
-        .map_err(|_| Unwritable::Backend)?
-        .is_some()
-    {
-        return Err(Unwritable::AlreadyExists);
-    }
-
     let scope = asked.into_model(
         draw(provider)?,
         realm_id.to_owned(),
@@ -91,7 +84,10 @@ pub async fn create_scope(
     );
     client_scopes::create_scope(transaction, &scope)
         .await
-        .map_err(|_| Unwritable::Backend)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Unwritable::AlreadyExists,
+            _ => Unwritable::Backend,
+        })?;
     Ok(scope)
 }
 
@@ -104,17 +100,6 @@ pub async fn update_scope(
     check_name(&asked.name)?;
     let standing = get_scope(transaction, client_scope_id).await?;
 
-    // The name is only contested when it moves: a rewrite keeping its own
-    // name would otherwise be refused for colliding with itself.
-    if (asked.protocol, asked.name.as_str()) != (standing.protocol, standing.name.as_str())
-        && client_scopes::load_scope_by_name(transaction, asked.protocol, &asked.name)
-            .await
-            .map_err(|_| Unwritable::Backend)?
-            .is_some()
-    {
-        return Err(Unwritable::AlreadyExists);
-    }
-
     let mut scope = asked.into_model(
         client_scope_id.to_owned(),
         standing.realm_id.clone(),
@@ -123,7 +108,10 @@ pub async fn update_scope(
     scope.metadata.updated_by = Some(by.to_owned());
     if !client_scopes::update_scope(transaction, &scope)
         .await
-        .map_err(|_| Unwritable::Backend)?
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Unwritable::AlreadyExists,
+            _ => Unwritable::Backend,
+        })?
     {
         return Err(Unwritable::NotFound);
     }

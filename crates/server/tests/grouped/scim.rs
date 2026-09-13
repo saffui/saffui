@@ -381,3 +381,61 @@ async fn the_scim_door_needs_its_own_capability() {
     .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
+
+/// A group name or identity already held is refused as not unique, on a
+/// creation and on a rename by either verb, rather than failing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_group_name_or_identity_already_held_is_refused_as_not_unique() {
+    let plane = Plane::with_actions(&[AdminAction::ScimRead, AdminAction::ScimWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/realms/{REALM}/scim/v2");
+    let group = |name: &str| {
+        Some(json!({ "schemas": [services::scim::GROUP_SCHEMA], "displayName": name }))
+    };
+    let renamed = |name: &str| {
+        Some(json!({
+            "schemas": [services::scim::PATCH_SCHEMA],
+            "Operations": [ { "op": "replace", "path": "displayName", "value": name } ],
+        }))
+    };
+    let not_unique = |status: StatusCode, told: &serde_json::Value| {
+        assert_eq!(status, StatusCode::CONFLICT, "{told}");
+        assert_eq!(told["scimType"], "uniqueness", "{told}");
+    };
+
+    let mut ids = Vec::new();
+    for name in ["alpha", "beta"] {
+        let (status, made) = asked(
+            &plane,
+            Method::POST,
+            &format!("{base}/Groups"),
+            &bearer,
+            group(name),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        ids.push(made["id"].as_str().expect("a group id").to_owned());
+    }
+
+    let beta = format!("{base}/Groups/{}", ids[1]);
+    let (status, told) = asked(&plane, Method::PATCH, &beta, &bearer, renamed("alpha")).await;
+    not_unique(status, &told);
+    let (status, told) = asked(&plane, Method::PUT, &beta, &bearer, group("alpha")).await;
+    not_unique(status, &told);
+
+    // Renamed, a group keeps the identity its first name gave it, which a new
+    // group under that name would take.
+    let alpha = format!("{base}/Groups/{}", ids[0]);
+    let (status, told) = asked(&plane, Method::PATCH, &alpha, &bearer, renamed("gamma")).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/Groups"),
+        &bearer,
+        group("alpha"),
+    )
+    .await;
+    not_unique(status, &told);
+}

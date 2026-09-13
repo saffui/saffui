@@ -759,3 +759,81 @@ async fn an_action_the_realm_turned_off_is_asked_of_nobody() {
         "an action the realm never registered was refused: {told}"
     );
 }
+
+/// A step placed or reordered at a position another step holds is a conflict
+/// that names the position, not an internal error.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_taken_step_position_is_a_conflict() {
+    let plane = Plane::with_actions(&[AdminAction::AuthFlowRead, AdminAction::AuthFlowWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/auth/flows");
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(json!({ "alias": "positions", "provider_id": "basic-flow", "description": "" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let flow_id = made["flow_id"].as_str().expect("an identity").to_owned();
+    let step = |alias: &str, authenticator: &str, priority: i32| {
+        json!({
+            "alias": alias, "flow_id": "ignored", "priority": priority,
+            "requirement": "required",
+            "step": { "kind": "authenticator", "authenticator": authenticator, "config_id": null },
+        })
+    };
+
+    let mut steps = Vec::new();
+    for (alias, authenticator, priority) in [("first", "password", 10), ("second", "totp", 20)] {
+        let (status, made) = asked(
+            &plane,
+            Method::POST,
+            &format!("{base}/{flow_id}/executions"),
+            &bearer,
+            Some(step(alias, authenticator, priority)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        steps.push(
+            made["execution_id"]
+                .as_str()
+                .expect("an identity")
+                .to_owned(),
+        );
+    }
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/{flow_id}/executions"),
+        &bearer,
+        Some(step("third", "webauthn", 10)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(
+        told["error_code"], "auth.execution.already_exists",
+        "{told}"
+    );
+    assert_eq!(
+        told["message"], "a step already stands at position 10 of this flow",
+        "{told}"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{flow_id}/order"),
+        &bearer,
+        Some(json!({ "order": [ { "execution_id": steps[1], "priority": 10 } ] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(
+        told["message"], "two steps of this flow cannot share a position",
+        "{told}"
+    );
+}

@@ -227,7 +227,7 @@ pub async fn update(transaction: &Transaction<'_>, user: &UserModel) -> StoreRes
     let changed = transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(changed > 0)
 }
 

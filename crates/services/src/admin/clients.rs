@@ -8,11 +8,12 @@ use models::auditable::AuditableModel;
 use models::entities::client::{ClientCreateModel, ClientModel, JweRegistration, Protocol};
 use models::paging::Page;
 use secrecy::{ExposeSecret, SecretBox};
+use store::error::StoreError;
 use store::providers::{client_scopes, clients};
 use store::query::list_query::ListQuery;
 use url::Url;
 
-use crate::provisioning::{STANDARD_SCOPES, provision_standard_scopes};
+use crate::provisioning::provision_standard_scopes;
 
 /// What a client is registered as.
 #[derive(Debug, Clone, Default)]
@@ -240,14 +241,6 @@ pub async fn register(
 ) -> Result<(ClientModel, Option<String>), Unregistrable> {
     check_id(client_id)?;
     check(spec)?;
-    if clients::load(transaction, client_id)
-        .await
-        .map_err(|_| Unregistrable::Unwritable)?
-        .is_some()
-    {
-        return Err(Unregistrable::AlreadyExists);
-    }
-
     let metadata = AuditableModel::from_creator(tenant.to_owned(), by.to_owned());
     let mut client = ClientCreateModel {
         name: spec.name.clone().unwrap_or_else(|| client_id.to_owned()),
@@ -266,16 +259,20 @@ pub async fn register(
     apply(&mut client, spec);
     clients::create(transaction, &client)
         .await
-        .map_err(|_| Unregistrable::Unwritable)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Unregistrable::AlreadyExists,
+            _ => Unregistrable::Unwritable,
+        })?;
     clients::update(transaction, &client)
         .await
         .map_err(|_| Unregistrable::Unwritable)?;
 
-    // Every standard scope, optional: granted when asked for.
-    provision_standard_scopes(transaction, tenant, realm_id)
+    // Every standard scope, optional: granted when asked for, under the
+    // identifier its name is held by.
+    let standard = provision_standard_scopes(transaction, tenant, realm_id)
         .await
         .map_err(|_| Unregistrable::Unwritable)?;
-    for (scope, _, _) in STANDARD_SCOPES {
+    for scope in &standard {
         client_scopes::attach_scope(transaction, client_id, scope, true)
             .await
             .map_err(|_| Unregistrable::Unwritable)?;

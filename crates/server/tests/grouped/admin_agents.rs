@@ -424,3 +424,52 @@ async fn a_revoked_agents_tokens_die_everywhere_at_once() {
         assert_eq!(told, 1, "the cut was not told exactly once");
     }
 }
+
+/// An agent whose account name somebody already holds is refused, the account
+/// named, and nothing of the agent is left behind.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_agent_whose_account_name_is_held_is_refused() {
+    use models::entities::authz::AdminAction;
+    let plane = Plane::with_actions(&[
+        AdminAction::ClientRead,
+        AdminAction::ClientWrite,
+        AdminAction::UserWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let (status, person) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/users"),
+        &bearer,
+        Some(json!({ "user_name": "service-account-scribe-2" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{person}");
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/agents"),
+        &bearer,
+        Some(json!({ "client_id": "scribe-2", "capabilities": ["a.b"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(told["error_code"], "user.already_exists", "{told}");
+    assert_eq!(
+        told["message"], "the account service-account-scribe-2 already exists",
+        "{told}"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/clients/scribe-2"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+}

@@ -7,6 +7,7 @@ use models::entities::authz::GroupModel;
 use models::entities::user::UserModel;
 use serde_json::Value;
 use services::scim::{self, GroupPatch, Refusal, list_response, shown_group};
+use store::error::StoreError;
 use store::providers::{roles, users};
 use store::query::list_query::ListQuery;
 use store::tenancy::Tenancy;
@@ -140,14 +141,6 @@ pub async fn create(
     let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
         return unavailable();
     };
-    match roles::load_group_by_name(&transaction, name).await {
-        Ok(Some(_)) => {
-            return refused(&Refusal::uniqueness(format!("{name} is already a group")));
-        }
-        Ok(None) => {}
-        Err(_) => return unavailable(),
-    }
-
     let mut metadata = models::auditable::AuditableModel::from_creator(
         context.tenant.clone(),
         admin.context.principal.id().to_owned(),
@@ -163,8 +156,14 @@ pub async fn create(
         parent_id: None,
         metadata,
     };
-    if roles::create_group(&transaction, &group).await.is_err() {
-        return unavailable();
+    match roles::create_group(&transaction, &group).await {
+        Ok(()) => {}
+        Err(StoreError::AlreadyExists) => {
+            return refused(&Refusal::uniqueness(format!(
+                "a group already answers to {name}"
+            )));
+        }
+        Err(_) => return unavailable(),
     }
     for member in body["members"].as_array().unwrap_or(&Vec::new()) {
         let Some(user_id) = member["value"].as_str().filter(|it| !it.is_empty()) else {
@@ -305,8 +304,15 @@ pub async fn patch(
                 }
             }
         };
-        if landed.is_err() {
-            return unavailable();
+        match landed {
+            Ok(()) => {}
+            Err(StoreError::AlreadyExists) => {
+                return refused(&Refusal::uniqueness(format!(
+                    "a group already answers to {}",
+                    group.name
+                )));
+            }
+            Err(_) => return unavailable(),
         }
     }
     if let Err(answer) = weigh_seated(&transaction, &group_id, &standing_before, seated).await {
@@ -354,8 +360,14 @@ pub async fn replace(
     if let Some(name) = body["displayName"].as_str().filter(|it| !it.is_empty()) {
         group.name = name.to_owned();
         group.display_name = name.to_owned();
-        if roles::update_group(&transaction, &group).await.is_err() {
-            return unavailable();
+        match roles::update_group(&transaction, &group).await {
+            Ok(_) => {}
+            Err(StoreError::AlreadyExists) => {
+                return refused(&Refusal::uniqueness(format!(
+                    "a group already answers to {name}"
+                )));
+            }
+            Err(_) => return unavailable(),
         }
     }
     if let Some(members) = body.get("members") {

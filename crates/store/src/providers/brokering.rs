@@ -9,7 +9,7 @@ use models::entities::brokering::{
 use secrecy::ExposeSecret;
 use tokio_postgres::Row;
 
-use crate::error::{StoreError, StoreResult};
+use crate::error::{StoreError, StoreResult, refuse_broken_rule};
 use crate::keyring::RealmKeyring;
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
@@ -45,7 +45,7 @@ pub async fn create_provider(
             &set.params(),
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 

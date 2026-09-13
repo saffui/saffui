@@ -10,6 +10,7 @@ use models::entities::auth::{
     RequiredActionMutationModel,
 };
 use models::entities::user::RequiredAction;
+use store::error::StoreError;
 use store::providers::{auth_flows, users};
 
 /// The alias every realm's browser login rests on when no client says
@@ -26,6 +27,9 @@ pub enum Unwritable {
     AlreadyExists,
     #[error("this action is already registered")]
     ActionExists,
+    /// A step already stands where another would go.
+    #[error("{0}")]
+    PositionTaken(String),
     #[error("no such flow")]
     NotFound,
     #[error("no such execution")]
@@ -86,13 +90,6 @@ pub async fn create_flow(
     if asked.alias.trim().is_empty() {
         return Err(Unwritable::Invalid("a flow answers to an alias".to_owned()));
     }
-    if auth_flows::flow_by_alias(transaction, &asked.alias)
-        .await
-        .map_err(|_| Unwritable::Backend)?
-        .is_some()
-    {
-        return Err(Unwritable::AlreadyExists);
-    }
     // Built-in is the provisioner's word for what a deployment stands on; a
     // caller does not get to borrow it.
     asked.built_in = Some(false);
@@ -103,7 +100,10 @@ pub async fn create_flow(
     );
     auth_flows::create_flow(transaction, &flow)
         .await
-        .map_err(|_| Unwritable::Backend)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Unwritable::AlreadyExists,
+            _ => Unwritable::Backend,
+        })?;
     Ok(flow)
 }
 
@@ -187,7 +187,13 @@ pub async fn add_execution(
     );
     auth_flows::create_execution(transaction, &step)
         .await
-        .map_err(|_| Unwritable::Backend)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Unwritable::PositionTaken(format!(
+                "a step already stands at position {} of this flow",
+                step.priority
+            )),
+            _ => Unwritable::Backend,
+        })?;
     Ok(step)
 }
 
@@ -254,7 +260,12 @@ pub async fn reorder(
         .collect();
     auth_flows::reorder(transaction, &borrowed)
         .await
-        .map_err(|_| Unwritable::Backend)
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Unwritable::PositionTaken(
+                "two steps of this flow cannot share a position".to_owned(),
+            ),
+            _ => Unwritable::Backend,
+        })
 }
 
 pub async fn actions(
@@ -273,13 +284,6 @@ pub async fn register_action(
     by: &str,
     asked: RequiredActionMutationModel,
 ) -> Result<RequiredActionModel, Unwritable> {
-    if auth_flows::load_action(transaction, asked.action)
-        .await
-        .map_err(|_| Unwritable::Backend)?
-        .is_some()
-    {
-        return Err(Unwritable::ActionExists);
-    }
     let action = asked.into_model(
         draw(provider)?,
         realm_id.to_owned(),
@@ -287,7 +291,10 @@ pub async fn register_action(
     );
     auth_flows::register_action(transaction, &action)
         .await
-        .map_err(|_| Unwritable::Backend)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Unwritable::ActionExists,
+            _ => Unwritable::Backend,
+        })?;
     Ok(action)
 }
 

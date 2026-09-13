@@ -57,12 +57,15 @@ pub fn validate(terms: &PolicyTerms) -> StoreResult<()> {
         });
     }
 
+    named_once("condition", &terms.policies)?;
+    named_once("resource", &terms.resources)?;
+    named_once("scope", &terms.scopes)?;
     match &terms.rule {
-        PolicyRule::Role { roles } => at_least_one("role", roles),
-        PolicyRule::Group { groups, .. } => at_least_one("group", groups),
-        PolicyRule::User { users } => at_least_one("user", users),
-        PolicyRule::Client { clients } => at_least_one("client", clients),
-        PolicyRule::ClientScope { client_scopes } => at_least_one("client scope", client_scopes),
+        PolicyRule::Role { roles } => named_members("role", roles),
+        PolicyRule::Group { groups, .. } => named_members("group", groups),
+        PolicyRule::User { users } => named_members("user", users),
+        PolicyRule::Client { clients } => named_members("client", clients),
+        PolicyRule::ClientScope { client_scopes } => named_members("client scope", client_scopes),
         // A comparison carries its own terms and is legible to the schema as
         // the document it is stored as.
         PolicyRule::Attribute { .. } => Ok(()),
@@ -437,6 +440,24 @@ fn at_least_one(kind: &'static str, members: &[String]) -> StoreResult<()> {
         return Err(StoreError::EmptyPolicy { kind });
     }
     Ok(())
+}
+
+/// Each member named once: a binding holds a member once, and a repeat would
+/// otherwise reach the store as a broken key rather than as the caller's slip.
+fn named_once(kind: &'static str, members: &[String]) -> StoreResult<()> {
+    let mut seen = std::collections::HashSet::new();
+    match members.iter().find(|member| !seen.insert(member.as_str())) {
+        Some(named) => Err(StoreError::RepeatedMember {
+            kind,
+            named: named.clone(),
+        }),
+        None => Ok(()),
+    }
+}
+
+fn named_members(kind: &'static str, members: &[String]) -> StoreResult<()> {
+    at_least_one(kind, members)?;
+    named_once(kind, members)
 }
 
 /// A permission has something to decide with, and something to decide about.

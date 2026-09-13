@@ -11,6 +11,7 @@ use models::auditable::AuditableModel;
 use models::entities::attributes::AttributeValue;
 use models::entities::client::{ClientCreateModel, ClientModel, Protocol};
 use models::entities::user::UserCreateModel;
+use store::error::StoreError;
 use store::providers::{clients, users};
 
 use crate::capability;
@@ -27,6 +28,9 @@ const LONGEST_SESSION: i32 = 86_400;
 pub enum Refused {
     #[error("a client with this identifier already exists")]
     AlreadyExists,
+    /// The name of the account the agent would act as is already held.
+    #[error("the account {0} already exists")]
+    AccountTaken(String),
     #[error("no agent answers to this identifier")]
     NotFound,
     #[error("{0}")]
@@ -147,14 +151,6 @@ pub async fn register(
     if client_id.trim().is_empty() || client_id.len() > 200 {
         return Err(invalid("an agent's identifier is 1 to 200 characters"));
     }
-    if clients::load(transaction, client_id)
-        .await
-        .map_err(|_| Refused::Unwritable)?
-        .is_some()
-    {
-        return Err(Refused::AlreadyExists);
-    }
-
     let metadata = AuditableModel::from_creator(tenant.to_owned(), by.to_owned());
     let mut client = ClientCreateModel {
         name: client_id.to_owned(),
@@ -189,7 +185,10 @@ pub async fn register(
     }
     clients::create(transaction, &client)
         .await
-        .map_err(|_| Refused::Unwritable)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Refused::AlreadyExists,
+            _ => Refused::Unwritable,
+        })?;
     clients::update(transaction, &client)
         .await
         .map_err(|_| Refused::Unwritable)?;
@@ -220,9 +219,14 @@ pub async fn register(
     }
     .into_model(identity, realm_id.to_owned(), metadata);
     account.email_verified = Some(false);
+    // An account left under this name is refused, never adopted: whoever made
+    // it, a sign-up included, would inherit what the agent may do.
     users::create(transaction, &account)
         .await
-        .map_err(|_| Refused::Unwritable)?;
+        .map_err(|why| match why {
+            StoreError::AlreadyExists => Refused::AccountTaken(account.user_name.clone()),
+            _ => Refused::Unwritable,
+        })?;
 
     store::providers::outbox::emit(
         transaction,

@@ -1298,3 +1298,57 @@ async fn a_closed_resource_grants_nothing_through_its_shares() {
         "a share taken back while closed came back with reopening"
     );
 }
+
+/// A policy naming one member twice is refused in words, not by the key of
+/// the table that binds it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_policy_naming_a_member_twice_is_refused_in_words() {
+    let plane = Plane::with_actions(&[
+        AdminAction::UmaRead,
+        AdminAction::UmaWrite,
+        AdminAction::RoleRead,
+        AdminAction::RoleWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!(
+        "/admin/realms/{REALM}/authz/servers/{}",
+        support::CONFIDENTIAL
+    );
+    let (status, editor) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(json!({ "name": "editor" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{editor}");
+    let editor = editor["role_id"].as_str().expect("an identity").to_owned();
+    let (status, made) = asked(&plane, Method::POST, &base, &bearer, Some(protection())).await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/policies"),
+        &bearer,
+        Some(json!({
+            "name": "editors-twice",
+            "description": "",
+            "decision": "unanimous",
+            "logic": "positive",
+            "policy_owner": "app",
+            "policies": [], "resources": [], "scopes": [],
+            "policy_type": "role", "roles": [editor, editor],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert_eq!(
+        told["message"],
+        format!("role {editor} is named twice"),
+        "{told}"
+    );
+}

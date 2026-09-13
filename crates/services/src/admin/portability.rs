@@ -1427,6 +1427,7 @@ fn describe_store_refusal(why: StoreError, item: &str) -> Unportable {
         )),
         refused @ (StoreError::EmptyPolicy { .. }
         | StoreError::UnboundMember { .. }
+        | StoreError::RepeatedMember { .. }
         | StoreError::UnconditionalPermission
         | StoreError::UnappliedPermission
         | StoreError::UnreadBinding { .. }

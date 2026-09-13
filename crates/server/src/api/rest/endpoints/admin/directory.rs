@@ -555,11 +555,13 @@ pub async fn claim_organization_domain(
         .into_inner()
         .domain
         .map(|held| held.trim().to_ascii_lowercase())
-        .filter(|held| !held.is_empty() && held.contains('.') && !held.contains('@'));
+        .filter(|held| {
+            !held.is_empty() && held.contains('.') && !held.contains('@') && held.is_ascii()
+        });
     let Some(domain) = domain else {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,
-            "domain is required, as a bare host name".to_owned(),
+            "domain is required, as a bare host name in its ASCII form".to_owned(),
         ));
     };
     let mut drawn = [0_u8; 16];

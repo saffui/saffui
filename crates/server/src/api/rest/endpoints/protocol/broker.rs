@@ -6,7 +6,7 @@ use data_encoding::BASE64;
 use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::Value;
-use services::brokering::{self, Upstream};
+use services::brokering::{self, Identity, TokenAuth, Upstream};
 use store::tenancy::{Tenancy, resolve};
 use ureq::unversioned::resolver::DefaultResolver;
 
@@ -150,37 +150,82 @@ pub async fn conclude(
         ("grant_type".to_owned(), "authorization_code".to_owned()),
         ("code".to_owned(), code),
         ("redirect_uri".to_owned(), landing),
-        ("code_verifier".to_owned(), spent.code_verifier.clone()),
     ];
-    if secret.is_none() {
-        form.push(("client_id".to_owned(), upstream.client_id.clone()));
+    if upstream.pkce {
+        form.push(("code_verifier".to_owned(), spent.code_verifier.clone()));
     }
-    let basic = secret.map(|held| (upstream.client_id.clone(), held));
+    let basic = match (upstream.token_auth, secret) {
+        (TokenAuth::Basic, Some(held)) => Some((upstream.client_id.clone(), held)),
+        (TokenAuth::Post, Some(held)) => {
+            form.push(("client_id".to_owned(), upstream.client_id.clone()));
+            form.push(("client_secret".to_owned(), held));
+            None
+        }
+        (_, None) => {
+            form.push(("client_id".to_owned(), upstream.client_id.clone()));
+            None
+        }
+    };
     let Some(answered) = post_form(upstream.token_endpoint.clone(), **egress, form, basic).await
     else {
         tracing::warn!(alias, "the upstream refused the code exchange");
         return refused();
     };
-    let Ok(answered) = serde_json::from_str::<Value>(&answered) else {
-        return refused();
-    };
-    let Some(id_token) = answered.get("id_token").and_then(Value::as_str) else {
-        tracing::warn!(alias, "the upstream answered without an identity token");
+    let Some(answered) = brokering::read_token_answer(&answered) else {
         return refused();
     };
 
-    // 3. Verify the token against the upstream's published keys, bounded by
-    //    configuration, and 4. against this departure's own nonce.
-    let Some(keys) = fetch(upstream.jwks_uri.clone(), **egress).await else {
-        tracing::warn!(alias, "the upstream's keys could not be read");
-        return refused();
-    };
-    let Ok(keys) = serde_json::from_str::<Value>(&keys) else {
-        return refused();
-    };
-    let Ok(arrival) = brokering::arrived(&upstream, &keys, id_token, &spent, now) else {
-        tracing::warn!(alias, "the upstream's identity token did not verify");
-        return refused();
+    // 3. Who arrived: an identity token verified against the upstream's keys,
+    //    bounded by configuration, and 4. against this departure's own nonce;
+    //    or, for plain OAuth 2.0, the account API asked with the access token.
+    let (arrival, id_token) = match &upstream.identity {
+        Identity::Signed(signed) => {
+            let Some(id_token) = answered.get("id_token").and_then(Value::as_str) else {
+                tracing::warn!(alias, "the upstream answered without an identity token");
+                return refused();
+            };
+            let Some(keys) = fetch(signed.jwks_uri.clone(), **egress).await else {
+                tracing::warn!(alias, "the upstream's keys could not be read");
+                return refused();
+            };
+            let Ok(keys) = serde_json::from_str::<Value>(&keys) else {
+                return refused();
+            };
+            let Ok(arrival) = brokering::arrived(&upstream, &keys, id_token, &spent, now) else {
+                tracing::warn!(alias, "the upstream's identity token did not verify");
+                return refused();
+            };
+            (arrival, Some(id_token.to_owned()))
+        }
+        Identity::Asked(api) => {
+            let Some(access_token) = answered.get("access_token").and_then(Value::as_str) else {
+                tracing::warn!(alias, "the upstream answered without an access token");
+                return refused();
+            };
+            let Some(account) =
+                asked_json(api.userinfo_endpoint.clone(), **egress, access_token).await
+            else {
+                tracing::warn!(alias, "the upstream's account could not be read");
+                return refused();
+            };
+            let listed = match &api.emails {
+                Some(list) => {
+                    let Some(listed) =
+                        asked_json(list.endpoint.clone(), **egress, access_token).await
+                    else {
+                        tracing::warn!(alias, "the upstream's addresses could not be read");
+                        return refused();
+                    };
+                    Some(listed)
+                }
+                None => None,
+            };
+            let Ok(arrival) = brokering::answered_by_account(api, &account, listed.as_ref()) else {
+                tracing::warn!(alias, "the upstream's account named nobody");
+                return refused();
+            };
+            (arrival, None)
+        }
     };
 
     // Who that is here, decided by policy; then the login they left open is
@@ -217,10 +262,11 @@ pub async fn conclude(
     }
     // The upstream's own signed assertion, kept as this person's aggregated
     // claim source: what it says travels as its word, never restated as
-    // this realm's.
-    if brokering::keep_assertions(&transaction, &provider, &user_id, id_token, &arrival)
-        .await
-        .is_err()
+    // this realm's. A plain OAuth 2.0 answer signs nothing to keep.
+    if let Some(id_token) = &id_token
+        && brokering::keep_assertions(&transaction, &provider, &user_id, id_token, &arrival)
+            .await
+            .is_err()
     {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     }
@@ -360,31 +406,18 @@ async fn post_form(
     form: Vec<(String, String)>,
     basic: Option<(String, String)>,
 ) -> Option<String> {
-    let secure =
-        uri.starts_with("https://") || (egress == Egress::Anywhere && uri.starts_with("http://"));
-    if !secure {
+    if !dialable(&uri, egress) {
         return None;
     }
     tokio::task::spawn_blocking(move || {
-        let agent = ureq::Agent::with_parts(
-            ureq::Agent::config_builder()
-                .timeout_global(Some(PATIENCE))
-                .max_redirects(0)
-                .tls_config(
-                    ureq::tls::TlsConfig::builder()
-                        .provider(ureq::tls::TlsProvider::NativeTls)
-                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                        .build(),
-                )
-                .build(),
-            ureq::unversioned::transport::DefaultConnector::new(),
-            Outward(DefaultResolver::default(), egress),
-        );
+        let agent = outward_agent(egress);
         let pairs: Vec<(&str, &str)> = form
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
             .collect();
-        let mut request = agent.post(&uri);
+        // JSON, which a provider that defaults to the form encoding answers
+        // with when asked.
+        let mut request = agent.post(&uri).header("accept", "application/json");
         if let Some((user, secret)) = &basic {
             let encoded = BASE64.encode(format!("{user}:{secret}").as_bytes());
             request = request.header("authorization", &format!("Basic {encoded}"));
@@ -403,6 +436,64 @@ async fn post_form(
     .await
     .ok()
     .flatten()
+}
+
+/// Ask a plain OAuth 2.0 provider's API with the access token, under the same
+/// guardrails as the token exchange, and read its JSON answer.
+async fn asked_json(uri: String, egress: Egress, access_token: &str) -> Option<Value> {
+    if !dialable(&uri, egress) {
+        return None;
+    }
+    let bearer = format!("Bearer {access_token}");
+    let answered = tokio::task::spawn_blocking(move || {
+        let agent = outward_agent(egress);
+        let mut response = agent
+            .get(&uri)
+            .header("authorization", &bearer)
+            .header("accept", "application/json")
+            // Some providers refuse a call that names no client software.
+            .header("user-agent", "saffui")
+            .call()
+            .ok()?;
+        if response.status() != 200 {
+            return None;
+        }
+        response
+            .body_mut()
+            .with_config()
+            .limit(64 * 1024)
+            .read_to_string()
+            .ok()
+    })
+    .await
+    .ok()
+    .flatten()?;
+    serde_json::from_str(&answered).ok()
+}
+
+/// Whether an upstream address may be dialled: https, or clear http only where
+/// the deployment lets the egress reach anywhere, as a bench does.
+fn dialable(uri: &str, egress: Egress) -> bool {
+    uri.starts_with("https://") || (egress == Egress::Anywhere && uri.starts_with("http://"))
+}
+
+/// An agent for dialling an upstream: bounded in time, following no redirect,
+/// and resolving no address inside the deployment.
+fn outward_agent(egress: Egress) -> ureq::Agent {
+    ureq::Agent::with_parts(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(PATIENCE))
+            .max_redirects(0)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .provider(ureq::tls::TlsProvider::NativeTls)
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build(),
+        ureq::unversioned::transport::DefaultConnector::new(),
+        Outward(DefaultResolver::default(), egress),
+    )
 }
 
 /// What the upstream posts when somebody it vouched for logs out there.
@@ -459,7 +550,12 @@ pub async fn dismiss(
     let Ok(upstream) = Upstream::parse(&provider) else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
-    let Some(keys) = fetch(upstream.jwks_uri.clone(), **egress).await else {
+    // Only an OpenID Connect provider mints logout tokens this realm can read.
+    let Identity::Signed(signed) = &upstream.identity else {
+        tracing::warn!(alias, "an upstream logout named a plain OAuth 2.0 provider");
+        return refused();
+    };
+    let Some(keys) = fetch(signed.jwks_uri.clone(), **egress).await else {
         tracing::warn!(alias, "the upstream's keys could not be read");
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };

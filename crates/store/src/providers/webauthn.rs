@@ -20,12 +20,12 @@ pub struct EnrolledCredential {
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Enrol one.
+/// Enrol one, and say so.
 pub async fn enrol(
     transaction: &Transaction<'_>,
     credential: &EnrolledCredential,
 ) -> StoreResult<()> {
-    transaction
+    let written = transaction
         .execute(
             "INSERT INTO webauthn_credentials \
                  (tenant, realm_id, credential_id, user_id, label, passkey, sign_count) \
@@ -41,6 +41,9 @@ pub async fn enrol(
         )
         .await
         .map_err(|_| StoreError::Backend)?;
+    if written > 0 {
+        announce_key_change(transaction, &credential.user_id).await?;
+    }
     Ok(())
 }
 
@@ -111,6 +114,7 @@ pub async fn record_use(
 ///
 /// The user is part of the question, not a nicety: a caller naming a user and
 /// an identifier must not reach past that user, however it learned the name.
+/// Only a key that was there is announced as gone.
 pub async fn revoke(
     transaction: &Transaction<'_>,
     user_id: &str,
@@ -123,7 +127,24 @@ pub async fn revoke(
         )
         .await
         .map_err(|_| StoreError::Backend)?;
-    Ok(removed > 0)
+    if removed == 0 {
+        return Ok(false);
+    }
+    announce_key_change(transaction, user_id).await?;
+    Ok(true)
+}
+
+/// Announce that this person's keys changed, in the transaction that changed
+/// them. The other credentials' store announces theirs; a key's type is
+/// `webauthn`, the word the flows and the admin listing already use.
+async fn announce_key_change(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<()> {
+    super::outbox::emit(
+        transaction,
+        super::outbox::CREDENTIAL_CHANGED,
+        user_id,
+        &serde_json::json!({ "credential_type": "webauthn" }),
+    )
+    .await
 }
 
 fn read(row: Row) -> EnrolledCredential {

@@ -45,6 +45,8 @@ pub struct Asked {
     pub organization: Option<String>,
     /// OIDC Core §3.1.2.1, space-separated tongues, most wanted first.
     pub ui_locales: Option<String>,
+    /// A factor the application asks the person to add, by required action.
+    pub enrol: Option<String>,
 }
 
 /// Begin a login, asked in the query.
@@ -237,6 +239,7 @@ async fn start(
             claims: asked.claims.as_deref(),
             organization: asked.organization.as_deref(),
             ui_locales: asked.ui_locales.as_deref(),
+            enrol: asked.enrol.as_deref(),
         },
         binding::read(&request, binding::SSO_SESSION).as_deref(),
         signing.as_ref(),

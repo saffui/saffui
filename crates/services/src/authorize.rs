@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
@@ -5,6 +7,7 @@ use models::entities::acr::{self, AchievedAuth, AcrRequirement, AuthContextReque
 use models::entities::attributes::AttributeValue;
 use models::entities::client::ClientModel;
 use models::entities::realm::RealmModel;
+use models::entities::user::RequiredAction;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::{Value, json};
 use store::providers::login::{self, AuthSession};
@@ -55,6 +58,9 @@ pub struct Requested<'a> {
     /// OIDC Core §3.1.2.1 `ui_locales`: the tongues the client would like the
     /// pages in, space separated, most wanted first. Advisory by the spec.
     pub ui_locales: Option<&'a str>,
+    /// A factor the application asks the person to add, named as the required
+    /// action it is. Honoured only after a fresh sign-in, and only to add.
+    pub enrol: Option<&'a str>,
 }
 
 /// Where the browser goes next.
@@ -247,6 +253,7 @@ pub async fn begin(
     // What the request asks of the authentication itself, against what the
     // browser already holds.
     let prompt = Prompt::read(requested.prompt)?;
+    let enrolling = asked_enrolment(transaction, requested.enrol, &prompt).await?;
     // OIDC Core §11: without `prompt=consent` the request for offline access is
     // ignored rather than refused, and the rest of it is served.
     let granted = if prompt.consent {
@@ -289,7 +296,9 @@ pub async fn begin(
         acr_values,
         requirement,
         max_age: requested.max_age.or(client.default_max_age.map(i64::from)),
-        prompt_login: prompt.login,
+        // A factor is added by whoever proves, now, that the account is theirs:
+        // a session left open on a shared screen is not that proof.
+        prompt_login: prompt.login || enrolling.is_some(),
     };
     let realm = realms::load(transaction, &tenant.realm_id)
         .await
@@ -439,6 +448,46 @@ pub async fn begin(
     .await
 }
 
+/// The ceremonies an application may ask for: each adds a factor and nothing
+/// else. Replacing a password or re-verifying an address stays the realm's to
+/// demand, never an application's.
+const ASKABLE_ENROLMENTS: [RequiredAction; 3] = [
+    RequiredAction::ConfigureTotp,
+    RequiredAction::ConfigureWebauthn,
+    RequiredAction::ConfigureRecoveryCodes,
+];
+
+/// The factor an application asks the person to add, read whole.
+///
+/// A name outside the askable ceremonies is refused rather than ignored, and
+/// so is `prompt=none` beside one, since a ceremony is nothing but interaction.
+/// A realm that registered the ceremony and turned it off is not overruled; a
+/// realm that never said anything offers it.
+async fn asked_enrolment(
+    transaction: &Transaction<'_>,
+    named: Option<&str>,
+    prompt: &Prompt,
+) -> Result<Option<RequiredAction>, Refusal> {
+    let Some(named) = named else {
+        return Ok(None);
+    };
+    let action = RequiredAction::from_str(named)
+        .ok()
+        .filter(|action| ASKABLE_ENROLMENTS.contains(action))
+        .ok_or(Refusal::Redirect("invalid_request"))?;
+    if prompt.none {
+        return Err(Refusal::Redirect("invalid_request"));
+    }
+    let turned_off = auth_flows::load_action(transaction, action)
+        .await
+        .map_err(|_| Refusal::Redirect("server_error"))?
+        .is_some_and(|registered| registered.enabled == Some(false));
+    if turned_off {
+        return Err(Refusal::Redirect("invalid_request"));
+    }
+    Ok(Some(action))
+}
+
 /// What `prompt` asked for.
 ///
 /// `none` and `login` together contradict each other, and OIDC Core §3.1.2.1
@@ -517,6 +566,9 @@ async fn start_login(
                 "organization": requested.organization,
                 // Advisory: the pages read it before the browser's own list.
                 "ui_locales": requested.ui_locales,
+                // A factor the application asked the person to add, already
+                // read whole; the enrolment after the flow runs it.
+                "enrol": requested.enrol,
                 // How the answer travels. Kept because by the time the flow
                 // finishes, the request that named it is gone.
                 "response_mode": mode.as_str(),

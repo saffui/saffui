@@ -91,6 +91,7 @@ impl Carried {
             claims: self.claims.as_deref().or(outer.claims),
             organization: self.text("organization").or(outer.organization),
             ui_locales: self.text("ui_locales").or(outer.ui_locales),
+            enrol: self.text("enrol").or(outer.enrol),
         })
     }
 }

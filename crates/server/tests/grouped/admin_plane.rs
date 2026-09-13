@@ -2951,6 +2951,13 @@ async fn a_second_factor_is_taken_away_and_a_password_is_not() {
             .any(|item| item["kind"] == "totp"),
         "the factor is still there: {after}"
     );
+    let changes = plane.credential_changes_of(support::SUBJECT).await;
+    let removal = changes.last().expect("the removal was announced");
+    assert_eq!(removal["credential_type"], "totp", "{removal}");
+    assert_eq!(
+        removal["change_type"], "revoke",
+        "an administrator's removal went as something other than a revocation: {removal}"
+    );
 }
 
 #[tokio::test]

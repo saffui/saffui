@@ -850,6 +850,146 @@ async fn the_kinds_held_are_answerable_without_the_material() {
     transaction.commit().await.unwrap();
 }
 
+/// What was announced about a person's credentials, oldest first, as a type and
+/// what happened to it.
+async fn announced_changes(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    user_id: &str,
+) -> Vec<String> {
+    transaction
+        .query(
+            "SELECT concat_ws(' ', payload->>'credential_type', payload->>'change_type') \
+             FROM event_outbox WHERE kind = $1 AND user_id = $2 ORDER BY event_id",
+            &[&store::providers::outbox::CREDENTIAL_CHANGED, &user_id],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+/// Every write to a credential says once what happened to it. A sheet of codes
+/// is one change however many codes it holds, a password set outright is an
+/// update when one stood, and an administrator's removal is a revocation where
+/// a holder's own is a deletion.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn each_credential_change_is_announced_once_with_what_happened() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned();
+    realm_with_user(&pool, &tenancy, "acme", "main").await;
+    let crypto = OpenSslProvider::new(&CryptoConfig {
+        fips_required: false,
+        pkcs11: None,
+    })
+    .unwrap();
+
+    let mut connection = pool.get().await.unwrap();
+    let transaction = tenancy
+        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+
+    credentials::create(&transaction, &otp_credential("acme", "main", "app-1", 10))
+        .await
+        .unwrap();
+    assert!(
+        credentials::replace_secret(
+            &transaction,
+            "app-1",
+            &CredentialSecret::new("NEWSECRET".to_owned()),
+            Some(&OtpCredentialData {
+                algorithm: OtpAlgorithm::Sha1,
+                parameters: OtpParameters::totp_default(),
+            }),
+            "ada",
+        )
+        .await
+        .unwrap()
+    );
+    assert!(credentials::revoke(&transaction, "app-1").await.unwrap());
+    credentials::create(&transaction, &otp_credential("acme", "main", "app-2", 20))
+        .await
+        .unwrap();
+    assert!(credentials::delete(&transaction, "app-2").await.unwrap());
+    assert!(!credentials::revoke(&transaction, "app-2").await.unwrap());
+    assert_eq!(
+        announced_changes(&transaction, "ada").await,
+        [
+            "totp create",
+            "totp update",
+            "totp revoke",
+            "totp create",
+            "totp delete"
+        ],
+        "an app's life was not told one change at a time"
+    );
+
+    let metadata = AuditableModel::from_creator("acme".to_owned(), "ada".to_owned());
+    for identifiers in [["code-1", "code-2"], ["code-3", "code-4"]] {
+        credentials::replace_recovery_codes(
+            &transaction,
+            crypto.digest(),
+            "main",
+            "ada",
+            &["aaaa-bbbb", "cccc-dddd"],
+            &identifiers,
+            &metadata,
+        )
+        .await
+        .unwrap();
+    }
+    assert!(
+        credentials::spend_recovery_code(&transaction, crypto.digest(), "ada", "aaaa-bbbb")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        credentials::delete_recovery_codes(&transaction, "ada")
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        credentials::delete_recovery_codes(&transaction, "ada")
+            .await
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        announced_changes(&transaction, "ada").await[5..],
+        [
+            "recovery-code create",
+            "recovery-code update",
+            "recovery-code delete",
+            "recovery-code delete"
+        ],
+        "a sheet was not told as one change"
+    );
+
+    for _ in 0..2 {
+        credentials::replace_all_of_type(&transaction, &password("acme", "main", "scim-ada", 0))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        credentials::load_for_user_of_type(&transaction, "ada", CredentialType::Password)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "a password set outright left another beside it"
+    );
+    assert_eq!(
+        announced_changes(&transaction, "ada").await[9..],
+        ["password create", "password update"],
+        "a password set outright was told as a removal and an arrival"
+    );
+    transaction.commit().await.unwrap();
+}
+
 /// A realm's credentials are invisible from another realm, and removing a user
 /// takes theirs with them.
 #[tokio::test]

@@ -3316,13 +3316,16 @@ async fn a_required_key_is_enrolled_and_then_lets_the_subject_in() {
         "the registration state was not remembered"
     );
 
+    // The attachment rides beside the attestation, where a browser's JSON puts it.
+    let mut attested = key.attest(asks, support::ORIGIN);
+    attested["authenticatorAttachment"] = serde_json::json!("cross-platform");
     let (status, admitted, _) = login_step(
         &plane,
         Some(&auth_session),
         serde_json::json!({
             "username": support::SUBJECT,
             "password": support::PASSWORD,
-            "webauthn_register": key.attest(asks, support::ORIGIN).to_string(),
+            "webauthn_register": attested.to_string(),
         }),
     )
     .await;
@@ -3333,6 +3336,21 @@ async fn a_required_key_is_enrolled_and_then_lets_the_subject_in() {
         plane.subject_keys().await,
         vec![key.credential_id.clone()],
         "the ceremony's credential is not what the store holds"
+    );
+    let changes = plane.credential_changes_of(support::SUBJECT).await;
+    let enrolment = changes
+        .iter()
+        .rev()
+        .find(|change| change["credential_type"] == "webauthn")
+        .expect("the enrolment was announced");
+    assert_eq!(enrolment["change_type"], "create", "{enrolment}");
+    assert_eq!(
+        enrolment["attachment"], "cross-platform",
+        "the attachment the browser reported was not kept: {enrolment}"
+    );
+    assert!(
+        enrolment["backup_eligible"].is_boolean(),
+        "the stored key's backup flag was not read: {enrolment}"
     );
 
     // The enrolled key is a working credential, not just a row.
@@ -5930,6 +5948,7 @@ async fn a_printed_sheet_is_drawn_once_and_each_code_spent_once() {
         .iter()
         .map(|code| code.as_str().expect("a code").to_owned())
         .collect();
+    let announced_before = plane.credential_changes_of(support::SUBJECT).await.len();
     let retyped = drawn[3].replace('-', " ").to_uppercase();
     let (status, admitted, _) = login_step(
         &plane,
@@ -5945,6 +5964,16 @@ async fn a_printed_sheet_is_drawn_once_and_each_code_spent_once() {
     assert_eq!(admitted["status"], "admitted", "{admitted}");
     assert_eq!(plane.subject_owes().await, vec![], "the instruction stands");
     assert_eq!(plane.recovery_codes_left().await, 10);
+    let sheet: Vec<_> = plane.credential_changes_of(support::SUBJECT).await[announced_before..]
+        .iter()
+        .filter(|change| change["credential_type"] == "recovery-code")
+        .cloned()
+        .collect();
+    assert_eq!(
+        sheet,
+        [serde_json::json!({ "credential_type": "recovery-code", "change_type": "create" })],
+        "a sheet of ten was not told as one change"
+    );
 
     // Now the sheet answers where a second factor stands.
     plane
@@ -5975,6 +6004,17 @@ async fn a_printed_sheet_is_drawn_once_and_each_code_spent_once() {
     assert_eq!(status, StatusCode::OK, "{told}");
     assert_eq!(told["status"], "admitted", "{told}");
     assert_eq!(plane.recovery_codes_left().await, 9);
+    let spent: Vec<_> = plane
+        .credential_changes_of(support::SUBJECT)
+        .await
+        .into_iter()
+        .filter(|change| change["credential_type"] == "recovery-code")
+        .collect();
+    assert_eq!(
+        spent.last(),
+        Some(&serde_json::json!({ "credential_type": "recovery-code", "change_type": "delete" })),
+        "a spent code was not told as a deletion"
+    );
 
     // The same code again is a wrong code. Spent is spent, and the sheet is
     // not shortened twice for one line.
@@ -5989,6 +6029,16 @@ async fn a_printed_sheet_is_drawn_once_and_each_code_spent_once() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
     assert_eq!(told["status"], "refused", "{told}");
     assert_eq!(plane.recovery_codes_left().await, 9);
+    assert_eq!(
+        plane
+            .credential_changes_of(support::SUBJECT)
+            .await
+            .iter()
+            .filter(|change| change["credential_type"] == "recovery-code")
+            .count(),
+        spent.len(),
+        "a refused code was announced"
+    );
 }
 
 /// The realm's word on plain connections, kept at the door.

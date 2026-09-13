@@ -6,7 +6,7 @@ use data_encoding::BASE64;
 use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::Value;
-use services::brokering::{self, Identity, TokenAuth, Upstream};
+use services::brokering::{self, Identity, Upstream};
 use store::tenancy::{Tenancy, resolve};
 use ureq::unversioned::resolver::DefaultResolver;
 
@@ -146,27 +146,15 @@ pub async fn conclude(
     // 2. Redeem the code with the verifier from that row, never the request.
     let secret = opened_secret(&transaction, &sealing, &context, &provider).await;
     let landing = callback_of(&origin, &context.realm_id, &alias);
-    let mut form = vec![
-        ("grant_type".to_owned(), "authorization_code".to_owned()),
-        ("code".to_owned(), code),
-        ("redirect_uri".to_owned(), landing),
-    ];
-    if upstream.pkce {
-        form.push(("code_verifier".to_owned(), spent.code_verifier.clone()));
-    }
-    let basic = match (upstream.token_auth, secret) {
-        (TokenAuth::Basic, Some(held)) => Some((upstream.client_id.clone(), held)),
-        (TokenAuth::Post, Some(held)) => {
-            form.push(("client_id".to_owned(), upstream.client_id.clone()));
-            form.push(("client_secret".to_owned(), held));
-            None
-        }
-        (_, None) => {
-            form.push(("client_id".to_owned(), upstream.client_id.clone()));
-            None
-        }
-    };
-    let Some(answered) = post_form(upstream.token_endpoint.clone(), **egress, form, basic).await
+    let exchange =
+        brokering::compose_code_exchange(&upstream, code, landing, &spent.code_verifier, secret);
+    let Some(answered) = post_form(
+        upstream.token_endpoint.clone(),
+        **egress,
+        exchange.form,
+        exchange.basic,
+    )
+    .await
     else {
         tracing::warn!(alias, "the upstream refused the code exchange");
         return refused();
@@ -451,7 +439,7 @@ async fn asked_json(uri: String, egress: Egress, access_token: &str) -> Option<V
             .get(&uri)
             .header("authorization", &bearer)
             .header("accept", "application/json")
-            // Some providers refuse a call that names no client software.
+            // GitHub asks callers to name their application in the user agent.
             .header("user-agent", "saffui")
             .call()
             .ok()?;

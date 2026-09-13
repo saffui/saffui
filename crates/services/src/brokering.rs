@@ -351,6 +351,45 @@ pub fn arrived(
     })
 }
 
+/// What redeems a code at the upstream's token endpoint.
+pub struct CodeExchange {
+    pub form: Vec<(String, String)>,
+    /// The client id and secret, when they travel in a Basic header.
+    pub basic: Option<(String, String)>,
+}
+
+/// The code exchange for this upstream: the verifier only when the departure
+/// carried its challenge, and the secret where the provider reads it.
+pub fn compose_code_exchange(
+    upstream: &Upstream,
+    code: String,
+    redirect_uri: String,
+    verifier: &str,
+    secret: Option<String>,
+) -> CodeExchange {
+    let mut form = vec![
+        ("grant_type".to_owned(), "authorization_code".to_owned()),
+        ("code".to_owned(), code),
+        ("redirect_uri".to_owned(), redirect_uri),
+    ];
+    if upstream.pkce {
+        form.push(("code_verifier".to_owned(), verifier.to_owned()));
+    }
+    let basic = match (upstream.token_auth, secret) {
+        (TokenAuth::Basic, Some(held)) => Some((upstream.client_id.clone(), held)),
+        (TokenAuth::Post, Some(held)) => {
+            form.push(("client_id".to_owned(), upstream.client_id.clone()));
+            form.push(("client_secret".to_owned(), held));
+            None
+        }
+        (_, None) => {
+            form.push(("client_id".to_owned(), upstream.client_id.clone()));
+            None
+        }
+    };
+    CodeExchange { form, basic }
+}
+
 /// The token endpoint's answer as fields: JSON as the standard asks, or the
 /// form encoding a provider answers with when it is not told otherwise.
 pub fn read_token_answer(body: &str) -> Option<Map<String, Value>> {
@@ -1038,6 +1077,55 @@ mod tests {
         assert_eq!(form["access_token"], "gho_abc");
         assert_eq!(form["scope"], "read:user");
         assert!(read_token_answer("").is_none());
+    }
+
+    /// The code is redeemed with the verifier only when the departure carried
+    /// a challenge, and with the secret where the provider reads it.
+    #[test]
+    fn the_code_exchange_carries_the_verifier_and_the_secret_where_told() {
+        let exchanged = |said: &[(&str, &str)], secret: Option<&str>| {
+            let upstream = Upstream::parse(&plain_provider(said)).expect("a plain provider");
+            compose_code_exchange(
+                &upstream,
+                "the-code".into(),
+                "https://id.example/landing".into(),
+                "the-verifier",
+                secret.map(str::to_owned),
+            )
+        };
+        let field = |exchange: &CodeExchange, key: &str| {
+            exchange
+                .form
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.clone())
+        };
+
+        let basic = exchanged(&[], Some("s3cret"));
+        assert_eq!(field(&basic, "code").as_deref(), Some("the-code"));
+        assert_eq!(
+            field(&basic, "code_verifier").as_deref(),
+            Some("the-verifier")
+        );
+        assert_eq!(
+            basic.basic,
+            Some(("saffui".to_owned(), "s3cret".to_owned()))
+        );
+        assert!(field(&basic, "client_secret").is_none());
+
+        let posted = exchanged(
+            &[("token_auth", "client_secret_post"), ("pkce", "false")],
+            Some("s3cret"),
+        );
+        assert!(field(&posted, "code_verifier").is_none());
+        assert!(posted.basic.is_none());
+        assert_eq!(field(&posted, "client_id").as_deref(), Some("saffui"));
+        assert_eq!(field(&posted, "client_secret").as_deref(), Some("s3cret"));
+
+        let unheld = exchanged(&[], None);
+        assert!(unheld.basic.is_none());
+        assert_eq!(field(&unheld, "client_id").as_deref(), Some("saffui"));
+        assert!(field(&unheld, "client_secret").is_none());
     }
 
     /// An account answer names the arrival by the provider's stable subject,

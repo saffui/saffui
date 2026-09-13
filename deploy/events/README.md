@@ -83,14 +83,14 @@ event payloads, and the realm isolation is enforced by the admin transaction.
 The gap after an outage, or a consumer onboarded late:
 
 ```
-POST /admin/realms/{realm}/events/replay
-{ "from_event_id": 1200, "to_event_id": 1500, "connector": "siem" }
+POST /admin/realms/{realm}/identity-providers/siem/redeliveries
+{ "from_event_id": 1200, "to_event_id": 1500 }
 ```
 
 Dry by default: the answer says what it would deliver and where it
 stopped (at most 500 per ask; `more` says to continue from `stopped_at`).
-Add `"dry_run": false` to do it. A replay feeds exactly the one named
-webhook, respects its filter, and re-delivers under the original ids and
+Add `"dry_run": false` to do it. A redelivery feeds exactly the webhook the
+path names, respects its filter, and re-delivers under the original ids and
 signatures, so the far side's dedup makes repeating it harmless. The
 range is bounded by the outbox's own retention: what the sweeper has let
 go of cannot be replayed.

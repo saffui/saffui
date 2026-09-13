@@ -346,14 +346,10 @@ pub async fn requeue(
 }
 
 #[derive(serde::Deserialize)]
-pub struct ReplayAsk {
+pub struct RedeliveryAsk {
     pub from_event_id: i64,
     pub to_event_id: Option<i64>,
-    /// The one connector this replay feeds, by alias. Explicit, never all
-    /// of them: a replay that fanned out would redeliver to every listener
-    /// that already heard.
-    pub connector: String,
-    /// A replay tells what it would do unless told to do it.
+    /// A redelivery tells what it would do unless told to do it.
     #[serde(default = "stand_back")]
     pub dry_run: bool,
 }
@@ -366,21 +362,22 @@ fn stand_back() -> bool {
 /// stopped, so the operator continues from there.
 const REPLAY_CEILING: i64 = 500;
 
-/// Re-deliver a range of retained tellings to one named webhook: the gap
-/// after an outage, or a consumer onboarded late. Bounded by the outbox's
-/// own retention, a dry run by default, and every delivery carries its
-/// original id, so the far side's dedup makes the operation safe to
-/// repeat.
-pub async fn replay(
+/// Re-deliver a range of retained tellings to the one webhook the path names:
+/// the gap after an outage, or a consumer onboarded late. One connector and
+/// never all of them, since a redelivery that fanned out would reach every
+/// listener that already heard. Bounded by the outbox's own retention, a dry
+/// run by default, and every delivery carries its original id, so the far
+/// side's dedup makes the operation safe to repeat.
+pub async fn redeliver_to_connector(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<crate::api::config::Sealing>,
     egress: web::Data<config::serving::Egress>,
-    path: web::Path<String>,
-    body: web::Json<ReplayAsk>,
+    path: web::Path<(String, String)>,
+    body: web::Json<RedeliveryAsk>,
 ) -> Result<HttpResponse, ApiError> {
-    let realm_id = path.into_inner();
+    let (realm_id, alias) = path.into_inner();
     let asked = body.into_inner();
     let mut connection = pool.get().await.map_err(|_| internal())?;
     let context = TenantContext::new(&admin.context.tenant.tenant, &realm_id);
@@ -389,7 +386,7 @@ pub async fn replay(
         .await
         .map_err(|_| internal())?;
 
-    let row = store::providers::brokering::provider_by_alias(&transaction, &asked.connector)
+    let row = store::providers::brokering::provider_by_alias(&transaction, &alias)
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::IdentityProviderNotFound))?;

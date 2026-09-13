@@ -340,6 +340,11 @@ pub async fn unregister_action(
 }
 
 /// Ask one more thing of a person at their next login.
+///
+/// Not an action the realm registered and turned off: switching one off is
+/// the realm saying nobody is to be asked it. What a person already owes
+/// stays owed, and what the server attaches on its own, an expired or a
+/// temporary password, a reset, does not come through this door.
 pub async fn require_of_user(
     transaction: &Transaction<'_>,
     user_id: &str,
@@ -349,6 +354,15 @@ pub async fn require_of_user(
         .await
         .map_err(|_| Unwritable::Backend)?
         .ok_or(Unwritable::NoSuchUser)?;
+    let turned_off = auth_flows::load_action(transaction, action)
+        .await
+        .map_err(|_| Unwritable::Backend)?
+        .is_some_and(|registered| registered.enabled == Some(false));
+    if turned_off {
+        return Err(Unwritable::Invalid(
+            "this realm has turned that action off, so it is asked of nobody".to_owned(),
+        ));
+    }
     let held = person.required_actions.get_or_insert_with(Vec::new);
     if !held.contains(&action) {
         held.push(action);

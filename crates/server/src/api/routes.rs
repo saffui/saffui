@@ -1550,9 +1550,9 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::POST,
-            pattern: "/admin/realms/{realm}/events/replay",
+            pattern: "/admin/realms/{realm}/identity-providers/{alias}/redeliveries",
             action: AdminAction::IdpWrite,
-            handler: Some(|| web::post().to(events::replay)),
+            handler: Some(|| web::post().to(events::redeliver_to_connector)),
         },
         AdminRoute {
             method: Method::GET,

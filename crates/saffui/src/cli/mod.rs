@@ -639,11 +639,12 @@ fn answer(plane: &Resolved, command: &AdminCmd, out: &mut dyn Write) -> Result<(
                     plane,
                     &token,
                     Call::Post(
-                        format!("/admin/realms/{realm}/events/replay"),
+                        format!(
+                            "/admin/realms/{realm}/identity-providers/{connector}/redeliveries"
+                        ),
                         serde_json::json!({
                             "from_event_id": from,
                             "to_event_id": to,
-                            "connector": connector,
                             "dry_run": !run,
                         }),
                     ),

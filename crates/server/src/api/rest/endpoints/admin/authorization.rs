@@ -17,10 +17,11 @@ use crate::middleware::admin_guard::Admin;
 /// The store speaks in whole sentences about what it refused, and the answer
 /// carries them out as the detail: restating a cycle or an unusable window
 /// here would only say it worse.
-fn refused(why: Unwritable, missing: ErrorCode) -> ApiError {
+fn refused(why: Unwritable, exists: ErrorCode, missing: ErrorCode) -> ApiError {
     match why {
         Unwritable::NoSuchClient => ApiError::new(ErrorCode::ClientNotFound),
         Unwritable::AlreadyProtected => ApiError::new(ErrorCode::ResourceServerAlreadyExists),
+        Unwritable::Taken => ApiError::new(exists),
         Unwritable::NotFound => ApiError::new(missing),
         Unwritable::StillRead(what) => ApiError::with_detail(ErrorCode::StillGranted, what),
         Unwritable::Refused(what) => ApiError::with_detail(ErrorCode::ValidationError, what),
@@ -70,7 +71,13 @@ pub async fn protect(
         asked.user_managed_access,
     )
     .await
-    .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;
+    .map_err(|why| {
+        refused(
+            why,
+            ErrorCode::ResourceServerAlreadyExists,
+            ErrorCode::ResourceServerNotFound,
+        )
+    })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Created().json(made))
 }
@@ -89,7 +96,13 @@ pub async fn server(
         .map_err(|_| internal())?;
     let held = authz::server(&transaction, &client_id)
         .await
-        .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::ResourceServerAlreadyExists,
+                ErrorCode::ResourceServerNotFound,
+            )
+        })?;
     Ok(HttpResponse::Ok().json(held))
 }
 
@@ -116,7 +129,13 @@ pub async fn set_protection(
         asked.user_managed_access,
     )
     .await
-    .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;
+    .map_err(|why| {
+        refused(
+            why,
+            ErrorCode::ResourceServerAlreadyExists,
+            ErrorCode::ResourceServerNotFound,
+        )
+    })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(held))
 }
@@ -135,7 +154,13 @@ pub async fn unprotect(
         .map_err(|_| internal())?;
     authz::unprotect(&transaction, &client_id)
         .await
-        .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::ResourceServerAlreadyExists,
+                ErrorCode::ResourceServerNotFound,
+            )
+        })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -145,7 +170,7 @@ pub async fn unprotect(
 macro_rules! surface {
     ($create:ident, $list:ident, $rework:ident, $delete:ident,
      $mutation:ty, $create_call:ident, $list_call:ident, $rework_call:ident,
-     $delete_call:ident, $missing:ident) => {
+     $delete_call:ident, $missing:ident, $exists:ident) => {
         pub async fn $create(
             admin: web::ReqData<Admin>,
             pool: web::Data<Pool>,
@@ -170,7 +195,7 @@ macro_rules! surface {
                 body.into_inner(),
             )
             .await
-            .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;
+            .map_err(|why| refused(why, ErrorCode::$exists, ErrorCode::ResourceServerNotFound))?;
             transaction.commit().await.map_err(|_| internal())?;
             Ok(HttpResponse::Created().json(made))
         }
@@ -189,7 +214,9 @@ macro_rules! surface {
                 .map_err(|_| internal())?;
             let found = authz::$list_call(&transaction, &server_id)
                 .await
-                .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;
+                .map_err(|why| {
+                    refused(why, ErrorCode::$exists, ErrorCode::ResourceServerNotFound)
+                })?;
             Ok(HttpResponse::Ok().json(found))
         }
 
@@ -214,7 +241,7 @@ macro_rules! surface {
                 body.into_inner(),
             )
             .await
-            .map_err(|why| refused(why, ErrorCode::$missing))?;
+            .map_err(|why| refused(why, ErrorCode::$exists, ErrorCode::$missing))?;
             transaction.commit().await.map_err(|_| internal())?;
             Ok(HttpResponse::Ok().json(made))
         }
@@ -233,7 +260,7 @@ macro_rules! surface {
                 .map_err(|_| internal())?;
             authz::$delete_call(&transaction, &server_id, &id)
                 .await
-                .map_err(|why| refused(why, ErrorCode::$missing))?;
+                .map_err(|why| refused(why, ErrorCode::$exists, ErrorCode::$missing))?;
             transaction.commit().await.map_err(|_| internal())?;
             Ok(HttpResponse::NoContent().finish())
         }
@@ -250,7 +277,8 @@ surface!(
     resources,
     rework_resource,
     remove_resource,
-    ResourceNotFound
+    ResourceNotFound,
+    ResourceAlreadyExists
 );
 surface!(
     add_scope,
@@ -262,7 +290,8 @@ surface!(
     scopes,
     rework_scope,
     remove_scope,
-    ScopeNotFound
+    ScopeNotFound,
+    ScopeAlreadyExists
 );
 
 /// A policy's terms, and the organization it is confined to.
@@ -300,7 +329,13 @@ pub async fn add_policy(
         asked.terms,
     )
     .await
-    .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;
+    .map_err(|why| {
+        refused(
+            why,
+            ErrorCode::PolicyAlreadyExists,
+            ErrorCode::ResourceServerNotFound,
+        )
+    })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Created().json(made))
 }
@@ -331,7 +366,13 @@ pub async fn policies(
         .map_err(|_| internal())?;
     let found = authz::policies(&transaction, &server_id)
         .await
-        .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::PolicyAlreadyExists,
+                ErrorCode::ResourceServerNotFound,
+            )
+        })?;
     let rows = found
         .into_iter()
         .map(render_policy_row)
@@ -360,7 +401,13 @@ pub async fn rework_policy(
         body.into_inner(),
     )
     .await
-    .map_err(|why| refused(why, ErrorCode::PolicyNotFound))?;
+    .map_err(|why| {
+        refused(
+            why,
+            ErrorCode::PolicyAlreadyExists,
+            ErrorCode::PolicyNotFound,
+        )
+    })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(held))
 }
@@ -379,7 +426,13 @@ pub async fn remove_policy(
         .map_err(|_| internal())?;
     authz::remove_policy(&transaction, &policy_id)
         .await
-        .map_err(|why| refused(why, ErrorCode::PolicyNotFound))?;
+        .map_err(|why| {
+            refused(
+                why,
+                ErrorCode::PolicyAlreadyExists,
+                ErrorCode::PolicyNotFound,
+            )
+        })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }

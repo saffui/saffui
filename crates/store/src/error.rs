@@ -25,7 +25,7 @@ pub enum StoreError {
     #[error("the database operation failed")]
     Backend,
 
-    /// A globally addressed object already answers to this identifier.
+    /// An identifier or a name another row already answers to, where only one may.
     #[error("this identifier is already in use")]
     AlreadyExists,
 
@@ -125,3 +125,13 @@ impl From<commons::walk::Exhausted> for StoreError {
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
+
+/// A write the database refused, told apart where the caller can act on it: a
+/// name another row already holds. Anything else stays coarse.
+pub(crate) fn refuse_taken_name(error: tokio_postgres::Error) -> StoreError {
+    if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) {
+        StoreError::AlreadyExists
+    } else {
+        StoreError::Backend
+    }
+}

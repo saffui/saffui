@@ -283,7 +283,7 @@ pub async fn remove_own_factor(
             if let Some(why) = held.key_kept_because() {
                 return Err(Unremoved::LastFactor(why));
             }
-            webauthn::revoke(transaction, user_id, credential_id)
+            webauthn::delete(transaction, user_id, credential_id)
                 .await
                 .map_err(|_| Unremoved::Backend)?;
         }

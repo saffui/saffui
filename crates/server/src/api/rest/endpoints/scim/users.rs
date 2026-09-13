@@ -519,16 +519,7 @@ async fn planted_password(
     else {
         return Err("the password could not be kept");
     };
-    let standing =
-        credentials::load_for_user_of_type(transaction, user_id, CredentialType::Password)
-            .await
-            .map_err(|_| "the password could not be kept")?;
-    for held in &standing {
-        credentials::delete(transaction, &held.credential_id)
-            .await
-            .map_err(|_| "the password could not be kept")?;
-    }
-    credentials::create(
+    credentials::replace_all_of_type(
         transaction,
         &CredentialModel {
             credential_id: format!("scim-{user_id}"),

@@ -231,6 +231,42 @@ async fn a_provisioner_runs_a_whole_day() {
         StatusCode::OK
     );
 
+    // A password pushed over the one that stood is one update, never a removal
+    // followed by an arrival.
+    let (status, told) = asked(
+        &plane,
+        Method::PATCH,
+        &format!("{base}/Users/{id}"),
+        &bearer,
+        Some(json!({
+            "schemas": [services::scim::PATCH_SCHEMA],
+            "Operations": [{
+                "op": "replace",
+                "path": "password",
+                "value": "another-password-of-decent-length",
+            }],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let changes: Vec<String> = plane
+        .credential_changes_of(&id)
+        .await
+        .iter()
+        .map(|change| {
+            format!(
+                "{} {}",
+                change["credential_type"].as_str().unwrap_or_default(),
+                change["change_type"].as_str().unwrap_or_default()
+            )
+        })
+        .collect();
+    assert_eq!(
+        changes,
+        ["password create", "password update"],
+        "a pushed password was not told as one change each time"
+    );
+
     // The version tag moves when the person moves.
     let (_, read_back) = asked(
         &plane,

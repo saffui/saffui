@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::authz::IdentityProviderModel;
+use models::entities::credentials::{AuthenticatorAttachment, CredentialChange, CredentialType};
 use serde_json::{Value, json};
 
 pub const KIND: &str = "caep-push";
@@ -156,15 +157,56 @@ impl Receiver {
 pub fn security_event(kind: &str, payload: &Value) -> Option<(&'static str, Value)> {
     match kind {
         store::providers::outbox::SESSION_REVOKED => Some((SESSION_REVOKED, json!({}))),
-        store::providers::outbox::CREDENTIAL_CHANGED => Some((
-            CREDENTIAL_CHANGE,
-            json!({ "credential_type": payload["credential_type"] }),
-        )),
+        store::providers::outbox::CREDENTIAL_CHANGED => {
+            Some((CREDENTIAL_CHANGE, credential_change_claims(payload)))
+        }
         store::providers::outbox::USER_DELETED => Some((ACCOUNT_PURGED, json!({}))),
         store::providers::outbox::USER_UPDATED if payload["enabled"] == json!(false) => {
             Some((ACCOUNT_DISABLED, json!({ "reason": "disabled" })))
         }
         _ => None,
+    }
+}
+
+/// A credential change in the profile's words, read off saffui's own.
+///
+/// The outbox keeps saffui's vocabulary because webhooks read it as written,
+/// so the translation happens here and nowhere else. A type the profile has no
+/// word for keeps its own, which the profile allows between parties that agree
+/// on it. A change of unknown kind, from a row written before kinds were
+/// recorded, is left unsaid rather than guessed.
+fn credential_change_claims(payload: &Value) -> Value {
+    let mut claims = json!({ "credential_type": translate_credential_type(payload) });
+    if let Some(change) = payload["change_type"]
+        .as_str()
+        .and_then(|named| named.parse::<CredentialChange>().ok())
+    {
+        claims["change_type"] = json!(change);
+    }
+    claims
+}
+
+/// An authenticator app is `app` whichever algorithm it runs. A key is named by
+/// where it lives: the attachment its browser reported, else the backup flag
+/// its stored form keeps, since a key that can be synced lives in a platform's
+/// keychain. With neither, it stays `webauthn`.
+fn translate_credential_type(payload: &Value) -> Value {
+    let named = payload["credential_type"].as_str().unwrap_or_default();
+    if named == store::providers::webauthn::CREDENTIAL_TYPE {
+        let attachment = payload["attachment"]
+            .as_str()
+            .and_then(|reported| reported.parse::<AuthenticatorAttachment>().ok());
+        return json!(match (attachment, payload["backup_eligible"].as_bool()) {
+            (Some(AuthenticatorAttachment::Platform), _) | (None, Some(true)) => "fido2-platform",
+            (Some(AuthenticatorAttachment::CrossPlatform), _) | (None, Some(false)) => {
+                "fido2-roaming"
+            }
+            (None, None) => named,
+        });
+    }
+    match named.parse::<CredentialType>() {
+        Ok(CredentialType::Totp | CredentialType::Hotp) => json!("app"),
+        _ => payload["credential_type"].clone(),
     }
 }
 
@@ -362,14 +404,53 @@ mod tests {
             security_event("session.revoked", &quiet).unwrap().0,
             SESSION_REVOKED
         );
+        let told = |payload: Value| security_event("credential.changed", &payload).unwrap().1;
         assert_eq!(
-            security_event(
-                "credential.changed",
-                &json!({ "credential_type": "password" })
-            )
-            .unwrap()
-            .1["credential_type"],
-            "password"
+            told(json!({ "credential_type": "password", "change_type": "update" })),
+            json!({ "credential_type": "password", "change_type": "update" })
+        );
+        assert_eq!(
+            told(json!({ "credential_type": "totp", "change_type": "create" })),
+            json!({ "credential_type": "app", "change_type": "create" })
+        );
+        assert_eq!(
+            told(json!({ "credential_type": "hotp", "change_type": "revoke" }))["credential_type"],
+            "app"
+        );
+        // A key is named by the attachment its browser reported, then by the
+        // backup flag of its stored form, then not at all.
+        for (attachment, backup_eligible, named) in [
+            (json!("platform"), json!(false), "fido2-platform"),
+            (json!("cross-platform"), json!(true), "fido2-roaming"),
+            (json!(null), json!(true), "fido2-platform"),
+            (json!(null), json!(false), "fido2-roaming"),
+            (json!(null), json!(null), "webauthn"),
+        ] {
+            let key = json!({
+                "credential_type": "webauthn",
+                "change_type": "delete",
+                "attachment": attachment,
+                "backup_eligible": backup_eligible,
+            });
+            assert_eq!(
+                told(key.clone()),
+                json!({ "credential_type": named, "change_type": "delete" }),
+                "{key}"
+            );
+        }
+        // A type the profile has no word for keeps saffui's, and a change of no
+        // known kind is left out rather than guessed.
+        assert_eq!(
+            told(json!({ "credential_type": "recovery-code", "change_type": "delete" })),
+            json!({ "credential_type": "recovery-code", "change_type": "delete" })
+        );
+        assert_eq!(
+            told(json!({ "credential_type": "secret" })),
+            json!({ "credential_type": "secret" })
+        );
+        assert_eq!(
+            told(json!({ "credential_type": "password", "change_type": "renamed" })),
+            json!({ "credential_type": "password" })
         );
     }
 }

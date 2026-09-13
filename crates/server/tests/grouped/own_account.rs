@@ -450,6 +450,7 @@ async fn plant_key(plane: &Plane, credential_id: &[u8]) {
             label: "laptop".into(),
             passkey: json!({}),
             sign_count: 0,
+            attachment: None,
             enrolled_at: None,
             last_used_at: None,
         },
@@ -576,6 +577,12 @@ async fn removing_a_factor_needs_a_recent_sign_in() {
         before + 1,
         "a removed app went unannounced"
     );
+    let changes = plane.credential_changes_of(support::SUBJECT).await;
+    assert_eq!(
+        changes.last().map(|change| &change["change_type"]),
+        Some(&json!("delete")),
+        "a holder's own app went as something other than a deletion: {changes:?}"
+    );
     let (status, told) = asked(&plane, Method::DELETE, &path, &bearer, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
 }
@@ -672,6 +679,13 @@ async fn an_account_without_a_password_keeps_its_last_key() {
     plant_key(&plane, b"key-two").await;
     let (status, told) = asked(&plane, Method::DELETE, &key_one, &bearer, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    let changes = plane.credential_changes_of(support::SUBJECT).await;
+    let removal = changes.last().expect("the removal was announced");
+    assert_eq!(removal["credential_type"], "webauthn", "{removal}");
+    assert_eq!(
+        removal["change_type"], "delete",
+        "a holder's own key went as something other than a deletion: {removal}"
+    );
 }
 
 /// The sheet of recovery codes is a way back, not a defence, so it may always
@@ -699,6 +713,10 @@ async fn the_recovery_sheet_may_always_go() {
         before + 1,
         "the sheet went without one announcement"
     );
+    let changes = plane.credential_changes_of(support::SUBJECT).await;
+    let removal = changes.last().expect("the removal was announced");
+    assert_eq!(removal["credential_type"], "recovery-code", "{removal}");
+    assert_eq!(removal["change_type"], "delete", "{removal}");
     let (_, held) = asked(&plane, Method::GET, &own("credentials"), &bearer, None).await;
     assert_eq!(held["recovery_codes"], 0, "{held}");
     assert_eq!(held["apps"][0]["id"], "cred-totp", "{held}");

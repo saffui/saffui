@@ -885,6 +885,7 @@ impl Plane {
         self.enrol_passkey(
             serde_json::to_value(&passkey).expect("the stored shape"),
             passkey.cred_id().as_ref().to_vec(),
+            None,
         )
         .await;
         key
@@ -892,8 +893,13 @@ impl Plane {
 
     /// Enrol a passkey for the subject, as a registration ceremony would leave
     /// it. The blob is the library's own format, which is what the store keeps.
-    #[allow(dead_code, reason = "only the protocol suite enrols one")]
-    pub async fn enrol_passkey(&self, passkey: serde_json::Value, credential_id: Vec<u8>) {
+    #[allow(dead_code, reason = "only the protocol and caep suites enrol one")]
+    pub async fn enrol_passkey(
+        &self,
+        passkey: serde_json::Value,
+        credential_id: Vec<u8>,
+        attachment: Option<models::entities::credentials::AuthenticatorAttachment>,
+    ) {
         let mut connection = self.connection().await;
         let transaction = self
             .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
@@ -906,6 +912,7 @@ impl Plane {
                 label: "a key".into(),
                 passkey,
                 sign_count: 0,
+                attachment,
                 enrolled_at: None,
                 last_used_at: None,
             },
@@ -1114,6 +1121,26 @@ impl Plane {
             .expect("the credential table")
             .into_iter()
             .map(|credential| credential.credential_id)
+            .collect()
+    }
+
+    /// What was announced about a person's credentials, oldest first.
+    #[allow(dead_code, reason = "only the suites that change credentials ask")]
+    pub async fn credential_changes_of(&self, user_id: &str) -> Vec<serde_json::Value> {
+        let mut connection = self.connection().await;
+        let transaction = self
+            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+            .await;
+        transaction
+            .query(
+                "SELECT payload FROM event_outbox WHERE kind = $1 AND user_id = $2 \
+                 ORDER BY event_id",
+                &[&store::providers::outbox::CREDENTIAL_CHANGED, &user_id],
+            )
+            .await
+            .expect("the outbox")
+            .iter()
+            .map(|row| row.get(0))
             .collect()
     }
 

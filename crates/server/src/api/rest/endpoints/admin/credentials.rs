@@ -152,7 +152,7 @@ pub async fn revoke(
             "a password is replaced rather than taken away",
         ));
     }
-    store::providers::credentials::delete(&transaction, &credential_id)
+    store::providers::credentials::revoke(&transaction, &credential_id)
         .await
         .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;

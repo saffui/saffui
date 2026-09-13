@@ -2,7 +2,7 @@ use crypto::provider::{DigestProvider, HashAlg};
 use data_encoding::HEXLOWER;
 use deadpool_postgres::Transaction;
 use models::entities::credentials::{
-    CredentialModel, CredentialSecret, CredentialType, OtpCredentialData,
+    CredentialChange, CredentialModel, CredentialSecret, CredentialType, OtpCredentialData,
 };
 use tokio_postgres::Row;
 
@@ -24,14 +24,13 @@ pub async fn create(
     credential: &CredentialModel,
 ) -> StoreResult<()> {
     write(transaction, credential).await?;
-    super::outbox::emit(
+    announce_credential_change(
         transaction,
-        super::outbox::CREDENTIAL_CHANGED,
         &credential.user_id,
-        &serde_json::json!({ "credential_type": credential.credential_type }),
+        credential.credential_type,
+        CredentialChange::Create,
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 /// Record a credential and say nothing.
@@ -169,19 +168,16 @@ pub async fn replace_secret(
     let Some(row) = changed.first() else {
         return Ok(false);
     };
-    let user_id: String = row.get("user_id");
-    let credential_type: CredentialType = row.get("credential_type");
-    super::outbox::emit(
+    announce_credential_change(
         transaction,
-        super::outbox::CREDENTIAL_CHANGED,
-        &user_id,
-        &serde_json::json!({ "credential_type": credential_type }),
+        &row.get::<_, String>("user_id"),
+        row.get("credential_type"),
+        CredentialChange::Update,
     )
     .await?;
     Ok(true)
 }
 
-/// Remove a credential, and say whether there was one to remove.
 /// Spend a one-time code's step, once.
 ///
 /// The comparison is the write. Reading the last step, comparing it and writing
@@ -228,7 +224,9 @@ fn recovery_digest(digest: &dyn DigestProvider, code: &str) -> StoreResult<Strin
 ///
 /// The old set goes in the same transaction the new one arrives in. A set drawn
 /// twice must not leave both live: the point of drawing again is that the sheet
-/// somebody printed last year no longer opens anything.
+/// somebody printed last year no longer opens anything. The sheet is announced
+/// once, as a create when nothing stood and an update when it replaced one,
+/// however many codes it holds.
 pub async fn replace_recovery_codes(
     transaction: &Transaction<'_>,
     digest: &dyn DigestProvider,
@@ -241,9 +239,9 @@ pub async fn replace_recovery_codes(
     if codes.len() != identifiers.len() {
         return Err(StoreError::Backend);
     }
-    transaction
+    let replaced = transaction
         .execute(
-            "DELETE FROM user_credentials              WHERE user_id = $1 AND credential_type = $2",
+            "DELETE FROM user_credentials WHERE user_id = $1 AND credential_type = $2",
             &[&user_id, &CredentialType::RecoveryCode],
         )
         .await
@@ -257,9 +255,19 @@ pub async fn replace_recovery_codes(
             CredentialSecret::new(recovery_digest(digest, code.as_ref())?),
             metadata.clone(),
         );
-        create(transaction, &credential).await?;
+        write(transaction, &credential).await?;
     }
-    Ok(())
+    announce_credential_change(
+        transaction,
+        user_id,
+        CredentialType::RecoveryCode,
+        if replaced > 0 {
+            CredentialChange::Update
+        } else {
+            CredentialChange::Create
+        },
+    )
+    .await
 }
 
 /// Spend one code, saying whether it was one of this user's.
@@ -285,11 +293,11 @@ pub async fn spend_recovery_code(
     if spent.is_empty() {
         return Ok(false);
     }
-    super::outbox::emit(
+    announce_credential_change(
         transaction,
-        super::outbox::CREDENTIAL_CHANGED,
         user_id,
-        &serde_json::json!({ "credential_type": CredentialType::RecoveryCode }),
+        CredentialType::RecoveryCode,
+        CredentialChange::Delete,
     )
     .await?;
     Ok(true)
@@ -327,11 +335,11 @@ pub async fn delete_recovery_codes(
         .await
         .map_err(|_| StoreError::Backend)?;
     if removed > 0 {
-        super::outbox::emit(
+        announce_credential_change(
             transaction,
-            super::outbox::CREDENTIAL_CHANGED,
             user_id,
-            &serde_json::json!({ "credential_type": CredentialType::RecoveryCode }),
+            CredentialType::RecoveryCode,
+            CredentialChange::Delete,
         )
         .await?;
     }
@@ -373,7 +381,22 @@ pub async fn delete_quietly(
     Ok(removed > 0)
 }
 
+/// Remove a credential at its holder's hand, and say whether there was one.
 pub async fn delete(transaction: &Transaction<'_>, credential_id: &str) -> StoreResult<bool> {
+    remove(transaction, credential_id, CredentialChange::Delete).await
+}
+
+/// Take a credential away at an administrator's hand, and say whether there
+/// was one. Only what a receiver is told sets it apart from [`delete`].
+pub async fn revoke(transaction: &Transaction<'_>, credential_id: &str) -> StoreResult<bool> {
+    remove(transaction, credential_id, CredentialChange::Revoke).await
+}
+
+async fn remove(
+    transaction: &Transaction<'_>,
+    credential_id: &str,
+    change: CredentialChange,
+) -> StoreResult<bool> {
     let removed = transaction
         .query(
             "DELETE FROM user_credentials WHERE credential_id = $1 \
@@ -385,16 +408,61 @@ pub async fn delete(transaction: &Transaction<'_>, credential_id: &str) -> Store
     let Some(row) = removed.first() else {
         return Ok(false);
     };
-    let user_id: String = row.get("user_id");
-    let credential_type: CredentialType = row.get("credential_type");
-    super::outbox::emit(
+    announce_credential_change(
         transaction,
-        super::outbox::CREDENTIAL_CHANGED,
-        &user_id,
-        &serde_json::json!({ "credential_type": credential_type }),
+        &row.get::<_, String>("user_id"),
+        row.get("credential_type"),
+        change,
     )
     .await?;
     Ok(true)
+}
+
+/// Put one credential in place of every one of its type the person holds, and
+/// say so once: an update when something stood, a create when nothing did.
+///
+/// For a door that sets a credential outright, as a provisioning client pushing
+/// a password does. Announcing the clearing and the writing apart would tell a
+/// receiver the password was deleted when it was only replaced.
+pub async fn replace_all_of_type(
+    transaction: &Transaction<'_>,
+    credential: &CredentialModel,
+) -> StoreResult<()> {
+    let replaced = transaction
+        .execute(
+            "DELETE FROM user_credentials WHERE user_id = $1 AND credential_type = $2",
+            &[&credential.user_id, &credential.credential_type],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    write(transaction, credential).await?;
+    announce_credential_change(
+        transaction,
+        &credential.user_id,
+        credential.credential_type,
+        if replaced > 0 {
+            CredentialChange::Update
+        } else {
+            CredentialChange::Create
+        },
+    )
+    .await
+}
+
+/// Tell whoever listens that one of a person's credentials changed, and how.
+async fn announce_credential_change(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    credential_type: CredentialType,
+    change: CredentialChange,
+) -> StoreResult<()> {
+    super::outbox::emit(
+        transaction,
+        super::outbox::CREDENTIAL_CHANGED,
+        user_id,
+        &serde_json::json!({ "credential_type": credential_type, "change_type": change }),
+    )
+    .await
 }
 
 /// Which kinds a user holds, without any of the material.

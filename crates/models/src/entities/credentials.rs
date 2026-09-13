@@ -22,6 +22,28 @@ str_enum! {
 }
 
 str_enum! {
+    /// What happened to a credential, in the four words a credential change
+    /// carries. Who removed one decides between the last two: an administrator
+    /// revokes, while a holder removing their own or a code being spent deletes.
+    pub enum CredentialChange {
+        Create => "create",
+        Update => "update",
+        Delete => "delete",
+        Revoke => "revoke",
+    }
+}
+
+str_enum! {
+    #[postgres(name = "authenticator_attachment")]
+    /// Where a browser reported the key it made lives: built into the device,
+    /// or carried to it. Reported rather than attested.
+    pub enum AuthenticatorAttachment {
+        Platform => "platform",
+        CrossPlatform => "cross-platform",
+    }
+}
+
+str_enum! {
     #[postgres(name = "otp_algorithm")]
     /// The digest an OTP credential is computed with, spelled as an
     /// `otpauth://` URI spells it.
@@ -272,10 +294,18 @@ mod tests {
     fn the_catalogues_agree_with_their_own_spelling() {
         assert_eq!(CredentialType::ALL.len(), 6);
         assert_eq!(OtpAlgorithm::ALL.len(), 3);
+        assert_eq!(CredentialChange::ALL.len(), 4);
+        assert_eq!(AuthenticatorAttachment::ALL.len(), 2);
         assert_eq!(CredentialType::PasswordHistory.as_str(), "password-history");
         assert_eq!(OtpAlgorithm::Sha256.as_str(), "SHA256");
+        assert_eq!(
+            AuthenticatorAttachment::CrossPlatform.as_str(),
+            "cross-platform"
+        );
         assert_round_trips(CredentialType::ALL);
         assert_round_trips(OtpAlgorithm::ALL);
+        assert_round_trips(CredentialChange::ALL);
+        assert_round_trips(AuthenticatorAttachment::ALL);
     }
 
     /// Only the digests an authenticator implements can be stored, and each

@@ -5,7 +5,7 @@ use models::entities::organization::{
 use models::paging::Page;
 use tokio_postgres::Row;
 
-use crate::error::{StoreError, StoreResult};
+use crate::error::{StoreError, StoreResult, refuse_broken_rule};
 use crate::query::list_query::ListQuery;
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
@@ -49,7 +49,7 @@ pub async fn create(transaction: &Transaction<'_>, org: &OrganizationModel) -> S
             &set.params(),
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -128,7 +128,7 @@ pub async fn update(transaction: &Transaction<'_>, org: &OrganizationModel) -> S
     let changed = transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(changed > 0)
 }
 
@@ -288,7 +288,7 @@ pub async fn add_member(
     transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 

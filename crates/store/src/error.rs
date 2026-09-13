@@ -29,6 +29,11 @@ pub enum StoreError {
     #[error("this identifier is already in use")]
     AlreadyExists,
 
+    /// Another rule of the schema a written row broke, named by its constraint
+    /// or column and never by the values the row carried.
+    #[error("the row breaks the rule {rule}")]
+    BrokenRule { rule: String },
+
     /// The realm has no chain, so nothing can be appended to it or verified.
     #[error("the realm has no audit chain")]
     NoChain,
@@ -127,11 +132,20 @@ impl From<commons::walk::Exhausted> for StoreError {
 pub type StoreResult<T> = Result<T, StoreError>;
 
 /// A write the database refused, told apart where the caller can act on it: a
-/// name another row already holds. Anything else stays coarse.
-pub(crate) fn refuse_taken_name(error: tokio_postgres::Error) -> StoreError {
-    if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) {
-        StoreError::AlreadyExists
-    } else {
-        StoreError::Backend
+/// value another row already holds, or another integrity rule the row broke.
+/// Anything else, an unreachable server included, stays coarse.
+pub(crate) fn refuse_broken_rule(error: tokio_postgres::Error) -> StoreError {
+    let Some(refusal) = error.as_db_error() else {
+        return StoreError::Backend;
+    };
+    if refusal.code() == &tokio_postgres::error::SqlState::UNIQUE_VIOLATION {
+        return StoreError::AlreadyExists;
+    }
+    // Only a broken integrity rule names a constraint.
+    match refusal.constraint() {
+        Some(rule) => StoreError::BrokenRule {
+            rule: rule.to_owned(),
+        },
+        None => StoreError::Backend,
     }
 }

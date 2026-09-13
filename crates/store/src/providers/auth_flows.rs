@@ -6,7 +6,7 @@ use models::entities::auth::{
 use models::entities::user::RequiredAction;
 use tokio_postgres::Row;
 
-use crate::error::{StoreError, StoreResult};
+use crate::error::{StoreError, StoreResult, refuse_broken_rule};
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
@@ -54,7 +54,7 @@ pub async fn create_flow(
             &set.params(),
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -81,7 +81,7 @@ pub async fn update_flow(
     Ok(transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?
+        .map_err(refuse_broken_rule)?
         > 0)
 }
 
@@ -188,7 +188,7 @@ pub async fn create_execution(
             &set.params(),
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -224,7 +224,7 @@ pub async fn update_execution(
     Ok(transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?
+        .map_err(refuse_broken_rule)?
         > 0)
 }
 
@@ -286,6 +286,16 @@ pub async fn reorder(transaction: &Transaction<'_>, moves: &[(&str, i32)]) -> St
             .await
             .map_err(|_| StoreError::Backend)?;
     }
+    Ok(())
+}
+
+/// Check the step positions a deferred write left, now rather than at commit,
+/// so two steps placed at one position are refused where it can still be said.
+pub async fn settle_step_positions(transaction: &Transaction<'_>) -> StoreResult<()> {
+    transaction
+        .execute("SET CONSTRAINTS one_step_per_position IMMEDIATE", &[])
+        .await
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -440,7 +450,7 @@ pub async fn register_action(
             &set.params(),
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -520,7 +530,7 @@ pub async fn update_action(
     let changed = transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(changed > 0)
 }
 

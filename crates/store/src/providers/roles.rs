@@ -3,7 +3,7 @@ use models::entities::authz::{AdminAction, GroupModel, RoleModel};
 use models::paging::Page;
 use tokio_postgres::Row;
 
-use crate::error::{StoreError, StoreResult};
+use crate::error::{StoreError, StoreResult, refuse_broken_rule};
 use crate::query::list_query::ListQuery;
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
@@ -132,7 +132,7 @@ pub async fn update(transaction: &Transaction<'_>, role: &RoleModel) -> StoreRes
     let changed = transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(changed > 0)
 }
 
@@ -156,7 +156,7 @@ pub async fn update_group(transaction: &Transaction<'_>, group: &GroupModel) -> 
     let changed = transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(changed > 0)
 }
 
@@ -240,7 +240,7 @@ pub async fn create(transaction: &Transaction<'_>, role: &RoleModel) -> StoreRes
     transaction
         .execute(statement::insert("roles", &set).as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -339,7 +339,7 @@ pub async fn add_composite(
             &[&parent_role_id, &child_role_id],
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -377,7 +377,7 @@ pub async fn create_group(transaction: &Transaction<'_>, group: &GroupModel) -> 
     transaction
         .execute(statement::insert("groups", &set).as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -438,7 +438,7 @@ pub async fn grant_to_user(
             &[&user_id, &role_id],
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -473,7 +473,7 @@ pub async fn add_to_group(
             &[&user_id, &group_id],
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -617,7 +617,7 @@ pub async fn grant_to_group(
             &[&group_id, &role_id],
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 

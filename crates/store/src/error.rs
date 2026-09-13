@@ -76,6 +76,10 @@ pub enum StoreError {
     #[error("no {kind} answers to {named}")]
     UnboundMember { kind: &'static str, named: String },
 
+    /// A policy naming one member twice, which its bindings hold only once.
+    #[error("{kind} {named} is named twice")]
+    RepeatedMember { kind: &'static str, named: String },
+
     /// A permission with no condition.
     #[error("a permission with no condition can only refuse")]
     UnconditionalPermission,

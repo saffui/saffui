@@ -16,17 +16,17 @@ const GROUP_COLUMNS: &str = "tenant, realm_id, group_id, name, display_name, des
                              is_default, parent_id, created_by, created_at, updated_by, \
                              updated_at, version";
 
-/// One role by the name a caller spelled, which the realm holds unique.
-pub async fn load_by_name(
-    transaction: &Transaction<'_>,
-    name: &str,
-) -> StoreResult<Option<RoleModel>> {
-    let statement = format!("SELECT {ROLE_COLUMNS} FROM roles WHERE name = $1");
-    Ok(transaction
-        .query_opt(statement.as_str(), &[&name])
+/// Whether any role of the realm, its own or a client's, already answers to
+/// this name. Asked as a question, because two such roles may already stand.
+pub async fn is_role_name_taken(transaction: &Transaction<'_>, name: &str) -> StoreResult<bool> {
+    transaction
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM roles WHERE name = $1)",
+            &[&name],
+        )
         .await
-        .map_err(|_| StoreError::Backend)?
-        .map(read_role))
+        .map(|row| row.get(0))
+        .map_err(|_| StoreError::Backend)
 }
 
 /// The same for a group.

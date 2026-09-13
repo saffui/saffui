@@ -269,7 +269,8 @@ pub async fn executions_of(
 ///
 /// The unique constraint on the position is deferred for the statement, because
 /// a swap passes through a state where two steps share one position and comes
-/// out of it in the same transaction.
+/// out of it in the same transaction. Checked again once every move is written,
+/// so moves leaving two steps at one position are refused here.
 pub async fn reorder(transaction: &Transaction<'_>, moves: &[(&str, i32)]) -> StoreResult<()> {
     transaction
         .execute("SET CONSTRAINTS one_step_per_position DEFERRED", &[])
@@ -286,7 +287,7 @@ pub async fn reorder(transaction: &Transaction<'_>, moves: &[(&str, i32)]) -> St
             .await
             .map_err(|_| StoreError::Backend)?;
     }
-    Ok(())
+    settle_step_positions(transaction).await
 }
 
 /// Check the step positions a deferred write left, now rather than at commit,

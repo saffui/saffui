@@ -1024,33 +1024,52 @@ async fn a_login_crosses_a_plain_oauth2_upstream_and_comes_back_admitted() {
     let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
     let bearer = plane.token(&support::claims());
     let base = served_upstream(&plane);
-    plain_provider(&plane, &bearer, "plain", &base, json!({})).await;
 
-    let (status, landing, departure) = crossed(&plane, "plain").await;
-    assert!(
-        departure.starts_with(&format!("{base}/auth?")),
-        "{departure}"
-    );
-    assert!(param(&departure, "nonce").is_none(), "{departure}");
-    assert!(param(&departure, "code_challenge").is_some(), "{departure}");
-    assert_eq!(status, StatusCode::SEE_OTHER, "{landing:?}");
-    let landing = landing.expect("a landing");
-    assert!(landing.starts_with(support::REDIRECT), "{landing}");
-    assert!(param(&landing, "code").is_some(), "{landing}");
+    // The same upstream twice: with the defaults, then with the secret posted
+    // in the form and no PKCE, the way some providers want it.
+    for (alias, tuned, challenged) in [
+        ("plain", json!({}), true),
+        (
+            "posted",
+            json!({
+                "token_auth": { "Str": "client_secret_post" },
+                "pkce": { "Str": "false" },
+            }),
+            false,
+        ),
+    ] {
+        plain_provider(&plane, &bearer, alias, &base, tuned).await;
+        let (status, landing, departure) = crossed(&plane, alias).await;
+        assert!(
+            departure.starts_with(&format!("{base}/auth?")),
+            "{departure}"
+        );
+        assert!(param(&departure, "nonce").is_none(), "{departure}");
+        assert_eq!(
+            param(&departure, "code_challenge").is_some(),
+            challenged,
+            "{departure}"
+        );
+        assert_eq!(status, StatusCode::SEE_OTHER, "{alias}: {landing:?}");
+        let landing = landing.expect("a landing");
+        assert!(landing.starts_with(support::REDIRECT), "{landing}");
+        assert!(param(&landing, "code").is_some(), "{landing}");
 
-    let mut connection = plane.connection().await;
-    let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
-        .await;
-    let linked = store::providers::brokering::linked_user(&transaction, "plain", support::SUBJECT)
-        .await
-        .expect("the link table")
-        .expect("the arrival was linked under its subject");
-    assert_ne!(
-        linked,
-        support::SUBJECT,
-        "an untrusted arrival took over the local account"
-    );
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let linked =
+            store::providers::brokering::linked_user(&transaction, alias, support::SUBJECT)
+                .await
+                .expect("the link table")
+                .expect("the arrival was linked under its subject");
+        assert_ne!(
+            linked,
+            support::SUBJECT,
+            "{alias}: an untrusted arrival took over the local account"
+        );
+    }
 }
 
 /// An address counts only when the provider's list marks it primary and

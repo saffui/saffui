@@ -1,9 +1,17 @@
 use super::support::{self, Plane};
 use actix_web::App;
 use models::entities::authz::AdminAction;
+use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use server::api::config::{Plane as Mounted, register};
 use std::path::Path;
 use std::process::Command;
+use store::tenancy::TenantContext;
+
+/// A login of ada's the console may end: ending the one the token names would
+/// sign the rest of the run out. The contract suite names it too.
+const SPARE_SESSION: &str = "session-contract";
+/// An app of ada's the console may take away, for the same reason.
+const SPARE_APP: &str = "cred-contract";
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
@@ -23,6 +31,80 @@ fn mounted(plane: &Plane) -> Mounted {
     }
 }
 
+/// What the console lists and the planted world lacks, so a list it reads
+/// carries a row to judge: a passkey beside ada's app, her spare app, a
+/// consent she gave, and her spare login with what the app got out of it.
+async fn plant_what_the_console_lists(plane: &Plane) {
+    plane.enrol_soft_passkey().await;
+    plane.enrol_totp(SPARE_APP, support::TOTP_SECRET).await;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    store::providers::consents::keep(
+        &transaction,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        &["openid".to_owned()],
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("a consent");
+    store::providers::sessions::open(
+        &transaction,
+        &UserSessionModel {
+            browser_state: None,
+            tenant: support::TENANT.into(),
+            session_id: SPARE_SESSION.into(),
+            realm_id: support::REALM.into(),
+            user_id: support::SUBJECT.into(),
+            login_username: support::SUBJECT.into(),
+            broker_session_id: None,
+            broker_user_id: None,
+            auth_method: None,
+            ip_address: None,
+            user_agent: None,
+            started_at: chrono::Utc::now().timestamp(),
+            auth_time: None,
+            loa: None,
+            expiration: None,
+            state: UserSessionState::LoggedIn,
+            remember_me: None,
+            last_session_refresh: None,
+            is_offline: None,
+            notes: None,
+        },
+    )
+    .await
+    .expect("a spare login");
+    store::providers::sessions::open_client_session(
+        &transaction,
+        &ClientSessionModel {
+            tenant: support::TENANT.into(),
+            session_id: format!("{SPARE_SESSION}-{}", support::CONFIDENTIAL),
+            realm_id: support::REALM.into(),
+            user_id: support::SUBJECT.into(),
+            user_session_id: SPARE_SESSION.into(),
+            client_id: support::CONFIDENTIAL.into(),
+            auth_method: None,
+            redirect_uri: Some(support::REDIRECT.into()),
+            started_at: chrono::Utc::now().timestamp(),
+            expiration: None,
+            notes: None,
+            current_refresh_token: None,
+            current_refresh_token_use_count: None,
+            offline: None,
+            requested_claims: None,
+        },
+    )
+    .await
+    .expect("what the app got out of the spare login");
+    transaction.commit().await.expect("the world kept");
+}
+
 /// The console's own service calls, run by its contract suite against this
 /// server on a real socket. Its mocked transport tests prove what the console
 /// does with an answer; this proves the server still gives that answer: every
@@ -33,6 +115,7 @@ fn mounted(plane: &Plane) -> Mounted {
 async fn the_console_contract_holds_against_a_live_server() {
     let plane = Plane::with_actions(AdminAction::ALL).await;
     let bearer = plane.token(&support::claims());
+    plant_what_the_console_lists(&plane).await;
 
     let served = mounted(&plane);
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");

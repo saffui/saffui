@@ -663,3 +663,99 @@ async fn the_flow_a_realm_runs_is_not_deleted_out_from_under_it() {
     let (status, told) = asked(&plane, Method::DELETE, &bound, &bearer, None).await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
 }
+
+/// An action the realm registered and turned off is asked of nobody: the door
+/// that asks a person refuses it in the realm's words, turned back on it asks
+/// again, and an action the realm never registered stays askable.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_action_the_realm_turned_off_is_asked_of_nobody() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RequiredActionWrite,
+        AdminAction::UserRead,
+        AdminAction::UserWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/auth/required-actions");
+    let registration = |enabled: bool| {
+        json!({
+            "provider_id": "totp",
+            "action": "configure-totp",
+            "name": "configure-totp",
+            "display_name": "Configure TOTP",
+            "description": "",
+            "enabled": enabled,
+        })
+    };
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(registration(false)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+
+    let person = format!("/admin/realms/{REALM}/users/{}", support::SUBJECT);
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{person}/required-actions/configure-totp"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|why| why.contains("turned that action off")),
+        "{told}"
+    );
+    let (_, held) = asked(&plane, Method::GET, &person, &bearer, None).await;
+    assert!(
+        !held["required_actions"]
+            .as_array()
+            .is_some_and(|owed| owed.iter().any(|action| action == "configure-totp")),
+        "a refused action was put on the person: {held}"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/configure-totp"),
+        &bearer,
+        Some(registration(true)),
+    )
+    .await;
+    assert!(status.is_success(), "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{person}/required-actions/configure-totp"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "an action turned back on was refused: {told}"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{person}/required-actions/verify-email"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "an action the realm never registered was refused: {told}"
+    );
+}

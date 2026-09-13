@@ -592,9 +592,9 @@ async fn a_replay_feeds_one_listener_dry_by_default() {
     let (status, told) = asked(
         &plane,
         Method::POST,
-        &format!("/admin/realms/{REALM}/events/replay"),
+        &format!("/admin/realms/{REALM}/identity-providers/late-ear/redeliveries"),
         &bearer,
-        Some(json!({ "from_event_id": 1, "connector": "late-ear" })),
+        Some(json!({ "from_event_id": 1 })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{told}");
@@ -610,9 +610,9 @@ async fn a_replay_feeds_one_listener_dry_by_default() {
     let (status, ran) = asked(
         &plane,
         Method::POST,
-        &format!("/admin/realms/{REALM}/events/replay"),
+        &format!("/admin/realms/{REALM}/identity-providers/late-ear/redeliveries"),
         &bearer,
-        Some(json!({ "from_event_id": 1, "connector": "late-ear", "dry_run": false })),
+        Some(json!({ "from_event_id": 1, "dry_run": false })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{ran}");
@@ -664,9 +664,9 @@ async fn a_replay_feeds_one_listener_dry_by_default() {
     let (status, refused) = asked(
         &plane,
         Method::POST,
-        &format!("/admin/realms/{REALM}/events/replay"),
+        &format!("/admin/realms/{REALM}/identity-providers/an-ear/redeliveries"),
         &bearer,
-        Some(json!({ "from_event_id": 1, "connector": "an-ear", "dry_run": false })),
+        Some(json!({ "from_event_id": 1, "dry_run": false })),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refused}");
@@ -680,10 +680,23 @@ async fn a_replay_feeds_one_listener_dry_by_default() {
     let (status, _) = asked(
         &plane,
         Method::POST,
-        &format!("/admin/realms/{REALM}/events/replay"),
+        &format!("/admin/realms/{REALM}/identity-providers/nobody/redeliveries"),
         &bearer,
-        Some(json!({ "from_event_id": 1, "connector": "nobody", "dry_run": false })),
+        Some(json!({ "from_event_id": 1, "dry_run": false })),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    // The shared path no longer re-delivers: it is the catch-up's alone.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/events/replay"),
+        &bearer,
+        Some(json!({ "from_event_id": 1, "connector": "late-ear", "dry_run": false })),
+    )
+    .await;
+    assert!(
+        !status.is_success(),
+        "the old replay path still re-delivers: {told}"
+    );
 }

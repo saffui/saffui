@@ -9,7 +9,7 @@ const { redeliverToConnector } = await import("@/services/events");
 afterEach(() => vi.unstubAllGlobals());
 
 describe("connector redelivery transport", () => {
-  test("sends the connector, range and simulation flag to the replay endpoint", async () => {
+  test("names the connector in the path and sends the range and simulation flag", async () => {
     const result = {
       dry_run: true,
       would_deliver: 8,
@@ -34,11 +34,10 @@ describe("connector redelivery transport", () => {
     ).resolves.toEqual(result);
 
     expect(fetch).toHaveBeenCalledWith(
-      "/admin/realms/north%2Feast/events/replay",
+      "/admin/realms/north%2Feast/identity-providers/audit%2Fwebhook/redeliveries",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({
-          connector: "audit/webhook",
           from_event_id: 12,
           to_event_id: 42,
           dry_run: true,

@@ -255,6 +255,41 @@ async fn what_happens_here_is_signalled_there() {
         "{claims}"
     );
 
+    // A key is a credential too: enrolling one for ada is a credential-change,
+    // and so is revoking it on the admin plane.
+    plane.enrol_passkey(json!({}), b"ada-key".to_vec()).await;
+    walked(&plane).await;
+    let (_, _, set) = heard.try_recv().expect("the enrolment was pushed");
+    let claims = plane.claims_of(&set).await;
+    assert_eq!(
+        claims["events"][CREDENTIAL_CHANGE]["credential_type"], "webauthn",
+        "{claims}"
+    );
+    let revoking = format!(
+        "/admin/realms/{REALM}/users/{}/keys/{}",
+        support::SUBJECT,
+        BASE64URL_NOPAD.encode(b"ada-key"),
+    );
+    let (status, told) = asked(&plane, Method::DELETE, &revoking, &bearer, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    walked(&plane).await;
+    let (_, _, set) = heard.try_recv().expect("the revocation was pushed");
+    let claims = plane.claims_of(&set).await;
+    assert_eq!(
+        claims["events"][CREDENTIAL_CHANGE]["credential_type"], "webauthn",
+        "{claims}"
+    );
+    assert_eq!(claims["sub_id"]["sub"], support::SUBJECT, "{claims}");
+
+    // The same key again is one ada no longer holds: nothing goes, nothing is said.
+    let (status, told) = asked(&plane, Method::DELETE, &revoking, &bearer, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+    walked(&plane).await;
+    assert!(
+        heard.try_recv().is_err(),
+        "a revocation that removed nothing was signalled"
+    );
+
     // A new person is nothing at all: provisioning is the connectors'
     // traffic, not a security signal.
     let (status, born) = asked(

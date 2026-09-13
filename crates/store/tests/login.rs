@@ -423,6 +423,78 @@ async fn a_user_presents_what_they_enrolled() {
     );
 }
 
+/// The credential types announced for a person, oldest first.
+async fn announced_credential_types(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    user_id: &str,
+) -> Vec<String> {
+    transaction
+        .query(
+            "SELECT coalesce(payload->>'credential_type', '') FROM event_outbox \
+             WHERE kind = $1 AND user_id = $2 ORDER BY event_id",
+            &[&store::providers::outbox::CREDENTIAL_CHANGED, &user_id],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+/// A key arriving or leaving is announced once, and revoking a key the person
+/// does not hold announces nothing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_key_enrolled_or_revoked_is_announced_once() {
+    let fixture = Fixture::with_user().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    webauthn::enrol(&transaction, &credential(b"key-1", "ada", "yubikey"))
+        .await
+        .unwrap();
+    assert_eq!(
+        announced_credential_types(&transaction, "ada").await,
+        ["webauthn"],
+        "the enrolment was not announced exactly once"
+    );
+
+    assert!(
+        !webauthn::revoke(&transaction, "grace", b"key-1")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !webauthn::revoke(&transaction, "ada", b"key-9")
+            .await
+            .unwrap()
+    );
+    assert!(
+        announced_credential_types(&transaction, "grace")
+            .await
+            .is_empty(),
+        "a key grace never held was announced as gone"
+    );
+    assert_eq!(
+        announced_credential_types(&transaction, "ada").await,
+        ["webauthn"],
+        "a revocation that removed nothing was announced"
+    );
+
+    assert!(
+        webauthn::revoke(&transaction, "ada", b"key-1")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        announced_credential_types(&transaction, "ada").await,
+        ["webauthn", "webauthn"],
+        "the revocation was not announced exactly once"
+    );
+}
+
 /// A login that has expired is finished, whatever it is asked to do next.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]

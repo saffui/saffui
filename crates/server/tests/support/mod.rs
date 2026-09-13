@@ -892,7 +892,7 @@ impl Plane {
 
     /// Enrol a passkey for the subject, as a registration ceremony would leave
     /// it. The blob is the library's own format, which is what the store keeps.
-    #[allow(dead_code, reason = "only the protocol suite enrols one")]
+    #[allow(dead_code, reason = "only the protocol and caep suites enrol one")]
     pub async fn enrol_passkey(&self, passkey: serde_json::Value, credential_id: Vec<u8>) {
         let mut connection = self.connection().await;
         let transaction = self

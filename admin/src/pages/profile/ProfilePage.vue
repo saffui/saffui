@@ -4,12 +4,20 @@ import { useRoute } from "vue-router";
 import { Eye, EyeOff } from "lucide-vue-next";
 import AppHint from "@/components/AppHint.vue";
 import { say } from "@/i18n";
-import { changeOwnPassword } from "@/services/account";
+import {
+  changeOwnPassword,
+  listOwnFactors,
+  removeOwnApp,
+  removeOwnKey,
+  removeOwnRecoveryCodes,
+  type OwnFactors,
+} from "@/services/account";
+import { ApiError } from "@/services/http";
 import { getUser } from "@/services/users";
 import { afterWrites } from "@/services/writes";
 import { useSession } from "@/stores/session";
 import type { UserFull } from "@/models/user";
-import { OWN_FACTORS, type OwnFactor } from "./ownFactors";
+import { OWN_FACTORS, freshEnough, type OwnFactor } from "./ownFactors";
 import { ownPasswordReady, passwordKeptHere } from "./ownPassword";
 
 const route = useRoute();
@@ -17,6 +25,7 @@ const session = useSession();
 const realm = computed(() => session.realm || String(route.params.realm));
 const user = ref<UserFull | null>(null);
 const failed = ref(false);
+const factors = ref<OwnFactors | null>(null);
 
 const current = ref("");
 const replacement = ref("");
@@ -34,6 +43,35 @@ async function addFactor(factor: OwnFactor) {
   await session.enrol(realm.value, factor, route.fullPath);
 }
 
+function when(held: string | null): string {
+  return held ? new Date(held).toLocaleDateString() : "";
+}
+
+async function signInAgain() {
+  if (window.confirm(say("profile-factor-sign-in-again"))) {
+    await session.reauthenticate(realm.value, route.fullPath);
+  }
+}
+
+/// Remove one of the person's factors, or first send them to sign in again
+/// when the sign-in behind the page is too old for a removal.
+async function removeFactor(named: string, remove: () => Promise<void>) {
+  if (!freshEnough(factors.value?.fresh_until ?? null, Math.floor(Date.now() / 1000))) {
+    await signInAgain();
+    return;
+  }
+  if (!window.confirm(say("profile-factor-remove-confirm", { factor: named }))) return;
+  try {
+    await remove();
+  } catch (refusal) {
+    // The toast already said; a sign-in gone stale between the list and the
+    // click is the one refusal the page can do something about.
+    if (refusal instanceof ApiError && refusal.code === "account.reauthentication_required") {
+      await signInAgain();
+    }
+  }
+}
+
 async function load() {
   if (!session.userId) {
     failed.value = true;
@@ -42,6 +80,12 @@ async function load() {
   try {
     user.value = await getUser(realm.value, session.userId);
     failed.value = false;
+    try {
+      factors.value = await listOwnFactors(realm.value);
+    } catch {
+      // A role without account:read shows no list rather than a broken one.
+      factors.value = null;
+    }
   } catch {
     user.value = null;
     failed.value = true;
@@ -205,6 +249,64 @@ async function changePassword() {
         </button>
       </div>
       <p v-if="previewing" class="mt-2 text-xs text-muted">{{ say("profile-factors-preview") }}</p>
+      <div v-if="factors" class="sf-list mt-3 divide-y divide-border text-xs">
+        <p class="px-4 pt-3 pb-2 text-[11px] text-muted">{{ say("profile-factors-held") }}</p>
+        <div v-for="app in factors.apps" :key="app.id" class="flex items-center gap-3 px-4 py-2.5">
+          <span class="flex-1">
+            <strong class="font-medium">{{ app.label || say(`profile-factor-kind-${app.kind}`) }}</strong>
+            <span v-if="app.created_at" class="ml-2 text-muted">
+              {{ say("profile-factor-added", { when: when(app.created_at) }) }}
+            </span>
+          </span>
+          <AppHint v-if="app.kept_because" :text="app.kept_because" />
+          <button
+            type="button"
+            class="sf-button"
+            :disabled="previewing || app.kept_because !== null"
+            @click="removeFactor(app.label || say(`profile-factor-kind-${app.kind}`), () => removeOwnApp(realm, app.id))"
+          >
+            {{ say("profile-factor-remove") }}
+          </button>
+        </div>
+        <div v-for="key in factors.keys" :key="key.id" class="flex items-center gap-3 px-4 py-2.5">
+          <span class="flex-1">
+            <strong class="font-medium">{{ key.label || say("profile-factor-key") }}</strong>
+            <span v-if="key.last_used_at" class="ml-2 text-muted">
+              {{ say("profile-factor-used", { when: when(key.last_used_at) }) }}
+            </span>
+            <span v-else-if="key.enrolled_at" class="ml-2 text-muted">
+              {{ say("profile-factor-added", { when: when(key.enrolled_at) }) }}
+            </span>
+          </span>
+          <AppHint v-if="key.kept_because" :text="key.kept_because" />
+          <button
+            type="button"
+            class="sf-button"
+            :disabled="previewing || key.kept_because !== null"
+            @click="removeFactor(key.label || say('profile-factor-key'), () => removeOwnKey(realm, key.id))"
+          >
+            {{ say("profile-factor-remove") }}
+          </button>
+        </div>
+        <div v-if="factors.recovery_codes > 0" class="flex items-center gap-3 px-4 py-2.5">
+          <span class="flex-1">
+            <strong class="font-medium">
+              {{ say("profile-factor-sheet", { count: String(factors.recovery_codes) }) }}
+            </strong>
+          </span>
+          <button
+            type="button"
+            class="sf-button"
+            :disabled="previewing"
+            @click="removeFactor(say('profile-factor-sheet-named'), () => removeOwnRecoveryCodes(realm))"
+          >
+            {{ say("profile-factor-remove") }}
+          </button>
+        </div>
+        <p v-if="!factors.apps.length && !factors.keys.length" class="px-4 py-3 text-muted">
+          {{ say("profile-factors-none") }}
+        </p>
+      </div>
     </section>
   </div>
 </template>

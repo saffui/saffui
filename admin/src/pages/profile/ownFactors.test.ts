@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { OWN_FACTORS } from "./ownFactors";
+import { OWN_FACTORS, freshEnough } from "./ownFactors";
+import { previewAnswer } from "@/services/preview";
 
 const i18n = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "i18n");
 
@@ -24,5 +25,22 @@ describe("the factors a person adds to their own account", () => {
         );
       }
     }
+  });
+
+  test("a sign-in removes a factor only until the moment the server gave", () => {
+    expect(freshEnough(1000, 999)).toBe(true);
+    expect(freshEnough(1000, 1000)).toBe(true);
+    expect(freshEnough(1000, 1001)).toBe(false);
+    expect(freshEnough(null, 0)).toBe(false);
+  });
+
+  test("the preview world lists factors and takes a removal", () => {
+    const held = previewAnswer<{ apps: unknown[]; keys: unknown[] }>(
+      "/admin/realms/main/account/credentials",
+      "GET",
+    );
+    expect(held.apps.length).toBeGreaterThan(0);
+    expect(held.keys.length).toBeGreaterThan(0);
+    expect(previewAnswer("/admin/realms/main/account/recovery-codes", "DELETE")).toBeUndefined();
   });
 });

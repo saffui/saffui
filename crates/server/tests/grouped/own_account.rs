@@ -403,3 +403,337 @@ async fn changing_ones_own_password_costs_its_own_capability() {
         "a refused caller changed the password"
     );
 }
+
+async fn prove_sign_in_at(plane: &Plane, at: i64) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::sessions::record_authentication(&transaction, support::SESSION, at, Some(1))
+        .await
+        .expect("the sessions table");
+    transaction.commit().await.expect("the sign-in kept");
+}
+
+async fn plant_app(plane: &Plane, credential_id: &str) {
+    use models::entities::credentials::{
+        CredentialModel, CredentialSecret, OtpAlgorithm, OtpParameters,
+    };
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::credentials::create(
+        &transaction,
+        &CredentialModel::otp(
+            credential_id.to_owned(),
+            support::REALM.into(),
+            support::SUBJECT.into(),
+            CredentialSecret::new("JBSWY3DPEHPK3PXP".to_owned()),
+            OtpAlgorithm::Sha1,
+            OtpParameters::totp_default(),
+            models::auditable::AuditableModel::from_creator(
+                support::TENANT.to_owned(),
+                support::SUBJECT.to_owned(),
+            ),
+        ),
+    )
+    .await
+    .expect("the credentials table");
+    transaction.commit().await.expect("the app kept");
+}
+
+async fn plant_key(plane: &Plane, credential_id: &[u8]) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::webauthn::enrol(
+        &transaction,
+        &store::providers::webauthn::EnrolledCredential {
+            credential_id: credential_id.to_vec(),
+            user_id: support::SUBJECT.into(),
+            label: "laptop".into(),
+            passkey: json!({}),
+            sign_count: 0,
+            enrolled_at: None,
+            last_used_at: None,
+        },
+    )
+    .await
+    .expect("the keys table");
+    transaction.commit().await.expect("the key kept");
+}
+
+async fn plant_recovery_codes(plane: &Plane) {
+    use crypto::provider::CryptoProvider as _;
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::credentials::replace_recovery_codes(
+        &transaction,
+        support::provider().digest(),
+        support::REALM,
+        support::SUBJECT,
+        &["first-code", "second-code"],
+        &["sheet-1", "sheet-2"],
+        &models::auditable::AuditableModel::from_creator(
+            support::TENANT.to_owned(),
+            support::SUBJECT.to_owned(),
+        ),
+    )
+    .await
+    .expect("the credentials table");
+    transaction.commit().await.expect("the sheet kept");
+}
+
+async fn credential_changes_told(plane: &Plane) -> i64 {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    transaction
+        .query_one(
+            "SELECT count(*) FROM event_outbox WHERE kind = $1 AND user_id = $2",
+            &[
+                &store::providers::outbox::CREDENTIAL_CHANGED,
+                &support::SUBJECT,
+            ],
+        )
+        .await
+        .expect("the outbox")
+        .get(0)
+}
+
+fn own(leaf: &str) -> String {
+    format!("/admin/realms/{REALM}/account/{leaf}")
+}
+
+/// A person reads what they hold to sign in with: kinds, names and dates, why
+/// a factor has to stay, and never a secret.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_reads_their_own_factors_and_what_has_to_stay() {
+    let plane = Plane::with_actions(&[AdminAction::AccountRead]).await;
+    let bearer = plane.token(&support::claims());
+    plant_recovery_codes(&plane).await;
+    prove_sign_in_at(&plane, chrono::Utc::now().timestamp()).await;
+
+    let (status, held) = asked(&plane, Method::GET, &own("credentials"), &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert_eq!(held["password"], true, "{held}");
+    assert_eq!(held["apps"].as_array().map(Vec::len), Some(1), "{held}");
+    assert_eq!(held["apps"][0]["id"], "cred-totp", "{held}");
+    assert_eq!(held["apps"][0]["kind"], "totp", "{held}");
+    assert!(
+        held["apps"][0]["kept_because"]
+            .as_str()
+            .is_some_and(|why| why.contains("last second factor")),
+        "the only app was offered for removal: {held}"
+    );
+    assert_eq!(held["recovery_codes"], 2, "{held}");
+    assert!(held["fresh_until"].is_i64(), "{held}");
+    for secret in plane.subject_totp_secrets().await {
+        assert!(
+            !held.to_string().contains(&secret),
+            "a secret left the plane: {held}"
+        );
+    }
+
+    plant_key(&plane, b"key-one").await;
+    let (_, held) = asked(&plane, Method::GET, &own("credentials"), &bearer, None).await;
+    assert!(
+        held["apps"][0]["kept_because"].is_null(),
+        "an app with a key beside it was kept: {held}"
+    );
+    assert_eq!(held["keys"][0]["label"], "laptop", "{held}");
+    assert!(held["keys"][0]["kept_because"].is_null(), "{held}");
+}
+
+/// A removal is taken only from a login proven moments ago.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn removing_a_factor_needs_a_recent_sign_in() {
+    let plane = Plane::with_actions(&[AdminAction::AccountWrite]).await;
+    let bearer = plane.token(&support::claims());
+    plant_app(&plane, "app-one").await;
+    plant_key(&plane, b"key-one").await;
+    let path = own("credentials/app-one");
+
+    let (status, told) = asked(&plane, Method::DELETE, &path, &bearer, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{told}");
+    assert_eq!(
+        told["error_code"], "account.reauthentication_required",
+        "{told}"
+    );
+
+    let long_ago = chrono::Utc::now().timestamp() - services::account::FRESH_SIGN_IN_SECONDS - 60;
+    prove_sign_in_at(&plane, long_ago).await;
+    let (status, told) = asked(&plane, Method::DELETE, &path, &bearer, None).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a sign-in proven long ago removed a factor: {told}"
+    );
+
+    prove_sign_in_at(&plane, chrono::Utc::now().timestamp()).await;
+    let before = credential_changes_told(&plane).await;
+    let (status, told) = asked(&plane, Method::DELETE, &path, &bearer, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    assert_eq!(
+        credential_changes_told(&plane).await,
+        before + 1,
+        "a removed app went unannounced"
+    );
+    let (status, told) = asked(&plane, Method::DELETE, &path, &bearer, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+}
+
+/// The last second factor stays until another takes its place, and a removal
+/// reaches nothing the caller does not hold.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_last_second_factor_stays_until_another_takes_its_place() {
+    let plane = Plane::with_actions(&[AdminAction::AccountWrite]).await;
+    let bearer = plane.token(&support::claims());
+    prove_sign_in_at(&plane, chrono::Utc::now().timestamp()).await;
+
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &own("credentials/cred-totp"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(told["error_code"], "account.last_factor", "{told}");
+
+    plant_key(&plane, b"key-one").await;
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &own("credentials/cred-totp"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+
+    let key = data_encoding::BASE64URL_NOPAD.encode(b"key-one");
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &own(&format!("keys/{key}")),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the key left alone was taken: {told}"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &own("credentials/not-an-app-of-mine"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+}
+
+/// An account without a password signs in by key, so its last key stays even
+/// with an app beside it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_account_without_a_password_keeps_its_last_key() {
+    let plane = Plane::with_actions(&[AdminAction::AccountWrite]).await;
+    let bearer = plane.token(&support::claims());
+    prove_sign_in_at(&plane, chrono::Utc::now().timestamp()).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &within()).await;
+        store::providers::credentials::delete_quietly(&transaction, "cred-1")
+            .await
+            .expect("the credentials table");
+        transaction.commit().await.expect("the password gone");
+    }
+    plant_key(&plane, b"key-one").await;
+    plant_app(&plane, "app-one").await;
+    let key_one = own(&format!(
+        "keys/{}",
+        data_encoding::BASE64URL_NOPAD.encode(b"key-one")
+    ));
+
+    let (status, told) = asked(&plane, Method::DELETE, &key_one, &bearer, None).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .is_some_and(|why| why.contains("only way")),
+        "{told}"
+    );
+
+    plant_key(&plane, b"key-two").await;
+    let (status, told) = asked(&plane, Method::DELETE, &key_one, &bearer, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+}
+
+/// The sheet of recovery codes is a way back, not a defence, so it may always
+/// go, and it goes whole.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_recovery_sheet_may_always_go() {
+    let plane = Plane::with_actions(&[AdminAction::AccountRead, AdminAction::AccountWrite]).await;
+    let bearer = plane.token(&support::claims());
+    prove_sign_in_at(&plane, chrono::Utc::now().timestamp()).await;
+    plant_recovery_codes(&plane).await;
+
+    let before = credential_changes_told(&plane).await;
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &own("recovery-codes"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    assert_eq!(
+        credential_changes_told(&plane).await,
+        before + 1,
+        "the sheet went without one announcement"
+    );
+    let (_, held) = asked(&plane, Method::GET, &own("credentials"), &bearer, None).await;
+    assert_eq!(held["recovery_codes"], 0, "{held}");
+    assert_eq!(held["apps"][0]["id"], "cred-totp", "{held}");
+
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &own("recovery-codes"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+}
+
+/// Reading one's factors and removing them cost their own capabilities.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn reading_and_removing_ones_factors_cost_their_own_capabilities() {
+    let reader = Plane::with_actions(&[AdminAction::AccountRead]).await;
+    let bearer = reader.token(&support::claims());
+    prove_sign_in_at(&reader, chrono::Utc::now().timestamp()).await;
+    let (status, told) = asked(
+        &reader,
+        Method::DELETE,
+        &own("recovery-codes"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{told}");
+    drop(reader);
+
+    let writer = Plane::with_actions(&[AdminAction::AccountWrite, AdminAction::UserRead]).await;
+    let bearer = writer.token(&support::claims());
+    let (status, told) = asked(&writer, Method::GET, &own("credentials"), &bearer, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{told}");
+}

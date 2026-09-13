@@ -35,8 +35,9 @@ str_enum! {
         RealmKeysWrite => "realm:keys:write",
         UserRead => "user:read",
         UserWrite => "user:write",
-        /// The caller's own account and nobody else's: what a person may do to
-        /// themselves from the console.
+        /// The caller's own account and nobody else's: what a person may see of
+        /// and do to themselves from the console.
+        AccountRead => "account:read",
         AccountWrite => "account:write",
         RoleRead => "role:read",
         RoleWrite => "role:write",

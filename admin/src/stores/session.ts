@@ -54,6 +54,13 @@ export const useSession = defineStore("session", {
       rememberPath(path);
       await clientFor(realm).login(consoleSignIn({ enrol: ceremony }));
     },
+    /// Sign in again, proving the account afresh, and land back on the page
+    /// that asked: removing a factor takes a sign-in this recent.
+    async reauthenticate(realm: string, path: string) {
+      rememberRealm(realm);
+      rememberPath(path);
+      await clientFor(realm).login(consoleSignIn({ prompt: "login" }));
+    },
     adopt(realm: string, tokens: Tokens) {
       this.realm = realm;
       this.accessToken = tokens.access_token;

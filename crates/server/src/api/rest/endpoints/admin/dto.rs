@@ -349,3 +349,11 @@ pub struct PasswordSpec {
     #[serde(default)]
     pub temporary: bool,
 }
+
+/// A person's own password and the one replacing it. No `Debug`: both halves
+/// are secrets, and nothing should be able to print them.
+#[derive(Deserialize)]
+pub struct PasswordChange {
+    pub current_password: String,
+    pub new_password: String,
+}

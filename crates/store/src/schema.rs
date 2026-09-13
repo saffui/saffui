@@ -601,6 +601,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V099__passkey_attachment.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 100,
+            name: "decision_trace",
+            sql: include_str!("../migrations/V100__decision_trace.sql"),
+            transactional: true,
+        }),
     ]
 }
 

@@ -74,6 +74,7 @@ pub async fn weigh(
         return Weighed::Deny;
     }
 
+    let trace = crate::otel::current_trace_id();
     let answer = decide(
         &transaction,
         &Journal::new(pool.clone(), tenancy.clone()),
@@ -86,7 +87,7 @@ pub async fn weigh(
             },
             action: &route.action,
             decision_id: asked.decision_id,
-            trace_id: None,
+            trace_id: trace.as_deref(),
         },
     )
     .await;

@@ -185,3 +185,67 @@ fn read_subject(row: Row) -> Subject {
         subject_relation: row.get("subject_relation"),
     }
 }
+
+/// One edge as written: an object, a relation, and who stands in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tuple {
+    pub object_type: String,
+    pub object_id: String,
+    pub relation: String,
+    pub subject: Subject,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// What a listing of edges is narrowed to. Every part is optional, and every
+/// part given has to hold.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct TupleFilter<'a> {
+    pub object_type: Option<&'a str>,
+    pub relation: Option<&'a str>,
+    pub subject_type: Option<&'a str>,
+    pub subject_id: Option<&'a str>,
+}
+
+/// The realm's edges a page at a time, in the order the key keeps them.
+///
+/// Read as written and never walked: a listing says what stands, the engine
+/// says what follows from it.
+pub async fn tuples(
+    transaction: &Transaction<'_>,
+    filter: TupleFilter<'_>,
+    first: i64,
+    max: i64,
+) -> StoreResult<Vec<Tuple>> {
+    Ok(transaction
+        .query(
+            "SELECT object_type, object_id, relation, subject_type, subject_id, \
+                    subject_relation, created_at \
+             FROM rebac_tuples \
+             WHERE ($1::text IS NULL OR object_type = $1) \
+               AND ($2::text IS NULL OR relation = $2) \
+               AND ($3::text IS NULL OR subject_type = $3) \
+               AND ($4::text IS NULL OR subject_id = $4) \
+             ORDER BY object_type, object_id, relation, subject_type, subject_id, \
+                      subject_relation \
+             OFFSET $5 LIMIT $6",
+            &[
+                &filter.object_type,
+                &filter.relation,
+                &filter.subject_type,
+                &filter.subject_id,
+                &first,
+                &max,
+            ],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| Tuple {
+            object_type: row.get("object_type"),
+            object_id: row.get("object_id"),
+            relation: row.get("relation"),
+            created_at: row.get("created_at"),
+            subject: read_subject(row),
+        })
+        .collect())
+}

@@ -1598,6 +1598,8 @@ pub struct Exchanging<'a> {
     /// against the narrowest root in the room and lands in `cap`.
     pub capabilities: Option<&'a str>,
     pub keys: &'a [models::entities::keys::RealmSigningKeyView],
+    /// The trace the exchange runs in, which the decision it asks for records.
+    pub trace_id: Option<&'a str>,
 }
 
 /// Exchange a user's token for one that acts on their behalf, RFC 8693.
@@ -1794,7 +1796,7 @@ pub async fn token_exchange(
                 },
                 action: "token-exchange",
                 decision_id: &decision_id,
-                trace_id: None,
+                trace_id: exchanging.trace_id,
             },
         )
         .await

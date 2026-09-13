@@ -34,6 +34,8 @@ mod admin_user_memberships;
 mod carte;
 #[path = "grouped/cli.rs"]
 mod cli;
+#[path = "grouped/console_contract.rs"]
+mod console_contract;
 #[path = "grouped/health.rs"]
 mod health;
 #[path = "grouped/housekeeping.rs"]

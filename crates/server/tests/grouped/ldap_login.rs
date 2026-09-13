@@ -847,3 +847,45 @@ async fn a_directory_person_is_not_mirrored_into_a_breach() {
         "a shadow was left behind to carry the breach"
     );
 }
+
+/// An import the store cannot write is not blamed on the directory: the walk
+/// succeeds, the mirror fails here, and the answer is an internal error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG) and a directory (SAFFUI_TEST_LDAP)"]
+async fn an_import_the_store_cannot_write_is_not_blamed_on_the_directory() {
+    let Some(url) = directory_url() else {
+        eprintln!("SAFFUI_TEST_LDAP unset; the journey has no directory to cross");
+        return;
+    };
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/federations/directory"),
+        &bearer,
+        Some(dialled(&url, "(uid={username})")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (owner, connection) = support::owner()
+        .connect(tokio_postgres::NoTls)
+        .await
+        .expect("the owner");
+    tokio::spawn(connection);
+    owner
+        .batch_execute("REVOKE INSERT ON users FROM saffui_app")
+        .await
+        .expect("the write withheld");
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/federations/directory/import"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{told}");
+}

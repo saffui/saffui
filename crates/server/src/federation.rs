@@ -405,6 +405,15 @@ pub struct Imported {
     pub walked: u64,
 }
 
+/// Why an operator-asked import stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unimported {
+    /// The directory could not be walked.
+    Unwalked,
+    /// A mirror could not be read or written here.
+    Unwritten,
+}
+
 /// Mirror everybody the directory holds: unknown people become shadows the
 /// way a first login would make them, known mirrors are refreshed the way
 /// the sync refreshes them. Local people keep their names.
@@ -414,11 +423,14 @@ pub async fn import_everyone(
     context: &store::tenancy::TenantContext,
     alias: &str,
     directory: &LdapDirectory,
-) -> Result<Imported, ()> {
+) -> Result<Imported, Unimported> {
     use auth::login::directory::Directory;
     use chrono::Utc;
 
-    let people = directory.everyone().await?;
+    let people = directory
+        .everyone()
+        .await
+        .map_err(|()| Unimported::Unwalked)?;
     let mut told = Imported {
         walked: people.len() as u64,
         ..Default::default()
@@ -427,21 +439,21 @@ pub async fn import_everyone(
     for person in people {
         let standing = store::providers::users::load_by_name(transaction, &person.username)
             .await
-            .map_err(|_| ())?;
+            .map_err(|_| Unimported::Unwritten)?;
         match standing {
             None => {
                 let shadow =
                     auth::login::browser::shadow_row(provider, context, alias, &person, now)
-                        .map_err(|_| ())?;
+                        .map_err(|_| Unimported::Unwritten)?;
                 store::providers::users::create(transaction, &shadow)
                     .await
-                    .map_err(|_| ())?;
+                    .map_err(|_| Unimported::Unwritten)?;
                 told.imported += 1;
             }
             Some(held) if held.user_storage == Some(models::entities::user::UserStorage::Ldap) => {
                 let refreshed = refresh_shadow(transaction, held, &person)
                     .await
-                    .map_err(|_| ())?;
+                    .map_err(|_| Unimported::Unwritten)?;
                 if refreshed {
                     told.refreshed += 1;
                 }

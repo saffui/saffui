@@ -798,3 +798,109 @@ async fn an_upstream_logout_reaches_down() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+/// A first arrival the store cannot write is answered as unavailable, not as
+/// a refusal the person would take for their own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_first_arrival_the_store_cannot_write_is_not_refused() {
+    let plane = Plane::with_actions(&[AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let served = mounted(&plane);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().expect("an address").port();
+    let upstream = actix_web::HttpServer::new(move || App::new().configure(register(&served)))
+        .listen(listener)
+        .expect("a listener")
+        .workers(1)
+        .disable_signals()
+        .run();
+    tokio::spawn(upstream);
+    let base = format!("http://127.0.0.1:{port}/realms/{REALM}/protocol/openid-connect");
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": ALIAS,
+            "name": ALIAS,
+            "display_name": "This realm, from outside",
+            "description": "",
+            "trust_email": false,
+            "configs": {
+                "issuer": { "Str": support::origin().issuer(REALM) },
+                "authorization_endpoint": { "Str": format!("{base}/auth") },
+                "token_endpoint": { "Str": format!("{base}/token") },
+                "jwks_uri": { "Str": format!("{base}/certs") },
+                "client_id": { "Str": support::CONFIDENTIAL },
+                "client_secret": { "Str": support::CLIENT_SECRET },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+
+    let cookie = opened_login(&plane).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/login"
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a departure")
+        .to_owned();
+    let state = param(&location, "state").expect("a state");
+    let nonce = param(&location, "nonce").expect("a nonce");
+    let challenge = param(&location, "code_challenge").expect("a challenge");
+    let code = plane
+        .mint_code_with_nonce(
+            support::CONFIDENTIAL,
+            &format!(
+                "{}/protocol/openid-connect/broker/{ALIAS}/endpoint",
+                support::origin().issuer(REALM)
+            ),
+            "openid",
+            Some((&challenge, "S256")),
+            &nonce,
+        )
+        .await;
+
+    // The account table refuses the application its write, the way a store
+    // that cannot take one would.
+    let (owner, connection) = support::owner()
+        .connect(tokio_postgres::NoTls)
+        .await
+        .expect("the owner");
+    tokio::spawn(connection);
+    owner
+        .batch_execute("REVOKE INSERT ON users FROM saffui_app")
+        .await
+        .expect("the write withheld");
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/endpoint?code={}&state={}",
+                support::urlencode(&code),
+                support::urlencode(&state),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+}

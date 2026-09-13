@@ -278,3 +278,128 @@ async fn the_mcp_door_mints_and_attenuates_under_the_realm_switch() {
         }
     }
 }
+
+/// A capability minted over MCP records its exchange decision under the trace
+/// the call ran in.
+#[cfg(feature = "otel")]
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_minted_capability_records_the_trace_it_ran_in() {
+    use models::entities::attributes::AttributeValue;
+    use models::entities::authz::AdminAction;
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::prelude::*;
+
+    const TRACE: &str = "6cafe00dfeed55667788990011223344";
+    let inside = format!("00-{TRACE}-b7ad6b7169203331-01");
+
+    let plane = Plane::with_actions(&[AdminAction::UmaRead, AdminAction::UmaWrite]).await;
+    let admin = plane.token(&support::claims());
+    agent_world(&plane, true).await;
+    let subject = subject_token(&plane).await;
+
+    // A permissive application and a resource for the policy to name, so the
+    // exchange behind the mint reaches the decision point and goes through.
+    let plain = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let servers = format!(
+        "/admin/realms/{REALM}/authz/servers/{}",
+        support::CONFIDENTIAL
+    );
+    let response = test::call_service(
+        &plain,
+        test::TestRequest::post()
+            .uri(&servers)
+            .insert_header(("authorization", format!("Bearer {admin}")))
+            .set_json(json!({ "enforcement_mode": "permissive", "decision_strategy": "unanimous" }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let resource: Value = test::call_and_read_body_json(
+        &plain,
+        test::TestRequest::post()
+            .uri(&format!("{servers}/resources"))
+            .insert_header(("authorization", format!("Bearer {admin}")))
+            .set_json(json!({
+                "name": "exchanges", "display_name": "", "description": "",
+                "resource_uris": [], "resource_type": "urn:app:exchanges",
+                "resource_owner": "app", "user_managed_access": false,
+            }))
+            .to_request(),
+    )
+    .await;
+    let exchanges = resource["resource_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no resource: {resource}"))
+        .to_owned();
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        let bag = client.configs.get_or_insert_with(Default::default);
+        for (key, value) in [
+            ("token.exchange.policy_server", support::CONFIDENTIAL),
+            ("token.exchange.policy_resource", exchanges.as_str()),
+            ("token.exchange.policy_scope", "exchange"),
+        ] {
+            bag.insert(key.to_owned(), AttributeValue::Str(value.to_owned()));
+        }
+        assert!(
+            store::providers::clients::update(&transaction, &client)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+    }
+
+    server::otel::install_propagation();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_simple_exporter(exporter)
+        .build();
+    let _scope = tracing::subscriber::set_default(
+        tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("the-test"))),
+    );
+    let traced =
+        test::init_service(server::api::config::observed().configure(register(&mounted(&plane))))
+            .await;
+    let response = test::call_service(
+        &traced,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/mcp"))
+            .insert_header(("authorization", format!("Bearer {subject}")))
+            .insert_header(("traceparent", inside.as_str()))
+            .set_json(rpc(
+                "tools/call",
+                json!({ "name": "capability.mint",
+                        "arguments": { "capabilities": "saffui.user.read" } }),
+            ))
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (is_error, minted) = unwrapped(&body);
+    assert!(!is_error && minted["access_token"].is_string(), "{body}");
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let decided = store::providers::authz_policies::decisions_of_trace(&transaction, TRACE, 10)
+        .await
+        .unwrap();
+    let actions: Vec<&str> = decided.iter().map(|held| held.action.as_str()).collect();
+    assert_eq!(
+        actions,
+        vec!["token-exchange"],
+        "the mint did not record its decision under the trace it ran in"
+    );
+}

@@ -473,3 +473,46 @@ async fn an_agent_whose_account_name_is_held_is_refused() {
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
 }
+
+/// Deleting an agent's client takes its service account with it, so the same
+/// identifier registers again.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_deleted_client_takes_its_service_account_with_it() {
+    use models::entities::authz::AdminAction;
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let agents = format!("/admin/realms/{REALM}/agents");
+    let registration = || Some(json!({ "client_id": "scribe-3", "capabilities": ["a.b"] }));
+    let (status, born) = asked(&plane, Method::POST, &agents, &bearer, registration()).await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    let (status, _) = asked(
+        &plane,
+        Method::DELETE,
+        &format!("/admin/realms/{REALM}/clients/scribe-3"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, REALM),
+            )
+            .await;
+        assert!(
+            store::providers::users::load_service_account(&transaction, "scribe-3")
+                .await
+                .expect("the account table")
+                .is_none(),
+            "the service account outlived its client"
+        );
+    }
+
+    let (status, again) = asked(&plane, Method::POST, &agents, &bearer, registration()).await;
+    assert_eq!(status, StatusCode::CREATED, "{again}");
+}

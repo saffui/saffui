@@ -44,6 +44,9 @@
   const button = document.getElementById("continue");
   const allow = document.getElementById("allow");
   const deny = document.getElementById("deny");
+  // Offered only beside a factor the application asked for: what the realm
+  // requires has no way around it.
+  const later = document.getElementById("enroll-later");
   const whichOrg = document.getElementById("which-org");
   const whichOrgList = document.getElementById("which-org-list");
   const recoveryRow = document.getElementById("recovery-row");
@@ -352,6 +355,7 @@
     button.disabled = yes;
     allow.disabled = yes;
     deny.disabled = yes;
+    later.disabled = yes;
   }
 
   function round() {
@@ -372,6 +376,7 @@
   // What one round was told. Returns whatever the ceremony returns, so the
   // round it starts is part of the same chain.
   function read(status, told) {
+    later.hidden = true;
     // Admitted, or refused for the client to hear: either way the browser goes
     // where the server said, and only if it said. Following a place nobody
     // named is a dead end that says nothing, and whoever is waiting on this
@@ -425,6 +430,7 @@
       }
       document.getElementById("otpauth").href = told.asks.otpauth;
       document.getElementById("secret").textContent = told.asks.secret;
+      later.hidden = !told.asks.optional;
       only("app");
       form.totp_register.focus();
       return;
@@ -466,11 +472,13 @@
         line.textContent = drawn;
         list.appendChild(line);
       });
+      later.hidden = !told.asks.optional;
       only("sheet");
       form.recovery_codes_register.focus();
       return;
     }
     if (told.asks) {
+      later.hidden = !(told.execution === "webauthn-register" && told.asks.optional);
       return ceremony(told);
     }
     // A step that issues nothing and still waits is a code from an app. The
@@ -534,6 +542,13 @@
   deny.addEventListener("click", function () {
     answered.consent = "refused";
     round();
+  });
+
+  later.addEventListener("click", function () {
+    answered.enrolment_declined = true;
+    round().then(function () {
+      delete answered.enrolment_declined;
+    });
   });
 
   form.addEventListener("submit", function (event) {

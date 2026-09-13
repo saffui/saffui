@@ -42,6 +42,8 @@ pub struct Answered {
     pub recovery_codes_register: Option<String>,
     /// The replacement, when the realm told this person to change theirs.
     pub new_password: Option<String>,
+    /// The person declined the factor the application asked them to add.
+    pub enrolment_declined: Option<bool>,
     /// What a mailed link carried, as the page it landed on posted it.
     pub magic_link: Option<String>,
     /// The texted code, answering a second factor.
@@ -273,6 +275,7 @@ pub async fn answer(
                 .filter(|held| !held.is_empty()),
             kept: kept.as_deref(),
             new_password: renewed.as_ref(),
+            declined: answered.enrolment_declined == Some(true),
         },
         &read_provenance(&request),
         sealing.sender.is_some(),

@@ -135,6 +135,7 @@ impl PushedRequest {
             claims: self.text("claims"),
             organization: self.text("organization"),
             ui_locales: self.text("ui_locales"),
+            enrol: self.text("enrol"),
         }
     }
 }

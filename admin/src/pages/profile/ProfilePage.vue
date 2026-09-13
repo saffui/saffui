@@ -9,6 +9,7 @@ import { getUser } from "@/services/users";
 import { afterWrites } from "@/services/writes";
 import { useSession } from "@/stores/session";
 import type { UserFull } from "@/models/user";
+import { OWN_FACTORS, type OwnFactor } from "./ownFactors";
 import { ownPasswordReady, passwordKeptHere } from "./ownPassword";
 
 const route = useRoute();
@@ -26,6 +27,12 @@ const showAgain = ref(false);
 const saving = ref(false);
 const refusal = ref("");
 const ended = ref<number | null>(null);
+/// The preview has no server behind it, so no sign-in to send a person to.
+const previewing = computed(() => session.accessToken === "preview");
+
+async function addFactor(factor: OwnFactor) {
+  await session.enrol(realm.value, factor, route.fullPath);
+}
 
 async function load() {
   if (!session.userId) {
@@ -179,6 +186,25 @@ async function changePassword() {
       <p v-else-if="ended !== null" class="mt-2 text-xs text-muted" role="status">
         {{ say("profile-password-done", { count: String(ended) }) }}
       </p>
+    </section>
+
+    <section v-if="user" class="mt-8">
+      <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("profile-factors") }} <AppHint name="profile-factors-help" />
+      </div>
+      <div class="mt-2 flex flex-wrap gap-2">
+        <button
+          v-for="factor in OWN_FACTORS"
+          :key="factor"
+          type="button"
+          class="sf-button"
+          :disabled="previewing"
+          @click="addFactor(factor)"
+        >
+          {{ say(`profile-factor-${factor}`) }}
+        </button>
+      </div>
+      <p v-if="previewing" class="mt-2 text-xs text-muted">{{ say("profile-factors-preview") }}</p>
     </section>
   </div>
 </template>

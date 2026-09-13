@@ -6632,3 +6632,238 @@ async fn the_signup_panel_wears_the_realms_password_rules() {
         "the blacklist rode onto the page: {body}"
     );
 }
+
+/// An application may ask a person to add an authenticator app. A browser
+/// already signed in is sent to sign in again, the ceremony runs as the realm's
+/// own would and says it may be declined, and the app is kept.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_application_asks_for_an_authenticator_app_after_a_fresh_sign_in() {
+    let plane = Plane::with_actions(&[]).await;
+    let session = signed_in_once(&plane).await;
+    let (status, sent) = authorize_signed_in(
+        &plane,
+        &asking_for(&[("enrol", "configure-totp")]),
+        &session,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FOUND);
+    assert_eq!(
+        sent, "https://login.test",
+        "a standing session added a factor without signing in again"
+    );
+
+    let before = plane.subject_totp_secrets().await;
+    let mut asked = started(support::CONFIDENTIAL);
+    asked.push(("enrol", "configure-totp".to_owned()));
+    let (_, _, opened) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["execution"], "totp-register", "{told}");
+    assert_eq!(told["asks"]["optional"], true, "{told}");
+    let secret = told["asks"]["secret"]
+        .as_str()
+        .expect("a secret to enter")
+        .to_owned();
+
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "totp_register": code_for(&secret),
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(admitted["status"], "admitted", "{admitted}");
+    let after = plane.subject_totp_secrets().await;
+    assert_eq!(after.len(), before.len() + 1, "the app was not kept");
+    assert!(
+        after.contains(&secret),
+        "the secret shown is not the one kept"
+    );
+    assert_eq!(
+        plane.subject_owes().await,
+        vec![],
+        "an asked factor left an instruction behind"
+    );
+}
+
+/// A factor an application asked for may be declined: the login is admitted
+/// and nothing is kept.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_asked_factor_can_be_declined_and_the_login_goes_on() {
+    let plane = Plane::with_actions(&[]).await;
+    let before = plane.recovery_codes_left().await;
+    let mut asked = started(support::CONFIDENTIAL);
+    asked.push(("enrol", "configure-recovery-codes".to_owned()));
+    let (_, _, opened) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["execution"], "recovery-codes-register", "{told}");
+    assert_eq!(told["asks"]["optional"], true, "{told}");
+
+    let (status, admitted, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "enrolment_declined": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{admitted}");
+    assert_eq!(
+        admitted["status"], "admitted",
+        "a declined factor held the login: {admitted}"
+    );
+    assert_eq!(
+        plane.recovery_codes_left().await,
+        before,
+        "a declined sheet was kept"
+    );
+}
+
+/// What the realm requires stays required when an application asks for the
+/// same factor: nothing offers a way out, and declining changes nothing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_factor_the_realm_requires_cannot_be_declined_even_when_asked() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    plane
+        .require_of_subject(RequiredAction::ConfigureTotp)
+        .await;
+    let mut asked = started(support::CONFIDENTIAL);
+    asked.push(("enrol", "configure-totp".to_owned()));
+    let (_, _, opened) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["execution"], "totp-register", "{told}");
+    assert!(
+        told["asks"].get("optional").is_none(),
+        "a required factor offered a way out: {told}"
+    );
+
+    let (status, told, _) = login_step(
+        &plane,
+        Some(&auth_session),
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+            "enrolment_declined": true,
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        told["status"], "challenge",
+        "declining a required factor admitted the login: {told}"
+    );
+    assert_eq!(told["execution"], "totp-register", "{told}");
+    assert_eq!(
+        plane.subject_owes().await,
+        vec![RequiredAction::ConfigureTotp]
+    );
+}
+
+/// Only a ceremony that adds a factor may be asked for, never without a screen
+/// to run it on, and never one the realm turned off.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn only_a_factor_can_be_asked_for_and_only_with_a_screen() {
+    use models::entities::user::RequiredAction;
+
+    let plane = Plane::with_actions(&[]).await;
+    for (asked, what) in [
+        (vec![("enrol", "update-password")], "a password replacement"),
+        (vec![("enrol", "verify-email")], "an address verification"),
+        (vec![("enrol", "no-such-ceremony")], "an unknown ceremony"),
+        (
+            vec![("enrol", "configure-totp"), ("prompt", "none")],
+            "a ceremony without a screen",
+        ),
+    ] {
+        let (_, sent) = authorize(&plane, &asking_for(&asked)).await;
+        assert!(
+            sent.starts_with(REDIRECT) && sent.contains("error=invalid_request"),
+            "{what} was not refused: {sent}"
+        );
+    }
+
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        for (action, enabled) in [
+            (RequiredAction::ConfigureTotp, false),
+            (RequiredAction::ConfigureRecoveryCodes, true),
+        ] {
+            store::providers::auth_flows::register_action(
+                &transaction,
+                &models::entities::auth::RequiredActionModel {
+                    action_id: format!("registered-{action}"),
+                    realm_id: support::REALM.into(),
+                    provider_id: action.to_string(),
+                    action,
+                    name: action.to_string(),
+                    display_name: action.to_string(),
+                    description: String::new(),
+                    enabled: Some(enabled),
+                    default_action: Some(false),
+                    on_time_action: None,
+                    priority: Some(10),
+                    metadata: models::auditable::AuditableModel::from_creator(
+                        support::TENANT.to_owned(),
+                        "root".to_owned(),
+                    ),
+                },
+            )
+            .await
+            .expect("a registered action");
+        }
+        transaction.commit().await.expect("the registrations kept");
+    }
+
+    let (_, sent) = authorize(&plane, &asking_for(&[("enrol", "configure-totp")])).await;
+    assert!(
+        sent.contains("error=invalid_request"),
+        "a ceremony the realm turned off was offered: {sent}"
+    );
+    let (_, sent) = authorize(
+        &plane,
+        &asking_for(&[("enrol", "configure-recovery-codes")]),
+    )
+    .await;
+    assert_eq!(
+        sent, "https://login.test",
+        "a ceremony the realm turned on was refused"
+    );
+}

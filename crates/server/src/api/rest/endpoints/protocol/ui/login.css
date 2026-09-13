@@ -167,7 +167,8 @@ button:focus-visible {
   color: var(--brand-on-primary);
 }
 #allow { margin-top: 16px; }
-#deny {
+#deny,
+#enroll-later {
   width: 100%;
   margin-top: 8px;
   background: transparent;

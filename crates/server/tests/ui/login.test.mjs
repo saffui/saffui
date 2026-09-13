@@ -689,3 +689,40 @@ test("a discoverable challenge is asked for modally, not through autofill", asyn
   assert.equal(asked.asked.publicKey.challenge, "abc", "the challenge was not handed over");
   assert.equal(page.element("key").hidden, false, "the waiting line was not shown");
 });
+
+test("a factor the application asked for can be declined", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "totp-register",
+          asks: { secret: "SECRET", otpauth: "otpauth://totp/main:ada", qr: "", optional: true },
+        },
+      },
+      { told: { status: "admitted", redirect_to: "https://app.example/cb?code=abc" } },
+    ],
+  });
+  await page.signIn();
+  assert.equal(page.element("enroll-later").hidden, false, "an asked factor offers no way out");
+
+  await page.press("enroll-later");
+  assert.equal(page.sent[1].body.enrolment_declined, true);
+  assert.deepEqual(page.went, ["https://app.example/cb?code=abc"]);
+});
+
+test("a factor the realm requires cannot be declined", async () => {
+  const page = opened({
+    rounds: [
+      {
+        told: {
+          status: "challenge",
+          execution: "recovery-codes-register",
+          asks: { codes: ["one", "two"] },
+        },
+      },
+    ],
+  });
+  await page.signIn();
+  assert.equal(page.element("enroll-later").hidden, true, "a required factor offered a way out");
+});

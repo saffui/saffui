@@ -10,6 +10,7 @@ use models::entities::realm::RealmModel;
 use models::entities::user::{RequiredAction, UserModel};
 use secrecy::SecretBox;
 use serde_json::{Value, json};
+use std::str::FromStr;
 use store::providers::{credentials, one_time_tokens, users, webauthn};
 use store::tenancy::TenantContext;
 use uuid::Uuid;
@@ -65,6 +66,9 @@ pub struct Answers<'a> {
     pub kept: Option<&'a str>,
     /// The replacement, when the realm told this person to change theirs.
     pub new_password: Option<&'a SecretBox<String>>,
+    /// The person declined the factor the application asked for. Honoured for
+    /// that ceremony alone: what the realm requires cannot be declined.
+    pub declined: bool,
 }
 
 /// Where an enrolment stands after one round.
@@ -119,7 +123,15 @@ pub async fn required(
         .flatten()
         .and_then(|fresh| fresh.required_actions)
         .unwrap_or_default();
-    let pending = |action: RequiredAction| standing.contains(&action);
+    let owed = |action: RequiredAction| standing.contains(&action);
+    // A factor the application asked for rides the login's notes and runs as
+    // though the realm required it, except that the person may decline it.
+    let asked = remembered
+        .get("enrol")
+        .and_then(Value::as_str)
+        .and_then(|named| RequiredAction::from_str(named).ok())
+        .filter(|action| !owed(*action) && !answers.declined);
+    let pending = |action: RequiredAction| owed(action) || asked == Some(action);
     // First, before any new factor is enrolled: the person just proved the
     // old password, and when the realm has said to replace it, everything
     // else waits behind the replacement. Two instructions, one ceremony:
@@ -152,24 +164,26 @@ pub async fn required(
             _ => start(transaction, &party, subject).await,
         };
         if !matches!(round, Enrolment::Settled) {
-            return round;
+            return offered(round, asked == Some(RequiredAction::ConfigureWebauthn));
         }
     }
     if pending(RequiredAction::ConfigureTotp) {
-        return match (answers.code, remembered.get(CONFIGURE_TOTP)) {
+        let round = match (answers.code, remembered.get(CONFIGURE_TOTP)) {
             (Some(typed), Some(state)) => {
                 finish_totp(transaction, provider, tenant, subject, typed, state).await
             }
             _ => start_totp(provider, realm, subject),
         };
+        return offered(round, asked == Some(RequiredAction::ConfigureTotp));
     }
     if pending(RequiredAction::ConfigureRecoveryCodes) {
-        return match (answers.kept, remembered.get(CONFIGURE_RECOVERY_CODES)) {
+        let round = match (answers.kept, remembered.get(CONFIGURE_RECOVERY_CODES)) {
             (Some(typed), Some(state)) => {
                 finish_recovery_codes(transaction, provider, tenant, subject, typed, state).await
             }
             _ => start_recovery_codes(provider),
         };
+        return offered(round, asked == Some(RequiredAction::ConfigureRecoveryCodes));
     }
     if pending(RequiredAction::VerifyEmail) {
         return match answers.verified_address {
@@ -202,6 +216,28 @@ pub async fn required(
         .await;
     }
     Enrolment::Settled
+}
+
+/// A round of a factor the application asked for says so, which is what lets
+/// the page offer a way to decline it.
+fn offered(round: Enrolment, optional: bool) -> Enrolment {
+    match round {
+        Enrolment::Asked {
+            named,
+            mut challenge,
+            sending,
+        } if optional => {
+            if let Some(shown) = challenge.shown.as_object_mut() {
+                shown.insert("optional".to_owned(), Value::Bool(true));
+            }
+            Enrolment::Asked {
+                named,
+                challenge,
+                sending,
+            }
+        }
+        other => other,
+    }
 }
 
 /// The start leg of an authenticator app: a fresh secret, shown once as the

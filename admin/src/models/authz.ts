@@ -37,6 +37,20 @@ export interface PolicyRow {
   minute_end?: number | null;
 }
 
+/// What the listing answers for `StoredPolicy::Unreadable`: the row is there,
+/// and this build cannot decode its rule.
+export interface UnreadablePolicyRow {
+  policy_id: string;
+  unreadable: true;
+}
+
+/// The policy listing split in two, so a caller neither draws a policy it
+/// cannot read nor loses sight of one that is there.
+export interface PolicyListing {
+  readable: PolicyRow[];
+  unreadable: string[];
+}
+
 /// Partial mirror of a stored resource row.
 export interface ResourceRow {
   resource_id: string;

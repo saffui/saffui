@@ -104,7 +104,8 @@ async function loadServer() {
   if (!clientId.value) return;
   try {
     [policies.value, resources.value, scopes.value] = await Promise.all([
-      listPolicies(realm.value, clientId.value),
+      // A policy this build cannot read gives the engine nothing to decide.
+      listPolicies(realm.value, clientId.value).then((listing) => listing.readable),
       listResources(realm.value, clientId.value),
       listAuthzScopes(realm.value, clientId.value),
     ]);

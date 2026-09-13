@@ -70,6 +70,7 @@ const clients = ref<ClientBrief[]>([]);
 let clientLoad = 0;
 let resourceLoad = 0;
 const policies = ref<PolicyRow[]>([]);
+const unreadablePolicies = ref<string[]>([]);
 const resources = ref<ResourceRow[]>([]);
 const scopes = ref<ScopeRow[]>([]);
 const failed = ref("");
@@ -136,6 +137,7 @@ async function load() {
   litPolicies.value = new Set();
   selected.value = null;
   policies.value = [];
+  unreadablePolicies.value = [];
   resources.value = [];
   scopes.value = [];
   askedPolicy.value = "";
@@ -147,7 +149,8 @@ async function load() {
       listAuthzScopes(realm.value, clientId.value),
     ]);
     if (current !== resourceLoad) return;
-    policies.value = foundPolicies;
+    policies.value = foundPolicies.readable;
+    unreadablePolicies.value = foundPolicies.unreadable;
     resources.value = foundResources;
     scopes.value = foundScopes;
     askedPolicy.value = policies.value[0]?.policy_id ?? "";
@@ -157,6 +160,7 @@ async function load() {
       unprotected.value = true;
       if (drawer.value === "policy" || drawer.value === "resource" || drawer.value === "scope") drawer.value = "";
       policies.value = [];
+      unreadablePolicies.value = [];
       resources.value = [];
       scopes.value = [];
       return;
@@ -173,6 +177,7 @@ async function loadClients() {
   clientId.value = "";
   clients.value = [];
   policies.value = [];
+  unreadablePolicies.value = [];
   resources.value = [];
   scopes.value = [];
   unprotected.value = false;
@@ -1003,6 +1008,27 @@ function nodeStroke(row: PolicyRow): string {
       </div>
 
       <aside class="flex w-full shrink-0 flex-col gap-3 xl:w-72">
+        <div v-if="unreadablePolicies.length" class="rounded-lg border border-border bg-surface p-3">
+          <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+            {{ say("authz-unreadable-title") }}
+          </div>
+          <ul class="mt-2 flex flex-col gap-2.5">
+            <li v-for="unreadableId in unreadablePolicies" :key="unreadableId" class="flex flex-col gap-1.5">
+              <span class="font-mono text-[11px] break-all text-ink">{{ unreadableId }}</span>
+              <span class="flex items-center gap-1.5">
+                <span class="sf-badge sf-badge-warn">{{ say("authz-unreadable-chip") }}</span>
+                <AppHint name="authz-unreadable-help" />
+                <button
+                  type="button"
+                  class="ml-auto text-[11px] text-faint hover:text-danger"
+                  @click="erasing = { leaf: 'policies', id: unreadableId, named: unreadableId }"
+                >
+                  {{ say("authz-erase") }}
+                </button>
+              </span>
+            </li>
+          </ul>
+        </div>
         <div class="rounded-lg border border-border bg-surface p-3">
           <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
             {{ say("authz-simulator") }}

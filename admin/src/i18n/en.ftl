@@ -563,6 +563,9 @@ authz-indeterminate = INDETERMINATE
 authz-no-reasons = The engine met nothing worth naming.
 authz-built-from = Built from
 authz-binds = Binds
+authz-unreadable-title = Unreadable policies
+authz-unreadable-chip = Rule unreadable by this build
+authz-unreadable-help = This build cannot read the rule this policy holds. It decides nothing until a build that reads it runs.
 
 nav-journal = Journal
 federation-title = Federation

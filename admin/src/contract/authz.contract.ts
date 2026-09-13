@@ -73,7 +73,7 @@ describe("authorization", () => {
     const resource = (await keepAnswer(listResources, REALM, SERVER)).find(
       (held) => held.name === "orders",
     );
-    const policy = (await keepAnswer(listPolicies, REALM, SERVER)).find(
+    const policy = (await keepAnswer(listPolicies, REALM, SERVER)).readable.find(
       (held) => held.name === "staff",
     );
     if (!scope || !resource || !policy) throw new Error("the model did not read back whole");

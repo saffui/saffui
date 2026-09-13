@@ -15,16 +15,69 @@ pub const STATE_LIFESPAN: Duration = Duration::minutes(10);
 /// what decides whether a token is trusted does not stay a string in a bag.
 #[derive(Debug, Clone)]
 pub struct Upstream {
-    pub issuer: String,
     pub authorization_endpoint: String,
     pub token_endpoint: String,
-    pub jwks_uri: String,
     pub client_id: String,
-    /// Space separated, `openid` unless the operator said more.
+    /// Space separated: `openid` for OpenID Connect unless the operator said
+    /// more, nothing for plain OAuth 2.0.
     pub scope: String,
+    pub token_auth: TokenAuth,
+    /// Whether the departure carries a PKCE challenge: on, unless the operator
+    /// turned it off for a provider that mishandles it.
+    pub pkce: bool,
+    pub identity: Identity,
+}
+
+/// How this server proves itself at the upstream's token endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenAuth {
+    /// The client id and secret in a Basic authorization header.
+    Basic,
+    /// The client id and secret as form fields.
+    Post,
+}
+
+/// How the upstream says who arrived.
+#[derive(Debug, Clone)]
+pub enum Identity {
+    /// OpenID Connect: an identity token signed with the provider's keys.
+    Signed(SignedIdentity),
+    /// Plain OAuth 2.0: the provider's account API, asked with the access token.
+    Asked(AccountApi),
+}
+
+#[derive(Debug, Clone)]
+pub struct SignedIdentity {
+    pub issuer: String,
+    pub jwks_uri: String,
     /// The algorithms an upstream token may be signed with. Bounded by
     /// configuration, never by the token's own header.
     pub allowed_algs: Vec<SignAlg>,
+}
+
+/// Where a plain OAuth 2.0 provider says who holds an access token, and the
+/// JSON pointers into its answer that say it.
+#[derive(Debug, Clone)]
+pub struct AccountApi {
+    pub userinfo_endpoint: String,
+    /// An identifier the provider gives no one else and never changes: a
+    /// number or an opaque id, never a login a person can rename.
+    pub subject: String,
+    pub username: Option<String>,
+    pub email: Option<String>,
+    pub email_verified: Option<String>,
+    pub emails: Option<EmailList>,
+}
+
+/// A second call listing the account's addresses, for a provider that marks
+/// only there which one is verified.
+#[derive(Debug, Clone)]
+pub struct EmailList {
+    pub endpoint: String,
+    pub list: String,
+    pub address: String,
+    pub verified: String,
+    pub primary: String,
 }
 
 /// Why a provider's configuration cannot be used, each naming the field.
@@ -36,6 +89,12 @@ pub enum Unusable {
     Insecure(&'static str),
     #[error("no signing algorithm answers to {0}")]
     UnknownAlgorithm(String),
+    #[error("no protocol answers to {0}")]
+    UnknownProtocol(String),
+    #[error("no token endpoint authentication answers to {0}")]
+    UnknownTokenAuth(String),
+    #[error("{0} is not a JSON pointer")]
+    NotAPointer(&'static str),
 }
 
 fn text<'a>(bag: &'a AttributesMap, key: &str) -> Option<&'a str> {
@@ -57,6 +116,37 @@ impl Upstream {
     pub fn parse(provider: &IdentityProviderModel) -> Result<Self, Unusable> {
         let empty = AttributesMap::new();
         let bag = provider.configs.as_ref().unwrap_or(&empty);
+        let identity = match text(bag, "protocol").unwrap_or("oidc") {
+            "oidc" => Identity::Signed(SignedIdentity::parse(bag)?),
+            "oauth2" => Identity::Asked(AccountApi::parse(bag)?),
+            other => return Err(Unusable::UnknownProtocol(other.to_owned())),
+        };
+        let token_auth = match text(bag, "token_auth").unwrap_or("client_secret_basic") {
+            "client_secret_basic" => TokenAuth::Basic,
+            "client_secret_post" => TokenAuth::Post,
+            other => return Err(Unusable::UnknownTokenAuth(other.to_owned())),
+        };
+        let unsaid_scope = match identity {
+            Identity::Signed(_) => "openid",
+            Identity::Asked(_) => "",
+        };
+        Ok(Self {
+            authorization_endpoint: addressed(bag, "authorization_endpoint")?,
+            token_endpoint: addressed(bag, "token_endpoint")?,
+            client_id: text(bag, "client_id")
+                .ok_or(Unusable::Missing("client_id"))?
+                .to_owned(),
+            scope: text(bag, "scope").unwrap_or(unsaid_scope).to_owned(),
+            token_auth,
+            pkce: !matches!(bag.get("pkce"), Some(AttributeValue::Bool(false)))
+                && text(bag, "pkce") != Some("false"),
+            identity,
+        })
+    }
+}
+
+impl SignedIdentity {
+    fn parse(bag: &AttributesMap) -> Result<Self, Unusable> {
         let allowed_algs = match text(bag, "allowed_algs") {
             None => vec![SignAlg::Rs256, SignAlg::Es256],
             Some(named) => named
@@ -71,15 +161,46 @@ impl Upstream {
             issuer: text(bag, "issuer")
                 .ok_or(Unusable::Missing("issuer"))?
                 .to_owned(),
-            authorization_endpoint: addressed(bag, "authorization_endpoint")?,
-            token_endpoint: addressed(bag, "token_endpoint")?,
             jwks_uri: addressed(bag, "jwks_uri")?,
-            client_id: text(bag, "client_id")
-                .ok_or(Unusable::Missing("client_id"))?
-                .to_owned(),
-            scope: text(bag, "scope").unwrap_or("openid").to_owned(),
             allowed_algs,
         })
+    }
+}
+
+impl AccountApi {
+    fn parse(bag: &AttributesMap) -> Result<Self, Unusable> {
+        let emails = match text(bag, "emails_endpoint") {
+            None => None,
+            Some(_) => Some(EmailList {
+                endpoint: addressed(bag, "emails_endpoint")?,
+                list: pointer(bag, "emails_list_pointer")?.unwrap_or_default(),
+                address: pointer(bag, "emails_address_pointer")?
+                    .unwrap_or_else(|| "/email".to_owned()),
+                verified: pointer(bag, "emails_verified_pointer")?
+                    .unwrap_or_else(|| "/verified".to_owned()),
+                primary: pointer(bag, "emails_primary_pointer")?
+                    .unwrap_or_else(|| "/primary".to_owned()),
+            }),
+        };
+        Ok(Self {
+            userinfo_endpoint: addressed(bag, "userinfo_endpoint")?,
+            subject: pointer(bag, "subject_pointer")?
+                .ok_or(Unusable::Missing("subject_pointer"))?,
+            username: pointer(bag, "username_pointer")?,
+            email: pointer(bag, "email_pointer")?,
+            email_verified: pointer(bag, "email_verified_pointer")?,
+            emails,
+        })
+    }
+}
+
+/// A JSON pointer the operator named, when they named one: `/` first, or it is
+/// refused rather than read as a field name.
+fn pointer(bag: &AttributesMap, key: &'static str) -> Result<Option<String>, Unusable> {
+    match text(bag, key).filter(|given| !given.is_empty()) {
+        None => Ok(None),
+        Some(given) if given.starts_with('/') => Ok(Some(given.to_owned())),
+        Some(_) => Err(Unusable::NotAPointer(key)),
     }
 }
 
@@ -120,16 +241,27 @@ pub fn depart(
             .map_err(|_| Unbrokered::Backend)?,
     );
 
-    let location = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
+    let mut location = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}",
         upstream.authorization_endpoint,
         encoded(&upstream.client_id),
         encoded(redirect_uri),
-        encoded(&upstream.scope),
         encoded(&state),
-        encoded(&nonce),
-        encoded(&challenge),
     );
+    if !upstream.scope.is_empty() {
+        location.push_str(&format!("&scope={}", encoded(&upstream.scope)));
+    }
+    // A nonce is for an identity token to echo, and a plain OAuth 2.0 answer
+    // carries none.
+    if matches!(upstream.identity, Identity::Signed(_)) {
+        location.push_str(&format!("&nonce={}", encoded(&nonce)));
+    }
+    if upstream.pkce {
+        location.push_str(&format!(
+            "&code_challenge={}&code_challenge_method=S256",
+            encoded(&challenge)
+        ));
+    }
     Ok(Departure {
         location,
         state: BrokerLoginState {
@@ -179,11 +311,14 @@ pub fn arrived(
     state: &BrokerLoginState,
     now: DateTime<Utc>,
 ) -> Result<Arrival, Unbrokered> {
-    let claims = crate::assertion::read_against(keys, id_token, &upstream.allowed_algs)
+    let Identity::Signed(signed) = &upstream.identity else {
+        return Err(Unbrokered::Refused);
+    };
+    let claims = crate::assertion::read_against(keys, id_token, &signed.allowed_algs)
         .map_err(|_| Unbrokered::Refused)?;
 
     let text = |name: &str| claims.get(name).and_then(Value::as_str);
-    if text("iss") != Some(upstream.issuer.as_str()) {
+    if text("iss") != Some(signed.issuer.as_str()) {
         return Err(Unbrokered::Refused);
     }
     let audience_holds = match claims.get("aud") {
@@ -214,6 +349,119 @@ pub fn arrived(
             .unwrap_or(false),
         claims,
     })
+}
+
+/// What redeems a code at the upstream's token endpoint.
+pub struct CodeExchange {
+    pub form: Vec<(String, String)>,
+    /// The client id and secret, when they travel in a Basic header.
+    pub basic: Option<(String, String)>,
+}
+
+/// The code exchange for this upstream: the verifier only when the departure
+/// carried its challenge, and the secret where the provider reads it.
+pub fn compose_code_exchange(
+    upstream: &Upstream,
+    code: String,
+    redirect_uri: String,
+    verifier: &str,
+    secret: Option<String>,
+) -> CodeExchange {
+    let mut form = vec![
+        ("grant_type".to_owned(), "authorization_code".to_owned()),
+        ("code".to_owned(), code),
+        ("redirect_uri".to_owned(), redirect_uri),
+    ];
+    if upstream.pkce {
+        form.push(("code_verifier".to_owned(), verifier.to_owned()));
+    }
+    let basic = match (upstream.token_auth, secret) {
+        (TokenAuth::Basic, Some(held)) => Some((upstream.client_id.clone(), held)),
+        (TokenAuth::Post, Some(held)) => {
+            form.push(("client_id".to_owned(), upstream.client_id.clone()));
+            form.push(("client_secret".to_owned(), held));
+            None
+        }
+        (_, None) => {
+            form.push(("client_id".to_owned(), upstream.client_id.clone()));
+            None
+        }
+    };
+    CodeExchange { form, basic }
+}
+
+/// The token endpoint's answer as fields: JSON as the standard asks, or the
+/// form encoding a provider answers with when it is not told otherwise.
+pub fn read_token_answer(body: &str) -> Option<Map<String, Value>> {
+    if let Ok(Value::Object(fields)) = serde_json::from_str::<Value>(body) {
+        return Some(fields);
+    }
+    let fields: Map<String, Value> = url::form_urlencoded::parse(body.trim().as_bytes())
+        .map(|(key, value)| (key.into_owned(), Value::String(value.into_owned())))
+        .collect();
+    (!fields.is_empty()).then_some(fields)
+}
+
+/// Who a plain OAuth 2.0 provider says holds the access token, read from its
+/// account answer, and from its list of addresses when it keeps one.
+///
+/// The subject is the provider's own identifier for the account, a string or
+/// a number. An address counts as verified only when the list marks it both
+/// primary and verified, or when the account answer says so where named.
+pub fn answered_by_account(
+    api: &AccountApi,
+    account: &Value,
+    listed: Option<&Value>,
+) -> Result<Arrival, Unbrokered> {
+    let Value::Object(claims) = account else {
+        return Err(Unbrokered::Refused);
+    };
+    let external_user_id = match account.pointer(&api.subject) {
+        Some(Value::String(held)) if !held.is_empty() => held.clone(),
+        Some(Value::Number(held)) => held.to_string(),
+        _ => return Err(Unbrokered::Refused),
+    };
+    let named = |at: &Option<String>| {
+        at.as_deref()
+            .and_then(|at| account.pointer(at))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    let (email, email_verified) = match (&api.emails, listed) {
+        (Some(list), Some(listed)) => primary_verified_address(list, listed),
+        _ => (
+            named(&api.email),
+            api.email_verified
+                .as_deref()
+                .and_then(|at| account.pointer(at))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        ),
+    };
+    Ok(Arrival {
+        external_user_id,
+        username: named(&api.username),
+        email,
+        email_verified,
+        claims: claims.clone(),
+    })
+}
+
+/// The address a list marks both primary and verified, when one is.
+fn primary_verified_address(list: &EmailList, listed: &Value) -> (Option<String>, bool) {
+    let marked = |entry: &Value, at: &str| entry.pointer(at).and_then(Value::as_bool) == Some(true);
+    let chosen = listed
+        .pointer(&list.list)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|entry| marked(entry, &list.primary) && marked(entry, &list.verified))
+        .and_then(|entry| entry.pointer(&list.address))
+        .and_then(Value::as_str);
+    match chosen {
+        Some(address) => (Some(address.to_owned()), true),
+        None => (None, false),
+    }
 }
 
 /// The local account this arrival is, decided by policy rather than by
@@ -555,11 +803,14 @@ pub fn dismissed(
     logout_token: &str,
     now: DateTime<Utc>,
 ) -> Result<Dismissal, Unbrokered> {
-    let claims = crate::assertion::read_against(keys, logout_token, &upstream.allowed_algs)
+    let Identity::Signed(signed) = &upstream.identity else {
+        return Err(Unbrokered::Refused);
+    };
+    let claims = crate::assertion::read_against(keys, logout_token, &signed.allowed_algs)
         .map_err(|_| Unbrokered::Refused)?;
 
     let text = |name: &str| claims.get(name).and_then(Value::as_str);
-    if text("iss") != Some(upstream.issuer.as_str()) {
+    if text("iss") != Some(signed.issuer.as_str()) {
         return Err(Unbrokered::Refused);
     }
     let audience_holds = match claims.get("aud") {
@@ -712,5 +963,235 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn plain_provider(said: &[(&str, &str)]) -> IdentityProviderModel {
+        let configs: AttributesMap = [
+            ("protocol", "oauth2"),
+            ("client_id", "saffui"),
+            (
+                "authorization_endpoint",
+                "https://git.example/login/oauth/authorize",
+            ),
+            (
+                "token_endpoint",
+                "https://git.example/login/oauth/access_token",
+            ),
+            ("userinfo_endpoint", "https://api.git.example/user"),
+            ("subject_pointer", "/id"),
+        ]
+        .iter()
+        .chain(said.iter())
+        .map(|(key, value)| ((*key).to_owned(), AttributeValue::Str((*value).to_owned())))
+        .collect();
+        IdentityProviderMutationModel {
+            provider_id: "git".into(),
+            name: "git".into(),
+            display_name: "Git".into(),
+            description: String::new(),
+            enabled: Some(true),
+            trust_email: Some(false),
+            configs: Some(configs),
+        }
+        .into_model(
+            "idp-2".into(),
+            "main".into(),
+            AuditableModel::from_creator("local".into(), "root".into()),
+        )
+    }
+
+    fn account_api(said: &[(&str, &str)]) -> AccountApi {
+        match Upstream::parse(&plain_provider(said))
+            .expect("a plain provider")
+            .identity
+        {
+            Identity::Asked(api) => api,
+            Identity::Signed(_) => panic!("a plain provider read as OpenID Connect"),
+        }
+    }
+
+    /// A plain OAuth 2.0 provider is read with its own fields and knobs, and
+    /// refused, naming the field, when one cannot be used.
+    #[test]
+    fn a_plain_oauth2_provider_names_its_account_api() {
+        let upstream = Upstream::parse(&plain_provider(&[])).expect("a plain provider");
+        assert_eq!(upstream.token_auth, TokenAuth::Basic);
+        assert!(upstream.pkce);
+        assert_eq!(upstream.scope, "");
+        let api = account_api(&[]);
+        assert_eq!(api.subject, "/id");
+        assert!(api.emails.is_none());
+
+        let tuned = Upstream::parse(&plain_provider(&[
+            ("token_auth", "client_secret_post"),
+            ("pkce", "false"),
+        ]))
+        .expect("a tuned provider");
+        assert_eq!(tuned.token_auth, TokenAuth::Post);
+        assert!(!tuned.pkce);
+        let listed = account_api(&[("emails_endpoint", "https://api.git.example/user/emails")]);
+        let list = listed.emails.expect("an address list");
+        assert_eq!(
+            (
+                list.list.as_str(),
+                list.address.as_str(),
+                list.verified.as_str(),
+                list.primary.as_str()
+            ),
+            ("", "/email", "/verified", "/primary")
+        );
+
+        for (said, refusal) in [
+            (
+                ("subject_pointer", ""),
+                "the provider names no subject_pointer",
+            ),
+            (
+                ("subject_pointer", "id"),
+                "subject_pointer is not a JSON pointer",
+            ),
+            (
+                ("userinfo_endpoint", "http://api.git.example/user"),
+                "userinfo_endpoint is not an https address",
+            ),
+            (("protocol", "saml"), "no protocol answers to saml"),
+            (
+                ("token_auth", "private_key_jwt"),
+                "no token endpoint authentication answers to private_key_jwt",
+            ),
+        ] {
+            let refused = Upstream::parse(&plain_provider(&[said])).expect_err("a refusal");
+            assert_eq!(refused.to_string(), refusal);
+        }
+    }
+
+    /// The token endpoint's answer is read as JSON, or as the form encoding a
+    /// provider answers with by default.
+    #[test]
+    fn the_token_answer_is_read_in_either_encoding() {
+        let json = read_token_answer(r#"{"access_token":"gho_abc","token_type":"bearer"}"#)
+            .expect("a JSON answer");
+        assert_eq!(json["access_token"], "gho_abc");
+        let form = read_token_answer("access_token=gho_abc&scope=read%3Auser&token_type=bearer")
+            .expect("a form answer");
+        assert_eq!(form["access_token"], "gho_abc");
+        assert_eq!(form["scope"], "read:user");
+        assert!(read_token_answer("").is_none());
+    }
+
+    /// The code is redeemed with the verifier only when the departure carried
+    /// a challenge, and with the secret where the provider reads it.
+    #[test]
+    fn the_code_exchange_carries_the_verifier_and_the_secret_where_told() {
+        let exchanged = |said: &[(&str, &str)], secret: Option<&str>| {
+            let upstream = Upstream::parse(&plain_provider(said)).expect("a plain provider");
+            compose_code_exchange(
+                &upstream,
+                "the-code".into(),
+                "https://id.example/landing".into(),
+                "the-verifier",
+                secret.map(str::to_owned),
+            )
+        };
+        let field = |exchange: &CodeExchange, key: &str| {
+            exchange
+                .form
+                .iter()
+                .find(|(name, _)| name == key)
+                .map(|(_, value)| value.clone())
+        };
+
+        let basic = exchanged(&[], Some("s3cret"));
+        assert_eq!(field(&basic, "code").as_deref(), Some("the-code"));
+        assert_eq!(
+            field(&basic, "code_verifier").as_deref(),
+            Some("the-verifier")
+        );
+        assert_eq!(
+            basic.basic,
+            Some(("saffui".to_owned(), "s3cret".to_owned()))
+        );
+        assert!(field(&basic, "client_secret").is_none());
+
+        let posted = exchanged(
+            &[("token_auth", "client_secret_post"), ("pkce", "false")],
+            Some("s3cret"),
+        );
+        assert!(field(&posted, "code_verifier").is_none());
+        assert!(posted.basic.is_none());
+        assert_eq!(field(&posted, "client_id").as_deref(), Some("saffui"));
+        assert_eq!(field(&posted, "client_secret").as_deref(), Some("s3cret"));
+
+        let unheld = exchanged(&[], None);
+        assert!(unheld.basic.is_none());
+        assert_eq!(field(&unheld, "client_id").as_deref(), Some("saffui"));
+        assert!(field(&unheld, "client_secret").is_none());
+    }
+
+    /// An account answer names the arrival by the provider's stable subject,
+    /// and an address counts as verified only when the list says so.
+    #[test]
+    fn an_account_answer_names_the_arrival_by_its_stable_subject() {
+        let api = account_api(&[
+            ("username_pointer", "/login"),
+            ("email_pointer", "/email"),
+            ("emails_endpoint", "https://api.git.example/user/emails"),
+        ]);
+        let account = serde_json::json!({ "id": 583231, "login": "octocat", "email": "public@octocat.example" });
+        let listed = serde_json::json!([
+            { "email": "old@octocat.example", "primary": false, "verified": true },
+            { "email": "main@octocat.example", "primary": true, "verified": true },
+        ]);
+        let arrival = answered_by_account(&api, &account, Some(&listed)).expect("an arrival");
+        assert_eq!(arrival.external_user_id, "583231");
+        assert_eq!(arrival.username.as_deref(), Some("octocat"));
+        assert_eq!(arrival.email.as_deref(), Some("main@octocat.example"));
+        assert!(arrival.email_verified);
+        assert_eq!(arrival.claims["login"], "octocat");
+
+        let unverified = serde_json::json!([
+            { "email": "main@octocat.example", "primary": true, "verified": false },
+        ]);
+        let arrival = answered_by_account(&api, &account, Some(&unverified)).expect("an arrival");
+        assert_eq!((arrival.email, arrival.email_verified), (None, false));
+
+        for nobody in [
+            serde_json::json!({ "login": "octocat" }),
+            serde_json::json!({ "id": { "nested": 1 } }),
+            serde_json::json!(["not", "an", "account"]),
+        ] {
+            assert!(
+                answered_by_account(&api, &nobody, Some(&listed)).is_err(),
+                "{nobody}"
+            );
+        }
+    }
+
+    /// Nested pointers read an account the provider wraps, and an address the
+    /// answer does not say is verified is not.
+    #[test]
+    fn nested_pointers_read_a_wrapped_account() {
+        let api = account_api(&[
+            ("subject_pointer", "/data/id"),
+            ("username_pointer", "/data/username"),
+            ("email_pointer", "/data/email"),
+            ("email_verified_pointer", "/data/email_verified"),
+        ]);
+        let account = serde_json::json!({ "data": {
+            "id": "2244994945", "username": "xdevelopers",
+            "email": "dev@x.example", "email_verified": true,
+        } });
+        let arrival = answered_by_account(&api, &account, None).expect("an arrival");
+        assert_eq!(arrival.external_user_id, "2244994945");
+        assert_eq!(arrival.username.as_deref(), Some("xdevelopers"));
+        assert_eq!(arrival.email.as_deref(), Some("dev@x.example"));
+        assert!(arrival.email_verified);
+        let unsaid =
+            serde_json::json!({ "data": { "id": "2244994945", "email": "dev@x.example" } });
+        assert!(
+            !answered_by_account(&api, &unsaid, None)
+                .expect("an arrival")
+                .email_verified
+        );
     }
 }

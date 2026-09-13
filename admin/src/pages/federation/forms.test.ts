@@ -4,9 +4,10 @@ import {
   ATTRIBUTE_MAPPER,
   ROLE_MAPPER,
   mapperDraft,
+  emptyProviderDraft,
   mapperMutation,
-  oidcDraft,
-  oidcMutation,
+  providerDraft,
+  providerMutation,
 } from "./forms";
 
 describe("identity provider forms", () => {
@@ -29,9 +30,9 @@ describe("identity provider forms", () => {
       },
     };
 
-    const draft = oidcDraft(row);
+    const draft = providerDraft(row);
     expect(draft.clientSecret).toBe("");
-    expect(oidcMutation(draft)).toEqual(
+    expect(providerMutation(draft)).toEqual(
       expect.objectContaining({
         provider_id: "corp",
         trust_email: true,
@@ -41,7 +42,7 @@ describe("identity provider forms", () => {
   });
 
   test("sends a new secret only when the operator typed one", () => {
-    const draft = oidcDraft({
+    const draft = providerDraft({
       internal_id: "idp-1",
       provider_id: "corp",
       name: "corp",
@@ -58,7 +59,84 @@ describe("identity provider forms", () => {
       },
     });
     draft.clientSecret = "new-secret";
-    expect(oidcMutation(draft).configs.client_secret).toEqual({ Str: "new-secret" });
+    expect(providerMutation(draft).configs.client_secret).toEqual({ Str: "new-secret" });
+  });
+});
+
+describe("plain OAuth 2.0 provider forms", () => {
+  test("round-trips a plain OAuth 2.0 provider and sends only its own fields", () => {
+    const row: IdpRow = {
+      internal_id: "idp-2",
+      provider_id: "github",
+      name: "github",
+      display_name: "GitHub",
+      description: "",
+      enabled: true,
+      trust_email: true,
+      configs: {
+        protocol: { Str: "oauth2" },
+        authorization_endpoint: { Str: "https://github.com/login/oauth/authorize" },
+        token_endpoint: { Str: "https://github.com/login/oauth/access_token" },
+        userinfo_endpoint: { Str: "https://api.github.com/user" },
+        client_id: { Str: "console" },
+        client_secret: { Str: "**********" },
+        scope: { Str: "read:user user:email" },
+        token_auth: { Str: "client_secret_post" },
+        pkce: { Str: "false" },
+        subject_pointer: { Str: "/id" },
+        username_pointer: { Str: "/login" },
+        emails_endpoint: { Str: "https://api.github.com/user/emails" },
+      },
+    };
+
+    const draft = providerDraft(row);
+    expect(draft.protocol).toBe("oauth2");
+    expect(draft.tokenAuth).toBe("client_secret_post");
+    expect(draft.pkce).toBe(false);
+    expect(draft.emailsVerifiedPointer).toBe("/verified");
+    expect(providerMutation(draft).configs).toEqual({
+      protocol: { Str: "oauth2" },
+      authorization_endpoint: { Str: "https://github.com/login/oauth/authorize" },
+      token_endpoint: { Str: "https://github.com/login/oauth/access_token" },
+      client_id: { Str: "console" },
+      token_auth: { Str: "client_secret_post" },
+      userinfo_endpoint: { Str: "https://api.github.com/user" },
+      subject_pointer: { Str: "/id" },
+      scope: { Str: "read:user user:email" },
+      username_pointer: { Str: "/login" },
+      emails_endpoint: { Str: "https://api.github.com/user/emails" },
+      emails_address_pointer: { Str: "/email" },
+      emails_verified_pointer: { Str: "/verified" },
+      emails_primary_pointer: { Str: "/primary" },
+      pkce: { Str: "false" },
+    });
+  });
+
+  test("sends no address list and no OpenID Connect field for an account API alone", () => {
+    const draft = {
+      ...emptyProviderDraft(),
+      alias: "x",
+      protocol: "oauth2" as const,
+      issuer: "https://left.over",
+      jwksUri: "https://left.over/keys",
+      authorizationEndpoint: "https://x.com/i/oauth2/authorize",
+      tokenEndpoint: "https://api.x.com/2/oauth2/token",
+      userinfoEndpoint: "https://api.x.com/2/users/me",
+      clientId: "console",
+      scope: "users.read",
+      subjectPointer: "/data/id",
+    };
+    const configs = providerMutation(draft).configs;
+    expect(Object.keys(configs).sort()).toEqual([
+      "authorization_endpoint",
+      "client_id",
+      "protocol",
+      "scope",
+      "subject_pointer",
+      "token_auth",
+      "token_endpoint",
+      "userinfo_endpoint",
+    ]);
   });
 });
 

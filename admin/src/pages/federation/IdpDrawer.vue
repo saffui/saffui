@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import AppDrawer from "@/components/AppDrawer.vue";
+import AppHint from "@/components/AppHint.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import { say } from "@/i18n";
 import type { RoleRow } from "@/models/directory";
@@ -19,11 +20,10 @@ import {
   ATTRIBUTE_MAPPER,
   ROLE_MAPPER,
   emptyMapperDraft,
-  emptyOidcDraft,
   mapperDraft,
   mapperMutation,
-  oidcDraft,
-  oidcMutation,
+  providerDraft,
+  providerMutation,
 } from "./forms";
 import { presetDraft, type ProviderPreset } from "./providerCatalog";
 
@@ -31,7 +31,7 @@ const props = defineProps<{ realm: string; row?: IdpRow; preset?: ProviderPreset
 const emit = defineEmits<{ close: []; saved: []; deleted: [] }>();
 
 const current = ref<"configuration" | "mappers">("configuration");
-const draft = ref(props.row ? oidcDraft(props.row) : presetDraft(props.preset));
+const draft = ref(props.row ? providerDraft(props.row) : presetDraft(props.preset));
 const saving = ref(false);
 const doomName = ref("");
 const mappers = ref<IdpMapperRow[]>([]);
@@ -41,6 +41,33 @@ const mapperId = ref<string | null>(null);
 const rule = ref(emptyMapperDraft());
 
 const alias = computed(() => props.row?.provider_id ?? draft.value.alias.trim());
+
+const endpointFields = computed(() =>
+  draft.value.protocol === "oidc"
+    ? ([
+        ["issuer", "idp-issuer", "idp-issuer-help"],
+        ["authorizationEndpoint", "idp-authorization-endpoint", ""],
+        ["tokenEndpoint", "idp-token-endpoint", ""],
+        ["jwksUri", "idp-jwks-uri", "idp-jwks-uri-help"],
+      ] as const)
+    : ([
+        ["authorizationEndpoint", "idp-authorization-endpoint", ""],
+        ["tokenEndpoint", "idp-token-endpoint", ""],
+        ["userinfoEndpoint", "idp-userinfo-endpoint", "idp-userinfo-endpoint-help"],
+      ] as const),
+);
+const identityFields = [
+  ["subjectPointer", "idp-subject-pointer", "idp-subject-pointer-help"],
+  ["usernamePointer", "idp-username-pointer", ""],
+  ["emailPointer", "idp-email-pointer", ""],
+  ["emailVerifiedPointer", "idp-email-verified-pointer", "idp-email-verified-pointer-help"],
+] as const;
+const emailListFields = [
+  ["emailsListPointer", "idp-emails-list-pointer"],
+  ["emailsAddressPointer", "idp-emails-address-pointer"],
+  ["emailsVerifiedPointer", "idp-emails-verified-pointer"],
+  ["emailsPrimaryPointer", "idp-emails-primary-pointer"],
+] as const;
 
 async function loadRules() {
   if (!props.row) return;
@@ -57,7 +84,7 @@ onMounted(() => void loadRules());
 async function saveProvider() {
   saving.value = true;
   try {
-    const body = oidcMutation(draft.value);
+    const body = providerMutation(draft.value);
     if (props.row) await updateIdp(props.realm, props.row.provider_id, body);
     else await createIdp(props.realm, body);
     emit("saved");
@@ -126,7 +153,7 @@ function typeLabel(row: IdpMapperRow): string {
 <template>
   <AppDrawer
     :title="props.row?.display_name || props.row?.provider_id || say('idp-new')"
-    :subtitle="props.row?.provider_id || say('idp-oidc')"
+    :subtitle="props.row?.provider_id || say(draft.protocol === 'oauth2' ? 'idp-protocol-oauth2' : 'idp-oidc')"
     @close="emit('close')"
   >
     <div class="flex h-8 items-center gap-0.5 border-b border-border" role="tablist">
@@ -174,13 +201,19 @@ function typeLabel(row: IdpMapperRow): string {
           {{ say("idp-endpoints") }}
         </h3>
         <div class="mt-3 grid gap-3">
-          <label v-for="field in [
-            ['issuer', 'idp-issuer'],
-            ['authorizationEndpoint', 'idp-authorization-endpoint'],
-            ['tokenEndpoint', 'idp-token-endpoint'],
-            ['jwksUri', 'idp-jwks-uri'],
-          ] as const" :key="field[0]" class="text-[11px] font-medium text-muted">
-            {{ say(field[1]) }}
+          <label class="text-[11px] font-medium text-muted">
+            <span class="inline-flex items-center gap-1">
+              {{ say("idp-protocol") }} <AppHint name="idp-protocol-help" />
+            </span>
+            <select v-model="draft.protocol" class="sf-field mt-1">
+              <option value="oidc">{{ say("idp-oidc") }}</option>
+              <option value="oauth2">{{ say("idp-protocol-oauth2") }}</option>
+            </select>
+          </label>
+          <label v-for="field in endpointFields" :key="field[0]" class="text-[11px] font-medium text-muted">
+            <span class="inline-flex items-center gap-1">
+              {{ say(field[1]) }} <AppHint v-if="field[2]" :name="field[2]" />
+            </span>
             <input
               v-model="draft[field[0]]"
               type="url"
@@ -188,6 +221,50 @@ function typeLabel(row: IdpMapperRow): string {
               spellcheck="false"
               placeholder="https://"
               class="sf-field mt-1 font-mono"
+            />
+          </label>
+        </div>
+      </section>
+
+      <section v-if="draft.protocol === 'oauth2'" class="border-t border-border pt-4">
+        <h3 class="inline-flex items-center gap-1 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          {{ say("idp-identity") }} <AppHint name="idp-identity-help" />
+        </h3>
+        <div class="mt-3 grid gap-3 sm:grid-cols-2">
+          <label v-for="field in identityFields" :key="field[0]" class="text-[11px] font-medium text-muted">
+            <span class="inline-flex items-center gap-1">
+              {{ say(field[1]) }} <AppHint v-if="field[2]" :name="field[2]" />
+            </span>
+            <input
+              v-model="draft[field[0]]"
+              :required="field[0] === 'subjectPointer'"
+              spellcheck="false"
+              placeholder="/"
+              class="sf-field mt-1 font-mono"
+            />
+          </label>
+        </div>
+        <h4 class="mt-4 inline-flex items-center gap-1 text-[11px] font-medium text-muted">
+          {{ say("idp-emails") }} <AppHint name="idp-emails-help" />
+        </h4>
+        <div class="mt-2 grid gap-3 sm:grid-cols-2">
+          <label class="text-[11px] font-medium text-muted sm:col-span-2">
+            {{ say("idp-emails-endpoint") }}
+            <input
+              v-model="draft.emailsEndpoint"
+              type="url"
+              spellcheck="false"
+              placeholder="https://"
+              class="sf-field mt-1 font-mono"
+            />
+          </label>
+          <label v-for="field in emailListFields" :key="field[0]" class="text-[11px] font-medium text-muted">
+            {{ say(field[1]) }}
+            <input
+              v-model="draft[field[0]]"
+              :disabled="!draft.emailsEndpoint"
+              spellcheck="false"
+              class="sf-field mt-1 font-mono disabled:opacity-60"
             />
           </label>
         </div>
@@ -215,12 +292,30 @@ function typeLabel(row: IdpMapperRow): string {
           </label>
           <label class="text-[11px] font-medium text-muted">
             {{ say("idp-scope") }}
-            <input v-model="draft.scope" required spellcheck="false" class="sf-field mt-1 font-mono" />
+            <input
+              v-model="draft.scope"
+              :required="draft.protocol === 'oidc'"
+              spellcheck="false"
+              class="sf-field mt-1 font-mono"
+            />
           </label>
-          <label class="text-[11px] font-medium text-muted">
+          <label v-if="draft.protocol === 'oidc'" class="text-[11px] font-medium text-muted">
             {{ say("platform-algs") }}
             <input v-model="draft.algorithms" spellcheck="false" class="sf-field mt-1 font-mono" />
           </label>
+          <label class="text-[11px] font-medium text-muted">
+            <span class="inline-flex items-center gap-1">
+              {{ say("idp-token-auth") }} <AppHint name="idp-token-auth-help" />
+            </span>
+            <select v-model="draft.tokenAuth" class="sf-field mt-1">
+              <option value="client_secret_basic">{{ say("idp-token-auth-basic") }}</option>
+              <option value="client_secret_post">{{ say("idp-token-auth-post") }}</option>
+            </select>
+          </label>
+          <span class="inline-flex items-center gap-1 sm:col-span-2">
+            <AppToggle v-model="draft.pkce">{{ say("idp-pkce") }}</AppToggle>
+            <AppHint name="idp-pkce-help" />
+          </span>
         </div>
       </section>
 

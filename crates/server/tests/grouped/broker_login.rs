@@ -904,3 +904,261 @@ async fn a_first_arrival_the_store_cannot_write_is_not_refused() {
     .await;
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
 }
+
+/// A provider speaking plain OAuth 2.0: this very world, told to answer who
+/// arrived through its account API rather than an identity token.
+async fn plain_provider(plane: &Plane, bearer: &str, alias: &str, base: &str, extra: Value) {
+    let mut configs = json!({
+        "protocol": { "Str": "oauth2" },
+        "authorization_endpoint": { "Str": format!("{base}/auth") },
+        "token_endpoint": { "Str": format!("{base}/token") },
+        "userinfo_endpoint": { "Str": format!("{base}/userinfo") },
+        "client_id": { "Str": support::CONFIDENTIAL },
+        "client_secret": { "Str": support::CLIENT_SECRET },
+        "scope": { "Str": "openid" },
+        "subject_pointer": { "Str": "/sub" },
+        "username_pointer": { "Str": "/preferred_username" },
+        "email_pointer": { "Str": "/email" },
+    });
+    for (key, value) in extra.as_object().expect("extra configs") {
+        configs[key] = value.clone();
+    }
+    let (status, told) = asked(
+        plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        bearer,
+        Some(json!({
+            "provider_id": alias,
+            "name": alias,
+            "display_name": alias,
+            "description": "",
+            "trust_email": true,
+            "configs": configs,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+}
+
+/// This world, answering on a real socket for the broker's own dials.
+fn served_upstream(plane: &Plane) -> String {
+    let served = mounted(plane);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().expect("an address").port();
+    let upstream = actix_web::HttpServer::new(move || App::new().configure(register(&served)))
+        .listen(listener)
+        .expect("a listener")
+        .workers(1)
+        .disable_signals()
+        .run();
+    tokio::spawn(upstream);
+    format!("http://127.0.0.1:{port}/realms/{REALM}/protocol/openid-connect")
+}
+
+/// One login through a provider: it leaves for the upstream, the upstream's
+/// own leg is compressed into a code, and the callback answers. What comes
+/// back is the callback's status, where it lands, and where the login left for.
+async fn crossed(plane: &Plane, alias: &str) -> (StatusCode, Option<String>, String) {
+    let cookie = opened_login(plane).await;
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{alias}/login"
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let departure = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a departure")
+        .to_owned();
+    let state = param(&departure, "state").expect("a state");
+    let challenge = param(&departure, "code_challenge");
+    let code = plane
+        .mint_code(
+            support::CONFIDENTIAL,
+            &format!(
+                "{}/protocol/openid-connect/broker/{alias}/endpoint",
+                support::origin().issuer(REALM)
+            ),
+            "openid",
+            challenge.as_deref().map(|held| (held, "S256")),
+        )
+        .await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{alias}/endpoint?code={}&state={}",
+                support::urlencode(&code),
+                support::urlencode(&state),
+            ))
+            .to_request(),
+    )
+    .await;
+    let landing = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .map(str::to_owned);
+    (response.status(), landing, departure)
+}
+
+/// A plain OAuth 2.0 upstream gives no identity token: the login leaves with
+/// no nonce, the broker asks the account API with the access token, and the
+/// person arrives under the provider's stable subject.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_login_crosses_a_plain_oauth2_upstream_and_comes_back_admitted() {
+    use store::tenancy::TenantContext;
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = served_upstream(&plane);
+
+    // The same upstream twice: with the defaults, then with the secret posted
+    // in the form and no PKCE, the way some providers want it.
+    for (alias, tuned, challenged) in [
+        ("plain", json!({}), true),
+        (
+            "posted",
+            json!({
+                "token_auth": { "Str": "client_secret_post" },
+                "pkce": { "Str": "false" },
+            }),
+            false,
+        ),
+    ] {
+        plain_provider(&plane, &bearer, alias, &base, tuned).await;
+        let (status, landing, departure) = crossed(&plane, alias).await;
+        assert!(
+            departure.starts_with(&format!("{base}/auth?")),
+            "{departure}"
+        );
+        assert!(param(&departure, "nonce").is_none(), "{departure}");
+        assert_eq!(
+            param(&departure, "code_challenge").is_some(),
+            challenged,
+            "{departure}"
+        );
+        assert_eq!(status, StatusCode::SEE_OTHER, "{alias}: {landing:?}");
+        let landing = landing.expect("a landing");
+        assert!(landing.starts_with(support::REDIRECT), "{landing}");
+        assert!(param(&landing, "code").is_some(), "{landing}");
+
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let linked =
+            store::providers::brokering::linked_user(&transaction, alias, support::SUBJECT)
+                .await
+                .expect("the link table")
+                .expect("the arrival was linked under its subject");
+        assert_ne!(
+            linked,
+            support::SUBJECT,
+            "{alias}: an untrusted arrival took over the local account"
+        );
+    }
+}
+
+/// An address counts only when the provider's list marks it primary and
+/// verified: a verified one links the arrival to the local account holding
+/// it, an unverified one does not, whatever the operator trusts.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_plain_oauth2_upstream_links_only_by_an_address_its_list_verifies() {
+    use store::tenancy::TenantContext;
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = served_upstream(&plane);
+    let email = {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::users::load(&transaction, support::SUBJECT)
+            .await
+            .expect("the account table")
+            .expect("the local account")
+            .email
+    };
+    assert!(!email.is_empty(), "the local account holds no address");
+
+    // The provider's list of addresses, one route verifying the address and
+    // one not, both refusing a call that brings no access token.
+    let listed = email.clone();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().expect("an address").port();
+    let addresses = actix_web::HttpServer::new(move || {
+        let listed = listed.clone();
+        App::new().route(
+            "/emails/{verified}",
+            actix_web::web::get().to(
+                move |request: actix_web::HttpRequest, verified: actix_web::web::Path<bool>| {
+                    let listed = listed.clone();
+                    async move {
+                        let bearing = request
+                            .headers()
+                            .get("authorization")
+                            .and_then(|held| held.to_str().ok())
+                            .is_some_and(|held| held.starts_with("Bearer "));
+                        if !bearing {
+                            return actix_web::HttpResponse::Unauthorized().finish();
+                        }
+                        actix_web::HttpResponse::Ok().json(json!([
+                            { "email": "someone.else@example.test", "primary": false, "verified": true },
+                            { "email": listed, "primary": true, "verified": verified.into_inner() },
+                        ]))
+                    }
+                },
+            ),
+        )
+    })
+    .listen(listener)
+    .expect("a listener")
+    .workers(1)
+    .disable_signals()
+    .run();
+    tokio::spawn(addresses);
+
+    for (alias, verified) in [("listed", true), ("unlisted", false)] {
+        plain_provider(
+            &plane,
+            &bearer,
+            alias,
+            &base,
+            json!({
+                "emails_endpoint": { "Str": format!("http://127.0.0.1:{port}/emails/{verified}") },
+            }),
+        )
+        .await;
+        let (status, landing, _) = crossed(&plane, alias).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{alias}: {landing:?}");
+
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let linked =
+            store::providers::brokering::linked_user(&transaction, alias, support::SUBJECT)
+                .await
+                .expect("the link table")
+                .expect("the arrival was linked");
+        assert_eq!(
+            linked == support::SUBJECT,
+            verified,
+            "{alias}: the arrival was linked to the wrong account"
+        );
+    }
+}

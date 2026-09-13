@@ -666,7 +666,7 @@ impl Walk<'_> {
             });
         }
 
-        let edges = rebac::subjects(
+        let edges = rebac::granting_subjects(
             self.transaction,
             object.object_type,
             object.object_id,

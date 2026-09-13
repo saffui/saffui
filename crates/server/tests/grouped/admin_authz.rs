@@ -1098,3 +1098,203 @@ async fn a_blank_or_taken_name_is_refused_in_words() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
     assert!(says(&told, "policy name cannot be blank"), "{told}");
 }
+
+/// What a relation question about ada and one object computes.
+async fn evaluate_viewer(
+    plane: &Plane,
+    bearer: &str,
+    object_type: &str,
+    object_id: &str,
+) -> String {
+    let (status, verdict) = asked(
+        plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/authz/evaluate"),
+        bearer,
+        Some(json!({
+            "subject": support::SUBJECT,
+            "question": {
+                "kind": "relationship",
+                "object_type": object_type,
+                "object_id": object_id,
+                "relation": "viewer",
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{verdict}");
+    verdict["computed"].as_str().unwrap_or_default().to_owned()
+}
+
+/// Closing a resource's sharing, or its server's, stops its shares from
+/// granting without erasing them: they grant again once sharing reopens, a
+/// share can still be taken back meanwhile, and an edge on an object that is
+/// no protected resource is left alone.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_closed_resource_grants_nothing_through_its_shares() {
+    let plane = Plane::with_actions(&[
+        AdminAction::UmaRead,
+        AdminAction::UmaWrite,
+        AdminAction::RebacRead,
+        AdminAction::RebacWrite,
+        AdminAction::AuthzDecisionWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!(
+        "/admin/realms/{REALM}/authz/servers/{}",
+        support::CONFIDENTIAL
+    );
+    let protection = |shareable: bool| {
+        json!({
+            "enforcement_mode": "enforcing",
+            "decision_strategy": "unanimous",
+            "user_managed_access": shareable,
+        })
+    };
+    let (status, told) = asked(&plane, Method::POST, &base, &bearer, Some(protection(true))).await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/rebac/schema"),
+        &bearer,
+        Some(json!({
+            "source": "definition user {}\n\ndefinition invoice {\n    relation viewer: user\n}\n\ndefinition folder {\n    relation viewer: user\n}\n"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let resource = |shareable: bool| {
+        json!({
+            "name": "shared", "display_name": "shared", "description": "",
+            "resource_uris": [], "resource_type": "invoice",
+            "resource_owner": support::SUBJECT, "user_managed_access": shareable,
+        })
+    };
+    let (status, made) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/resources"),
+        &bearer,
+        Some(resource(true)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{made}");
+    let invoice = made["resource_id"].as_str().expect("an id").to_owned();
+    let at = format!("{base}/resources/{invoice}");
+    let shares = format!("{at}/shares");
+    let share = |reader: &str| json!({ "relation": "viewer", "subject_type": "user", "subject_id": reader });
+    for reader in [support::SUBJECT, "second-reader"] {
+        let (status, told) =
+            asked(&plane, Method::POST, &shares, &bearer, Some(share(reader))).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    }
+    assert_eq!(
+        evaluate_viewer(&plane, &bearer, "invoice", &invoice).await,
+        "permit",
+        "the open share did not grant"
+    );
+
+    // Closing the resource keeps its shares and stops them granting.
+    let (status, told) = asked(&plane, Method::PUT, &at, &bearer, Some(resource(false))).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        evaluate_viewer(&plane, &bearer, "invoice", &invoice).await,
+        "deny",
+        "a closed resource still granted through its share"
+    );
+    let (status, listed) = asked(
+        &plane,
+        Method::GET,
+        &format!(
+            "/admin/realms/{REALM}/rebac/relations?object_type=invoice&object_id={invoice}&relation=viewer"
+        ),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{listed}");
+    assert!(
+        listed
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|row| row["subject_id"] == support::SUBJECT)),
+        "closing sharing erased the share: {listed}"
+    );
+
+    // A share can be taken back while the resource is closed.
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &shares,
+        &bearer,
+        Some(share("second-reader")),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "a share could not be taken back from a closed resource: {told}"
+    );
+
+    // Reopening the resource grants again.
+    let (status, told) = asked(&plane, Method::PUT, &at, &bearer, Some(resource(true))).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        evaluate_viewer(&plane, &bearer, "invoice", &invoice).await,
+        "permit",
+        "a reopened resource did not grant again"
+    );
+
+    // The server's ceiling closes it the same way.
+    let (status, told) = asked(&plane, Method::PUT, &base, &bearer, Some(protection(false))).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        evaluate_viewer(&plane, &bearer, "invoice", &invoice).await,
+        "deny",
+        "a closed server still let its resource grant"
+    );
+
+    // An edge on an object that is no protected resource keeps granting.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/rebac/relations"),
+        &bearer,
+        Some(json!({
+            "object_type": "folder", "object_id": "plans", "relation": "viewer",
+            "subject_type": "user", "subject_id": support::SUBJECT,
+        })),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {told}");
+    assert_eq!(
+        evaluate_viewer(&plane, &bearer, "folder", "plans").await,
+        "permit",
+        "an edge on no protected resource stopped granting"
+    );
+
+    // A share taken back under the closed server stays gone once it reopens.
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &shares,
+        &bearer,
+        Some(share(support::SUBJECT)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NO_CONTENT,
+        "a share could not be taken back under a closed server: {told}"
+    );
+    let (status, told) = asked(&plane, Method::PUT, &base, &bearer, Some(protection(true))).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(
+        evaluate_viewer(&plane, &bearer, "invoice", &invoice).await,
+        "deny",
+        "a share taken back while closed came back with reopening"
+    );
+}

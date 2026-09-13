@@ -32,9 +32,11 @@ fn mounted(plane: &Plane) -> Mounted {
 }
 
 /// What the console lists and the planted world lacks, so a list it reads
-/// carries a row to judge: a passkey beside ada's app, her spare app, a
-/// consent she gave, and her spare login with what the app got out of it.
+/// carries a row to judge: two passkeys beside ada's app, one of them spare,
+/// her spare app, a consent she gave, and her spare login with what the app
+/// got out of it.
 async fn plant_what_the_console_lists(plane: &Plane) {
+    plane.enrol_soft_passkey().await;
     plane.enrol_soft_passkey().await;
     plane.enrol_totp(SPARE_APP, support::TOTP_SECRET).await;
     let mut connection = plane.connection().await;

@@ -3,11 +3,13 @@ import { redeliverToConnector } from "@/services/events";
 import {
   createIdp,
   createIdpMapper,
+  deleteDirectory,
   deleteIdp,
   deleteIdpMapper,
   listDirectories,
   listIdpMappers,
   listIdps,
+  putDirectory,
   updateIdp,
   updateIdpMapper,
 } from "@/services/federation";
@@ -16,6 +18,7 @@ import { keepAnswer, REALM } from "./answers";
 
 const PROVIDER = "contract-oidc";
 const HOOK = "contract-hook";
+const DIRECTORY = "contract-ldap";
 
 describe("federation", () => {
   test("keeps an OpenID provider with a mapper, and removes both", async () => {
@@ -91,13 +94,30 @@ describe("federation", () => {
     await deleteIdp(REALM, HOOK);
   });
 
-  test("keeps a negotiation principal and forgets it, and lists directories", async () => {
+  test("keeps a negotiation principal and a directory, then forgets both", async () => {
     await keepAnswer(putSpnego, REALM, {
       enabled: false,
       configs: { service_principal: { Str: "HTTP/id.test@SAFFUI.TEST" } },
     });
     await keepAnswer(getSpnego, REALM);
     await deleteSpnego(REALM);
-    await keepAnswer(listDirectories, REALM);
+
+    await keepAnswer(putDirectory, REALM, DIRECTORY, {
+      enabled: false,
+      priority: 50,
+      configs: {
+        url: { Str: "ldaps://directory.example.test" },
+        bind_dn: { Str: "cn=saffui,dc=example,dc=test" },
+        users_dn: { Str: "ou=people,dc=example,dc=test" },
+        user_filter: { Str: "(uid={username})" },
+        username_attribute: { Str: "uid" },
+        email_attribute: { Str: "mail" },
+        first_name_attribute: { Str: "givenName" },
+        last_name_attribute: { Str: "sn" },
+      },
+    });
+    const directories = await keepAnswer(listDirectories, REALM);
+    expect(directories.some((held) => held.alias === DIRECTORY)).toBe(true);
+    await deleteDirectory(REALM, DIRECTORY);
   });
 });

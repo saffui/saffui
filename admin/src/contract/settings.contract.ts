@@ -13,6 +13,8 @@ import {
   getRealmTheme,
   getSms,
   getUssd,
+  importPartialRealm,
+  keepFeatureWish,
   listFeatures,
   listPageKeys,
   listRealmFeatures,
@@ -93,14 +95,17 @@ describe("realm settings", () => {
     const features = await keepAnswer(listFeatures);
     expect(features.length).toBeGreaterThan(0);
     const realmFeatures = await keepAnswer(listRealmFeatures, REALM);
-    expect(realmFeatures.length).toBeGreaterThan(0);
+    const switchable = realmFeatures.find((feature) => feature.reach === "realm");
+    if (!switchable) throw new Error("no feature is the realm's to switch");
+    await keepFeatureWish(REALM, switchable.slug, switchable.asked);
     await keepAnswer(listPageKeys, REALM);
     await keepAnswer(listSignInEvents, REALM, 0, 20);
   });
 
-  test("exports the realm and previews importing it back", async () => {
+  test("exports the realm, previews importing it back, and imports it", async () => {
     const exported = await keepAnswer(exportRealm, REALM, false);
     await keepAnswer(previewPartialImport, REALM, exported, "skip");
+    await keepAnswer(importPartialRealm, REALM, exported, "skip");
   });
 
   test("rotates the registration secret and forgets it", async () => {

@@ -19,6 +19,7 @@ import {
   readPasswordHistory,
   revokeCredential,
   revokeSessionGrant,
+  revokeWebAuthnKey,
   setUserPassword,
   updateUser,
   withdrawConsent,
@@ -48,10 +49,15 @@ describe("users", () => {
     await keepAnswer(listMessageDeliveries, REALM, ADA);
   });
 
-  test("reads a person's credentials and takes one away", async () => {
+  test("reads a person's credentials and takes an app and a passkey away", async () => {
     const credentials = await keepAnswer(readCredentials, REALM, ADA);
     expect(credentials.some((credential) => credential.id === SPARE_APP)).toBe(true);
     await revokeCredential(REALM, ADA, SPARE_APP);
+    const keys = credentials.filter((credential) => credential.kind === "webauthn");
+    expect(keys.length).toBeGreaterThan(1);
+    const spareKey = keys[0].id;
+    if (!spareKey) throw new Error("the passkey is not offered for removal");
+    await revokeWebAuthnKey(REALM, ADA, spareKey);
   });
 
   test("lists a person's logins and consents, and ends one of each", async () => {

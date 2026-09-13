@@ -101,11 +101,13 @@ pub async fn requeue(transaction: &Transaction<'_>, event_id: i64) -> StoreResul
 /// The tellings that are due, oldest first, claimed for this pass: the next
 /// attempt moves out before the work starts, so a crashed worker costs a
 /// delay and never a double-claim inside the window.
+///
+/// Due is read on the database's clock, the one that stamps every row here: a
+/// caller's clock running behind it would leave a change just written for later.
 pub async fn due(
     transaction: &Transaction<'_>,
     ceiling: i64,
     backoff_seconds: i64,
-    now: DateTime<Utc>,
 ) -> StoreResult<Vec<OutboxEvent>> {
     Ok(transaction
         .query(
@@ -115,16 +117,16 @@ pub async fn due(
             // out more rows than the ceiling names.
             "WITH picked AS MATERIALIZED ( \
                  SELECT tenant, realm_id, event_id FROM event_outbox \
-                 WHERE state = 'pending' AND next_attempt_at <= $3 \
+                 WHERE state = 'pending' AND next_attempt_at <= now() \
                  ORDER BY event_id ASC LIMIT $1 FOR UPDATE SKIP LOCKED) \
              UPDATE event_outbox held SET attempts = held.attempts + 1, \
-                    next_attempt_at = $3 + make_interval(secs => $2::float8 * (held.attempts + 1)) \
+                    next_attempt_at = now() + make_interval(secs => $2::float8 * (held.attempts + 1)) \
              FROM picked \
              WHERE held.tenant = picked.tenant AND held.realm_id = picked.realm_id \
                AND held.event_id = picked.event_id \
              RETURNING held.realm_id, held.event_id, held.kind, held.user_id, \
                        held.payload, held.attempts, held.occurred_at",
-            &[&ceiling, &(backoff_seconds as f64), &now],
+            &[&ceiling, &(backoff_seconds as f64)],
         )
         .await
         .map_err(|_| StoreError::Backend)?

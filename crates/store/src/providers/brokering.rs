@@ -265,7 +265,10 @@ pub async fn consume_state(
 }
 
 /// Drop what expired without being spent.
-pub async fn sweep_states(transaction: &Transaction<'_>, now: DateTime<Utc>) -> StoreResult<u64> {
+pub async fn drop_expired_login_states(
+    transaction: &Transaction<'_>,
+    now: DateTime<Utc>,
+) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM broker_login_states WHERE expires_at <= $1",

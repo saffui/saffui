@@ -3137,6 +3137,7 @@ async fn an_evidence_pack_accounts_for_its_period_with_the_chain_leading() {
     );
     let retention = pack["retention"].to_string();
     assert!(retention.contains("sign_in_log"), "{pack}");
+    assert!(retention.contains("delivered_events"), "{pack}");
 
     // A period that runs backwards is refused before anything is drawn.
     let (status, told) = fetched(

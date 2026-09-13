@@ -4,7 +4,8 @@ use commons::error::ErrorCode;
 use commons::http::ApiError;
 use deadpool_postgres::Pool;
 use models::entities::authz::{
-    DecisionStrategy, PolicyEnforcementMode, PolicyTerms, ResourceMutationModel, ScopeMutationModel,
+    DecisionStrategy, PolicyEnforcementMode, PolicyTerms, ResourceMutationModel,
+    ScopeMutationModel, StoredPolicy,
 };
 use serde::Deserialize;
 use services::admin::authorization::{self as authz, Unwritable};
@@ -304,6 +305,18 @@ pub async fn add_policy(
     Ok(HttpResponse::Created().json(made))
 }
 
+/// A policy the way its own doors write it. A row whose rule this build cannot
+/// read is named and marked, rather than dropped or dressed as a rule.
+fn render_policy_row(stored: StoredPolicy) -> Result<serde_json::Value, ApiError> {
+    match stored {
+        StoredPolicy::Read(policy) => serde_json::to_value(policy).map_err(|_| internal()),
+        StoredPolicy::Unreadable { policy_id } => Ok(serde_json::json!({
+            "policy_id": policy_id,
+            "unreadable": true,
+        })),
+    }
+}
+
 pub async fn policies(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
@@ -319,7 +332,11 @@ pub async fn policies(
     let found = authz::policies(&transaction, &server_id)
         .await
         .map_err(|why| refused(why, ErrorCode::ResourceServerNotFound))?;
-    Ok(HttpResponse::Ok().json(found))
+    let rows = found
+        .into_iter()
+        .map(render_policy_row)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(HttpResponse::Ok().json(rows))
 }
 
 pub async fn rework_policy(

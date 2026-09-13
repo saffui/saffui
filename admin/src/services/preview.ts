@@ -887,7 +887,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
   if (path.includes("/authz/decisions?") && method === "DELETE") {
     return answer({ removed: 184 });
   }
-  if (path.endsWith("/events/replay") && method === "POST") {
+  if (path.endsWith("/redeliveries") && method === "POST") {
     const request = body as { dry_run?: boolean } | undefined;
     return request?.dry_run === false
       ? answer({ dry_run: false, delivered: 31, failed: 1, stopped_at: 432, more: false })

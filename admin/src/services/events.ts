@@ -51,10 +51,10 @@ export async function redeliverToConnector(
   range: { fromEventId: number; toEventId?: number },
   options: { dryRun: boolean },
 ): Promise<ConnectorRedeliveryResult> {
-  return api<ConnectorRedeliveryResult>(adminPath(realm, "events/replay"), {
+  const path = adminPath(realm, `identity-providers/${encodeURIComponent(alias)}/redeliveries`);
+  return api<ConnectorRedeliveryResult>(path, {
     method: "POST",
     json: {
-      connector: alias,
       from_event_id: range.fromEventId,
       ...(range.toEventId === undefined ? {} : { to_event_id: range.toEventId }),
       dry_run: options.dryRun,

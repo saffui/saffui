@@ -16,10 +16,10 @@ describe("preview answers", () => {
       administrator: { user_name: "ada", password: "preview-import-password" },
     });
     expect(
-      previewAnswer("/admin/realms/main/events/replay", "POST", { dry_run: true }),
+      previewAnswer("/admin/realms/main/identity-providers/siem/redeliveries", "POST", { dry_run: true }),
     ).toMatchObject({ dry_run: true, would_deliver: 32 });
     expect(
-      previewAnswer("/admin/realms/main/events/replay", "POST", { dry_run: false }),
+      previewAnswer("/admin/realms/main/identity-providers/siem/redeliveries", "POST", { dry_run: false }),
     ).toMatchObject({ dry_run: false, delivered: 31, failed: 1 });
   });
 

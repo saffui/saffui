@@ -13,6 +13,7 @@ nav-cap-configure = Configurer
 nav-cap-observe = Observer
 nav-cap-operate = Exploiter
 nav-cap-tools = Outils
+nav-profile = Profil
 nav-appearance = Apparence
 nav-overview = Vue d'ensemble
 nav-directory = Annuaire

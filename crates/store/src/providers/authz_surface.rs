@@ -5,7 +5,7 @@ use models::entities::attributes::AttributesMap;
 use models::entities::authz::{ResourceModel, ResourceServerModel, ScopeModel};
 use tokio_postgres::Row;
 
-use crate::error::{StoreError, StoreResult, refuse_taken_name};
+use crate::error::{StoreError, StoreResult, refuse_broken_rule};
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
@@ -50,7 +50,7 @@ pub async fn create_server(
             &set.params(),
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -95,7 +95,7 @@ pub async fn set_server_protection(
     let changed = transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(changed > 0)
 }
 
@@ -166,7 +166,7 @@ pub async fn create_resource(
     transaction
         .execute(statement::insert("resources", &set).as_str(), &set.params())
         .await
-        .map_err(refuse_taken_name)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -208,7 +208,7 @@ pub async fn update_resource(
     Ok(transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(refuse_taken_name)?
+        .map_err(refuse_broken_rule)?
         > 0)
 }
 
@@ -303,7 +303,7 @@ pub async fn create_scope(transaction: &Transaction<'_>, scope: &ScopeModel) -> 
     transaction
         .execute(statement::insert("scopes", &set).as_str(), &set.params())
         .await
-        .map_err(refuse_taken_name)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -327,7 +327,7 @@ pub async fn update_scope(transaction: &Transaction<'_>, scope: &ScopeModel) -> 
     Ok(transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(refuse_taken_name)?
+        .map_err(refuse_broken_rule)?
         > 0)
 }
 

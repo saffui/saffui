@@ -3,7 +3,7 @@ use models::entities::user::{RequiredAction, UserModel, UserStorage};
 use models::paging::Page;
 use tokio_postgres::Row;
 
-use crate::error::{StoreError, StoreResult};
+use crate::error::{StoreError, StoreResult, refuse_broken_rule};
 use crate::query::list_query::ListQuery;
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
@@ -52,7 +52,7 @@ pub async fn create(transaction: &Transaction<'_>, user: &UserModel) -> StoreRes
     transaction
         .execute(statement::insert("users", &set).as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 

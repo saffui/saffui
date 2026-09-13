@@ -11,7 +11,7 @@ use models::entities::authz::{
 };
 use tokio_postgres::Row;
 
-use crate::error::{StoreError, StoreResult, refuse_taken_name};
+use crate::error::{StoreError, StoreResult, refuse_broken_rule};
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
@@ -125,7 +125,7 @@ pub async fn create(transaction: &Transaction<'_>, policy: &PolicyModel) -> Stor
     transaction
         .execute(statement::insert("policies", &set).as_str(), &set.params())
         .await
-        .map_err(refuse_taken_name)?;
+        .map_err(refuse_broken_rule)?;
 
     bind_members(transaction, policy, &conditions).await
 }
@@ -215,7 +215,7 @@ pub async fn update(transaction: &Transaction<'_>, policy: &PolicyModel) -> Stor
     transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(refuse_taken_name)?;
+        .map_err(refuse_broken_rule)?;
 
     unbind(transaction, &policy.policy_id).await?;
     bind_members(transaction, policy, &conditions).await?;

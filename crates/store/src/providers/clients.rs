@@ -4,7 +4,7 @@ use models::entities::keys::{JweAlgorithm, JweEncryption};
 use models::paging::Page;
 use tokio_postgres::Row;
 
-use crate::error::{StoreError, StoreResult};
+use crate::error::{StoreError, StoreResult, refuse_broken_rule};
 use crate::query::list_query::ListQuery;
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
@@ -67,7 +67,7 @@ pub async fn create(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
     transaction
         .execute(statement::insert("clients", &set).as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -502,7 +502,7 @@ pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
     let changed = transaction
         .execute(statement::update("clients", &set).as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(changed > 0)
 }
 

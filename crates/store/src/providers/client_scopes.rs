@@ -2,7 +2,7 @@ use deadpool_postgres::Transaction;
 use models::entities::client::{ClientScopeModel, Protocol, ProtocolMapperModel};
 use tokio_postgres::Row;
 
-use crate::error::{StoreError, StoreResult};
+use crate::error::{StoreError, StoreResult, refuse_broken_rule};
 use crate::query::statement;
 use crate::query::write_set::{WriteSet, col};
 
@@ -38,7 +38,7 @@ pub async fn create_scope(
             &set.params(),
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -109,7 +109,7 @@ pub async fn update_scope(
     let changed = transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(changed > 0)
 }
 
@@ -196,7 +196,7 @@ pub async fn create_mapper(
             &set.params(),
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -248,7 +248,7 @@ pub async fn update_mapper(
     let changed = transaction
         .execute(statement.as_str(), &set.params())
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(changed > 0)
 }
 
@@ -415,7 +415,7 @@ pub async fn attach_scope(
             &[&client_id, &client_scope_id, &optional],
         )
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 
@@ -560,7 +560,7 @@ async fn attach(
     transaction
         .execute(statement.as_str(), &[&left_value, &right_value])
         .await
-        .map_err(|_| StoreError::Backend)?;
+        .map_err(refuse_broken_rule)?;
     Ok(())
 }
 

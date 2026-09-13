@@ -10,6 +10,7 @@ use models::entities::export::{
 };
 use models::paging::Window;
 use std::collections::HashSet;
+use store::error::StoreError;
 use store::providers::{
     auth_flows, authz_policies, authz_surface, client_scopes, clients, organizations, realms,
     roles, users,
@@ -107,9 +108,11 @@ async fn existing(
     if ids.is_empty() && names.is_empty() {
         return Ok(Existing::default());
     }
+    // Text on both sides: a name kept in an enum column, a required action's,
+    // neither binds nor reads as a string otherwise.
     let statement = format!(
-        "SELECT {id_column}, {name_column} FROM {table} \
-         WHERE {id_column} = ANY($1) OR {name_column} = ANY($2)"
+        "SELECT {id_column}, {name_column}::text AS {name_column} FROM {table} \
+         WHERE {id_column} = ANY($1) OR {name_column}::text = ANY($2)"
     );
     let rows = transaction
         .query(statement.as_str(), &[&ids, &names])
@@ -748,7 +751,7 @@ pub async fn import_partial_realm(
             }
             PartialAction::Skip => Ok(()),
         }
-        .map_err(|_| Unportable::Backend)?;
+        .map_err(|why| describe_store_refusal(why, &format!("role {}", exported.role.name)))?;
     }
 
     for exported in &document.roles {
@@ -798,14 +801,21 @@ pub async fn import_partial_realm(
                     .map(|_| ()),
                 PartialAction::Skip => Ok(()),
             }
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(why, &format!("group {}", exported.group.name))
+            })?;
             created_groups.insert(exported.group.group_id.clone());
             if !matches!(group_action, PartialAction::Skip) {
                 reached_groups.push(exported.group.group_id.clone());
                 for role_id in &exported.grants {
                     roles::grant_to_group(transaction, &exported.group.group_id, role_id)
                         .await
-                        .map_err(|_| Unportable::Backend)?;
+                        .map_err(|why| {
+                            describe_store_refusal(
+                                why,
+                                &format!("role {role_id} granted to group {}", exported.group.name),
+                            )
+                        })?;
                 }
             }
         }
@@ -830,7 +840,9 @@ pub async fn import_partial_realm(
                 .map(|_| ()),
             PartialAction::Skip => Ok(()),
         }
-        .map_err(|_| Unportable::Backend)?;
+        .map_err(|why| {
+            describe_store_refusal(why, &format!("client scope {}", exported.scope.name))
+        })?;
     }
     for mapper in &document.protocol_mappers {
         match action(
@@ -845,7 +857,7 @@ pub async fn import_partial_realm(
                 .map(|_| ()),
             PartialAction::Skip => Ok(()),
         }
-        .map_err(|_| Unportable::Backend)?;
+        .map_err(|why| describe_store_refusal(why, &format!("protocol mapper {}", mapper.name)))?;
     }
     for exported in &document.clients {
         match action(
@@ -860,7 +872,9 @@ pub async fn import_partial_realm(
                 .map(|_| ()),
             PartialAction::Skip => Ok(()),
         }
-        .map_err(|_| Unportable::Backend)?;
+        .map_err(|why| {
+            describe_store_refusal(why, &format!("client {}", exported.client.client_id))
+        })?;
     }
     for exported in &document.organizations {
         match action(
@@ -875,7 +889,9 @@ pub async fn import_partial_realm(
                 .map(|_| ()),
             PartialAction::Skip => Ok(()),
         }
-        .map_err(|_| Unportable::Backend)?;
+        .map_err(|why| {
+            describe_store_refusal(why, &format!("organization {}", exported.organization.name))
+        })?;
     }
     for action_model in &document.required_actions {
         let name = action_model.action.to_string();
@@ -891,7 +907,7 @@ pub async fn import_partial_realm(
                 .map(|_| ()),
             PartialAction::Skip => Ok(()),
         }
-        .map_err(|_| Unportable::Backend)?;
+        .map_err(|why| describe_store_refusal(why, &format!("required action {name}")))?;
     }
     for flow in &document.flows {
         match action(&plan.flows, &flow.flow_id, &flow.alias, policy)? {
@@ -901,7 +917,7 @@ pub async fn import_partial_realm(
             }
             PartialAction::Skip => Ok(()),
         }
-        .map_err(|_| Unportable::Backend)?;
+        .map_err(|why| describe_store_refusal(why, &format!("flow {}", flow.alias)))?;
     }
     transaction
         .execute("SET CONSTRAINTS one_step_per_position DEFERRED", &[])
@@ -920,8 +936,16 @@ pub async fn import_partial_realm(
                 .map(|_| ()),
             PartialAction::Skip => Ok(()),
         }
-        .map_err(|_| Unportable::Backend)?;
+        .map_err(|why| {
+            describe_store_refusal(
+                why,
+                &format!("step {} of flow {}", execution.alias, execution.flow_id),
+            )
+        })?;
     }
+    auth_flows::settle_step_positions(transaction)
+        .await
+        .map_err(|why| describe_store_refusal(why, "a step of the document"))?;
 
     for exported in &document.client_scopes {
         let scope_action = action(
@@ -938,7 +962,15 @@ pub async fn import_partial_realm(
                     mapper_id,
                 )
                 .await
-                .map_err(|_| Unportable::Backend)?;
+                .map_err(|why| {
+                    describe_store_refusal(
+                        why,
+                        &format!(
+                            "protocol mapper {mapper_id} on client scope {}",
+                            exported.scope.name
+                        ),
+                    )
+                })?;
             }
             for role_id in &exported.grants {
                 client_scopes::attach_role_to_scope(
@@ -947,7 +979,15 @@ pub async fn import_partial_realm(
                     role_id,
                 )
                 .await
-                .map_err(|_| Unportable::Backend)?;
+                .map_err(|why| {
+                    describe_store_refusal(
+                        why,
+                        &format!(
+                            "role {role_id} granted to client scope {}",
+                            exported.scope.name
+                        ),
+                    )
+                })?;
             }
         }
     }
@@ -967,7 +1007,15 @@ pub async fn import_partial_realm(
                     *optional,
                 )
                 .await
-                .map_err(|_| Unportable::Backend)?;
+                .map_err(|why| {
+                    describe_store_refusal(
+                        why,
+                        &format!(
+                            "client scope {scope_id} on client {}",
+                            exported.client.client_id
+                        ),
+                    )
+                })?;
             }
             for mapper_id in &exported.mappers {
                 client_scopes::attach_mapper_to_client(
@@ -976,7 +1024,15 @@ pub async fn import_partial_realm(
                     mapper_id,
                 )
                 .await
-                .map_err(|_| Unportable::Backend)?;
+                .map_err(|why| {
+                    describe_store_refusal(
+                        why,
+                        &format!(
+                            "protocol mapper {mapper_id} on client {}",
+                            exported.client.client_id
+                        ),
+                    )
+                })?;
             }
         }
     }
@@ -997,7 +1053,12 @@ pub async fn import_partial_realm(
             }
             PartialAction::Skip => Ok(()),
         }
-        .map_err(|_| Unportable::Backend)?;
+        .map_err(|why| {
+            describe_store_refusal(
+                why,
+                &format!("authorization server {}", exported.server.server_id),
+            )
+        })?;
         if matches!(server_action, PartialAction::Skip) {
             continue;
         }
@@ -1014,7 +1075,15 @@ pub async fn import_partial_realm(
                     .map(|_| ()),
                 PartialAction::Skip => Ok(()),
             }
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(
+                    why,
+                    &format!(
+                        "resource {} of {}",
+                        resource.name, exported.server.server_id
+                    ),
+                )
+            })?;
         }
         for scope in &exported.scopes {
             match action(
@@ -1029,7 +1098,12 @@ pub async fn import_partial_realm(
                     .map(|_| ()),
                 PartialAction::Skip => Ok(()),
             }
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(
+                    why,
+                    &format!("scope {} of {}", scope.name, exported.server.server_id),
+                )
+            })?;
         }
         for policy_model in conditions_first(&exported.server.server_id, exported.policies.clone())?
         {
@@ -1039,15 +1113,15 @@ pub async fn import_partial_realm(
                 &policy_model.terms.name,
                 policy,
             )? {
-                PartialAction::New => authz_policies::create(transaction, &policy_model)
-                    .await
-                    .map_err(|why| Unportable::Invalid(why.to_string())),
+                PartialAction::New => authz_policies::create(transaction, &policy_model).await,
                 PartialAction::Overwrite => authz_policies::update(transaction, &policy_model)
                     .await
-                    .map(|_| ())
-                    .map_err(|why| Unportable::Invalid(why.to_string())),
+                    .map(|_| ()),
                 PartialAction::Skip => Ok(()),
-            }?;
+            }
+            .map_err(|why| {
+                describe_store_refusal(why, &format!("policy {}", policy_model.terms.name))
+            })?;
         }
     }
 
@@ -1332,7 +1406,48 @@ async fn add_composite_checked(
     }
     roles::add_composite(transaction, parent_role_id, child_role_id)
         .await
-        .map_err(|_| Unportable::Backend)
+        .map_err(|why| {
+            describe_store_refusal(
+                why,
+                &format!("composite {child_role_id} of role {parent_role_id}"),
+            )
+        })
+}
+
+/// What the store refused of a document, said with the item being written.
+/// The document's content is the importer's to fix; a store that could not
+/// answer stays an internal error.
+fn describe_store_refusal(why: StoreError, item: &str) -> Unportable {
+    match why {
+        StoreError::AlreadyExists => Unportable::Invalid(format!(
+            "{item} cannot be written: a value it must hold alone is already held"
+        )),
+        StoreError::BrokenRule { rule } => Unportable::Invalid(format!(
+            "{item} cannot be written: it breaks the rule {rule}"
+        )),
+        refused @ (StoreError::EmptyPolicy { .. }
+        | StoreError::UnboundMember { .. }
+        | StoreError::UnconditionalPermission
+        | StoreError::UnappliedPermission
+        | StoreError::UnreadBinding { .. }
+        | StoreError::PolicyIsACondition { .. }
+        | StoreError::UnusableWindow { .. }
+        | StoreError::BadPattern(_)
+        | StoreError::PolicyKindChanged
+        | StoreError::PolicyCycle { .. }
+        | StoreError::UnsearchableGraph) => {
+            Unportable::Invalid(format!("{item} cannot be written: {refused}"))
+        }
+        StoreError::Backend
+        | StoreError::Residency { .. }
+        | StoreError::NoChain
+        | StoreError::NoKeyring
+        | StoreError::NoActiveGeneration
+        | StoreError::UnknownGeneration { .. }
+        | StoreError::NotSealed
+        | StoreError::NotFound { .. }
+        | StoreError::Ambiguous { .. } => Unportable::Backend,
+    }
 }
 
 /// Point every row of the document at the realm it is being written into.
@@ -1492,29 +1607,36 @@ pub async fn import_realm(
     realms::create(transaction, &doc.realm)
         .await
         .map_err(|why| match why {
-            store::error::StoreError::AlreadyExists => Unportable::AlreadyExists,
-            _ => Unportable::Backend,
+            StoreError::AlreadyExists => Unportable::AlreadyExists,
+            refused => describe_store_refusal(refused, &format!("realm {realm_id}")),
         })?;
     for action in &doc.required_actions {
         auth_flows::register_action(transaction, action)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(why, &format!("required action {}", action.action))
+            })?;
     }
     for flow in &doc.flows {
         auth_flows::create_flow(transaction, flow)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| describe_store_refusal(why, &format!("flow {}", flow.alias)))?;
     }
     for execution in &doc.executions {
         auth_flows::create_execution(transaction, execution)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(
+                    why,
+                    &format!("step {} of flow {}", execution.alias, execution.flow_id),
+                )
+            })?;
     }
 
     for exported in &doc.roles {
         roles::create(transaction, &exported.role)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| describe_store_refusal(why, &format!("role {}", exported.role.name)))?;
     }
     for exported in &doc.roles {
         for child_role_id in &exported.composites {
@@ -1524,28 +1646,41 @@ pub async fn import_realm(
     for exported in &doc.groups {
         roles::create_group(transaction, &exported.group)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(why, &format!("group {}", exported.group.name))
+            })?;
         for role_id in &exported.grants {
             roles::grant_to_group(transaction, &exported.group.group_id, role_id)
                 .await
-                .map_err(|_| Unportable::Backend)?;
+                .map_err(|why| {
+                    describe_store_refusal(
+                        why,
+                        &format!("role {role_id} granted to group {}", exported.group.name),
+                    )
+                })?;
         }
     }
     for exported in &doc.organizations {
         organizations::create(transaction, &exported.organization)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(why, &format!("organization {}", exported.organization.name))
+            })?;
     }
 
     for exported in &doc.client_scopes {
         client_scopes::create_scope(transaction, &exported.scope)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(why, &format!("client scope {}", exported.scope.name))
+            })?;
     }
     for mapper in &doc.protocol_mappers {
         client_scopes::create_mapper(transaction, mapper)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(why, &format!("protocol mapper {}", mapper.name))
+            })?;
     }
     for exported in &doc.client_scopes {
         for mapper_id in &exported.mappers {
@@ -1555,7 +1690,15 @@ pub async fn import_realm(
                 mapper_id,
             )
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(
+                    why,
+                    &format!(
+                        "protocol mapper {mapper_id} on client scope {}",
+                        exported.scope.name
+                    ),
+                )
+            })?;
         }
         for role_id in &exported.grants {
             client_scopes::attach_role_to_scope(
@@ -1564,17 +1707,29 @@ pub async fn import_realm(
                 role_id,
             )
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(
+                    why,
+                    &format!(
+                        "role {role_id} granted to client scope {}",
+                        exported.scope.name
+                    ),
+                )
+            })?;
         }
     }
 
     for exported in &doc.clients {
         clients::create(transaction, &exported.client)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(why, &format!("client {}", exported.client.client_id))
+            })?;
         clients::update(transaction, &exported.client)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(why, &format!("client {}", exported.client.client_id))
+            })?;
         for (scope_id, optional) in &exported.scopes {
             client_scopes::attach_scope(
                 transaction,
@@ -1583,7 +1738,15 @@ pub async fn import_realm(
                 *optional,
             )
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(
+                    why,
+                    &format!(
+                        "client scope {scope_id} on client {}",
+                        exported.client.client_id
+                    ),
+                )
+            })?;
         }
         for mapper_id in &exported.mappers {
             client_scopes::attach_mapper_to_client(
@@ -1592,55 +1755,101 @@ pub async fn import_realm(
                 mapper_id,
             )
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(
+                    why,
+                    &format!(
+                        "protocol mapper {mapper_id} on client {}",
+                        exported.client.client_id
+                    ),
+                )
+            })?;
         }
     }
 
     for user in &doc.users {
         users::create(transaction, user)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| describe_store_refusal(why, &format!("user {}", user.user_name)))?;
     }
     for exported in &doc.roles {
         for user_id in &exported.held_by_users {
             roles::grant_to_user(transaction, user_id, &exported.role.role_id)
                 .await
-                .map_err(|_| Unportable::Backend)?;
+                .map_err(|why| {
+                    describe_store_refusal(
+                        why,
+                        &format!("role {} held by {user_id}", exported.role.name),
+                    )
+                })?;
         }
     }
     for exported in &doc.groups {
         for user_id in &exported.members {
             roles::add_to_group(transaction, user_id, &exported.group.group_id)
                 .await
-                .map_err(|_| Unportable::Backend)?;
+                .map_err(|why| {
+                    describe_store_refusal(
+                        why,
+                        &format!("member {user_id} of group {}", exported.group.name),
+                    )
+                })?;
         }
     }
     for exported in &doc.organizations {
         for member in &exported.members {
             organizations::add_member(transaction, member)
                 .await
-                .map_err(|_| Unportable::Backend)?;
+                .map_err(|why| {
+                    describe_store_refusal(
+                        why,
+                        &format!(
+                            "member {} of organization {}",
+                            member.user_id, exported.organization.name
+                        ),
+                    )
+                })?;
         }
     }
 
     for exported in &doc.authorization {
         authz_surface::create_server(transaction, &exported.server)
             .await
-            .map_err(|_| Unportable::Backend)?;
+            .map_err(|why| {
+                describe_store_refusal(
+                    why,
+                    &format!("authorization server {}", exported.server.server_id),
+                )
+            })?;
         for resource in &exported.resources {
             authz_surface::create_resource(transaction, resource)
                 .await
-                .map_err(|_| Unportable::Backend)?;
+                .map_err(|why| {
+                    describe_store_refusal(
+                        why,
+                        &format!(
+                            "resource {} of {}",
+                            resource.name, exported.server.server_id
+                        ),
+                    )
+                })?;
         }
         for scope in &exported.scopes {
             authz_surface::create_scope(transaction, scope)
                 .await
-                .map_err(|_| Unportable::Backend)?;
+                .map_err(|why| {
+                    describe_store_refusal(
+                        why,
+                        &format!("scope {} of {}", scope.name, exported.server.server_id),
+                    )
+                })?;
         }
         for policy in &exported.policies {
             authz_policies::create(transaction, policy)
                 .await
-                .map_err(|why| Unportable::Invalid(why.to_string()))?;
+                .map_err(|why| {
+                    describe_store_refusal(why, &format!("policy {}", policy.terms.name))
+                })?;
         }
     }
     Ok(())

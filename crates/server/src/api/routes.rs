@@ -4,7 +4,7 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    agents, authorization, claim_sources, client_scopes, clients, compliance, credentials,
+    account, agents, authorization, claim_sources, client_scopes, clients, compliance, credentials,
     directory, events, features, federation, flows, idps, iga, journal, keys, mail, metrics,
     negotiation, overview, portability, protocol_mappers, realm_keys, realms, rebac, recert,
     requests, sessions, sms, users, ussd,
@@ -1409,6 +1409,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/users/{user}/password",
             action: AdminAction::UserWrite,
             handler: Some(|| web::put().to(users::set_password)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/account/password",
+            action: AdminAction::AccountWrite,
+            handler: Some(|| web::put().to(account::change_own_password)),
         },
         AdminRoute {
             method: Method::GET,

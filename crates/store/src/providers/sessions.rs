@@ -257,6 +257,38 @@ pub async fn end_all_of_user(transaction: &Transaction<'_>, user_id: &str) -> St
     Ok(removed)
 }
 
+/// End every login this person holds but the one named, and what clients got
+/// out of each, offline grants included.
+///
+/// What a password changed from inside a login does: whoever else knew the
+/// old one is shut out, and the login making the change keeps working. Each
+/// ended login is told the way a logout tells it.
+pub async fn end_others_of_user(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    kept_session_id: &str,
+) -> StoreResult<usize> {
+    let ended = transaction
+        .query(
+            "DELETE FROM user_sessions WHERE user_id = $1 AND session_id <> $2 \
+             RETURNING session_id",
+            &[&user_id, &kept_session_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    for row in &ended {
+        let session_id: String = row.get("session_id");
+        super::outbox::emit(
+            transaction,
+            super::outbox::SESSION_REVOKED,
+            user_id,
+            &serde_json::json!({ "session_id": session_id }),
+        )
+        .await?;
+    }
+    Ok(ended.len())
+}
+
 /// Take away the client grants that ran out under logins still standing.
 ///
 /// The cascade only reaches these when their login goes; a grant that ended

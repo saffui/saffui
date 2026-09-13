@@ -185,6 +185,45 @@ async fn remember_the_password_it_replaces(
     Ok(())
 }
 
+/// What a password offered for a person says against the one they hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Compared {
+    Matches,
+    Differs,
+    /// Nothing is kept to compare against: the person signs in some other way.
+    NoneHeld,
+}
+
+/// Compare a password offered for a person with the one this realm keeps.
+///
+/// A stored row in a shape this build does not read differs, as it does at a
+/// login: nothing is admitted on a hash nobody can check.
+pub async fn compare_with_held(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    user_id: &str,
+    offered: &SecretBox<String>,
+) -> store::error::StoreResult<Compared> {
+    let held =
+        credentials::load_for_user_of_type(transaction, user_id, CredentialType::Password).await?;
+    let Some(credential) = held.first() else {
+        return Ok(Compared::NoneHeld);
+    };
+    let Ok(stored) = StoredPassword::Argon2id {
+        encoded: credential.secret.expose().to_owned(),
+    }
+    .to_legacy_hash() else {
+        return Ok(Compared::Differs);
+    };
+    let matches = crypto::password::migration::verify_and_plan(provider, offered, &stored)
+        .is_ok_and(|plan| plan.valid);
+    Ok(if matches {
+        Compared::Matches
+    } else {
+        Compared::Differs
+    })
+}
+
 /// Write a password, replacing the one held or writing the first.
 ///
 /// The cost is the caller's, because a realm that chose one means it to apply

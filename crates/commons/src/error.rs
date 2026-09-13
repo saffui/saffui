@@ -60,6 +60,9 @@ catalogue! {
     KeyStillActive = 111, 409, "realm.key.still_active", "this key is still in service; rotate its algorithm first";
     UserNotFound = 200, 404, "user.not_found", "user not found";
     UserAlreadyExists = 201, 409, "user.already_exists", "a user with this identifier already exists in the realm";
+    CurrentPasswordMismatch = 202, 422, "user.password.current_mismatch", "the current password is not this account's";
+    PasswordNotHeldHere = 203, 409, "user.password.not_held_here", "this account keeps no password here to change";
+    UserLockedOut = 204, 429, "user.locked_out", "too many wrong passwords; try again later";
     ClientNotFound = 300, 404, "client.not_found", "client not found";
     ClientAlreadyExists = 301, 409, "client.already_exists", "a client with this identifier already exists";
     ClientScopeNotFound = 310, 404, "client.scope.not_found", "client scope not found";
@@ -179,7 +182,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 59);
+        assert_eq!(ErrorCode::ALL.len(), 62);
     }
 
     /// A message never restates the slug, and never carries a value.

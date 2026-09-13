@@ -178,6 +178,9 @@ function decided(
 export function previewAnswer<T>(path: string, method = "GET", body?: unknown): T {
   const answer = (held: unknown) => held as T;
 
+  if (path.endsWith("/account/password")) {
+    return answer({ ended_sessions: 1 });
+  }
   if (path.endsWith("/mail")) {
     if (method === "DELETE") return answer(undefined);
     return answer({

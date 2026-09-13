@@ -63,6 +63,8 @@ catalogue! {
     CurrentPasswordMismatch = 202, 422, "user.password.current_mismatch", "the current password is not this account's";
     PasswordNotHeldHere = 203, 409, "user.password.not_held_here", "this account keeps no password here to change";
     UserLockedOut = 204, 429, "user.locked_out", "too many wrong passwords; try again later";
+    AccountReauthenticationRequired = 205, 403, "account.reauthentication_required", "sign in again before changing this account's factors";
+    AccountLastFactor = 206, 409, "account.last_factor", "this factor is the last of what keeps the account safe";
     ClientNotFound = 300, 404, "client.not_found", "client not found";
     ClientAlreadyExists = 301, 409, "client.already_exists", "a client with this identifier already exists";
     ClientScopeNotFound = 310, 404, "client.scope.not_found", "client scope not found";
@@ -182,7 +184,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 62);
+        assert_eq!(ErrorCode::ALL.len(), 64);
     }
 
     /// A message never restates the slug, and never carries a value.

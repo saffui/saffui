@@ -313,6 +313,49 @@ pub async fn count_recovery_codes(
     Ok(row.get("held"))
 }
 
+/// Take a person's whole sheet of codes away, and say how many went. One
+/// announcement for the sheet, since the sheet is what the person gave up.
+pub async fn delete_recovery_codes(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> StoreResult<u64> {
+    let removed = transaction
+        .execute(
+            "DELETE FROM user_credentials WHERE user_id = $1 AND credential_type = $2",
+            &[&user_id, &CredentialType::RecoveryCode],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    if removed > 0 {
+        super::outbox::emit(
+            transaction,
+            super::outbox::CREDENTIAL_CHANGED,
+            user_id,
+            &serde_json::json!({ "credential_type": CredentialType::RecoveryCode }),
+        )
+        .await?;
+    }
+    Ok(removed)
+}
+
+const FACTORS: i32 = 0x4641_4354;
+
+/// One writer at a time over a person's factors, until the transaction ends.
+///
+/// Two removals racing would each read the other's factor as still standing,
+/// and a rule that keeps the last one would let both go.
+pub async fn hold_factors(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<()> {
+    transaction
+        .execute(
+            "SELECT pg_advisory_xact_lock($1, \
+                 hashtext(current_setting('saffui.current_realm', true) || ':' || $2))",
+            &[&FACTORS, &user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(())
+}
+
 /// Take a bookkeeping row away and say nothing, for the same reason
 /// [`create_quietly`] writes one that way: a retired password falling off the
 /// end of the remembered set is not a credential anybody lost.

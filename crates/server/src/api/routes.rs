@@ -1418,6 +1418,30 @@ pub fn routes() -> Vec<AdminRoute> {
         },
         AdminRoute {
             method: Method::GET,
+            pattern: "/admin/realms/{realm}/account/credentials",
+            action: AdminAction::AccountRead,
+            handler: Some(|| web::get().to(account::list_own_factors)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/account/credentials/{credential}",
+            action: AdminAction::AccountWrite,
+            handler: Some(|| web::delete().to(account::remove_own_app)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/account/keys/{credential}",
+            action: AdminAction::AccountWrite,
+            handler: Some(|| web::delete().to(account::remove_own_key)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/account/recovery-codes",
+            action: AdminAction::AccountWrite,
+            handler: Some(|| web::delete().to(account::remove_own_recovery_codes)),
+        },
+        AdminRoute {
+            method: Method::GET,
             pattern: "/admin/realms/{realm}/users/{user}/consents",
             action: AdminAction::UserRead,
             handler: Some(|| web::get().to(users::consents)),

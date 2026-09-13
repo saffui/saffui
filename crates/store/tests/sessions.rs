@@ -134,6 +134,87 @@ async fn closing_a_login_takes_what_the_clients_got_with_it() {
     transaction.commit().await.unwrap();
 }
 
+/// Ending a person's other logins keeps the one named, and takes what clients
+/// got out of the rest, offline grants included.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn ending_the_other_logins_keeps_the_one_named() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+
+    for id in ["s-here", "s-there", "s-away"] {
+        sessions::open(&transaction, &session(id, 1_000))
+            .await
+            .unwrap();
+    }
+    sessions::open_client_session(&transaction, &client_session("cs-here", "s-here"))
+        .await
+        .unwrap();
+    sessions::open_client_session(
+        &transaction,
+        &ClientSessionModel {
+            offline: Some(true),
+            ..client_session("cs-there", "s-there")
+        },
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        sessions::end_others_of_user(&transaction, "ada", "s-here")
+            .await
+            .unwrap(),
+        2
+    );
+    assert!(
+        sessions::load(&transaction, "s-here")
+            .await
+            .unwrap()
+            .is_some(),
+        "the named login ended"
+    );
+    for gone in ["s-there", "s-away"] {
+        assert!(
+            sessions::load(&transaction, gone).await.unwrap().is_none(),
+            "{gone} outlived the sweep"
+        );
+    }
+    assert_eq!(
+        sessions::client_sessions_of(&transaction, "s-here")
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the named login lost what its clients got"
+    );
+    assert!(
+        sessions::client_sessions_of(&transaction, "s-there")
+            .await
+            .unwrap()
+            .is_empty(),
+        "an offline grant outlived its login"
+    );
+    let told: i64 = transaction
+        .query_one(
+            "SELECT count(*) FROM event_outbox WHERE kind = $1 AND user_id = 'ada'",
+            &[&store::providers::outbox::SESSION_REVOKED],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(told, 2, "each ended login is told once");
+    assert_eq!(
+        sessions::end_others_of_user(&transaction, "ada", "s-here")
+            .await
+            .unwrap(),
+        0
+    );
+    transaction.commit().await.unwrap();
+}
+
 /// A token is spent in the statement that checks it.
 ///
 /// Reading it and then deleting it is a window in which two presentations both

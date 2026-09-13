@@ -1288,115 +1288,113 @@ async fn a_name_two_roles_already_share_is_still_a_conflict() {
     assert_eq!(status, StatusCode::CONFLICT, "{told}");
 }
 
-/// A role asked for, or renamed, under a name another request took after the
-/// check read is refused as taken by the write itself.
+/// A role asked for, or renamed, under a name another request has written but
+/// not yet committed passes the check, and is refused as taken by the write.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_role_name_taken_after_the_check_is_refused_by_the_write() {
-    let plane = Plane::with_actions(&[AdminAction::RoleWrite]).await;
-    let bearer = plane.token(&support::claims());
-    let mut connection = plane.connection().await;
-    let late = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, REALM),
-        )
-        .await;
-    // The late request reads from here on, before the other one lands.
-    assert!(
-        !store::providers::roles::is_role_name_taken(&late, "racer")
-            .await
-            .expect("a first read")
-    );
-    let (status, born) = asked(
-        &plane,
-        Method::POST,
-        &format!("/admin/realms/{REALM}/roles"),
-        &bearer,
-        Some(serde_json::json!({ "name": "racer" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{born}");
+    use models::entities::authz::RoleMutationModel;
+    use services::admin::directory::{self, Unwritable};
 
-    let refused = services::admin::directory::create_role(
-        &late,
-        &support::provider(),
+    let plane = Plane::with_actions(&[AdminAction::RoleWrite]).await;
+    let provider = support::provider();
+    let context = store::tenancy::TenantContext::new(support::TENANT, REALM);
+    let role = |name: &str| RoleMutationModel {
+        name: name.to_owned(),
+        description: String::new(),
+        display_name: String::new(),
+        client_id: None,
+        admin_actions: None,
+    };
+
+    let mut connection = plane.connection().await;
+    let standing = plane.scoped(&mut connection, &context).await;
+    let renamable = directory::create_role(
+        &standing,
+        &provider,
         support::TENANT,
         REALM,
-        "a-late-caller",
-        models::entities::authz::RoleMutationModel {
-            name: "racer".to_owned(),
-            description: String::new(),
-            display_name: String::new(),
-            client_id: None,
-            admin_actions: None,
-        },
+        "the-test",
+        role("renamable"),
     )
-    .await;
-    assert_eq!(
-        refused.err(),
-        Some(services::admin::directory::Unwritable::AlreadyExists)
-    );
+    .await
+    .expect("a role to rename")
+    .role_id;
+    standing.commit().await.expect("the role stands");
 
-    // The same for a rename: the name was free when the late request read it.
-    let (status, renamable) = asked(
-        &plane,
-        Method::POST,
-        &format!("/admin/realms/{REALM}/roles"),
-        &bearer,
-        Some(serde_json::json!({ "name": "renamable" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{renamable}");
-    let renamable = renamable["role_id"]
-        .as_str()
-        .expect("an identity")
-        .to_owned();
-    let mut connection = plane.connection().await;
-    let late = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, REALM),
+    for asked in ["create", "rename"] {
+        let taken = format!("taken-on-{asked}");
+        let mut rival_connection = plane.connection().await;
+        let rival = plane.scoped(&mut rival_connection, &context).await;
+        directory::create_role(
+            &rival,
+            &provider,
+            support::TENANT,
+            REALM,
+            "a-rival",
+            role(&taken),
         )
-        .await;
-    assert!(
-        !store::providers::roles::is_role_name_taken(&late, "taken-later")
-            .await
-            .expect("a first read")
-    );
-    let (status, born) = asked(
-        &plane,
-        Method::POST,
-        &format!("/admin/realms/{REALM}/roles"),
-        &bearer,
-        Some(serde_json::json!({ "name": "taken-later" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{born}");
-    let refused = services::admin::directory::update_role(
-        &late,
-        &renamable,
-        "a-late-caller",
-        models::entities::authz::RoleMutationModel {
-            name: "taken-later".to_owned(),
-            description: String::new(),
-            display_name: String::new(),
-            client_id: None,
-            admin_actions: None,
-        },
-    )
-    .await;
-    assert_eq!(
-        refused.err(),
-        Some(services::admin::directory::Unwritable::AlreadyExists)
-    );
+        .await
+        .expect("the rival's role, not yet committed");
+        let mut late_connection = plane.connection().await;
+        let late = plane.scoped(&mut late_connection, &context).await;
+        let written = async {
+            if asked == "create" {
+                directory::create_role(
+                    &late,
+                    &provider,
+                    support::TENANT,
+                    REALM,
+                    "a-late-caller",
+                    role(&taken),
+                )
+                .await
+                .map(|_| ())
+            } else {
+                directory::update_role(&late, &renamable, "a-late-caller", role(&taken))
+                    .await
+                    .map(|_| ())
+            }
+        };
+        let (refused, ()) = tokio::join!(written, commit_once_a_write_queues_behind(rival));
+        assert_eq!(refused, Err(Unwritable::AlreadyExists), "on {asked}");
+    }
 }
 
-/// A domain is claimed in its ASCII form, and a domain the store's own rules
-/// refuse is not answered as one another organization holds.
+/// Commit the rival once another request's write queues behind one of its
+/// locks: the window a check read before a write cannot see into.
+async fn commit_once_a_write_queues_behind(rival: deadpool_postgres::Transaction<'_>) {
+    let queued = async {
+        loop {
+            let behind: i64 = rival
+                .query_one(
+                    "SELECT count(*) FROM pg_locks \
+                     WHERE NOT granted AND pg_backend_pid() = ANY(pg_blocking_pids(pid))",
+                    &[],
+                )
+                .await
+                .expect("the lock table")
+                .get(0);
+            if behind > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(10), queued)
+        .await
+        .expect("the write never queued behind the rival");
+    rival.commit().await.expect("the rival lands");
+}
+
+/// A domain claim refuses a domain outside its ASCII form at the door, and a
+/// claim whose organization goes away as it writes is told not found rather
+/// than that the domain is taken.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn a_domain_is_claimed_in_its_ascii_lower_case_form() {
+async fn a_domain_claim_refuses_a_foreign_script_and_a_vanished_organization() {
+    use services::admin::directory::{self, Unwritable};
+
     let plane = Plane::with_actions(&[AdminAction::OrgRead, AdminAction::OrgWrite]).await;
     let bearer = plane.token(&support::claims());
     let base = format!("/admin/realms/{REALM}/organizations");
@@ -1421,26 +1419,17 @@ async fn a_domain_is_claimed_in_its_ascii_lower_case_form() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
 
-    // Past the door, a capital it would have lowered breaks the store's rule.
-    let mut connection = plane.connection().await;
-    let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, REALM),
-        )
-        .await;
-    let refused = services::admin::directory::claim_organization_domain(
-        &transaction,
-        &org,
-        "Acme.Example",
-        "saffui-domain-test",
-    )
-    .await;
-    assert!(
-        matches!(
-            refused,
-            Err(services::admin::directory::Unwritable::Invalid(_))
-        ),
-        "{refused:?}"
+    let context = store::tenancy::TenantContext::new(support::TENANT, REALM);
+    let mut rival_connection = plane.connection().await;
+    let rival = plane.scoped(&mut rival_connection, &context).await;
+    directory::delete_organization(&rival, &org)
+        .await
+        .expect("the organization, going away");
+    let mut late_connection = plane.connection().await;
+    let late = plane.scoped(&mut late_connection, &context).await;
+    let (refused, ()) = tokio::join!(
+        directory::claim_organization_domain(&late, &org, "race.example", "saffui-domain-race"),
+        commit_once_a_write_queues_behind(rival)
     );
+    assert_eq!(refused, Err(Unwritable::NotFound));
 }

@@ -443,8 +443,8 @@ pub async fn claim_organization_domain(
         .await
         .map_err(|why| match why {
             StoreError::AlreadyExists => Unwritable::AlreadyExists,
-            // The one other rule a claim can break is its organization's key:
-            // the organization went away after it was read.
+            // The door shapes the domain, which leaves one rule to break: the
+            // organization's key, once it went away after it was read.
             StoreError::BrokenRule { .. } => Unwritable::NotFound,
             _ => Unwritable::Backend,
         })

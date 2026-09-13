@@ -158,8 +158,7 @@ pub async fn required(
         let round = match (answers.attestation, remembered.get(CONFIGURE_WEBAUTHN)) {
             // Both halves in hand: verify, keep, and strike the instruction.
             (Some(answered), Some(state)) => {
-                let owing = owed(RequiredAction::ConfigureWebauthn);
-                finish(transaction, &party, subject, answered, state, owing).await
+                finish(transaction, &party, subject, answered, state).await
             }
             // No state yet, so nothing to verify against: issue the challenge.
             _ => start(transaction, &party, subject).await,
@@ -171,8 +170,7 @@ pub async fn required(
     if pending(RequiredAction::ConfigureTotp) {
         let round = match (answers.code, remembered.get(CONFIGURE_TOTP)) {
             (Some(typed), Some(state)) => {
-                let owing = owed(RequiredAction::ConfigureTotp);
-                finish_totp(transaction, provider, tenant, subject, typed, state, owing).await
+                finish_totp(transaction, provider, tenant, subject, typed, state).await
             }
             _ => start_totp(provider, realm, subject),
         };
@@ -181,9 +179,7 @@ pub async fn required(
     if pending(RequiredAction::ConfigureRecoveryCodes) {
         let round = match (answers.kept, remembered.get(CONFIGURE_RECOVERY_CODES)) {
             (Some(typed), Some(state)) => {
-                let owing = owed(RequiredAction::ConfigureRecoveryCodes);
-                finish_recovery_codes(transaction, provider, tenant, subject, typed, state, owing)
-                    .await
+                finish_recovery_codes(transaction, provider, tenant, subject, typed, state).await
             }
             _ => start_recovery_codes(provider),
         };
@@ -325,7 +321,6 @@ async fn finish_totp(
     subject: &UserModel,
     typed: &str,
     state: &Value,
-    owed: bool,
 ) -> Enrolment {
     let Some(encoded) = state.get("secret").and_then(Value::as_str) else {
         return Enrolment::Refused;
@@ -412,7 +407,6 @@ async fn finish_totp(
         .await
     {
         Ok(true) => Enrolment::Settled,
-        Ok(false) if !owed => Enrolment::Settled,
         _ => Enrolment::Refused,
     }
 }
@@ -502,7 +496,6 @@ async fn finish_recovery_codes(
     subject: &UserModel,
     typed: &str,
     state: &Value,
-    owed: bool,
 ) -> Enrolment {
     let Some(codes) = state.get("codes").and_then(Value::as_array) else {
         return Enrolment::Refused;
@@ -545,7 +538,6 @@ async fn finish_recovery_codes(
     .await
     {
         Ok(true) => Enrolment::Settled,
-        Ok(false) if !owed => Enrolment::Settled,
         _ => Enrolment::Refused,
     }
 }
@@ -607,9 +599,6 @@ async fn finish(
     subject: &UserModel,
     answered: &str,
     state: &Value,
-    // Whether the realm required the key. Asked by an application instead,
-    // there is no instruction to strike.
-    owed: bool,
 ) -> Enrolment {
     let Ok(state) = serde_json::from_value::<PasskeyRegistration>(state.clone()) else {
         return Enrolment::Refused;
@@ -654,7 +643,6 @@ async fn finish(
     .await
     {
         Ok(true) => Enrolment::Settled,
-        Ok(false) if !owed => Enrolment::Settled,
         _ => Enrolment::Refused,
     }
 }

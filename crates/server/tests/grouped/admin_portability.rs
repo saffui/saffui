@@ -665,3 +665,193 @@ async fn join_a_group_and_an_organization(plane: &Plane, bearer: &str) {
     .await;
     assert!(status.is_success(), "{status}: {told}");
 }
+
+/// A document the store refuses is answered with what could not be written and
+/// the rule it broke, not with an internal error, and nothing of it lands.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_document_the_store_refuses_is_refused_in_words() {
+    let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export?include_users=false"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+
+    let mut named_twice = document.clone();
+    let roles = named_twice["roles"].as_array_mut().expect("the roles");
+    let mut second = roles
+        .iter()
+        .find(|row| row["role"]["client_id"].is_null())
+        .expect("a realm role")
+        .clone();
+    let name = second["role"]["name"]
+        .as_str()
+        .expect("its name")
+        .to_owned();
+    second["role"]["role_id"] = json!("a-second-role-id");
+    second["composites"] = json!([]);
+    roles.push(second);
+
+    let mut dangling = document.clone();
+    let client_id = dangling["clients"][0]["client"]["client_id"]
+        .as_str()
+        .expect("a client")
+        .to_owned();
+    dangling["clients"][0]["scopes"]
+        .as_array_mut()
+        .expect("its scopes")
+        .push(json!(["no-such-scope", false]));
+
+    for (tampered, said) in [
+        (
+            named_twice,
+            format!("role {name} cannot be written: a value it must hold alone is already held"),
+        ),
+        (
+            dangling,
+            format!(
+                "client scope no-such-scope on client {client_id} cannot be written: it breaks the rule "
+            ),
+        ),
+    ] {
+        let (status, told) = asked(
+            &plane,
+            Method::POST,
+            "/admin/realms/import?as=refused-document",
+            &bearer,
+            Some(tampered),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+        assert!(
+            told["message"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with(said.as_str()),
+            "expected a refusal starting {said:?}: {told}"
+        );
+    }
+
+    // Nothing of the refused attempts landed: the name is still free.
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=refused-document",
+        &bearer,
+        Some(document),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+}
+
+/// A partial document the store refuses is answered in words too, two steps
+/// placed at one position included, which the store checks only once all are written.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_partial_document_the_store_refuses_is_refused_in_words() {
+    let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export?include_users=false"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+
+    let scope = &document["client_scopes"][0]["scope"];
+    let new_scope = |client_scope_id: &str| {
+        let mut row = scope.clone();
+        row["client_scope_id"] = json!(client_scope_id);
+        row["name"] = json!("a-scope-named-twice");
+        json!({ "scope": row, "mappers": [], "grants": [] })
+    };
+    let named_twice = document_with_only(
+        &document,
+        "client_scopes",
+        json!([new_scope("a-new-scope"), new_scope("another-new-scope")]),
+    );
+
+    let steps = document["executions"].as_array().expect("the steps");
+    let flow = steps
+        .iter()
+        .map(|step| &step["flow_id"])
+        .find(|flow| {
+            steps
+                .iter()
+                .filter(|step| &step["flow_id"] == *flow)
+                .count()
+                >= 2
+        })
+        .expect("a flow with two steps");
+    let one_position: Vec<Value> = steps
+        .iter()
+        .filter(|step| &step["flow_id"] == flow)
+        .map(|step| {
+            let mut moved = step.clone();
+            moved["priority"] = json!(7);
+            moved
+        })
+        .collect();
+    let crowded = document_with_only(&document, "executions", json!(one_position));
+
+    for (tampered, collision, said) in [
+        (
+            named_twice,
+            "skip",
+            "client scope a-scope-named-twice cannot be written: a value it must hold alone is already held",
+        ),
+        (
+            crowded,
+            "overwrite",
+            "a step of the document cannot be written: a value it must hold alone is already held",
+        ),
+    ] {
+        let (status, told) = asked(
+            &plane,
+            Method::POST,
+            &format!("/admin/realms/{REALM}/import"),
+            &bearer,
+            Some(json!({ "document": tampered, "collision": collision })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+        assert_eq!(told["message"], said, "{told}");
+    }
+
+    // Nothing of the refused attempts landed: the first new scope collides
+    // with nothing.
+    let (status, preview) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/import/preview"),
+        &bearer,
+        Some(json!({
+            "document": document_with_only(&document, "client_scopes", json!([new_scope("a-new-scope")])),
+            "collision": "skip",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert_eq!(preview["collision_count"], 0, "{preview}");
+}
+
+/// The document with every section emptied but one, which carries the rows given.
+fn document_with_only(document: &Value, section: &str, rows: Value) -> Value {
+    let mut narrowed = document.clone();
+    for (key, value) in narrowed.as_object_mut().expect("a document") {
+        if value.is_array() && key != "sections" {
+            *value = json!([]);
+        }
+    }
+    narrowed[section] = rows;
+    narrowed
+}

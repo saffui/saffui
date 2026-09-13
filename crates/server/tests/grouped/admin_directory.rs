@@ -1138,3 +1138,309 @@ async fn a_name_is_the_persons_and_the_identity_is_the_realms() {
     let (status, _) = asked(&plane, Method::GET, &format!("{base}/grace"), &bearer, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+/// A taken group or organization name is a conflict, on creation and on a
+/// rename alike.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_taken_group_or_organization_name_is_a_conflict() {
+    let plane = Plane::with_actions(&[AdminAction::GroupWrite, AdminAction::OrgWrite]).await;
+    let bearer = plane.token(&support::claims());
+    for (base, identity, code) in [
+        (
+            format!("/admin/realms/{REALM}/groups"),
+            "group_id",
+            "group.already_exists",
+        ),
+        (
+            format!("/admin/realms/{REALM}/organizations"),
+            "org_id",
+            "organization.already_exists",
+        ),
+    ] {
+        let named = |name: &str| Some(serde_json::json!({ "name": name }));
+        let (status, born) = asked(&plane, Method::POST, &base, &bearer, named("taken")).await;
+        assert_eq!(status, StatusCode::CREATED, "{born}");
+        let (status, told) = asked(&plane, Method::POST, &base, &bearer, named("taken")).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{told}");
+        assert_eq!(told["error_code"], code, "{told}");
+
+        let (status, other) = asked(&plane, Method::POST, &base, &bearer, named("free")).await;
+        assert_eq!(status, StatusCode::CREATED, "{other}");
+        let other = other[identity].as_str().expect("an identity").to_owned();
+        let (status, told) = asked(
+            &plane,
+            Method::PUT,
+            &format!("{base}/{other}"),
+            &bearer,
+            named("taken"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{told}");
+        assert_eq!(told["error_code"], code, "{told}");
+    }
+}
+
+/// Renaming a person onto a name somebody else signs in with is a conflict.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn renaming_a_person_onto_a_taken_name_is_a_conflict() {
+    let plane = Plane::with_actions(&[
+        AdminAction::UserRead,
+        AdminAction::UserWrite,
+        AdminAction::RealmRead,
+        AdminAction::RealmWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/users");
+    let (status, _) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}"),
+        &bearer,
+        Some(serde_json::json!({ "edit_user_name_allowed": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let mut born = Vec::new();
+    for user_name in ["ada-lovelace", "grace-hopper"] {
+        let (status, person) = asked(
+            &plane,
+            Method::POST,
+            &base,
+            &bearer,
+            Some(serde_json::json!({ "user_name": user_name })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{person}");
+        born.push(person["user_id"].as_str().expect("an identity").to_owned());
+    }
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{}", born[1]),
+        &bearer,
+        Some(serde_json::json!({ "user_name": "ada-lovelace" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    assert_eq!(told["error_code"], "user.already_exists", "{told}");
+}
+
+/// A realm role and a client role may share a name, and asking for another
+/// role under it is then a conflict, not a lookup unable to choose.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_name_two_roles_already_share_is_still_a_conflict() {
+    let plane = Plane::with_actions(&[AdminAction::RoleRead, AdminAction::RoleWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/roles");
+    let named = |name: &str| Some(serde_json::json!({ "name": name }));
+    let (status, born) = asked(&plane, Method::POST, &base, &bearer, named("twin")).await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    // The plane refuses a client role under a realm role's name, so the second
+    // of the pair is written the way an import writes it.
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, REALM),
+            )
+            .await;
+        store::providers::roles::create(
+            &transaction,
+            &models::entities::authz::RoleModel {
+                role_id: "twin-of-the-client".to_owned(),
+                realm_id: REALM.to_owned(),
+                name: "twin".to_owned(),
+                display_name: "Twin".to_owned(),
+                description: String::new(),
+                client_id: Some(support::CONFIDENTIAL.to_owned()),
+                admin_actions: None,
+                metadata: models::auditable::AuditableModel::from_creator(
+                    support::TENANT.to_owned(),
+                    "the-test".to_owned(),
+                ),
+            },
+        )
+        .await
+        .expect("a client role of the same name");
+        transaction.commit().await.expect("the pair stands");
+    }
+
+    let (status, told) = asked(&plane, Method::POST, &base, &bearer, named("twin")).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+    let (status, single) = asked(&plane, Method::POST, &base, &bearer, named("single")).await;
+    assert_eq!(status, StatusCode::CREATED, "{single}");
+    let single = single["role_id"].as_str().expect("an identity").to_owned();
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("{base}/{single}"),
+        &bearer,
+        named("twin"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{told}");
+}
+
+/// A role asked for, or renamed, under a name another request took after the
+/// check read is refused as taken by the write itself.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_role_name_taken_after_the_check_is_refused_by_the_write() {
+    let plane = Plane::with_actions(&[AdminAction::RoleWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let mut connection = plane.connection().await;
+    let late = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, REALM),
+        )
+        .await;
+    // The late request reads from here on, before the other one lands.
+    assert!(
+        !store::providers::roles::is_role_name_taken(&late, "racer")
+            .await
+            .expect("a first read")
+    );
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(serde_json::json!({ "name": "racer" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+
+    let refused = services::admin::directory::create_role(
+        &late,
+        &support::provider(),
+        support::TENANT,
+        REALM,
+        "a-late-caller",
+        models::entities::authz::RoleMutationModel {
+            name: "racer".to_owned(),
+            description: String::new(),
+            display_name: String::new(),
+            client_id: None,
+            admin_actions: None,
+        },
+    )
+    .await;
+    assert_eq!(
+        refused.err(),
+        Some(services::admin::directory::Unwritable::AlreadyExists)
+    );
+
+    // The same for a rename: the name was free when the late request read it.
+    let (status, renamable) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(serde_json::json!({ "name": "renamable" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{renamable}");
+    let renamable = renamable["role_id"]
+        .as_str()
+        .expect("an identity")
+        .to_owned();
+    let mut connection = plane.connection().await;
+    let late = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, REALM),
+        )
+        .await;
+    assert!(
+        !store::providers::roles::is_role_name_taken(&late, "taken-later")
+            .await
+            .expect("a first read")
+    );
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(serde_json::json!({ "name": "taken-later" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let refused = services::admin::directory::update_role(
+        &late,
+        &renamable,
+        "a-late-caller",
+        models::entities::authz::RoleMutationModel {
+            name: "taken-later".to_owned(),
+            description: String::new(),
+            display_name: String::new(),
+            client_id: None,
+            admin_actions: None,
+        },
+    )
+    .await;
+    assert_eq!(
+        refused.err(),
+        Some(services::admin::directory::Unwritable::AlreadyExists)
+    );
+}
+
+/// A domain is claimed in its ASCII form, and a domain the store's own rules
+/// refuse is not answered as one another organization holds.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_domain_is_claimed_in_its_ascii_lower_case_form() {
+    let plane = Plane::with_actions(&[AdminAction::OrgRead, AdminAction::OrgWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/organizations");
+    let (status, born) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(serde_json::json!({ "name": "acme" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{born}");
+    let org = born["org_id"].as_str().expect("an identity").to_owned();
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("{base}/{org}/domains"),
+        &bearer,
+        Some(serde_json::json!({ "domain": "éxample.org" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // Past the door, a capital it would have lowered breaks the store's rule.
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, REALM),
+        )
+        .await;
+    let refused = services::admin::directory::claim_organization_domain(
+        &transaction,
+        &org,
+        "Acme.Example",
+        "saffui-domain-test",
+    )
+    .await;
+    assert!(
+        matches!(
+            refused,
+            Err(services::admin::directory::Unwritable::Invalid(_))
+        ),
+        "{refused:?}"
+    );
+}

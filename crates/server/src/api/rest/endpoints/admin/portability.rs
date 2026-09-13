@@ -135,7 +135,15 @@ pub async fn import(
                 &format!("{user_name}@{realm_id}.invalid"),
             )
             .await
-            .map_err(|_| internal())?,
+            .map_err(|why| match why {
+                // The name is held by a role the document brought under another
+                // identifier, which the way in does not take over.
+                store::error::StoreError::AlreadyExists => ApiError::with_detail(
+                    ErrorCode::ValidationError,
+                    "the document holds a role named administrator under another identifier",
+                ),
+                _ => internal(),
+            })?,
         )),
         _ => None,
     };

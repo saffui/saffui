@@ -912,3 +912,55 @@ async fn a_partial_import_plans_the_required_actions_it_carries() {
         assert_eq!(report["skipped"]["required_actions"], 1, "{path}: {report}");
     }
 }
+
+/// The way in refuses in words when the document already holds a role named
+/// administrator under another identifier, and nothing of the attempt lands.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_way_in_blocked_by_a_role_named_administrator_is_refused_in_words() {
+    let plane = Plane::with_actions(&[AdminAction::RealmExport, AdminAction::RealmImport]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, mut document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export?include_users=false"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    let roles = document["roles"].as_array_mut().expect("the roles");
+    let mut impostor = roles
+        .iter()
+        .find(|row| row["role"]["client_id"].is_null())
+        .expect("a realm role")
+        .clone();
+    impostor["role"]["role_id"] = json!("not-the-administrator");
+    impostor["role"]["name"] = json!("administrator");
+    impostor["composites"] = json!([]);
+    roles.push(impostor);
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=way-in&administrator=keeper",
+        &bearer,
+        Some(document.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert_eq!(
+        told["message"], "the document holds a role named administrator under another identifier",
+        "{told}"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=way-in",
+        &bearer,
+        Some(document),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+}

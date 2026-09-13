@@ -28,6 +28,9 @@ pub enum Unwritable {
     /// The store's own sentence for a write it refused.
     #[error("{0}")]
     Refused(String),
+    /// A name another row of the same server already holds.
+    #[error("this name is already held on this server")]
+    Taken,
     #[error("the store could not be written")]
     Backend,
 }
@@ -36,6 +39,7 @@ pub enum Unwritable {
 fn carried(why: StoreError) -> Unwritable {
     match why {
         StoreError::NotFound { .. } => Unwritable::NotFound,
+        StoreError::AlreadyExists => Unwritable::Taken,
         StoreError::PolicyIsACondition { .. } => Unwritable::StillRead(why.to_string()),
         StoreError::UnboundMember { .. }
         | StoreError::EmptyPolicy { .. }
@@ -57,6 +61,15 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
         .fill(&mut bytes)
         .map_err(|_| Unwritable::Backend)?;
     Ok(crypto::provider::uuid_from(bytes))
+}
+
+/// A field the schema forbids blank, refused in words before the store is
+/// asked, so it never comes back as a failure of the store's own.
+fn refuse_blank_field(value: &str, field: &str) -> Result<(), Unwritable> {
+    if value.trim().is_empty() {
+        return Err(Unwritable::Refused(format!("the {field} cannot be blank")));
+    }
+    Ok(())
 }
 
 /// Declare a client a protected application. The identity is the client's own,
@@ -159,6 +172,8 @@ pub async fn add_resource(
     server_id: &str,
     asked: ResourceMutationModel,
 ) -> Result<ResourceModel, Unwritable> {
+    refuse_blank_field(&asked.name, "resource name")?;
+    refuse_blank_field(&asked.resource_type, "resource type")?;
     server(transaction, server_id).await?;
     let resource = asked.into_model(
         draw(provider)?,
@@ -192,6 +207,8 @@ pub async fn rework_resource(
     by: &str,
     asked: ResourceMutationModel,
 ) -> Result<ResourceModel, Unwritable> {
+    refuse_blank_field(&asked.name, "resource name")?;
+    refuse_blank_field(&asked.resource_type, "resource type")?;
     server(transaction, server_id).await?;
     let held = authz_surface::load_resource(transaction, resource_id)
         .await
@@ -244,6 +261,7 @@ pub async fn add_scope(
     server_id: &str,
     asked: ScopeMutationModel,
 ) -> Result<ScopeModel, Unwritable> {
+    refuse_blank_field(&asked.name, "scope name")?;
     server(transaction, server_id).await?;
     let scope = asked.into_model(
         draw(provider)?,
@@ -276,6 +294,7 @@ pub async fn rework_scope(
     by: &str,
     asked: ScopeMutationModel,
 ) -> Result<ScopeModel, Unwritable> {
+    refuse_blank_field(&asked.name, "scope name")?;
     server(transaction, server_id).await?;
     let held = authz_surface::load_scope(transaction, scope_id)
         .await
@@ -334,6 +353,7 @@ pub async fn add_policy(
     org_id: Option<String>,
     terms: PolicyTerms,
 ) -> Result<PolicyModel, Unwritable> {
+    refuse_blank_field(&terms.name, "policy name")?;
     server(transaction, server_id).await?;
     let policy = terms.into_model(
         draw(provider)?,
@@ -368,6 +388,7 @@ pub async fn rework_policy(
     by: &str,
     terms: PolicyTerms,
 ) -> Result<PolicyModel, Unwritable> {
+    refuse_blank_field(&terms.name, "policy name")?;
     let held = match authz_policies::load(transaction, server_id, policy_id)
         .await
         .map_err(|_| Unwritable::Backend)?

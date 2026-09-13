@@ -525,8 +525,8 @@ pub async fn share_resource(
     .map_err(|_| Unshareable::Backend)
 }
 
-/// Stop sharing. Refused on the same grounds, so a resource that stopped being
-/// user managed is not a resource whose shares can be quietly rearranged.
+/// Stop sharing, whether sharing is open today or not. A share kept while it is
+/// closed grants nothing, and taking it back cannot wait for sharing to reopen.
 pub async fn unshare_resource(
     transaction: &Transaction<'_>,
     server_id: &str,
@@ -534,18 +534,15 @@ pub async fn unshare_resource(
     relation: &str,
     with: &store::providers::rebac::Subject,
 ) -> Result<(), Unshareable> {
-    let server = authz_surface::load_server(transaction, server_id)
+    authz_surface::load_server(transaction, server_id)
         .await
         .map_err(|_| Unshareable::Backend)?
         .ok_or(Unshareable::NotFound)?;
-    if !server.user_managed_access {
-        return Err(Unshareable::ServerHoldsIt);
-    }
     let held = authz_surface::load_resource(transaction, resource_id)
         .await
         .map_err(|_| Unshareable::Backend)?
         .ok_or(Unshareable::NotFound)?;
-    if held.server_id != server_id || !held.user_managed_access {
+    if held.server_id != server_id {
         return Err(Unshareable::NotFound);
     }
     crate::rebac::unrelate(

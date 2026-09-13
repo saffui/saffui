@@ -178,6 +178,42 @@ pub async fn subjects(
         .collect())
 }
 
+/// The same edges, as far as they grant.
+///
+/// An edge on a resource whose sharing is closed, by the resource or by its
+/// server, grants nothing and is left out here. It stays written, and grants
+/// again once sharing reopens. Every edge on that resource is left out, since a
+/// share is a row like any other; [`subjects`] still lists them all.
+pub async fn granting_subjects(
+    transaction: &Transaction<'_>,
+    object_type: &str,
+    object_id: &str,
+    relation: &str,
+    limit: i64,
+) -> StoreResult<Vec<Subject>> {
+    Ok(transaction
+        .query(
+            "SELECT t.subject_type, t.subject_id, t.subject_relation FROM rebac_tuples t \
+             WHERE t.object_type = $1 AND t.object_id = $2 AND t.relation = $3 \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM resources r \
+                   JOIN resource_servers s \
+                     ON s.tenant = r.tenant AND s.realm_id = r.realm_id \
+                    AND s.server_id = r.server_id \
+                   WHERE r.tenant = t.tenant AND r.realm_id = t.realm_id \
+                     AND r.resource_type = t.object_type AND r.resource_id = t.object_id \
+                     AND NOT (r.user_managed_access AND s.user_managed_access)) \
+             ORDER BY t.subject_type ASC, t.subject_id ASC, t.subject_relation ASC \
+             LIMIT $4",
+            &[&object_type, &object_id, &relation, &(limit + 1)],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(read_subject)
+        .collect())
+}
+
 fn read_subject(row: Row) -> Subject {
     Subject {
         subject_type: row.get("subject_type"),

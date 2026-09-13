@@ -1465,6 +1465,114 @@ async fn one_authorization_mints_one_code() {
     );
 }
 
+/// Answer a login step while another round ends the same login.
+///
+/// The other round's delete is held open until this round queues behind it, so
+/// the row is there when this round resumes the login and gone by the time it
+/// finishes it. That is the window a resume without a lock leaves open.
+async fn login_step_while_another_round_ends_it(
+    plane: &Plane,
+    auth_session: &str,
+    body: serde_json::Value,
+) -> (StatusCode, serde_json::Value, Vec<String>) {
+    let mut connection = plane.connection().await;
+    let other_round = plane
+        .scoped(
+            &mut connection,
+            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    assert!(
+        store::providers::login::finish(&other_round, auth_session)
+            .await
+            .expect("the auth session table"),
+        "no login was in progress to end"
+    );
+    let (answered, ()) = tokio::join!(login_step(plane, Some(auth_session), body), async move {
+        let queued = async {
+            loop {
+                let behind: i64 = other_round
+                    .query_one(
+                        "SELECT count(*) FROM pg_locks \
+                         WHERE NOT granted AND pg_backend_pid() = ANY(pg_blocking_pids(pid))",
+                        &[],
+                    )
+                    .await
+                    .expect("the lock table")
+                    .get(0);
+                if behind > 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), queued)
+            .await
+            .expect("the round never queued behind the other one");
+        other_round
+            .commit()
+            .await
+            .expect("the other round ends the login");
+    });
+    answered
+}
+
+/// A login is answered by the round that ends it. One that resumed the login
+/// just before another round ended it finds nothing left to finish, and
+/// admitting it anyway would answer one authorization twice.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_login_another_round_ended_is_not_admitted() {
+    let plane = Plane::with_actions(&[]).await;
+    let asked = started(support::CONFIDENTIAL);
+    let (_, _, opened) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    let (status, told, set) = login_step_while_another_round_ends_it(
+        &plane,
+        &auth_session,
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+    assert_eq!(told["status"], "no-such-login");
+    assert!(
+        set.iter().any(|header| {
+            header.starts_with(&format!("{}=;", support::AUTH_SESSION_COOKIE))
+                && header.contains("Max-Age=0")
+        }),
+        "the browser keeps a binding to a login that is over: {set:?}"
+    );
+    // The session a round opens carries the login's own identifier, and every
+    // code hangs off a session, so neither was kept.
+    assert!(
+        !plane.session_exists(&auth_session).await,
+        "a session was kept for a login another round ended"
+    );
+}
+
+/// The same holds for a round that would only have sent the client an error.
+/// The round that ended the login answered the client, and a second answer
+/// could contradict the first.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_login_another_round_ended_is_not_sent_back() {
+    let plane = Plane::with_actions(&[]).await;
+    // Asked for grace and answered by ada, so this round ends in a send-back.
+    let for_grace = asking_for(&[("claims", r#"{"id_token": {"sub": {"value": "grace"}}}"#)]);
+    let (_, _, opened) = authorize_with_cookies(&plane, &for_grace).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    let (status, told, _) = login_step_while_another_round_ends_it(
+        &plane,
+        &auth_session,
+        serde_json::json!({ "username": support::SUBJECT, "password": support::PASSWORD }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+    assert_eq!(told["status"], "no-such-login");
+}
+
 /// A login nobody opened is answered the way one that expired is, and the same
 /// way a realm this deployment does not hold is. None of the three is something
 /// an unauthenticated caller gets to tell apart.

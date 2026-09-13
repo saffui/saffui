@@ -42,16 +42,18 @@ describe("identity provider catalogue", () => {
     expect(PROVIDER_CATALOG.some((provider) => provider.id === "instagram")).toBe(false);
   });
 
-  test("prefills the plain OAuth 2.0 providers by their stable subject", () => {
-    for (const [id, subject] of [
-      ["github", "/id"],
-      ["bitbucket", "/uuid"],
-      ["twitter", "/data/id"],
-    ]) {
+  test("prefills each plain OAuth 2.0 provider's stable subject, client authentication and PKCE", () => {
+    for (const [id, subject, tokenAuth, pkce] of [
+      ["github", "/id", "client_secret_post", true],
+      ["bitbucket", "/uuid", "client_secret_basic", false],
+      ["twitter", "/data/id", "client_secret_basic", true],
+    ] as const) {
       const draft = presetDraft(PROVIDER_CATALOG.find((provider) => provider.id === id));
       expect(draft.protocol).toBe("oauth2");
       expect(draft.subjectPointer).toBe(subject);
       expect(draft.userinfoEndpoint).toMatch(/^https:\/\//);
+      expect(draft.tokenAuth).toBe(tokenAuth);
+      expect(draft.pkce).toBe(pkce);
     }
     const linkedin = presetDraft(PROVIDER_CATALOG.find((provider) => provider.id === "linkedin"));
     expect(linkedin.protocol).toBe("oidc");

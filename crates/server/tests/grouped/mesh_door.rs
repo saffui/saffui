@@ -303,3 +303,132 @@ async fn the_mesh_door_answers_a_proxy_in_its_own_protocol() {
         "an unmapped path consulted a rule"
     );
 }
+
+/// A check runs inside the trace of the request it weighs, as the proxy hands
+/// that request's headers over, and its decision records that trace. A check
+/// whose request names none records a trace of its own.
+#[cfg(feature = "otel")]
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_check_records_the_trace_of_the_request_it_weighs() {
+    use opentelemetry::trace::TracerProvider as _;
+    use tracing_subscriber::prelude::*;
+
+    const TRACE: &str = "3cafe00dfeed55667788990011223344";
+    let inside = format!("00-{TRACE}-b7ad6b7169203331-01");
+
+    let plane = Plane::with_actions(&[AdminAction::UmaRead, AdminAction::UmaWrite]).await;
+    let admin = plane.token(&claims());
+    let mut mine = claims();
+    mine.set_audience(vec![support::CONFIDENTIAL]);
+    let application = plane.token(&mine);
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!(
+            "/admin/realms/{REALM}/authz/servers/{}",
+            support::CONFIDENTIAL
+        ),
+        &admin,
+        Some(json!({ "enforcement_mode": "permissive", "decision_strategy": "unanimous" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let (status, resource) = asked(
+        &plane,
+        Method::POST,
+        &format!(
+            "/admin/realms/{REALM}/authz/servers/{}/resources",
+            support::CONFIDENTIAL
+        ),
+        &admin,
+        Some(json!({
+            "name": "orders",
+            "display_name": "",
+            "description": "",
+            "resource_uris": ["/api/*"],
+            "resource_type": "urn:app:orders",
+            "resource_owner": "app",
+            "user_managed_access": false,
+            "configs": null,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{resource}");
+    let orders = resource["resource_id"]
+        .as_str()
+        .expect("an identifier")
+        .to_owned();
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/authz/routes/reads"),
+        &admin,
+        Some(
+            json!({ "method": "GET", "path": "/api/*", "server_id": support::CONFIDENTIAL,
+                     "resource": orders, "scope": "read", "action": "read" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_simple_exporter(exporter)
+        .build();
+    let _scope = tracing::subscriber::set_default(
+        tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("the-test"))),
+    );
+    let mut door = opened(&plane).await;
+    let bearer = format!("Bearer {application}");
+    for (id, headers) in [
+        (
+            "traced",
+            vec![
+                ("authorization", bearer.as_str()),
+                ("traceparent", inside.as_str()),
+            ],
+        ),
+        ("untraced", vec![("authorization", bearer.as_str())]),
+    ] {
+        let answer = door
+            .check(check(id, "GET", "/api/orders", &headers))
+            .await
+            .expect("an answer")
+            .into_inner();
+        assert_eq!(denied(&answer), None, "{id}: {answer:?}");
+    }
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let found: Vec<String> =
+        store::providers::authz_policies::decisions_of_trace(&transaction, TRACE, 10)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|held| held.decision_id)
+            .collect();
+    assert_eq!(
+        found,
+        vec!["mesh-traced".to_owned()],
+        "the check did not record the trace of the request it weighed"
+    );
+    let untraced = store::providers::authz_policies::recent(&transaction, 50)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|held| held.decision_id == "mesh-untraced")
+        .expect("the untraced check was recorded");
+    assert!(
+        untraced
+            .trace_id
+            .as_deref()
+            .is_some_and(|held| held != TRACE),
+        "a check with no trace of its own recorded {:?}",
+        untraced.trace_id
+    );
+}

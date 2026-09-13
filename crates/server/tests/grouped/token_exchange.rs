@@ -861,3 +861,132 @@ async fn exchange_turned(plane: &Plane, on: bool) {
         .expect("the wish was kept");
     transaction.commit().await.expect("the wish stands");
 }
+
+/// An exchange the operator's policy weighs records its decision under the
+/// trace the token request ran in.
+#[cfg(feature = "otel")]
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_exchange_decision_records_the_trace_it_ran_in() {
+    use models::entities::attributes::AttributeValue;
+    use opentelemetry::trace::TracerProvider as _;
+    use store::tenancy::TenantContext;
+    use tracing_subscriber::prelude::*;
+
+    const TRACE: &str = "5cafe00dfeed55667788990011223344";
+    let inside = format!("00-{TRACE}-b7ad6b7169203331-01");
+
+    let plane = Plane::with_actions(&[AdminAction::UmaRead, AdminAction::UmaWrite]).await;
+    let admin = plane.token(&support::claims());
+    let minted = subject_tokens(&plane, "openid").await;
+    let subject_token = minted["access_token"]
+        .as_str()
+        .expect("an access token")
+        .to_owned();
+    opted_in(&plane, support::CONFIDENTIAL).await;
+
+    // A permissive application and a resource for the policy to name, so the
+    // exchange reaches the decision point and goes through.
+    let plain = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let servers = format!(
+        "/admin/realms/{REALM}/authz/servers/{}",
+        support::CONFIDENTIAL
+    );
+    let response = test::call_service(
+        &plain,
+        test::TestRequest::post()
+            .uri(&servers)
+            .insert_header(("authorization", format!("Bearer {admin}")))
+            .set_json(serde_json::json!({ "enforcement_mode": "permissive", "decision_strategy": "unanimous" }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let resource: Value = test::call_and_read_body_json(
+        &plain,
+        test::TestRequest::post()
+            .uri(&format!("{servers}/resources"))
+            .insert_header(("authorization", format!("Bearer {admin}")))
+            .set_json(serde_json::json!({
+                "name": "exchanges", "display_name": "", "description": "",
+                "resource_uris": [], "resource_type": "urn:app:exchanges",
+                "resource_owner": "app", "user_managed_access": false,
+            }))
+            .to_request(),
+    )
+    .await;
+    let exchanges = resource["resource_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no resource: {resource}"))
+        .to_owned();
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
+            .await
+            .unwrap()
+            .expect("the client");
+        let bag = client.configs.get_or_insert_with(Default::default);
+        for (key, value) in [
+            ("token.exchange.policy_server", support::CONFIDENTIAL),
+            ("token.exchange.policy_resource", exchanges.as_str()),
+            ("token.exchange.policy_scope", "exchange"),
+        ] {
+            bag.insert(key.to_owned(), AttributeValue::Str(value.to_owned()));
+        }
+        assert!(
+            store::providers::clients::update(&transaction, &client)
+                .await
+                .unwrap()
+        );
+        transaction.commit().await.unwrap();
+    }
+
+    server::otel::install_propagation();
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_simple_exporter(exporter)
+        .build();
+    let _scope = tracing::subscriber::set_default(
+        tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("the-test"))),
+    );
+    let traced =
+        test::init_service(server::api::config::observed().configure(register(&mounted(&plane))))
+            .await;
+    let encoded =
+        BASE64.encode(format!("{}:{}", support::CONFIDENTIAL, support::CLIENT_SECRET).as_bytes());
+    let response = test::call_service(
+        &traced,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/token"))
+            .insert_header(("authorization", format!("Basic {encoded}")))
+            .insert_header(("traceparent", inside.as_str()))
+            .set_form([
+                ("grant_type", EXCHANGE),
+                ("subject_token", subject_token.as_str()),
+                ("subject_token_type", ACCESS_TYPE),
+            ])
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    let body: Value = test::read_body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let decided = store::providers::authz_policies::decisions_of_trace(&transaction, TRACE, 10)
+        .await
+        .unwrap();
+    let actions: Vec<&str> = decided.iter().map(|held| held.action.as_str()).collect();
+    assert_eq!(
+        actions,
+        vec!["token-exchange"],
+        "the exchange did not record its decision under the trace it ran in"
+    );
+}

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 use tonic::{Request, Response, Status};
+use tracing::Instrument;
 
 /// The generated code, nested the way the package names are: what it
 /// writes for one package refers to another by walking up to this root, so
@@ -168,6 +169,7 @@ impl Authorization for Door {
         };
 
         let decision_id = format!("mesh-{}", http.id);
+        let span = crate::otel::open_check_span(&http.headers);
         match crate::mesh::weigh(
             &self.pool,
             &self.tenancy,
@@ -179,6 +181,7 @@ impl Authorization for Door {
                 decision_id: &decision_id,
             },
         )
+        .instrument(span)
         .await
         {
             crate::mesh::Weighed::Permit { subject } => Ok(permitted(&subject, &decision_id)),

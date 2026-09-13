@@ -1,9 +1,29 @@
 import { defineStore } from "pinia";
 import { peek, type Tokens } from "saffui-js";
-import { clientFor, rememberRealm, rememberedRealm, returnUri } from "@/services/auth";
+import {
+  clientFor,
+  rememberPath,
+  rememberRealm,
+  rememberedRealm,
+  returnUri,
+} from "@/services/auth";
 import { getUser } from "@/services/users";
 
 let renewal: Promise<string> | null = null;
+
+/// What every sign-in the console starts asks for, a first one or a repeated one.
+function consoleSignIn(extra: Record<string, string> = {}) {
+  return {
+    redirectUri: returnUri(),
+    scope: "openid profile admin",
+    extra: {
+      claims: JSON.stringify({
+        id_token: { preferred_username: { essential: true } },
+      }),
+      ...extra,
+    },
+  };
+}
 
 /// Who is signed in, into which realm, holding what. Tokens live in memory
 /// only: a reload signs in again through the server's own session cookie,
@@ -24,15 +44,15 @@ export const useSession = defineStore("session", {
   actions: {
     async login(realm: string) {
       rememberRealm(realm);
-      await clientFor(realm).login({
-        redirectUri: returnUri(),
-        scope: "openid profile admin",
-        extra: {
-          claims: JSON.stringify({
-            id_token: { preferred_username: { essential: true } },
-          }),
-        },
-      });
+      await clientFor(realm).login(consoleSignIn());
+    },
+    /// Sign in again to add a factor to one's own account, and land back on the
+    /// page that asked. The ceremony runs on the sign-in page, where it can be
+    /// declined; the server refuses a name it does not offer.
+    async enrol(realm: string, ceremony: string, path: string) {
+      rememberRealm(realm);
+      rememberPath(path);
+      await clientFor(realm).login(consoleSignIn({ enrol: ceremony }));
     },
     adopt(realm: string, tokens: Tokens) {
       this.realm = realm;

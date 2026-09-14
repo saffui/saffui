@@ -3,6 +3,7 @@ use crypto::envelope::Envelope;
 use deadpool_postgres::Transaction;
 use models::entities::attributes;
 use models::entities::brokering::UserClaimSourceModel;
+use models::entities::client::Protocol;
 use models::entities::keys::RealmSigningKeyView;
 use models::entities::user::{UserModel, address, profile};
 use serde_json::{Map, Value, json};
@@ -335,7 +336,7 @@ pub async fn entitled_scopes(
     transaction: &Transaction<'_>,
     client_id: &str,
 ) -> Result<Vec<String>, ()> {
-    let attached = client_scopes::scopes_of_client(transaction, client_id)
+    let attached = client_scopes::scopes_of_client_for(transaction, client_id, Protocol::OpenId)
         .await
         .map_err(|_| ())?;
     Ok(attached.into_iter().map(|(scope, _)| scope.name).collect())

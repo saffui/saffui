@@ -269,6 +269,111 @@ async fn a_mapper_shapes_what_the_realm_answers() {
     );
 }
 
+/// Rules and scopes are kept per protocol. One of another protocol held by an
+/// OpenID Connect client shapes none of its tokens or answers: neither a rule
+/// attached to the client, nor the rule a scope of that protocol carries.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_rule_or_a_scope_of_another_protocol_shapes_no_openid_grant() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/protocol-mappers");
+    planted_attribute(&plane, "department", "mines").await;
+
+    // A department rule of the docker protocol, held by the client itself.
+    let (status, docker_rule) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(json!({
+            "name": "docker-department",
+            "protocol": "docker",
+            "mapper_type": "oidc-usermodel-attribute-mapper",
+            "configs": {
+                "claim.name": { "Str": "department" },
+                "user.attribute": { "Str": "department" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{docker_rule}");
+    let docker_rule_id = docker_rule["mapper_id"].as_str().expect("an id").to_owned();
+
+    // A division rule of OpenID Connect, carried by a docker scope the client
+    // holds as required.
+    let (status, registry) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/client-scopes"),
+        &bearer,
+        Some(json!({ "name": "registry", "protocol": "docker" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{registry}");
+    let registry_id = registry["client_scope_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
+    let (status, division_rule) = asked(
+        &plane,
+        Method::POST,
+        &base,
+        &bearer,
+        Some(json!({
+            "name": "division",
+            "mapper_type": "oidc-usermodel-attribute-mapper",
+            "configs": {
+                "claim.name": { "Str": "division" },
+                "user.attribute": { "Str": "department" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{division_rule}");
+    let division_rule_id = division_rule["mapper_id"].as_str().expect("an id").to_owned();
+
+    for held in [
+        format!(
+            "/admin/realms/{REALM}/clients/{}/mappers/{docker_rule_id}",
+            support::CONFIDENTIAL
+        ),
+        format!("/admin/realms/{REALM}/client-scopes/{registry_id}/mappers/{division_rule_id}"),
+        format!(
+            "/admin/realms/{REALM}/clients/{}/scopes/{registry_id}",
+            support::CONFIDENTIAL
+        ),
+    ] {
+        let (status, told) = asked(&plane, Method::PUT, &held, &bearer, None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{held}: {told}");
+    }
+
+    // Even named by the grant, nothing of the docker protocol shapes it.
+    let body = exchanged(&plane, "openid registry").await;
+    let access = body["access_token"].as_str().expect("an access token");
+    let claims = plane.claims_of(access).await;
+    assert!(
+        claims.get("department").is_none(),
+        "a docker rule shaped the access token: {claims}"
+    );
+    assert!(
+        claims.get("division").is_none(),
+        "the rule of a docker scope shaped the access token: {claims}"
+    );
+    let identity = plane
+        .claims_of(body["id_token"].as_str().expect("an id token"))
+        .await;
+    assert!(
+        identity.get("department").is_none() && identity.get("division").is_none(),
+        "{identity}"
+    );
+    let answer = told_of(&plane, access).await;
+    assert!(
+        answer.get("department").is_none() && answer.get("division").is_none(),
+        "{answer}"
+    );
+}
+
 /// Reading the rules does not grant writing them.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]

@@ -5,7 +5,7 @@ use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
 use models::entities::acr::{self, AchievedAuth, AcrRequirement, AuthContextRequest, AuthDecision};
 use models::entities::attributes::AttributeValue;
-use models::entities::client::ClientModel;
+use models::entities::client::{ClientModel, Protocol};
 use models::entities::realm::RealmModel;
 use models::entities::user::RequiredAction;
 use models::sessions::records::{UserSessionModel, UserSessionState};
@@ -642,7 +642,7 @@ pub async fn granted_scope(
     client_id: &str,
     requested: &str,
 ) -> Result<String, Refusal> {
-    let attached = client_scopes::scopes_of_client(transaction, client_id)
+    let attached = client_scopes::scopes_of_client_for(transaction, client_id, Protocol::OpenId)
         .await
         .map_err(|_| Refusal::Redirect("server_error"))?;
 

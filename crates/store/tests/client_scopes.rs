@@ -250,7 +250,7 @@ async fn a_mapper_reached_by_two_routes_is_one_rule() {
         let granted = granted.to_vec();
         let transaction = &transaction;
         async move {
-            client_scopes::mappers_for_grant(transaction, "app", &granted)
+            client_scopes::mappers_for_grant(transaction, "app", &granted, Protocol::OpenId)
                 .await
                 .unwrap()
                 .into_iter()

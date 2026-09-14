@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 use services::grant::Signing;
 use services::logout::{self, EndedAt, Frame, Requested};
+use services::saml_brokering;
 use store::keyring;
 use store::tenancy::{Tenancy, resolve};
 
@@ -107,6 +108,7 @@ async fn run(
     // would drop a session the user still holds.
     let mut notices = Vec::new();
     let mut frames = Vec::new();
+    let mut departure = None;
     let ending = signed_in
         .as_deref()
         .filter(|named| !named.is_empty() && ended != EndedAt::Confirm);
@@ -132,6 +134,29 @@ async fn run(
             now,
         )
         .await;
+        // A browser is sent on to the SAML provider the login came through, so the
+        // provider ends its own session too, and it sends the browser back to where
+        // this logout was going.
+        if page::wants_page(request) {
+            let issuer = origin.issuer(&context.realm_id);
+            let resume_to = match &ended {
+                EndedAt::Redirect(landing) => landing.clone(),
+                _ => format!("{issuer}/protocol/openid-connect/logout"),
+            };
+            departure = saml_brokering::open_provider_logout(
+                &transaction,
+                &signing,
+                &issuer,
+                session_id,
+                &resume_to,
+                now,
+            )
+            .await
+            .unwrap_or_else(|why| {
+                tracing::warn!(%why, "a login's SAML provider could not be sent its logout");
+                None
+            });
+        }
     }
     if let Some(session_id) = ending {
         frames = logout::frames_for(&transaction, &origin.issuer(realm), session_id).await;
@@ -141,7 +166,34 @@ async fn run(
         return told(&context.realm_id, EndedAt::Nowhere, &[]);
     }
     backchannel::deliver(notices).await;
+    if let Some(location) = departure {
+        return leave_for_provider(&context.realm_id, &location, &frames);
+    }
     told(&context.realm_id, ended, &frames)
+}
+
+/// The browser sent on to the SAML provider its login came through, its cookies
+/// gone. Front-channel frames load first, as they do before any landing.
+fn leave_for_provider(realm_id: &str, location: &str, frames: &[Frame]) -> HttpResponse {
+    if !frames.is_empty() {
+        let mut response = page::notice_with_frames(
+            StatusCode::OK,
+            "Signing you out",
+            &format!(
+                "{}<p class=\"told\"><a href=\"{}\">Continue</a></p>",
+                loading(frames),
+                page::escaped(location)
+            ),
+            Some(location),
+        );
+        forget_on(&mut response, realm_id);
+        return response;
+    }
+    let mut response = HttpResponseBuilder::new(StatusCode::FOUND);
+    forget(&mut response, realm_id);
+    uncached(&mut response)
+        .insert_header(("Location", location.to_owned()))
+        .finish()
 }
 
 /// What the browser is told. A page to a browser, JSON to anything else; the

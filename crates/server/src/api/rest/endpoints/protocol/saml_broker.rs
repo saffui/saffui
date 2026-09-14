@@ -4,7 +4,9 @@ use chrono::Utc;
 use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
 use serde::Deserialize;
-use services::saml_brokering::{self, SamlLogoutMessage, SamlUpstream, Unheeded, Untaken};
+use services::saml_brokering::{
+    self, SamlLogoutMessage, SamlUpstream, TakenLogout, Unheeded, Untaken,
+};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
@@ -250,17 +252,19 @@ pub async fn consume_assertion(
     answer_admitted(&origin, &context.realm_id, &alias, &admitted, &landed)
 }
 
-/// What a SAML provider posts to the realm's logout address.
+/// What a SAML provider posts to the realm's logout address: its own logout request,
+/// or its answer to one the realm sent.
 #[derive(Deserialize)]
 pub struct PostedLogout {
     #[serde(rename = "SAMLRequest")]
     pub saml_request: Option<String>,
+    #[serde(rename = "SAMLResponse")]
+    pub saml_response: Option<String>,
     #[serde(rename = "RelayState")]
     pub relay_state: Option<String>,
 }
 
-/// A SAML provider's logout request on a Redirect, read from the query exactly as it
-/// arrived.
+/// A SAML logout message on a Redirect, read from the query exactly as it arrived.
 pub async fn take_redirected_logout(
     request: HttpRequest,
     path: web::Path<(String, String)>,
@@ -270,7 +274,7 @@ pub async fn take_redirected_logout(
     origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
     let (realm, alias) = path.into_inner();
-    answer_logout_request(
+    answer_logout_message(
         &realm,
         &alias,
         SamlLogoutMessage::Redirected(request.query_string()),
@@ -282,7 +286,8 @@ pub async fn take_redirected_logout(
     .await
 }
 
-/// A SAML provider's logout request posted through the browser.
+/// A SAML logout message posted through the browser: a request or an answer, never
+/// both.
 pub async fn take_posted_logout(
     path: web::Path<(String, String)>,
     posted: web::Form<PostedLogout>,
@@ -292,31 +297,29 @@ pub async fn take_posted_logout(
     origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
     let (realm, alias) = path.into_inner();
-    let Some(saml_request) = posted.saml_request.as_deref() else {
-        return told(StatusCode::BAD_REQUEST, "refused");
-    };
-    answer_logout_request(
-        &realm,
-        &alias,
-        SamlLogoutMessage::Posted {
-            request: saml_request,
+    let message = match (
+        posted.saml_request.as_deref(),
+        posted.saml_response.as_deref(),
+    ) {
+        (Some(request), None) => SamlLogoutMessage::PostedRequest {
+            request,
             relay_state: posted.relay_state.as_deref(),
         },
-        &pool,
-        &tenancy,
-        &sealing,
-        &origin,
-    )
-    .await
+        (None, Some(answer)) => SamlLogoutMessage::PostedAnswer(answer),
+        _ => return told(StatusCode::BAD_REQUEST, "refused"),
+    };
+    answer_logout_message(&realm, &alias, message, &pool, &tenancy, &sealing, &origin).await
 }
 
-/// End what a SAML provider's logout request names, and answer the provider.
+/// Take a SAML logout message and answer the browser.
 ///
-/// Everything here is attacker supplied until the request verifies, and every
-/// refusal answers the same way, with the reason kept for the operator log. The
-/// logins end with their clients told, as when an OpenID Connect provider logs
-/// somebody out, and the browser carries the signed answer back to the provider.
-async fn answer_logout_request(
+/// Everything here is attacker supplied until the message verifies, and every
+/// refusal answers the same way, with the reason kept for the operator log. A
+/// provider's own logout request ends the logins it names with their clients told,
+/// as when an OpenID Connect provider logs somebody out, and the browser carries the
+/// signed answer back to the provider. The provider's answer to a logout the realm
+/// started sends the browser on to where that logout was going.
+async fn answer_logout_message(
     realm: &str,
     alias: &str,
     message: SamlLogoutMessage<'_>,
@@ -371,7 +374,7 @@ async fn answer_logout_request(
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
     let issuer = origin.issuer(&context.realm_id);
-    let heeded = match saml_brokering::heed_logout_request(
+    let taken = match saml_brokering::take_logout_message(
         &transaction,
         sealing.provider.as_ref(),
         &upstream,
@@ -383,15 +386,27 @@ async fn answer_logout_request(
     )
     .await
     {
-        Ok(heeded) => heeded,
+        Ok(taken) => taken,
         Err(Unheeded::Backend) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
         Err(why) => {
-            tracing::warn!(
-                alias,
-                ?why,
-                "a SAML provider's logout request was not heeded"
-            );
+            tracing::warn!(alias, ?why, "a SAML logout message was not taken");
             return refused();
+        }
+    };
+    let heeded = match taken {
+        TakenLogout::Requested(heeded) => heeded,
+        TakenLogout::Answered(request) => {
+            if transaction.commit().await.is_err() {
+                return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+            }
+            tracing::info!(alias, "a SAML provider answered the realm's logout");
+            return match request.resume_to {
+                Some(resume_to) => HttpResponseBuilder::new(StatusCode::SEE_OTHER)
+                    .insert_header(("location", resume_to))
+                    .insert_header(("cache-control", "no-store"))
+                    .finish(),
+                None => told(StatusCode::OK, "logged-out"),
+            };
         }
     };
 

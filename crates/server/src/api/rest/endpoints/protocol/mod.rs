@@ -24,6 +24,7 @@ pub mod privacy;
 pub mod recovery;
 pub mod registration;
 pub mod revoke;
+pub mod saml_broker;
 pub mod signup;
 pub mod ssf;
 pub mod texting;

@@ -1,10 +1,19 @@
-use crypto::x509::{CertifiedKey, read_certificate_facts};
+use crypto::jose::jwk::KeyPair;
+use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+use crypto::provider::{PrivateKey, PublicKey, SignAlg};
+use crypto::x509::{CertifiedKey, Issuance, issue_certificate, read_certificate_facts};
+use deadpool_postgres::Transaction;
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::IdentityProviderModel;
-use saml::metadata::{IdentityProvider, Misread, read_identity_provider};
+use models::entities::keys::{JweAlgorithm, KeyUse, RealmEncryptionKey, RealmSigningKey};
+use saml::metadata::{
+    IdentityProvider, Misread, ServiceProvider, describe_service_provider, read_identity_provider,
+};
 use saml::xml::Limits;
+use store::providers::realm_keys;
 
 use crate::brokering::text;
+use crate::grant::Signing;
 
 const PERSISTENT: &str = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
 const MINIMUM_RSA_BITS: u32 = 2048;
@@ -139,19 +148,164 @@ fn read_given(bag: &AttributesMap, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// RFC 5280 §4.1.2.5: the instant a certificate with no well-defined end carries.
+const NO_WELL_DEFINED_END: i64 = 253_402_300_799;
+/// The realm encryption keys a SAML provider can encrypt to, in the order offered.
+const RSA_ENCRYPTION: [JweAlgorithm; 4] = [
+    JweAlgorithm::RsaOaep256,
+    JweAlgorithm::RsaOaep,
+    JweAlgorithm::RsaOaep384,
+    JweAlgorithm::RsaOaep512,
+];
+
+/// Why a realm could not describe itself to a SAML provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum Undescribed {
+    #[error("the realm holds no active RSA key to sign with")]
+    NoSigningKey,
+    #[error("a realm key could not be read as RSA")]
+    UnreadableKey,
+    #[error("a certificate could not be issued for a realm key")]
+    Unissued,
+    #[error("the store could not be read")]
+    Backend,
+}
+
+/// Where a realm takes one SAML provider's messages: the base of its metadata,
+/// assertion consumer and logout addresses, under the realm's issuer.
+pub fn compose_saml_address(issuer: &str, alias: &str) -> String {
+    format!("{issuer}/broker/{alias}/saml")
+}
+
+/// The realm keys a SAML provider is shown: the active RSA key the realm signs
+/// with, and an active RSA key assertions may be encrypted to when it holds one.
+pub async fn load_published_keys(
+    transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
+) -> Result<(RealmSigningKey, Option<RealmEncryptionKey>), Undescribed> {
+    let signing_key = realm_keys::active(
+        transaction,
+        signing.ring,
+        signing.envelope,
+        KeyUse::Sig,
+        Some(SignAlg::Rs256),
+    )
+    .await
+    .map_err(|_| Undescribed::Backend)?
+    .ok_or(Undescribed::NoSigningKey)?;
+    for algorithm in RSA_ENCRYPTION {
+        let found =
+            realm_keys::active_encryption(transaction, signing.ring, signing.envelope, algorithm)
+                .await
+                .map_err(|_| Undescribed::Backend)?;
+        if found.is_some() {
+            return Ok((signing_key, found));
+        }
+    }
+    Ok((signing_key, None))
+}
+
+/// The realm's metadata as this provider's service provider: the entity identifier
+/// it answers to, where responses and logout come, and a certificate for each of
+/// its keys issued under its signing key. The same keys give the same bytes, so
+/// nothing is stored and a provider that imported them keeps finding them.
+pub fn describe_realm(
+    upstream: &SamlUpstream,
+    issuer: &str,
+    alias: &str,
+    realm_id: &str,
+    signing_key: &RealmSigningKey,
+    encryption_key: Option<&RealmEncryptionKey>,
+) -> Result<String, Undescribed> {
+    let signer =
+        RsaKeyPair::from_pem(&signing_key.private_pem).map_err(|_| Undescribed::UnreadableKey)?;
+    let signing_certificate = issue_key_certificate(
+        &signer,
+        &signer,
+        realm_id,
+        &signing_key.kid,
+        signing_key.created_at,
+    )?;
+    let encryption_certificates = match encryption_key {
+        Some(key) => {
+            let sealed_to =
+                RsaKeyPair::from_pem(&key.private_pem).map_err(|_| Undescribed::UnreadableKey)?;
+            vec![issue_key_certificate(
+                &sealed_to,
+                &signer,
+                realm_id,
+                &key.kid,
+                signing_key.created_at,
+            )?]
+        }
+        None => Vec::new(),
+    };
+    let base = compose_saml_address(issuer, alias);
+    let entity_id = upstream
+        .sp_entity_id
+        .clone()
+        .unwrap_or_else(|| format!("{base}/metadata"));
+    Ok(describe_service_provider(&ServiceProvider {
+        entity_id: &entity_id,
+        assertion_consumer: &format!("{base}/acs"),
+        single_logout: &format!("{base}/slo"),
+        name_id_format: Some(upstream.name_id_format.as_str()),
+        signing_certificates: &[signing_certificate],
+        encryption_certificates: &encryption_certificates,
+    }))
+}
+
+/// A certificate for the subject's key under the signer's, named for the realm, its
+/// serial drawn from the key's thumbprint and its start the signing key's.
+fn issue_key_certificate(
+    subject: &RsaKeyPair,
+    signer: &RsaKeyPair,
+    realm_id: &str,
+    kid: &str,
+    not_before: i64,
+) -> Result<Vec<u8>, Undescribed> {
+    issue_certificate(&Issuance {
+        subject_key: &PublicKey::from_der(subject.to_der_public_key()),
+        subject_name: realm_id,
+        issuer_key: &PrivateKey::from_der(signer.to_der_private_key()),
+        issuer_name: realm_id,
+        serial: &derive_serial(kid),
+        not_before,
+        not_after: NO_WELL_DEFINED_END,
+    })
+    .ok_or(Undescribed::Unissued)
+}
+
+/// Sixteen octets of a key's thumbprint, the top bit cleared and the next one set,
+/// so the serial is positive, never zero and within the 20 octets RFC 5280 allows.
+fn derive_serial(kid: &str) -> Vec<u8> {
+    let mut serial = data_encoding::BASE64URL_NOPAD
+        .decode(kid.as_bytes())
+        .unwrap_or_else(|_| kid.as_bytes().to_vec());
+    serial.resize(16, 0);
+    serial[0] = (serial[0] & 0x7f) | 0x40;
+    serial
+}
+
 #[cfg(test)]
 mod tests {
     use super::{SamlUpstream, UnusableSaml, is_saml};
+    use super::{Undescribed, compose_saml_address, describe_realm};
     use crypto::jose::jwk::KeyPair;
     use crypto::jose::jwk::alg::ec::{EcCurve, EcKeyPair};
     use crypto::jose::jwk::alg::ed::{EdCurve, EdKeyPair};
     use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+    use crypto::provider::SignAlg;
     use crypto::provider::{PrivateKey, PublicKey};
     use crypto::x509::{Issuance, issue_certificate};
     use models::auditable::AuditableModel;
     use models::entities::attributes::{AttributeValue, AttributesMap};
     use models::entities::authz::{IdentityProviderModel, IdentityProviderMutationModel};
+    use models::entities::keys::{
+        JweAlgorithm, KeyStatus, KeyUse, RealmEncryptionKey, RealmSigningKey,
+    };
     use saml::metadata::Misread;
+    use saml::xml::{Limits, read_message};
 
     const PERSISTENT: &str = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
     const TRANSIENT: &str = "urn:oasis:names:tc:SAML:2.0:nameid-format:transient";
@@ -407,6 +561,156 @@ mod tests {
         assert!(
             SamlUpstream::parse(&saml_provider(&secure, &[("sp_entity_id", &long[..1024])]))
                 .is_ok()
+        );
+    }
+
+    /// The realm describes itself to a provider under the entity identifier its
+    /// alias gives, or the one an administrator set, with its consumer, its logout
+    /// and the format asked, a certificate for its signing key issued by that key and
+    /// one for its encryption key issued by the signing key, the same bytes every
+    /// time; without an encryption key it offers none, and a key that is not RSA is
+    /// not described.
+    #[test]
+    fn a_realm_describes_itself_with_certificates_for_its_keys() {
+        let provider_key = rsa_key(2048);
+        let provider_certificate = certificate_for(&provider_key, &provider_key);
+        let upstream =
+            SamlUpstream::parse(&saml_provider(&secure_metadata(&provider_certificate), &[]))
+                .expect("a usable provider");
+        let signer = rsa_key(2048);
+        let sealed_to = rsa_key(2048);
+        let signing_key = RealmSigningKey {
+            tenant: "acme".into(),
+            realm_id: "main".into(),
+            kid: "8PDw8PDw8PDw8PDw8PDw8PDw".into(),
+            algorithm: SignAlg::Rs256,
+            key_use: KeyUse::Sig,
+            status: KeyStatus::Active,
+            priority: 100,
+            private_pem: signer.to_pem_private_key(),
+            public_jwk: serde_json::Value::Null,
+            created_at: 1_789_372_800,
+        };
+        let encryption_key = RealmEncryptionKey {
+            kid: "ZW5jcnlwdGlvbi1rZXktdGh1bWJwcmludC0wMDAwMA".into(),
+            algorithm: JweAlgorithm::RsaOaep256,
+            private_pem: sealed_to.to_pem_private_key(),
+            public_jwk: serde_json::Value::Null,
+        };
+        let issuer = "https://id.test/realms/main";
+        let base = "https://id.test/realms/main/broker/corp/saml";
+        assert_eq!(compose_saml_address(issuer, "corp"), base);
+
+        let written = describe_realm(
+            &upstream,
+            issuer,
+            "corp",
+            "main",
+            &signing_key,
+            Some(&encryption_key),
+        )
+        .expect("a description");
+        assert_eq!(
+            describe_realm(
+                &upstream,
+                issuer,
+                "corp",
+                "main",
+                &signing_key,
+                Some(&encryption_key)
+            ),
+            Ok(written.clone())
+        );
+        let document = read_message(&written, Limits::MESSAGE).expect("well-formed");
+        let entity = document.root_element();
+        assert_eq!(
+            entity.attribute("entityID"),
+            Some(format!("{base}/metadata").as_str())
+        );
+        let role = entity.first_element_child().expect("a role");
+        let located = |name: &str| {
+            role.children()
+                .filter(|node| node.tag_name().name() == name)
+                .filter_map(|node| node.attribute("Location"))
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(located("AssertionConsumerService"), [format!("{base}/acs")]);
+        assert_eq!(
+            located("SingleLogoutService"),
+            [format!("{base}/slo"), format!("{base}/slo")]
+        );
+        let formats: Vec<_> = role
+            .children()
+            .filter(|node| node.tag_name().name() == "NameIDFormat")
+            .filter_map(|node| node.text())
+            .collect();
+        assert_eq!(formats, [upstream.name_id_format.as_str()]);
+
+        let published = |usage: &str| {
+            role.children()
+                .filter(|node| node.attribute("use") == Some(usage))
+                .flat_map(|node| node.descendants())
+                .filter(|node| node.tag_name().name() == "X509Certificate")
+                .filter_map(|node| node.text())
+                .map(|text| {
+                    data_encoding::BASE64
+                        .decode(text.as_bytes())
+                        .expect("base64")
+                })
+                .collect::<Vec<_>>()
+        };
+        let issued_by_signer = |subject: &RsaKeyPair, kid: &str| {
+            issue_certificate(&Issuance {
+                subject_key: &PublicKey::from_der(subject.to_der_public_key()),
+                subject_name: "main",
+                issuer_key: &PrivateKey::from_der(signer.to_der_private_key()),
+                issuer_name: "main",
+                serial: &super::derive_serial(kid),
+                not_before: 1_789_372_800,
+                not_after: 253_402_300_799,
+            })
+            .expect("a certificate")
+        };
+        assert_eq!(
+            published("signing"),
+            [issued_by_signer(&signer, &signing_key.kid)]
+        );
+        assert_eq!(
+            published("encryption"),
+            [issued_by_signer(&sealed_to, &encryption_key.kid)]
+        );
+        let serial = super::derive_serial(&signing_key.kid);
+        assert_eq!((serial.len(), serial[0] & 0xc0), (16, 0x40));
+
+        let overridden = SamlUpstream {
+            sp_entity_id: Some("https://old.example/sp".into()),
+            ..upstream.clone()
+        };
+        let written = describe_realm(&overridden, issuer, "corp", "main", &signing_key, None)
+            .expect("a description");
+        let document = read_message(&written, Limits::MESSAGE).expect("well-formed");
+        assert_eq!(
+            document.root_element().attribute("entityID"),
+            Some("https://old.example/sp")
+        );
+        assert_eq!(
+            document
+                .descendants()
+                .filter(|node| node.tag_name().name() == "KeyDescriptor")
+                .count(),
+            1
+        );
+
+        let elliptic = RealmSigningKey {
+            private_pem: EcKeyPair::generate(EcCurve::P256)
+                .expect("a P-256 key")
+                .to_pem_private_key(),
+            ..signing_key.clone()
+        };
+        assert_eq!(
+            describe_realm(&upstream, issuer, "corp", "main", &elliptic, None),
+            Err(Undescribed::UnreadableKey)
         );
     }
 }

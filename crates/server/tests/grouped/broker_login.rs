@@ -1448,7 +1448,7 @@ async fn plant_saml_provider(
     })
     .expect("a certificate issued by the crypto crate");
     let idp_metadata = format!(
-        r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://idp.test/metadata"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/></md:IDPSSODescriptor></md:EntityDescriptor>"#,
+        r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://idp.test/metadata"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/slo" ResponseLocation="https://idp.test/slo/answers"/><md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/></md:IDPSSODescriptor></md:EntityDescriptor>"#,
         data_encoding::BASE64.encode(&certificate)
     );
     let (status, told) = asked(
@@ -2049,4 +2049,232 @@ async fn a_saml_provider_s_rules_follow_what_its_assertions_carry() {
         )
     );
     assert!(!roles.contains(&staff), "{roles:?}");
+}
+
+/// A logout request the SAML identity provider at `https://idp.test/metadata` writes
+/// for `name` under `id`, addressed to the realm's logout address for `alias`.
+fn write_idp_logout_request(alias: &str, id: &str, name: &str) -> String {
+    let destination = format!(
+        "{}/broker/{alias}/saml/slo",
+        support::origin().issuer(REALM)
+    );
+    saml::logout::write_logout_request(&saml::logout::LogoutRequest {
+        id,
+        issue_instant: chrono::Utc::now().timestamp(),
+        destination: &destination,
+        issuer: "https://idp.test/metadata",
+        name_id: &saml::name_id::NameId {
+            value: name.to_owned(),
+            format: Some("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".to_owned()),
+            name_qualifier: None,
+            sp_name_qualifier: None,
+        },
+        session_index: Some("_session-at-idp"),
+    })
+    .expect("a logout request")
+}
+
+/// `message` on a Redirect query signed with `key`, as a SAML provider sends it.
+fn redirect_signed_by(
+    key: &crypto::jose::jwk::alg::rsa::RsaKeyPair,
+    carried: saml::redirect::Carried,
+    message: &str,
+    relay_state: Option<&str>,
+) -> String {
+    use crypto::jose::jwk::KeyPair;
+    use crypto::provider::{PrivateKey, SignAlg};
+
+    let sealing = support::sealing();
+    let private = PrivateKey::from_der(key.to_der_private_key());
+    saml::redirect::encode_query(carried, message, relay_state, SignAlg::Rs256, &|octets| {
+        sealing
+            .provider
+            .signer()
+            .sign(SignAlg::Rs256, &private, octets)
+            .ok()
+    })
+    .expect("a query")
+}
+
+/// The logins still standing through `alias` under `name`.
+async fn read_standing_logins(plane: &Plane, alias: &str, name: &str) -> Vec<String> {
+    use store::tenancy::TenantContext;
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    store::providers::saml_brokering::find_named_sessions(&transaction, alias, name, &[])
+        .await
+        .expect("a read")
+}
+
+/// A SAML provider's logout request ends the logins it names and is answered where
+/// the provider takes answers. Signed on a Redirect query, it ends the login, and the
+/// browser carries back a success the realm signs, naming the request and its relay
+/// state; the same request again and one signed with another key are refused. Posted
+/// with an enveloped signature, a relay state past what the binding allows is
+/// refused without ending anything, and the request then ends the next login.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_saml_provider_s_logout_request_ends_the_logins_it_names() {
+    use crypto::jose::jwk::KeyPair;
+    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+    use crypto::provider::{PrivateKey, PublicKey, SignAlg};
+    use saml::redirect::Carried;
+
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let identity_provider = plant_saml_provider(&plane, &bearer, "corp").await;
+    let realm_key = support::SigningKey::generate_rsa("saml-rsa");
+    plane.publish_key(&realm_key).await;
+    let realm_public = PublicKey::from_der(
+        RsaKeyPair::from_pem(realm_key.private_pem())
+            .expect("the realm's RSA key")
+            .to_der_public_key(),
+    );
+    let sealing = support::sealing();
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let logout = format!("/realms/{REALM}/broker/corp/saml/slo");
+    let entity = format!(
+        "{}/broker/corp/saml/metadata",
+        support::origin().issuer(REALM)
+    );
+    let answer_of = |response: &actix_web::dev::ServiceResponse, request_id: &str| {
+        let answered = response
+            .headers()
+            .get("location")
+            .and_then(|held| held.to_str().ok())
+            .expect("an answer")
+            .to_owned();
+        let (address, query) = answered.split_once('?').expect("a query");
+        assert_eq!(address, "https://idp.test/slo/answers");
+        let received = saml::redirect::decode_query(query, saml::xml::Limits::MESSAGE)
+            .expect("a Redirect query");
+        let outcome = saml::logout::accept_logout_response(
+            sealing.provider.as_ref(),
+            saml::logout::Delivered::Redirected(&received),
+            &saml::logout::ExpectedLogout {
+                issuer: &entity,
+                destination: "https://idp.test/slo/answers",
+                trusted: std::slice::from_ref(&realm_public),
+                now: chrono::Utc::now().timestamp(),
+                skew: 180,
+            },
+            request_id,
+        );
+        (received.relay_state, outcome)
+    };
+
+    assert_eq!(
+        signed_in_through_saml(&plane, &identity_provider, "corp", "AAdzZWNyZXQx", &[]).await,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        read_standing_logins(&plane, "corp", "AAdzZWNyZXQx")
+            .await
+            .len(),
+        1
+    );
+    let query = redirect_signed_by(
+        &identity_provider,
+        Carried::Request,
+        &write_idp_logout_request("corp", "_idp-logout-1", "AAdzZWNyZXQx"),
+        Some("idp-state"),
+    );
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("{logout}?{query}"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        answer_of(&response, "_idp-logout-1"),
+        (
+            Some("idp-state".to_owned()),
+            Ok(saml::logout::LoggedOut::Everywhere)
+        )
+    );
+    assert!(
+        read_standing_logins(&plane, "corp", "AAdzZWNyZXQx")
+            .await
+            .is_empty()
+    );
+
+    let foreign = RsaKeyPair::generate(2048).expect("another RSA key");
+    for refused in [
+        query.clone(),
+        redirect_signed_by(
+            &foreign,
+            Carried::Request,
+            &write_idp_logout_request("corp", "_idp-logout-2", "AAdzZWNyZXQx"),
+            None,
+        ),
+    ] {
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("{logout}?{refused}"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    assert_eq!(
+        signed_in_through_saml(&plane, &identity_provider, "corp", "AAdzZWNyZXQx", &[]).await,
+        StatusCode::SEE_OTHER
+    );
+    let identity_private = PrivateKey::from_der(identity_provider.to_der_private_key());
+    let posted = |id: &str, relay_state: String| {
+        let signed = saml::dsig::sign_enveloped(
+            sealing.provider.as_ref(),
+            &write_idp_logout_request("corp", id, "AAdzZWNyZXQx"),
+            id,
+            SignAlg::Rs256,
+            &|octets| {
+                sealing
+                    .provider
+                    .signer()
+                    .sign(SignAlg::Rs256, &identity_private, octets)
+                    .ok()
+            },
+        )
+        .expect("the logout request signed");
+        test::TestRequest::post()
+            .uri(&logout)
+            .set_form(vec![
+                (
+                    "SAMLRequest",
+                    data_encoding::BASE64.encode(signed.as_bytes()),
+                ),
+                ("RelayState", relay_state),
+            ])
+            .to_request()
+    };
+    let response = test::call_service(&app, posted("_idp-logout-3", "r".repeat(81))).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        read_standing_logins(&plane, "corp", "AAdzZWNyZXQx")
+            .await
+            .len(),
+        1
+    );
+    let response =
+        test::call_service(&app, posted("_idp-logout-4", "posted-state".to_owned())).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        answer_of(&response, "_idp-logout-4"),
+        (
+            Some("posted-state".to_owned()),
+            Ok(saml::logout::LoggedOut::Everywhere)
+        )
+    );
+    assert!(
+        read_standing_logins(&plane, "corp", "AAdzZWNyZXQx")
+            .await
+            .is_empty()
+    );
 }

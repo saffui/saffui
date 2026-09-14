@@ -4,7 +4,7 @@ use chrono::Utc;
 use config::serving::PublicOrigin;
 use deadpool_postgres::Pool;
 use serde::Deserialize;
-use services::saml_brokering::{self, SamlUpstream, Untaken};
+use services::saml_brokering::{self, SamlLogoutMessage, SamlUpstream, Unheeded, Untaken};
 use store::tenancy::{Tenancy, resolve};
 
 use crate::api::config::Sealing;
@@ -248,4 +248,175 @@ pub async fn consume_assertion(
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     }
     answer_admitted(&origin, &context.realm_id, &alias, &admitted, &landed)
+}
+
+/// What a SAML provider posts to the realm's logout address.
+#[derive(Deserialize)]
+pub struct PostedLogout {
+    #[serde(rename = "SAMLRequest")]
+    pub saml_request: Option<String>,
+    #[serde(rename = "RelayState")]
+    pub relay_state: Option<String>,
+}
+
+/// A SAML provider's logout request on a Redirect, read from the query exactly as it
+/// arrived.
+pub async fn take_redirected_logout(
+    request: HttpRequest,
+    path: web::Path<(String, String)>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
+) -> HttpResponse {
+    let (realm, alias) = path.into_inner();
+    answer_logout_request(
+        &realm,
+        &alias,
+        SamlLogoutMessage::Redirected(request.query_string()),
+        &pool,
+        &tenancy,
+        &sealing,
+        &origin,
+    )
+    .await
+}
+
+/// A SAML provider's logout request posted through the browser.
+pub async fn take_posted_logout(
+    path: web::Path<(String, String)>,
+    posted: web::Form<PostedLogout>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
+) -> HttpResponse {
+    let (realm, alias) = path.into_inner();
+    let Some(saml_request) = posted.saml_request.as_deref() else {
+        return told(StatusCode::BAD_REQUEST, "refused");
+    };
+    answer_logout_request(
+        &realm,
+        &alias,
+        SamlLogoutMessage::Posted {
+            request: saml_request,
+            relay_state: posted.relay_state.as_deref(),
+        },
+        &pool,
+        &tenancy,
+        &sealing,
+        &origin,
+    )
+    .await
+}
+
+/// End what a SAML provider's logout request names, and answer the provider.
+///
+/// Everything here is attacker supplied until the request verifies, and every
+/// refusal answers the same way, with the reason kept for the operator log. The
+/// logins end with their clients told, as when an OpenID Connect provider logs
+/// somebody out, and the browser carries the signed answer back to the provider.
+async fn answer_logout_request(
+    realm: &str,
+    alias: &str,
+    message: SamlLogoutMessage<'_>,
+    pool: &Pool,
+    tenancy: &Tenancy,
+    sealing: &Sealing,
+    origin: &PublicOrigin,
+) -> HttpResponse {
+    let now = Utc::now();
+    let refused = || told(StatusCode::BAD_REQUEST, "refused");
+    let Ok(mut connection) = pool.get().await else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let Ok(context) = resolve::realm_by_name(&connection, realm).await else {
+        return refused();
+    };
+    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let Ok(Some(provider)) =
+        store::providers::brokering::provider_by_alias(&transaction, alias).await
+    else {
+        return refused();
+    };
+    if provider.enabled == Some(false) || !saml_brokering::is_saml(&provider) {
+        return refused();
+    }
+    let Ok(upstream) = SamlUpstream::parse(&provider) else {
+        tracing::warn!(alias, "a SAML provider is stored that cannot be used");
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let Ok(ring) = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let signing = services::grant::Signing {
+        provider: sealing.provider.as_ref(),
+        ring: &ring,
+        envelope: &sealing.envelope,
+    };
+    let Ok(signing_key) = saml_brokering::load_signing_key(&transaction, &signing).await else {
+        tracing::warn!(
+            alias,
+            "the realm holds no RSA key to answer a SAML logout with"
+        );
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let issuer = origin.issuer(&context.realm_id);
+    let heeded = match saml_brokering::heed_logout_request(
+        &transaction,
+        sealing.provider.as_ref(),
+        &upstream,
+        &issuer,
+        alias,
+        &signing_key,
+        message,
+        now,
+    )
+    .await
+    {
+        Ok(heeded) => heeded,
+        Err(Unheeded::Backend) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
+        Err(why) => {
+            tracing::warn!(
+                alias,
+                ?why,
+                "a SAML provider's logout request was not heeded"
+            );
+            return refused();
+        }
+    };
+
+    let notices = services::logout::end_brokered_sessions(
+        &transaction,
+        Some(&signing),
+        &issuer,
+        &heeded.sessions,
+        now,
+    )
+    .await;
+    if transaction.commit().await.is_err() {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    }
+    tracing::info!(
+        alias,
+        closed = heeded.sessions.len(),
+        "a SAML provider's logout landed"
+    );
+    crate::api::rest::endpoints::protocol::backchannel::deliver(notices).await;
+    match heeded.answer {
+        Some(location) => HttpResponseBuilder::new(StatusCode::SEE_OTHER)
+            .insert_header(("location", location))
+            .insert_header(("cache-control", "no-store"))
+            .finish(),
+        None => told(StatusCode::OK, "logged-out"),
+    }
 }

@@ -177,8 +177,8 @@ async fn a_logout_request_is_spent_once_and_keeps_where_the_browser_goes() {
 
 /// What a provider named a login by is read back whole, found by the name a
 /// logout gives among the sessions it lists, a login without a session index
-/// included, and goes when the login goes; one for a login that does not exist is
-/// refused.
+/// included, is not found once its login has ended, and goes when the login goes;
+/// one for a login that does not exist is refused.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_broker_session_is_found_by_the_name_a_logout_gives_and_goes_with_its_login() {
@@ -253,6 +253,15 @@ async fn a_broker_session_is_found_by_the_name_a_logout_gives_and_goes_with_its_
             "{alias} {name} {indexes:?}"
         );
     }
+    sessions::set_state(&transaction, "s-2", UserSessionState::LoggedOut)
+        .await
+        .unwrap();
+    assert_eq!(
+        saml_brokering::find_named_sessions(&transaction, "corp", "AAdzZWNyZXQx", &[])
+            .await
+            .unwrap(),
+        vec!["s-1", "s-3"]
+    );
 
     transaction
         .execute("DELETE FROM user_sessions WHERE session_id = 's-1'", &[])

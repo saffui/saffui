@@ -747,9 +747,6 @@ pub async fn dismiss(
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
 
-    // Minted while each login's record is still readable, delivered once
-    // the endings are written, exactly as this realm's own logout does it.
-    let mut notices = Vec::new();
     let ring = store::keyring::load(
         &transaction,
         &sealing.envelope,
@@ -758,31 +755,19 @@ pub async fn dismiss(
     )
     .await
     .ok();
-    for session_id in &standing {
-        if let Some(ring) = ring.as_ref() {
-            let signing = services::grant::Signing {
-                provider: sealing.provider.as_ref(),
-                ring,
-                envelope: &sealing.envelope,
-            };
-            notices.extend(
-                services::logout::notices_for(
-                    &transaction,
-                    &signing,
-                    &origin.issuer(&context.realm_id),
-                    session_id,
-                    now,
-                )
-                .await,
-            );
-        }
-        let _ = store::providers::sessions::set_state(
-            &transaction,
-            session_id,
-            models::sessions::records::UserSessionState::LoggedOut,
-        )
-        .await;
-    }
+    let signing = ring.as_ref().map(|ring| services::grant::Signing {
+        provider: sealing.provider.as_ref(),
+        ring,
+        envelope: &sealing.envelope,
+    });
+    let notices = services::logout::end_brokered_sessions(
+        &transaction,
+        signing.as_ref(),
+        &origin.issuer(&context.realm_id),
+        &standing,
+        now,
+    )
+    .await;
     if transaction.commit().await.is_err() {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     }

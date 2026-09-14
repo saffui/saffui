@@ -2,6 +2,7 @@ use crypto::provider::{CryptoProvider, HashAlg, PublicKey, SignAlg};
 use roxmltree::Node;
 
 use crate::c14n::canonicalize_exclusive;
+use crate::xml::{base64_content_of, element_children};
 
 const XMLDSIG: &str = "http://www.w3.org/2000/09/xmldsig#";
 const EXCLUSIVE_CANONICALIZATION: &str = "http://www.w3.org/2001/10/xml-exc-c14n#";
@@ -125,7 +126,7 @@ pub fn verify_enveloped_signature<'a, 'input>(
 
     let signed = canonicalize_exclusive(signed_info, None, &listed_prefixes(canonicalization)?)
         .map_err(|_| Unverified::Misshapen)?;
-    let mut value = decoded(signature_value)?;
+    let mut value = base64_content_of(signature_value).ok_or(Unverified::Misshapen)?;
     if algorithm.is_ecdsa() {
         value = crypto::ecdsa::der_from_raw_signature(&value).map_err(|_| Unverified::Untrusted)?;
     }
@@ -146,7 +147,10 @@ pub fn verify_enveloped_signature<'a, 'input>(
         .digest()
         .hash(hash, &covered)
         .map_err(|_| Unverified::DigestMismatch)?;
-    if !crypto::constant_time::eq(&computed, &decoded(digest_value)?) {
+    if !crypto::constant_time::eq(
+        &computed,
+        &base64_content_of(digest_value).ok_or(Unverified::Misshapen)?,
+    ) {
         return Err(Unverified::DigestMismatch);
     }
     Ok(Signed { element })
@@ -199,29 +203,6 @@ fn listed_prefixes<'a>(method: Node<'a, '_>) -> Result<Vec<&'a str>, Unverified>
         return Err(Unverified::Misshapen);
     }
     Ok(prefixes)
-}
-
-/// The bytes a base64 value holds, with the whitespace XML Schema allows
-/// between its characters.
-fn decoded(node: Node<'_, '_>) -> Result<Vec<u8>, Unverified> {
-    if element_children(node).next().is_some() {
-        return Err(Unverified::Misshapen);
-    }
-    let compact: Vec<u8> = node
-        .text()
-        .unwrap_or_default()
-        .bytes()
-        .filter(|byte| !byte.is_ascii_whitespace())
-        .collect();
-    data_encoding::BASE64
-        .decode(&compact)
-        .map_err(|_| Unverified::Misshapen)
-}
-
-fn element_children<'a, 'input>(
-    parent: Node<'a, 'input>,
-) -> impl Iterator<Item = Node<'a, 'input>> {
-    parent.children().filter(Node::is_element)
 }
 
 fn next_named<'a, 'input>(

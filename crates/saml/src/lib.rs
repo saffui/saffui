@@ -4,3 +4,4 @@ pub mod response;
 #[cfg(test)]
 mod testing;
 pub mod xml;
+pub mod xmlenc;

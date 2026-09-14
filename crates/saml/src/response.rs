@@ -1,8 +1,10 @@
 use chrono::NaiveDateTime;
-use crypto::provider::{CryptoProvider, PublicKey};
+use crypto::provider::{CryptoProvider, PrivateKey, PublicKey};
 use roxmltree::{Document, Node, NodeType};
 
 use crate::dsig::{Unverified, carries_signature, verify_enveloped_signature};
+use crate::xml::{Limits, children_named, is_named, read_message};
+use crate::xmlenc::{Undecrypted, content_cipher_of, decrypt_element};
 
 const PROTOCOL: &str = "urn:oasis:names:tc:SAML:2.0:protocol";
 const ASSERTION: &str = "urn:oasis:names:tc:SAML:2.0:assertion";
@@ -24,6 +26,8 @@ pub struct Expected<'e> {
     pub request_id: &'e str,
     /// The keys the identity provider signs with.
     pub trusted: &'e [PublicKey],
+    /// The keys this service provider decrypts assertions with.
+    pub decryption_keys: &'e [PrivateKey],
     /// Seconds since the epoch.
     pub now: i64,
     /// Seconds of clock difference tolerated either way.
@@ -50,8 +54,10 @@ pub enum Refused {
     Unsolicited,
     #[error("the response answers another request")]
     WrongRequest,
-    #[error("the response carries an encrypted assertion")]
-    Encrypted,
+    #[error("an assertion under an unauthenticated cipher sits in a response nobody signed")]
+    EncryptedUnauthenticated,
+    #[error("the encrypted assertion was not read: {0}")]
+    Undecrypted(Undecrypted),
     #[error("the response does not carry exactly one assertion")]
     NotOneAssertion,
     #[error("the assertion is not shaped as the profile requires")]
@@ -125,22 +131,76 @@ pub fn accept_response(
         Some(_) => {}
     }
 
-    if children_named(response, ASSERTION, "EncryptedAssertion")
-        .next()
-        .is_some()
-    {
-        return Err(Refused::Encrypted);
+    let mut plain = children_named(response, ASSERTION, "Assertion");
+    let mut sealed = children_named(response, ASSERTION, "EncryptedAssertion");
+    match (plain.next(), plain.next(), sealed.next(), sealed.next()) {
+        (Some(assertion), None, None, None) => {
+            accept_assertion(provider, assertion, response_signed, expected)
+        }
+        (None, None, Some(encrypted), None) => {
+            // Settled before any key is tried: an unauthenticated cipher
+            // decrypted for anyone who asks is an oracle.
+            let cipher = content_cipher_of(encrypted).map_err(Refused::Undecrypted)?;
+            if !cipher.is_authenticated() && !response_signed {
+                return Err(Refused::EncryptedUnauthenticated);
+            }
+            let plaintext = decrypt_element(provider, encrypted, expected.decryption_keys)
+                .map_err(Refused::Undecrypted)?;
+            let wrapped = wrapped_in_scope(encrypted, &plaintext)?;
+            let decrypted =
+                read_message(&wrapped, Limits::MESSAGE).map_err(|_| Refused::Misshapen)?;
+            let mut inside = decrypted.root_element().children().filter(Node::is_element);
+            match (inside.next(), inside.next()) {
+                (Some(assertion), None) if is_named(assertion, ASSERTION, "Assertion") => {
+                    accept_assertion(provider, assertion, response_signed, expected)
+                }
+                _ => Err(Refused::Misshapen),
+            }
+        }
+        _ => Err(Refused::NotOneAssertion),
     }
-    let mut assertions = children_named(response, ASSERTION, "Assertion");
-    let assertion = assertions.next().ok_or(Refused::NotOneAssertion)?;
-    if assertions.next().is_some() {
-        return Err(Refused::NotOneAssertion);
-    }
+}
+
+/// Verify the assertion's own signature where the response's does not cover it,
+/// or where it carries one anyway, then read it.
+fn accept_assertion(
+    provider: &dyn CryptoProvider,
+    assertion: Node<'_, '_>,
+    response_signed: bool,
+    expected: &Expected<'_>,
+) -> Result<Accepted, Refused> {
     if !response_signed || carries_signature(assertion) {
         verify_enveloped_signature(provider, assertion, expected.trusted)
             .map_err(Refused::Unverified)?;
     }
     read_assertion(assertion, expected)
+}
+
+/// The decrypted element inside a wrapper declaring every namespace in scope
+/// where the encrypted one stood: XML Encryption lets the plaintext lean on that
+/// context for prefixes it does not declare itself.
+fn wrapped_in_scope(encrypted: Node<'_, '_>, plaintext: &[u8]) -> Result<String, Refused> {
+    let plaintext = std::str::from_utf8(plaintext).map_err(|_| Refused::Misshapen)?;
+    let mut wrapped = String::from("<decrypted");
+    for namespace in encrypted.namespaces() {
+        match namespace.name() {
+            Some(prefix) => wrapped.push_str(&format!(" xmlns:{prefix}=\"")),
+            None => wrapped.push_str(" xmlns=\""),
+        }
+        for held in namespace.uri().chars() {
+            match held {
+                '&' => wrapped.push_str("&amp;"),
+                '<' => wrapped.push_str("&lt;"),
+                '"' => wrapped.push_str("&quot;"),
+                other => wrapped.push(other),
+            }
+        }
+        wrapped.push('"');
+    }
+    wrapped.push('>');
+    wrapped.push_str(plaintext);
+    wrapped.push_str("</decrypted>");
+    Ok(wrapped)
 }
 
 fn read_assertion(assertion: Node<'_, '_>, expected: &Expected<'_>) -> Result<Accepted, Refused> {
@@ -340,22 +400,6 @@ fn strict_text(element: Node<'_, '_>) -> Result<String, Refused> {
     Ok(text.trim().to_owned())
 }
 
-fn is_named(node: Node<'_, '_>, namespace: &str, name: &str) -> bool {
-    node.is_element()
-        && node.tag_name().namespace() == Some(namespace)
-        && node.tag_name().name() == name
-}
-
-fn children_named<'a, 'input>(
-    parent: Node<'a, 'input>,
-    namespace: &'static str,
-    name: &'static str,
-) -> impl Iterator<Item = Node<'a, 'input>> {
-    parent
-        .children()
-        .filter(move |child| is_named(*child, namespace, name))
-}
-
 /// The one child of that name, if any; two of them are refused, since which one
 /// a reader takes is exactly what an attacker would choose.
 fn single_child<'a, 'input>(
@@ -375,9 +419,11 @@ fn single_child<'a, 'input>(
 mod tests {
     use super::{Accepted, Expected, Refused, accept_response, instant_of};
     use crate::dsig::Unverified;
-    use crate::testing::{key_certified_by, provider};
+    use crate::testing::{key_certified_by, private_key_of, provider};
     use crate::xml::{Limits, read_message};
+    use crate::xmlenc::Undecrypted;
     use chrono::NaiveDateTime;
+    use crypto::provider::PrivateKey;
 
     const ACS: &str = "https://sp.test/realms/main/broker/corp/endpoint";
     const SP: &str = "https://sp.test/realms/main";
@@ -397,6 +443,18 @@ mod tests {
     /// The outcome of a response against this service provider's expectations
     /// at 08:01, changed as a case needs.
     fn outcome(text: &str, change: impl FnOnce(&mut Expected<'_>)) -> Result<Accepted, Refused> {
+        let keys = [private_key_of(include_str!(
+            "../tests/fixtures/sp-encryption.pk8.b64"
+        ))];
+        outcome_decrypting(text, &keys, change)
+    }
+
+    /// The same outcome with the decryption keys a case chooses.
+    fn outcome_decrypting(
+        text: &str,
+        keys: &[PrivateKey],
+        change: impl FnOnce(&mut Expected<'_>),
+    ) -> Result<Accepted, Refused> {
         let trusted = [key_certified_by(include_str!(
             "../tests/fixtures/idp-rsa.cer.b64"
         ))];
@@ -406,6 +464,7 @@ mod tests {
             recipient: ACS,
             request_id: REQUEST,
             trusted: &trusted,
+            decryption_keys: keys,
             now: at("2026-09-14T08:01:00"),
             skew: 180,
         };
@@ -416,6 +475,29 @@ mod tests {
 
     fn unchanged(_: &mut Expected<'_>) {}
 
+    /// What the plain assertion of every fixture says.
+    fn plain_acceptance() -> Accepted {
+        Accepted {
+            assertion_id: "_assertion".to_owned(),
+            replayable_until: at("2026-09-14T08:05:00"),
+            name_id: "AAdzZWNyZXQx".to_owned(),
+            name_id_format: Some("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".to_owned()),
+            session_index: Some("_session-1".to_owned()),
+            session_not_on_or_after: Some(at("2026-09-14T16:00:00")),
+            authn_instant: at("2026-09-14T07:59:30"),
+            authn_context_class: Some(
+                "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport".to_owned(),
+            ),
+            attributes: vec![
+                ("mail".to_owned(), vec!["alice@idp.test".to_owned()]),
+                (
+                    "groups".to_owned(),
+                    vec!["staff".to_owned(), "admins".to_owned()],
+                ),
+            ],
+        }
+    }
+
     fn at_four(expected: &mut Expected<'_>) {
         expected.now = at("2026-09-14T08:04:00");
     }
@@ -425,31 +507,7 @@ mod tests {
     #[test]
     fn a_response_signed_either_way_is_accepted_with_what_it_says() {
         for text in [ASSERTION_SIGNED, RESPONSE_SIGNED, BOTH_SIGNED] {
-            assert_eq!(
-                outcome(text, unchanged),
-                Ok(Accepted {
-                    assertion_id: "_assertion".to_owned(),
-                    replayable_until: at("2026-09-14T08:05:00"),
-                    name_id: "AAdzZWNyZXQx".to_owned(),
-                    name_id_format: Some(
-                        "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".to_owned()
-                    ),
-                    session_index: Some("_session-1".to_owned()),
-                    session_not_on_or_after: Some(at("2026-09-14T16:00:00")),
-                    authn_instant: at("2026-09-14T07:59:30"),
-                    authn_context_class: Some(
-                        "urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport"
-                            .to_owned()
-                    ),
-                    attributes: vec![
-                        ("mail".to_owned(), vec!["alice@idp.test".to_owned()]),
-                        (
-                            "groups".to_owned(),
-                            vec!["staff".to_owned(), "admins".to_owned()]
-                        ),
-                    ],
-                })
-            );
+            assert_eq!(outcome(text, unchanged), Ok(plain_acceptance()));
         }
     }
 
@@ -613,7 +671,7 @@ mod tests {
     }
 
     /// A failed status is refused with its codes, and so are the shapes this code
-    /// does not read: an encrypted assertion, two assertions, an assertion of
+    /// does not read: an encrypted assertion naming no cipher, two assertions, an assertion of
     /// another version, two names, no authentication statement, a comment inside
     /// the name, a time with an offset, and a signed response with no destination.
     #[test]
@@ -627,7 +685,7 @@ mod tests {
         for (fixture, refused) in [
             (
                 include_str!("../tests/fixtures/response-encrypted-assertion.xml"),
-                Refused::Encrypted,
+                Refused::Undecrypted(Undecrypted::Misshapen),
             ),
             (
                 include_str!("../tests/fixtures/response-two-assertions.xml"),
@@ -705,6 +763,192 @@ mod tests {
             ),
             Err(Refused::Unverified(Unverified::Untrusted))
         );
+    }
+
+    /// An encrypted assertion reads like a plain one once decrypted: under CBC in
+    /// a signed response, under GCM in an unsigned one, with RSA-OAEP naming its
+    /// digests either way or leaving them to their defaults, its key beside the
+    /// data, prefixes left to the response to declare, and a namespace whose name
+    /// needs escaping.
+    #[test]
+    fn an_encrypted_assertion_reads_like_a_plain_one() {
+        let gcm = include_str!("../tests/fixtures/response-encrypted-gcm.xml");
+        let without_digest = gcm.replacen(
+            r#"<ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>"#,
+            "",
+            1,
+        );
+        let odd_namespace = gcm.replacen(
+            "<samlp:Response ",
+            r#"<samlp:Response xmlns:odd="urn:a&amp;b&quot;&lt;" "#,
+            1,
+        );
+        for text in [
+            include_str!("../tests/fixtures/response-encrypted-cbc-signed.xml").to_owned(),
+            gcm.to_owned(),
+            include_str!("../tests/fixtures/response-encrypted-oaep-sha256.xml").to_owned(),
+            include_str!("../tests/fixtures/response-encrypted-oaep-sha256-mgf256.xml").to_owned(),
+            include_str!("../tests/fixtures/response-encrypted-sibling-key.xml").to_owned(),
+            include_str!("../tests/fixtures/response-encrypted-context-namespaces.xml").to_owned(),
+            without_digest,
+            odd_namespace,
+        ] {
+            assert_eq!(outcome(&text, unchanged), Ok(plain_acceptance()));
+        }
+    }
+
+    /// An encrypted assertion is read only when it can be trusted: CBC in an
+    /// unsigned response is refused before any key is tried; a decrypted
+    /// assertion signed nowhere needs a signed response; a tampered or short
+    /// body, a bad padding, a key of the wrong length or not ours, RSA 1.5, a
+    /// named MGF on the 2001 form, parameters, content held elsewhere, two keys,
+    /// another type, extra parts, and something other than an assertion or
+    /// beside a plain one are refused.
+    #[test]
+    fn an_encrypted_assertion_is_read_only_when_it_can_be_trusted() {
+        let cbc_unsigned = include_str!("../tests/fixtures/response-encrypted-cbc-unsigned.xml");
+        assert_eq!(
+            outcome(cbc_unsigned, unchanged),
+            Err(Refused::EncryptedUnauthenticated)
+        );
+        assert_eq!(
+            outcome_decrypting(cbc_unsigned, &[], unchanged),
+            Err(Refused::EncryptedUnauthenticated)
+        );
+        let gcm = include_str!("../tests/fixtures/response-encrypted-gcm.xml");
+        let other_key = [private_key_of(include_str!(
+            "../tests/fixtures/other-encryption.pk8.b64"
+        ))];
+        for keys in [&other_key[..], &[]] {
+            assert_eq!(
+                outcome_decrypting(gcm, keys, unchanged),
+                Err(Refused::Undecrypted(Undecrypted::Undecryptable))
+            );
+        }
+
+        let our_key = private_key_of(include_str!("../tests/fixtures/sp-encryption.pk8.b64"));
+        let both = [other_key[0].clone(), our_key];
+        assert_eq!(
+            outcome_decrypting(gcm, &both, unchanged),
+            Ok(plain_acceptance())
+        );
+
+        let digest = r#"<ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>"#;
+        let with_parameters = gcm.replacen(
+            digest,
+            &format!("{digest}<xenc:OAEPparams>AAAA</xenc:OAEPparams>"),
+            1,
+        );
+        let digest_twice = gcm.replacen(digest, &format!("{digest}{digest}"), 1);
+        let named_mgf = gcm.replacen(
+            digest,
+            &format!(r#"{digest}<xenc11:MGF xmlns:xenc11="http://www.w3.org/2009/xmlenc11#" Algorithm="http://www.w3.org/2009/xmlenc11#mgf1sha256"/>"#),
+            1,
+        );
+        let start = gcm.rfind("<xenc:CipherData>").expect("the content");
+        let end = gcm.rfind("</xenc:CipherData>").expect("its end") + "</xenc:CipherData>".len();
+        let held_elsewhere = format!(
+            r##"{}<xenc:CipherData><xenc:CipherReference URI="#elsewhere"/></xenc:CipherData>{}"##,
+            &gcm[..start],
+            &gcm[end..]
+        );
+        let short_body = format!(
+            "{}<xenc:CipherData><xenc:CipherValue>AAAAAAAAAAA=</xenc:CipherValue></xenc:CipherData>{}",
+            &gcm[..start],
+            &gcm[end..]
+        );
+        let with_properties = format!("{}<xenc:EncryptionProperties/>{}", &gcm[..end], &gcm[end..]);
+        let other_type = gcm.replacen(
+            r#"Type="http://www.w3.org/2001/04/xmlenc#Element""#,
+            r#"Type="http://www.w3.org/2001/04/xmlenc#Content""#,
+            1,
+        );
+        let sized_method = gcm.replacen(
+            r#"<xenc:EncryptionMethod Algorithm="http://www.w3.org/2009/xmlenc11#aes256-gcm"/>"#,
+            r#"<xenc:EncryptionMethod Algorithm="http://www.w3.org/2009/xmlenc11#aes256-gcm"><xenc:KeySize>256</xenc:KeySize></xenc:EncryptionMethod>"#,
+            1,
+        );
+        let beside_data = gcm.replacen(
+            "</saml:EncryptedAssertion>",
+            "<saml:Other/></saml:EncryptedAssertion>",
+            1,
+        );
+        let unknown_key_part = gcm.replacen(
+            "</xenc:EncryptedKey>",
+            "<xenc:Unknown/></xenc:EncryptedKey>",
+            1,
+        );
+        let sibling = include_str!("../tests/fixtures/response-encrypted-sibling-key.xml");
+        let key_start = sibling.rfind("<xenc:EncryptedKey").expect("the key");
+        let key_end =
+            sibling.rfind("</xenc:EncryptedKey>").expect("its end") + "</xenc:EncryptedKey>".len();
+        let two_keys = format!(
+            "{}{}{}",
+            &sibling[..key_end],
+            &sibling[key_start..key_end],
+            &sibling[key_end..]
+        );
+
+        let undecryptable = Refused::Undecrypted(Undecrypted::Undecryptable);
+        let misshapen = Refused::Undecrypted(Undecrypted::Misshapen);
+        for (text, refused) in [
+            (
+                include_str!("../tests/fixtures/response-encrypted-gcm-unsigned-assertion.xml")
+                    .to_owned(),
+                Refused::Unverified(Unverified::Unsigned),
+            ),
+            (
+                include_str!("../tests/fixtures/response-encrypted-gcm-tampered.xml").to_owned(),
+                undecryptable.clone(),
+            ),
+            (
+                include_str!("../tests/fixtures/response-encrypted-cbc-padding-zero.xml")
+                    .to_owned(),
+                undecryptable.clone(),
+            ),
+            (
+                include_str!("../tests/fixtures/response-encrypted-cbc-padding-long.xml")
+                    .to_owned(),
+                undecryptable.clone(),
+            ),
+            (
+                include_str!("../tests/fixtures/response-encrypted-cbc-short-body.xml").to_owned(),
+                undecryptable.clone(),
+            ),
+            (
+                include_str!("../tests/fixtures/response-encrypted-short-key.xml").to_owned(),
+                undecryptable.clone(),
+            ),
+            (short_body, undecryptable.clone()),
+            (
+                include_str!("../tests/fixtures/response-encrypted-rsa15.xml").to_owned(),
+                Refused::Undecrypted(Undecrypted::UnacceptedAlgorithm),
+            ),
+            (
+                named_mgf,
+                Refused::Undecrypted(Undecrypted::UnacceptedAlgorithm),
+            ),
+            (
+                include_str!("../tests/fixtures/response-encrypted-not-assertion.xml").to_owned(),
+                Refused::Misshapen,
+            ),
+            (
+                include_str!("../tests/fixtures/response-encrypted-and-plain.xml").to_owned(),
+                Refused::NotOneAssertion,
+            ),
+            (with_parameters, misshapen.clone()),
+            (digest_twice, misshapen.clone()),
+            (held_elsewhere, misshapen.clone()),
+            (two_keys, misshapen.clone()),
+            (other_type, misshapen.clone()),
+            (with_properties, misshapen.clone()),
+            (sized_method, misshapen.clone()),
+            (beside_data, misshapen.clone()),
+            (unknown_key_part, misshapen.clone()),
+        ] {
+            assert_ne!(text, gcm);
+            assert_eq!(outcome(&text, unchanged), Err(refused.clone()), "{refused}");
+        }
     }
 
     /// A SAML time is UTC: a `Z` or no zone reads the same, fractional seconds are

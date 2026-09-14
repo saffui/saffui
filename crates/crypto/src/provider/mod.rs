@@ -138,6 +138,31 @@ impl AeadAlg {
     }
 }
 
+/// AES in CBC mode, for reading what older protocols encrypted; nothing here
+/// encrypts with it.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum CbcAlg {
+    A128Cbc,
+    A192Cbc,
+    A256Cbc,
+}
+
+impl CbcAlg {
+    /// Required key length in bytes.
+    pub fn key_len(self) -> usize {
+        match self {
+            Self::A128Cbc => 16,
+            Self::A192Cbc => 24,
+            Self::A256Cbc => 32,
+        }
+    }
+
+    /// Block and initialization vector length in bytes; 16 for AES.
+    pub fn block_len(self) -> usize {
+        16
+    }
+}
+
 /// A signature algorithm, named as JWS `alg` values.
 ///
 /// The rename on each variant is the same spelling [`SignAlg::name`] returns, so
@@ -383,6 +408,8 @@ pub trait CryptoProvider: Send + Sync {
 
     fn hmac(&self) -> &dyn HmacProvider;
     fn aead(&self) -> &dyn AeadProvider;
+    fn cbc(&self) -> &dyn CbcProvider;
+    fn key_transport(&self) -> &dyn KeyTransportProvider;
     fn signer(&self) -> &dyn SignerProvider;
     fn kdf(&self) -> &dyn KdfProvider;
     fn rand(&self) -> &dyn RandProvider;
@@ -602,6 +629,35 @@ pub trait AeadProvider: Send + Sync {
         aad: &[u8],
         ciphertext: &[u8],
     ) -> Result<Vec<u8>>;
+}
+
+/// Decryption of AES-CBC ciphertext, with no padding taken off.
+///
+/// Decryption only: nothing new is encrypted without authentication. A caller
+/// reading an older format strips that format's padding itself; XML Encryption
+/// pads with arbitrary bytes and a final length, which no padding mode of the
+/// backend reads.
+pub trait CbcProvider: Send + Sync {
+    fn decrypt_without_padding(
+        &self,
+        alg: CbcAlg,
+        key: &SecretBox<Vec<u8>>,
+        iv: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Vec<u8>>;
+}
+
+/// Recovering a content key someone encrypted to one of our RSA keys.
+pub trait KeyTransportProvider: Send + Sync {
+    /// RSAES-OAEP without a label, the OAEP digest and the MGF1 digest named
+    /// apart: XML Encryption lets them differ, where JOSE ties one to the other.
+    fn unwrap_rsa_oaep(
+        &self,
+        key: &PrivateKey,
+        oaep_digest: HashAlg,
+        mgf1_digest: HashAlg,
+        wrapped: &[u8],
+    ) -> Result<SecretBox<Vec<u8>>>;
 }
 
 pub trait SignerProvider: Send + Sync {

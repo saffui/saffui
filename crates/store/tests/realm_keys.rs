@@ -6,7 +6,9 @@ use crypto::envelope::Envelope;
 use crypto::provider::CryptoConfig;
 use crypto::provider::SignAlg;
 use crypto::provider::openssl::OpenSslProvider;
-use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKey};
+use models::entities::keys::{
+    JweAlgorithm, KeyStatus, KeyUse, RealmEncryptionKey, RealmSigningKey,
+};
 use store::keyring;
 use store::providers::realm_keys;
 use store::tenancy::TenantContext;
@@ -416,4 +418,93 @@ async fn a_key_is_not_visible_from_another_realm() {
             .is_empty(),
         "another realm published this realm's keys"
     );
+}
+
+/// Every encryption key still held for use comes back with its private half
+/// opened, a rotated one beside the active one, and a disabled key does not.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn every_encryption_key_still_held_for_use_opens() {
+    let fixture = Fixture::with_user().await;
+    let envelope = envelope();
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+    keyring::provision(&transaction, &envelope, "acme", "main")
+        .await
+        .unwrap();
+    let ring = keyring::load(&transaction, &envelope, "acme", "main")
+        .await
+        .unwrap();
+    let written = |kid: &str, algorithm: JweAlgorithm, private_pem: &[u8]| RealmEncryptionKey {
+        kid: kid.into(),
+        algorithm,
+        private_pem: private_pem.to_vec(),
+        public_jwk: serde_json::json!({"kty": "RSA", "kid": kid}),
+    };
+
+    // A realm holds one active key per algorithm, so each takes its status before
+    // the next of its algorithm is written.
+    realm_keys::create_encryption(
+        &transaction,
+        &ring,
+        &envelope,
+        &written(
+            "enc-rotated",
+            JweAlgorithm::RsaOaep256,
+            b"rotated-private-half",
+        ),
+    )
+    .await
+    .unwrap();
+    transaction
+        .execute(
+            "UPDATE realm_signing_keys SET status = 'passive' WHERE kid = 'enc-rotated'",
+            &[],
+        )
+        .await
+        .unwrap();
+    realm_keys::create_encryption(
+        &transaction,
+        &ring,
+        &envelope,
+        &written(
+            "enc-disabled",
+            JweAlgorithm::RsaOaep256,
+            b"disabled-private-half",
+        ),
+    )
+    .await
+    .unwrap();
+    assert!(
+        realm_keys::disable(&transaction, "enc-disabled")
+            .await
+            .unwrap()
+    );
+    realm_keys::create_encryption(
+        &transaction,
+        &ring,
+        &envelope,
+        &written("enc-active", JweAlgorithm::RsaOaep, b"active-private-half"),
+    )
+    .await
+    .unwrap();
+
+    let usable = realm_keys::load_usable_encryption_keys(&transaction, &ring, &envelope)
+        .await
+        .unwrap();
+    let opened: Vec<(String, Vec<u8>)> = usable
+        .iter()
+        .map(|key| (key.kid.clone(), key.private_pem.clone()))
+        .collect();
+    assert_eq!(
+        opened,
+        vec![
+            ("enc-active".to_owned(), b"active-private-half".to_vec()),
+            ("enc-rotated".to_owned(), b"rotated-private-half".to_vec()),
+        ]
+    );
+    assert_eq!(usable[0].algorithm, JweAlgorithm::RsaOaep);
+    assert_eq!(usable[1].algorithm, JweAlgorithm::RsaOaep256);
 }

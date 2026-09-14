@@ -300,6 +300,39 @@ pub async fn active_encryption(
     }))
 }
 
+/// Every encryption key the realm still holds for use, private halves opened: the
+/// active one and those rotated away, which a party that imported them before the
+/// rotation may still encrypt to. Disabled keys are not opened.
+pub async fn load_usable_encryption_keys(
+    transaction: &Transaction<'_>,
+    ring: &RealmKeyring,
+    envelope: &Envelope,
+) -> StoreResult<Vec<RealmEncryptionKey>> {
+    let rows = transaction
+        .query(
+            "SELECT kid, algorithm, private_pem, public_jwk FROM realm_signing_keys \
+             WHERE key_use = 'enc' AND status <> 'disabled' \
+             ORDER BY priority DESC, kid ASC",
+            &[],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+
+    let mut keys = Vec::with_capacity(rows.len());
+    for row in rows {
+        let kid: String = row.get("kid");
+        let sealed: Vec<u8> = row.get("private_pem");
+        let private_pem = ring.open(envelope, PURPOSE, &kid, &sealed).await?;
+        keys.push(RealmEncryptionKey {
+            algorithm: read_encryption_algorithm(&row)?,
+            kid,
+            private_pem: crypto::secrecy::ExposeSecret::expose_secret(&private_pem).clone(),
+            public_jwk: row.get("public_jwk"),
+        });
+    }
+    Ok(keys)
+}
+
 /// The keys this realm publishes to be encrypted to.
 pub async fn published_encryption(
     transaction: &Transaction<'_>,

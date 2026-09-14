@@ -255,6 +255,10 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
                         support::urlencode(&code),
                         support::urlencode(&state),
                     ))
+                    .insert_header((
+                        "cookie",
+                        format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+                    ))
                     .to_request(),
             )
             .await;
@@ -275,7 +279,7 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
     };
 
     let cookie = opened_login(&plane).await;
-    let (status, cookies, location, spent_state) = crossing(cookie).await;
+    let (status, cookies, location, spent_state) = crossing(cookie.clone()).await;
     assert_eq!(status, StatusCode::SEE_OTHER, "{location:?}");
     let location = location.expect("a landing");
     assert!(
@@ -360,6 +364,10 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
             .uri(&format!(
                 "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/endpoint?code=again&state={}",
                 support::urlencode(&spent_state),
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
             ))
             .to_request(),
     )
@@ -478,6 +486,10 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
                     "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/endpoint?code={}&state={}",
                     support::urlencode(&code),
                     support::urlencode(&state),
+                ))
+                .insert_header((
+                    "cookie",
+                    format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
                 ))
                 .to_request(),
         )
@@ -677,6 +689,10 @@ async fn an_upstream_logout_reaches_down() {
                 "/realms/{REALM}/protocol/openid-connect/broker/{ALIAS}/endpoint?code={}&state={}",
                 support::urlencode(&code),
                 support::urlencode(&state),
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
             ))
             .to_request(),
     )
@@ -899,6 +915,10 @@ async fn a_first_arrival_the_store_cannot_write_is_not_refused() {
                 support::urlencode(&code),
                 support::urlencode(&state),
             ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
             .to_request(),
     )
     .await;
@@ -1002,6 +1022,10 @@ async fn crossed(plane: &Plane, alias: &str) -> (StatusCode, Option<String>, Str
                 "/realms/{REALM}/protocol/openid-connect/broker/{alias}/endpoint?code={}&state={}",
                 support::urlencode(&code),
                 support::urlencode(&state),
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
             ))
             .to_request(),
     )
@@ -1242,5 +1266,85 @@ async fn the_door_on_the_sign_in_page_leaves_for_the_upstream() {
     assert!(
         departure.starts_with(&format!("{base}/auth?")),
         "{departure}"
+    );
+}
+
+/// The way back belongs to the browser that left: without that login's cookie,
+/// or with another login's, it is refused before anything is spent, and the
+/// browser that left then comes back admitted with the same code and state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_way_back_is_refused_in_a_browser_that_did_not_leave() {
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = served_upstream(&plane);
+    plain_provider(&plane, &bearer, "plain", &base, json!({})).await;
+    let cookie = opened_login(&plane).await;
+    let other = opened_login(&plane).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/plain/login"
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let departure = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a departure")
+        .to_owned();
+    let state = param(&departure, "state").expect("a state");
+    let challenge = param(&departure, "code_challenge");
+    let code = plane
+        .mint_code(
+            support::CONFIDENTIAL,
+            &format!(
+                "{}/protocol/openid-connect/broker/plain/endpoint",
+                support::origin().issuer(REALM)
+            ),
+            "openid",
+            challenge.as_deref().map(|held| (held, "S256")),
+        )
+        .await;
+    let way_back = format!(
+        "/realms/{REALM}/protocol/openid-connect/broker/plain/endpoint?code={}&state={}",
+        support::urlencode(&code),
+        support::urlencode(&state),
+    );
+
+    for presented in [None, Some(other.as_str())] {
+        let mut asked = test::TestRequest::get().uri(&way_back);
+        if let Some(held) = presented {
+            asked =
+                asked.insert_header(("cookie", format!("{}={held}", support::AUTH_SESSION_COOKIE)));
+        }
+        let response = test::call_service(&app, asked.to_request()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{presented:?}");
+    }
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&way_back)
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "the refused ways back spent what the browser that left still needed"
     );
 }

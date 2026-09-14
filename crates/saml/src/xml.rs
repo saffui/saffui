@@ -1,4 +1,4 @@
-use roxmltree::{Document, Error, ParsingOptions};
+use roxmltree::{Document, Error, Node, ParsingOptions};
 
 /// How much a message may hold before it is refused unread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,9 +64,65 @@ pub fn read_message(text: &str, limits: Limits) -> Result<Document<'_>, Unreadab
     Ok(document)
 }
 
+/// The element children of a node, in document order.
+pub(crate) fn element_children<'a, 'input>(
+    parent: Node<'a, 'input>,
+) -> impl Iterator<Item = Node<'a, 'input>> {
+    parent.children().filter(Node::is_element)
+}
+
+pub(crate) fn is_named(node: Node<'_, '_>, namespace: &str, name: &str) -> bool {
+    node.is_element()
+        && node.tag_name().namespace() == Some(namespace)
+        && node.tag_name().name() == name
+}
+
+pub(crate) fn children_named<'a, 'input>(
+    parent: Node<'a, 'input>,
+    namespace: &'static str,
+    name: &'static str,
+) -> impl Iterator<Item = Node<'a, 'input>> {
+    parent
+        .children()
+        .filter(move |child| is_named(*child, namespace, name))
+}
+
+/// The bytes a base64 element holds, with the whitespace XML Schema allows
+/// between its characters; nothing when it holds an element or is not base64.
+pub(crate) fn base64_content_of(node: Node<'_, '_>) -> Option<Vec<u8>> {
+    if element_children(node).next().is_some() {
+        return None;
+    }
+    let compact: Vec<u8> = node
+        .text()
+        .unwrap_or_default()
+        .bytes()
+        .filter(|byte| !byte.is_ascii_whitespace())
+        .collect();
+    data_encoding::BASE64.decode(&compact).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Limits, Unreadable, read_message};
+
+    /// Base64 content reads across the whitespace XML allows inside it, and an
+    /// element inside or characters outside the alphabet read as nothing.
+    #[test]
+    fn base64_content_reads_across_whitespace_only() {
+        let document = read_message(
+            "<r><a>aGVs\n  bG8=</a><b><c/></b><d>not base64!</d></r>",
+            Limits::MESSAGE,
+        )
+        .expect("a message");
+        let children: Vec<_> = super::element_children(document.root_element()).collect();
+        assert_eq!(
+            super::base64_content_of(children[0]).as_deref(),
+            Some(&b"hello"[..])
+        );
+        assert_eq!(super::base64_content_of(children[1]), None);
+        assert_eq!(super::base64_content_of(children[2]), None);
+    }
 
     /// A document type is refused whether it declares entities, names an
     /// external definition or declares nothing at all.

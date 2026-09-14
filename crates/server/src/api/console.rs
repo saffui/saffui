@@ -11,6 +11,13 @@ use include_dir::{Dir, include_dir};
 
 static CONSOLE: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../admin/dist");
 
+/// What the console may load and call: its own bundle, the images and fonts
+/// the build inlines, and this server's API. Nothing inline runs, and no other
+/// page may frame it.
+const POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
+                      img-src 'self' data:; font-src 'self' data:; connect-src 'self'; \
+                      form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+
 /// Read off the match rather than extracted, because the bare `/console`
 /// route has no `path` segment to extract and must still answer the shell.
 pub async fn serve(request: HttpRequest) -> HttpResponse {
@@ -48,6 +55,8 @@ fn answer(asked: &str) -> HttpResponse {
             },
         ))
         .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("Content-Security-Policy", POLICY))
+        .insert_header(("X-Frame-Options", "DENY"))
         .body(file.contents())
 }
 

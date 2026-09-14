@@ -4,6 +4,7 @@ pub mod dsig;
 pub mod logout;
 pub mod metadata;
 pub mod name_id;
+pub mod post;
 pub mod protocol;
 pub mod redirect;
 pub mod response;

@@ -1,5 +1,4 @@
 use crypto::provider::{AeadAlg, CbcAlg, CryptoProvider, HashAlg, PrivateKey};
-use crypto::secrecy::ExposeSecret;
 use roxmltree::Node;
 
 use crate::xml::{base64_content_of, children_named, element_children, is_named};
@@ -35,13 +34,6 @@ impl ContentCipher {
     /// caller decrypts it only under a signature it has already verified.
     pub fn is_authenticated(self) -> bool {
         matches!(self, Self::Gcm(_))
-    }
-
-    fn key_len(self) -> usize {
-        match self {
-            Self::Cbc(alg) => alg.key_len(),
-            Self::Gcm(alg) => alg.key_len(),
-        }
     }
 }
 
@@ -113,9 +105,6 @@ pub fn decrypt_element(
                 .ok()
         })
         .ok_or(Undecrypted::Undecryptable)?;
-    if content_key.expose_secret().len() != cipher.key_len() {
-        return Err(Undecrypted::Undecryptable);
-    }
     match cipher {
         ContentCipher::Cbc(alg) => {
             let block = alg.block_len();

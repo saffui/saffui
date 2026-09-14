@@ -368,8 +368,9 @@ mod tests {
     }
 
     /// The profile is SAML's and no wider: a second signature or reference, an
-    /// extra transform, canonicalization keeping comments, and SHA-1 digests or
-    /// signatures are refused before any key is tried.
+    /// object beside the key, an extra transform, canonicalization keeping
+    /// comments, and SHA-1 digests or signatures are refused before any key is
+    /// tried.
     #[test]
     fn what_the_profile_does_not_allow_is_refused() {
         let (signature, _) = signature_cut_from(SIGNED_ASSERTION);
@@ -395,6 +396,13 @@ mod tests {
         );
         assert_eq!(
             verdict(&transformed, "Assertion", &[idp_rsa()]),
+            Err(Unverified::Misshapen)
+        );
+        let with_object =
+            SIGNED_ASSERTION.replacen("</ds:KeyInfo>", "</ds:KeyInfo><ds:Object/>", 1);
+        assert_ne!(with_object, SIGNED_ASSERTION);
+        assert_eq!(
+            verdict(&with_object, "Assertion", &[idp_rsa()]),
             Err(Unverified::Misshapen)
         );
         for (accepted, refused) in [

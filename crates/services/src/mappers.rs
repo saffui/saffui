@@ -426,7 +426,7 @@ fn config_str<'a>(configs: &'a Option<AttributesMap>, key: &str) -> Option<&'a s
 }
 
 /// A configuration flag, read as stored or as the string a JSON bag carries.
-fn config_bool(configs: &Option<AttributesMap>, key: &str, resting: bool) -> bool {
+pub(crate) fn config_bool(configs: &Option<AttributesMap>, key: &str, resting: bool) -> bool {
     match configs.as_ref().and_then(|map| map.get(key)) {
         Some(AttributeValue::Bool(value)) => *value,
         Some(AttributeValue::Str(value)) => {

@@ -8,6 +8,8 @@ use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel, IdpM
 use serde_json::{Map, Value};
 use store::providers::{brokering, users};
 
+use crate::mappers::{MULTIVALUED, config_bool};
+
 /// How long what left for the upstream is honoured on the way back.
 pub const STATE_LIFESPAN: Duration = Duration::minutes(10);
 
@@ -543,16 +545,30 @@ pub async fn decide_link(
 pub const ATTRIBUTE_IDP_MAPPER: &str = "oidc-user-attribute-idp-mapper";
 /// Grant the arriving user a named local role.
 pub const ROLE_IDP_MAPPER: &str = "oidc-hardcoded-role-idp-mapper";
+/// Write an attribute a SAML provider asserts onto the arriving user: its first
+/// value, or every value as a list when the rule says `multivalued`, so the
+/// attribute keeps one shape whatever the count a sign-in asserts.
+pub const SAML_ATTRIBUTE_IDP_MAPPER: &str = "saml-user-attribute-idp-mapper";
+/// Grant the arriving user a named local role while a SAML provider asserts an
+/// attribute holding a given value.
+pub const SAML_ROLE_IDP_MAPPER: &str = "saml-role-idp-mapper";
 
 /// Every rule this build applies on arrival. The plane refuses names
 /// outside it rather than recording rules nothing runs.
-pub const KNOWN_IDP_MAPPERS: [&str; 2] = [ATTRIBUTE_IDP_MAPPER, ROLE_IDP_MAPPER];
+pub const KNOWN_IDP_MAPPERS: [&str; 4] = [
+    ATTRIBUTE_IDP_MAPPER,
+    ROLE_IDP_MAPPER,
+    SAML_ATTRIBUTE_IDP_MAPPER,
+    SAML_ROLE_IDP_MAPPER,
+];
 
 /// What a rule reads from its bag.
 pub const CLAIM: &str = "claim";
 pub const USER_ATTRIBUTE: &str = "user.attribute";
 pub const ROLE: &str = "role";
 pub const SYNC_MODE: &str = "syncMode";
+pub const ATTRIBUTE_NAME: &str = "attribute.name";
+pub const ATTRIBUTE_VALUE: &str = "attribute.value";
 
 fn config_str<'a>(
     configs: &'a Option<models::entities::attributes::AttributesMap>,
@@ -569,6 +585,139 @@ fn config_str<'a>(
 /// one, taking the upstream as authoritative.
 fn forced(mapper: &IdpMapperModel) -> bool {
     config_str(&mapper.configs, SYNC_MODE) == Some("force")
+}
+
+/// Whether a rule reads what its provider sends: claims come from an OpenID
+/// Connect or OAuth 2.0 provider, attributes from a SAML one, and a granted role
+/// reads nothing.
+pub fn rule_fits_provider(mapper_type: &str, provider: &IdentityProviderModel) -> bool {
+    match mapper_type {
+        ROLE_IDP_MAPPER => true,
+        ATTRIBUTE_IDP_MAPPER => !crate::saml_brokering::is_saml(provider),
+        SAML_ATTRIBUTE_IDP_MAPPER | SAML_ROLE_IDP_MAPPER => {
+            crate::saml_brokering::is_saml(provider)
+        }
+        _ => false,
+    }
+}
+
+/// What one rule does for who arrived, read before anything is written.
+#[derive(Debug, PartialEq, Eq)]
+enum Mapped<'a> {
+    Attribute {
+        attribute: &'a str,
+        value: AttributeValue,
+    },
+    Grant {
+        role_id: &'a str,
+    },
+    /// Only a role granted to the person directly is taken back: one held through
+    /// a group stays with the group.
+    Withdraw {
+        role_id: &'a str,
+    },
+}
+
+/// What a rule does for one arrival, if anything. A rule written once acts only at
+/// the first arrival. A rule missing what its type reads does nothing, as does a
+/// claim or attribute the arrival does not carry in a shape an attribute holds. A
+/// forced role rule withdraws its role while the provider does not assert the value.
+fn read_rule<'a>(
+    rule: &'a IdpMapperModel,
+    arrival: &Arrival,
+    first_login: bool,
+) -> Option<Mapped<'a>> {
+    if !first_login && !forced(rule) {
+        return None;
+    }
+    let configs = &rule.configs;
+    match rule.mapper_type.as_str() {
+        ATTRIBUTE_IDP_MAPPER => {
+            let value = match arrival.claims.get(config_str(configs, CLAIM)?)? {
+                Value::String(text) => AttributeValue::Str(text.clone()),
+                Value::Bool(flag) => AttributeValue::Bool(*flag),
+                Value::Number(number) => AttributeValue::Int(number.as_i64()?),
+                _ => return None,
+            };
+            Some(Mapped::Attribute {
+                attribute: config_str(configs, USER_ATTRIBUTE)?,
+                value,
+            })
+        }
+        SAML_ATTRIBUTE_IDP_MAPPER => {
+            let asserted: Vec<&str> =
+                match arrival.claims.get(config_str(configs, ATTRIBUTE_NAME)?)? {
+                    Value::String(one) => vec![one.as_str()],
+                    Value::Array(several) => {
+                        several.iter().map(Value::as_str).collect::<Option<_>>()?
+                    }
+                    _ => return None,
+                };
+            let value = if config_bool(configs, MULTIVALUED, false) {
+                AttributeValue::ListStr(asserted.into_iter().map(str::to_owned).collect())
+            } else {
+                AttributeValue::Str(asserted.first().copied()?.to_owned())
+            };
+            Some(Mapped::Attribute {
+                attribute: config_str(configs, USER_ATTRIBUTE)?,
+                value,
+            })
+        }
+        ROLE_IDP_MAPPER => Some(Mapped::Grant {
+            role_id: config_str(configs, ROLE)?,
+        }),
+        SAML_ROLE_IDP_MAPPER => {
+            let role_id = config_str(configs, ROLE)?;
+            let wanted = config_str(configs, ATTRIBUTE_VALUE)?;
+            let asserted = match arrival.claims.get(config_str(configs, ATTRIBUTE_NAME)?) {
+                Some(Value::String(one)) => one == wanted,
+                Some(Value::Array(several)) => {
+                    several.iter().any(|held| held.as_str() == Some(wanted))
+                }
+                _ => false,
+            };
+            if asserted {
+                Some(Mapped::Grant { role_id })
+            } else if forced(rule) {
+                Some(Mapped::Withdraw { role_id })
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// What a provider's rules do for one arrival, read before anything is written. A
+/// rule reading what the provider does not send is skipped with a line for the
+/// operator, and a role one rule withdraws stays while another rule grants it.
+fn read_rules<'a>(
+    provider: &IdentityProviderModel,
+    rules: &'a [IdpMapperModel],
+    arrival: &Arrival,
+    first_login: bool,
+) -> Vec<(&'a IdpMapperModel, Mapped<'a>)> {
+    let mut decided = Vec::with_capacity(rules.len());
+    for rule in rules {
+        if !rule_fits_provider(&rule.mapper_type, provider) {
+            tracing::warn!(rule = %rule.name, mapper_type = %rule.mapper_type, "an idp mapper reads what its provider does not send");
+            continue;
+        }
+        if let Some(mapped) = read_rule(rule, arrival, first_login) {
+            decided.push((rule, mapped));
+        }
+    }
+    let granted: Vec<&str> = decided
+        .iter()
+        .filter_map(|(_, mapped)| match mapped {
+            Mapped::Grant { role_id } => Some(*role_id),
+            _ => None,
+        })
+        .collect();
+    decided.retain(
+        |(_, mapped)| !matches!(mapped, Mapped::Withdraw { role_id } if granted.contains(role_id)),
+    );
+    decided
 }
 
 /// Run the provider's rules on who arrived.
@@ -593,33 +742,9 @@ pub async fn apply_mappers(
 
     let mut person: Option<models::entities::user::UserModel> = None;
     let mut rewritten = false;
-    for rule in &rules {
-        if !first_login && !forced(rule) {
-            continue;
-        }
-        match rule.mapper_type.as_str() {
-            ATTRIBUTE_IDP_MAPPER => {
-                let (Some(claim), Some(attribute)) = (
-                    config_str(&rule.configs, CLAIM),
-                    config_str(&rule.configs, USER_ATTRIBUTE),
-                ) else {
-                    continue;
-                };
-                let value = match arrival.claims.get(claim) {
-                    Some(Value::String(text)) => {
-                        models::entities::attributes::AttributeValue::Str(text.clone())
-                    }
-                    Some(Value::Bool(flag)) => {
-                        models::entities::attributes::AttributeValue::Bool(*flag)
-                    }
-                    Some(Value::Number(number)) if number.as_i64().is_some() => {
-                        models::entities::attributes::AttributeValue::Int(
-                            number.as_i64().unwrap_or_default(),
-                        )
-                    }
-                    // Absent, or a shape no attribute holds: nothing to write.
-                    _ => continue,
-                };
+    for (rule, mapped) in read_rules(provider, &rules, arrival, first_login) {
+        match mapped {
+            Mapped::Attribute { attribute, value } => {
                 if person.is_none() {
                     person = users::load(transaction, user_id)
                         .await
@@ -633,37 +758,14 @@ pub async fn apply_mappers(
                     .insert(attribute.to_owned(), value);
                 rewritten = true;
             }
-            ROLE_IDP_MAPPER => {
-                let Some(role_id) = config_str(&rule.configs, ROLE) else {
-                    continue;
-                };
-                // The plane checked the role when the rule was written; one
-                // deleted since is the operator's to mend, not a reason to
-                // lock the person out.
-                if store::providers::roles::load(transaction, role_id)
-                    .await
-                    .map_err(|_| Unbrokered::Backend)?
-                    .is_none()
-                {
-                    tracing::warn!(rule = %rule.name, role_id, "an idp mapper names a role nobody holds anymore");
-                    continue;
-                }
-                // A role that would put the person in breach of a separation
-                // is withheld and the sign-in goes on: the rule is the
-                // operator's to mend, as a role deleted since is.
-                match crate::sod::weigh_grant(transaction, user_id, role_id).await {
-                    Ok(()) => {}
-                    Err(crate::sod::Toxic::Refused(said)) => {
-                        tracing::warn!(rule = %rule.name, role_id, %said, "an idp mapper's role was withheld: separation of duties");
-                        continue;
-                    }
-                    Err(crate::sod::Toxic::Backend) => return Err(Unbrokered::Backend),
-                }
-                store::providers::roles::grant_to_user(transaction, user_id, role_id)
+            Mapped::Grant { role_id } => {
+                grant_mapped_role(transaction, rule, user_id, role_id).await?;
+            }
+            Mapped::Withdraw { role_id } => {
+                store::providers::roles::revoke_from_user(transaction, user_id, role_id)
                     .await
                     .map_err(|_| Unbrokered::Backend)?;
             }
-            _ => {}
         }
     }
     if rewritten && let Some(held) = person.as_ref() {
@@ -672,6 +774,40 @@ pub async fn apply_mappers(
             .map_err(|_| Unbrokered::Backend)?;
     }
     Ok(())
+}
+
+/// Grant a rule's role to who arrived.
+async fn grant_mapped_role(
+    transaction: &Transaction<'_>,
+    rule: &IdpMapperModel,
+    user_id: &str,
+    role_id: &str,
+) -> Result<(), Unbrokered> {
+    // The plane checked the role when the rule was written; one
+    // deleted since is the operator's to mend, not a reason to
+    // lock the person out.
+    if store::providers::roles::load(transaction, role_id)
+        .await
+        .map_err(|_| Unbrokered::Backend)?
+        .is_none()
+    {
+        tracing::warn!(rule = %rule.name, role_id, "an idp mapper names a role nobody holds anymore");
+        return Ok(());
+    }
+    // A role that would put the person in breach of a separation
+    // is withheld and the sign-in goes on: the rule is the
+    // operator's to mend, as a role deleted since is.
+    match crate::sod::weigh_grant(transaction, user_id, role_id).await {
+        Ok(()) => {}
+        Err(crate::sod::Toxic::Refused(said)) => {
+            tracing::warn!(rule = %rule.name, role_id, %said, "an idp mapper's role was withheld: separation of duties");
+            return Ok(());
+        }
+        Err(crate::sod::Toxic::Backend) => return Err(Unbrokered::Backend),
+    }
+    store::providers::roles::grant_to_user(transaction, user_id, role_id)
+        .await
+        .map_err(|_| Unbrokered::Backend)
 }
 
 /// The names an upstream's document answers for: what it asserts about the
@@ -1193,5 +1329,287 @@ mod tests {
                 .expect("an arrival")
                 .email_verified
         );
+    }
+
+    fn rule_of(mapper_type: &str, said: &[(&str, &str)]) -> IdpMapperModel {
+        models::entities::brokering::IdpMapperMutationModel {
+            name: format!("{mapper_type} rule"),
+            mapper_type: mapper_type.to_owned(),
+            configs: Some(
+                said.iter()
+                    .map(|(key, value)| {
+                        ((*key).to_owned(), AttributeValue::Str((*value).to_owned()))
+                    })
+                    .collect(),
+            ),
+        }
+        .into_model(
+            "mapper-1".into(),
+            "main".into(),
+            "corp".into(),
+            AuditableModel::from_creator("local".into(), "root".into()),
+        )
+    }
+
+    fn arrival_with(claims: Value) -> Arrival {
+        Arrival {
+            external_user_id: "AAdzZWNyZXQx".into(),
+            username: None,
+            email: None,
+            email_verified: false,
+            claims: claims.as_object().cloned().unwrap_or_default(),
+        }
+    }
+
+    /// A rule runs only for a provider sending what it reads: a claim rule for an
+    /// OpenID Connect or OAuth 2.0 provider, the SAML rules for a SAML one, a granted
+    /// role for either, and a name outside the catalogue for none.
+    #[test]
+    fn a_rule_runs_only_for_a_provider_sending_what_it_reads() {
+        let saml = plain_provider(&[("protocol", "saml")]);
+        let oauth = plain_provider(&[]);
+        for (mapper_type, for_saml, for_oauth) in [
+            (ROLE_IDP_MAPPER, true, true),
+            (ATTRIBUTE_IDP_MAPPER, false, true),
+            (SAML_ATTRIBUTE_IDP_MAPPER, true, false),
+            (SAML_ROLE_IDP_MAPPER, true, false),
+            ("saml-avatar-mapper", false, false),
+        ] {
+            assert_eq!(
+                rule_fits_provider(mapper_type, &saml),
+                for_saml,
+                "{mapper_type}"
+            );
+            assert_eq!(
+                rule_fits_provider(mapper_type, &oauth),
+                for_oauth,
+                "{mapper_type}"
+            );
+        }
+    }
+
+    /// A claim rule writes a string, a flag or a whole number as it came, and a claim
+    /// of another shape, or one not carried, writes nothing.
+    #[test]
+    fn a_claim_rule_writes_only_what_an_attribute_holds() {
+        let arrival = arrival_with(serde_json::json!({
+            "acr": "gold", "verified": true, "level": 3, "ratio": 0.5, "teams": ["a"]
+        }));
+        for (claim, written) in [
+            ("acr", Some(AttributeValue::Str("gold".into()))),
+            ("verified", Some(AttributeValue::Bool(true))),
+            ("level", Some(AttributeValue::Int(3))),
+            ("ratio", None),
+            ("teams", None),
+            ("absent", None),
+        ] {
+            let carried = rule_of(
+                ATTRIBUTE_IDP_MAPPER,
+                &[(CLAIM, claim), (USER_ATTRIBUTE, "held")],
+            );
+            assert_eq!(
+                read_rule(&carried, &arrival, true),
+                written.map(|value| Mapped::Attribute {
+                    attribute: "held",
+                    value
+                }),
+                "{claim}"
+            );
+        }
+    }
+
+    /// A SAML attribute rule writes an attribute's first value as a string, or every
+    /// value as a list in the order asserted when the rule says `multivalued`, one
+    /// value included, so the shape never follows the count asserted. It writes at
+    /// the first arrival, or on every one when forced; an attribute not asserted, or
+    /// a rule missing what it reads, writes nothing.
+    #[test]
+    fn a_saml_attribute_rule_writes_what_the_assertion_holds() {
+        let arrival = arrival_with(serde_json::json!({
+            "department": "Research", "memberOf": ["staff", "readers"]
+        }));
+        let department = [(ATTRIBUTE_NAME, "department"), (USER_ATTRIBUTE, "unit")];
+        let written = Some(Mapped::Attribute {
+            attribute: "unit",
+            value: AttributeValue::Str("Research".into()),
+        });
+        let once = rule_of(SAML_ATTRIBUTE_IDP_MAPPER, &department);
+        assert_eq!(read_rule(&once, &arrival, true), written);
+        assert_eq!(read_rule(&once, &arrival, false), None);
+        let every_time = rule_of(
+            SAML_ATTRIBUTE_IDP_MAPPER,
+            &[department[0], department[1], (SYNC_MODE, "force")],
+        );
+        assert_eq!(read_rule(&every_time, &arrival, false), written);
+
+        let groups = [(ATTRIBUTE_NAME, "memberOf"), (USER_ATTRIBUTE, "groups")];
+        let first_group = rule_of(SAML_ATTRIBUTE_IDP_MAPPER, &groups);
+        let every_group = rule_of(
+            SAML_ATTRIBUTE_IDP_MAPPER,
+            &[groups[0], groups[1], (MULTIVALUED, "true")],
+        );
+        let grouped = |value| {
+            Some(Mapped::Attribute {
+                attribute: "groups",
+                value,
+            })
+        };
+        assert_eq!(
+            read_rule(&first_group, &arrival, true),
+            grouped(AttributeValue::Str("staff".into()))
+        );
+        assert_eq!(
+            read_rule(&every_group, &arrival, true),
+            grouped(AttributeValue::ListStr(vec![
+                "staff".into(),
+                "readers".into()
+            ]))
+        );
+        let one_group = arrival_with(serde_json::json!({ "memberOf": "readers" }));
+        assert_eq!(
+            read_rule(&every_group, &one_group, true),
+            grouped(AttributeValue::ListStr(vec!["readers".into()]))
+        );
+
+        for silent in [
+            rule_of(
+                SAML_ATTRIBUTE_IDP_MAPPER,
+                &[(ATTRIBUTE_NAME, "title"), (USER_ATTRIBUTE, "title")],
+            ),
+            rule_of(SAML_ATTRIBUTE_IDP_MAPPER, &department[..1]),
+            rule_of(SAML_ATTRIBUTE_IDP_MAPPER, &department[1..]),
+        ] {
+            assert_eq!(
+                read_rule(&silent, &arrival, true),
+                None,
+                "{:?}",
+                silent.configs
+            );
+        }
+    }
+
+    /// A SAML role rule grants its role while the attribute holds the value, alone or
+    /// among several, and exactly as written. While the value is not asserted, a rule
+    /// written once does nothing and a forced rule withdraws the role; a rule missing
+    /// what it reads does nothing, forced or not.
+    #[test]
+    fn a_saml_role_rule_follows_the_value_asserted() {
+        let said = [
+            (ATTRIBUTE_NAME, "memberOf"),
+            (ATTRIBUTE_VALUE, "staff"),
+            (ROLE, "role-staff"),
+        ];
+        let once = rule_of(SAML_ROLE_IDP_MAPPER, &said);
+        let every_time = rule_of(
+            SAML_ROLE_IDP_MAPPER,
+            &[said[0], said[1], said[2], (SYNC_MODE, "force")],
+        );
+        let granted = Some(Mapped::Grant {
+            role_id: "role-staff",
+        });
+
+        for holding in [
+            serde_json::json!({ "memberOf": "staff" }),
+            serde_json::json!({ "memberOf": ["readers", "staff"] }),
+        ] {
+            let arrival = arrival_with(holding);
+            assert_eq!(read_rule(&once, &arrival, true), granted);
+            assert_eq!(read_rule(&once, &arrival, false), None);
+            assert_eq!(read_rule(&every_time, &arrival, false), granted);
+        }
+        for lacking in [
+            serde_json::json!({ "memberOf": "Staff" }),
+            serde_json::json!({ "memberOf": ["readers"] }),
+            serde_json::json!({}),
+        ] {
+            let arrival = arrival_with(lacking);
+            assert_eq!(read_rule(&once, &arrival, true), None);
+            assert_eq!(
+                read_rule(&every_time, &arrival, false),
+                Some(Mapped::Withdraw {
+                    role_id: "role-staff"
+                })
+            );
+        }
+
+        let arrival = arrival_with(serde_json::json!({}));
+        for incomplete in [&said[1..], &[said[0], said[2]][..], &said[..2]] {
+            let forced_rule = rule_of(
+                SAML_ROLE_IDP_MAPPER,
+                &[incomplete, &[(SYNC_MODE, "force")][..]].concat(),
+            );
+            assert_eq!(
+                read_rule(&forced_rule, &arrival, true),
+                None,
+                "{incomplete:?}"
+            );
+        }
+    }
+
+    /// A role one forced rule withdraws stays while another rule grants it on the
+    /// same arrival, whichever is read first, and a rule reading what the provider
+    /// does not send is left out.
+    #[test]
+    fn a_role_another_rule_grants_is_not_withdrawn() {
+        let saml = plain_provider(&[("protocol", "saml")]);
+        let arrival = arrival_with(serde_json::json!({
+            "memberOf": ["readers"], "department": "Research"
+        }));
+        let staff_while_member = rule_of(
+            SAML_ROLE_IDP_MAPPER,
+            &[
+                (ATTRIBUTE_NAME, "memberOf"),
+                (ATTRIBUTE_VALUE, "staff"),
+                (ROLE, "role-staff"),
+                (SYNC_MODE, "force"),
+            ],
+        );
+        let staff_always = rule_of(ROLE_IDP_MAPPER, &[(ROLE, "role-staff")]);
+        let audit_while_member = rule_of(
+            SAML_ROLE_IDP_MAPPER,
+            &[
+                (ATTRIBUTE_NAME, "memberOf"),
+                (ATTRIBUTE_VALUE, "auditors"),
+                (ROLE, "role-audit"),
+                (SYNC_MODE, "force"),
+            ],
+        );
+        let claimed_department = rule_of(
+            ATTRIBUTE_IDP_MAPPER,
+            &[(CLAIM, "department"), (USER_ATTRIBUTE, "unit")],
+        );
+
+        for rules in [
+            [
+                staff_while_member.clone(),
+                staff_always.clone(),
+                audit_while_member.clone(),
+                claimed_department.clone(),
+            ],
+            [
+                staff_always.clone(),
+                claimed_department.clone(),
+                audit_while_member.clone(),
+                staff_while_member.clone(),
+            ],
+        ] {
+            let decided: Vec<Mapped> = read_rules(&saml, &rules, &arrival, true)
+                .into_iter()
+                .map(|(_, mapped)| mapped)
+                .collect();
+            assert_eq!(decided.len(), 2, "{decided:?}");
+            assert!(
+                decided.contains(&Mapped::Grant {
+                    role_id: "role-staff"
+                }),
+                "{decided:?}"
+            );
+            assert!(
+                decided.contains(&Mapped::Withdraw {
+                    role_id: "role-audit"
+                }),
+                "{decided:?}"
+            );
+        }
     }
 }

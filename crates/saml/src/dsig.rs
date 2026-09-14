@@ -152,6 +152,11 @@ pub fn verify_enveloped_signature<'a, 'input>(
     Ok(Signed { element })
 }
 
+/// Whether an element carries an enveloped signature of its own, verified or not.
+pub fn carries_signature(element: Node<'_, '_>) -> bool {
+    element_children(element).any(|child| is_signature_element(&child, "Signature"))
+}
+
 fn signature_algorithm_named(uri: &str) -> Option<SignAlg> {
     match uri {
         "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256" => Some(SignAlg::Rs256),
@@ -236,9 +241,9 @@ fn is_signature_element(node: &Node<'_, '_>, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Unverified, verify_enveloped_signature};
+    use crate::testing::{key_certified_by, provider};
     use crate::xml::{Limits, read_message};
-    use crypto::provider::openssl::OpenSslProvider;
-    use crypto::provider::{CryptoConfig, PublicKey};
+    use crypto::provider::PublicKey;
 
     const SIGNED_ASSERTION: &str = include_str!("../tests/fixtures/signed-assertion-rsa.xml");
     const SIGNED_ASSERTION_EC: &str = include_str!("../tests/fixtures/signed-assertion-ec.xml");
@@ -247,25 +252,18 @@ mod tests {
         include_str!("../tests/fixtures/signed-assertion-listed-rsa.xml");
     const SIGNED_BY_OTHER: &str = include_str!("../tests/fixtures/signed-assertion-other-rsa.xml");
 
-    fn key_of(certificate: &str) -> PublicKey {
-        let der = data_encoding::BASE64
-            .decode(certificate.trim().as_bytes())
-            .expect("base64");
-        crypto::x509::public_key_of(&der).expect("a certificate")
-    }
-
     fn idp_rsa() -> PublicKey {
-        key_of(include_str!("../tests/fixtures/idp-rsa.cer.b64"))
+        key_certified_by(include_str!("../tests/fixtures/idp-rsa.cer.b64"))
     }
 
     fn idp_ec() -> PublicKey {
-        key_of(include_str!("../tests/fixtures/idp-ec.cer.b64"))
+        key_certified_by(include_str!("../tests/fixtures/idp-ec.cer.b64"))
     }
 
     /// Verify the first element of that local name, and check that what comes
     /// back as signed is that element.
     fn verdict(text: &str, name: &str, trusted: &[PublicKey]) -> Result<(), Unverified> {
-        let provider = OpenSslProvider::new(&CryptoConfig::default()).expect("a provider");
+        let provider = provider();
         let document = read_message(text, Limits::MESSAGE).expect("a message");
         let element = document
             .descendants()

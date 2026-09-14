@@ -3056,6 +3056,7 @@ dependencies = [
 name = "saml"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "crypto",
  "data-encoding",
  "roxmltree",

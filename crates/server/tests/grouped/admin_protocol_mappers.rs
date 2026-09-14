@@ -331,7 +331,10 @@ async fn a_rule_or_a_scope_of_another_protocol_shapes_no_openid_grant() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{division_rule}");
-    let division_rule_id = division_rule["mapper_id"].as_str().expect("an id").to_owned();
+    let division_rule_id = division_rule["mapper_id"]
+        .as_str()
+        .expect("an id")
+        .to_owned();
 
     for held in [
         format!(

@@ -2550,7 +2550,10 @@ pub fn pkce_pair() -> (String, String) {
 
 /// What `/authorize` actually granted, read off the login it opened. The scope
 /// rides the code into the token, so this is what the request was allowed.
-#[allow(dead_code, reason = "only the offline suite reads a granted scope")]
+#[allow(
+    dead_code,
+    reason = "only the offline and client scope suites read a granted scope"
+)]
 pub async fn granted_scope_of(plane: &Plane, asked: &[(&str, &str)]) -> String {
     let query = asked
         .iter()

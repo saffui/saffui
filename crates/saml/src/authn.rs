@@ -1,4 +1,4 @@
-use crate::time::written_instant;
+use crate::time::write_instant;
 use crate::xml::{push_attribute, push_text};
 
 const POST_BINDING: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
@@ -29,8 +29,8 @@ pub enum Unwritable {
 
 /// The request as XML for the Redirect binding to carry. It holds no enveloped
 /// signature: that binding signs the query instead.
-pub fn authn_request(request: &AuthnRequest<'_>) -> Result<String, Unwritable> {
-    let instant = written_instant(request.issue_instant).ok_or(Unwritable::Time)?;
+pub fn write_authn_request(request: &AuthnRequest<'_>) -> Result<String, Unwritable> {
+    let instant = write_instant(request.issue_instant).ok_or(Unwritable::Time)?;
     let mut xml = String::from(
         r#"<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion""#,
     );
@@ -60,7 +60,7 @@ pub fn authn_request(request: &AuthnRequest<'_>) -> Result<String, Unwritable> {
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthnRequest, Unwritable, authn_request};
+    use super::{AuthnRequest, Unwritable, write_authn_request};
     use crate::xml::{Limits, read_message};
 
     fn request<'a>() -> AuthnRequest<'a> {
@@ -80,7 +80,7 @@ mod tests {
     /// value escaped; a time no calendar holds is not written.
     #[test]
     fn a_request_says_what_the_profile_asks_and_escapes_it() {
-        let written = authn_request(&request()).expect("a request");
+        let written = write_authn_request(&request()).expect("a request");
         let document = read_message(&written, Limits::MESSAGE).expect("well-formed");
         let root = document.root_element();
         assert_eq!(root.tag_name().name(), "AuthnRequest");
@@ -126,7 +126,7 @@ mod tests {
             force_authn: true,
             ..request()
         };
-        let written = authn_request(&odd).expect("a request");
+        let written = write_authn_request(&odd).expect("a request");
         let document = read_message(&written, Limits::MESSAGE).expect("still well-formed");
         let root = document.root_element();
         assert_eq!(root.attribute("ForceAuthn"), Some("true"));
@@ -141,6 +141,6 @@ mod tests {
             issue_instant: i64::MAX,
             ..request()
         };
-        assert_eq!(authn_request(&timeless), Err(Unwritable::Time));
+        assert_eq!(write_authn_request(&timeless), Err(Unwritable::Time));
     }
 }

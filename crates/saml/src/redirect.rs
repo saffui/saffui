@@ -85,17 +85,17 @@ pub fn encode_query(
     let mut query = format!(
         "{}={}",
         carried.parameter(),
-        percent_encoded(&data_encoding::BASE64.encode(&compressed))
+        percent_encode(&data_encoding::BASE64.encode(&compressed))
     );
     if let Some(relay_state) = relay_state {
         query.push_str("&RelayState=");
-        query.push_str(&percent_encoded(relay_state));
+        query.push_str(&percent_encode(relay_state));
     }
     query.push_str("&SigAlg=");
-    query.push_str(&percent_encoded(uri));
+    query.push_str(&percent_encode(uri));
     let signature = sign(query.as_bytes()).ok_or(Unencodable::Unsigned)?;
     query.push_str("&Signature=");
-    query.push_str(&percent_encoded(&data_encoding::BASE64.encode(&signature)));
+    query.push_str(&percent_encode(&data_encoding::BASE64.encode(&signature)));
     Ok(query)
 }
 
@@ -127,7 +127,7 @@ pub fn decode_query(raw: &str, limits: Limits) -> Result<Received, Undecodable> 
         Carried::Response
     };
     let compressed = data_encoding::BASE64
-        .decode(percent_decoded(message_value)?.as_bytes())
+        .decode(percent_decode(message_value)?.as_bytes())
         .map_err(|_| Undecodable::Misshapen)?;
     let mut inflated = Vec::new();
     DeflateDecoder::new(compressed.as_slice())
@@ -138,12 +138,12 @@ pub fn decode_query(raw: &str, limits: Limits) -> Result<Received, Undecodable> 
         return Err(Undecodable::TooLarge);
     }
     let message = String::from_utf8(inflated).map_err(|_| Undecodable::Misshapen)?;
-    let relay_state = relay.map(|(_, value)| percent_decoded(value)).transpose()?;
+    let relay_state = relay.map(|(_, value)| percent_decode(value)).transpose()?;
 
     let signature = match (algorithm, signature) {
         (None, None) => None,
         (Some((_, algorithm_value)), Some((_, signature_value))) => {
-            let algorithm = signature_algorithm_named(&percent_decoded(algorithm_value)?)
+            let algorithm = signature_algorithm_named(&percent_decode(algorithm_value)?)
                 .ok_or(Undecodable::UnacceptedAlgorithm)?;
             let mut octets = format!("{message_name}={message_value}");
             if let Some((_, relay_value)) = relay {
@@ -153,7 +153,7 @@ pub fn decode_query(raw: &str, limits: Limits) -> Result<Received, Undecodable> 
             octets.push_str("&SigAlg=");
             octets.push_str(algorithm_value);
             let value = data_encoding::BASE64
-                .decode(percent_decoded(signature_value)?.as_bytes())
+                .decode(percent_decode(signature_value)?.as_bytes())
                 .map_err(|_| Undecodable::Misshapen)?;
             Some(QuerySignature {
                 algorithm,
@@ -207,7 +207,7 @@ fn signature_uri_of(algorithm: SignAlg) -> Option<&'static str> {
 
 /// RFC 3986 escaping: the unreserved characters kept, every other byte written
 /// as an upper case escape.
-fn percent_encoded(value: &str) -> String {
+fn percent_encode(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
@@ -220,7 +220,7 @@ fn percent_encoded(value: &str) -> String {
 }
 
 /// Escapes undone in either case; a `+` stays a `+`, which base64 needs.
-fn percent_decoded(value: &str) -> Result<String, Undecodable> {
+fn percent_decode(value: &str) -> Result<String, Undecodable> {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
@@ -244,7 +244,7 @@ fn percent_decoded(value: &str) -> Result<String, Undecodable> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Carried, Undecodable, Unencodable, decode_query, encode_query, percent_encoded,
+        Carried, Undecodable, Unencodable, decode_query, encode_query, percent_encode,
         verify_query_signature,
     };
     use crate::dsig::Unverified;
@@ -377,7 +377,7 @@ mod tests {
         let bomb = encoder.finish().expect("compressed");
         let exploding = format!(
             "SAMLRequest={}",
-            percent_encoded(&data_encoding::BASE64.encode(&bomb))
+            percent_encode(&data_encoding::BASE64.encode(&bomb))
         );
         assert!(exploding.len() < 8 * 1024, "the bomb is small on the wire");
         assert_eq!(

@@ -377,7 +377,7 @@ fn read_attributes(assertion: Node<'_, '_>) -> Vec<(String, Vec<String>)> {
 }
 
 fn instant_of(text: &str) -> Result<i64, Refused> {
-    crate::time::instant_of(text).ok_or(Refused::Misshapen)
+    crate::time::read_instant(text).ok_or(Refused::Misshapen)
 }
 
 /// The text of an element that holds text alone. A comment or an element inside

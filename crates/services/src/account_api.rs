@@ -1,11 +1,16 @@
 use chrono::{DateTime, Utc};
+use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
 use models::sessions::records::{UserSessionModel, UserSessionState};
+use secrecy::SecretBox;
 use serde_json::{Map, Value};
-use store::providers::{sessions, users};
+use store::providers::{realms, sessions, users};
 use store::tenancy::TenantContext;
 
-use crate::account::{FRESH_SIGN_IN_SECONDS, SignInStanding, Unread, read_sign_in_standing};
+use crate::account::{
+    Changing, FRESH_SIGN_IN_SECONDS, OwnFactor, OwnFactors, SignInStanding, Unchanged, Unread,
+    Unremoved, change_own_password, own_factors, read_sign_in_standing, remove_own_factor,
+};
 use crate::context::minted_at;
 use crate::token::Verified;
 
@@ -160,10 +165,16 @@ pub async fn establish_account_caller(
 
 /// What a login still has to prove before a sensitive change, if anything.
 pub fn read_step_up(standing: &SignInStanding) -> Option<StepUp> {
-    (!standing.allows_sensitive_change()).then(|| StepUp {
+    (!standing.allows_sensitive_change()).then(|| compose_step_up(standing))
+}
+
+/// The step-up a login is asked for: the level the flow lets the person reach, by
+/// the realm's name for it, and a sign-in no older than a sensitive change allows.
+fn compose_step_up(standing: &SignInStanding) -> StepUp {
+    StepUp {
         acr_values: standing.reachable_acr.clone(),
         max_age: FRESH_SIGN_IN_SECONDS,
-    })
+    }
 }
 
 /// What the caller's login still has to prove before a sensitive change, judged
@@ -198,6 +209,120 @@ pub async fn read_me(
     let mut claims = crate::userinfo::held_claims(&person);
     claims.remove("sub");
     Ok(claims)
+}
+
+/// Why a change to the caller's own account did not go ahead.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Unmade {
+    /// The login has to be proven again, recently and strongly enough, first.
+    #[error("the login has to be proven again first")]
+    StepUp(StepUp),
+    #[error("{0}")]
+    Password(Unchanged),
+    #[error("{0}")]
+    LastFactor(&'static str),
+    #[error("the caller holds no such factor")]
+    NotFound,
+    #[error("the store could not be read")]
+    Backend,
+}
+
+/// Replace the caller's password on proof of the current one, from a login recent
+/// and strong enough, and say how many of their other logins ended.
+///
+/// A wrong current password has written its count against the lock by the time it
+/// is refused, and the caller commits that count.
+pub async fn change_caller_password(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    caller: &AccountCaller,
+    from: Option<&str>,
+    current: &SecretBox<String>,
+    replacement: &SecretBox<String>,
+) -> Result<usize, Unmade> {
+    if let Some(step_up) = find_needed_step_up(transaction, caller)
+        .await
+        .map_err(|_| Unmade::Backend)?
+    {
+        return Err(Unmade::StepUp(step_up));
+    }
+    let realm = realms::load(transaction, &caller.tenant.realm_id)
+        .await
+        .map_err(|_| Unmade::Backend)?
+        .ok_or(Unmade::Backend)?;
+    let person = users::load(transaction, &caller.user_id)
+        .await
+        .map_err(|_| Unmade::Backend)?
+        .ok_or(Unmade::Backend)?;
+    change_own_password(
+        transaction,
+        provider,
+        &Changing {
+            realm: &realm,
+            person: &person,
+            session_id: &caller.session_id,
+            from,
+            now: caller.now,
+        },
+        current,
+        replacement,
+    )
+    .await
+    .map_err(Unmade::Password)
+}
+
+/// What the caller holds to sign in with, judged against the flow the account
+/// console signs in with.
+pub async fn read_caller_factors(
+    transaction: &Transaction<'_>,
+    caller: &AccountCaller,
+) -> Result<OwnFactors, Unremoved> {
+    own_factors(
+        transaction,
+        &caller.user_id,
+        &caller.session_id,
+        Some(ACCOUNT_CONSOLE),
+        caller.now,
+    )
+    .await
+}
+
+/// Remove one of the caller's own factors, from a login recent and strong enough.
+///
+/// The removal judges the login itself, under the lock on the person's factors, so
+/// the level to step up to is read only once it has refused.
+pub async fn remove_caller_factor(
+    transaction: &Transaction<'_>,
+    caller: &AccountCaller,
+    factor: OwnFactor<'_>,
+) -> Result<(), Unmade> {
+    let removed = remove_own_factor(
+        transaction,
+        &caller.user_id,
+        &caller.session_id,
+        Some(ACCOUNT_CONSOLE),
+        caller.now,
+        factor,
+    )
+    .await;
+    match removed {
+        Ok(()) => Ok(()),
+        Err(Unremoved::NotFresh | Unremoved::StrongerSignInNeeded) => {
+            let standing = read_sign_in_standing(
+                transaction,
+                &caller.user_id,
+                &caller.session_id,
+                Some(ACCOUNT_CONSOLE),
+                caller.now,
+            )
+            .await
+            .map_err(|_| Unmade::Backend)?;
+            Err(Unmade::StepUp(compose_step_up(&standing)))
+        }
+        Err(Unremoved::LastFactor(why)) => Err(Unmade::LastFactor(why)),
+        Err(Unremoved::NotFound) => Err(Unmade::NotFound),
+        Err(Unremoved::Backend) => Err(Unmade::Backend),
+    }
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use crypto::provider::{CryptoProvider, PrivateKey, PublicKey};
-use roxmltree::{Document, Node, NodeType};
+use roxmltree::{Document, Node};
 
 use crate::dsig::{Unverified, carries_signature, verify_enveloped_signature};
 use crate::xml::{Limits, children_named, is_named, read_message};
@@ -384,14 +384,7 @@ fn instant_of(text: &str) -> Result<i64, Refused> {
 /// is refused rather than skipped: reading around a comment is how one
 /// identifier turns into another.
 fn strict_text(element: Node<'_, '_>) -> Result<String, Refused> {
-    let mut text = String::new();
-    for child in element.children() {
-        match child.node_type() {
-            NodeType::Text => text.push_str(child.text().unwrap_or_default()),
-            _ => return Err(Refused::Misshapen),
-        }
-    }
-    Ok(text.trim().to_owned())
+    crate::xml::strict_text_of(element).ok_or(Refused::Misshapen)
 }
 
 /// The one child of that name, if any; two of them are refused, since which one

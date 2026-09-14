@@ -1574,16 +1574,29 @@ async fn a_login_leaves_for_a_saml_provider_on_a_request_the_realm_signs() {
 }
 
 /// What the SAML identity provider at `https://idp.test/metadata` answers a request
-/// with: a success naming `name` persistently, its assertion addressed to the
-/// realm's entity for `alias`, confirmed for that provider's consumer and this
-/// request for five minutes, carrying a note long enough to outgrow the form ceiling
-/// a framework picks by default, signed with `key`, and encoded as the POST binding
-/// carries it.
+/// with when its assertion carries the note alone.
 fn answer_saml_request(
     key: &crypto::jose::jwk::alg::rsa::RsaKeyPair,
     alias: &str,
     request_id: &str,
     name: &str,
+) -> String {
+    answer_saml_request_carrying(key, alias, request_id, name, &[])
+}
+
+/// What the SAML identity provider at `https://idp.test/metadata` answers a request
+/// with: a success naming `name` persistently, its assertion addressed to the
+/// realm's entity for `alias`, confirmed for that provider's consumer and this
+/// request for five minutes, carrying a note long enough to outgrow the form ceiling
+/// a framework picks by default and each of `attributes` with its values, signed
+/// with `key`, and encoded as the POST binding carries it. The assertion is named
+/// after the request, so no two answers carry the same one.
+fn answer_saml_request_carrying(
+    key: &crypto::jose::jwk::alg::rsa::RsaKeyPair,
+    alias: &str,
+    request_id: &str,
+    name: &str,
+    attributes: &[(&str, &[&str])],
 ) -> String {
     use crypto::jose::jwk::KeyPair;
     use crypto::provider::{PrivateKey, SignAlg};
@@ -1596,8 +1609,19 @@ fn answer_saml_request(
     };
     let (now, closing) = (instant(0), instant(300));
     let note = "n".repeat(24 * 1024);
+    let assertion_id = format!("{request_id}-assertion");
+    let carried: String = attributes
+        .iter()
+        .map(|(attribute, values)| {
+            let values: String = values
+                .iter()
+                .map(|value| format!("<saml:AttributeValue>{value}</saml:AttributeValue>"))
+                .collect();
+            format!(r#"<saml:Attribute Name="{attribute}">{values}</saml:Attribute>"#)
+        })
+        .collect();
     let response = format!(
-        r#"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_response" Version="2.0" IssueInstant="{now}" Destination="{base}/acs" InResponseTo="{request_id}"><saml:Issuer>https://idp.test/metadata</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status><saml:Assertion ID="_assertion" Version="2.0" IssueInstant="{now}"><saml:Issuer>https://idp.test/metadata</saml:Issuer><saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">{name}</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData NotOnOrAfter="{closing}" Recipient="{base}/acs" InResponseTo="{request_id}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="{now}" NotOnOrAfter="{closing}"><saml:AudienceRestriction><saml:Audience>{base}/metadata</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="{now}" SessionIndex="_session-at-idp"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement><saml:AttributeStatement><saml:Attribute Name="note"><saml:AttributeValue>{note}</saml:AttributeValue></saml:Attribute></saml:AttributeStatement></saml:Assertion></samlp:Response>"#
+        r#"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_response" Version="2.0" IssueInstant="{now}" Destination="{base}/acs" InResponseTo="{request_id}"><saml:Issuer>https://idp.test/metadata</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status><saml:Assertion ID="{assertion_id}" Version="2.0" IssueInstant="{now}"><saml:Issuer>https://idp.test/metadata</saml:Issuer><saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">{name}</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData NotOnOrAfter="{closing}" Recipient="{base}/acs" InResponseTo="{request_id}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="{now}" NotOnOrAfter="{closing}"><saml:AudienceRestriction><saml:Audience>{base}/metadata</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="{now}" SessionIndex="_session-at-idp"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement><saml:AttributeStatement><saml:Attribute Name="note"><saml:AttributeValue>{note}</saml:AttributeValue></saml:Attribute>{carried}</saml:AttributeStatement></saml:Assertion></samlp:Response>"#
     );
     let sealing = support::sealing();
     let private = PrivateKey::from_der(key.to_der_private_key());
@@ -1611,7 +1635,7 @@ fn answer_saml_request(
     let signed = saml::dsig::sign_enveloped(
         sealing.provider.as_ref(),
         &response,
-        "_assertion",
+        &assertion_id,
         SignAlg::Rs256,
         &sign,
     )
@@ -1798,4 +1822,231 @@ async fn a_saml_answer_admits_the_login_that_left_for_it() {
         .expect("a census")
         .get(0);
     assert_eq!(open, 0);
+}
+
+/// Sign in once through the SAML provider at `alias`, which answers for `name` with
+/// `attributes`, and say how the realm took the answer.
+async fn signed_in_through_saml(
+    plane: &Plane,
+    key: &crypto::jose::jwk::alg::rsa::RsaKeyPair,
+    alias: &str,
+    name: &str,
+    attributes: &[(&str, &[&str])],
+) -> StatusCode {
+    let cookie = opened_login(plane).await;
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/{alias}/login"
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let departure = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a departure")
+        .to_owned();
+    let (_, query) = departure.split_once('?').expect("a query");
+    let received =
+        saml::redirect::decode_query(query, saml::xml::Limits::MESSAGE).expect("a Redirect query");
+    let request_id = saml::xml::read_message(&received.message, saml::xml::Limits::MESSAGE)
+        .expect("well-formed")
+        .root_element()
+        .attribute("ID")
+        .expect("an identifier")
+        .to_owned();
+    let answer = answer_saml_request_carrying(key, alias, &request_id, name, attributes);
+    test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/broker/{alias}/saml/acs"))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .set_form(vec![("SAMLResponse", answer), ("bounced", "1".to_owned())])
+            .to_request(),
+    )
+    .await
+    .status()
+}
+
+/// The attributes, and the roles granted directly, of the person `alias` links
+/// `name` to.
+async fn read_mapped_person(
+    plane: &Plane,
+    alias: &str,
+    name: &str,
+) -> (models::entities::attributes::AttributesMap, Vec<String>) {
+    use store::tenancy::TenantContext;
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let user_id = store::providers::brokering::linked_user(&transaction, alias, name)
+        .await
+        .expect("a read")
+        .expect("a linked person");
+    let person = store::providers::users::load(&transaction, &user_id)
+        .await
+        .expect("a read")
+        .expect("the person");
+    let roles = store::providers::roles::direct_roles_of(&transaction, &user_id)
+        .await
+        .expect("a read");
+    (person.attributes.unwrap_or_default(), roles)
+}
+
+/// A SAML provider's rules act on what its assertions carry. The plane refuses a
+/// claim rule for the provider, a SAML rule reworked into one, and a role rule
+/// naming a role nobody made. At the first sign-in an attribute is written, one marked
+/// multivalued as a list, and a role is granted while the provider asserts its
+/// value; at the next, a rule written once keeps what it wrote, while the forced
+/// rules rewrite their attribute, still a list for a single value, and withdraw
+/// the role no longer asserted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_saml_provider_s_rules_follow_what_its_assertions_carry() {
+    use models::entities::attributes::AttributeValue;
+
+    let plane = Plane::with_actions(&[
+        AdminAction::IdpRead,
+        AdminAction::IdpWrite,
+        AdminAction::RoleWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let identity_provider = plant_saml_provider(&plane, &bearer, "corp").await;
+    plane
+        .publish_key(&support::SigningKey::generate_rsa("saml-rsa"))
+        .await;
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/roles"),
+        &bearer,
+        Some(json!({ "name": "staff" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let staff = told["role_id"].as_str().expect("an identity").to_owned();
+
+    let rules = format!("/admin/realms/{REALM}/identity-providers/corp/mappers");
+    let mut written = Vec::new();
+    for rule in [
+        json!({ "name": "carry-department", "mapper_type": "saml-user-attribute-idp-mapper",
+                "configs": { "attribute.name": { "Str": "department" },
+                             "user.attribute": { "Str": "department" } } }),
+        json!({ "name": "carry-groups", "mapper_type": "saml-user-attribute-idp-mapper",
+                "configs": { "attribute.name": { "Str": "memberOf" },
+                             "user.attribute": { "Str": "groups" },
+                             "multivalued": { "Str": "true" },
+                             "syncMode": { "Str": "force" } } }),
+        json!({ "name": "staff-while-member", "mapper_type": "saml-role-idp-mapper",
+                "configs": { "attribute.name": { "Str": "memberOf" },
+                             "attribute.value": { "Str": "staff" },
+                             "role": { "Str": staff },
+                             "syncMode": { "Str": "force" } } }),
+    ] {
+        let (status, told) = asked(&plane, Method::POST, &rules, &bearer, Some(rule)).await;
+        assert_eq!(status, StatusCode::CREATED, "{told}");
+        written.push(told["mapper_id"].as_str().expect("an identity").to_owned());
+    }
+    for (method, path, rule, holds) in [
+        (
+            Method::POST,
+            rules.clone(),
+            json!({ "name": "carry-acr", "mapper_type": "oidc-user-attribute-idp-mapper",
+                    "configs": { "claim": { "Str": "acr" },
+                                 "user.attribute": { "Str": "upstream.acr" } } }),
+            "not claims",
+        ),
+        (
+            Method::PUT,
+            format!("{rules}/{}", written[0]),
+            json!({ "name": "carry-department", "mapper_type": "oidc-user-attribute-idp-mapper",
+                    "configs": { "claim": { "Str": "department" },
+                                 "user.attribute": { "Str": "department" } } }),
+            "not claims",
+        ),
+        (
+            Method::POST,
+            rules.clone(),
+            json!({ "name": "nobody-while-member", "mapper_type": "saml-role-idp-mapper",
+                    "configs": { "attribute.name": { "Str": "memberOf" },
+                                 "attribute.value": { "Str": "staff" },
+                                 "role": { "Str": "nobody" } } }),
+            "no role answers to nobody",
+        ),
+    ] {
+        let (status, told) = asked(&plane, method, &path, &bearer, Some(rule)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+        assert!(
+            told["message"]
+                .as_str()
+                .is_some_and(|why| why.contains(holds)),
+            "the refusal does not say {holds}: {told}"
+        );
+    }
+
+    assert_eq!(
+        signed_in_through_saml(
+            &plane,
+            &identity_provider,
+            "corp",
+            "AAdzZWNyZXQx",
+            &[
+                ("department", &["Research"][..]),
+                ("memberOf", &["staff", "readers"][..]),
+            ],
+        )
+        .await,
+        StatusCode::SEE_OTHER
+    );
+    let (attributes, roles) = read_mapped_person(&plane, "corp", "AAdzZWNyZXQx").await;
+    assert_eq!(
+        (attributes.get("department"), attributes.get("groups")),
+        (
+            Some(&AttributeValue::Str("Research".into())),
+            Some(&AttributeValue::ListStr(vec![
+                "staff".into(),
+                "readers".into()
+            ])),
+        )
+    );
+    assert!(roles.contains(&staff), "{roles:?}");
+
+    assert_eq!(
+        signed_in_through_saml(
+            &plane,
+            &identity_provider,
+            "corp",
+            "AAdzZWNyZXQx",
+            &[
+                ("department", &["Sales"][..]),
+                ("memberOf", &["readers"][..]),
+            ],
+        )
+        .await,
+        StatusCode::SEE_OTHER
+    );
+    let (attributes, roles) = read_mapped_person(&plane, "corp", "AAdzZWNyZXQx").await;
+    assert_eq!(
+        (attributes.get("department"), attributes.get("groups")),
+        (
+            Some(&AttributeValue::Str("Research".into())),
+            Some(&AttributeValue::ListStr(vec!["readers".into()])),
+        )
+    );
+    assert!(!roles.contains(&staff), "{roles:?}");
 }

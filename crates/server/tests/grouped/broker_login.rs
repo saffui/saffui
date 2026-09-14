@@ -1162,3 +1162,85 @@ async fn a_plain_oauth2_upstream_links_only_by_an_address_its_list_verifies() {
         );
     }
 }
+
+/// The door the sign-in page shows for a provider opens where the broker
+/// answers: followed from the page this server renders for an open login, with
+/// the login's cookie, it leaves for the upstream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_door_on_the_sign_in_page_leaves_for_the_upstream() {
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("https://upstream.example/realms/{REALM}/protocol/openid-connect");
+    plain_provider(&plane, &bearer, ALIAS, &base, json!({})).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/auth?client_id={}&redirect_uri={}\
+                 &response_type=code&scope=openid&state=s&nonce=n-local",
+                support::CONFIDENTIAL,
+                support::urlencode(support::REDIRECT),
+            ))
+            .to_request(),
+    )
+    .await;
+    let cookies: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    let binding = format!(
+        "{}={}",
+        support::AUTH_SESSION_COOKIE,
+        support::cookie_value(&cookies, support::AUTH_SESSION_COOKIE).expect("a login")
+    );
+    let page_path = format!("/realms/{REALM}/protocol/openid-connect/login");
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&page_path)
+            .insert_header(("cookie", binding.clone()))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = String::from_utf8(test::read_body(response).await.to_vec()).expect("a page");
+    let door = page
+        .split(r#"class="idp-door" href=""#)
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("a door on the page");
+    let followed = if door.starts_with('/') {
+        door.to_owned()
+    } else {
+        format!("{}/{door}", page_path.rsplit_once('/').expect("a parent").0)
+    };
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&followed)
+            .insert_header(("cookie", binding))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "the door {door} opens nowhere"
+    );
+    let departure = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a departure");
+    assert!(
+        departure.starts_with(&format!("{base}/auth?")),
+        "{departure}"
+    );
+}

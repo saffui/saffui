@@ -8,5 +8,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+crypto = { workspace = true }
+data-encoding = { workspace = true }
 roxmltree = { workspace = true }
 thiserror = { workspace = true }

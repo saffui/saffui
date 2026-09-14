@@ -16,6 +16,7 @@ compile_error!(
 pub use secrecy;
 
 pub mod constant_time;
+pub mod ecdsa;
 pub mod envelope;
 pub mod jose;
 pub mod otp;

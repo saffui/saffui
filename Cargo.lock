@@ -3056,6 +3056,8 @@ dependencies = [
 name = "saml"
 version = "0.1.0"
 dependencies = [
+ "crypto",
+ "data-encoding",
  "roxmltree",
  "thiserror 2.0.19",
 ]

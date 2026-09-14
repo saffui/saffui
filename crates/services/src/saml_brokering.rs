@@ -690,9 +690,6 @@ pub async fn heed_logout_request(
         SamlLogoutMessage::Redirected(query) => {
             let received =
                 decode_query(query, Limits::MESSAGE).map_err(|_| Unheeded::Unreadable)?;
-            if received.carried != Carried::Request {
-                return Err(Unheeded::Unreadable);
-            }
             let requested =
                 accept_logout_request(provider, Delivered::Redirected(&received), &expected)
                     .map_err(Unheeded::Refused)?;

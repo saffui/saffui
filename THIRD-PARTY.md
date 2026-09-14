@@ -9,7 +9,9 @@ part of this repository's source.
 
 ## Current state
 
-The JOSE layer is vendored from josekit. See the entry below.
+The JOSE layer is vendored from josekit. See the entry below. Changes to the rest
+of the `crypto` crate, this repository's own code beside that layer, are listed
+under *Beside the vendored tree*.
 
 ---
 
@@ -163,6 +165,26 @@ needs it written: DPoP binds a token to `jkt`, mTLS certificate binding and
 several OIDC flows use the same value. Writing it means the canonical JSON as
 well as the hash, since a serialiser that emits members in insertion order
 produces a thumbprint that agrees with nobody.
+
+## Beside the vendored tree
+
+The rest of the `crypto` crate is this repository's own code: the provider seam
+and its OpenSSL and PKCS#11 backends, the envelope, password storage, one-time
+passwords, thumbprints and the certificate helpers. None of it is vendored or
+carries a notice. It shares a crate with the vendored layer all the same, so a
+change that adds to the crate's public surface or moves code between its modules
+is recorded here, numbered in the order it landed, in the commit that makes it.
+Code meant for the whole crate goes into a module of its own rather than into
+`jose/`, which keeps the vendored files diffable against upstream.
+
+1. `ecdsa::der_from_raw_signature` (2026-09-14, SAML signature verification):
+   moved out of the PKCS#11 store, where it was private, into a public module
+   that the store now calls. An XML signature carries ECDSA as `r‖s`, the way a
+   token returns it. The vendored `jose/jws/alg/ecdsa.rs` keeps its own
+   conversion, untouched.
+2. `x509::public_key_of` (2026-09-14, SAML signature verification): the
+   SubjectPublicKeyInfo of a DER certificate, so the key of a certificate an
+   administrator pinned can be handed to the signer.
 
 ## Before vendoring anything
 

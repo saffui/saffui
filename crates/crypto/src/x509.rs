@@ -1,3 +1,13 @@
+use crate::provider::PublicKey;
+
+/// The public key a DER certificate certifies, as the SubjectPublicKeyInfo the
+/// signer verifies with; nothing when the bytes are not a certificate.
+pub fn public_key_of(der: &[u8]) -> Option<PublicKey> {
+    let certificate = openssl::x509::X509::from_der(der).ok()?;
+    let key = certificate.public_key().ok()?;
+    key.public_key_to_der().ok().map(PublicKey::from_der)
+}
+
 /// The URI subject-alternative-names of a DER certificate, in order. What a
 /// workload mesh writes its identity in; empty when the certificate has
 /// none, nothing when it is not a certificate at all.
@@ -76,4 +86,47 @@ fn dn_escaped(value: &str) -> String {
         written.push(held);
     }
     written
+}
+
+#[cfg(test)]
+mod tests {
+    use super::public_key_of;
+    use openssl::asn1::Asn1Time;
+    use openssl::ec::{EcGroup, EcKey};
+    use openssl::hash::MessageDigest;
+    use openssl::nid::Nid;
+    use openssl::pkey::PKey;
+    use openssl::x509::{X509Builder, X509NameBuilder};
+
+    /// A certificate hands back the key it certifies, in the form the signer
+    /// verifies with, and bytes that are no certificate hand back nothing.
+    #[test]
+    fn a_certificate_hands_back_the_key_it_certifies() {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).expect("P-256");
+        let key = PKey::from_ec_key(EcKey::generate(&group).expect("a key")).expect("a key");
+        let mut name = X509NameBuilder::new().expect("a name");
+        name.append_entry_by_text("CN", "idp.test")
+            .expect("a common name");
+        let name = name.build();
+        let mut builder = X509Builder::new().expect("a builder");
+        builder.set_version(2).expect("version 3");
+        builder.set_subject_name(&name).expect("a subject");
+        builder.set_issuer_name(&name).expect("an issuer");
+        builder.set_pubkey(&key).expect("the key");
+        builder
+            .set_not_before(&Asn1Time::days_from_now(0).expect("now"))
+            .expect("a start");
+        builder
+            .set_not_after(&Asn1Time::days_from_now(1).expect("tomorrow"))
+            .expect("an end");
+        builder.sign(&key, MessageDigest::sha256()).expect("signed");
+        let der = builder.build().to_der().expect("DER");
+
+        let held = public_key_of(&der).expect("a key");
+        assert_eq!(
+            held.der(),
+            key.public_key_to_der().expect("SPKI").as_slice()
+        );
+        assert!(public_key_of(b"not a certificate").is_none());
+    }
 }

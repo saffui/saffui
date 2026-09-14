@@ -115,30 +115,6 @@ fn pss(hash: MechanismType, salt_len: u64) -> PkcsPssParams {
     }
 }
 
-/// Re-encode a raw `r‖s` ECDSA signature as the DER the rest of this crate
-/// speaks.
-///
-/// The halves are equal and fixed by the curve, so the split is the midpoint —
-/// and an odd length is not a signature from any curve, rather than something
-/// to round.
-fn der_from_raw_ecdsa(raw: &[u8]) -> Result<Vec<u8>> {
-    use openssl::bn::BigNum;
-    use openssl::ecdsa::EcdsaSig;
-
-    if raw.is_empty() || !raw.len().is_multiple_of(2) {
-        return Err(CryptoError::OperationFailed);
-    }
-
-    let (r, s) = raw.split_at(raw.len() / 2);
-    let signature = EcdsaSig::from_private_components(
-        BigNum::from_slice(r).map_err(|_| CryptoError::OperationFailed)?,
-        BigNum::from_slice(s).map_err(|_| CryptoError::OperationFailed)?,
-    )
-    .map_err(|_| CryptoError::OperationFailed)?;
-
-    signature.to_der().map_err(|_| CryptoError::OperationFailed)
-}
-
 /// The mechanism that signs under an algorithm, and the digest to apply first.
 ///
 /// ECDSA uses the bare `CKM_ECDSA`, which signs a digest already computed —
@@ -313,7 +289,7 @@ impl KeyStoreProvider for Pkcs11KeyStore {
         // thing has to mean one encoding, or moving a deployment from software
         // to a token changes the bytes every verifier downstream reads.
         if matches!(alg, SignAlg::Es256 | SignAlg::Es384 | SignAlg::Es512) {
-            return der_from_raw_ecdsa(&signature);
+            return crate::ecdsa::der_from_raw_signature(&signature);
         }
 
         Ok(signature)

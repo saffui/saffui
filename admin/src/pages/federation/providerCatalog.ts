@@ -192,7 +192,14 @@ export const PROVIDER_CATALOG: ProviderPreset[] = [
     availability: "manual",
     draft: { scope: "openid email profile", algorithms: "RS256 ES256" },
   },
-  { id: "saml", name: "SAML 2.0", glyph: "server", protocol: "Metadata XML", availability: "backend" },
+  {
+    id: "saml",
+    name: "SAML 2.0",
+    glyph: "server",
+    protocol: "Metadata XML",
+    availability: "manual",
+    draft: { protocol: "saml" },
+  },
 ];
 
 export function presetDraft(preset?: ProviderPreset): ProviderDraft {

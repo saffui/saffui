@@ -41,4 +41,14 @@ describe("identity provider catalogue flow", () => {
     );
     expect(configs.issuer).toBeUndefined();
   });
+
+  test("turns the SAML preset into a SAML broker mutation with no key of the other protocols", () => {
+    const draft = presetDraft(PROVIDER_CATALOG.find((provider) => provider.id === "saml"));
+    draft.alias = "partner";
+    draft.idpMetadata = "<md:EntityDescriptor/>";
+
+    const configs = providerMutation(draft).configs;
+    expect(Object.keys(configs).sort()).toEqual(["idp_metadata", "name_id_format", "protocol"]);
+    expect(configs.protocol).toEqual({ Str: "saml" });
+  });
 });

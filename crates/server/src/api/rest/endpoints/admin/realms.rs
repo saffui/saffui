@@ -233,6 +233,18 @@ pub async fn create(
         .await
         .map_err(|_| internal())?;
     }
+    provisioning::provision_account_console(
+        &transaction,
+        &tenant,
+        &realm_id,
+        &provisioning::AccountConsole {
+            redirect_uris: vec![services::account_api::compose_account_console_redirect(
+                &origin.issuer(&realm_id),
+            )],
+        },
+    )
+    .await
+    .map_err(|_| internal())?;
     provisioning::provision_signing_key(
         &transaction,
         sealing.provider.as_ref(),

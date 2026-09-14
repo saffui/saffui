@@ -2,6 +2,8 @@
 //! fifty-nine link editions, and the links were most of the wait.
 mod support;
 
+#[path = "grouped/account_api.rs"]
+mod account_api;
 #[path = "grouped/binding.rs"]
 mod binding;
 #[path = "grouped/brute_force.rs"]

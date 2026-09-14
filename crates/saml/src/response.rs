@@ -826,6 +826,13 @@ mod tests {
             );
         }
 
+        let our_key = private_key_of(include_str!("../tests/fixtures/sp-encryption.pk8.b64"));
+        let both = [other_key[0].clone(), our_key];
+        assert_eq!(
+            outcome_decrypting(gcm, &both, unchanged),
+            Ok(plain_acceptance())
+        );
+
         let digest = r#"<ds:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>"#;
         let with_parameters = gcm.replacen(
             digest,

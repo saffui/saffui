@@ -526,7 +526,8 @@ mod tests {
     /// format or two issuers, another destination or none, an instant ahead or at
     /// the end of its lifetime, an instant with an offset, an expiry passed, another
     /// version, an empty identifier, no name, two names, an empty name, a name in a
-    /// form not read, an empty session, and a response in its place.
+    /// form not read, an empty session, and another request or a response in its
+    /// place.
     #[test]
     fn a_logout_request_is_refused_for_what_it_says() {
         let instant = r#"IssueInstant="2026-09-14T08:00:00Z""#;
@@ -610,6 +611,10 @@ mod tests {
             ),
             (
                 IDP_REQUEST.replacen(">_session-2<", "><", 1),
+                RefusedLogout::Misshapen,
+            ),
+            (
+                IDP_REQUEST.replace("samlp:LogoutRequest", "samlp:ManageNameIDRequest"),
                 RefusedLogout::Misshapen,
             ),
             (IDP_ANSWER.to_owned(), RefusedLogout::Misshapen),

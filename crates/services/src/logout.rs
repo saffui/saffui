@@ -313,3 +313,24 @@ pub async fn notices_for(
     }
     notices
 }
+
+/// End the logins an upstream's logout names. Every client of each login is told
+/// while the login's record can still be read, and the notices go out once the
+/// caller has written the endings, as the realm's own logout does it. Without the
+/// realm's keys the logins still end, and their clients are not told.
+pub async fn end_brokered_sessions(
+    transaction: &Transaction<'_>,
+    signing: Option<&crate::grant::Signing<'_>>,
+    issuer: &str,
+    session_ids: &[String],
+    now: DateTime<Utc>,
+) -> Vec<Notice> {
+    let mut notices = Vec::new();
+    for session_id in session_ids {
+        if let Some(signing) = signing {
+            notices.extend(notices_for(transaction, signing, issuer, session_id, now).await);
+        }
+        let _ = sessions::set_state(transaction, session_id, UserSessionState::LoggedOut).await;
+    }
+    notices
+}

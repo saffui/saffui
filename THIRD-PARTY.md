@@ -185,6 +185,13 @@ Code meant for the whole crate goes into a module of its own rather than into
 2. `x509::public_key_of` (2026-09-14, SAML signature verification): the
    SubjectPublicKeyInfo of a DER certificate, so the key of a certificate an
    administrator pinned can be handed to the signer.
+3. `CbcAlg`, `CbcProvider` and its OpenSSL backend (2026-09-14, SAML assertion
+   decryption): AES-CBC decryption with no padding taken off, reached through
+   the seam, so that XML Encryption's own padding can be read. Decryption only.
+4. `KeyTransportProvider` and its OpenSSL backend (2026-09-14, SAML assertion
+   decryption): RSAES-OAEP unwrapping with the OAEP and MGF1 digests named
+   apart, as XML Encryption names them. The vendored `jose/jwe/alg/rsaes.rs`
+   ties the two together and stays untouched.
 
 ## Before vendoring anything
 

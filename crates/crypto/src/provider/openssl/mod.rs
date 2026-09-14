@@ -1,9 +1,11 @@
 pub mod aead;
+pub mod cbc;
 pub mod digest;
 pub mod hashing;
 pub mod hmac;
 pub mod kdf;
 pub mod key_store;
+pub mod key_transport;
 pub mod legacy_digest;
 pub mod password;
 #[cfg(feature = "pkcs11")]
@@ -14,16 +16,18 @@ pub mod rand;
 pub mod signer;
 
 use crate::provider::{
-    AeadProvider, CryptoConfig, CryptoError, CryptoProvider, DigestProvider, HmacProvider,
-    KdfProvider, KeyStoreProvider, LegacyDigestProvider, PasswordProvider, RandProvider, Result,
-    SignerProvider,
+    AeadProvider, CbcProvider, CryptoConfig, CryptoError, CryptoProvider, DigestProvider,
+    HmacProvider, KdfProvider, KeyStoreProvider, KeyTransportProvider, LegacyDigestProvider,
+    PasswordProvider, RandProvider, Result, SignerProvider,
 };
 
 use aead::OpenSslAead;
+use cbc::OpenSslCbc;
 use hashing::OpenSslDigest;
 use hmac::OpenSslHmac;
 use kdf::OpenSslKdf;
 use key_store::SoftwareKeyStore;
+use key_transport::OpenSslKeyTransport;
 use legacy_digest::OpenSslLegacyDigest;
 use password::OpenSslPassword;
 #[cfg(feature = "pq-hybrid")]
@@ -42,6 +46,8 @@ pub struct OpenSslProvider {
     _fips_providers: Vec<openssl::provider::Provider>,
     hmac: OpenSslHmac,
     aead: OpenSslAead,
+    cbc: OpenSslCbc,
+    key_transport: OpenSslKeyTransport,
     signer: OpenSslSigner,
     kdf: OpenSslKdf,
     rand: OpenSslRand,
@@ -92,6 +98,8 @@ impl OpenSslProvider {
             _fips_providers: fips_providers,
             hmac: OpenSslHmac,
             aead: OpenSslAead,
+            cbc: OpenSslCbc,
+            key_transport: OpenSslKeyTransport,
             signer: OpenSslSigner,
             kdf: OpenSslKdf,
             rand: OpenSslRand,
@@ -157,6 +165,12 @@ impl CryptoProvider for OpenSslProvider {
     }
     fn aead(&self) -> &dyn AeadProvider {
         &self.aead
+    }
+    fn cbc(&self) -> &dyn CbcProvider {
+        &self.cbc
+    }
+    fn key_transport(&self) -> &dyn KeyTransportProvider {
+        &self.key_transport
     }
     fn signer(&self) -> &dyn SignerProvider {
         &self.signer

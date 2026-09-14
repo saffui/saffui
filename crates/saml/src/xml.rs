@@ -102,6 +102,34 @@ pub(crate) fn base64_content_of(node: Node<'_, '_>) -> Option<Vec<u8>> {
     data_encoding::BASE64.decode(&compact).ok()
 }
 
+/// ` name="value"` written into a start tag, the value escaped.
+pub(crate) fn push_attribute(xml: &mut String, name: &str, value: &str) {
+    xml.push(' ');
+    xml.push_str(name);
+    xml.push_str("=\"");
+    for held in value.chars() {
+        match held {
+            '&' => xml.push_str("&amp;"),
+            '<' => xml.push_str("&lt;"),
+            '"' => xml.push_str("&quot;"),
+            other => xml.push(other),
+        }
+    }
+    xml.push('"');
+}
+
+/// Text written as an element's content, escaped.
+pub(crate) fn push_text(xml: &mut String, text: &str) {
+    for held in text.chars() {
+        match held {
+            '&' => xml.push_str("&amp;"),
+            '<' => xml.push_str("&lt;"),
+            '>' => xml.push_str("&gt;"),
+            other => xml.push(other),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Limits, Unreadable, read_message};

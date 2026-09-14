@@ -1,4 +1,3 @@
-use chrono::NaiveDateTime;
 use crypto::provider::{CryptoProvider, PrivateKey, PublicKey};
 use roxmltree::{Document, Node, NodeType};
 
@@ -377,13 +376,8 @@ fn read_attributes(assertion: Node<'_, '_>) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// A SAML time: `xs:dateTime` in UTC, fractional seconds allowed, with a `Z` or
-/// no zone at all. An offset is refused rather than converted.
 fn instant_of(text: &str) -> Result<i64, Refused> {
-    let local = text.strip_suffix('Z').unwrap_or(text);
-    NaiveDateTime::parse_from_str(local, "%Y-%m-%dT%H:%M:%S%.f")
-        .map(|instant| instant.and_utc().timestamp())
-        .map_err(|_| Refused::Misshapen)
+    crate::time::read_instant(text).ok_or(Refused::Misshapen)
 }
 
 /// The text of an element that holds text alone. A comment or an element inside

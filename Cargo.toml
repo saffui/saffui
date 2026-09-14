@@ -25,6 +25,7 @@ pgcore  = { path = "crates/pgcore" }
 models  = { path = "crates/models" }
 store   = { path = "crates/store" }
 authz   = { path = "crates/authz" }
+saml    = { path = "crates/saml" }
 auth    = { path = "crates/auth" }
 services       = { path = "crates/services" }
 # Bare, so the binary crate alone decides which server features a build
@@ -133,6 +134,11 @@ bcrypt         = "0.17"
 # (otpauth:// URIs), BASE64URL_NOPAD for JOSE compact serialization (RFC 7515
 # §2 mandates base64url *without* padding — standard base64 breaks the format).
 data-encoding  = "2.6"
+
+# --- SAML ---
+# The one XML parser: what a signature covers and what is read after it come
+# from the same tree, so no second parser ever sees another document.
+roxmltree      = "0.21.1"
 
 # --- Required by the vendored josekit JOSE layer (see THIRD-PARTY.md) ---
 anyhow         = "1"

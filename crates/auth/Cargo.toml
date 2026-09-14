@@ -37,6 +37,7 @@ secrecy = { workspace = true }
 data-encoding = { workspace = true }
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 url.workspace = true
+serde_cbor_2 = "0.13"
 uuid = { version = "1", features = ["v5"] }
 async-trait = { workspace = true }
 tracing.workspace = true

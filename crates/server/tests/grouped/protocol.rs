@@ -3499,6 +3499,30 @@ async fn a_required_key_is_enrolled_and_then_lets_the_subject_in() {
         "the stored key's backup flag was not read: {enrolment}"
     );
 
+    // The key's model and its attestation format were kept beside it.
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        let kept = store::providers::webauthn::of_user(&transaction, support::SUBJECT)
+            .await
+            .expect("the keys table");
+        let enrolled = kept
+            .iter()
+            .find(|held| held.credential_id == key.credential_id)
+            .expect("the enrolled key");
+        assert_eq!(
+            enrolled.aaguid.as_deref(),
+            Some("73616666-7569-2d73-6f66-742d6b657921"),
+            "the model the key named was not kept"
+        );
+        assert_eq!(enrolled.attestation_format.as_deref(), Some("none"));
+    }
+
     // The enrolled key is a working credential, not just a row.
     plane
         .bind_browser_flow(support::CONFIDENTIAL, support::KEYED_FLOW)

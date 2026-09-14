@@ -27,6 +27,8 @@ fn credential(id: &[u8], user: &str, label: &str) -> EnrolledCredential {
         passkey: serde_json::json!({"kty": "EC", "alg": -7}),
         sign_count: 0,
         attachment: None,
+        aaguid: None,
+        attestation_format: None,
         enrolled_at: None,
         last_used_at: None,
     }

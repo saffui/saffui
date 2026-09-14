@@ -615,6 +615,7 @@ async fn finish(
     let Ok(stored) = serde_json::to_value(&passkey) else {
         return Enrolment::Refused;
     };
+    let (aaguid, attestation_format) = read_attested_model(&attested);
     let enrolled = webauthn::enrol(
         transaction,
         &webauthn::EnrolledCredential {
@@ -627,6 +628,8 @@ async fn finish(
             // been used yet.
             sign_count: 0,
             attachment: read_reported_attachment(answered),
+            aaguid,
+            attestation_format,
             enrolled_at: None,
             last_used_at: None,
         },
@@ -649,6 +652,37 @@ async fn finish(
         _ => Enrolment::Refused,
     }
 }
+
+/// The authenticator model and the attestation format a key answered with, read
+/// off the attestation object the ceremony has just verified. The model sits in
+/// the attested credential data after the relying party hash, the flags and the
+/// counter; zeros name no model.
+fn read_attested_model(attested: &RegisterPublicKeyCredential) -> (Option<String>, Option<String>) {
+    use serde_cbor_2::Value as Cbor;
+    let Ok(Cbor::Map(object)) =
+        serde_cbor_2::from_slice::<Cbor>(attested.response.attestation_object.as_ref())
+    else {
+        return (None, None);
+    };
+    let field = |name: &str| object.get(&Cbor::Text(name.to_owned()));
+    let format = match field("fmt") {
+        Some(Cbor::Text(format)) => Some(format.clone()),
+        _ => None,
+    };
+    let aaguid = match field("authData") {
+        Some(Cbor::Bytes(data)) if data.len() >= 53 && data[32] & ATTESTED_CREDENTIAL_DATA != 0 => {
+            <[u8; 16]>::try_from(&data[37..53])
+                .ok()
+                .filter(|model| model.iter().any(|byte| *byte != 0))
+                .map(|model| Uuid::from_bytes(model).hyphenated().to_string())
+        }
+        _ => None,
+    };
+    (aaguid, format)
+}
+
+/// The flag saying the authenticator data carries a credential and its model.
+const ATTESTED_CREDENTIAL_DATA: u8 = 0b0100_0000;
 
 /// Where the browser said the key it made lives, when it said.
 ///
@@ -1078,6 +1112,60 @@ mod tests {
         assert!(
             issued.starts_with("otpauth://totp/Main%20Realm:ada?"),
             "{issued}"
+        );
+    }
+
+    /// The model a key names is read off its attestation only where the data
+    /// says a credential is attached, and a model given as zeros is none.
+    #[test]
+    fn a_key_names_its_model_only_through_attested_data() {
+        use super::read_attested_model;
+        use serde_cbor_2::Value as Cbor;
+        use serde_json::json;
+        use webauthn_rs::prelude::RegisterPublicKeyCredential;
+        let attested = |flags: u8, model: [u8; 16]| -> RegisterPublicKeyCredential {
+            let mut auth_data = vec![0_u8; 32];
+            auth_data.push(flags);
+            auth_data.extend_from_slice(&0_u32.to_be_bytes());
+            auth_data.extend_from_slice(&model);
+            auth_data.extend_from_slice(&[0, 1, 7]);
+            let object = serde_cbor_2::to_vec(&Cbor::Map(
+                [
+                    (Cbor::Text("fmt".into()), Cbor::Text("packed".into())),
+                    (Cbor::Text("authData".into()), Cbor::Bytes(auth_data)),
+                ]
+                .into_iter()
+                .collect(),
+            ))
+            .expect("an attestation object");
+            serde_json::from_value(json!({
+                "id": "AQc",
+                "rawId": "AQc",
+                "type": "public-key",
+                "extensions": {},
+                "response": {
+                    "attestationObject": data_encoding::BASE64URL_NOPAD.encode(&object),
+                    "clientDataJSON": data_encoding::BASE64URL_NOPAD.encode(b"{}"),
+                },
+            }))
+            .expect("a registration answer")
+        };
+        let model = *b"a-model-of-a-key";
+        let packed = Some("packed".to_owned());
+        assert_eq!(
+            read_attested_model(&attested(0b0100_0101, model)),
+            (
+                Some("612d6d6f-6465-6c2d-6f66-2d612d6b6579".to_owned()),
+                packed.clone()
+            )
+        );
+        assert_eq!(
+            read_attested_model(&attested(0b0000_0101, model)),
+            (None, packed.clone())
+        );
+        assert_eq!(
+            read_attested_model(&attested(0b0100_0101, [0_u8; 16])),
+            (None, packed)
         );
     }
 }

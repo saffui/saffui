@@ -10,6 +10,9 @@ use serde_json::{Value, json};
 const UP_UV: u8 = 0b0000_0101;
 const UP_UV_AT: u8 = 0b0100_0101;
 
+/// The model a soft key names at enrolment: the bytes of `saffui-soft-key!`.
+pub const AAGUID: [u8; 16] = *b"saffui-soft-key!";
+
 /// One credential, private half included.
 pub struct SoftKey {
     provider: OpenSslProvider,
@@ -64,7 +67,7 @@ impl SoftKey {
         let mut auth_data = self.sha256(rp_id.as_bytes());
         auth_data.push(UP_UV_AT);
         auth_data.extend_from_slice(&0u32.to_be_bytes());
-        auth_data.extend_from_slice(&[0u8; 16]);
+        auth_data.extend_from_slice(&AAGUID);
         auth_data.extend_from_slice(&(self.credential_id.len() as u16).to_be_bytes());
         auth_data.extend_from_slice(&self.credential_id);
         auth_data.extend_from_slice(&self.cose);

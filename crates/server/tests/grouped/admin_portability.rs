@@ -434,6 +434,137 @@ async fn a_realm_crosses_as_a_document() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
 }
 
+/// A realm's theme and its organizations' themes cross with the document, and a
+/// document carrying a theme the pages could not wear is refused before anything
+/// lands.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn themes_cross_with_their_realm_and_organizations() {
+    let plane = Plane::with_actions(&[
+        AdminAction::RealmExport,
+        AdminAction::RealmImport,
+        AdminAction::RealmWrite,
+        AdminAction::OrgWrite,
+    ])
+    .await;
+    let bearer = plane.token(&support::claims());
+    let realm_theme = json!({ "light": { "brand-primary": "#123456" } });
+    let org_theme = json!({ "dark": { "brand-primary": "#654321" } });
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/theme"),
+        &bearer,
+        Some(realm_theme.clone()),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {told}");
+    let (status, organization) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/organizations"),
+        &bearer,
+        Some(json!({ "name": "dressed-org" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{organization}");
+    let org_id = organization["org_id"]
+        .as_str()
+        .expect("an identity")
+        .to_owned();
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/organizations/{org_id}/theme"),
+        &bearer,
+        Some(org_theme.clone()),
+    )
+    .await;
+    assert!(status.is_success(), "{status}: {told}");
+
+    let (status, document) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/export"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{document}");
+    assert_eq!(
+        document["theme"], realm_theme,
+        "the realm's theme stayed home"
+    );
+    let carried = document["organizations"]
+        .as_array()
+        .expect("organizations")
+        .iter()
+        .find(|held| held["organization"]["org_id"] == org_id.as_str())
+        .expect("the dressed organization");
+    assert_eq!(
+        carried["theme"], org_theme,
+        "the organization's theme stayed home"
+    );
+
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=dressed",
+        &bearer,
+        Some(document.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    let (landed_realm, landed_org) = {
+        use store::tenancy::TenantContext;
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &TenantContext::new(support::TENANT, "dressed"),
+            )
+            .await;
+        (
+            store::providers::realms::theme_of(&transaction, "dressed")
+                .await
+                .expect("the realms table"),
+            store::providers::organizations::theme_of(&transaction, &org_id)
+                .await
+                .expect("the organizations table"),
+        )
+    };
+    assert_eq!(
+        landed_realm,
+        Some(realm_theme),
+        "the realm landed undressed"
+    );
+    assert_eq!(
+        landed_org,
+        Some(org_theme),
+        "the organization landed undressed"
+    );
+
+    let mut unsound = document.clone();
+    unsound["theme"] = json!({ "light": { "brand-primary": "url(https://elsewhere.example/x)" } });
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        "/admin/realms/import?as=unsound",
+        &bearer,
+        Some(unsound),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("theme"),
+        "{told}"
+    );
+}
+
 /// Carrying a realm out and writing one in are different powers.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]

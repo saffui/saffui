@@ -135,13 +135,26 @@ pub async fn conclude(
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
 
-    // 1. Spend the state: keyed on its hash and this provider, once.
+    // 1. Spend the state: keyed on its hash and this provider, once, and only for
+    //    the browser that started the login. A refusal commits nothing, so a way
+    //    back carried to another browser, or planted in one, leaves the state and
+    //    the upstream's code to the browser they belong to.
     let Ok(spent) =
         brokering::returned(&transaction, sealing.provider.as_ref(), &alias, &state, now).await
     else {
         tracing::warn!(alias, "a brokered login presented a state nothing opened");
         return refused();
     };
+    let presented = binding::read(&request, binding::AUTH_SESSION);
+    if !presented.is_some_and(|held| {
+        crypto::constant_time::eq(held.as_bytes(), spent.auth_session.as_bytes())
+    }) {
+        tracing::warn!(
+            alias,
+            "a brokered login came back to a browser that did not start it"
+        );
+        return refused();
+    }
 
     // 2. Redeem the code with the verifier from that row, never the request.
     let secret = opened_secret(&transaction, &sealing, &context, &provider).await;

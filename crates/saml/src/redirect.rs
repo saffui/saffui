@@ -257,16 +257,12 @@ mod tests {
 
     const MESSAGE: &str = r#"<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_logout" Version="2.0" IssueInstant="2026-09-14T08:00:00Z"/>"#;
 
-    fn signed(relay_state: Option<&str>) -> String {
+    fn signed(carried: Carried, relay_state: Option<&str>) -> String {
         let provider = provider();
         let key = private_key_of(include_str!("../tests/fixtures/idp-rsa.pk8.b64"));
-        encode_query(
-            Carried::Request,
-            MESSAGE,
-            relay_state,
-            SignAlg::Rs256,
-            &|octets| provider.signer().sign(SignAlg::Rs256, &key, octets).ok(),
-        )
+        encode_query(carried, MESSAGE, relay_state, SignAlg::Rs256, &|octets| {
+            provider.signer().sign(SignAlg::Rs256, &key, octets).ok()
+        })
         .expect("a query")
     }
 
@@ -276,14 +272,18 @@ mod tests {
         ))]
     }
 
-    /// A signed query carries the message and the relay state back unchanged, with
-    /// or without a relay state, and its signature verifies under the signer's key.
+    /// A signed query carries the message, its kind and the relay state back
+    /// unchanged, with or without a relay state, and its signature verifies under
+    /// the signer's key.
     #[test]
     fn a_signed_query_round_trips_and_verifies() {
-        for relay_state in [Some("back to the page & more"), None] {
-            let query = signed(relay_state);
+        for (carried, relay_state) in [
+            (Carried::Request, Some("back to the page & more")),
+            (Carried::Response, None),
+        ] {
+            let query = signed(carried, relay_state);
             let received = decode_query(&query, Limits::MESSAGE).expect("a query");
-            assert_eq!(received.carried, Carried::Request);
+            assert_eq!(received.carried, carried);
             assert_eq!(received.message, MESSAGE);
             assert_eq!(received.relay_state.as_deref(), relay_state);
             let signature = received.signature.expect("a signature");
@@ -307,7 +307,11 @@ mod tests {
             Ok(())
         );
 
-        let moved = signed(Some("back")).replacen("RelayState=back", "RelayState=elsewhere", 1);
+        let moved = signed(Carried::Request, Some("back")).replacen(
+            "RelayState=back",
+            "RelayState=elsewhere",
+            1,
+        );
         let received = decode_query(&moved, Limits::MESSAGE).expect("a query");
         let signature = received.signature.expect("a signature");
         assert_eq!(
@@ -316,12 +320,31 @@ mod tests {
         );
     }
 
+    /// A sender with an elliptic key signs its query as XML signatures do, the two
+    /// halves of the signature side by side, and that verifies.
+    #[test]
+    fn a_query_signed_with_an_elliptic_key_verifies() {
+        let query = include_str!("../tests/fixtures/redirect-query-ecdsa.txt").trim();
+        let received = decode_query(query, Limits::MESSAGE).expect("a query");
+        assert_eq!(received.carried, Carried::Response);
+        let signature = received.signature.expect("a signature");
+        assert_eq!(signature.algorithm, SignAlg::Es256);
+        let trusted = [key_certified_by(include_str!(
+            "../tests/fixtures/idp-ec.cer.b64"
+        ))];
+        assert_eq!(
+            verify_query_signature(&provider(), &signature, &trusted),
+            Ok(())
+        );
+    }
+
     /// What the binding does not allow is refused: a message twice, an algorithm
-    /// without a signature, SHA-1, a broken escape, no message, a message that
-    /// inflates past the limit, and ECDSA for a query this service signs.
+    /// without a signature, SHA-1, a broken escape in the message, an escape with a
+    /// sign in the relay state, no message, a message that inflates past the limit,
+    /// and ECDSA for a query this service signs.
     #[test]
     fn what_the_binding_does_not_allow_is_refused() {
-        let query = signed(None);
+        let query = signed(Carried::Request, None);
         let (message, _) = query.split_once("&SigAlg=").expect("a message");
         let without_signature = &query[..query.find("&Signature=").expect("a signature")];
         for (text, refused) in [
@@ -336,6 +359,7 @@ mod tests {
                 Undecodable::UnacceptedAlgorithm,
             ),
             (format!("{message}%zz"), Undecodable::Misshapen),
+            (format!("{message}&RelayState=%+A"), Undecodable::Misshapen),
             ("RelayState=alone".to_owned(), Undecodable::Misshapen),
         ] {
             assert_ne!(text, query);

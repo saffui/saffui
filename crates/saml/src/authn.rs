@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(policy.attribute("AllowCreate"), Some("true"));
 
         let odd = AuthnRequest {
-            issuer: "https://sp.test/?a=1&b=\"<2>\"",
+            issuer: "https://sp.test/?a=1&b=\"<2>\"&c=]]>",
             id: "_\"quoted\"&<angled>",
             force_authn: true,
             ..request()
@@ -135,7 +135,7 @@ mod tests {
             .children()
             .find(|node| node.tag_name().name() == "Issuer")
             .expect("an issuer");
-        assert_eq!(issuer.text(), Some("https://sp.test/?a=1&b=\"<2>\""));
+        assert_eq!(issuer.text(), Some("https://sp.test/?a=1&b=\"<2>\"&c=]]>"));
 
         let timeless = AuthnRequest {
             issue_instant: i64::MAX,

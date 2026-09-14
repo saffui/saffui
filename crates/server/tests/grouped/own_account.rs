@@ -460,6 +460,8 @@ async fn plant_key(plane: &Plane, credential_id: &[u8]) {
             passkey: json!({}),
             sign_count: 0,
             attachment: None,
+            aaguid: None,
+            attestation_format: None,
             enrolled_at: None,
             last_used_at: None,
         },

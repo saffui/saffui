@@ -1237,9 +1237,13 @@ pub async fn export_realm(
         let members = organizations::members(transaction, &organization.org_id)
             .await
             .map_err(|_| Unportable::Backend)?;
+        let theme = organizations::theme_of(transaction, &organization.org_id)
+            .await
+            .map_err(|_| Unportable::Backend)?;
         exported_orgs.push(ExportedOrganization {
             organization,
             members,
+            theme,
         });
     }
 
@@ -1322,6 +1326,10 @@ pub async fn export_realm(
         });
     }
 
+    let theme = realms::theme_of(transaction, realm_id)
+        .await
+        .map_err(|_| Unportable::Backend)?;
+
     Ok(ExportedRealm {
         format_version: EXPORT_FORMAT,
         exported_at: now.timestamp(),
@@ -1343,6 +1351,7 @@ pub async fn export_realm(
         .map(str::to_owned)
         .collect(),
         realm,
+        theme,
         required_actions,
         flows,
         executions,
@@ -1458,6 +1467,26 @@ fn describe_store_refusal(why: StoreError, item: &str) -> Unportable {
 /// refused or, worse, quietly rescoped by the session settings. The tenant
 /// is rewritten for the same reason: it is the importer's, never the
 /// document's.
+/// A theme the pages could not wear is refused before anything lands, named by
+/// what carries it: an import does not write what the admin plane would refuse.
+fn refuse_unsound_themes(doc: &ExportedRealm) -> Result<(), Unportable> {
+    if let Some(theme) = &doc.theme {
+        crate::theme::css_of(theme)
+            .map_err(|why| Unportable::Invalid(format!("the realm's theme: {why}")))?;
+    }
+    for exported in &doc.organizations {
+        if let Some(theme) = &exported.theme {
+            crate::theme::css_of(theme).map_err(|why| {
+                Unportable::Invalid(format!(
+                    "the theme of organization {}: {why}",
+                    exported.organization.name
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
 fn retarget(doc: &mut ExportedRealm, tenant: &str, realm_id: &str) {
     let name = realm_id.to_owned();
     doc.realm.realm_id = name.clone();
@@ -1596,6 +1625,7 @@ pub async fn import_realm(
         )));
     }
     refuse_people_not_carried(&doc)?;
+    refuse_unsound_themes(&doc)?;
     if realms::load(transaction, realm_id)
         .await
         .map_err(|_| Unportable::Backend)?
@@ -1661,12 +1691,22 @@ pub async fn import_realm(
                 })?;
         }
     }
+    if let Some(theme) = &doc.theme {
+        realms::set_theme(transaction, realm_id, Some(theme))
+            .await
+            .map_err(|_| Unportable::Backend)?;
+    }
     for exported in &doc.organizations {
         organizations::create(transaction, &exported.organization)
             .await
             .map_err(|why| {
                 describe_store_refusal(why, &format!("organization {}", exported.organization.name))
             })?;
+        if let Some(theme) = &exported.theme {
+            organizations::set_theme(transaction, &exported.organization.org_id, Some(theme))
+                .await
+                .map_err(|_| Unportable::Backend)?;
+        }
     }
 
     for exported in &doc.client_scopes {

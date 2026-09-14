@@ -338,6 +338,7 @@ dependencies = [
  "qrcode",
  "secrecy",
  "serde",
+ "serde_cbor_2",
  "serde_json",
  "store",
  "thiserror 2.0.19",

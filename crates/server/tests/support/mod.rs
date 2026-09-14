@@ -913,6 +913,8 @@ impl Plane {
                 passkey,
                 sign_count: 0,
                 attachment,
+                aaguid: None,
+                attestation_format: None,
                 enrolled_at: None,
                 last_used_at: None,
             },

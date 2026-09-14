@@ -22,6 +22,10 @@ pub struct EnrolledCredential {
     pub sign_count: i64,
     /// Where the browser said the key lives, when it said.
     pub attachment: Option<AuthenticatorAttachment>,
+    /// The authenticator model the key named at enrolment, when it named one.
+    pub aaguid: Option<String>,
+    /// The attestation format the key answered its enrolment with.
+    pub attestation_format: Option<String>,
     /// Stamped by the store on enrolment; whatever a caller sets is ignored.
     pub enrolled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub last_used_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -36,9 +40,10 @@ pub async fn enrol(
         .execute(
             "INSERT INTO webauthn_credentials \
                  (tenant, realm_id, credential_id, user_id, label, passkey, sign_count, \
-                  attachment) \
+                  attachment, aaguid, attestation_format) \
              SELECT current_setting('saffui.current_tenant', true), \
-                    current_setting('saffui.current_realm', true), $1, $2, $3, $4, $5, $6",
+                    current_setting('saffui.current_realm', true), $1, $2, $3, $4, $5, $6, \
+                    $7::text::uuid, $8",
             &[
                 &credential.credential_id,
                 &credential.user_id,
@@ -46,6 +51,8 @@ pub async fn enrol(
                 &credential.passkey,
                 &credential.sign_count,
                 &credential.attachment,
+                &credential.aaguid,
+                &credential.attestation_format,
             ],
         )
         .await
@@ -71,7 +78,7 @@ pub async fn by_id(
     Ok(transaction
         .query_opt(
             "SELECT credential_id, user_id, label, passkey, sign_count, attachment, \
-                    enrolled_at, last_used_at \
+                    aaguid::text AS aaguid, attestation_format, enrolled_at, last_used_at \
              FROM webauthn_credentials WHERE credential_id = $1",
             &[&credential_id],
         )
@@ -91,7 +98,7 @@ pub async fn of_user(
     Ok(transaction
         .query(
             "SELECT credential_id, user_id, label, passkey, sign_count, attachment, \
-                    enrolled_at, last_used_at \
+                    aaguid::text AS aaguid, attestation_format, enrolled_at, last_used_at \
              FROM webauthn_credentials WHERE user_id = $1 \
              ORDER BY enrolled_at ASC, credential_id ASC",
             &[&user_id],
@@ -224,6 +231,8 @@ fn read(row: Row) -> EnrolledCredential {
         passkey: row.get("passkey"),
         sign_count: row.get("sign_count"),
         attachment: row.get("attachment"),
+        aaguid: row.get("aaguid"),
+        attestation_format: row.get("attestation_format"),
         enrolled_at: row.get("enrolled_at"),
         last_used_at: row.get("last_used_at"),
     }

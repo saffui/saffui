@@ -78,6 +78,10 @@ pub struct ExportedRealm {
     pub sections: Vec<String>,
 
     pub realm: RealmModel,
+    /// The realm's theme tokens, absent when it wears the default look. Absent
+    /// too in a document written before themes travelled.
+    #[serde(default)]
+    pub theme: Option<serde_json::Value>,
     pub required_actions: Vec<RequiredActionModel>,
     pub flows: Vec<AuthenticationFlowModel>,
     pub executions: Vec<AuthenticationExecutionModel>,
@@ -113,6 +117,9 @@ pub struct ExportedGroup {
 pub struct ExportedOrganization {
     pub organization: OrganizationModel,
     pub members: Vec<OrganizationMemberModel>,
+    /// The organization's theme, absent when it wears the realm's.
+    #[serde(default)]
+    pub theme: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

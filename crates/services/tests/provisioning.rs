@@ -3,10 +3,11 @@ mod support;
 use models::auditable::AuditableModel;
 use models::entities::authz::AdminAction;
 use models::entities::client::{ClientScopeModel, Protocol};
+use services::account_api::{ACCOUNT_CONSOLE, ACCOUNT_SCOPE};
 use services::authorize::granted_scope;
 use services::provisioning::{
-    ADMIN_SCOPE, ADMINISTRATOR_ROLE, AdminConsole, provision_admin_console,
-    provision_offered_flows, provision_realm_administration,
+    ADMIN_SCOPE, ADMINISTRATOR_ROLE, AccountConsole, AdminConsole, provision_account_console,
+    provision_admin_console, provision_offered_flows, provision_realm_administration,
 };
 use store::providers::client_scopes;
 use store::providers::roles;
@@ -159,6 +160,104 @@ async fn provisioning_twice_keeps_what_the_operator_changed() {
             .await
             .unwrap(),
         format!("openid {ADMIN_SCOPE}"),
+        "the attachment was not put back"
+    );
+}
+
+/// The account console carries the account scope without asking for it, as a
+/// public client with the browser flow alone, and the scope is offered to no other
+/// client. Provisioning again keeps what the operator changed and puts the
+/// attachment back.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_account_console_carries_the_account_scope_and_keeps_what_the_operator_changed() {
+    let fixture = Fixture::with_user_and_client().await;
+    let mut connection = fixture.connection().await;
+    let transaction = fixture
+        .scoped(&mut connection, &TenantContext::new("acme", "main"))
+        .await;
+    let console = AccountConsole {
+        redirect_uris: vec!["https://id.test/realms/main/account/login/return".to_owned()],
+    };
+
+    provision_account_console(&transaction, "acme", "main", &console)
+        .await
+        .unwrap();
+
+    let held = store::providers::clients::load(&transaction, ACCOUNT_CONSOLE)
+        .await
+        .unwrap()
+        .expect("the account console");
+    assert_eq!(
+        (
+            held.public_client,
+            held.standard_flow_enabled,
+            held.direct_access_grants_enabled,
+            held.service_account_enabled,
+            held.implicit_flow_enabled,
+        ),
+        (
+            Some(true),
+            Some(true),
+            Some(false),
+            Some(false),
+            Some(false)
+        )
+    );
+    assert_eq!(held.redirect_uris, Some(console.redirect_uris.clone()));
+    assert_eq!(
+        granted_scope(&transaction, ACCOUNT_CONSOLE, "openid")
+            .await
+            .unwrap(),
+        format!("openid {ACCOUNT_SCOPE}"),
+        "the account console had to ask for the scope its API requires"
+    );
+    assert_eq!(
+        granted_scope(&transaction, "app", &format!("openid {ACCOUNT_SCOPE}"))
+            .await
+            .unwrap(),
+        "openid",
+        "a client nothing attached to the account scope was granted it"
+    );
+    assert_eq!(
+        client_scopes::load_scope(&transaction, ACCOUNT_SCOPE)
+            .await
+            .unwrap()
+            .expect("the account scope")
+            .default_scope,
+        Some(false),
+        "the account scope would be offered to every client registered afterwards"
+    );
+
+    let mut moved = held;
+    moved.redirect_uris = Some(vec!["https://elsewhere.test/account".to_owned()]);
+    store::providers::clients::update(&transaction, &moved)
+        .await
+        .unwrap();
+    assert!(
+        client_scopes::detach_scope(&transaction, ACCOUNT_CONSOLE, ACCOUNT_SCOPE)
+            .await
+            .unwrap()
+    );
+
+    provision_account_console(&transaction, "acme", "main", &console)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store::providers::clients::load(&transaction, ACCOUNT_CONSOLE)
+            .await
+            .unwrap()
+            .expect("the account console")
+            .redirect_uris,
+        Some(vec!["https://elsewhere.test/account".to_owned()]),
+        "provisioning again sent the account console back to an address nobody serves"
+    );
+    assert_eq!(
+        granted_scope(&transaction, ACCOUNT_CONSOLE, "openid")
+            .await
+            .unwrap(),
+        format!("openid {ACCOUNT_SCOPE}"),
         "the attachment was not put back"
     );
 }

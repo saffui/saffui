@@ -553,7 +553,13 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
             .await
             .expect("a scope catalogue");
         let names: Vec<&str> = scopes.iter().map(|held| held.name.as_str()).collect();
-        for wanted in ["profile", "email", "offline_access", support::SCOPE] {
+        for wanted in [
+            "profile",
+            "email",
+            "offline_access",
+            support::SCOPE,
+            services::account_api::ACCOUNT_SCOPE,
+        ] {
             assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
         }
         assert!(
@@ -562,6 +568,29 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
                 .expect("a client read")
                 .is_some(),
             "the console was not registered in the new realm"
+        );
+        let account_console =
+            store::providers::clients::load(&transaction, services::account_api::ACCOUNT_CONSOLE)
+                .await
+                .expect("a client read")
+                .expect("the account console was not registered in the new realm");
+        assert_eq!(
+            account_console.redirect_uris,
+            Some(vec![
+                "https://id.test/realms/staging/account/login/return".to_owned()
+            ]),
+            "the account console signs in somewhere other than under the new realm"
+        );
+        assert_eq!(
+            services::authorize::granted_scope(
+                &transaction,
+                services::account_api::ACCOUNT_CONSOLE,
+                "openid"
+            )
+            .await
+            .expect("a grant"),
+            format!("openid {}", services::account_api::ACCOUNT_SCOPE),
+            "the account console does not carry the account scope"
         );
     }
 

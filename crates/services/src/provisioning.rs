@@ -167,7 +167,7 @@ pub async fn provision_standard_scopes(
     Ok(held)
 }
 
-/// Give a realm its admin scope and a console entitled to it./// Give a realm its admin scope and a console entitled to it.
+/// Give a realm its admin scope and a console entitled to it.
 ///
 /// Idempotent, and idempotent in the direction that matters: what already
 /// exists is left as it stands. An operator who pointed the console at a
@@ -183,6 +183,69 @@ pub async fn provision_admin_console(
     realm_id: &str,
     console: &AdminConsole<'_>,
 ) -> StoreResult<()> {
+    provision_console(
+        transaction,
+        tenant,
+        realm_id,
+        &Console {
+            client_id: console.client_id,
+            display_name: "Admin Console",
+            description: "The console this realm is administered from",
+            scope: console.scope,
+            scope_description: "Administration plane access",
+            redirect_uris: &console.redirect_uris,
+        },
+    )
+    .await
+}
+
+/// The console a person manages their own account from.
+#[derive(Debug, Clone)]
+pub struct AccountConsole {
+    /// Where the console's sign-in comes back to, the only place it may land.
+    pub redirect_uris: Vec<String>,
+}
+
+/// Give a realm its account console and the scope the account API requires,
+/// idempotent the way the admin console is.
+pub async fn provision_account_console(
+    transaction: &Transaction<'_>,
+    tenant: &str,
+    realm_id: &str,
+    console: &AccountConsole,
+) -> StoreResult<()> {
+    provision_console(
+        transaction,
+        tenant,
+        realm_id,
+        &Console {
+            client_id: crate::account_api::ACCOUNT_CONSOLE,
+            display_name: "Account Console",
+            description: "Where a person manages their own account",
+            scope: crate::account_api::ACCOUNT_SCOPE,
+            scope_description: "Access to one's own account",
+            redirect_uris: &console.redirect_uris,
+        },
+    )
+    .await
+}
+
+/// A browser console: a public client entitled to a scope no other client is offered.
+struct Console<'a> {
+    client_id: &'a str,
+    display_name: &'a str,
+    description: &'a str,
+    scope: &'a str,
+    scope_description: &'a str,
+    redirect_uris: &'a [String],
+}
+
+async fn provision_console(
+    transaction: &Transaction<'_>,
+    tenant: &str,
+    realm_id: &str,
+    console: &Console<'_>,
+) -> StoreResult<()> {
     let metadata = AuditableModel::from_creator(tenant.to_owned(), "system".to_owned());
 
     if client_scopes::load_scope(transaction, console.scope)
@@ -195,11 +258,11 @@ pub async fn provision_admin_console(
                 client_scope_id: console.scope.to_owned(),
                 realm_id: realm_id.to_owned(),
                 name: console.scope.to_owned(),
-                description: "Administration plane access".to_owned(),
+                description: console.scope_description.to_owned(),
                 protocol: Protocol::OpenId,
                 // Not a realm default. A default is offered to every client
-                // registered afterwards, and a scope that opens the admin plane
-                // is the last one to hand out by registration.
+                // registered afterwards, and a scope that opens a console's
+                // plane is the last one to hand out by registration.
                 default_scope: Some(false),
                 configs: None,
                 metadata: metadata.clone(),
@@ -214,8 +277,8 @@ pub async fn provision_admin_console(
     {
         let mut client = ClientCreateModel {
             name: console.client_id.to_owned(),
-            display_name: "Admin Console".to_owned(),
-            description: "The console this realm is administered from".to_owned(),
+            display_name: console.display_name.to_owned(),
+            description: console.description.to_owned(),
             enabled: Some(true),
         }
         .into_model(
@@ -229,12 +292,12 @@ pub async fn provision_admin_console(
         // public is what makes `/authorize` insist on a challenge.
         client.public_client = Some(true);
         client.standard_flow_enabled = Some(true);
-        // A console acts for the administrator using it and never for itself, so
-        // it gets no service account and no direct grant.
+        // A console acts for the person using it and never for itself, so it
+        // gets no service account and no direct grant.
         client.service_account_enabled = Some(false);
         client.direct_access_grants_enabled = Some(false);
         client.implicit_flow_enabled = Some(false);
-        client.redirect_uris = Some(console.redirect_uris.clone());
+        client.redirect_uris = Some(console.redirect_uris.to_vec());
 
         clients::create(transaction, &client).await?;
         // Twice, because the insert writes the identifying columns and the rest

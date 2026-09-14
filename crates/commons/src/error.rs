@@ -66,6 +66,7 @@ catalogue! {
     AccountReauthenticationRequired = 205, 403, "account.reauthentication_required", "sign in again before changing this account's factors";
     AccountLastFactor = 206, 409, "account.last_factor", "this factor is the last of what keeps the account safe";
     AccountStrongerSignInRequired = 207, 403, "account.stronger_sign_in_required", "sign in again with the strongest factor this account can use before changing its factors";
+    AccountStepUpRequired = 208, 401, "account.step_up_required", "sign in again, recently and as strongly as this account allows";
     ClientNotFound = 300, 404, "client.not_found", "client not found";
     ClientAlreadyExists = 301, 409, "client.already_exists", "a client with this identifier already exists";
     ClientScopeNotFound = 310, 404, "client.scope.not_found", "client scope not found";
@@ -185,7 +186,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 65);
+        assert_eq!(ErrorCode::ALL.len(), 66);
     }
 
     /// A message never restates the slug, and never carries a value.

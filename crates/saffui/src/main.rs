@@ -816,6 +816,18 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
     )
     .await
     .map_err(unreadable)?;
+    provisioning::provision_account_console(
+        &transaction,
+        tenant,
+        realm,
+        &provisioning::AccountConsole {
+            redirect_uris: vec![services::account_api::compose_account_console_redirect(
+                &plane.origin.issuer(realm),
+            )],
+        },
+    )
+    .await
+    .map_err(unreadable)?;
     if provisioning::provision_signing_key(
         &transaction,
         plane.sealing.provider.as_ref(),

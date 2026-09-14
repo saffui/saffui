@@ -120,4 +120,31 @@ async fn cli_provision_is_atomic_and_idempotent() {
         .unwrap()
         .get(0);
     assert_eq!((tenant_count, realm_count), (1, 1));
+
+    // The realm's account console, provisioned once however often the command
+    // runs, and sent back under the realm's own address.
+    let consoles = owner
+        .query(
+            "SELECT redirect_uris FROM clients \
+             WHERE realm_id = 'cli-atomic' AND client_id = 'account-console'",
+            &[],
+        )
+        .await
+        .unwrap();
+    assert_eq!(consoles.len(), 1);
+    assert_eq!(
+        consoles[0].get::<_, Vec<String>>(0),
+        vec!["https://saffui.test/realms/cli-atomic/account/login/return".to_owned()]
+    );
+    let attached: i64 = owner
+        .query_one(
+            "SELECT count(*) FROM clients_client_scopes \
+             WHERE realm_id = 'cli-atomic' AND client_id = 'account-console' \
+               AND client_scope_id = 'account'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(attached, 1);
 }

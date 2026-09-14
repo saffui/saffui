@@ -12,6 +12,7 @@ use crypto::provider::CryptoProvider;
 use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 
+use crate::api::rest::endpoints::account;
 use crate::api::rest::endpoints::authz::decision;
 use crate::api::rest::endpoints::ops::health;
 use crate::api::rest::endpoints::ops::health::Vitals;
@@ -20,6 +21,7 @@ use crate::api::rest::endpoints::protocol::{
     page, par, privacy, recovery, registration, revoke, signup, ssf, token, userinfo, ussd,
 };
 use crate::api::routes;
+use crate::middleware::account_guard::AccountGuard;
 use crate::middleware::admin_guard::Guard;
 use crate::middleware::admin_policy::AdminPolicy;
 use crate::middleware::caller::Caller;
@@ -134,6 +136,7 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             .service(authz_scope(plane))
             .service(protocol_scope())
             .service(saml_broker_scope())
+            .service(account_api_scope(plane))
             // Not under the protocol scope. RFC 8414 §3 fixes this path at the
             // issuer's root, and a client builds it from the issuer rather than
             // from anything this server tells it.
@@ -339,6 +342,22 @@ fn authz_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
             origin: plane.origin.clone(),
         })
         .service(web::resource("/decision").route(web::post().to(decision::ask)))
+}
+
+/// A person's own account, reached only with a token the realm's account console
+/// obtained for a login still open. The transport is judged before the token.
+fn account_api_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
+    web::scope("/realms/{realm}/account-api/v1")
+        .wrap(AccountGuard {
+            pool: plane.pool.clone(),
+            tenancy: plane.tenancy.clone(),
+            origin: plane.origin.clone(),
+        })
+        .wrap(crate::middleware::transport::SecuredTransport)
+        .service(web::resource("/me").route(web::get().to(account::show_me)))
+        .service(
+            web::resource("/me/recent-sign-in").route(web::get().to(account::check_recent_sign_in)),
+        )
 }
 
 /// The SAML side of a brokered provider, under the address the realm answers to

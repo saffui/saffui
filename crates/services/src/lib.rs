@@ -1,4 +1,5 @@
 pub mod account;
+pub mod account_api;
 pub mod admin;
 pub mod agent;
 pub mod assertion;

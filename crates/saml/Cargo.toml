@@ -10,6 +10,7 @@ authors.workspace = true
 [dependencies]
 chrono = { workspace = true }
 crypto = { workspace = true }
+flate2 = { workspace = true }
 data-encoding = { workspace = true }
 roxmltree = { workspace = true }
 thiserror = { workspace = true }

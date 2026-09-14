@@ -161,7 +161,7 @@ pub fn carries_signature(element: Node<'_, '_>) -> bool {
     element_children(element).any(|child| is_signature_element(&child, "Signature"))
 }
 
-fn signature_algorithm_named(uri: &str) -> Option<SignAlg> {
+pub(crate) fn signature_algorithm_named(uri: &str) -> Option<SignAlg> {
     match uri {
         "http://www.w3.org/2001/04/xmldsig-more#rsa-sha256" => Some(SignAlg::Rs256),
         "http://www.w3.org/2001/04/xmldsig-more#rsa-sha384" => Some(SignAlg::Rs384),

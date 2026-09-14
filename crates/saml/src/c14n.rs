@@ -124,7 +124,7 @@ fn rendered_namespaces<'a>(
         element
             .namespaces()
             .filter_map(|namespace| namespace.name())
-            .filter(|prefix| *prefix != "xml" && listed(prefix)),
+            .filter(|prefix| listed(prefix)),
     );
     if listed("") {
         candidates.push("");
@@ -188,7 +188,6 @@ fn visibly_utilized_prefixes<'input>(element: Node<'_, 'input>) -> Vec<&'input s
             .map(|attribute| prefix_of(&source[attribute.range_qname()]))
             .filter(|prefix| !prefix.is_empty()),
     );
-    prefixes.retain(|prefix| *prefix != "xml");
     prefixes.sort_unstable();
     prefixes.dedup();
     prefixes
@@ -427,12 +426,20 @@ mod tests {
         assert_forms(&rows);
     }
 
-    /// A listed default follows the inclusive rules. lxml drops `#default` from a
-    /// prefix list before libxml2 sees it, so these forms were written by
-    /// libxml2 through its C API instead.
+    /// A listed default and a listed `xml` prefix follow the inclusive rules.
+    /// lxml drops `#default` from a prefix list before libxml2 sees it, so these
+    /// forms were written by libxml2 through its C API instead.
     #[test]
-    fn a_listed_default_is_rendered_as_libxml2_renders_it() {
+    fn listed_prefixes_render_as_libxml2_renders_them() {
         assert_forms(&[
+            Row {
+                rule: "the xml prefix is never declared, even listed",
+                document: r#"<r xml:lang="en"><e xml:space="preserve"/></r>"#,
+                element: "r",
+                omitted: None,
+                prefixes: &["xml"],
+                expected: r#"<r xml:lang="en"><e xml:space="preserve"></e></r>"#,
+            },
             Row {
                 rule: "a listed default is declared on a prefixed apex that does not use it",
                 document: r#"<p:e xmlns:p="urn:p" xmlns="urn:d"><p:f/></p:e>"#,

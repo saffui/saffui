@@ -35,15 +35,11 @@ pub enum Unreadable {
 
 /// Parse a message under limits.
 ///
-/// A document type is refused before the parser sees it, an empty one too: no
-/// SAML party needs one, and its entities are where expansion bombs and
-/// external fetches live.
+/// Any document type is refused, an empty one too: no SAML party needs one,
+/// and its entities are where expansion bombs and external fetches live.
 pub fn read_message(text: &str, limits: Limits) -> Result<Document<'_>, Unreadable> {
     if text.len() > limits.bytes {
         return Err(Unreadable::TooLarge);
-    }
-    if text.contains("<!DOCTYPE") {
-        return Err(Unreadable::DocumentType);
     }
     let options = ParsingOptions {
         allow_dtd: false,
@@ -78,6 +74,7 @@ mod tests {
     fn a_document_type_is_refused_even_empty() {
         for text in [
             "<!DOCTYPE a><a/>",
+            "<!DOCTYPE a []><a/>",
             "<!DOCTYPE a [<!ENTITY x \"expanded\">]><a>&x;</a>",
             "<?xml version=\"1.0\"?>\n<!DOCTYPE a SYSTEM \"http://example.org/a.dtd\"><a/>",
         ] {

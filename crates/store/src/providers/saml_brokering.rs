@@ -166,8 +166,9 @@ pub async fn read_broker_session(
         .map(read_session))
 }
 
-/// The logins a provider's logout request names: by the provider and the name
-/// identifier's value, among the sessions it lists when it lists any.
+/// The logins a provider's logout request names that still stand: by the provider
+/// and the name identifier's value, among the sessions it lists when it lists any.
+/// A login already ended is not found again, so its clients are not told twice.
 ///
 /// Neither the format nor the qualifiers are matched, and a login the provider
 /// gave no session index is taken whatever the request lists: a provider may
@@ -181,11 +182,15 @@ pub async fn find_named_sessions(
 ) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
-            "SELECT session_id FROM saml_broker_sessions \
-             WHERE provider_alias = $1 AND name_id = $2 \
-               AND (cardinality($3::text[]) = 0 OR session_index IS NULL \
-                    OR session_index = ANY($3)) \
-             ORDER BY session_id",
+            "SELECT named.session_id FROM saml_broker_sessions named \
+             JOIN user_sessions standing \
+               ON standing.tenant = named.tenant AND standing.realm_id = named.realm_id \
+              AND standing.session_id = named.session_id \
+             WHERE named.provider_alias = $1 AND named.name_id = $2 \
+               AND standing.state = 'logged-in' \
+               AND (cardinality($3::text[]) = 0 OR named.session_index IS NULL \
+                    OR named.session_index = ANY($3)) \
+             ORDER BY named.session_id",
             &[&alias, &name_id, &session_indexes],
         )
         .await

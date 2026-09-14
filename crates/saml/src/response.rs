@@ -2,6 +2,7 @@ use crypto::provider::{CryptoProvider, PrivateKey, PublicKey};
 use roxmltree::{Document, Node};
 
 use crate::dsig::{Unverified, carries_signature, verify_enveloped_signature};
+use crate::name_id::{NameId, read_name_id};
 use crate::xml::{Limits, children_named, is_named, read_message};
 use crate::xmlenc::{Undecrypted, content_cipher_of, decrypt_element};
 
@@ -78,8 +79,7 @@ pub struct Accepted {
     /// Kept against replay until `replayable_until`, when the confirmation closes.
     pub assertion_id: String,
     pub replayable_until: i64,
-    pub name_id: String,
-    pub name_id_format: Option<String>,
+    pub name_id: NameId,
     /// Names the session a later logout request refers to.
     pub session_index: Option<String>,
     pub session_not_on_or_after: Option<i64>,
@@ -242,8 +242,7 @@ fn read_assertion(assertion: Node<'_, '_>, expected: &Expected<'_>) -> Result<Ac
     Ok(Accepted {
         assertion_id: assertion_id.to_owned(),
         replayable_until,
-        name_id: strict_text(name)?,
-        name_id_format: name.attribute("Format").map(str::to_owned),
+        name_id: read_name_id(name).ok_or(Refused::Misshapen)?,
         session_index: statement.attribute("SessionIndex").map(str::to_owned),
         session_not_on_or_after,
         authn_instant,
@@ -406,6 +405,7 @@ fn single_child<'a, 'input>(
 mod tests {
     use super::{Accepted, Expected, Refused, accept_response, instant_of};
     use crate::dsig::Unverified;
+    use crate::name_id::NameId;
     use crate::testing::{key_certified_by, private_key_of, provider};
     use crate::xml::{Limits, read_message};
     use crate::xmlenc::Undecrypted;
@@ -419,6 +419,7 @@ mod tests {
     const ASSERTION_SIGNED: &str = include_str!("../tests/fixtures/response-assertion-signed.xml");
     const RESPONSE_SIGNED: &str = include_str!("../tests/fixtures/response-signed.xml");
     const BOTH_SIGNED: &str = include_str!("../tests/fixtures/response-both-signed.xml");
+    const QUALIFIED_NAME: &str = include_str!("../tests/fixtures/response-qualified-name.xml");
 
     fn at(text: &str) -> i64 {
         NaiveDateTime::parse_from_str(text, "%Y-%m-%dT%H:%M:%S")
@@ -467,8 +468,12 @@ mod tests {
         Accepted {
             assertion_id: "_assertion".to_owned(),
             replayable_until: at("2026-09-14T08:05:00"),
-            name_id: "AAdzZWNyZXQx".to_owned(),
-            name_id_format: Some("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".to_owned()),
+            name_id: NameId {
+                value: "AAdzZWNyZXQx".to_owned(),
+                format: Some("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".to_owned()),
+                name_qualifier: None,
+                sp_name_qualifier: None,
+            },
             session_index: Some("_session-1".to_owned()),
             session_not_on_or_after: Some(at("2026-09-14T16:00:00")),
             authn_instant: at("2026-09-14T07:59:30"),
@@ -496,6 +501,22 @@ mod tests {
         for text in [ASSERTION_SIGNED, RESPONSE_SIGNED, BOTH_SIGNED] {
             assert_eq!(outcome(text, unchanged), Ok(plain_acceptance()));
         }
+    }
+
+    /// A name identifier's qualifiers are kept as the identity provider wrote
+    /// them, for the logout request that repeats them.
+    #[test]
+    fn a_qualified_name_is_kept_whole() {
+        let accepted = outcome(QUALIFIED_NAME, unchanged).expect("an accepted response");
+        assert_eq!(
+            accepted.name_id,
+            NameId {
+                value: "AAdzZWNyZXQx".to_owned(),
+                format: Some("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".to_owned()),
+                name_qualifier: Some(IDP.to_owned()),
+                sp_name_qualifier: Some(SP.to_owned()),
+            }
+        );
     }
 
     /// The response has to be SAML 2.0 and answer this request, at this address,

@@ -1,7 +1,10 @@
 pub mod authn;
 pub mod c14n;
 pub mod dsig;
+pub mod logout;
 pub mod metadata;
+pub mod name_id;
+pub mod protocol;
 pub mod redirect;
 pub mod response;
 #[cfg(test)]

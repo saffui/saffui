@@ -1,4 +1,4 @@
-use crate::time::write_instant;
+use crate::protocol::{Unwritable, open_protocol_message};
 use crate::xml::{push_attribute, push_text};
 
 const POST_BINDING: &str = "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST";
@@ -20,24 +20,15 @@ pub struct AuthnRequest<'a> {
     pub force_authn: bool,
 }
 
-/// Why a message could not be written.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum Unwritable {
-    #[error("a time could not be written")]
-    Time,
-}
-
 /// The request as XML for the Redirect binding to carry. It holds no enveloped
 /// signature: that binding signs the query instead.
 pub fn write_authn_request(request: &AuthnRequest<'_>) -> Result<String, Unwritable> {
-    let instant = write_instant(request.issue_instant).ok_or(Unwritable::Time)?;
-    let mut xml = String::from(
-        r#"<samlp:AuthnRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion""#,
-    );
-    push_attribute(&mut xml, "ID", request.id);
-    push_attribute(&mut xml, "Version", "2.0");
-    push_attribute(&mut xml, "IssueInstant", &instant);
-    push_attribute(&mut xml, "Destination", request.destination);
+    let mut xml = open_protocol_message(
+        "AuthnRequest",
+        request.id,
+        request.issue_instant,
+        request.destination,
+    )?;
     push_attribute(
         &mut xml,
         "AssertionConsumerServiceURL",
@@ -60,7 +51,8 @@ pub fn write_authn_request(request: &AuthnRequest<'_>) -> Result<String, Unwrita
 
 #[cfg(test)]
 mod tests {
-    use super::{AuthnRequest, Unwritable, write_authn_request};
+    use super::{AuthnRequest, write_authn_request};
+    use crate::protocol::Unwritable;
     use crate::xml::{Limits, read_message};
 
     fn request<'a>() -> AuthnRequest<'a> {

@@ -8,6 +8,8 @@ use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel, IdpM
 use serde_json::{Map, Value};
 use store::providers::{brokering, users};
 
+use crate::mappers::{MULTIVALUED, config_bool};
+
 /// How long what left for the upstream is honoured on the way back.
 pub const STATE_LIFESPAN: Duration = Duration::minutes(10);
 
@@ -543,7 +545,9 @@ pub async fn decide_link(
 pub const ATTRIBUTE_IDP_MAPPER: &str = "oidc-user-attribute-idp-mapper";
 /// Grant the arriving user a named local role.
 pub const ROLE_IDP_MAPPER: &str = "oidc-hardcoded-role-idp-mapper";
-/// Write an attribute a SAML provider asserts onto the arriving user.
+/// Write an attribute a SAML provider asserts onto the arriving user: its first
+/// value, or every value as a list when the rule says `multivalued`, so the
+/// attribute keeps one shape whatever the count a sign-in asserts.
 pub const SAML_ATTRIBUTE_IDP_MAPPER: &str = "saml-user-attribute-idp-mapper";
 /// Grant the arriving user a named local role while a SAML provider asserts an
 /// attribute holding a given value.
@@ -641,15 +645,18 @@ fn read_rule<'a>(
             })
         }
         SAML_ATTRIBUTE_IDP_MAPPER => {
-            let value = match arrival.claims.get(config_str(configs, ATTRIBUTE_NAME)?)? {
-                Value::String(one) => AttributeValue::Str(one.clone()),
-                Value::Array(several) => AttributeValue::ListStr(
-                    several
-                        .iter()
-                        .map(|held| held.as_str().map(str::to_owned))
-                        .collect::<Option<_>>()?,
-                ),
-                _ => return None,
+            let asserted: Vec<&str> =
+                match arrival.claims.get(config_str(configs, ATTRIBUTE_NAME)?)? {
+                    Value::String(one) => vec![one.as_str()],
+                    Value::Array(several) => {
+                        several.iter().map(Value::as_str).collect::<Option<_>>()?
+                    }
+                    _ => return None,
+                };
+            let value = if config_bool(configs, MULTIVALUED, false) {
+                AttributeValue::ListStr(asserted.into_iter().map(str::to_owned).collect())
+            } else {
+                AttributeValue::Str(asserted.first().copied()?.to_owned())
             };
             Some(Mapped::Attribute {
                 attribute: config_str(configs, USER_ATTRIBUTE)?,
@@ -1411,10 +1418,11 @@ mod tests {
         }
     }
 
-    /// A SAML attribute rule writes an attribute's one value as a string and several
-    /// as a list in the order asserted, at the first arrival or on every one when
-    /// forced; an attribute not asserted, or a rule missing what it reads, writes
-    /// nothing.
+    /// A SAML attribute rule writes an attribute's first value as a string, or every
+    /// value as a list in the order asserted when the rule says `multivalued`, one
+    /// value included, so the shape never follows the count asserted. It writes at
+    /// the first arrival, or on every one when forced; an attribute not asserted, or
+    /// a rule missing what it reads, writes nothing.
     #[test]
     fn a_saml_attribute_rule_writes_what_the_assertion_holds() {
         let arrival = arrival_with(serde_json::json!({
@@ -1434,16 +1442,33 @@ mod tests {
         );
         assert_eq!(read_rule(&every_time, &arrival, false), written);
 
-        let groups = rule_of(
+        let groups = [(ATTRIBUTE_NAME, "memberOf"), (USER_ATTRIBUTE, "groups")];
+        let first_group = rule_of(SAML_ATTRIBUTE_IDP_MAPPER, &groups);
+        let every_group = rule_of(
             SAML_ATTRIBUTE_IDP_MAPPER,
-            &[(ATTRIBUTE_NAME, "memberOf"), (USER_ATTRIBUTE, "groups")],
+            &[groups[0], groups[1], (MULTIVALUED, "true")],
         );
-        assert_eq!(
-            read_rule(&groups, &arrival, true),
+        let grouped = |value| {
             Some(Mapped::Attribute {
                 attribute: "groups",
-                value: AttributeValue::ListStr(vec!["staff".into(), "readers".into()]),
+                value,
             })
+        };
+        assert_eq!(
+            read_rule(&first_group, &arrival, true),
+            grouped(AttributeValue::Str("staff".into()))
+        );
+        assert_eq!(
+            read_rule(&every_group, &arrival, true),
+            grouped(AttributeValue::ListStr(vec![
+                "staff".into(),
+                "readers".into()
+            ]))
+        );
+        let one_group = arrival_with(serde_json::json!({ "memberOf": "readers" }));
+        assert_eq!(
+            read_rule(&every_group, &one_group, true),
+            grouped(AttributeValue::ListStr(vec!["readers".into()]))
         );
 
         for silent in [

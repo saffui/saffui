@@ -59,6 +59,8 @@ pub fn sweep_expired_rows(
                     backchannel_requests = swept.backchannel_requests,
                     device_codes = swept.device_codes,
                     broker_login_states = swept.broker_login_states,
+                    saml_login_requests = swept.saml_login_requests,
+                    saml_logout_requests = swept.saml_logout_requests,
                     sessions = swept.sessions,
                     client_sessions = swept.client_sessions,
                     "swept expired rows"

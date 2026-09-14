@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use store::providers::{
     backchannel, brokering, caep_queue, deliveries, devices, dpop, form_post, login, oidc,
-    one_time_tokens, outbox, pushed, replay, sessions, sms, ussd,
+    one_time_tokens, outbox, pushed, replay, saml_brokering, sessions, sms, ussd,
 };
 
 /// How long the sign-in log looks back. A window, not an archive: long
@@ -46,6 +46,10 @@ pub struct Swept {
     pub device_codes: u64,
     /// Brokered logins that ran out before the upstream sent anyone back.
     pub broker_login_states: u64,
+    /// SAML authentication requests no response answered in time.
+    pub saml_login_requests: u64,
+    /// SAML logout requests no provider answered in time.
+    pub saml_logout_requests: u64,
     pub sessions: u64,
     /// Client grants that ran out under logins still standing.
     pub client_sessions: u64,
@@ -71,6 +75,8 @@ impl Swept {
             + self.backchannel_requests
             + self.device_codes
             + self.broker_login_states
+            + self.saml_login_requests
+            + self.saml_logout_requests
             + self.sessions
             + self.client_sessions
     }
@@ -94,6 +100,8 @@ impl Swept {
         self.backchannel_requests += other.backchannel_requests;
         self.device_codes += other.device_codes;
         self.broker_login_states += other.broker_login_states;
+        self.saml_login_requests += other.saml_login_requests;
+        self.saml_logout_requests += other.saml_logout_requests;
         self.sessions += other.sessions;
         self.client_sessions += other.client_sessions;
     }
@@ -170,6 +178,12 @@ pub async fn drop_expired_rows(
             .await
             .map_err(failed)?,
         broker_login_states: brokering::drop_expired_login_states(transaction, now)
+            .await
+            .map_err(failed)?,
+        saml_login_requests: saml_brokering::drop_expired_login_requests(transaction, now)
+            .await
+            .map_err(failed)?,
+        saml_logout_requests: saml_brokering::drop_expired_logout_requests(transaction, now)
             .await
             .map_err(failed)?,
         // Before the logins, so this pass counts only what ended early: what

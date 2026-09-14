@@ -7,6 +7,7 @@ use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::Value;
 use services::brokering::{self, Identity, Upstream};
+use services::saml_brokering::{self, SamlUpstream};
 use store::tenancy::{Tenancy, resolve};
 use ureq::unversioned::resolver::DefaultResolver;
 
@@ -54,6 +55,20 @@ pub async fn begin(
     if provider.enabled == Some(false) {
         return told(StatusCode::NOT_FOUND, "no-such-provider");
     }
+    if saml_brokering::is_saml(&provider) {
+        return leave_for_saml(
+            transaction,
+            &provider,
+            &sealing,
+            &origin,
+            &context.tenant,
+            &context.realm_id,
+            &alias,
+            &auth_session,
+            now,
+        )
+        .await;
+    }
     let Ok(upstream) = Upstream::parse(&provider) else {
         tracing::warn!(alias, "a provider is stored that cannot be used");
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
@@ -78,6 +93,66 @@ pub async fn begin(
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     }
 
+    HttpResponseBuilder::new(StatusCode::SEE_OTHER)
+        .insert_header(("location", departure.location))
+        .finish()
+}
+
+/// Send the browser to a SAML provider, the request it carries kept for the login
+/// that sent it.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a piece of the departure the handler already holds"
+)]
+async fn leave_for_saml(
+    transaction: deadpool_postgres::Transaction<'_>,
+    provider: &models::entities::authz::IdentityProviderModel,
+    sealing: &Sealing,
+    origin: &PublicOrigin,
+    tenant: &str,
+    realm_id: &str,
+    alias: &str,
+    auth_session: &str,
+    now: chrono::DateTime<Utc>,
+) -> HttpResponse {
+    let Ok(upstream) = SamlUpstream::parse(provider) else {
+        tracing::warn!(alias, "a SAML provider is stored that cannot be used");
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let Ok(ring) = store::keyring::load(&transaction, &sealing.envelope, tenant, realm_id).await
+    else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let signing = services::grant::Signing {
+        provider: sealing.provider.as_ref(),
+        ring: &ring,
+        envelope: &sealing.envelope,
+    };
+    let Ok(signing_key) = saml_brokering::load_signing_key(&transaction, &signing).await else {
+        tracing::warn!(
+            alias,
+            "a realm with no RSA key to sign with was asked to leave for SAML"
+        );
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    let Ok(departure) = saml_brokering::depart(
+        sealing.provider.as_ref(),
+        &upstream,
+        &origin.issuer(realm_id),
+        alias,
+        &signing_key,
+        auth_session,
+        now,
+    ) else {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    };
+    if store::providers::saml_brokering::open_login_request(&transaction, &departure.request)
+        .await
+        .is_err()
+        || transaction.commit().await.is_err()
+    {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    }
     HttpResponseBuilder::new(StatusCode::SEE_OTHER)
         .insert_header(("location", departure.location))
         .finish()

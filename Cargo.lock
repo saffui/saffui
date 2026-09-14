@@ -3228,6 +3228,7 @@ dependencies = [
  "prost",
  "protoc-bin-vendored",
  "saffui",
+ "saml",
  "secrecy",
  "serde",
  "serde_cbor_2",

@@ -1,18 +1,23 @@
+use chrono::{DateTime, Utc};
 use crypto::jose::jwk::KeyPair;
 use crypto::jose::jwk::alg::rsa::RsaKeyPair;
-use crypto::provider::{PrivateKey, PublicKey, SignAlg};
+use crypto::provider::{CryptoProvider, PrivateKey, PublicKey, SignAlg};
 use crypto::x509::{CertifiedKey, Issuance, issue_certificate, read_certificate_facts};
+use data_encoding::HEXLOWER;
 use deadpool_postgres::Transaction;
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::IdentityProviderModel;
+use models::entities::brokering::SamlLoginRequest;
 use models::entities::keys::{JweAlgorithm, KeyUse, RealmEncryptionKey, RealmSigningKey};
+use saml::authn::{AuthnRequest, write_authn_request};
 use saml::metadata::{
     IdentityProvider, Misread, ServiceProvider, describe_service_provider, read_identity_provider,
 };
+use saml::redirect::{Carried, encode_query};
 use saml::xml::Limits;
 use store::providers::realm_keys;
 
-use crate::brokering::text;
+use crate::brokering::{STATE_LIFESPAN, Unbrokered, text};
 use crate::grant::Signing;
 
 const PERSISTENT: &str = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
@@ -183,16 +188,7 @@ pub async fn load_published_keys(
     transaction: &Transaction<'_>,
     signing: &Signing<'_>,
 ) -> Result<(RealmSigningKey, Option<RealmEncryptionKey>), Undescribed> {
-    let signing_key = realm_keys::active(
-        transaction,
-        signing.ring,
-        signing.envelope,
-        KeyUse::Sig,
-        Some(SignAlg::Rs256),
-    )
-    .await
-    .map_err(|_| Undescribed::Backend)?
-    .ok_or(Undescribed::NoSigningKey)?;
+    let signing_key = load_signing_key(transaction, signing).await?;
     for algorithm in RSA_ENCRYPTION {
         let found =
             realm_keys::active_encryption(transaction, signing.ring, signing.envelope, algorithm)
@@ -241,10 +237,7 @@ pub fn describe_realm(
         None => Vec::new(),
     };
     let base = compose_saml_address(issuer, alias);
-    let entity_id = upstream
-        .sp_entity_id
-        .clone()
-        .unwrap_or_else(|| format!("{base}/metadata"));
+    let entity_id = resolve_entity_id(upstream, &base);
     Ok(describe_service_provider(&ServiceProvider {
         entity_id: &entity_id,
         assertion_consumer: &format!("{base}/acs"),
@@ -285,6 +278,98 @@ fn derive_serial(kid: &str) -> Vec<u8> {
     serial.resize(16, 0);
     serial[0] = (serial[0] & 0x7f) | 0x40;
     serial
+}
+
+/// What leaves for a SAML provider: where the browser goes, and the row that ties
+/// the provider's answer to this departure.
+pub struct SamlDeparture {
+    pub location: String,
+    pub request: SamlLoginRequest,
+}
+
+/// The realm's active RSA key, the one it signs what it sends SAML providers with.
+pub async fn load_signing_key(
+    transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
+) -> Result<RealmSigningKey, Undescribed> {
+    realm_keys::active(
+        transaction,
+        signing.ring,
+        signing.envelope,
+        KeyUse::Sig,
+        Some(SignAlg::Rs256),
+    )
+    .await
+    .map_err(|_| Undescribed::Backend)?
+    .ok_or(Undescribed::NoSigningKey)
+}
+
+/// Send a login to a SAML provider: an authentication request under a fresh
+/// identifier, issued by the realm's entity for this provider, asking for the name
+/// format the provider was set up to give and for the answer at this provider's
+/// consumer, on a Redirect query the realm's RSA key signs. The request row is what
+/// the answer will be held to, and it lasts as long as a brokered login.
+pub fn depart(
+    provider: &dyn CryptoProvider,
+    upstream: &SamlUpstream,
+    issuer: &str,
+    alias: &str,
+    signing_key: &RealmSigningKey,
+    auth_session: &str,
+    now: DateTime<Utc>,
+) -> Result<SamlDeparture, Unbrokered> {
+    let mut drawn = [0_u8; 32];
+    provider
+        .rand()
+        .fill(&mut drawn)
+        .map_err(|_| Unbrokered::Backend)?;
+    let request_id = format!("_{}", HEXLOWER.encode(&drawn));
+    let base = compose_saml_address(issuer, alias);
+    let message = write_authn_request(&AuthnRequest {
+        id: &request_id,
+        issue_instant: now.timestamp(),
+        destination: &upstream.identity_provider.single_sign_on,
+        issuer: &resolve_entity_id(upstream, &base),
+        assertion_consumer: &format!("{base}/acs"),
+        name_id_format: Some(upstream.name_id_format.as_str()),
+        force_authn: false,
+    })
+    .map_err(|_| Unbrokered::Backend)?;
+    let key = RsaKeyPair::from_pem(&signing_key.private_pem).map_err(|_| Unbrokered::Backend)?;
+    let private_key = PrivateKey::from_der(key.to_der_private_key());
+    let query = encode_query(
+        Carried::Request,
+        &message,
+        None,
+        SignAlg::Rs256,
+        &|octets| {
+            provider
+                .signer()
+                .sign(SignAlg::Rs256, &private_key, octets)
+                .ok()
+        },
+    )
+    .map_err(|_| Unbrokered::Backend)?;
+    let sign_on = &upstream.identity_provider.single_sign_on;
+    let separator = if sign_on.contains('?') { '&' } else { '?' };
+    Ok(SamlDeparture {
+        location: format!("{sign_on}{separator}{query}"),
+        request: SamlLoginRequest {
+            request_id,
+            provider_alias: alias.to_owned(),
+            auth_session: auth_session.to_owned(),
+            expires_at: now + STATE_LIFESPAN,
+        },
+    })
+}
+
+/// The entity identifier the realm answers to for this provider: the one an
+/// administrator set, or the address of its metadata.
+fn resolve_entity_id(upstream: &SamlUpstream, base: &str) -> String {
+    upstream
+        .sp_entity_id
+        .clone()
+        .unwrap_or_else(|| format!("{base}/metadata"))
 }
 
 #[cfg(test)]
@@ -712,5 +797,159 @@ mod tests {
             describe_realm(&upstream, issuer, "corp", "main", &elliptic, None),
             Err(Undescribed::UnreadableKey)
         );
+    }
+
+    /// A login leaves for a SAML provider at its sign-on address, carrying an
+    /// authentication request under a fresh identifier, issued by the realm's entity
+    /// for that provider, asking for its format and for the answer at its consumer,
+    /// on a query the realm's key signs; the row keeps the identifier, the provider,
+    /// the login and a brokered login's expiry; an overriding entity identifier is
+    /// the issuer, and a sign-on address that already holds a query is extended.
+    #[test]
+    fn a_login_leaves_for_a_saml_provider_on_a_signed_request() {
+        use super::depart;
+        use chrono::DateTime;
+        use crypto::provider::CryptoConfig;
+        use crypto::provider::openssl::OpenSslProvider;
+        use saml::redirect::{Carried, decode_query, verify_query_signature};
+
+        let crypto = OpenSslProvider::new(&CryptoConfig::default()).expect("a provider");
+        let provider_key = rsa_key(2048);
+        let upstream = SamlUpstream::parse(&saml_provider(
+            &secure_metadata(&certificate_for(&provider_key, &provider_key)),
+            &[],
+        ))
+        .expect("a usable provider");
+        let signer = rsa_key(2048);
+        let signing_key = RealmSigningKey {
+            tenant: "acme".into(),
+            realm_id: "main".into(),
+            kid: "8PDw8PDw8PDw8PDw8PDw8PDw".into(),
+            algorithm: SignAlg::Rs256,
+            key_use: KeyUse::Sig,
+            status: KeyStatus::Active,
+            priority: 100,
+            private_pem: signer.to_pem_private_key(),
+            public_jwk: serde_json::Value::Null,
+            created_at: 1_789_372_800,
+        };
+        let now = DateTime::from_timestamp(1_789_372_800, 0).expect("a time");
+        let issuer = "https://id.test/realms/main";
+        let base = "https://id.test/realms/main/broker/corp/saml";
+        let departure = depart(
+            &crypto,
+            &upstream,
+            issuer,
+            "corp",
+            &signing_key,
+            "auth-7",
+            now,
+        )
+        .expect("a departure");
+
+        let (address, query) = departure.location.split_once('?').expect("a query");
+        assert_eq!(address, "https://idp.test/sso");
+        let received = decode_query(query, Limits::MESSAGE).expect("a Redirect query");
+        assert_eq!(received.carried, Carried::Request);
+        let signature = received.signature.as_ref().expect("a signature");
+        assert_eq!(
+            verify_query_signature(
+                &crypto,
+                signature,
+                &[PublicKey::from_der(signer.to_der_public_key())]
+            ),
+            Ok(())
+        );
+        let document = read_message(&received.message, Limits::MESSAGE).expect("well-formed");
+        let request = document.root_element();
+        assert_eq!(request.tag_name().name(), "AuthnRequest");
+        let consumer = format!("{base}/acs");
+        for (name, value) in [
+            ("ID", departure.request.request_id.as_str()),
+            ("Destination", "https://idp.test/sso"),
+            ("AssertionConsumerServiceURL", consumer.as_str()),
+            ("IssueInstant", "2026-09-14T08:00:00Z"),
+        ] {
+            assert_eq!(request.attribute(name), Some(value), "{name}");
+        }
+        let child = |name: &str| {
+            request
+                .children()
+                .find(|node| node.tag_name().name() == name)
+                .expect("a child")
+        };
+        assert_eq!(
+            child("Issuer").text(),
+            Some(format!("{base}/metadata").as_str())
+        );
+        assert_eq!(child("NameIDPolicy").attribute("Format"), Some(PERSISTENT));
+
+        let id = &departure.request.request_id;
+        assert!(
+            id.len() == 65
+                && id.starts_with('_')
+                && id[1..]
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "{id}"
+        );
+        assert_eq!(
+            (
+                departure.request.provider_alias.as_str(),
+                departure.request.auth_session.as_str(),
+                departure.request.expires_at
+            ),
+            ("corp", "auth-7", now + chrono::Duration::minutes(10))
+        );
+        let again = depart(
+            &crypto,
+            &upstream,
+            issuer,
+            "corp",
+            &signing_key,
+            "auth-7",
+            now,
+        )
+        .expect("a departure");
+        assert_ne!(again.request.request_id, departure.request.request_id);
+
+        let elsewhere = SamlUpstream {
+            sp_entity_id: Some("https://old.example/sp".into()),
+            identity_provider: saml::metadata::IdentityProvider {
+                single_sign_on: "https://idp.test/sso?tenant=acme".into(),
+                ..upstream.identity_provider.clone()
+            },
+            ..upstream.clone()
+        };
+        let departure = depart(
+            &crypto,
+            &elsewhere,
+            issuer,
+            "corp",
+            &signing_key,
+            "auth-7",
+            now,
+        )
+        .expect("a departure");
+        assert!(
+            departure
+                .location
+                .starts_with("https://idp.test/sso?tenant=acme&SAMLRequest="),
+            "{}",
+            departure.location
+        );
+        let received = decode_query(
+            departure.location.split_once('?').expect("a query").1,
+            Limits::MESSAGE,
+        )
+        .expect("a Redirect query");
+        let document = read_message(&received.message, Limits::MESSAGE).expect("well-formed");
+        let issued_by = document
+            .root_element()
+            .children()
+            .find(|node| node.tag_name().name() == "Issuer")
+            .and_then(|node| node.text())
+            .map(str::to_owned);
+        assert_eq!(issued_by.as_deref(), Some("https://old.example/sp"));
     }
 }

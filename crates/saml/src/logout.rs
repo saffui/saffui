@@ -305,6 +305,17 @@ fn check_logout_message(
     Ok((id.to_owned(), replayable_until))
 }
 
+/// The logout request an answer says it answers, read before anything in it is
+/// verified and only to find that request: `accept_logout_response` then holds the
+/// verified answer to it.
+pub fn read_answered_logout_request_id<'d>(document: &'d Document<'_>) -> Option<&'d str> {
+    let answer = document.root_element();
+    if !is_named(answer, PROTOCOL, "LogoutResponse") {
+        return None;
+    }
+    answer.attribute("InResponseTo")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -756,6 +767,30 @@ mod tests {
                 response_outcome(Delivered::Redirected(&received), request_id),
                 outcome,
                 "{message}"
+            );
+        }
+    }
+
+    /// A logout answer names the request it answers before anything in it is
+    /// verified; a logout request, a login response and an answer naming nothing
+    /// name no request.
+    #[test]
+    fn a_logout_answer_names_the_request_it_answers() {
+        let answer = read_message(IDP_ANSWER, Limits::MESSAGE).expect("well-formed");
+        assert_eq!(
+            super::read_answered_logout_request_id(&answer),
+            Some("_logout-3")
+        );
+        for other in [
+            IDP_REQUEST.to_owned(),
+            IDP_ANSWER.replace("samlp:LogoutResponse", "samlp:Response"),
+            IDP_ANSWER.replacen(r#" InResponseTo="_logout-3""#, "", 1),
+        ] {
+            let document = read_message(&other, Limits::MESSAGE).expect("well-formed");
+            assert_eq!(
+                super::read_answered_logout_request_id(&document),
+                None,
+                "{other}"
             );
         }
     }

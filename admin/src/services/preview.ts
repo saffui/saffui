@@ -713,7 +713,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
   if (/\/identity-providers\/[^/]+\/mappers\/[^/]+$/.test(path)) {
     return answer(null);
   }
-  if (/\/identity-providers\/partner-saml\/mappers$/.test(path)) {
+  if (path.endsWith("/identity-providers/partner-saml/mappers")) {
     if (method !== "GET") return answer(null);
     return answer([
       {

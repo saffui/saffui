@@ -192,6 +192,12 @@ Code meant for the whole crate goes into a module of its own rather than into
    decryption): RSAES-OAEP unwrapping with the OAEP and MGF1 digests named
    apart, as XML Encryption names them. The vendored `jose/jwe/alg/rsaes.rs`
    ties the two together and stays untouched.
+5. `x509::issue_certificate` and `x509::read_certificate_facts` (2026-09-14,
+   SAML metadata): a version 3 certificate for a public key under an RSA key
+   and SHA-256, the same bytes for the same issuance, so a realm publishes
+   certificates for its keys without storing any; and the kind, strength and
+   end of validity of a certified key, so an identity provider's weak key can
+   be refused where an administrator saves it.
 
 ## Before vendoring anything
 

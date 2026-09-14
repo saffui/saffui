@@ -32,7 +32,9 @@ export interface IdpMapperRow {
 
 export type IdpMapperType =
   | "oidc-user-attribute-idp-mapper"
-  | "oidc-hardcoded-role-idp-mapper";
+  | "oidc-hardcoded-role-idp-mapper"
+  | "saml-user-attribute-idp-mapper"
+  | "saml-role-idp-mapper";
 
 export interface IdpMapperMutation {
   name: string;

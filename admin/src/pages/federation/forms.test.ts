@@ -2,12 +2,20 @@ import { describe, expect, test } from "vitest";
 import type { IdpRow } from "@/models/federation";
 import {
   ATTRIBUTE_MAPPER,
+  PERSISTENT_NAME_ID,
   ROLE_MAPPER,
-  mapperDraft,
+  SAML_ATTRIBUTE_MAPPER,
+  SAML_ROLE_MAPPER,
+  emptyMapperDraft,
   emptyProviderDraft,
+  findProviderBlocker,
+  mapperDraft,
   mapperMutation,
+  mapperTypeLabel,
+  mapperTypesFor,
   providerDraft,
   providerMutation,
+  samlMetadataAddress,
 } from "./forms";
 
 describe("identity provider forms", () => {
@@ -143,6 +151,7 @@ describe("plain OAuth 2.0 provider forms", () => {
 describe("identity provider mapper forms", () => {
   test("keeps only claim mapping fields", () => {
     const body = mapperMutation({
+      ...emptyMapperDraft(),
       name: " Department ",
       type: ATTRIBUTE_MAPPER,
       syncMode: "force",
@@ -174,6 +183,142 @@ describe("identity provider mapper forms", () => {
       name: "operators",
       mapper_type: ROLE_MAPPER,
       configs: { syncMode: { Str: "import" }, role: { Str: "role-id" } },
+    });
+  });
+});
+
+describe("SAML provider forms", () => {
+  const row: IdpRow = {
+    internal_id: "idp-3",
+    provider_id: "partner",
+    name: "partner",
+    display_name: "Partner SSO",
+    description: "",
+    enabled: true,
+    trust_email: false,
+    configs: {
+      protocol: { Str: "saml" },
+      idp_metadata: { Str: "<md:EntityDescriptor/>" },
+      name_id_format: { Str: "urn:oasis:names:tc:SAML:2.0:nameid-format:transient" },
+      principal_attribute: { Str: "uid" },
+      email_attribute: { Str: "mail" },
+    },
+  };
+
+  test("reads a SAML provider as SAML and saves every key it holds, none of the other protocols", () => {
+    const draft = providerDraft(row);
+    expect(draft.protocol).toBe("saml");
+    expect(providerMutation(draft).configs).toEqual({
+      protocol: { Str: "saml" },
+      idp_metadata: { Str: "<md:EntityDescriptor/>" },
+      name_id_format: { Str: "urn:oasis:names:tc:SAML:2.0:nameid-format:transient" },
+      principal_attribute: { Str: "uid" },
+      email_attribute: { Str: "mail" },
+    });
+  });
+
+  test("starts on the persistent format and leaves a blank optional key out", () => {
+    const draft = {
+      ...emptyProviderDraft(),
+      alias: "partner",
+      protocol: "saml" as const,
+      idpMetadata: " <md:EntityDescriptor/> ",
+      spEntityId: " ",
+    };
+    expect(draft.nameIdFormat).toBe(PERSISTENT_NAME_ID);
+    expect(providerMutation(draft).configs).toEqual({
+      protocol: { Str: "saml" },
+      idp_metadata: { Str: "<md:EntityDescriptor/>" },
+      name_id_format: { Str: PERSISTENT_NAME_ID },
+    });
+  });
+
+  test("names what keeps a SAML provider from being saved", () => {
+    const ready = { ...emptyProviderDraft(), protocol: "saml" as const, idpMetadata: "<md:EntityDescriptor/>" };
+    expect(findProviderBlocker(ready)).toBeNull();
+    expect(findProviderBlocker({ ...ready, idpMetadata: " " })).toBe("idp-saml-metadata-needed");
+    expect(
+      findProviderBlocker({ ...ready, nameIdFormat: "urn:oasis:names:tc:SAML:2.0:nameid-format:transient" }),
+    ).toBe("idp-saml-principal-needed");
+    expect(findProviderBlocker({ ...ready, principalAttribute: "mail", emailAttribute: " mail " })).toBe(
+      "idp-saml-principal-is-email",
+    );
+    expect(findProviderBlocker(emptyProviderDraft())).toBeNull();
+  });
+
+  test("gives the realm's metadata address for a provider", () => {
+    expect(samlMetadataAddress("https://id.example", "main realm", "partner")).toBe(
+      "https://id.example/realms/main%20realm/broker/partner/saml/metadata",
+    );
+  });
+});
+
+describe("SAML mapper forms", () => {
+  test("offers the rules that read what each protocol sends", () => {
+    expect(mapperTypesFor("saml")).toEqual([SAML_ATTRIBUTE_MAPPER, SAML_ROLE_MAPPER, ROLE_MAPPER]);
+    expect(mapperTypesFor("oidc")).toEqual([ATTRIBUTE_MAPPER, ROLE_MAPPER]);
+    expect(mapperTypesFor("oauth2")).toEqual([ATTRIBUTE_MAPPER, ROLE_MAPPER]);
+    expect(emptyMapperDraft("saml").type).toBe(SAML_ATTRIBUTE_MAPPER);
+    expect(emptyMapperDraft().type).toBe(ATTRIBUTE_MAPPER);
+    expect([ATTRIBUTE_MAPPER, ROLE_MAPPER, SAML_ATTRIBUTE_MAPPER, SAML_ROLE_MAPPER].map(mapperTypeLabel)).toEqual([
+      "idp-mapper-attribute",
+      "idp-mapper-role",
+      "idp-mapper-saml-attribute",
+      "idp-mapper-saml-role",
+    ]);
+  });
+
+  test("round-trips a SAML attribute rule, keeping a list only when asked", () => {
+    const draft = mapperDraft({
+      mapper_id: "m-3",
+      realm_id: "main",
+      provider_alias: "partner",
+      name: "groups",
+      mapper_type: SAML_ATTRIBUTE_MAPPER,
+      configs: {
+        "attribute.name": { Str: "memberOf" },
+        "user.attribute": { Str: "groups" },
+        multivalued: { Str: "true" },
+        syncMode: { Str: "force" },
+      },
+    });
+    expect(draft.multivalued).toBe(true);
+    expect(mapperMutation(draft)).toEqual({
+      name: "groups",
+      mapper_type: SAML_ATTRIBUTE_MAPPER,
+      configs: {
+        syncMode: { Str: "force" },
+        "attribute.name": { Str: "memberOf" },
+        "user.attribute": { Str: "groups" },
+        multivalued: { Str: "true" },
+      },
+    });
+    expect(mapperMutation({ ...draft, multivalued: false }).configs.multivalued).toBeUndefined();
+  });
+
+  test("round-trips a SAML role rule by its attribute, its value and a stable role id", () => {
+    const draft = mapperDraft({
+      mapper_id: "m-4",
+      realm_id: "main",
+      provider_alias: "partner",
+      name: "staff",
+      mapper_type: SAML_ROLE_MAPPER,
+      configs: {
+        "attribute.name": { Str: "memberOf" },
+        "attribute.value": { Str: "staff" },
+        role: { Str: "role-staff" },
+        syncMode: { Str: "import" },
+      },
+    });
+    expect(mapperMutation(draft)).toEqual({
+      name: "staff",
+      mapper_type: SAML_ROLE_MAPPER,
+      configs: {
+        syncMode: { Str: "import" },
+        "attribute.name": { Str: "memberOf" },
+        "attribute.value": { Str: "staff" },
+        role: { Str: "role-staff" },
+      },
     });
   });
 });

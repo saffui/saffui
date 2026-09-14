@@ -10,7 +10,11 @@ use store::error::StoreError;
 use store::keyring::RealmKeyring;
 use store::providers::{brokering, roles};
 
-use crate::brokering::Upstream;
+use crate::brokering::{
+    ATTRIBUTE_IDP_MAPPER, ATTRIBUTE_NAME, ATTRIBUTE_VALUE, CLAIM, KNOWN_IDP_MAPPERS, ROLE,
+    ROLE_IDP_MAPPER, SAML_ATTRIBUTE_IDP_MAPPER, SAML_ROLE_IDP_MAPPER, SYNC_MODE, USER_ATTRIBUTE,
+    Upstream, rule_fits_provider,
+};
 
 /// What the sealed upstream secret is scoped to.
 const PURPOSE: &str = "identity-provider-secret";
@@ -310,58 +314,96 @@ async fn provider_exists(transaction: &Transaction<'_>, alias: &str) -> Result<(
 }
 
 /// Refuse what the arrival engine would not run: a type outside the
-/// catalogue, a rule missing what its type reads, a sync mode neither word,
-/// and a role nobody made. Checked here, at the plane, so a broken rule is
-/// the writer's problem and never the person's at the door.
+/// catalogue, a rule reading what its provider does not send, a sync mode
+/// neither word, a rule missing what its type reads, and a role nobody made.
+/// Checked here, at the plane, so a broken rule is the writer's problem and
+/// never the person's at the door.
 async fn check_rule(
     transaction: &Transaction<'_>,
+    provider: &IdentityProviderModel,
     asked: &IdpMapperMutationModel,
 ) -> Result<(), Unwritable> {
-    if !crate::brokering::KNOWN_IDP_MAPPERS.contains(&asked.mapper_type.as_str()) {
+    check_rule_shape(provider, asked)?;
+    let granted_role = match asked.mapper_type.as_str() {
+        ROLE_IDP_MAPPER | SAML_ROLE_IDP_MAPPER => asked
+            .configs
+            .as_ref()
+            .and_then(|bag| bag.get(ROLE))
+            .and_then(AttributeValue::as_str),
+        _ => None,
+    };
+    if let Some(role_id) = granted_role
+        && roles::load(transaction, role_id)
+            .await
+            .map_err(|_| Unwritable::Backend)?
+            .is_none()
+    {
+        return Err(Unwritable::Invalid(format!("no role answers to {role_id}")));
+    }
+    Ok(())
+}
+
+/// What a rule's check reads without the store.
+fn check_rule_shape(
+    provider: &IdentityProviderModel,
+    asked: &IdpMapperMutationModel,
+) -> Result<(), Unwritable> {
+    let mapper_type = asked.mapper_type.as_str();
+    if !KNOWN_IDP_MAPPERS.contains(&mapper_type) {
         return Err(Unwritable::Invalid(format!(
             "no rule of this name runs on arrival; one of: {}",
-            crate::brokering::KNOWN_IDP_MAPPERS.join(", ")
+            KNOWN_IDP_MAPPERS.join(", ")
         )));
+    }
+    if !rule_fits_provider(mapper_type, provider) {
+        return Err(Unwritable::Invalid(
+            if crate::saml_brokering::is_saml(provider) {
+                format!(
+                    "a SAML provider sends attributes, not claims; {SAML_ATTRIBUTE_IDP_MAPPER} reads them"
+                )
+            } else {
+                format!(
+                    "only a SAML provider sends attributes; {ATTRIBUTE_IDP_MAPPER} reads this provider's claims"
+                )
+            },
+        ));
     }
     let named = |key: &str| {
         asked
             .configs
             .as_ref()
             .and_then(|bag| bag.get(key))
-            .and_then(models::entities::attributes::AttributeValue::as_str)
+            .and_then(AttributeValue::as_str)
     };
-    if let Some(mode) = named(crate::brokering::SYNC_MODE)
+    if let Some(mode) = named(SYNC_MODE)
         && !matches!(mode, "import" | "force")
     {
         return Err(Unwritable::Invalid(
             "syncMode is import or force".to_owned(),
         ));
     }
-    match asked.mapper_type.as_str() {
-        crate::brokering::ATTRIBUTE_IDP_MAPPER => {
-            if named(crate::brokering::CLAIM).is_none()
-                || named(crate::brokering::USER_ATTRIBUTE).is_none()
-            {
-                return Err(Unwritable::Invalid(
-                    "an attribute rule names a claim and a user.attribute".to_owned(),
-                ));
-            }
+    let complete = |reads: &[&str], missing: &str| {
+        if reads.iter().any(|key| named(key).is_none()) {
+            Err(Unwritable::Invalid(missing.to_owned()))
+        } else {
+            Ok(())
         }
-        crate::brokering::ROLE_IDP_MAPPER => {
-            let Some(role_id) = named(crate::brokering::ROLE) else {
-                return Err(Unwritable::Invalid("a role rule names a role".to_owned()));
-            };
-            if roles::load(transaction, role_id)
-                .await
-                .map_err(|_| Unwritable::Backend)?
-                .is_none()
-            {
-                return Err(Unwritable::Invalid(format!("no role answers to {role_id}")));
-            }
-        }
-        _ => {}
+    };
+    match mapper_type {
+        ATTRIBUTE_IDP_MAPPER => complete(
+            &[CLAIM, USER_ATTRIBUTE],
+            "an attribute rule names a claim and a user.attribute",
+        ),
+        SAML_ATTRIBUTE_IDP_MAPPER => complete(
+            &[ATTRIBUTE_NAME, USER_ATTRIBUTE],
+            "a SAML attribute rule names an attribute.name and a user.attribute",
+        ),
+        SAML_ROLE_IDP_MAPPER => complete(
+            &[ATTRIBUTE_NAME, ATTRIBUTE_VALUE, ROLE],
+            "a SAML role rule names an attribute.name, an attribute.value and a role",
+        ),
+        _ => complete(&[ROLE], "a role rule names a role"),
     }
-    Ok(())
 }
 
 pub async fn add_mapper(
@@ -373,8 +415,8 @@ pub async fn add_mapper(
     alias: &str,
     asked: IdpMapperMutationModel,
 ) -> Result<IdpMapperModel, Unwritable> {
-    provider_exists(transaction, alias).await?;
-    check_rule(transaction, &asked).await?;
+    let identity_provider = get_provider(transaction, alias).await?;
+    check_rule(transaction, &identity_provider, &asked).await?;
     let mapper = asked.into_model(
         draw(provider)?,
         realm_id.to_owned(),
@@ -418,7 +460,8 @@ pub async fn rework_mapper(
     asked: IdpMapperMutationModel,
 ) -> Result<IdpMapperModel, Unwritable> {
     let standing = mapper_of(transaction, alias, mapper_id).await?;
-    check_rule(transaction, &asked).await?;
+    let identity_provider = get_provider(transaction, alias).await?;
+    check_rule(transaction, &identity_provider, &asked).await?;
     let mut mapper = asked.into_model(
         mapper_id.to_owned(),
         standing.realm_id.clone(),
@@ -450,7 +493,7 @@ pub async fn remove_mapper(
 
 #[cfg(test)]
 mod tests {
-    use super::{Unwritable, check_configuration};
+    use super::{Unwritable, check_configuration, check_rule_shape};
     use crypto::jose::jwk::KeyPair;
     use crypto::jose::jwk::alg::rsa::RsaKeyPair;
     use crypto::provider::{PrivateKey, PublicKey};
@@ -458,6 +501,7 @@ mod tests {
     use models::auditable::AuditableModel;
     use models::entities::attributes::{AttributeValue, AttributesMap};
     use models::entities::authz::{IdentityProviderModel, IdentityProviderMutationModel};
+    use models::entities::brokering::IdpMapperMutationModel;
 
     fn provider(said: &[(&str, &str)]) -> IdentityProviderModel {
         let configs: AttributesMap = said
@@ -526,5 +570,94 @@ mod tests {
             matches!(&refused, Err(Unwritable::Invalid(why)) if why.contains("jwks_uri")),
             "{refused:?}"
         );
+    }
+
+    fn rule(mapper_type: &str, said: &[(&str, &str)]) -> IdpMapperMutationModel {
+        IdpMapperMutationModel {
+            name: "rule".into(),
+            mapper_type: mapper_type.into(),
+            configs: Some(
+                said.iter()
+                    .map(|(key, value)| {
+                        ((*key).to_owned(), AttributeValue::Str((*value).to_owned()))
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    /// A rule is checked against what its provider sends before the store is read:
+    /// the SAML rules only for a SAML provider, the claim rule never for one, a
+    /// granted role for either, and a rule missing what its type reads refused with
+    /// its reason.
+    #[test]
+    fn a_rule_is_checked_against_what_its_provider_sends() {
+        let saml = provider(&[("protocol", "saml")]);
+        let openid = provider(&[]);
+        let department = [("attribute.name", "department"), ("user.attribute", "unit")];
+        let staff = [
+            ("attribute.name", "memberOf"),
+            ("attribute.value", "staff"),
+            ("role", "role-staff"),
+        ];
+        let acr = [("claim", "acr"), ("user.attribute", "upstream.acr")];
+        let held = [("role", "role-staff")];
+
+        for (on, asked) in [
+            (&saml, rule("saml-user-attribute-idp-mapper", &department)),
+            (&saml, rule("saml-role-idp-mapper", &staff)),
+            (&saml, rule("oidc-hardcoded-role-idp-mapper", &held)),
+            (&openid, rule("oidc-hardcoded-role-idp-mapper", &held)),
+            (&openid, rule("oidc-user-attribute-idp-mapper", &acr)),
+        ] {
+            assert!(
+                check_rule_shape(on, &asked).is_ok(),
+                "{}",
+                asked.mapper_type
+            );
+        }
+        let attribute_reads = "an attribute.name and a user.attribute";
+        let role_reads = "an attribute.value and a role";
+        for (on, asked, holds) in [
+            (
+                &saml,
+                rule("oidc-user-attribute-idp-mapper", &acr),
+                "not claims",
+            ),
+            (
+                &openid,
+                rule("saml-user-attribute-idp-mapper", &department),
+                "only a SAML provider",
+            ),
+            (
+                &openid,
+                rule("saml-role-idp-mapper", &staff),
+                "only a SAML provider",
+            ),
+            (
+                &saml,
+                rule("saml-user-attribute-idp-mapper", &department[..1]),
+                attribute_reads,
+            ),
+            (
+                &saml,
+                rule("saml-user-attribute-idp-mapper", &department[1..]),
+                attribute_reads,
+            ),
+            (&saml, rule("saml-role-idp-mapper", &staff[..2]), role_reads),
+            (&saml, rule("saml-role-idp-mapper", &staff[1..]), role_reads),
+            (
+                &saml,
+                rule("saml-role-idp-mapper", &[staff[0], staff[2]]),
+                role_reads,
+            ),
+            (&saml, rule("saml-avatar-mapper", &department), "one of:"),
+        ] {
+            let refused = check_rule_shape(on, &asked);
+            assert!(
+                matches!(&refused, Err(Unwritable::Invalid(why)) if why.contains(holds)),
+                "{refused:?}"
+            );
+        }
     }
 }

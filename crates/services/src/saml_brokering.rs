@@ -14,10 +14,12 @@ use saml::metadata::{
     IdentityProvider, Misread, ServiceProvider, describe_service_provider, read_identity_provider,
 };
 use saml::redirect::{Carried, encode_query};
+use saml::response::Accepted;
 use saml::xml::Limits;
+use serde_json::{Map, Value};
 use store::providers::realm_keys;
 
-use crate::brokering::{STATE_LIFESPAN, Unbrokered, text};
+use crate::brokering::{Arrival, STATE_LIFESPAN, Unbrokered, text};
 use crate::grant::Signing;
 
 const PERSISTENT: &str = "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent";
@@ -370,6 +372,69 @@ fn resolve_entity_id(upstream: &SamlUpstream, base: &str) -> String {
         .sp_entity_id
         .clone()
         .unwrap_or_else(|| format!("{base}/metadata"))
+}
+
+/// Who a SAML provider's accepted assertion names, read as a brokered login reads
+/// an arrival. The person is the persistent name identifier when the provider was
+/// set up for one, and then only a name in that format; otherwise the one value of
+/// the attribute set to name them. A name that can be given to someone else is never
+/// taken as the person. An address the provider gives counts as verified, so linking
+/// by it rests on the provider being trusted for addresses.
+pub fn arrive(upstream: &SamlUpstream, accepted: &Accepted) -> Result<Arrival, Unbrokered> {
+    let mut gathered: Map<String, Value> = Map::new();
+    for (name, values) in &accepted.attributes {
+        if let Value::Array(listed) = gathered
+            .entry(name.clone())
+            .or_insert_with(|| Value::Array(Vec::new()))
+        {
+            listed.extend(values.iter().cloned().map(Value::String));
+        }
+    }
+    let claims: Map<String, Value> = gathered
+        .into_iter()
+        .filter_map(|(name, value)| match value {
+            Value::Array(mut listed) if listed.len() == 1 => listed.pop().map(|only| (name, only)),
+            Value::Array(listed) if listed.is_empty() => None,
+            other => Some((name, other)),
+        })
+        .collect();
+    let single = |attribute: &Option<String>| {
+        attribute
+            .as_deref()
+            .and_then(|name| claims.get(name))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+
+    let external_user_id = if upstream.name_id_format == PERSISTENT {
+        if accepted.name_id.format.as_deref() != Some(PERSISTENT) {
+            return Err(Unbrokered::Refused);
+        }
+        accepted.name_id.value.clone()
+    } else {
+        single(&upstream.principal_attribute).ok_or(Unbrokered::Refused)?
+    };
+    let username = single(&upstream.username_attribute);
+    let email = single(&upstream.email_attribute);
+    Ok(Arrival {
+        external_user_id,
+        username,
+        email_verified: email.is_some(),
+        email,
+        claims,
+    })
+}
+
+/// The private keys a realm decrypts assertions with: every RSA encryption key it
+/// still holds for use, a rotated one included, so an assertion encrypted to a key a
+/// provider imported before the rotation still opens. A key that does not read as
+/// RSA is left out.
+pub fn read_decryption_keys(keys: &[RealmEncryptionKey]) -> Vec<PrivateKey> {
+    keys.iter()
+        .filter_map(|key| RsaKeyPair::from_pem(&key.private_pem).ok())
+        .map(|pair| PrivateKey::from_der(pair.to_der_private_key()))
+        .collect()
 }
 
 #[cfg(test)]
@@ -951,5 +1016,190 @@ mod tests {
             .and_then(|node| node.text())
             .map(str::to_owned);
         assert_eq!(issued_by.as_deref(), Some("https://old.example/sp"));
+    }
+
+    fn accepted(
+        name_id: &str,
+        format: Option<&str>,
+        attributes: &[(&str, &[&str])],
+    ) -> saml::response::Accepted {
+        saml::response::Accepted {
+            assertion_id: "_assertion".into(),
+            replayable_until: 1_789_373_100,
+            name_id: saml::name_id::NameId {
+                value: name_id.into(),
+                format: format.map(str::to_owned),
+                name_qualifier: None,
+                sp_name_qualifier: None,
+            },
+            session_index: Some("_session-1".into()),
+            session_not_on_or_after: None,
+            authn_instant: 1_789_372_790,
+            authn_context_class: None,
+            attributes: attributes
+                .iter()
+                .map(|(name, values)| {
+                    (
+                        (*name).to_owned(),
+                        values.iter().map(|value| (*value).to_owned()).collect(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    /// An assertion names the person only by a name that stays theirs: the
+    /// persistent name when the provider was set up for one, and never a transient
+    /// name or one in no format in its place; otherwise the one value of the
+    /// attribute set to name them, and never none, two or an empty one. The username
+    /// and the address are single values, the address counts as verified when given,
+    /// and every attribute is kept as a claim, a value once and several as a list.
+    #[test]
+    fn an_assertion_names_the_person_only_by_a_name_that_stays_theirs() {
+        use super::arrive;
+        use crate::brokering::Unbrokered;
+
+        let provider_key = rsa_key(2048);
+        let metadata = secure_metadata(&certificate_for(&provider_key, &provider_key));
+        let persistent = SamlUpstream::parse(&saml_provider(
+            &metadata,
+            &[("username_attribute", "uid"), ("email_attribute", "mail")],
+        ))
+        .expect("a usable provider");
+        let arrival = arrive(
+            &persistent,
+            &accepted(
+                "AAdzZWNyZXQx",
+                Some(PERSISTENT),
+                &[
+                    ("uid", &["ada"][..]),
+                    ("mail", &["ada@idp.test"][..]),
+                    ("groups", &["staff", "admins"][..]),
+                    ("groups", &["ops"][..]),
+                    ("empty", &[][..]),
+                ],
+            ),
+        )
+        .expect("an arrival");
+        assert_eq!(arrival.external_user_id, "AAdzZWNyZXQx");
+        assert_eq!(arrival.username.as_deref(), Some("ada"));
+        assert_eq!(
+            (arrival.email.as_deref(), arrival.email_verified),
+            (Some("ada@idp.test"), true)
+        );
+        assert_eq!(
+            arrival.claims.get("groups"),
+            Some(&serde_json::json!(["staff", "admins", "ops"]))
+        );
+        assert_eq!(arrival.claims.get("uid"), Some(&serde_json::json!("ada")));
+        assert!(!arrival.claims.contains_key("empty"));
+
+        for format in [Some(TRANSIENT), None] {
+            assert!(
+                matches!(
+                    arrive(&persistent, &accepted("AAdzZWNyZXQx", format, &[])),
+                    Err(Unbrokered::Refused)
+                ),
+                "{format:?}"
+            );
+        }
+        let doubled = arrive(
+            &persistent,
+            &accepted(
+                "AAdzZWNyZXQx",
+                Some(PERSISTENT),
+                &[
+                    ("mail", &["one@idp.test", "two@idp.test"][..]),
+                    ("uid", &["ada", "lovelace"][..]),
+                ],
+            ),
+        )
+        .expect("an arrival");
+        assert_eq!(
+            (doubled.email, doubled.email_verified, doubled.username),
+            (None, false, None)
+        );
+
+        let by_attribute = SamlUpstream::parse(&saml_provider(
+            &metadata,
+            &[
+                ("name_id_format", TRANSIENT),
+                ("principal_attribute", "employeeNumber"),
+            ],
+        ))
+        .expect("a usable provider");
+        let arrival = arrive(
+            &by_attribute,
+            &accepted(
+                "transient-1",
+                Some(TRANSIENT),
+                &[("employeeNumber", &["E-42"][..])],
+            ),
+        )
+        .expect("an arrival");
+        assert_eq!(arrival.external_user_id, "E-42");
+        let none: &[(&str, &[&str])] = &[];
+        let two: &[(&str, &[&str])] = &[("employeeNumber", &["E-42", "E-43"][..])];
+        let empty: &[(&str, &[&str])] = &[("employeeNumber", &[""][..])];
+        for attributes in [none, two, empty] {
+            assert!(
+                matches!(
+                    arrive(
+                        &by_attribute,
+                        &accepted("transient-1", Some(TRANSIENT), attributes)
+                    ),
+                    Err(Unbrokered::Refused)
+                ),
+                "{attributes:?}"
+            );
+        }
+    }
+
+    /// Every RSA encryption key the realm holds decrypts, whatever its OAEP variant,
+    /// while a key of another kind and one that does not read are left out.
+    #[test]
+    fn every_rsa_encryption_key_the_realm_holds_decrypts() {
+        use super::read_decryption_keys;
+
+        let first = rsa_key(2048);
+        let second = rsa_key(2048);
+        let key = |kid: &str, algorithm: JweAlgorithm, private_pem: Vec<u8>| RealmEncryptionKey {
+            kid: kid.into(),
+            algorithm,
+            private_pem,
+            public_jwk: serde_json::Value::Null,
+        };
+        let held = [
+            key(
+                "active",
+                JweAlgorithm::RsaOaep256,
+                first.to_pem_private_key(),
+            ),
+            key(
+                "rotated",
+                JweAlgorithm::RsaOaep,
+                second.to_pem_private_key(),
+            ),
+            key(
+                "elliptic",
+                JweAlgorithm::EcdhEs,
+                EcKeyPair::generate(EcCurve::P256)
+                    .expect("a P-256 key")
+                    .to_pem_private_key(),
+            ),
+            key(
+                "unreadable",
+                JweAlgorithm::RsaOaep256,
+                b"not a key".to_vec(),
+            ),
+        ];
+        let read: Vec<Vec<u8>> = read_decryption_keys(&held)
+            .iter()
+            .map(|private| private.der().to_vec())
+            .collect();
+        assert_eq!(
+            read,
+            [first.to_der_private_key(), second.to_der_private_key()]
+        );
     }
 }

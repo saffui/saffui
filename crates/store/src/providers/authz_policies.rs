@@ -402,6 +402,26 @@ pub async fn prune_decisions(
         .map_err(|_| StoreError::Backend)
 }
 
+/// What an erased person's decisions name as their subject.
+pub const ERASED_SUBJECT: &str = "erased";
+
+/// Take a person's name off the decisions that carry it, keeping each decision
+/// under the erased subject, and say how many were renamed.
+pub async fn pseudonymize_decisions_of(
+    transaction: &Transaction<'_>,
+    subject_type: &str,
+    subject_id: &str,
+) -> StoreResult<u64> {
+    transaction
+        .execute(
+            "UPDATE authz_decisions SET subject_id = $3 \
+             WHERE subject_type = $1 AND subject_id = $2",
+            &[&subject_type, &subject_id, &ERASED_SUBJECT],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)
+}
+
 pub async fn disagreements(
     transaction: &Transaction<'_>,
     limit: i64,

@@ -147,6 +147,24 @@ pub async fn unrelate(
     Ok(removed > 0)
 }
 
+/// Delete every edge naming this entity, as the subject or as the object, and
+/// say how many went.
+pub async fn unrelate_everything_naming(
+    transaction: &Transaction<'_>,
+    entity_type: &str,
+    entity_id: &str,
+) -> StoreResult<u64> {
+    transaction
+        .execute(
+            "DELETE FROM rebac_tuples \
+             WHERE (subject_type = $1 AND subject_id = $2) \
+                OR (object_type = $1 AND object_id = $2)",
+            &[&entity_type, &entity_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)
+}
+
 /// Who stands in one relation to one object.
 ///
 /// Ordered, because a walk that short circuits on the first answer spends a

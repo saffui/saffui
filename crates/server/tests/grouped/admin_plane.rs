@@ -2259,6 +2259,51 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
         )
         .await
         .unwrap();
+        // A decision about her, and relations naming her from either end,
+        // beside one that names only ada.
+        transaction
+            .execute(
+                "INSERT INTO authz_decisions \
+                 (tenant, realm_id, decision_id, subject_type, subject_id, resource_kind, \
+                  action, reported, computed, detail, duration_us) \
+                 VALUES ($1, $2, 'decision-about-grace', 'user', 'grace', 'document', \
+                         'view', 'deny', 'deny', '{}'::jsonb, 1)",
+                &[&support::TENANT, &REALM],
+            )
+            .await
+            .unwrap();
+        services::rebac::publish(
+            &transaction,
+            "definition user {
+                 relation manager: user
+             }
+             definition document {
+                 relation owner: user
+             }",
+            Some("root"),
+        )
+        .await
+        .unwrap();
+        for (object_type, object_id, relation, subject_id) in [
+            ("document", "grace-notes", "owner", "grace"),
+            ("user", "grace", "manager", support::SUBJECT),
+            ("document", "ada-notes", "owner", support::SUBJECT),
+        ] {
+            services::rebac::relate(
+                &transaction,
+                object_type,
+                object_id,
+                relation,
+                &store::providers::rebac::Subject {
+                    subject_type: "user".into(),
+                    subject_id: subject_id.into(),
+                    subject_relation: String::new(),
+                },
+                Some("root"),
+            )
+            .await
+            .unwrap();
+        }
         transaction.commit().await.unwrap();
     }
 
@@ -2376,6 +2421,36 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
             .unwrap()
             .get(0);
         assert_eq!(orphans, 0, "rows outlived the erasure");
+        let journal: (i64, i64) = transaction
+            .query_one(
+                "SELECT (SELECT count(*) FROM authz_decisions WHERE subject_id = 'grace'), \
+                        (SELECT count(*) FROM authz_decisions \
+                          WHERE decision_id = 'decision-about-grace' AND subject_id = 'erased')",
+                &[],
+            )
+            .await
+            .map(|row| (row.get(0), row.get(1)))
+            .unwrap();
+        assert_eq!(
+            journal,
+            (0, 1),
+            "the decision about her kept her name, or went with it"
+        );
+        let edges: (i64, i64) = transaction
+            .query_one(
+                "SELECT (SELECT count(*) FROM rebac_tuples \
+                          WHERE subject_id = 'grace' OR object_id = 'grace'), \
+                        (SELECT count(*) FROM rebac_tuples WHERE object_id = 'ada-notes')",
+                &[],
+            )
+            .await
+            .map(|row| (row.get(0), row.get(1)))
+            .unwrap();
+        assert_eq!(
+            edges,
+            (0, 1),
+            "a relation naming her outlived the erasure, or one naming only ada went"
+        );
         // Exactly one thing leaves on the way out, and it is not the profile.
         let outgoing = transaction
             .query("SELECT kind FROM event_outbox WHERE user_id = 'grace'", &[])

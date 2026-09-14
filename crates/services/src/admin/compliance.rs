@@ -120,7 +120,9 @@ pub async fn refuse(
 ///
 /// The walk: rows no cascade reaches are felled first (pending backchannel
 /// asks, device approvals, the person's queued outbox events, so telling the
-/// world about the erasure does not first deliver their profile); then the
+/// world about the erasure does not first deliver their profile, the relations
+/// naming them, and their name on the decision journal, whose decisions stay
+/// under an erased subject); then the
 /// account goes, taking everything keyed to it; the deletion itself emits
 /// the event the connectors and receivers de-provision by. The register's
 /// own row survives on its own legal ground, as the record of compliance.
@@ -171,6 +173,20 @@ pub async fn fulfil_erasure(
             store::providers::outbox::erase_pending_for_user(transaction, &user_id)
                 .await
                 .map_err(|_| Unactionable::Backend)?;
+            store::providers::authz_policies::pseudonymize_decisions_of(
+                transaction,
+                crate::context::PERSON_KIND,
+                &user_id,
+            )
+            .await
+            .map_err(|_| Unactionable::Backend)?;
+            store::providers::rebac::unrelate_everything_naming(
+                transaction,
+                crate::context::PERSON_KIND,
+                &user_id,
+            )
+            .await
+            .map_err(|_| Unactionable::Backend)?;
             if !users::delete(transaction, &user_id)
                 .await
                 .map_err(|_| Unactionable::Backend)?

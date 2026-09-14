@@ -7,6 +7,10 @@ use store::tenancy::TenantContext;
 
 use crate::token::Verified;
 
+/// What the journal's `subject_type` column, and a relation's type, take for a
+/// person.
+pub const PERSON_KIND: &str = "user";
+
 /// Who is asking, resolved against the realm rather than read off a token.
 ///
 /// A user, and only a user: what reaches here is an access token bound to a
@@ -33,7 +37,7 @@ impl Principal {
     /// What the journal's `subject_type` column takes. One producer, so two
     /// call sites cannot spell it two ways.
     pub fn kind(&self) -> &'static str {
-        "user"
+        PERSON_KIND
     }
 }
 

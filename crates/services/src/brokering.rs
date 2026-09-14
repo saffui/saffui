@@ -97,7 +97,7 @@ pub enum Unusable {
     NotAPointer(&'static str),
 }
 
-fn text<'a>(bag: &'a AttributesMap, key: &str) -> Option<&'a str> {
+pub(crate) fn text<'a>(bag: &'a AttributesMap, key: &str) -> Option<&'a str> {
     bag.get(key).and_then(AttributeValue::as_str)
 }
 

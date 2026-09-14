@@ -153,6 +153,44 @@ pub enum Unremoved {
     Backend,
 }
 
+/// The store could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the store could not be read")]
+pub struct Unread;
+
+impl From<Unread> for Unremoved {
+    fn from(_: Unread) -> Self {
+        Unremoved::Backend
+    }
+}
+
+/// How recently and how strongly a login was proven, against what a sensitive
+/// change to the account asks of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignInStanding {
+    /// Until when the login counts as recent, if it still does.
+    pub fresh_until: Option<i64>,
+    /// The strongest level the flow lets this person reach, where the realm maps levels.
+    pub reachable_level: Option<i32>,
+    /// The name the realm gives that level.
+    pub reachable_acr: Option<String>,
+    /// The level the login reached, zero where none was recorded.
+    pub reached: i32,
+}
+
+impl SignInStanding {
+    /// Whether the login reached what the flow lets this person reach.
+    pub fn is_strong_enough(&self) -> bool {
+        self.reachable_level
+            .is_none_or(|needed| self.reached >= needed)
+    }
+
+    /// Whether a sensitive change may go ahead on this login.
+    pub fn allows_sensitive_change(&self) -> bool {
+        self.fresh_until.is_some() && self.is_strong_enough()
+    }
+}
+
 /// What a person holds to sign in with, never the material.
 pub struct OwnFactors {
     pub password: bool,
@@ -226,54 +264,108 @@ pub async fn own_factors(
     let recovery_codes = credentials::count_recovery_codes(transaction, user_id)
         .await
         .map_err(|_| Unremoved::Backend)?;
+    let holds = Holdings {
+        password,
+        authenticator_app,
+        passkey: !keys.is_empty(),
+        recovery_codes: recovery_codes > 0,
+        verified_phone: read_verified_phone(transaction, user_id).await?,
+    };
+    let standing = judge_sign_in(transaction, session_id, presenter, &holds, now).await?;
+    let strong = standing.is_strong_enough();
+    Ok(OwnFactors {
+        password,
+        apps,
+        keys,
+        recovery_codes,
+        stronger_sign_in_needed: standing.fresh_until.is_some() && !strong,
+        fresh_until: standing.fresh_until.filter(|_| strong),
+    })
+}
+
+/// How the login a request rides stands for a sensitive change to the person's
+/// account: whether it is recent, and whether it is as strong as the flow the
+/// presenting client signs in with lets this person reach with what they hold.
+pub async fn read_sign_in_standing(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+    session_id: &str,
+    presenter: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<SignInStanding, Unread> {
+    let of_type = |kind| credentials::load_for_user_of_type(transaction, user_id, kind);
+    let holds = Holdings {
+        password: !of_type(CredentialType::Password)
+            .await
+            .map_err(|_| Unread)?
+            .is_empty(),
+        authenticator_app: !of_type(CredentialType::Totp)
+            .await
+            .map_err(|_| Unread)?
+            .is_empty(),
+        passkey: !webauthn::of_user(transaction, user_id)
+            .await
+            .map_err(|_| Unread)?
+            .is_empty(),
+        recovery_codes: credentials::count_recovery_codes(transaction, user_id)
+            .await
+            .map_err(|_| Unread)?
+            > 0,
+        verified_phone: read_verified_phone(transaction, user_id).await?,
+    };
+    judge_sign_in(transaction, session_id, presenter, &holds, now).await
+}
+
+async fn read_verified_phone(transaction: &Transaction<'_>, user_id: &str) -> Result<bool, Unread> {
+    Ok(users::load(transaction, user_id)
+        .await
+        .map_err(|_| Unread)?
+        .and_then(|person| person.phone_number_verified)
+        .unwrap_or(false))
+}
+
+/// How a login stands, given what the person holds.
+async fn judge_sign_in(
+    transaction: &Transaction<'_>,
+    session_id: &str,
+    presenter: Option<&str>,
+    holds: &Holdings,
+    now: DateTime<Utc>,
+) -> Result<SignInStanding, Unread> {
     let signed_in = sessions::load(transaction, session_id)
         .await
-        .map_err(|_| Unremoved::Backend)?;
+        .map_err(|_| Unread)?;
     let fresh_until = signed_in
         .as_ref()
         .and_then(|login| login.auth_time)
         .map(|proven| proven + FRESH_SIGN_IN_SECONDS)
         .filter(|until| *until >= now.timestamp());
 
-    let realm = realms::of_context(transaction)
-        .await
-        .map_err(|_| Unremoved::Backend)?;
-    let needed = match realm.as_ref().and_then(|realm| realm.acr_loa_map.as_ref()) {
-        None => None,
+    let realm = realms::of_context(transaction).await.map_err(|_| Unread)?;
+    let (level, acr) = match realm.as_ref().and_then(|realm| realm.acr_loa_map.as_ref()) {
+        None => (None, None),
         Some(levels) => {
-            let verified_phone = users::load(transaction, user_id)
-                .await
-                .map_err(|_| Unremoved::Backend)?
-                .and_then(|person| person.phone_number_verified)
-                .unwrap_or(false);
-            let holds = Holdings {
-                password,
-                authenticator_app,
-                passkey: !keys.is_empty(),
-                recovery_codes: recovery_codes > 0,
-                verified_phone,
-            };
             let bound = realm
                 .as_ref()
                 .and_then(|realm| realm.browser_flow.as_deref());
             let steps = match flow_signing_in(transaction, presenter, bound).await? {
                 Some(flow_id) => auth_flows::executions_of(transaction, &flow_id)
                     .await
-                    .map_err(|_| Unremoved::Backend)?,
+                    .map_err(|_| Unread)?,
                 None => Vec::new(),
             };
-            reachable_level(levels, &steps, &holds)
+            let level = reachable_level(levels, &steps, holds);
+            let acr = level
+                .and_then(|level| levels.acr_for_loa(level))
+                .map(str::to_owned);
+            (level, acr)
         }
     };
-    let reached = signed_in.as_ref().and_then(|login| login.loa).unwrap_or(0);
-    let strong = needed.is_none_or(|needed| reached >= needed);
-    Ok(OwnFactors {
-        password,
-        apps,
-        keys,
-        recovery_codes,
-        stronger_sign_in_needed: fresh_until.is_some() && !strong,
-        fresh_until: fresh_until.filter(|_| strong),
+    Ok(SignInStanding {
+        fresh_until,
+        reachable_level: level,
+        reachable_acr: acr,
+        reached: signed_in.as_ref().and_then(|login| login.loa).unwrap_or(0),
     })
 }
 
@@ -283,21 +375,21 @@ async fn flow_signing_in(
     transaction: &Transaction<'_>,
     presenter: Option<&str>,
     realm_bound: Option<&str>,
-) -> Result<Option<String>, Unremoved> {
+) -> Result<Option<String>, Unread> {
     if let Some(presenter) = presenter
         && let Some(client) = clients::load(transaction, presenter)
             .await
-            .map_err(|_| Unremoved::Backend)?
+            .map_err(|_| Unread)?
     {
         return crate::authorize::browser_flow(transaction, &client)
             .await
             .map(Some)
-            .map_err(|_| Unremoved::Backend);
+            .map_err(|_| Unread);
     }
     Ok(
         auth_flows::flow_by_alias(transaction, realm_bound.unwrap_or("browser"))
             .await
-            .map_err(|_| Unremoved::Backend)?
+            .map_err(|_| Unread)?
             .map(|flow| flow.flow_id),
     )
 }

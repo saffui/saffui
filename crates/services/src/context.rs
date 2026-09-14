@@ -255,7 +255,7 @@ async fn resolve(
 /// would turn a lever that was doing nothing into one that refuses everybody.
 /// Truncating is the safe direction: a token is judged as minted no later than
 /// it says.
-fn minted_at(verified: &Verified) -> Option<i64> {
+pub(crate) fn minted_at(verified: &Verified) -> Option<i64> {
     let issued = verified.claims.get("iat")?;
     issued
         .as_i64()

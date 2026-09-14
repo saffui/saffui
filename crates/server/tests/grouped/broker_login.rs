@@ -1424,8 +1424,13 @@ async fn a_saml_provider_is_shown_the_realm_as_its_service_provider() {
 }
 
 /// Plant a SAML provider through the admin API, trusting a certificate the crypto
-/// crate issues for a key it generates.
-async fn plant_saml_provider(plane: &Plane, bearer: &str, alias: &str) {
+/// crate issues for a key it generates, and hand back the key to answer as that
+/// provider.
+async fn plant_saml_provider(
+    plane: &Plane,
+    bearer: &str,
+    alias: &str,
+) -> crypto::jose::jwk::alg::rsa::RsaKeyPair {
     use crypto::jose::jwk::KeyPair;
     use crypto::jose::jwk::alg::rsa::RsaKeyPair;
     use crypto::provider::{PrivateKey, PublicKey};
@@ -1465,6 +1470,7 @@ async fn plant_saml_provider(plane: &Plane, bearer: &str, alias: &str) {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{told}");
+    key
 }
 
 /// A login leaves for a SAML provider through the door on the sign-in page: to the
@@ -1565,4 +1571,231 @@ async fn a_login_leaves_for_a_saml_provider_on_a_request_the_realm_signs() {
         .map(|row| (row.get(0), row.get(1), row.get(2)))
         .collect();
     assert_eq!(kept, [(request_id, "corp".to_owned(), cookie)]);
+}
+
+/// What the SAML identity provider at `https://idp.test/metadata` answers a request
+/// with: a success naming `name` persistently, its assertion addressed to the
+/// realm's entity for `alias`, confirmed for that provider's consumer and this
+/// request for five minutes, carrying a note long enough to outgrow the form ceiling
+/// a framework picks by default, signed with `key`, and encoded as the POST binding
+/// carries it.
+fn answer_saml_request(
+    key: &crypto::jose::jwk::alg::rsa::RsaKeyPair,
+    alias: &str,
+    request_id: &str,
+    name: &str,
+) -> String {
+    use crypto::jose::jwk::KeyPair;
+    use crypto::provider::{PrivateKey, SignAlg};
+
+    let base = format!("{}/broker/{alias}/saml", support::origin().issuer(REALM));
+    let instant = |offset: i64| {
+        (chrono::Utc::now() + chrono::Duration::seconds(offset))
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string()
+    };
+    let (now, closing) = (instant(0), instant(300));
+    let note = "n".repeat(24 * 1024);
+    let response = format!(
+        r#"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_response" Version="2.0" IssueInstant="{now}" Destination="{base}/acs" InResponseTo="{request_id}"><saml:Issuer>https://idp.test/metadata</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status><saml:Assertion ID="_assertion" Version="2.0" IssueInstant="{now}"><saml:Issuer>https://idp.test/metadata</saml:Issuer><saml:Subject><saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">{name}</saml:NameID><saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer"><saml:SubjectConfirmationData NotOnOrAfter="{closing}" Recipient="{base}/acs" InResponseTo="{request_id}"/></saml:SubjectConfirmation></saml:Subject><saml:Conditions NotBefore="{now}" NotOnOrAfter="{closing}"><saml:AudienceRestriction><saml:Audience>{base}/metadata</saml:Audience></saml:AudienceRestriction></saml:Conditions><saml:AuthnStatement AuthnInstant="{now}" SessionIndex="_session-at-idp"><saml:AuthnContext><saml:AuthnContextClassRef>urn:oasis:names:tc:SAML:2.0:ac:classes:PasswordProtectedTransport</saml:AuthnContextClassRef></saml:AuthnContext></saml:AuthnStatement><saml:AttributeStatement><saml:Attribute Name="note"><saml:AttributeValue>{note}</saml:AttributeValue></saml:Attribute></saml:AttributeStatement></saml:Assertion></samlp:Response>"#
+    );
+    let sealing = support::sealing();
+    let private = PrivateKey::from_der(key.to_der_private_key());
+    let sign = |octets: &[u8]| {
+        sealing
+            .provider
+            .signer()
+            .sign(SignAlg::Rs256, &private, octets)
+            .ok()
+    };
+    let signed = saml::dsig::sign_enveloped(
+        sealing.provider.as_ref(),
+        &response,
+        "_assertion",
+        SignAlg::Rs256,
+        &sign,
+    )
+    .expect("the assertion signed");
+    data_encoding::BASE64.encode(signed.as_bytes())
+}
+
+/// A SAML provider's signed answer admits the login that left for it. The
+/// provider's post, which a browser sends without the login's Lax cookie, is posted
+/// once more from this origin to the consumer alone; an answer signed with another
+/// key, the second post still without the cookie, and a post from another browser
+/// are refused without spending the request. The login then lands with its session,
+/// the person is linked by the persistent name, what the provider named the login by
+/// is kept, and the same answer posted again is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_saml_answer_admits_the_login_that_left_for_it() {
+    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+    use store::tenancy::TenantContext;
+
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let identity_provider = plant_saml_provider(&plane, &bearer, "corp").await;
+    plane
+        .publish_key(&support::SigningKey::generate_rsa("saml-rsa"))
+        .await;
+    let cookie = opened_login(&plane).await;
+    let other = opened_login(&plane).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/broker/corp/login"
+            ))
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let departure = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a departure")
+        .to_owned();
+    let (_, query) = departure.split_once('?').expect("a query");
+    let received =
+        saml::redirect::decode_query(query, saml::xml::Limits::MESSAGE).expect("a Redirect query");
+    let request_id = saml::xml::read_message(&received.message, saml::xml::Limits::MESSAGE)
+        .expect("well-formed")
+        .root_element()
+        .attribute("ID")
+        .expect("an identifier")
+        .to_owned();
+
+    let consumer = format!("/realms/{REALM}/broker/corp/saml/acs");
+    let posted = |answer: &str, bounced: bool, presented: Option<&str>| {
+        let mut fields = vec![("SAMLResponse", answer.to_owned())];
+        if bounced {
+            fields.push(("bounced", "1".to_owned()));
+        }
+        let mut asked = test::TestRequest::post().uri(&consumer).set_form(fields);
+        if let Some(held) = presented {
+            asked =
+                asked.insert_header(("cookie", format!("{}={held}", support::AUTH_SESSION_COOKIE)));
+        }
+        asked.to_request()
+    };
+    let answer = answer_saml_request(&identity_provider, "corp", &request_id, "AAdzZWNyZXQx");
+    let forged = answer_saml_request(
+        &RsaKeyPair::generate(2048).expect("another RSA key"),
+        "corp",
+        &request_id,
+        "AAdzZWNyZXQx",
+    );
+
+    let response = test::call_service(&app, posted(&answer, false, None)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let absolute = format!("{}/broker/corp/saml/acs", support::origin().issuer(REALM));
+    let policy = response
+        .headers()
+        .get("content-security-policy")
+        .and_then(|held| held.to_str().ok())
+        .expect("a policy")
+        .to_owned();
+    assert!(
+        policy.contains(&format!("form-action {absolute};")),
+        "{policy}"
+    );
+    let page = String::from_utf8(test::read_body(response).await.to_vec()).expect("UTF-8");
+    assert!(page.contains(&format!(r#"action="{absolute}""#)), "{page}");
+    assert!(
+        page.contains(&format!(
+            r#"<input type="hidden" name="SAMLResponse" value="{answer}">"#
+        )),
+        "{page}"
+    );
+    assert!(
+        page.contains(r#"<input type="hidden" name="bounced" value="1">"#),
+        "{page}"
+    );
+
+    for (sent, presented) in [
+        (forged.as_str(), Some(cookie.as_str())),
+        (answer.as_str(), None),
+        (answer.as_str(), Some(other.as_str())),
+    ] {
+        let response = test::call_service(&app, posted(sent, true, presented)).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{presented:?}");
+    }
+
+    let response = test::call_service(&app, posted(&answer, true, Some(&cookie))).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "the refused answers spent what the browser that left still needed"
+    );
+    let cookies: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a landing")
+        .to_owned();
+    assert!(location.starts_with(support::REDIRECT), "{location}");
+    assert!(param(&location, "code").is_some(), "{location}");
+    let session = support::cookie_value(&cookies, "saffui_session")
+        .expect("a session cookie")
+        .to_owned();
+
+    let response = test::call_service(&app, posted(&answer, true, Some(&cookie))).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("/realms/{REALM}/broker/corp/saml/form-post.js"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    assert!(
+        store::providers::brokering::linked_user(&transaction, "corp", "AAdzZWNyZXQx")
+            .await
+            .expect("a read")
+            .is_some(),
+        "the persistent name was not linked"
+    );
+    let named = store::providers::saml_brokering::read_broker_session(&transaction, &session)
+        .await
+        .expect("a read")
+        .expect("what the provider named the login by");
+    assert_eq!(
+        (
+            named.provider_alias.as_str(),
+            named.name_id.as_str(),
+            named.name_id_format.as_deref(),
+            named.session_index.as_deref(),
+        ),
+        (
+            "corp",
+            "AAdzZWNyZXQx",
+            Some("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"),
+            Some("_session-at-idp"),
+        )
+    );
+    let open: i64 = transaction
+        .query_one("SELECT count(*) FROM saml_login_requests", &[])
+        .await
+        .expect("a census")
+        .get(0);
+    assert_eq!(open, 0);
 }

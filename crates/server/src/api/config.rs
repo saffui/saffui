@@ -45,6 +45,10 @@ const ADMIN_BODY: usize = 8 * 1024 * 1024;
 /// with nothing presented.
 const PROTOCOL_BODY: usize = 8 * 1024;
 
+/// The form ceiling on a SAML provider's messages: a posted message is the base64
+/// of up to the 256 KiB a message may hold, a third more once encoded.
+const SAML_BODY: usize = 512 * 1024;
+
 /// Everything the planes need to answer.
 #[derive(Clone)]
 pub struct Plane {
@@ -345,9 +349,20 @@ fn authz_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
 fn saml_broker_scope() -> impl HttpServiceFactory + 'static {
     web::scope("/realms/{realm}/broker/{alias}/saml")
         .wrap(crate::middleware::transport::SecuredTransport)
+        .app_data(web::FormConfig::default().limit(SAML_BODY))
         .service(
             web::resource("/metadata")
                 .route(web::get().to(crate::api::rest::endpoints::protocol::saml_broker::metadata)),
+        )
+        .service(web::resource("/acs").route(
+            web::post().to(crate::api::rest::endpoints::protocol::saml_broker::consume_assertion),
+        ))
+        // The page posting an answer once more from this origin loads its script from
+        // beside the consumer.
+        .service(
+            web::resource("/form-post.js").route(
+                web::get().to(crate::api::rest::endpoints::protocol::page::form_post_script),
+            ),
         )
 }
 

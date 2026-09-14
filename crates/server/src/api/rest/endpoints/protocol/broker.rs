@@ -1,14 +1,18 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
-use chrono::Utc;
+use auth::login::browser::Admission;
+use auth::provenance::Provenance;
+use chrono::{DateTime, Utc};
 use config::serving::Egress;
 use data_encoding::BASE64;
-use deadpool_postgres::Pool;
+use deadpool_postgres::{Pool, Transaction};
+use models::entities::authz::IdentityProviderModel;
 use serde::Deserialize;
 use serde_json::Value;
-use services::brokering::{self, Identity, Upstream};
+use services::brokering::{self, Arrival, Identity, Upstream};
+use services::landing::Landing;
 use services::saml_brokering::{self, SamlUpstream};
-use store::tenancy::{Tenancy, resolve};
+use store::tenancy::{Tenancy, TenantContext, resolve};
 use ureq::unversioned::resolver::DefaultResolver;
 
 use config::serving::PublicOrigin;
@@ -304,38 +308,20 @@ pub async fn conclude(
         }
     };
 
-    // Who that is here, decided by policy; then the login they left open is
-    // admitted the same way an answered one is.
-    let (user_id, first_login) = match brokering::decide_link(
+    let user_id = match link_arrival(
         &transaction,
-        sealing.provider.as_ref(),
-        &context.tenant,
-        &context.realm_id,
+        &sealing,
+        &context,
         &provider,
+        &alias,
         &arrival,
         now,
     )
     .await
     {
-        Ok(decided) => decided,
-        Err(brokering::Unbrokered::Backend) => {
-            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
-        }
-        Err(brokering::Unbrokered::Refused) => {
-            tracing::warn!(alias, "no local account could be decided for the arrival");
-            return refused();
-        }
+        Ok(user_id) => user_id,
+        Err(response) => return response,
     };
-    // The provider's rules run on every arrival; each rule says whether it
-    // writes once or every time. After the link, so a rule reads who the
-    // person is here; before the admission, so what it wrote is what the
-    // tokens are minted from.
-    if brokering::apply_mappers(&transaction, &provider, &user_id, &arrival, first_login)
-        .await
-        .is_err()
-    {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
-    }
     // The upstream's own signed assertion, kept as this person's aggregated
     // claim source: what it says travels as its word, never restated as
     // this realm's. A plain OAuth 2.0 answer signs nothing to keep.
@@ -346,31 +332,6 @@ pub async fn conclude(
     {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     }
-    let Ok(Some(person)) = store::providers::users::load(&transaction, &user_id).await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
-    };
-
-    let seen = read_provenance(&request);
-    let step = match auth::login::browser::admit_federated(
-        &transaction,
-        sealing.provider.as_ref(),
-        &context,
-        &spent.auth_session,
-        &person.user_id,
-        &person.user_name,
-        &alias,
-        &arrival.external_user_id,
-        &seen,
-        now,
-    )
-    .await
-    {
-        Ok(step) => step,
-        Err(_) => {
-            tracing::warn!(alias, "the login the broker was answering is gone");
-            return refused();
-        }
-    };
 
     let ring = store::keyring::load(
         &transaction,
@@ -385,49 +346,166 @@ pub async fn conclude(
         ring,
         envelope: &sealing.envelope,
     });
+    let (admitted, landed) = match admit_arrival(
+        &transaction,
+        &sealing,
+        &origin,
+        &context,
+        signing.as_ref(),
+        &read_provenance(&request),
+        &spent.auth_session,
+        &alias,
+        &user_id,
+        &arrival.external_user_id,
+        now,
+    )
+    .await
+    {
+        Ok(admission) => admission,
+        Err(response) => return response,
+    };
+    if transaction.commit().await.is_err() {
+        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    }
+    answer_admitted(&origin, &context.realm_id, &alias, &admitted, &landed)
+}
+
+/// Who an arrival is here, decided by policy, with the provider's rules run on it.
+///
+/// Every rule runs on every arrival and says itself whether it writes once or
+/// every time: after the link, so a rule reads who the person is here, and before
+/// the admission, so what it wrote is what the tokens are minted from.
+pub(crate) async fn link_arrival(
+    transaction: &Transaction<'_>,
+    sealing: &Sealing,
+    context: &TenantContext,
+    provider: &IdentityProviderModel,
+    alias: &str,
+    arrival: &Arrival,
+    now: DateTime<Utc>,
+) -> Result<String, HttpResponse> {
+    let (user_id, first_login) = match brokering::decide_link(
+        transaction,
+        sealing.provider.as_ref(),
+        &context.tenant,
+        &context.realm_id,
+        provider,
+        arrival,
+        now,
+    )
+    .await
+    {
+        Ok(decided) => decided,
+        Err(brokering::Unbrokered::Backend) => {
+            return Err(told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"));
+        }
+        Err(brokering::Unbrokered::Refused) => {
+            tracing::warn!(alias, "no local account could be decided for the arrival");
+            return Err(told(StatusCode::BAD_REQUEST, "refused"));
+        }
+    };
+    if brokering::apply_mappers(transaction, provider, &user_id, arrival, first_login)
+        .await
+        .is_err()
+    {
+        return Err(told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"));
+    }
+    Ok(user_id)
+}
+
+/// Admit the login a browser left open for the person an arrival was linked to,
+/// and mint what it lands with. Every protocol's way back ends here.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a piece of the admission the way back already holds"
+)]
+pub(crate) async fn admit_arrival(
+    transaction: &Transaction<'_>,
+    sealing: &Sealing,
+    origin: &PublicOrigin,
+    context: &TenantContext,
+    signing: Option<&store::keyring::Signing<'_>>,
+    seen: &Provenance,
+    auth_session: &str,
+    alias: &str,
+    user_id: &str,
+    external_user_id: &str,
+    now: DateTime<Utc>,
+) -> Result<(Admission, Landing), HttpResponse> {
+    let Ok(Some(person)) = store::providers::users::load(transaction, user_id).await else {
+        return Err(told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"));
+    };
+    let step = match auth::login::browser::admit_federated(
+        transaction,
+        sealing.provider.as_ref(),
+        context,
+        auth_session,
+        &person.user_id,
+        &person.user_name,
+        alias,
+        external_user_id,
+        seen,
+        now,
+    )
+    .await
+    {
+        Ok(step) => step,
+        Err(_) => {
+            tracing::warn!(alias, "the login the broker was answering is gone");
+            return Err(told(StatusCode::BAD_REQUEST, "refused"));
+        }
+    };
     let auth::login::browser::Step::Admitted(admitted) = step else {
-        return refused();
+        return Err(told(StatusCode::BAD_REQUEST, "refused"));
     };
     let Ok(landed) = services::minting::landed(
-        &transaction,
+        transaction,
         sealing.provider.as_ref(),
-        &context,
+        context,
         &admitted,
-        signing.as_ref(),
+        signing,
         &origin.issuer(&context.realm_id),
         now,
     )
     .await
     else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+        return Err(told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"));
     };
-    if transaction.commit().await.is_err() {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
-    }
+    Ok((*admitted, landed))
+}
 
+/// What an admitted brokered login answers the browser: the login's cookie cleared,
+/// the session's set, and the client's landing.
+pub(crate) fn answer_admitted(
+    origin: &PublicOrigin,
+    realm_id: &str,
+    alias: &str,
+    admitted: &Admission,
+    landed: &Landing,
+) -> HttpResponse {
     tracing::info!(session = %admitted.session_id, alias, "brokered login admitted");
     let mut response = HttpResponseBuilder::new(StatusCode::SEE_OTHER);
-    binding::clear(&mut response, binding::AUTH_SESSION, &context.realm_id);
+    binding::clear(&mut response, binding::AUTH_SESSION, realm_id);
     // No box was ticked on the upstream's page: the session cookie dies with
     // the browser, like an unremembered local login.
     binding::set(
         &mut response,
         binding::SSO_SESSION,
         &admitted.session_id,
-        &context.realm_id,
+        realm_id,
         None,
     );
     if let Some(state) = &admitted.browser_state {
-        binding::set_browser_state(&mut response, state, &context.realm_id);
+        binding::set_browser_state(&mut response, state, realm_id);
     }
-    hand_over(&mut response, &context.realm_id, None);
+    hand_over(&mut response, realm_id, None);
     told_landing(
         &mut response,
         Spoken::Form,
         "admitted",
-        &landed,
-        &origin,
-        &context.realm_id,
+        landed,
+        origin,
+        realm_id,
     )
 }
 

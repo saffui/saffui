@@ -938,7 +938,10 @@ impl Plane {
     }
 
     /// Point a client's browser login at another flow.
-    #[allow(dead_code, reason = "only the protocol suite asks for a second factor")]
+    #[allow(
+        dead_code,
+        reason = "only the protocol and own account suites ask for a second factor"
+    )]
     pub async fn bind_browser_flow(&self, client_id: &str, flow: &str) {
         let mut connection = self.connection().await;
         let transaction = self

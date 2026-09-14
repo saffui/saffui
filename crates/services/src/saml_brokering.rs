@@ -9,17 +9,19 @@ use data_encoding::HEXLOWER;
 use deadpool_postgres::Transaction;
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::IdentityProviderModel;
-use models::entities::brokering::{SamlBrokerSession, SamlLoginRequest};
+use models::entities::brokering::{SamlBrokerSession, SamlLoginRequest, SamlLogoutRequest};
 use models::entities::keys::{JweAlgorithm, KeyUse, RealmEncryptionKey, RealmSigningKey};
 use saml::authn::{AuthnRequest, write_authn_request};
 use saml::logout::{
-    Delivered, ExpectedLogout, LogoutResponse, RefusedLogout, accept_logout_request,
-    write_logout_response,
+    Delivered, ExpectedLogout, LogoutRequest, LogoutRequested, LogoutResponse, RefusedLogout,
+    accept_logout_request, accept_logout_response, read_answered_logout_request_id,
+    write_logout_request, write_logout_response,
 };
 use saml::metadata::{
     Endpoint, IdentityProvider, Misread, ServiceProvider, describe_service_provider,
     read_identity_provider,
 };
+use saml::name_id::NameId;
 use saml::post::decode_posted_message;
 use saml::redirect::{Carried, decode_query, encode_query};
 use saml::response::{Accepted, Expected, Refused, accept_response, read_answered_request_id};
@@ -621,26 +623,30 @@ fn read_trusted_keys(upstream: &SamlUpstream) -> Vec<PublicKey> {
 #[derive(Debug, Clone, Copy)]
 pub enum SamlLogoutMessage<'a> {
     /// A Redirect query exactly as it arrived, since its signature covers those
-    /// octets.
+    /// octets. It carries a request or an answer.
     Redirected(&'a str),
-    /// The fields of a POST.
-    Posted {
+    /// A POST carrying the provider's own logout request.
+    PostedRequest {
         request: &'a str,
         relay_state: Option<&'a str>,
     },
+    /// A POST carrying the provider's answer to a logout the realm started.
+    PostedAnswer(&'a str),
 }
 
-/// Why a SAML provider's logout request was not heeded, each naming what failed for
-/// the operator's log. The browser is told one thing whatever the variant, the store
+/// Why a SAML logout message was not taken, each naming what failed for the
+/// operator's log. The browser is told one thing whatever the variant, the store
 /// failing aside.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum Unheeded {
-    #[error("the message is not a SAML logout request that reads")]
+    #[error("the message is not a SAML logout message that reads")]
     Unreadable,
-    #[error("the logout request was refused: {0}")]
+    #[error("the logout message was refused: {0}")]
     Refused(RefusedLogout),
     #[error("the logout request was already heeded")]
     Replayed,
+    #[error("the answer names no logout the realm started with this provider")]
+    NoOpenRequest,
     #[error("the store could not be read or written")]
     Backend,
 }
@@ -654,19 +660,31 @@ pub struct HeededLogout {
     pub answer: Option<String>,
 }
 
-/// Heed a SAML provider's logout request.
+/// What a SAML logout message comes to once taken.
+#[derive(Debug)]
+pub enum TakenLogout {
+    /// The provider's own logout request, heeded.
+    Requested(HeededLogout),
+    /// The provider's answer to a logout the realm started, with the row it was held
+    /// to, which says where the browser resumes.
+    Answered(SamlLogoutRequest),
+}
+
+/// Take a SAML logout message at the realm's logout address for a provider.
 ///
-/// The request is held to the provider's entity and signing keys and to the realm's
-/// logout address for this provider, is heeded once, and names the logins still
-/// standing through this provider under its name identifier. The answer reports
-/// success whatever was found, since a logout that finds nothing leaves nothing to
-/// end, and goes back on a Redirect query the realm's RSA key signs, with the relay
-/// state the request came with, to where the provider takes answers.
+/// Either kind is held to the provider's entity and signing keys and to this
+/// address. A logout request is heeded once and names the logins still standing
+/// through this provider under its name identifier. The answer to it reports success
+/// whatever was found, since a logout that finds nothing leaves nothing to end, and
+/// goes back on a Redirect query the realm's RSA key signs, with the relay state the
+/// request came with, to where the provider takes answers. An answer spends the row
+/// of the logout the realm started with this provider; a refusal commits nothing, so
+/// the row stays for the answer that verifies.
 #[allow(
     clippy::too_many_arguments,
     reason = "each is a piece of the logout the address already holds"
 )]
-pub async fn heed_logout_request(
+pub async fn take_logout_message(
     transaction: &Transaction<'_>,
     provider: &dyn CryptoProvider,
     upstream: &SamlUpstream,
@@ -675,7 +693,7 @@ pub async fn heed_logout_request(
     signing_key: &RealmSigningKey,
     message: SamlLogoutMessage<'_>,
     now: DateTime<Utc>,
-) -> Result<HeededLogout, Unheeded> {
+) -> Result<TakenLogout, Unheeded> {
     let base = compose_saml_address(issuer, alias);
     let destination = format!("{base}/slo");
     let trusted = read_trusted_keys(upstream);
@@ -690,12 +708,31 @@ pub async fn heed_logout_request(
         SamlLogoutMessage::Redirected(query) => {
             let received =
                 decode_query(query, Limits::MESSAGE).map_err(|_| Unheeded::Unreadable)?;
-            let requested =
-                accept_logout_request(provider, Delivered::Redirected(&received), &expected)
+            match received.carried {
+                Carried::Request => {
+                    let requested = accept_logout_request(
+                        provider,
+                        Delivered::Redirected(&received),
+                        &expected,
+                    )
                     .map_err(Unheeded::Refused)?;
-            (requested, received.relay_state)
+                    (requested, received.relay_state)
+                }
+                Carried::Response => {
+                    return take_logout_answer(
+                        transaction,
+                        provider,
+                        alias,
+                        Delivered::Redirected(&received),
+                        &expected,
+                        now,
+                    )
+                    .await
+                    .map(TakenLogout::Answered);
+                }
+            }
         }
-        SamlLogoutMessage::Posted {
+        SamlLogoutMessage::PostedRequest {
             request,
             relay_state,
         } => {
@@ -704,7 +741,51 @@ pub async fn heed_logout_request(
                 .map_err(Unheeded::Refused)?;
             (requested, relay_state.map(str::to_owned))
         }
+        SamlLogoutMessage::PostedAnswer(answer) => {
+            let xml = decode_posted_message(answer).ok_or(Unheeded::Unreadable)?;
+            return take_logout_answer(
+                transaction,
+                provider,
+                alias,
+                Delivered::Posted(&xml),
+                &expected,
+                now,
+            )
+            .await
+            .map(TakenLogout::Answered);
+        }
     };
+    heed_logout_request(
+        transaction,
+        provider,
+        upstream,
+        &base,
+        alias,
+        signing_key,
+        requested,
+        relay_state,
+        now,
+    )
+    .await
+    .map(TakenLogout::Requested)
+}
+
+/// Heed a SAML provider's own logout request, once it verifies.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a piece of the logout the address already holds"
+)]
+async fn heed_logout_request(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    upstream: &SamlUpstream,
+    base: &str,
+    alias: &str,
+    signing_key: &RealmSigningKey,
+    requested: LogoutRequested,
+    relay_state: Option<String>,
+    now: DateTime<Utc>,
+) -> Result<HeededLogout, Unheeded> {
     if relay_state
         .as_ref()
         .is_some_and(|held| held.len() > RELAY_STATE_MAX_BYTES)
@@ -741,7 +822,7 @@ pub async fn heed_logout_request(
                 id: &answer_id,
                 issue_instant: now.timestamp(),
                 destination: answered_at,
-                issuer: &resolve_entity_id(upstream, &base),
+                issuer: &resolve_entity_id(upstream, base),
                 in_response_to: &requested.id,
             })
             .map_err(|_| Unheeded::Backend)?;
@@ -760,6 +841,155 @@ pub async fn heed_logout_request(
         None => None,
     };
     Ok(HeededLogout { sessions, answer })
+}
+
+/// Take a SAML provider's answer to a logout the realm started. The answer names its
+/// request before anything in it is verified, only to find that logout's row, and is
+/// then held to that request.
+async fn take_logout_answer(
+    transaction: &Transaction<'_>,
+    provider: &dyn CryptoProvider,
+    alias: &str,
+    delivered: Delivered<'_>,
+    expected: &ExpectedLogout<'_>,
+    now: DateTime<Utc>,
+) -> Result<SamlLogoutRequest, Unheeded> {
+    let xml = match delivered {
+        Delivered::Redirected(received) => received.message.as_str(),
+        Delivered::Posted(xml) => xml,
+    };
+    let document = read_message(xml, Limits::MESSAGE).map_err(|_| Unheeded::Unreadable)?;
+    let request_id = read_answered_logout_request_id(&document).ok_or(Unheeded::NoOpenRequest)?;
+    let request = store::providers::saml_brokering::consume_logout_request(
+        transaction,
+        request_id,
+        alias,
+        now,
+    )
+    .await
+    .map_err(|_| Unheeded::Backend)?
+    .ok_or(Unheeded::NoOpenRequest)?;
+    accept_logout_response(provider, delivered, expected, &request.request_id)
+        .map_err(Unheeded::Refused)?;
+    Ok(request)
+}
+
+/// What leaves for a SAML provider when a login it opened ends here: where the
+/// browser goes, and the row the provider's answer is held to.
+pub struct SamlLogoutDeparture {
+    pub location: String,
+    pub request: SamlLogoutRequest,
+}
+
+/// Tell a SAML provider that a login it opened ended here: a logout request under a
+/// fresh identifier, issued by the realm's entity for this provider, repeating whole
+/// the name identifier the provider gave and the session it named, on a Redirect
+/// query the realm's RSA key signs, to the provider's logout address. The row keeps
+/// where the browser resumes once the provider answers, for as long as a brokered
+/// login lasts. A provider with no logout address is sent nothing.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a piece of the logout the realm already holds"
+)]
+pub fn depart_for_logout(
+    provider: &dyn CryptoProvider,
+    upstream: &SamlUpstream,
+    issuer: &str,
+    alias: &str,
+    signing_key: &RealmSigningKey,
+    named: &SamlBrokerSession,
+    resume_to: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<SamlLogoutDeparture>, Unbrokered> {
+    let Some(logout) = &upstream.identity_provider.single_logout else {
+        return Ok(None);
+    };
+    let request_id = draw_message_id(provider).ok_or(Unbrokered::Backend)?;
+    let base = compose_saml_address(issuer, alias);
+    let message = write_logout_request(&LogoutRequest {
+        id: &request_id,
+        issue_instant: now.timestamp(),
+        destination: &logout.location,
+        issuer: &resolve_entity_id(upstream, &base),
+        name_id: &NameId {
+            value: named.name_id.clone(),
+            format: named.name_id_format.clone(),
+            name_qualifier: named.name_qualifier.clone(),
+            sp_name_qualifier: named.sp_name_qualifier.clone(),
+        },
+        session_index: named.session_index.as_deref(),
+    })
+    .map_err(|_| Unbrokered::Backend)?;
+    let location = sign_redirect(
+        provider,
+        signing_key,
+        Carried::Request,
+        &message,
+        None,
+        &logout.location,
+    )
+    .ok_or(Unbrokered::Backend)?;
+    Ok(Some(SamlLogoutDeparture {
+        location,
+        request: SamlLogoutRequest {
+            request_id,
+            provider_alias: alias.to_owned(),
+            resume_to: Some(resume_to.to_owned()),
+            expires_at: now + STATE_LIFESPAN,
+        },
+    }))
+}
+
+/// Start the logout at the SAML provider that opened a login ending here, when that
+/// provider is still switched on and listens for logouts, and say where the browser
+/// goes. The row the provider's answer is held to is kept in the logout's own
+/// transaction.
+pub async fn open_provider_logout(
+    transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
+    issuer: &str,
+    session_id: &str,
+    resume_to: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<String>, Unbrokered> {
+    let Some(named) =
+        store::providers::saml_brokering::read_broker_session(transaction, session_id)
+            .await
+            .map_err(|_| Unbrokered::Backend)?
+    else {
+        return Ok(None);
+    };
+    let Some(opener) =
+        store::providers::brokering::provider_by_alias(transaction, &named.provider_alias)
+            .await
+            .map_err(|_| Unbrokered::Backend)?
+    else {
+        return Ok(None);
+    };
+    if opener.enabled == Some(false) || !is_saml(&opener) {
+        return Ok(None);
+    }
+    let upstream = SamlUpstream::parse(&opener).map_err(|_| Unbrokered::Backend)?;
+    let signing_key = load_signing_key(transaction, signing)
+        .await
+        .map_err(|_| Unbrokered::Backend)?;
+    let Some(departure) = depart_for_logout(
+        signing.provider,
+        &upstream,
+        issuer,
+        &named.provider_alias,
+        &signing_key,
+        &named,
+        resume_to,
+        now,
+    )?
+    else {
+        return Ok(None);
+    };
+    store::providers::saml_brokering::open_logout_request(transaction, &departure.request)
+        .await
+        .map_err(|_| Unbrokered::Backend)?;
+    Ok(Some(departure.location))
 }
 
 /// Where a provider takes the answers to its logout requests: the address it gave
@@ -1551,5 +1781,129 @@ mod tests {
         );
         endpoint.response_location = None;
         assert_eq!(super::answer_address(&endpoint), "https://idp.test/slo");
+    }
+
+    /// A login ending here leaves for the SAML provider that opened it on a logout
+    /// request the realm's key signs: to the provider's logout address, from the
+    /// realm's entity, repeating whole the name the provider gave and the session it
+    /// named, under a fresh identifier. The row keeps where the browser resumes for
+    /// as long as a brokered login lasts. A provider with no logout address is sent
+    /// nothing.
+    #[test]
+    fn a_login_ending_here_leaves_for_the_provider_that_opened_it() {
+        use super::depart_for_logout;
+        use chrono::DateTime;
+        use crypto::provider::CryptoConfig;
+        use crypto::provider::openssl::OpenSslProvider;
+        use models::entities::brokering::{SamlBrokerSession, SamlLogoutRequest};
+        use saml::logout::{Delivered, ExpectedLogout, accept_logout_request};
+        use saml::redirect::decode_query;
+
+        let crypto = OpenSslProvider::new(&CryptoConfig::default()).expect("a provider");
+        let provider_key = rsa_key(2048);
+        let metadata = secure_metadata(&certificate_for(&provider_key, &provider_key));
+        let upstream =
+            SamlUpstream::parse(&saml_provider(&metadata, &[])).expect("a usable provider");
+        let signer = rsa_key(2048);
+        let signing_key = RealmSigningKey {
+            tenant: "acme".into(),
+            realm_id: "main".into(),
+            kid: "8PDw8PDw8PDw8PDw8PDw8PDw".into(),
+            algorithm: SignAlg::Rs256,
+            key_use: KeyUse::Sig,
+            status: KeyStatus::Active,
+            priority: 100,
+            private_pem: signer.to_pem_private_key(),
+            public_jwk: serde_json::Value::Null,
+            created_at: 1_789_372_800,
+        };
+        let now = DateTime::from_timestamp(1_789_372_800, 0).expect("a time");
+        let issuer = "https://id.test/realms/main";
+        let entity = "https://id.test/realms/main/broker/corp/saml/metadata";
+        let named = SamlBrokerSession {
+            session_id: "session-7".into(),
+            provider_alias: "corp".into(),
+            name_id: "AAdzZWNyZXQx".into(),
+            name_id_format: Some("urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".into()),
+            name_qualifier: Some("https://idp.test/metadata".into()),
+            sp_name_qualifier: Some(entity.into()),
+            session_index: Some("_session-at-idp".into()),
+        };
+        let logout = upstream
+            .identity_provider
+            .single_logout
+            .clone()
+            .expect("a logout address");
+
+        let departure = depart_for_logout(
+            &crypto,
+            &upstream,
+            issuer,
+            "corp",
+            &signing_key,
+            &named,
+            "https://app.test/bye",
+            now,
+        )
+        .expect("a departure")
+        .expect("a provider that listens for logouts");
+        let (address, query) = departure.location.split_once('?').expect("a query");
+        assert_eq!(address, logout.location);
+        let received = decode_query(query, Limits::MESSAGE).expect("a Redirect query");
+        let requested = accept_logout_request(
+            &crypto,
+            Delivered::Redirected(&received),
+            &ExpectedLogout {
+                issuer: entity,
+                destination: &logout.location,
+                trusted: &[PublicKey::from_der(signer.to_der_public_key())],
+                now: now.timestamp(),
+                skew: 0,
+            },
+        )
+        .expect("a logout request the realm signed");
+        assert_eq!(
+            (
+                requested.name_id.value.as_str(),
+                requested.name_id.format.as_deref(),
+                requested.name_id.name_qualifier.as_deref(),
+                requested.name_id.sp_name_qualifier.as_deref(),
+            ),
+            (
+                "AAdzZWNyZXQx",
+                named.name_id_format.as_deref(),
+                named.name_qualifier.as_deref(),
+                Some(entity),
+            )
+        );
+        assert_eq!(requested.session_indexes, ["_session-at-idp"]);
+        assert_eq!(
+            departure.request,
+            SamlLogoutRequest {
+                request_id: requested.id.clone(),
+                provider_alias: "corp".into(),
+                resume_to: Some("https://app.test/bye".into()),
+                expires_at: now + crate::brokering::STATE_LIFESPAN,
+            }
+        );
+        assert!(requested.id.starts_with('_') && requested.id.len() == 65);
+
+        let mut silent =
+            SamlUpstream::parse(&saml_provider(&metadata, &[])).expect("a usable provider");
+        silent.identity_provider.single_logout = None;
+        assert!(
+            depart_for_logout(
+                &crypto,
+                &silent,
+                issuer,
+                "corp",
+                &signing_key,
+                &named,
+                "https://app.test/bye",
+                now,
+            )
+            .expect("no failure")
+            .is_none()
+        );
     }
 }

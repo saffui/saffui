@@ -89,6 +89,17 @@ pub struct Accepted {
     pub attributes: Vec<(String, Vec<String>)>,
 }
 
+/// The request a response says it answers, read before anything in it is verified
+/// and only to find that request: `accept_response` then holds the verified
+/// response to it.
+pub fn read_answered_request_id<'d>(document: &'d Document<'_>) -> Option<&'d str> {
+    let response = document.root_element();
+    if !is_named(response, PROTOCOL, "Response") {
+        return None;
+    }
+    response.attribute("InResponseTo")
+}
+
 /// Accept a response to one of this service provider's authentication requests,
 /// or say why not.
 ///
@@ -974,6 +985,36 @@ mod tests {
             "",
         ] {
             assert_eq!(instant_of(refused), Err(Refused::Misshapen), "{refused}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod answered_request_tests {
+    use super::read_answered_request_id;
+    use crate::xml::{Limits, read_message};
+
+    /// The request a response names is read from a SAML response alone: another
+    /// message, or an element outside the protocol's namespace, names none.
+    #[test]
+    fn the_request_a_response_answers_is_read_from_a_response_alone() {
+        for (xml, answered) in [
+            (
+                r#"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" InResponseTo="_request"/>"#,
+                Some("_request"),
+            ),
+            (
+                r#"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"/>"#,
+                None,
+            ),
+            (
+                r#"<samlp:LogoutResponse xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" InResponseTo="_request"/>"#,
+                None,
+            ),
+            (r#"<Response InResponseTo="_request"/>"#, None),
+        ] {
+            let document = read_message(xml, Limits::MESSAGE).expect("well-formed");
+            assert_eq!(read_answered_request_id(&document), answered, "{xml}");
         }
     }
 }

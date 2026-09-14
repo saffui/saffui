@@ -2,22 +2,25 @@ use chrono::{DateTime, Utc};
 use crypto::jose::jwk::KeyPair;
 use crypto::jose::jwk::alg::rsa::RsaKeyPair;
 use crypto::provider::{CryptoProvider, PrivateKey, PublicKey, SignAlg};
-use crypto::x509::{CertifiedKey, Issuance, issue_certificate, read_certificate_facts};
+use crypto::x509::{
+    CertifiedKey, Issuance, issue_certificate, public_key_of, read_certificate_facts,
+};
 use data_encoding::HEXLOWER;
 use deadpool_postgres::Transaction;
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::IdentityProviderModel;
-use models::entities::brokering::SamlLoginRequest;
+use models::entities::brokering::{SamlBrokerSession, SamlLoginRequest};
 use models::entities::keys::{JweAlgorithm, KeyUse, RealmEncryptionKey, RealmSigningKey};
 use saml::authn::{AuthnRequest, write_authn_request};
 use saml::metadata::{
     IdentityProvider, Misread, ServiceProvider, describe_service_provider, read_identity_provider,
 };
+use saml::post::decode_posted_message;
 use saml::redirect::{Carried, encode_query};
-use saml::response::Accepted;
-use saml::xml::Limits;
+use saml::response::{Accepted, Expected, Refused, accept_response, read_answered_request_id};
+use saml::xml::{Limits, read_message};
 use serde_json::{Map, Value};
-use store::providers::realm_keys;
+use store::providers::{realm_keys, replay};
 
 use crate::brokering::{Arrival, STATE_LIFESPAN, Unbrokered, text};
 use crate::grant::Signing;
@@ -435,6 +438,153 @@ pub fn read_decryption_keys(keys: &[RealmEncryptionKey]) -> Vec<PrivateKey> {
         .filter_map(|key| RsaKeyPair::from_pem(&key.private_pem).ok())
         .map(|pair| PrivateKey::from_der(pair.to_der_private_key()))
         .collect()
+}
+
+/// Clocks in two organisations drift further apart than clocks inside one.
+const SKEW: i64 = 180;
+
+/// Why a SAML provider's answer was not taken, each naming what failed for the
+/// operator's log. The browser is told one thing whatever the variant, the store
+/// failing aside.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Untaken {
+    #[error("the answer is not a SAML response that reads")]
+    Unreadable,
+    #[error("the answer names no request still open for this provider")]
+    NoOpenRequest,
+    #[error("the answer came back to another browser than the one that left")]
+    OtherBrowser,
+    #[error("the response was refused: {0}")]
+    Refused(Refused),
+    #[error("the assertion was already taken")]
+    Replayed,
+    #[error("the assertion names nobody this provider may name")]
+    Unnamed,
+    #[error("the store could not be read or written")]
+    Backend,
+}
+
+/// A SAML provider's answer once taken: the request it spent, what its verified
+/// assertion says, and who that is as an arrival.
+pub struct SamlAnswer {
+    pub request: SamlLoginRequest,
+    pub accepted: Accepted,
+    pub arrival: Arrival,
+}
+
+/// Take a SAML provider's answer, posted back for the login a browser left open.
+///
+/// The request the answer names is spent, and only for the browser that left with
+/// it: a refusal commits nothing, so the request stays with that browser. The
+/// response is then held to that request, to the provider's entity and signing
+/// keys, to the realm's entity for this provider and its consumer address, and
+/// decrypted with every RSA key the realm still holds; its assertion is taken once,
+/// and names the person only as `arrive` allows.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a piece of the answer the consumer already holds"
+)]
+pub async fn take_answer(
+    transaction: &Transaction<'_>,
+    signing: &Signing<'_>,
+    upstream: &SamlUpstream,
+    issuer: &str,
+    alias: &str,
+    posted: &str,
+    auth_session: &str,
+    now: DateTime<Utc>,
+) -> Result<SamlAnswer, Untaken> {
+    let message = decode_posted_message(posted).ok_or(Untaken::Unreadable)?;
+    let document = read_message(&message, Limits::MESSAGE).map_err(|_| Untaken::Unreadable)?;
+    let request_id = read_answered_request_id(&document).ok_or(Untaken::NoOpenRequest)?;
+    let request = store::providers::saml_brokering::consume_login_request(
+        transaction,
+        request_id,
+        alias,
+        now,
+    )
+    .await
+    .map_err(|_| Untaken::Backend)?
+    .ok_or(Untaken::NoOpenRequest)?;
+    if !crypto::constant_time::eq(request.auth_session.as_bytes(), auth_session.as_bytes()) {
+        return Err(Untaken::OtherBrowser);
+    }
+
+    let trusted: Vec<PublicKey> = upstream
+        .identity_provider
+        .signing_certificates
+        .iter()
+        .filter_map(|certificate| public_key_of(certificate))
+        .collect();
+    let held = realm_keys::load_usable_encryption_keys(transaction, signing.ring, signing.envelope)
+        .await
+        .map_err(|_| Untaken::Backend)?;
+    let decryption_keys = read_decryption_keys(&held);
+    let base = compose_saml_address(issuer, alias);
+    let accepted = accept_response(
+        signing.provider,
+        &document,
+        &Expected {
+            issuer: &upstream.identity_provider.entity_id,
+            audience: &resolve_entity_id(upstream, &base),
+            recipient: &format!("{base}/acs"),
+            request_id: &request.request_id,
+            trusted: &trusted,
+            decryption_keys: &decryption_keys,
+            now: now.timestamp(),
+            skew: SKEW,
+        },
+    )
+    .map_err(Untaken::Refused)?;
+
+    // Kept for as long as the assertion could still be taken: until its confirmation
+    // closes, or the request it answers runs out, whichever comes first.
+    let kept_until = DateTime::from_timestamp(accepted.replayable_until + SKEW, 0)
+        .map_or(request.expires_at, |closing| {
+            closing.min(request.expires_at)
+        });
+    let fresh = replay::remember_once(
+        transaction,
+        signing.provider.digest(),
+        "saml-assertion",
+        &format!("{alias}:{}", accepted.assertion_id),
+        kept_until,
+    )
+    .await
+    .map_err(|_| Untaken::Backend)?;
+    if !fresh {
+        return Err(Untaken::Replayed);
+    }
+    let arrival = arrive(upstream, &accepted).map_err(|_| Untaken::Unnamed)?;
+    Ok(SamlAnswer {
+        request,
+        accepted,
+        arrival,
+    })
+}
+
+/// Keep what a SAML provider named an admitted login by, so its logout finds it.
+pub async fn record_named_session(
+    transaction: &Transaction<'_>,
+    alias: &str,
+    session_id: &str,
+    accepted: &Accepted,
+) -> Result<(), Unbrokered> {
+    let named = &accepted.name_id;
+    store::providers::saml_brokering::record_broker_session(
+        transaction,
+        &SamlBrokerSession {
+            session_id: session_id.to_owned(),
+            provider_alias: alias.to_owned(),
+            name_id: named.value.clone(),
+            name_id_format: named.format.clone(),
+            name_qualifier: named.name_qualifier.clone(),
+            sp_name_qualifier: named.sp_name_qualifier.clone(),
+            session_index: accepted.session_index.clone(),
+        },
+    )
+    .await
+    .map_err(|_| Unbrokered::Backend)
 }
 
 #[cfg(test)]

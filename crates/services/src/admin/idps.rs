@@ -149,21 +149,7 @@ pub async fn create_provider(
         realm_id.to_owned(),
         AuditableModel::from_creator(tenant.to_owned(), by.to_owned()),
     );
-    if crate::workload::is_workload(&provider) {
-        crate::workload::Trusted::parse(&provider)
-            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    } else if crate::outbound::is_outbound(&provider) {
-        crate::outbound::Connector::parse(&provider)
-            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    } else if crate::caep::is_receiver(&provider) {
-        crate::caep::Receiver::parse(&provider)
-            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    } else if crate::webhook::is_webhook(&provider) {
-        crate::webhook::Webhook::parse(&provider)
-            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    } else {
-        Upstream::parse(&provider).map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    }
+    check_configuration(&provider)?;
     seal_secret(ring, envelope, &mut provider).await?;
     brokering::create_provider(transaction, &provider)
         .await
@@ -232,21 +218,7 @@ pub async fn update_provider(
                 .insert(sealed_key.to_owned(), kept.clone());
         }
     }
-    if crate::workload::is_workload(&rewritten) {
-        crate::workload::Trusted::parse(&rewritten)
-            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    } else if crate::outbound::is_outbound(&rewritten) {
-        crate::outbound::Connector::parse(&rewritten)
-            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    } else if crate::caep::is_receiver(&rewritten) {
-        crate::caep::Receiver::parse(&rewritten)
-            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    } else if crate::webhook::is_webhook(&rewritten) {
-        crate::webhook::Webhook::parse(&rewritten)
-            .map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    } else {
-        Upstream::parse(&rewritten).map_err(|why| Unwritable::Invalid(why.to_string()))?;
-    }
+    check_configuration(&rewritten)?;
     seal_secret(ring, envelope, &mut rewritten).await?;
     if !brokering::update_provider(transaction, &rewritten)
         .await
@@ -255,6 +227,36 @@ pub async fn update_provider(
         return Err(Unwritable::NotFound);
     }
     get_provider(transaction, alias).await
+}
+
+/// Read a provider's configuration the way its use will read it, by the kind of
+/// provider it is: a bag that cannot be used is refused here rather than at
+/// somebody's sign-in.
+fn check_configuration(provider: &IdentityProviderModel) -> Result<(), Unwritable> {
+    let refused = if crate::workload::is_workload(provider) {
+        crate::workload::Trusted::parse(provider)
+            .err()
+            .map(|why| why.to_string())
+    } else if crate::outbound::is_outbound(provider) {
+        crate::outbound::Connector::parse(provider)
+            .err()
+            .map(|why| why.to_string())
+    } else if crate::caep::is_receiver(provider) {
+        crate::caep::Receiver::parse(provider)
+            .err()
+            .map(|why| why.to_string())
+    } else if crate::webhook::is_webhook(provider) {
+        crate::webhook::Webhook::parse(provider)
+            .err()
+            .map(|why| why.to_string())
+    } else if crate::saml_brokering::is_saml(provider) {
+        crate::saml_brokering::SamlUpstream::parse(provider)
+            .err()
+            .map(|why| why.to_string())
+    } else {
+        Upstream::parse(provider).err().map(|why| why.to_string())
+    };
+    refused.map_or(Ok(()), |why| Err(Unwritable::Invalid(why)))
 }
 
 pub async fn delete_provider(transaction: &Transaction<'_>, alias: &str) -> Result<(), Unwritable> {
@@ -444,4 +446,85 @@ pub async fn remove_mapper(
         .map_err(|_| Unwritable::Backend)?
         .then_some(())
         .ok_or(Unwritable::NoSuchMapper)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Unwritable, check_configuration};
+    use crypto::jose::jwk::KeyPair;
+    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+    use crypto::provider::{PrivateKey, PublicKey};
+    use crypto::x509::{Issuance, issue_certificate};
+    use models::auditable::AuditableModel;
+    use models::entities::attributes::{AttributeValue, AttributesMap};
+    use models::entities::authz::{IdentityProviderModel, IdentityProviderMutationModel};
+
+    fn provider(said: &[(&str, &str)]) -> IdentityProviderModel {
+        let configs: AttributesMap = said
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), AttributeValue::Str((*value).to_owned())))
+            .collect();
+        IdentityProviderMutationModel {
+            provider_id: "upstream".into(),
+            name: "upstream".into(),
+            display_name: "Upstream".into(),
+            description: String::new(),
+            enabled: Some(true),
+            trust_email: Some(false),
+            configs: Some(configs),
+        }
+        .into_model(
+            "idp-1".into(),
+            "main".into(),
+            AuditableModel::from_creator("local".into(), "root".into()),
+        )
+    }
+
+    /// The door reads each provider by its kind: a SAML provider a login can use is
+    /// let through and one it cannot is refused with its reason, while an OpenID
+    /// provider is still read as one.
+    #[test]
+    fn the_door_reads_each_provider_by_its_kind() {
+        let key = RsaKeyPair::generate(2048).expect("an RSA key");
+        let certificate = issue_certificate(&Issuance {
+            subject_key: &PublicKey::from_der(key.to_der_public_key()),
+            subject_name: "idp.test",
+            issuer_key: &PrivateKey::from_der(key.to_der_private_key()),
+            issuer_name: "idp.test",
+            serial: &[1],
+            not_before: 1_789_372_800,
+            not_after: 2_104_992_000,
+        })
+        .expect("a certificate issued by the crypto crate");
+        let metadata = format!(
+            r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://idp.test/metadata"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/></md:IDPSSODescriptor></md:EntityDescriptor>"#,
+            data_encoding::BASE64.encode(&certificate)
+        );
+        assert!(
+            check_configuration(&provider(&[
+                ("protocol", "saml"),
+                ("idp_metadata", &metadata)
+            ]))
+            .is_ok()
+        );
+        let refused = check_configuration(&provider(&[("protocol", "saml")]));
+        assert!(
+            matches!(&refused, Err(Unwritable::Invalid(why)) if why.contains("idp_metadata")),
+            "{refused:?}"
+        );
+
+        let openid = [
+            ("issuer", "https://idp.example"),
+            ("client_id", "saffui"),
+            ("authorization_endpoint", "https://idp.example/auth"),
+            ("token_endpoint", "https://idp.example/token"),
+            ("jwks_uri", "https://idp.example/certs"),
+        ];
+        assert!(check_configuration(&provider(&openid)).is_ok());
+        let refused = check_configuration(&provider(&openid[..4]));
+        assert!(
+            matches!(&refused, Err(Unwritable::Invalid(why)) if why.contains("jwks_uri")),
+            "{refused:?}"
+        );
+    }
 }

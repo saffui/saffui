@@ -184,17 +184,20 @@ async fn doors_of_realm(
 /// straight to the broker, so the page works with no script at all.
 ///
 /// The identity_providers table also holds connectors that no browser can
-/// be sent to; what earns a door here is an `authorization_endpoint`.
+/// be sent to; what earns a door here is an `authorization_endpoint`, or SAML
+/// named as the protocol, since a SAML provider is reached through the metadata
+/// it was set up with rather than through an endpoint in the bag.
 fn federated_doors(rows: &[models::entities::authz::IdentityProviderModel]) -> String {
     let mut doors = String::new();
     for held in rows {
         if held.enabled == Some(false) {
             continue;
         }
-        let browsable = held
-            .configs
-            .as_ref()
-            .is_some_and(|bag| bag.get("authorization_endpoint").is_some());
+        let browsable = services::saml_brokering::is_saml(held)
+            || held
+                .configs
+                .as_ref()
+                .is_some_and(|bag| bag.get("authorization_endpoint").is_some());
         if !browsable {
             continue;
         }
@@ -815,16 +818,27 @@ mod tests {
     }
 
     /// A door per browsable provider and none for the rest: a connector has
-    /// no authorization endpoint and earns none, a disabled provider shows
-    /// nothing, a recognised name carries its mark, an unknown one its
-    /// initial, and every written value lands escaped.
+    /// no authorization endpoint and earns none, a SAML provider earns one
+    /// through its protocol, a disabled provider shows nothing, a recognised
+    /// name carries its mark, an unknown one its initial, and every written
+    /// value lands escaped.
     #[test]
     fn only_browsable_providers_earn_a_door_and_each_wears_its_mark() {
+        let saml = |alias: &str, display: &str, enabled: bool| {
+            let mut row = provider(alias, display, enabled, false);
+            row.configs.get_or_insert_with(Default::default).insert(
+                "protocol".into(),
+                models::entities::attributes::AttributeValue::Str("saml".into()),
+            );
+            row
+        };
         let rows = vec![
             provider("google", "Google", true, true),
             provider("the-ear", "", true, false),
             provider("okta", "Okta", false, true),
             provider("wiki<d>", "Wiki & Co", true, true),
+            saml("corp", "Corp SSO", true),
+            saml("partner", "Partner SSO", false),
         ];
         let doors = federated_doors(&rows);
 
@@ -832,6 +846,14 @@ mod tests {
         assert!(doors.contains("#4285F4"), "the recognised mark is missing");
         assert!(!doors.contains("the-ear"), "a connector earned a door");
         assert!(!doors.contains("okta"), "a disabled provider earned a door");
+        assert!(
+            doors.contains(r#"href="broker/corp/login""#) && doors.contains("Corp SSO"),
+            "a SAML provider earned no door: {doors}"
+        );
+        assert!(
+            !doors.contains("partner"),
+            "a disabled SAML provider earned a door"
+        );
         assert!(
             doors.contains("broker/wiki&lt;d&gt;/login") && doors.contains("Wiki &amp; Co"),
             "a written value reached the page unescaped: {doors}"

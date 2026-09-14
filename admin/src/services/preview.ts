@@ -201,6 +201,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       ],
       recovery_codes: 8,
       fresh_until: Math.floor(Date.now() / 1000) + 300,
+      stronger_sign_in_needed: false,
     });
   }
   if (

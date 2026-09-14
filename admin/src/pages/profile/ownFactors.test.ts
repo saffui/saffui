@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
-import { OWN_FACTORS, freshEnough } from "./ownFactors";
+import { OWN_FACTORS, freshEnough, signInNeededBeforeRemoval } from "./ownFactors";
 import { previewAnswer } from "@/services/preview";
 
 const i18n = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "i18n");
@@ -32,6 +32,21 @@ describe("the factors a person adds to their own account", () => {
     expect(freshEnough(1000, 1000)).toBe(true);
     expect(freshEnough(1000, 1001)).toBe(false);
     expect(freshEnough(null, 0)).toBe(false);
+  });
+
+  test("asks for a stronger sign-in before a recent but weaker one removes a factor", () => {
+    expect(
+      signInNeededBeforeRemoval({ fresh_until: null, stronger_sign_in_needed: true }, 1000),
+    ).toBe("stronger");
+    expect(
+      signInNeededBeforeRemoval({ fresh_until: null, stronger_sign_in_needed: false }, 1000),
+    ).toBe("recent");
+    expect(
+      signInNeededBeforeRemoval({ fresh_until: 999, stronger_sign_in_needed: false }, 1000),
+    ).toBe("recent");
+    expect(
+      signInNeededBeforeRemoval({ fresh_until: 1300, stronger_sign_in_needed: false }, 1000),
+    ).toBeNull();
   });
 
   test("the preview world lists factors and takes a removal", () => {

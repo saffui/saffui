@@ -45,6 +45,8 @@ export interface OwnFactors {
   recovery_codes: number;
   /// Until when, in epoch seconds, the sign-in behind this page may remove a factor.
   fresh_until: number | null;
+  /// Whether that sign-in is recent but weaker than the flow lets this person sign in.
+  stronger_sign_in_needed: boolean;
 }
 
 export async function listOwnFactors(realm: string): Promise<OwnFactors> {

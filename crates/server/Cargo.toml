@@ -109,6 +109,9 @@ ldapfront = { path = "../ldapfront" }
 openssl = { workspace = true }
 tokio-openssl = { workspace = true }
 services = { workspace = true }
+# The SAML reader, so a case can read what leaves for an identity provider the
+# way the provider would.
+saml = { workspace = true }
 # The public origin: every issuer minted and every issuer accepted is built from
 # it, so the gates read the same value the binary was started with.
 config = { workspace = true }

@@ -1356,47 +1356,9 @@ async fn a_way_back_is_refused_in_a_browser_that_did_not_leave() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_saml_provider_is_shown_the_realm_as_its_service_provider() {
-    use crypto::jose::jwk::KeyPair;
-    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
-    use crypto::provider::{PrivateKey, PublicKey};
-    use crypto::x509::{Issuance, issue_certificate};
-
     let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
     let bearer = plane.token(&support::claims());
-    let key = RsaKeyPair::generate(2048).expect("an RSA key");
-    let certificate = issue_certificate(&Issuance {
-        subject_key: &PublicKey::from_der(key.to_der_public_key()),
-        subject_name: "idp.test",
-        issuer_key: &PrivateKey::from_der(key.to_der_private_key()),
-        issuer_name: "idp.test",
-        serial: &[1],
-        not_before: 1_789_372_800,
-        not_after: 2_104_992_000,
-    })
-    .expect("a certificate issued by the crypto crate");
-    let idp_metadata = format!(
-        r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://idp.test/metadata"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/></md:IDPSSODescriptor></md:EntityDescriptor>"#,
-        data_encoding::BASE64.encode(&certificate)
-    );
-    let (status, told) = asked(
-        &plane,
-        Method::POST,
-        &format!("/admin/realms/{REALM}/identity-providers"),
-        &bearer,
-        Some(json!({
-            "provider_id": "corp",
-            "name": "corp",
-            "display_name": "Corp",
-            "description": "",
-            "trust_email": false,
-            "configs": {
-                "protocol": { "Str": "saml" },
-                "idp_metadata": { "Str": idp_metadata },
-            },
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "{told}");
+    plant_saml_provider(&plane, &bearer, "corp").await;
     plain_provider(&plane, &bearer, "plain", "https://upstream.test", json!({})).await;
 
     let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
@@ -1459,4 +1421,148 @@ async fn a_saml_provider_is_shown_the_realm_as_its_service_provider() {
         .await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND, "{alias}");
     }
+}
+
+/// Plant a SAML provider through the admin API, trusting a certificate the crypto
+/// crate issues for a key it generates.
+async fn plant_saml_provider(plane: &Plane, bearer: &str, alias: &str) {
+    use crypto::jose::jwk::KeyPair;
+    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+    use crypto::provider::{PrivateKey, PublicKey};
+    use crypto::x509::{Issuance, issue_certificate};
+
+    let key = RsaKeyPair::generate(2048).expect("an RSA key");
+    let certificate = issue_certificate(&Issuance {
+        subject_key: &PublicKey::from_der(key.to_der_public_key()),
+        subject_name: "idp.test",
+        issuer_key: &PrivateKey::from_der(key.to_der_private_key()),
+        issuer_name: "idp.test",
+        serial: &[1],
+        not_before: 1_789_372_800,
+        not_after: 2_104_992_000,
+    })
+    .expect("a certificate issued by the crypto crate");
+    let idp_metadata = format!(
+        r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://idp.test/metadata"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/></md:IDPSSODescriptor></md:EntityDescriptor>"#,
+        data_encoding::BASE64.encode(&certificate)
+    );
+    let (status, told) = asked(
+        plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        bearer,
+        Some(json!({
+            "provider_id": alias,
+            "name": alias,
+            "display_name": alias,
+            "description": "",
+            "trust_email": false,
+            "configs": {
+                "protocol": { "Str": "saml" },
+                "idp_metadata": { "Str": idp_metadata },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+}
+
+/// A login leaves for a SAML provider through the door on the sign-in page: to the
+/// provider's sign-on address, carrying an authentication request on a query signed
+/// by the key the realm's metadata certifies, and the request is kept for the login
+/// that left; a browser with no open login does not leave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_login_leaves_for_a_saml_provider_on_a_request_the_realm_signs() {
+    use store::tenancy::TenantContext;
+
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    plant_saml_provider(&plane, &bearer, "corp").await;
+    plane
+        .publish_key(&support::SigningKey::generate_rsa("saml-rsa"))
+        .await;
+    let cookie = opened_login(&plane).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let door = format!("/realms/{REALM}/protocol/openid-connect/broker/corp/login");
+
+    let response = test::call_service(&app, test::TestRequest::get().uri(&door).to_request()).await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&door)
+            .insert_header((
+                "cookie",
+                format!("{}={cookie}", support::AUTH_SESSION_COOKIE),
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    let departure = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a departure")
+        .to_owned();
+    let (address, query) = departure.split_once('?').expect("a query");
+    assert_eq!(address, "https://idp.test/sso");
+    let received =
+        saml::redirect::decode_query(query, saml::xml::Limits::MESSAGE).expect("a Redirect query");
+
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("/realms/{REALM}/broker/corp/saml/metadata"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let metadata = String::from_utf8(test::read_body(response).await.to_vec()).expect("UTF-8");
+    let certified = metadata
+        .split(r#"use="signing""#)
+        .nth(1)
+        .and_then(|rest| rest.split("<ds:X509Certificate>").nth(1))
+        .and_then(|rest| rest.split("</ds:X509Certificate>").next())
+        .expect("a signing certificate");
+    let key = crypto::x509::public_key_of(
+        &data_encoding::BASE64
+            .decode(certified.as_bytes())
+            .expect("base64"),
+    )
+    .expect("a certified key");
+    let signature = received.signature.as_ref().expect("a signed query");
+    assert_eq!(
+        saml::redirect::verify_query_signature(
+            support::sealing().provider.as_ref(),
+            signature,
+            &[key]
+        ),
+        Ok(())
+    );
+
+    let document = saml::xml::read_message(&received.message, saml::xml::Limits::MESSAGE)
+        .expect("well-formed");
+    let request_id = document
+        .root_element()
+        .attribute("ID")
+        .expect("an identifier")
+        .to_owned();
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let kept: Vec<(String, String, String)> = transaction
+        .query(
+            "SELECT request_id, provider_alias, auth_session FROM saml_login_requests",
+            &[],
+        )
+        .await
+        .expect("a census")
+        .into_iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .collect();
+    assert_eq!(kept, [(request_id, "corp".to_owned(), cookie)]);
 }

@@ -1,14 +1,17 @@
+use auth::login::authenticator::Authenticator;
 use auth::login::lockout;
 use auth::password::{self, Compared, Unkept};
 use chrono::{DateTime, Utc};
 use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
+use models::entities::acr::AcrLoaMap;
+use models::entities::auth::{AuthenticationExecutionModel, ExecutionStep};
 use models::entities::credentials::{CredentialModel, CredentialType};
 use models::entities::realm::RealmModel;
 use models::entities::user::{RequiredAction, UserModel, UserStorage};
 use secrecy::SecretBox;
 use store::providers::webauthn::EnrolledCredential;
-use store::providers::{credentials, sessions, users, webauthn};
+use store::providers::{auth_flows, clients, credentials, realms, sessions, users, webauthn};
 
 /// Why a person's own password was not changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -137,6 +140,9 @@ pub enum Unremoved {
     /// The login the request rides was proven too long ago.
     #[error("sign in again before changing this account's factors")]
     NotFresh,
+    /// The login is recent but weaker than the flow lets this person sign in.
+    #[error("sign in with the strongest factor this account can use")]
+    StrongerSignInNeeded,
     /// The factor is the last of what keeps the account safe, in words the
     /// person reads.
     #[error("{0}")]
@@ -156,6 +162,9 @@ pub struct OwnFactors {
     pub recovery_codes: i64,
     /// Until when the login the request rides may remove a factor, if it still may.
     pub fresh_until: Option<i64>,
+    /// Whether that login is recent but weaker than the flow lets this person
+    /// sign in, so a removal waits for a stronger one.
+    pub stronger_sign_in_needed: bool,
 }
 
 impl OwnFactors {
@@ -186,10 +195,15 @@ pub enum OwnFactor<'a> {
 }
 
 /// What a person holds to sign in with, read for the person themselves.
+///
+/// A removal needs a login both recent and as strong as the flow the presenting
+/// client signs in with lets this person reach: a weaker way in offered beside
+/// a second factor does not get to strip it.
 pub async fn own_factors(
     transaction: &Transaction<'_>,
     user_id: &str,
     session_id: &str,
+    presenter: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<OwnFactors, Unremoved> {
     let of_type = |kind| credentials::load_for_user_of_type(transaction, user_id, kind);
@@ -200,6 +214,7 @@ pub async fn own_factors(
     let mut apps = of_type(CredentialType::Totp)
         .await
         .map_err(|_| Unremoved::Backend)?;
+    let authenticator_app = !apps.is_empty();
     apps.extend(
         of_type(CredentialType::Hotp)
             .await
@@ -211,25 +226,131 @@ pub async fn own_factors(
     let recovery_codes = credentials::count_recovery_codes(transaction, user_id)
         .await
         .map_err(|_| Unremoved::Backend)?;
-    let fresh_until = sessions::load(transaction, session_id)
+    let signed_in = sessions::load(transaction, session_id)
         .await
-        .map_err(|_| Unremoved::Backend)?
+        .map_err(|_| Unremoved::Backend)?;
+    let fresh_until = signed_in
+        .as_ref()
         .and_then(|login| login.auth_time)
         .map(|proven| proven + FRESH_SIGN_IN_SECONDS)
         .filter(|until| *until >= now.timestamp());
+
+    let realm = realms::of_context(transaction)
+        .await
+        .map_err(|_| Unremoved::Backend)?;
+    let needed = match realm.as_ref().and_then(|realm| realm.acr_loa_map.as_ref()) {
+        None => None,
+        Some(levels) => {
+            let verified_phone = users::load(transaction, user_id)
+                .await
+                .map_err(|_| Unremoved::Backend)?
+                .and_then(|person| person.phone_number_verified)
+                .unwrap_or(false);
+            let holds = Holdings {
+                password,
+                authenticator_app,
+                passkey: !keys.is_empty(),
+                recovery_codes: recovery_codes > 0,
+                verified_phone,
+            };
+            let bound = realm
+                .as_ref()
+                .and_then(|realm| realm.browser_flow.as_deref());
+            let steps = match flow_signing_in(transaction, presenter, bound).await? {
+                Some(flow_id) => auth_flows::executions_of(transaction, &flow_id)
+                    .await
+                    .map_err(|_| Unremoved::Backend)?,
+                None => Vec::new(),
+            };
+            reachable_level(levels, &steps, &holds)
+        }
+    };
+    let reached = signed_in.as_ref().and_then(|login| login.loa).unwrap_or(0);
+    let strong = needed.is_none_or(|needed| reached >= needed);
     Ok(OwnFactors {
         password,
         apps,
         keys,
         recovery_codes,
-        fresh_until,
+        stronger_sign_in_needed: fresh_until.is_some() && !strong,
+        fresh_until: fresh_until.filter(|_| strong),
     })
+}
+
+/// The flow the presenting client signs in with: its own binding, else the
+/// realm's, else the one aliased `browser`.
+async fn flow_signing_in(
+    transaction: &Transaction<'_>,
+    presenter: Option<&str>,
+    realm_bound: Option<&str>,
+) -> Result<Option<String>, Unremoved> {
+    if let Some(presenter) = presenter
+        && let Some(client) = clients::load(transaction, presenter)
+            .await
+            .map_err(|_| Unremoved::Backend)?
+    {
+        return crate::authorize::browser_flow(transaction, &client)
+            .await
+            .map(Some)
+            .map_err(|_| Unremoved::Backend);
+    }
+    Ok(
+        auth_flows::flow_by_alias(transaction, realm_bound.unwrap_or("browser"))
+            .await
+            .map_err(|_| Unremoved::Backend)?
+            .map(|flow| flow.flow_id),
+    )
+}
+
+/// Which kinds of factor a person holds, as the steps of a flow ask for them.
+#[derive(Debug, Clone, Copy, Default)]
+struct Holdings {
+    password: bool,
+    authenticator_app: bool,
+    passkey: bool,
+    recovery_codes: bool,
+    verified_phone: bool,
+}
+
+impl Holdings {
+    fn can_answer(&self, authenticator: Authenticator) -> bool {
+        match authenticator {
+            Authenticator::Password => self.password,
+            Authenticator::Totp => self.authenticator_app,
+            Authenticator::Webauthn => self.passkey,
+            Authenticator::RecoveryCode => self.recovery_codes,
+            Authenticator::SmsOtp => self.verified_phone,
+            Authenticator::MagicLink | Authenticator::Kerberos => true,
+        }
+    }
+}
+
+/// The strongest level a sign-in through these steps lets this person reach,
+/// counting only the enabled steps they can answer; nothing where none maps.
+fn reachable_level(
+    levels: &AcrLoaMap,
+    steps: &[AuthenticationExecutionModel],
+    holds: &Holdings,
+) -> Option<i32> {
+    steps
+        .iter()
+        .filter(|step| step.is_enabled())
+        .filter_map(|step| match &step.step {
+            ExecutionStep::Authenticator { authenticator, .. } => {
+                authenticator.parse::<Authenticator>().ok()
+            }
+            ExecutionStep::SubFlow { .. } => None,
+        })
+        .filter(|authenticator| holds.can_answer(*authenticator))
+        .filter_map(|authenticator| levels.loa_of(authenticator.context()))
+        .max()
 }
 
 /// Remove one of a person's own factors.
 ///
 /// Only from a login proven moments ago: a console left open, or a token lifted
-/// from one, does not strip an account of its defences. One writer per person
+/// from one, does not strip an account of its defences, and a login weaker than
+/// the flow allows does not strip it of a stronger factor. One writer per person
 /// holds while the rule is read, so two removals racing cannot each leave the
 /// other as the last factor. The last second factor stays until another takes
 /// its place, a key stays where it is the only way in, and the sheet of codes
@@ -238,13 +359,17 @@ pub async fn remove_own_factor(
     transaction: &Transaction<'_>,
     user_id: &str,
     session_id: &str,
+    presenter: Option<&str>,
     now: DateTime<Utc>,
     factor: OwnFactor<'_>,
 ) -> Result<(), Unremoved> {
     credentials::hold_factors(transaction, user_id)
         .await
         .map_err(|_| Unremoved::Backend)?;
-    let held = own_factors(transaction, user_id, session_id, now).await?;
+    let held = own_factors(transaction, user_id, session_id, presenter, now).await?;
+    if held.stronger_sign_in_needed {
+        return Err(Unremoved::StrongerSignInNeeded);
+    }
     if held.fresh_until.is_none() {
         return Err(Unremoved::NotFresh);
     }
@@ -289,4 +414,84 @@ pub async fn remove_own_factor(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use models::auditable::AuditableModel;
+    use models::entities::auth::{AuthenticationExecutionMutationModel, AuthenticatorRequirement};
+
+    fn step(
+        authenticator: &str,
+        requirement: AuthenticatorRequirement,
+    ) -> AuthenticationExecutionModel {
+        AuthenticationExecutionMutationModel {
+            alias: authenticator.to_owned(),
+            flow_id: "flow".to_owned(),
+            priority: 10,
+            step: ExecutionStep::Authenticator {
+                authenticator: authenticator.to_owned(),
+                config_id: None,
+            },
+            requirement,
+        }
+        .into_model(
+            authenticator.to_owned(),
+            "main".to_owned(),
+            AuditableModel::from_creator("local".to_owned(), "test".to_owned()),
+        )
+    }
+
+    fn levels() -> AcrLoaMap {
+        AcrLoaMap::from_pairs([("password", 1), ("mfa", 2)])
+    }
+
+    /// The level a flow lets a person reach counts only the steps they can
+    /// answer: a code step for a person with an app, never a key step for a
+    /// person with no key, and never a step the flow switched off.
+    #[test]
+    fn the_reachable_level_counts_only_steps_the_person_can_answer() {
+        use AuthenticatorRequirement::{Alternative, Disabled, Required};
+        let with_password = Holdings {
+            password: true,
+            ..Holdings::default()
+        };
+        let with_app = Holdings {
+            authenticator_app: true,
+            ..with_password
+        };
+
+        let strong = [step("password", Required), step("totp", Required)];
+        assert_eq!(reachable_level(&levels(), &strong, &with_app), Some(2));
+        assert_eq!(reachable_level(&levels(), &strong, &with_password), Some(1));
+
+        let keyed = [step("password", Required), step("webauthn", Required)];
+        assert_eq!(reachable_level(&levels(), &keyed, &with_app), Some(1));
+
+        let switched_off = [step("password", Required), step("totp", Disabled)];
+        assert_eq!(
+            reachable_level(&levels(), &switched_off, &with_app),
+            Some(1)
+        );
+
+        let offered = [
+            step("magic-link", Alternative),
+            step("password", Alternative),
+            step("sms-otp", Alternative),
+        ];
+        let with_phone = Holdings {
+            verified_phone: true,
+            ..Holdings::default()
+        };
+        assert_eq!(reachable_level(&levels(), &offered, &with_phone), Some(2));
+        assert_eq!(
+            reachable_level(&levels(), &offered, &Holdings::default()),
+            Some(1)
+        );
+
+        let unknown = [step("invented-elsewhere", Required)];
+        assert_eq!(reachable_level(&levels(), &unknown, &with_app), None);
+        assert_eq!(reachable_level(&AcrLoaMap::new(), &strong, &with_app), None);
+    }
 }

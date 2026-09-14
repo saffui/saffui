@@ -96,7 +96,8 @@ pub async fn change_own_password(
 ///
 /// No secret leaves: a kind, a name, dates, and the reason a factor is kept.
 /// `fresh_until` says until when the caller's login may remove a factor, so a
-/// screen can ask for a new sign-in before a removal is refused for want of one.
+/// screen can ask for a new sign-in before a removal is refused for want of one,
+/// and `stronger_sign_in_needed` says a recent one was weaker than it may be.
 pub async fn list_own_factors(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
@@ -113,6 +114,7 @@ pub async fn list_own_factors(
         &transaction,
         admin.context.principal.id(),
         &admin.context.session_id,
+        admin.context.presenter.as_deref(),
         admin.context.now,
     )
     .await
@@ -137,6 +139,7 @@ pub async fn list_own_factors(
         })).collect::<Vec<_>>(),
         "recovery_codes": held.recovery_codes,
         "fresh_until": held.fresh_until,
+        "stronger_sign_in_needed": held.stronger_sign_in_needed,
     })))
 }
 
@@ -206,6 +209,7 @@ async fn remove_own(
         &transaction,
         admin.context.principal.id(),
         &admin.context.session_id,
+        admin.context.presenter.as_deref(),
         admin.context.now,
         factor,
     )
@@ -218,6 +222,7 @@ async fn remove_own(
 fn unremoved(why: Unremoved) -> ApiError {
     match why {
         Unremoved::NotFresh => ApiError::new(ErrorCode::AccountReauthenticationRequired),
+        Unremoved::StrongerSignInNeeded => ApiError::new(ErrorCode::AccountStrongerSignInRequired),
         Unremoved::LastFactor(said) => ApiError::with_detail(ErrorCode::AccountLastFactor, said),
         Unremoved::NotFound => ApiError::new(ErrorCode::CredentialNotFound),
         Unremoved::Backend => internal(),

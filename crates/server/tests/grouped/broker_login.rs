@@ -1833,6 +1833,20 @@ async fn signed_in_through_saml(
     name: &str,
     attributes: &[(&str, &[&str])],
 ) -> StatusCode {
+    sign_in_through_saml(plane, key, alias, name, attributes)
+        .await
+        .status()
+}
+
+/// Sign in once through the SAML provider at `alias`, which answers for `name` with
+/// `attributes`, and hand back the realm's answer to that sign-in.
+async fn sign_in_through_saml(
+    plane: &Plane,
+    key: &crypto::jose::jwk::alg::rsa::RsaKeyPair,
+    alias: &str,
+    name: &str,
+    attributes: &[(&str, &[&str])],
+) -> actix_web::dev::ServiceResponse {
     let cookie = opened_login(plane).await;
     let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
     let response = test::call_service(
@@ -1877,7 +1891,6 @@ async fn signed_in_through_saml(
             .to_request(),
     )
     .await
-    .status()
 }
 
 /// The attributes, and the roles granted directly, of the person `alias` links
@@ -2277,4 +2290,185 @@ async fn a_saml_provider_s_logout_request_ends_the_logins_it_names() {
             .await
             .is_empty()
     );
+}
+
+/// Log a login a SAML provider opened out of the realm from a browser, and read the
+/// logout request the browser carries on to the provider, verified as the realm's.
+async fn log_out_through_saml(
+    plane: &Plane,
+    identity_provider: &crypto::jose::jwk::alg::rsa::RsaKeyPair,
+    realm_public: &crypto::provider::PublicKey,
+) -> saml::logout::LogoutRequested {
+    let signed_in =
+        sign_in_through_saml(plane, identity_provider, "corp", "AAdzZWNyZXQx", &[]).await;
+    assert_eq!(signed_in.status(), StatusCode::SEE_OTHER);
+    let cookies: Vec<String> = signed_in
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    let session = support::cookie_value(&cookies, support::SSO_COOKIE).expect("a session cookie");
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/logout"))
+            .insert_header(("accept", "text/html"))
+            .insert_header(("cookie", format!("{}={session}", support::SSO_COOKIE)))
+            .set_form(vec![("confirmed", "yes")])
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .expect("a departure")
+        .to_owned();
+    let (address, query) = location.split_once('?').expect("a query");
+    assert_eq!(address, "https://idp.test/slo");
+    let received =
+        saml::redirect::decode_query(query, saml::xml::Limits::MESSAGE).expect("a Redirect query");
+    let entity = format!(
+        "{}/broker/corp/saml/metadata",
+        support::origin().issuer(REALM)
+    );
+    let sealing = support::sealing();
+    saml::logout::accept_logout_request(
+        sealing.provider.as_ref(),
+        saml::logout::Delivered::Redirected(&received),
+        &saml::logout::ExpectedLogout {
+            issuer: &entity,
+            destination: "https://idp.test/slo",
+            trusted: std::slice::from_ref(realm_public),
+            now: chrono::Utc::now().timestamp(),
+            skew: 180,
+        },
+    )
+    .expect("a logout request the realm signed")
+}
+
+/// The answer the SAML identity provider at `https://idp.test/metadata` writes under
+/// `id` to the realm's logout request `request_id`, addressed to the realm's logout
+/// address for `alias`.
+fn write_idp_logout_answer(alias: &str, id: &str, request_id: &str) -> String {
+    let destination = format!(
+        "{}/broker/{alias}/saml/slo",
+        support::origin().issuer(REALM)
+    );
+    saml::logout::write_logout_response(&saml::logout::LogoutResponse {
+        id,
+        issue_instant: chrono::Utc::now().timestamp(),
+        destination: &destination,
+        issuer: "https://idp.test/metadata",
+        in_response_to: request_id,
+    })
+    .expect("a logout answer")
+}
+
+/// A realm logout of a login a SAML provider opened ends the login here and sends the
+/// browser on to that provider, with a logout request the realm signs repeating the
+/// name and session the provider gave. The provider's answer brings the browser back
+/// to where the logout was going: signed on a Redirect it resumes, while one signed
+/// with another key is refused without spending the logout, and the same answer
+/// again is refused. A second logout, answered in a POST with an enveloped
+/// signature, resumes the same way.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_realm_logout_leaves_for_the_saml_provider_and_resumes_when_it_answers() {
+    use crypto::jose::jwk::KeyPair;
+    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+    use crypto::provider::{PrivateKey, PublicKey, SignAlg};
+    use saml::redirect::Carried;
+
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let identity_provider = plant_saml_provider(&plane, &bearer, "corp").await;
+    let realm_key = support::SigningKey::generate_rsa("saml-rsa");
+    plane.publish_key(&realm_key).await;
+    let realm_public = PublicKey::from_der(
+        RsaKeyPair::from_pem(realm_key.private_pem())
+            .expect("the realm's RSA key")
+            .to_der_public_key(),
+    );
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let logout = format!("/realms/{REALM}/broker/corp/saml/slo");
+    let resumed_at = format!(
+        "{}/protocol/openid-connect/logout",
+        support::origin().issuer(REALM)
+    );
+    let location_of = |response: &actix_web::dev::ServiceResponse| {
+        response
+            .headers()
+            .get("location")
+            .and_then(|held| held.to_str().ok())
+            .map(str::to_owned)
+    };
+
+    let first = log_out_through_saml(&plane, &identity_provider, &realm_public).await;
+    assert_eq!(
+        (
+            first.name_id.value.as_str(),
+            first.session_indexes.as_slice()
+        ),
+        ("AAdzZWNyZXQx", ["_session-at-idp".to_owned()].as_slice())
+    );
+    assert!(
+        read_standing_logins(&plane, "corp", "AAdzZWNyZXQx")
+            .await
+            .is_empty()
+    );
+    let answer = write_idp_logout_answer("corp", "_idp-answer-1", &first.id);
+    let foreign = RsaKeyPair::generate(2048).expect("another RSA key");
+    for (signer, expected) in [
+        (&foreign, StatusCode::BAD_REQUEST),
+        (&identity_provider, StatusCode::SEE_OTHER),
+        (&identity_provider, StatusCode::BAD_REQUEST),
+    ] {
+        let query = redirect_signed_by(signer, Carried::Response, &answer, None);
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("{logout}?{query}"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), expected);
+        if expected == StatusCode::SEE_OTHER {
+            assert_eq!(location_of(&response), Some(resumed_at.clone()));
+        }
+    }
+
+    let second = log_out_through_saml(&plane, &identity_provider, &realm_public).await;
+    let sealing = support::sealing();
+    let identity_private = PrivateKey::from_der(identity_provider.to_der_private_key());
+    let posted = saml::dsig::sign_enveloped(
+        sealing.provider.as_ref(),
+        &write_idp_logout_answer("corp", "_idp-answer-2", &second.id),
+        "_idp-answer-2",
+        SignAlg::Rs256,
+        &|octets| {
+            sealing
+                .provider
+                .signer()
+                .sign(SignAlg::Rs256, &identity_private, octets)
+                .ok()
+        },
+    )
+    .expect("the answer signed");
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&logout)
+            .set_form(vec![(
+                "SAMLResponse",
+                data_encoding::BASE64.encode(posted.as_bytes()),
+            )])
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(location_of(&response), Some(resumed_at.clone()));
 }

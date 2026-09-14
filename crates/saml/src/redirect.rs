@@ -5,7 +5,7 @@ use flate2::Compression;
 use flate2::read::DeflateDecoder;
 use flate2::write::DeflateEncoder;
 
-use crate::dsig::{Unverified, signature_algorithm_named};
+use crate::dsig::{Unverified, signature_algorithm_named, signature_uri_of};
 use crate::xml::Limits;
 
 /// Which message a Redirect query carries.
@@ -193,15 +193,6 @@ pub fn verify_query_signature(
         Ok(())
     } else {
         Err(Unverified::Untrusted)
-    }
-}
-
-fn signature_uri_of(algorithm: SignAlg) -> Option<&'static str> {
-    match algorithm {
-        SignAlg::Rs256 => Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"),
-        SignAlg::Rs384 => Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha384"),
-        SignAlg::Rs512 => Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha512"),
-        _ => None,
     }
 }
 

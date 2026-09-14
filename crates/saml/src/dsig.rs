@@ -2,11 +2,15 @@ use crypto::provider::{CryptoProvider, HashAlg, PublicKey, SignAlg};
 use roxmltree::Node;
 
 use crate::c14n::canonicalize_exclusive;
-use crate::xml::{base64_content_of, element_children};
+use crate::xml::{
+    Limits, base64_content_of, element_children, is_named, push_attribute, read_message,
+};
 
 const XMLDSIG: &str = "http://www.w3.org/2000/09/xmldsig#";
 const EXCLUSIVE_CANONICALIZATION: &str = "http://www.w3.org/2001/10/xml-exc-c14n#";
 const ENVELOPED_SIGNATURE: &str = "http://www.w3.org/2000/09/xmldsig#enveloped-signature";
+const ASSERTION: &str = "urn:oasis:names:tc:SAML:2.0:assertion";
+const SHA256_DIGEST: &str = "http://www.w3.org/2001/04/xmlenc#sha256";
 
 /// Why a signature was not accepted.
 ///
@@ -159,6 +163,99 @@ pub fn verify_enveloped_signature<'a, 'input>(
 /// Whether an element carries an enveloped signature of its own, verified or not.
 pub fn carries_signature(element: Node<'_, '_>) -> bool {
     element_children(element).any(|child| is_signature_element(&child, "Signature"))
+}
+
+/// Why an element could not be signed where it stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum Unsignable {
+    #[error("the message is not readable XML")]
+    Unreadable,
+    #[error("no single element holds the identifier to sign")]
+    NoSuchElement,
+    #[error("the element to sign does not open with its issuer")]
+    NoIssuer,
+    #[error("the element already carries a signature")]
+    AlreadySigned,
+    #[error("the signature algorithm is not one this service signs with")]
+    UnsupportedAlgorithm,
+    #[error("the element could not be canonicalized")]
+    Uncanonical,
+    #[error("the key did not sign")]
+    KeyRefused,
+}
+
+/// Sign the element `id` names where it stands: one enveloped signature, placed
+/// right after the element's issuer as SAML orders it, referencing the element by
+/// its identifier, over its exclusive canonical form with SHA-256, and signed by
+/// `sign` under an RSA algorithm. What `verify_enveloped_signature` accepts, and
+/// nothing wider.
+///
+/// Signing an element that holds a signed one keeps the inner signature inside what
+/// the outer one covers, which is how a response signed over a signed assertion is
+/// made.
+pub fn sign_enveloped(
+    provider: &dyn CryptoProvider,
+    xml: &str,
+    id: &str,
+    algorithm: SignAlg,
+    sign: &dyn Fn(&[u8]) -> Option<Vec<u8>>,
+) -> Result<String, Unsignable> {
+    let method = signature_uri_of(algorithm).ok_or(Unsignable::UnsupportedAlgorithm)?;
+    let document = read_message(xml, Limits::MESSAGE).map_err(|_| Unsignable::Unreadable)?;
+    let mut holders = document
+        .descendants()
+        .filter(|node| node.is_element() && node.attribute("ID") == Some(id));
+    let (Some(element), None) = (holders.next(), holders.next()) else {
+        return Err(Unsignable::NoSuchElement);
+    };
+    if carries_signature(element) {
+        return Err(Unsignable::AlreadySigned);
+    }
+    let issuer = element_children(element)
+        .next()
+        .filter(|child| is_named(*child, ASSERTION, "Issuer"))
+        .ok_or(Unsignable::NoIssuer)?;
+
+    let covered =
+        canonicalize_exclusive(element, None, &[]).map_err(|_| Unsignable::Uncanonical)?;
+    let digest = provider
+        .digest()
+        .hash(HashAlg::Sha256, &covered)
+        .map_err(|_| Unsignable::Uncanonical)?;
+    let mut signed_info = format!(
+        r#"<ds:SignedInfo xmlns:ds="{XMLDSIG}"><ds:CanonicalizationMethod Algorithm="{EXCLUSIVE_CANONICALIZATION}"/><ds:SignatureMethod Algorithm="{method}"/><ds:Reference"#
+    );
+    push_attribute(&mut signed_info, "URI", &format!("#{id}"));
+    signed_info.push_str(&format!(
+        r#"><ds:Transforms><ds:Transform Algorithm="{ENVELOPED_SIGNATURE}"/><ds:Transform Algorithm="{EXCLUSIVE_CANONICALIZATION}"/></ds:Transforms><ds:DigestMethod Algorithm="{SHA256_DIGEST}"/><ds:DigestValue>{}</ds:DigestValue></ds:Reference></ds:SignedInfo>"#,
+        data_encoding::BASE64.encode(&digest)
+    ));
+
+    // Canonicalized on its own: exclusive canonicalization renders what an element
+    // uses and nothing it inherits, so the form is the one it has inside the
+    // signature.
+    let alone = read_message(&signed_info, Limits::MESSAGE).map_err(|_| Unsignable::Uncanonical)?;
+    let canonical = canonicalize_exclusive(alone.root_element(), None, &[])
+        .map_err(|_| Unsignable::Uncanonical)?;
+    let value = sign(&canonical).ok_or(Unsignable::KeyRefused)?;
+
+    let at = issuer.range().end;
+    Ok(format!(
+        r#"{}<ds:Signature xmlns:ds="{XMLDSIG}">{signed_info}<ds:SignatureValue>{}</ds:SignatureValue></ds:Signature>{}"#,
+        &xml[..at],
+        data_encoding::BASE64.encode(&value),
+        &xml[at..]
+    ))
+}
+
+/// The URI naming a signature algorithm this service signs with: RSA with SHA-2.
+pub(crate) fn signature_uri_of(algorithm: SignAlg) -> Option<&'static str> {
+    match algorithm {
+        SignAlg::Rs256 => Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha256"),
+        SignAlg::Rs384 => Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha384"),
+        SignAlg::Rs512 => Some("http://www.w3.org/2001/04/xmldsig-more#rsa-sha512"),
+        _ => None,
+    }
 }
 
 pub(crate) fn signature_algorithm_named(uri: &str) -> Option<SignAlg> {
@@ -406,5 +503,160 @@ mod tests {
                 "{refused}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod enveloped_signing_tests {
+    use super::{Unsignable, Unverified, sign_enveloped, verify_enveloped_signature};
+    use crate::testing::provider;
+    use crate::xml::{Limits, read_message};
+    use crypto::jose::jwk::KeyPair;
+    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+    use crypto::provider::{CryptoProvider, PrivateKey, PublicKey, SignAlg};
+
+    const RESPONSE: &str = r#"<samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_response" Version="2.0" IssueInstant="2026-09-14T08:00:00Z"><saml:Issuer>https://idp.test/metadata</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status><saml:Assertion ID="_assertion" Version="2.0" IssueInstant="2026-09-14T08:00:00Z"><saml:Issuer>https://idp.test/metadata</saml:Issuer><saml:Subject><saml:NameID>AAdzZWNyZXQx</saml:NameID></saml:Subject></saml:Assertion></samlp:Response>"#;
+
+    /// An assertion and then the response around it, signed where they stand, each
+    /// verify under the signing key with the signature right after the issuer; a
+    /// name changed after signing breaks both digests, and another key verifies
+    /// neither.
+    #[test]
+    fn an_element_signed_where_it_stands_verifies() {
+        let provider = provider();
+        let key = RsaKeyPair::generate(2048).expect("an RSA key");
+        let private = PrivateKey::from_der(key.to_der_private_key());
+        let sign = |octets: &[u8]| {
+            provider
+                .signer()
+                .sign(SignAlg::Rs256, &private, octets)
+                .ok()
+        };
+        let trusted = [PublicKey::from_der(key.to_der_public_key())];
+
+        let inner = sign_enveloped(&provider, RESPONSE, "_assertion", SignAlg::Rs256, &sign)
+            .expect("the assertion signed");
+        let both = sign_enveloped(&provider, &inner, "_response", SignAlg::Rs256, &sign)
+            .expect("the response signed");
+        let document = read_message(&both, Limits::MESSAGE).expect("well-formed");
+        let element = |id: &str| {
+            document
+                .descendants()
+                .find(|node| node.attribute("ID") == Some(id))
+                .expect("the element")
+        };
+        for id in ["_response", "_assertion"] {
+            assert!(
+                verify_enveloped_signature(&provider, element(id), &trusted).is_ok(),
+                "{id}"
+            );
+            let opening: Vec<_> = element(id)
+                .children()
+                .filter(|node| node.is_element())
+                .map(|node| node.tag_name().name())
+                .take(2)
+                .collect();
+            assert_eq!(opening, ["Issuer", "Signature"], "{id}");
+        }
+
+        let tampered = both.replacen(">AAdzZWNyZXQx<", ">AAdzZWNyZXQy<", 1);
+        assert_ne!(tampered, both);
+        let document = read_message(&tampered, Limits::MESSAGE).expect("well-formed");
+        for id in ["_response", "_assertion"] {
+            let held = document
+                .descendants()
+                .find(|node| node.attribute("ID") == Some(id))
+                .expect("the element");
+            assert_eq!(
+                verify_enveloped_signature(&provider, held, &trusted).err(),
+                Some(Unverified::DigestMismatch),
+                "{id}"
+            );
+        }
+
+        let other = RsaKeyPair::generate(2048).expect("another RSA key");
+        let document = read_message(&both, Limits::MESSAGE).expect("well-formed");
+        let response = document.root_element();
+        assert_eq!(
+            verify_enveloped_signature(
+                &provider,
+                response,
+                &[PublicKey::from_der(other.to_der_public_key())]
+            )
+            .err(),
+            Some(Unverified::Untrusted)
+        );
+    }
+
+    /// What cannot be signed where it stands is refused: an identifier no element
+    /// holds or two do, an element that does not open with its issuer, one already
+    /// signed, an algorithm this service does not sign with, text that is not XML,
+    /// and a key that does not sign.
+    #[test]
+    fn what_cannot_be_signed_where_it_stands_is_refused() {
+        let provider = provider();
+        let key = RsaKeyPair::generate(2048).expect("an RSA key");
+        let private = PrivateKey::from_der(key.to_der_private_key());
+        let sign = |octets: &[u8]| {
+            provider
+                .signer()
+                .sign(SignAlg::Rs256, &private, octets)
+                .ok()
+        };
+        let signed = sign_enveloped(&provider, RESPONSE, "_assertion", SignAlg::Rs256, &sign)
+            .expect("the assertion signed");
+
+        for (xml, id, algorithm, refused) in [
+            (
+                RESPONSE.to_owned(),
+                "_elsewhere",
+                SignAlg::Rs256,
+                Unsignable::NoSuchElement,
+            ),
+            (
+                RESPONSE.replacen(r#"ID="_response""#, r#"ID="_assertion""#, 1),
+                "_assertion",
+                SignAlg::Rs256,
+                Unsignable::NoSuchElement,
+            ),
+            (
+                RESPONSE.replacen(
+                    "<saml:Issuer>https://idp.test/metadata</saml:Issuer><samlp:Status>",
+                    "<samlp:Status>",
+                    1,
+                ),
+                "_response",
+                SignAlg::Rs256,
+                Unsignable::NoIssuer,
+            ),
+            (
+                signed.clone(),
+                "_assertion",
+                SignAlg::Rs256,
+                Unsignable::AlreadySigned,
+            ),
+            (
+                RESPONSE.to_owned(),
+                "_response",
+                SignAlg::Es256,
+                Unsignable::UnsupportedAlgorithm,
+            ),
+            (
+                "<unclosed".to_owned(),
+                "_response",
+                SignAlg::Rs256,
+                Unsignable::Unreadable,
+            ),
+        ] {
+            assert_eq!(
+                sign_enveloped(&provider, &xml, id, algorithm, &sign),
+                Err(refused),
+                "{id} {refused:?}"
+            );
+        }
+        assert_eq!(
+            sign_enveloped(&provider, RESPONSE, "_response", SignAlg::Rs256, &|_| None),
+            Err(Unsignable::KeyRefused)
+        );
     }
 }

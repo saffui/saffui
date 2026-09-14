@@ -357,6 +357,18 @@ fn saml_broker_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/acs").route(
             web::post().to(crate::api::rest::endpoints::protocol::saml_broker::consume_assertion),
         ))
+        .service(
+            web::resource("/slo")
+                .route(
+                    web::get().to(
+                        crate::api::rest::endpoints::protocol::saml_broker::take_redirected_logout,
+                    ),
+                )
+                .route(
+                    web::post()
+                        .to(crate::api::rest::endpoints::protocol::saml_broker::take_posted_logout),
+                ),
+        )
         // The page posting an answer once more from this origin loads its script from
         // beside the consumer.
         .service(

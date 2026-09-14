@@ -17,7 +17,7 @@ import { getUser } from "@/services/users";
 import { afterWrites } from "@/services/writes";
 import { useSession } from "@/stores/session";
 import type { UserFull } from "@/models/user";
-import { OWN_FACTORS, freshEnough, type OwnFactor } from "./ownFactors";
+import { OWN_FACTORS, signInNeededBeforeRemoval, type OwnFactor } from "./ownFactors";
 import { ownPasswordReady, passwordKeptHere } from "./ownPassword";
 
 const route = useRoute();
@@ -53,10 +53,23 @@ async function signInAgain() {
   }
 }
 
+async function signInStronger() {
+  if (window.confirm(say("profile-factor-sign-in-stronger"))) {
+    await session.reauthenticate(realm.value, route.fullPath);
+  }
+}
+
 /// Remove one of the person's factors, or first send them to sign in again
-/// when the sign-in behind the page is too old for a removal.
+/// when the sign-in behind the page is too old or too weak for a removal.
 async function removeFactor(named: string, remove: () => Promise<void>) {
-  if (!freshEnough(factors.value?.fresh_until ?? null, Math.floor(Date.now() / 1000))) {
+  const needed = factors.value
+    ? signInNeededBeforeRemoval(factors.value, Math.floor(Date.now() / 1000))
+    : "recent";
+  if (needed === "stronger") {
+    await signInStronger();
+    return;
+  }
+  if (needed === "recent") {
     await signInAgain();
     return;
   }
@@ -64,10 +77,12 @@ async function removeFactor(named: string, remove: () => Promise<void>) {
   try {
     await remove();
   } catch (refusal) {
-    // The toast already said; a sign-in gone stale between the list and the
-    // click is the one refusal the page can do something about.
+    // The toast already said; a sign-in gone stale, or found too weak, between
+    // the list and the click are the refusals the page can do something about.
     if (refusal instanceof ApiError && refusal.code === "account.reauthentication_required") {
       await signInAgain();
+    } else if (refusal instanceof ApiError && refusal.code === "account.stronger_sign_in_required") {
+      await signInStronger();
     }
   }
 }

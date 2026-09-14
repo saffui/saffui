@@ -12,6 +12,7 @@ const HINTS: Record<string, string> = {
   "user.locked_out": "toast-hint-locked-out",
   "user.password.not_held_here": "toast-hint-password-not-held",
   "account.reauthentication_required": "toast-hint-sign-in-again",
+  "account.stronger_sign_in_required": "toast-hint-sign-in-stronger",
   "account.last_factor": "toast-hint-last-factor",
 };
 

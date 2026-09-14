@@ -405,11 +405,20 @@ async fn changing_ones_own_password_costs_its_own_capability() {
 }
 
 async fn prove_sign_in_at(plane: &Plane, at: i64) {
+    prove_sign_in_reaching(plane, at, 1).await;
+}
+
+async fn prove_sign_in_reaching(plane: &Plane, at: i64, level: i32) {
     let mut connection = plane.connection().await;
     let transaction = plane.scoped(&mut connection, &within()).await;
-    store::providers::sessions::record_authentication(&transaction, support::SESSION, at, Some(1))
-        .await
-        .expect("the sessions table");
+    store::providers::sessions::record_authentication(
+        &transaction,
+        support::SESSION,
+        at,
+        Some(level),
+    )
+    .await
+    .expect("the sessions table");
     transaction.commit().await.expect("the sign-in kept");
 }
 
@@ -585,6 +594,64 @@ async fn removing_a_factor_needs_a_recent_sign_in() {
     );
     let (status, told) = asked(&plane, Method::DELETE, &path, &bearer, None).await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{told}");
+}
+
+/// A recent sign-in is not enough when the flow the console signs in with lets
+/// the person reach a stronger one: with a code step behind the password, the
+/// password alone removes nothing, and the page is told to ask for more.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_factor_goes_only_by_a_sign_in_as_strong_as_the_flow_allows() {
+    let plane = Plane::with_actions(&[AdminAction::AccountRead, AdminAction::AccountWrite]).await;
+    let bearer = plane.token(&support::claims());
+    plane
+        .bind_browser_flow(support::PARTY, support::STRONG_FLOW)
+        .await;
+    plant_app(&plane, "app-one").await;
+    let path = own("credentials/app-one");
+
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+    let (status, held) = asked(&plane, Method::GET, &own("credentials"), &bearer, None).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert!(held["fresh_until"].is_null(), "{held}");
+    assert_eq!(held["stronger_sign_in_needed"], true, "{held}");
+    let (status, told) = asked(&plane, Method::DELETE, &path, &bearer, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{told}");
+    assert_eq!(
+        told["error_code"], "account.stronger_sign_in_required",
+        "{told}"
+    );
+
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 2).await;
+    let (_, held) = asked(&plane, Method::GET, &own("credentials"), &bearer, None).await;
+    assert!(held["fresh_until"].is_i64(), "{held}");
+    assert_eq!(held["stronger_sign_in_needed"], false, "{held}");
+    let (status, told) = asked(&plane, Method::DELETE, &path, &bearer, None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+}
+
+/// A step for a factor the person does not hold raises no bar: behind a key
+/// step, a person holding no key is asked only for what they can use.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_step_for_a_factor_the_person_lacks_raises_no_bar() {
+    let plane = Plane::with_actions(&[AdminAction::AccountWrite]).await;
+    let bearer = plane.token(&support::claims());
+    plane
+        .bind_browser_flow(support::PARTY, support::KEYED_FLOW)
+        .await;
+    plant_app(&plane, "app-one").await;
+
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+    let (status, told) = asked(
+        &plane,
+        Method::DELETE,
+        &own("credentials/app-one"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
 }
 
 /// The last second factor stays until another takes its place, and a removal

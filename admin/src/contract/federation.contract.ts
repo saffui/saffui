@@ -18,6 +18,7 @@ import { keepAnswer, REALM } from "./answers";
 
 const PROVIDER = "contract-oidc";
 const PLAIN = "contract-oauth2";
+const SAML = "contract-saml";
 const HOOK = "contract-hook";
 const DIRECTORY = "contract-ldap";
 
@@ -67,6 +68,43 @@ describe("federation", () => {
     expect(mappers.some((held) => held.mapper_id === mapper.mapper_id)).toBe(true);
     await deleteIdpMapper(REALM, PROVIDER, mapper.mapper_id);
     await deleteIdp(REALM, PROVIDER);
+  });
+
+  test("keeps a SAML provider with an attribute mapper, and removes both", async () => {
+    const certificate = process.env.SAFFUI_CONTRACT_SAML_CERTIFICATE;
+    expect(certificate, "the server's contract test hands over a certificate the crypto crate issued").toBeTruthy();
+    const metadata = `<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://saml.example.test/metadata"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>${certificate}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://saml.example.test/sso"/></md:IDPSSODescriptor></md:EntityDescriptor>`;
+    const provider = {
+      provider_id: SAML,
+      name: SAML,
+      display_name: "Contract SAML",
+      description: "",
+      enabled: false,
+      trust_email: false,
+      configs: {
+        protocol: { Str: "saml" },
+        idp_metadata: { Str: metadata },
+        name_id_format: { Str: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" },
+        email_attribute: { Str: "mail" },
+      },
+    };
+    await keepAnswer(createIdp, REALM, provider);
+    await keepAnswer(updateIdp, REALM, SAML, { ...provider, display_name: "Partner SSO" });
+
+    const mapper = await keepAnswer(createIdpMapper, REALM, SAML, {
+      name: "groups",
+      mapper_type: "saml-user-attribute-idp-mapper",
+      configs: {
+        syncMode: { Str: "force" },
+        "attribute.name": { Str: "memberOf" },
+        "user.attribute": { Str: "groups" },
+        multivalued: { Str: "true" },
+      },
+    });
+    const mappers = await keepAnswer(listIdpMappers, REALM, SAML);
+    expect(mappers.some((held) => held.mapper_id === mapper.mapper_id)).toBe(true);
+    await deleteIdpMapper(REALM, SAML, mapper.mapper_id);
+    await deleteIdp(REALM, SAML);
   });
 
   test("keeps a plain OAuth 2.0 provider asked through its account API", async () => {

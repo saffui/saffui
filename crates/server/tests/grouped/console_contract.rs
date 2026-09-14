@@ -107,6 +107,28 @@ async fn plant_what_the_console_lists(plane: &Plane) {
     transaction.commit().await.expect("the world kept");
 }
 
+/// A certificate the crypto crate issues for a key it draws, in base64, for the
+/// contract's SAML provider to carry in its metadata.
+fn issue_contract_certificate() -> String {
+    use crypto::jose::jwk::KeyPair;
+    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+    use crypto::provider::{PrivateKey, PublicKey};
+    use crypto::x509::{Issuance, issue_certificate};
+
+    let key = RsaKeyPair::generate(2048).expect("an RSA key");
+    let certificate = issue_certificate(&Issuance {
+        subject_key: &PublicKey::from_der(key.to_der_public_key()),
+        subject_name: "saml.example.test",
+        issuer_key: &PrivateKey::from_der(key.to_der_private_key()),
+        issuer_name: "saml.example.test",
+        serial: &[1],
+        not_before: 1_789_372_800,
+        not_after: 2_104_992_000,
+    })
+    .expect("a certificate issued by the crypto crate");
+    data_encoding::BASE64.encode(&certificate)
+}
+
 /// The console's own service calls, run by its contract suite against this
 /// server on a real socket. Its mocked transport tests prove what the console
 /// does with an answer; this proves the server still gives that answer: every
@@ -130,6 +152,7 @@ async fn the_console_contract_holds_against_a_live_server() {
         .run();
     tokio::spawn(server);
 
+    let saml_certificate = issue_contract_certificate();
     let console = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../admin");
     assert!(
         console.join("node_modules").is_dir(),
@@ -142,6 +165,7 @@ async fn the_console_contract_holds_against_a_live_server() {
             .env("SAFFUI_CONTRACT_ORIGIN", format!("http://127.0.0.1:{port}"))
             .env("SAFFUI_CONTRACT_TOKEN", bearer)
             .env("SAFFUI_CONTRACT_REALM", support::REALM)
+            .env("SAFFUI_CONTRACT_SAML_CERTIFICATE", saml_certificate)
             .output()
     })
     .await

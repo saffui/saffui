@@ -48,7 +48,12 @@ afterWrites(load);
 const brokers = computed(() =>
   idps.value.filter((row) => {
     const kind = kindOf(row);
-    return !kind.startsWith("caep") && kind !== "scim-outbound" && kind !== "workload";
+    return (
+      !kind.startsWith("caep") &&
+      kind !== "scim-outbound" &&
+      kind !== "webhook" &&
+      kind !== "workload"
+    );
   }),
 );
 

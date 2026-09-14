@@ -33,13 +33,19 @@ describe("identity provider catalogue", () => {
   });
 
   test("keeps out of reach only the providers the broker cannot serve", () => {
-    for (const id of ["stackoverflow", "paypal", "saml"]) {
+    for (const id of ["stackoverflow", "paypal"]) {
       expect(PROVIDER_CATALOG.find((provider) => provider.id === id)?.availability).toBe("backend");
     }
     for (const id of ["github", "bitbucket", "twitter", "linkedin"]) {
       expect(PROVIDER_CATALOG.find((provider) => provider.id === id)?.availability).toBe("ready");
     }
     expect(PROVIDER_CATALOG.some((provider) => provider.id === "instagram")).toBe(false);
+  });
+
+  test("opens SAML 2.0 on the SAML form", () => {
+    const saml = PROVIDER_CATALOG.find((provider) => provider.id === "saml");
+    expect(saml?.availability).toBe("manual");
+    expect(presetDraft(saml).protocol).toBe("saml");
   });
 
   test("prefills each plain OAuth 2.0 provider's stable subject, client authentication and PKCE", () => {

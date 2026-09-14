@@ -713,6 +713,23 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
   if (/\/identity-providers\/[^/]+\/mappers\/[^/]+$/.test(path)) {
     return answer(null);
   }
+  if (path.endsWith("/identity-providers/partner-saml/mappers")) {
+    if (method !== "GET") return answer(null);
+    return answer([
+      {
+        mapper_id: "m-3", realm_id: "main", provider_alias: "partner-saml",
+        name: "groups", mapper_type: "saml-user-attribute-idp-mapper",
+        configs: { "attribute.name": { Str: "urn:oid:1.3.6.1.4.1.5923.1.5.1.1" }, "user.attribute": { Str: "groups" },
+          multivalued: { Str: "true" }, syncMode: { Str: "force" } },
+      },
+      {
+        mapper_id: "m-4", realm_id: "main", provider_alias: "partner-saml",
+        name: "staff while a member", mapper_type: "saml-role-idp-mapper",
+        configs: { "attribute.name": { Str: "urn:oid:1.3.6.1.4.1.5923.1.5.1.1" }, "attribute.value": { Str: "staff" },
+          role: { Str: "role-staff" }, syncMode: { Str: "force" } },
+      },
+    ]);
+  }
   if (/\/identity-providers\/[^/]+\/mappers$/.test(path)) {
     if (method !== "GET") return answer(null);
     return answer([
@@ -742,6 +759,10 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
           client_id: { Str: "ci-deployer" } } },
       { internal_id: "i-5", provider_id: "audit-webhook", name: "audit-webhook", display_name: "Audit webhook", description: "", enabled: true, trust_email: false,
         configs: { kind: { Str: "webhook" }, url: { Str: "https://siem.example/hooks/saffui" }, filter: { Str: "*" }, secret: { Str: "**********" } } },
+      { internal_id: "i-6", provider_id: "partner-saml", name: "partner-saml", display_name: "Partner SSO", description: "", enabled: true, trust_email: false,
+        configs: { protocol: { Str: "saml" },
+          idp_metadata: { Str: '<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://sso.partner.example/metadata"/>' },
+          name_id_format: { Str: "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" }, email_attribute: { Str: "mail" } } },
     ]);
   }
   if (/\/federations\/[^/]+$/.test(path) && method !== "GET") {

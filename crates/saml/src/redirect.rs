@@ -239,18 +239,21 @@ mod tests {
         verify_query_signature,
     };
     use crate::dsig::Unverified;
-    use crate::testing::{key_certified_by, private_key_of, provider};
+    use crate::testing::{DrawnKey, key_certified_by, provider};
     use crate::xml::Limits;
     use crypto::provider::{CryptoProvider, PublicKey, SignAlg};
     use flate2::Compression;
     use flate2::write::DeflateEncoder;
     use std::io::Write;
+    use std::sync::LazyLock;
 
     const MESSAGE: &str = r#"<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" ID="_logout" Version="2.0" IssueInstant="2026-09-14T08:00:00Z"/>"#;
 
+    static SIGNER: LazyLock<DrawnKey> = LazyLock::new(DrawnKey::draw_rsa);
+
     fn signed(carried: Carried, relay_state: Option<&str>) -> String {
         let provider = provider();
-        let key = private_key_of(include_str!("../tests/fixtures/idp-rsa.pk8.b64"));
+        let key = SIGNER.to_private_key();
         encode_query(carried, MESSAGE, relay_state, SignAlg::Rs256, &|octets| {
             provider.signer().sign(SignAlg::Rs256, &key, octets).ok()
         })
@@ -258,9 +261,7 @@ mod tests {
     }
 
     fn trusted() -> Vec<PublicKey> {
-        vec![key_certified_by(include_str!(
-            "../tests/fixtures/idp-rsa.cer.b64"
-        ))]
+        vec![SIGNER.to_public_key()]
     }
 
     /// A signed query carries the message, its kind and the relay state back
@@ -293,8 +294,11 @@ mod tests {
         let received = decode_query(lowercase, Limits::MESSAGE).expect("a query");
         assert_eq!(received.relay_state.as_deref(), Some("state & more"));
         let signature = received.signature.expect("a signature");
+        let sender = [key_certified_by(include_str!(
+            "../tests/fixtures/idp-rsa.cer.b64"
+        ))];
         assert_eq!(
-            verify_query_signature(&provider(), &signature, &trusted()),
+            verify_query_signature(&provider(), &signature, &sender),
             Ok(())
         );
 

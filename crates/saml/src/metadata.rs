@@ -248,10 +248,14 @@ mod tests {
         Endpoint, IdentityProvider, Misread, ServiceProvider, describe_service_provider,
         read_identity_provider,
     };
+    use crate::testing::DrawnKey;
     use crate::xml::{Limits, read_message};
+    use std::sync::LazyLock;
 
-    const RSA: &str = include_str!("../tests/fixtures/idp-rsa.cer.b64");
-    const EC: &str = include_str!("../tests/fixtures/idp-ec.cer.b64");
+    static RSA: LazyLock<String> =
+        LazyLock::new(|| DrawnKey::draw_rsa().issue_certificate_in_base64());
+    static EC: LazyLock<String> =
+        LazyLock::new(|| DrawnKey::draw_ec().issue_certificate_in_base64());
     const ENTITY_ID: &str = r#"entityID="https://idp.test/metadata""#;
     const REDIRECT_SIGN_ON: &str = r#"<md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/>"#;
     const REDIRECT_LOGOUT: &str = r#"<md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/slo" ResponseLocation="https://idp.test/slo/answers"/>"#;
@@ -303,7 +307,7 @@ mod tests {
     /// an entity identifier may be; without a Redirect logout it has none.
     #[test]
     fn an_identity_provider_is_read_from_its_metadata() {
-        let plain = metadata(&key("", RSA));
+        let plain = metadata(&key("", &RSA));
         assert_eq!(
             read_identity_provider(&plain, Limits::MESSAGE),
             Ok(IdentityProvider {
@@ -313,7 +317,7 @@ mod tests {
                     location: "https://idp.test/slo".to_owned(),
                     response_location: Some("https://idp.test/slo/answers".to_owned()),
                 }),
-                signing_certificates: vec![der(RSA)],
+                signing_certificates: vec![der(&RSA)],
                 name_id_formats: vec![
                     "urn:oasis:names:tc:SAML:2.0:nameid-format:persistent".to_owned(),
                     "urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress".to_owned(),
@@ -341,17 +345,17 @@ mod tests {
         };
         assert_eq!(
             signing_of(&[
-                key(r#" use="encryption""#, EC),
-                key(r#" use="signing""#, RSA)
+                key(r#" use="encryption""#, &EC),
+                key(r#" use="signing""#, &RSA)
             ]),
-            Ok(vec![der(RSA)])
+            Ok(vec![der(&RSA)])
         );
         assert_eq!(
-            signing_of(&[key(r#" use="signing""#, RSA), key("", EC), key("", RSA)]),
-            Ok(vec![der(RSA), der(EC)])
+            signing_of(&[key(r#" use="signing""#, &RSA), key("", &EC), key("", &RSA)]),
+            Ok(vec![der(&RSA), der(&EC)])
         );
         assert_eq!(
-            signing_of(&[key(r#" use="encryption""#, RSA)]),
+            signing_of(&[key(r#" use="encryption""#, &RSA)]),
             Err(Misread::NoSigningCertificate)
         );
     }
@@ -360,7 +364,7 @@ mod tests {
     /// is refused.
     #[test]
     fn what_is_not_one_identity_provider_is_refused() {
-        let plain = metadata(&key("", RSA));
+        let plain = metadata(&key("", &RSA));
         let role_start = plain.find("<md:IDPSSODescriptor").expect("a role");
         let role_end =
             plain.find("</md:IDPSSODescriptor>").expect("a role") + "</md:IDPSSODescriptor>".len();
@@ -414,17 +418,17 @@ mod tests {
                 ),
                 Misread::Misshapen,
             ),
-            (metadata(&key(r#" use="both""#, RSA)), Misread::Misshapen),
+            (metadata(&key(r#" use="both""#, &RSA)), Misread::Misshapen),
             (
-                metadata(&key("", RSA).replace("ds:KeyInfo", "ds:KeyName")),
+                metadata(&key("", &RSA).replace("ds:KeyInfo", "ds:KeyName")),
                 Misread::Misshapen,
             ),
             (
-                metadata(&key("", RSA).replace("<ds:KeyInfo>", "<ds:KeyInfo></ds:KeyInfo><ds:KeyInfo>")),
+                metadata(&key("", &RSA).replace("<ds:KeyInfo>", "<ds:KeyInfo></ds:KeyInfo><ds:KeyInfo>")),
                 Misread::Misshapen,
             ),
             (
-                metadata(&key("", RSA).replace(
+                metadata(&key("", &RSA).replace(
                     "</ds:X509Certificate>",
                     &format!("</ds:X509Certificate><ds:X509Certificate>{}</ds:X509Certificate>", EC.trim()),
                 )),
@@ -443,7 +447,7 @@ mod tests {
                 Misread::UnreadableCertificate,
             ),
             (
-                metadata(&[key("", RSA), unreadable_key.replace("<md:KeyDescriptor>", r#"<md:KeyDescriptor use="encryption">"#)].concat()),
+                metadata(&[key("", &RSA), unreadable_key.replace("<md:KeyDescriptor>", r#"<md:KeyDescriptor use="encryption">"#)].concat()),
                 Misread::UnreadableCertificate,
             ),
             (
@@ -484,7 +488,7 @@ mod tests {
     /// value escaped; with no key for encryption and no format it names neither.
     #[test]
     fn a_realm_describes_itself_as_a_service_provider() {
-        let certificates = [der(RSA)];
+        let certificates = [der(&RSA)];
         let provider = ServiceProvider {
             entity_id: "https://sp.test/realms/main/broker/corp/saml/metadata?a=1&b=<2>",
             assertion_consumer: "https://sp.test/realms/main/broker/corp/saml/acs",
@@ -540,7 +544,7 @@ mod tests {
                 .find(|node| node.tag_name().name() == "X509Certificate")
                 .and_then(|node| node.text())
                 .expect("a certificate");
-            assert_eq!(der(certificate), der(RSA));
+            assert_eq!(der(certificate), der(&RSA));
             let methods: Vec<_> = part
                 .children()
                 .filter(|node| node.tag_name().name() == "EncryptionMethod")

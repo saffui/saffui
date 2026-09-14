@@ -417,7 +417,7 @@ mod tests {
     use super::{Accepted, Expected, Refused, accept_response, instant_of};
     use crate::dsig::Unverified;
     use crate::name_id::NameId;
-    use crate::testing::{key_certified_by, private_key_of, provider};
+    use crate::testing::{DrawnKey, key_certified_by, private_key_of, provider};
     use crate::xml::{Limits, read_message};
     use crate::xmlenc::Undecrypted;
     use chrono::NaiveDateTime;
@@ -835,9 +835,7 @@ mod tests {
             Err(Refused::EncryptedUnauthenticated)
         );
         let gcm = include_str!("../tests/fixtures/response-encrypted-gcm.xml");
-        let other_key = [private_key_of(include_str!(
-            "../tests/fixtures/other-encryption.pk8.b64"
-        ))];
+        let other_key = [DrawnKey::draw_rsa().to_private_key()];
         for keys in [&other_key[..], &[]] {
             assert_eq!(
                 outcome_decrypting(gcm, keys, unchanged),

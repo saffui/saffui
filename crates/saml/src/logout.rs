@@ -317,9 +317,10 @@ mod tests {
     use crate::post::decode_posted_message;
     use crate::protocol::Unwritable;
     use crate::redirect::{Carried, Received, decode_query, encode_query};
-    use crate::testing::{key_certified_by, private_key_of, provider};
+    use crate::testing::{DrawnKey, key_certified_by, provider};
     use crate::xml::{Limits, read_message};
     use crypto::provider::{CryptoProvider, SignAlg};
+    use std::sync::LazyLock;
 
     const PROTOCOL: &str = "urn:oasis:names:tc:SAML:2.0:protocol";
 
@@ -437,8 +438,8 @@ mod tests {
 
     const IDP: &str = "https://idp.test/metadata";
     const SLO: &str = "https://sp.test/realms/main/broker/corp/saml/slo";
-    const IDP_KEY: &str = include_str!("../tests/fixtures/idp-rsa.pk8.b64");
-    const OTHER_KEY: &str = include_str!("../tests/fixtures/other-encryption.pk8.b64");
+    static IDP_KEY: LazyLock<DrawnKey> = LazyLock::new(DrawnKey::draw_rsa);
+    static OTHER_KEY: LazyLock<DrawnKey> = LazyLock::new(DrawnKey::draw_rsa);
     const NAME: &str = r#"<saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" NameQualifier="https://idp.test/metadata" SPNameQualifier="https://sp.test/realms/main">AAdzZWNyZXQx</saml:NameID>"#;
     const IDP_REQUEST: &str = r#"<samlp:LogoutRequest xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_idp-logout" Version="2.0" IssueInstant="2026-09-14T08:00:00Z" Destination="https://sp.test/realms/main/broker/corp/saml/slo"><saml:Issuer>https://idp.test/metadata</saml:Issuer><saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent" NameQualifier="https://idp.test/metadata" SPNameQualifier="https://sp.test/realms/main">AAdzZWNyZXQx</saml:NameID><samlp:SessionIndex>_session-1</samlp:SessionIndex><samlp:SessionIndex>_session-2</samlp:SessionIndex></samlp:LogoutRequest>"#;
     const IDP_ANSWER: &str = r#"<samlp:LogoutResponse xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol" xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion" ID="_idp-answer" Version="2.0" IssueInstant="2026-09-14T08:00:00Z" Destination="https://sp.test/realms/main/broker/corp/saml/slo" InResponseTo="_logout-3"><saml:Issuer>https://idp.test/metadata</saml:Issuer><samlp:Status><samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success"/></samlp:Status></samlp:LogoutResponse>"#;
@@ -454,9 +455,9 @@ mod tests {
     }
 
     /// A message on a Redirect query signed with `signer`.
-    fn redirected(carried: Carried, message: &str, signer: &str) -> Received {
+    fn redirected(carried: Carried, message: &str, signer: &DrawnKey) -> Received {
         let provider = provider();
-        let key = private_key_of(signer);
+        let key = signer.to_private_key();
         let query = encode_query(carried, message, Some("back"), SignAlg::Rs256, &|octets| {
             provider.signer().sign(SignAlg::Rs256, &key, octets).ok()
         })
@@ -464,11 +465,14 @@ mod tests {
         decode_query(&query, Limits::MESSAGE).expect("a query")
     }
 
-    /// This service provider's expectations at 08:01, with three minutes of skew.
+    /// This service provider's expectations at 08:01, with three minutes of skew,
+    /// trusting the key the Redirect cases sign with and the certificate of the
+    /// provider that signed the posted fixtures.
     fn expected_with<T>(check: impl FnOnce(&ExpectedLogout<'_>) -> T) -> T {
-        let trusted = [key_certified_by(include_str!(
-            "../tests/fixtures/idp-rsa.cer.b64"
-        ))];
+        let trusted = [
+            IDP_KEY.to_public_key(),
+            key_certified_by(include_str!("../tests/fixtures/idp-rsa.cer.b64")),
+        ];
         check(&ExpectedLogout {
             issuer: IDP,
             destination: SLO,
@@ -506,7 +510,7 @@ mod tests {
             },
             session_indexes: vec!["_session-1".to_owned(), "_session-2".to_owned()],
         };
-        let received = redirected(Carried::Request, IDP_REQUEST, IDP_KEY);
+        let received = redirected(Carried::Request, IDP_REQUEST, &IDP_KEY);
         assert_eq!(
             request_outcome(Delivered::Redirected(&received)),
             Ok(accepted.clone())
@@ -620,7 +624,7 @@ mod tests {
             (IDP_ANSWER.to_owned(), RefusedLogout::Misshapen),
         ] {
             assert_ne!(message, IDP_REQUEST);
-            let received = redirected(Carried::Request, &message, IDP_KEY);
+            let received = redirected(Carried::Request, &message, &IDP_KEY);
             assert_eq!(
                 request_outcome(Delivered::Redirected(&received)),
                 Err(refused),
@@ -634,13 +638,13 @@ mod tests {
     /// nor posted unsigned, signed by another key or changed after signing.
     #[test]
     fn a_logout_request_is_taken_only_under_the_provider_signature() {
-        let signed = redirected(Carried::Request, IDP_REQUEST, IDP_KEY);
+        let signed = redirected(Carried::Request, IDP_REQUEST, &IDP_KEY);
         let unsigned = Received {
             signature: None,
             ..signed
         };
-        let foreign = redirected(Carried::Request, IDP_REQUEST, OTHER_KEY);
-        let crossed = redirected(Carried::Response, IDP_REQUEST, IDP_KEY);
+        let foreign = redirected(Carried::Request, IDP_REQUEST, &OTHER_KEY);
+        let crossed = redirected(Carried::Response, IDP_REQUEST, &IDP_KEY);
         let tampered = POSTED_REQUEST.replacen(">AAdzZWNyZXQx<", ">AAdzZWNyZXQy<", 1);
         assert_ne!(tampered, POSTED_REQUEST);
         for (delivered, refused) in [
@@ -676,7 +680,7 @@ mod tests {
     /// or is a request.
     #[test]
     fn a_logout_response_tells_whether_the_provider_logged_out_everywhere() {
-        let received = redirected(Carried::Response, IDP_ANSWER, IDP_KEY);
+        let received = redirected(Carried::Response, IDP_ANSWER, &IDP_KEY);
         assert_eq!(
             response_outcome(Delivered::Redirected(&received), "_logout-3"),
             Ok(LoggedOut::Everywhere)
@@ -747,7 +751,7 @@ mod tests {
             (IDP_REQUEST.to_owned(), "_logout-3", Err(RefusedLogout::Misshapen)),
         ] {
             assert_ne!(message, IDP_ANSWER);
-            let received = redirected(Carried::Response, &message, IDP_KEY);
+            let received = redirected(Carried::Response, &message, &IDP_KEY);
             assert_eq!(
                 response_outcome(Delivered::Redirected(&received), request_id),
                 outcome,

@@ -33,6 +33,7 @@ pub mod recert;
 pub mod replay;
 pub mod requests;
 pub mod roles;
+pub mod saml_brokering;
 pub mod sessions;
 pub mod sms;
 pub mod sod;

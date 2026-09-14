@@ -389,6 +389,87 @@ async fn a_broker_login_state_that_ran_out_is_taken_away() {
     assert_eq!(swept.broker_login_states, 1, "{swept:?}");
 }
 
+/// A SAML request no provider answered leaves its row behind: the sweep takes an
+/// authentication request and a logout request once they ran out, and leaves the
+/// ones still waiting.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn saml_requests_that_ran_out_are_taken_away() {
+    let plane = Plane::with_actions(&[]).await;
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    let now = chrono::Utc::now();
+    for (table, kept, request_id, expires_at) in [
+        (
+            "saml_login_requests",
+            "auth_session",
+            "_ran-out",
+            now - chrono::Duration::minutes(1),
+        ),
+        (
+            "saml_login_requests",
+            "auth_session",
+            "_still-waiting",
+            now + chrono::Duration::hours(1),
+        ),
+        (
+            "saml_logout_requests",
+            "resume_to",
+            "_ran-out",
+            now - chrono::Duration::minutes(1),
+        ),
+        (
+            "saml_logout_requests",
+            "resume_to",
+            "_still-waiting",
+            now + chrono::Duration::hours(1),
+        ),
+    ] {
+        let statement = format!(
+            "INSERT INTO {table} (tenant, realm_id, request_id, provider_alias, {kept}, expires_at) \
+             VALUES ($1, $2, $3, 'upstream', 'a-value', $4)"
+        );
+        transaction
+            .execute(
+                statement.as_str(),
+                &[&support::TENANT, &support::REALM, &request_id, &expires_at],
+            )
+            .await
+            .expect("a request planted");
+    }
+    transaction.commit().await.expect("the requests kept");
+
+    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+        .await
+        .expect("the realms were listed");
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    for table in ["saml_login_requests", "saml_logout_requests"] {
+        let census = format!("SELECT request_id FROM {table} ORDER BY request_id");
+        let left: Vec<String> = transaction
+            .query(census.as_str(), &[])
+            .await
+            .expect("a census")
+            .into_iter()
+            .map(|row| row.get(0))
+            .collect();
+        assert_eq!(left, vec!["_still-waiting".to_owned()], "{table}");
+    }
+    assert_eq!(swept.saml_login_requests, 1, "{swept:?}");
+    assert_eq!(swept.saml_logout_requests, 1, "{swept:?}");
+}
+
 /// A pass over several realms reports what each of them gave up: a stale text
 /// counter and a spent anchor in two realms are two of each, not none.
 #[tokio::test]

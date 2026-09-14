@@ -27,6 +27,40 @@ pub struct BrokerLoginState {
     pub expires_at: DateTime<Utc>,
 }
 
+/// One SAML authentication request in flight: the identifier the response must
+/// answer, spent exactly once, by the browser login that sent it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SamlLoginRequest {
+    pub request_id: String,
+    pub provider_alias: String,
+    pub auth_session: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// One SAML logout request a realm sent, spent by the provider's answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SamlLogoutRequest {
+    pub request_id: String,
+    pub provider_alias: String,
+    /// Where the browser goes once the provider answered, when the logout named a place.
+    pub resume_to: Option<String>,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// What a SAML identity provider named a local login by, kept whole so a logout
+/// request can repeat it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SamlBrokerSession {
+    pub session_id: String,
+    pub provider_alias: String,
+    pub name_id: String,
+    pub name_id_format: Option<String>,
+    pub name_qualifier: Option<String>,
+    pub sp_name_qualifier: Option<String>,
+    /// The session the provider named at sign-in, when it named one.
+    pub session_index: Option<String>,
+}
+
 /// A rule turning what an upstream provider asserted into something local.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdpMapperModel {

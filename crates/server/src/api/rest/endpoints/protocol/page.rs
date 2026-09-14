@@ -169,7 +169,7 @@ async fn doors_of_realm(
         doors.push("recovery-code");
     }
     let idps = match store::providers::brokering::list_providers(&transaction).await {
-        Ok(rows) => federated_doors(realm, &rows),
+        Ok(rows) => federated_doors(&rows),
         Err(_) => String::new(),
     };
     (
@@ -185,7 +185,7 @@ async fn doors_of_realm(
 ///
 /// The identity_providers table also holds connectors that no browser can
 /// be sent to; what earns a door here is an `authorization_endpoint`.
-fn federated_doors(realm: &str, rows: &[models::entities::authz::IdentityProviderModel]) -> String {
+fn federated_doors(rows: &[models::entities::authz::IdentityProviderModel]) -> String {
     let mut doors = String::new();
     for held in rows {
         if held.enabled == Some(false) {
@@ -215,8 +215,7 @@ fn federated_doors(realm: &str, rows: &[models::entities::authz::IdentityProvide
                 )
             });
         doors.push_str(&format!(
-            r#"<a class="idp-door" href="/realms/{}/broker/{}/login">{mark}<span>{}</span></a>"#,
-            escaped(realm),
+            r#"<a class="idp-door" href="broker/{}/login">{mark}<span>{}</span></a>"#,
             escaped(&held.provider_id),
             escaped(shown),
         ));
@@ -827,9 +826,9 @@ mod tests {
             provider("okta", "Okta", false, true),
             provider("wiki<d>", "Wiki & Co", true, true),
         ];
-        let doors = federated_doors("main", &rows);
+        let doors = federated_doors(&rows);
 
-        assert!(doors.contains("/realms/main/broker/google/login"));
+        assert!(doors.contains(r#"href="broker/google/login""#), "{doors}");
         assert!(doors.contains("#4285F4"), "the recognised mark is missing");
         assert!(!doors.contains("the-ear"), "a connector earned a door");
         assert!(!doors.contains("okta"), "a disabled provider earned a door");

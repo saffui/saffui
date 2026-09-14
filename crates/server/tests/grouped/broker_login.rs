@@ -1348,3 +1348,115 @@ async fn a_way_back_is_refused_in_a_browser_that_did_not_leave() {
         "the refused ways back spent what the browser that left still needed"
     );
 }
+
+/// A SAML provider is shown the realm as its service provider at the address its
+/// entity identifier names: the same document each time, its consumer and logout
+/// under that address, the realm's signing and encryption keys certified in it; a
+/// provider that is not SAML, or no provider, is shown nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_saml_provider_is_shown_the_realm_as_its_service_provider() {
+    use crypto::jose::jwk::KeyPair;
+    use crypto::jose::jwk::alg::rsa::RsaKeyPair;
+    use crypto::provider::{PrivateKey, PublicKey};
+    use crypto::x509::{Issuance, issue_certificate};
+
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let key = RsaKeyPair::generate(2048).expect("an RSA key");
+    let certificate = issue_certificate(&Issuance {
+        subject_key: &PublicKey::from_der(key.to_der_public_key()),
+        subject_name: "idp.test",
+        issuer_key: &PrivateKey::from_der(key.to_der_private_key()),
+        issuer_name: "idp.test",
+        serial: &[1],
+        not_before: 1_789_372_800,
+        not_after: 2_104_992_000,
+    })
+    .expect("a certificate issued by the crypto crate");
+    let idp_metadata = format!(
+        r#"<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" xmlns:ds="http://www.w3.org/2000/09/xmldsig#" entityID="https://idp.test/metadata"><md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol"><md:KeyDescriptor use="signing"><ds:KeyInfo><ds:X509Data><ds:X509Certificate>{}</ds:X509Certificate></ds:X509Data></ds:KeyInfo></md:KeyDescriptor><md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.test/sso"/></md:IDPSSODescriptor></md:EntityDescriptor>"#,
+        data_encoding::BASE64.encode(&certificate)
+    );
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        Some(json!({
+            "provider_id": "corp",
+            "name": "corp",
+            "display_name": "Corp",
+            "description": "",
+            "trust_email": false,
+            "configs": {
+                "protocol": { "Str": "saml" },
+                "idp_metadata": { "Str": idp_metadata },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    plain_provider(&plane, &bearer, "plain", "https://upstream.test", json!({})).await;
+
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    // The world signs with elliptic keys only, and a realm answers a SAML provider
+    // with an RSA key: until it holds one, it cannot describe itself.
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("/realms/{REALM}/broker/corp/saml/metadata"))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    plane
+        .publish_key(&support::SigningKey::generate_rsa("saml-rsa"))
+        .await;
+    let mut shown = Vec::new();
+    for _ in 0..2 {
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/realms/{REALM}/broker/corp/saml/metadata"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok()),
+            Some("application/samlmetadata+xml")
+        );
+        let body = test::read_body(response).await;
+        shown.push(String::from_utf8(body.to_vec()).expect("UTF-8"));
+    }
+    assert_eq!(shown[0], shown[1], "the realm described itself two ways");
+    let base = format!("{}/broker/corp/saml", support::origin().issuer(REALM));
+    for expected in [
+        format!(r#"entityID="{base}/metadata""#),
+        format!(r#"Location="{base}/acs""#),
+        format!(r#"Location="{base}/slo""#),
+        r#"use="signing""#.to_owned(),
+        r#"use="encryption""#.to_owned(),
+    ] {
+        assert!(
+            shown[0].contains(&expected),
+            "{expected} is not in {}",
+            shown[0]
+        );
+    }
+
+    for alias in ["plain", "nobody"] {
+        let response = test::call_service(
+            &app,
+            test::TestRequest::get()
+                .uri(&format!("/realms/{REALM}/broker/{alias}/saml/metadata"))
+                .to_request(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{alias}");
+    }
+}

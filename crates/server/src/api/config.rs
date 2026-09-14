@@ -129,6 +129,7 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             })
             .service(authz_scope(plane))
             .service(protocol_scope())
+            .service(saml_broker_scope())
             // Not under the protocol scope. RFC 8414 §3 fixes this path at the
             // issuer's root, and a client builds it from the issuer rather than
             // from anything this server tells it.
@@ -334,6 +335,20 @@ fn authz_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
             origin: plane.origin.clone(),
         })
         .service(web::resource("/decision").route(web::post().to(decision::ask)))
+}
+
+/// The SAML side of a brokered provider, under the address the realm answers to
+/// there, which its entity identifier names.
+///
+/// A scope of its own like the protocol one, without the browser calls it takes:
+/// nothing here is read by a script on another origin.
+fn saml_broker_scope() -> impl HttpServiceFactory + 'static {
+    web::scope("/realms/{realm}/broker/{alias}/saml")
+        .wrap(crate::middleware::transport::SecuredTransport)
+        .service(
+            web::resource("/metadata")
+                .route(web::get().to(crate::api::rest::endpoints::protocol::saml_broker::metadata)),
+        )
 }
 
 /// The protocol plane: what a client speaks to.

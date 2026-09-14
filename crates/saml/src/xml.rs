@@ -102,6 +102,19 @@ pub(crate) fn base64_content_of(node: Node<'_, '_>) -> Option<Vec<u8>> {
     data_encoding::BASE64.decode(&compact).ok()
 }
 
+/// The text an element holds when it holds text alone, trimmed. A comment or an
+/// element inside makes it none, since a reader could take a part for the whole.
+pub(crate) fn strict_text_of(element: Node<'_, '_>) -> Option<String> {
+    let mut text = String::new();
+    for child in element.children() {
+        if !child.is_text() {
+            return None;
+        }
+        text.push_str(child.text().unwrap_or_default());
+    }
+    Some(text.trim().to_owned())
+}
+
 /// ` name="value"` written into a start tag, the value escaped.
 pub(crate) fn push_attribute(xml: &mut String, name: &str, value: &str) {
     xml.push(' ');

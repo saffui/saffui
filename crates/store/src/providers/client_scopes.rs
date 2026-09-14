@@ -358,9 +358,10 @@ pub async fn mappers_of_client(
         .collect())
 }
 
-/// Every mapper a grant is under: the client's own, plus those of each
-/// attached scope the grant reaches, which is a required scope always and an
-/// optional one when the grant names it.
+/// Every mapper a grant in one protocol is under: the client's own, plus those
+/// of each attached scope of that protocol the grant reaches, which is a
+/// required scope always and an optional one when the grant names it. A rule
+/// or a scope of another protocol shapes nothing this grant answers.
 ///
 /// One membership test rather than a union deduplicated after: a mapper
 /// reached through the client and a scope at once is one rule.
@@ -368,20 +369,22 @@ pub async fn mappers_for_grant(
     transaction: &Transaction<'_>,
     client_id: &str,
     granted: &[String],
+    protocol: Protocol,
 ) -> StoreResult<Vec<ProtocolMapperModel>> {
     let statement = format!(
         "SELECT {MAPPER_COLUMNS} FROM protocol_mappers \
-         WHERE mapper_id IN ( \
+         WHERE protocol = $3 AND mapper_id IN ( \
              SELECT mapper_id FROM clients_protocol_mappers WHERE client_id = $1 \
              UNION ALL \
              SELECT sm.mapper_id FROM client_scopes_protocol_mappers sm \
              JOIN clients_client_scopes a USING (tenant, realm_id, client_scope_id) \
              JOIN client_scopes s USING (tenant, realm_id, client_scope_id) \
-             WHERE a.client_id = $1 AND (NOT a.optional OR s.name = ANY($2)) \
+             WHERE a.client_id = $1 AND s.protocol = $3 \
+               AND (NOT a.optional OR s.name = ANY($2)) \
          ) ORDER BY name ASC"
     );
     Ok(transaction
-        .query(statement.as_str(), &[&client_id, &granted])
+        .query(statement.as_str(), &[&client_id, &granted, &protocol])
         .await
         .map_err(|_| StoreError::Backend)?
         .into_iter()
@@ -495,6 +498,25 @@ pub async fn scopes_of_client(
     transaction: &Transaction<'_>,
     client_id: &str,
 ) -> StoreResult<Vec<(ClientScopeModel, bool)>> {
+    attached_scopes(transaction, client_id, None).await
+}
+
+/// A client's scopes of one protocol, with the same flag: what a grant in that
+/// protocol may name and always carries. A scope of another protocol attached
+/// to the same client is no part of it.
+pub async fn scopes_of_client_for(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    protocol: Protocol,
+) -> StoreResult<Vec<(ClientScopeModel, bool)>> {
+    attached_scopes(transaction, client_id, Some(protocol)).await
+}
+
+async fn attached_scopes(
+    transaction: &Transaction<'_>,
+    client_id: &str,
+    protocol: Option<Protocol>,
+) -> StoreResult<Vec<(ClientScopeModel, bool)>> {
     let columns = SCOPE_COLUMNS
         .split(", ")
         .map(|column| format!("s.{column}"))
@@ -503,11 +525,12 @@ pub async fn scopes_of_client(
     let statement = format!(
         "SELECT {columns}, a.optional FROM client_scopes s \
          JOIN clients_client_scopes a USING (tenant, realm_id, client_scope_id) \
-         WHERE a.client_id = $1 ORDER BY s.name ASC"
+         WHERE a.client_id = $1 AND ($2::protocol IS NULL OR s.protocol = $2) \
+         ORDER BY s.name ASC"
     );
 
     Ok(transaction
-        .query(statement.as_str(), &[&client_id])
+        .query(statement.as_str(), &[&client_id, &protocol])
         .await
         .map_err(|_| StoreError::Backend)?
         .into_iter()

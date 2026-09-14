@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use deadpool_postgres::Transaction;
 use models::entities::attributes::{AttributeValue, AttributesMap};
-use models::entities::client::ProtocolMapperModel;
+use models::entities::client::{Protocol, ProtocolMapperModel};
 use models::entities::user::{UserModel, profile};
 use serde_json::{Map, Value};
 use store::providers::{client_scopes, roles, users};
@@ -90,9 +90,10 @@ pub async fn resolve(
     scope: &str,
 ) -> Result<Resolved, ()> {
     let granted: Vec<String> = scope.split_whitespace().map(str::to_owned).collect();
-    let mappers = client_scopes::mappers_for_grant(transaction, client_id, &granted)
-        .await
-        .map_err(|_| ())?;
+    let mappers =
+        client_scopes::mappers_for_grant(transaction, client_id, &granted, Protocol::OpenId)
+            .await
+            .map_err(|_| ())?;
 
     let needs_realm = mappers
         .iter()

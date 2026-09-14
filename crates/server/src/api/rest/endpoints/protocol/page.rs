@@ -11,11 +11,12 @@ const SCRIPT: &str = include_str!("ui/login.js");
 const STYLE: &str = include_str!("ui/login.css");
 
 /// What the browser may do on this page: load this server's script and style,
-/// call this server back or post the form to it, and nothing else. No inline
-/// code, no frames, no submission to anywhere but here.
+/// show the images the page draws itself (the enrolment QR code is a `data:`
+/// image), call this server back or post the form to it, and nothing else. No
+/// inline code, no frames, no submission to anywhere but here.
 const POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
-                      connect-src 'self'; form-action 'self'; frame-ancestors 'none'; \
-                      base-uri 'none'";
+                      img-src data:; connect-src 'self'; form-action 'self'; \
+                      frame-ancestors 'none'; base-uri 'none'";
 
 /// Where `/auth` sends a browser when the deployment names no other page.
 pub fn location(origin: &PublicOrigin, realm: &str) -> String {

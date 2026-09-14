@@ -423,3 +423,29 @@ async fn the_page_carries_the_way_back_to_the_application_its_login_came_from() 
         "an address that runs as script reached the sign-in page"
     );
 }
+
+/// The page may show the QR code of an authenticator app enrolment: login.js
+/// draws it as a `data:` image, and a policy naming no image source hides it
+/// while leaving the rest of the page standing.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_page_shows_the_enrolment_qr_code_it_draws() {
+    let plane = Plane::with_actions(&[]).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/login"))
+            .to_request(),
+    )
+    .await;
+    let policy = response
+        .headers()
+        .get("content-security-policy")
+        .and_then(|value| value.to_str().ok())
+        .expect("a content security policy")
+        .to_owned();
+    let directives: Vec<&str> = policy.split(';').map(str::trim).collect();
+    assert!(directives.contains(&"img-src data:"), "{policy}");
+    assert!(directives.contains(&"default-src 'none'"), "{policy}");
+}

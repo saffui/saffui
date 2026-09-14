@@ -556,3 +556,67 @@ async fn a_new_client_takes_the_standard_scope_holding_its_name() {
         "{held}"
     );
 }
+
+/// A scope of another protocol held by an OpenID Connect client is no part of
+/// what `/authorize` grants it: neither named by the request nor carried as a
+/// required attachment.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_scope_of_another_protocol_is_no_part_of_an_openid_grant() {
+    let plane = Plane::with_actions(&[]).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, REALM),
+            )
+            .await;
+        store::providers::client_scopes::create_scope(
+            &transaction,
+            &models::entities::client::ClientScopeModel {
+                client_scope_id: "registry".to_owned(),
+                realm_id: REALM.to_owned(),
+                name: "registry".to_owned(),
+                description: String::new(),
+                protocol: models::entities::client::Protocol::Docker,
+                default_scope: Some(false),
+                configs: None,
+                metadata: models::auditable::AuditableModel::from_creator(
+                    support::TENANT.to_owned(),
+                    "test".to_owned(),
+                ),
+            },
+        )
+        .await
+        .expect("a docker scope");
+        store::providers::client_scopes::attach_scope(
+            &transaction,
+            support::CONFIDENTIAL,
+            "registry",
+            false,
+        )
+        .await
+        .expect("the docker scope held as required");
+        transaction.commit().await.expect("the attachment kept");
+    }
+
+    let granted = support::granted_scope_of(
+        &plane,
+        &[
+            ("client_id", support::CONFIDENTIAL),
+            ("response_type", "code"),
+            ("redirect_uri", "https://app.example/callback"),
+            ("scope", "openid registry"),
+            ("state", "s"),
+        ],
+    )
+    .await;
+    let held: Vec<&str> = granted.split_whitespace().collect();
+    assert!(held.contains(&"openid"), "{granted}");
+    assert!(held.contains(&"profile"), "{granted}");
+    assert!(
+        !held.contains(&"registry"),
+        "a docker scope was granted: {granted}"
+    );
+}

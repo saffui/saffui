@@ -4241,6 +4241,66 @@ async fn a_claim_asked_by_name_is_released_within_what_the_client_may_have() {
     );
 }
 
+/// A scope of another protocol is no entitlement, even named like a standard
+/// one: a docker `email` scope held by the client does not let a request that
+/// names the `email` claim have it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_scope_of_another_protocol_entitles_no_claim_asked_by_name() {
+    let plane = Plane::with_actions(&[]).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(
+                &mut connection,
+                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
+            )
+            .await;
+        store::providers::client_scopes::create_scope(
+            &transaction,
+            &models::entities::client::ClientScopeModel {
+                client_scope_id: "docker-email".to_owned(),
+                realm_id: support::REALM.to_owned(),
+                name: "email".to_owned(),
+                description: String::new(),
+                protocol: models::entities::client::Protocol::Docker,
+                default_scope: Some(false),
+                configs: None,
+                metadata: models::auditable::AuditableModel::from_creator(
+                    support::TENANT.to_owned(),
+                    "test".to_owned(),
+                ),
+            },
+        )
+        .await
+        .expect("a docker scope named email");
+        store::providers::client_scopes::attach_scope(
+            &transaction,
+            support::CONFIDENTIAL,
+            "docker-email",
+            true,
+        )
+        .await
+        .expect("the docker scope held by the client");
+        transaction.commit().await.expect("the attachment kept");
+    }
+
+    let granted = granted_through_login(
+        &plane,
+        &[
+            ("scope", "openid"),
+            ("claims", r#"{"userinfo": {"email": {"essential": true}}}"#),
+        ],
+    )
+    .await;
+    let (status, told, _) = userinfo(&plane, granted["access_token"].as_str()).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert!(
+        told.get("email").is_none(),
+        "a docker scope named email entitled the claim: {told}"
+    );
+}
+
 /// A claim asked for the identity token rides in it, at the redemption and
 /// again at every renewal, read from what the realm holds now, and within
 /// what the client may have.

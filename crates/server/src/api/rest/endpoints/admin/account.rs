@@ -10,6 +10,7 @@ use store::tenancy::Tenancy;
 use super::dto::PasswordChange;
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
+use crate::api::rest::endpoints::account::describe_own_factors;
 use crate::api::rest::endpoints::within;
 use crate::middleware::admin_guard::Admin;
 
@@ -119,28 +120,7 @@ pub async fn list_own_factors(
     )
     .await
     .map_err(unremoved)?;
-    let app_kept = held.app_kept_because();
-    let key_kept = held.key_kept_because();
-    Ok(HttpResponse::Ok().json(serde_json::json!({
-        "password": held.password,
-        "apps": held.apps.iter().map(|app| serde_json::json!({
-            "id": app.credential_id,
-            "kind": app.credential_type.to_string(),
-            "label": app.user_label,
-            "created_at": app.metadata.created_at,
-            "kept_because": app_kept,
-        })).collect::<Vec<_>>(),
-        "keys": held.keys.iter().map(|key| serde_json::json!({
-            "id": BASE64URL_NOPAD.encode(&key.credential_id),
-            "label": key.label,
-            "enrolled_at": key.enrolled_at,
-            "last_used_at": key.last_used_at,
-            "kept_because": key_kept,
-        })).collect::<Vec<_>>(),
-        "recovery_codes": held.recovery_codes,
-        "fresh_until": held.fresh_until,
-        "stronger_sign_in_needed": held.stronger_sign_in_needed,
-    })))
+    Ok(HttpResponse::Ok().json(describe_own_factors(&held)))
 }
 
 /// Take away one of the caller's authenticator apps.

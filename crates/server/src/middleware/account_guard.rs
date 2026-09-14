@@ -28,17 +28,22 @@ pub enum AccountRefusal {
     InsufficientScope,
     /// A login too old or too weak for the change asked for.
     StepUp(StepUp),
+    /// A request the account refuses for a reason of its own, in the catalogue's words.
+    Refused(ApiError),
     Unavailable,
 }
 
 impl std::fmt::Display for AccountRefusal {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(match self {
-            Self::InvalidToken => "the token does not reach the account API",
-            Self::InsufficientScope => "the token does not carry the account scope",
-            Self::StepUp(_) => "the login has to be proven again first",
-            Self::Unavailable => "the account API could not answer",
-        })
+        match self {
+            Self::InvalidToken => formatter.write_str("the token does not reach the account API"),
+            Self::InsufficientScope => {
+                formatter.write_str("the token does not carry the account scope")
+            }
+            Self::StepUp(_) => formatter.write_str("the login has to be proven again first"),
+            Self::Refused(error) => write!(formatter, "{error}"),
+            Self::Unavailable => formatter.write_str("the account API could not answer"),
+        }
     }
 }
 
@@ -47,6 +52,7 @@ impl ResponseError for AccountRefusal {
         match self {
             Self::InvalidToken | Self::StepUp(_) => StatusCode::UNAUTHORIZED,
             Self::InsufficientScope => StatusCode::FORBIDDEN,
+            Self::Refused(error) => error.status_code(),
             Self::Unavailable => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -54,28 +60,29 @@ impl ResponseError for AccountRefusal {
     /// RFC 6750 §3 and RFC 9470 §3: a refused credential is answered with a
     /// challenge saying what to present instead, and nothing here is cached.
     fn error_response(&self) -> HttpResponse<BoxBody> {
-        let (code, challenge) = match self {
+        let (body, challenge) = match self {
             Self::InvalidToken => (
-                ErrorCode::Unauthorized,
+                ApiError::new(ErrorCode::Unauthorized).body(),
                 Some(r#"Bearer error="invalid_token""#.to_owned()),
             ),
             Self::InsufficientScope => (
-                ErrorCode::AccessDenied,
+                ApiError::new(ErrorCode::AccessDenied).body(),
                 Some(format!(
                     r#"Bearer error="insufficient_scope", scope="{ACCOUNT_SCOPE}""#
                 )),
             ),
             Self::StepUp(step_up) => (
-                ErrorCode::AccountStepUpRequired,
+                ApiError::new(ErrorCode::AccountStepUpRequired).body(),
                 Some(write_step_up_challenge(step_up)),
             ),
-            Self::Unavailable => (ErrorCode::InternalError, None),
+            Self::Refused(error) => (error.body(), None),
+            Self::Unavailable => (ApiError::new(ErrorCode::InternalError).body(), None),
         };
         let mut response = HttpResponseBuilder::new(self.status_code());
         if let Some(challenge) = challenge {
             response.insert_header(("WWW-Authenticate", challenge));
         }
-        uncached(&mut response).json(ApiError::new(code).body())
+        uncached(&mut response).json(body)
     }
 }
 

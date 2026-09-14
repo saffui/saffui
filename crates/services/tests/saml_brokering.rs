@@ -190,11 +190,12 @@ async fn take(
     taken
 }
 
-/// An answer is taken for the browser that left with its request, and once: another
-/// browser is refused and leaves the request open, the answer taken spends it, and
-/// the same answer to a request opened again under that identifier was already
-/// taken. An entity identifier an administrator set is the audience an answer is
-/// held to.
+/// An answer is taken for the browser that left with its request, and once: one
+/// naming no request is refused as such without touching the request left open,
+/// another browser is refused and leaves the request open, the answer taken spends
+/// it, and the same answer to a request opened again under that identifier was
+/// already taken. An entity identifier an administrator set is the audience an
+/// answer is held to.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_answer_is_taken_once_for_the_browser_that_left() {
@@ -205,6 +206,26 @@ async fn an_answer_is_taken_once_for_the_browser_that_left() {
     let corp = upstream(&identity_provider, &[]);
     let posted = answer(&identity_provider, &Said::answering("_request"));
     open_request(&fixture, "_request").await;
+
+    let unsolicited = String::from_utf8(
+        data_encoding::BASE64
+            .decode(posted.as_bytes())
+            .expect("base64"),
+    )
+    .expect("UTF-8")
+    .replacen(r#" InResponseTo="_request""#, "", 1);
+    assert_eq!(
+        take(
+            &fixture,
+            &envelope,
+            &corp,
+            &data_encoding::BASE64.encode(unsolicited.as_bytes()),
+            THE_BROWSER
+        )
+        .await
+        .err(),
+        Some(Untaken::NoOpenRequest)
+    );
 
     assert_eq!(
         take(&fixture, &envelope, &corp, &posted, "another-browser")

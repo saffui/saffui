@@ -416,6 +416,10 @@ mod tests {
 
     fn unchanged(_: &mut Expected<'_>) {}
 
+    fn at_four(expected: &mut Expected<'_>) {
+        expected.now = at("2026-09-14T08:04:00");
+    }
+
     /// A response signed on its assertion, on itself or on both is accepted, and
     /// hands back what the assertion says.
     #[test]
@@ -449,8 +453,9 @@ mod tests {
         }
     }
 
-    /// The response has to answer this request, at this address, from this
-    /// issuer, for this service provider; a response nobody asked for is refused.
+    /// The response has to be SAML 2.0 and answer this request, at this address,
+    /// from this issuer named as an entity, for this service provider; the
+    /// assertion names the same issuer; a response nobody asked for is refused.
     #[test]
     fn a_response_answers_this_request_here_from_this_issuer() {
         assert_eq!(
@@ -474,12 +479,39 @@ mod tests {
             Err(Refused::WrongAudience)
         );
         let unsolicited = ASSERTION_SIGNED.replacen(r#" InResponseTo="_request-7""#, "", 1);
-        assert_ne!(unsolicited, ASSERTION_SIGNED);
-        assert_eq!(outcome(&unsolicited, unchanged), Err(Refused::Unsolicited));
+        let old_version = ASSERTION_SIGNED.replacen(
+            r#"ID="_response" Version="2.0""#,
+            r#"ID="_response" Version="1.1""#,
+            1,
+        );
+        let other_sender = ASSERTION_SIGNED.replacen(
+            "<saml:Issuer>https://idp.test/metadata</saml:Issuer>",
+            "<saml:Issuer>https://other-idp.test</saml:Issuer>",
+            1,
+        );
+        let person_named = ASSERTION_SIGNED.replacen(
+            "<saml:Issuer>https://idp.test/metadata</saml:Issuer>",
+            r#"<saml:Issuer Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent">https://idp.test/metadata</saml:Issuer>"#,
+            1,
+        );
+        for (text, refused) in [
+            (unsolicited, Refused::Unsolicited),
+            (old_version, Refused::NotAResponse),
+            (other_sender, Refused::WrongIssuer),
+            (person_named, Refused::WrongIssuer),
+            (
+                include_str!("../tests/fixtures/response-assertion-other-issuer.xml").to_owned(),
+                Refused::WrongIssuer,
+            ),
+        ] {
+            assert_ne!(text, ASSERTION_SIGNED);
+            assert_eq!(outcome(&text, unchanged), Err(refused.clone()), "{refused}");
+        }
     }
 
     /// Only a bearer confirmation for this address and this request, still open
-    /// and with no start of its own, confirms the subject.
+    /// and with no start of its own, confirms the subject, and the latest one
+    /// that holds sets how long the assertion is kept against replay.
     #[test]
     fn only_an_open_bearer_confirmation_confirms_the_subject() {
         for fixture in [
@@ -500,11 +532,19 @@ mod tests {
                 at("2026-09-14T08:07:59"))
             .is_ok()
         );
+        assert_eq!(
+            outcome(
+                include_str!("../tests/fixtures/response-two-confirmations.xml"),
+                unchanged
+            )
+            .map(|accepted| accepted.replayable_until),
+            Ok(at("2026-09-14T08:07:00"))
+        );
     }
 
-    /// Conditions hold the assertion to its time and to this service provider,
-    /// every audience restriction counting, and a condition not understood
-    /// refuses it.
+    /// Conditions hold the assertion to its time and to this service provider:
+    /// one audience restriction at least and every one counting, one-time use at
+    /// most once, nothing not understood; a session already closed is refused.
     #[test]
     fn conditions_hold_time_and_audience_and_admit_nothing_unknown() {
         assert_eq!(
@@ -517,13 +557,6 @@ mod tests {
                 at("2026-09-14T07:56:00"))
             .is_ok()
         );
-        assert_eq!(
-            outcome(
-                include_str!("../tests/fixtures/response-audiences-anded.xml"),
-                unchanged
-            ),
-            Err(Refused::WrongAudience)
-        );
         assert!(
             outcome(
                 include_str!("../tests/fixtures/response-audience-among-several.xml"),
@@ -533,17 +566,56 @@ mod tests {
         );
         assert_eq!(
             outcome(
-                include_str!("../tests/fixtures/response-proxy-restriction.xml"),
-                unchanged
+                include_str!("../tests/fixtures/response-conditions-ended.xml"),
+                at_four
             ),
-            Err(Refused::UnknownCondition)
+            Err(Refused::OutOfTime)
         );
+        assert_eq!(
+            outcome(
+                include_str!("../tests/fixtures/response-session-ended.xml"),
+                at_four
+            ),
+            Err(Refused::OutOfTime)
+        );
+        for (fixture, refused) in [
+            (
+                include_str!("../tests/fixtures/response-audiences-anded.xml"),
+                Refused::WrongAudience,
+            ),
+            (
+                include_str!("../tests/fixtures/response-no-audience-restriction.xml"),
+                Refused::WrongAudience,
+            ),
+            (
+                include_str!("../tests/fixtures/response-no-conditions.xml"),
+                Refused::WrongAudience,
+            ),
+            (
+                include_str!("../tests/fixtures/response-proxy-restriction.xml"),
+                Refused::UnknownCondition,
+            ),
+            (
+                include_str!("../tests/fixtures/response-conditions-reversed.xml"),
+                Refused::Misshapen,
+            ),
+            (
+                include_str!("../tests/fixtures/response-one-time-use-twice.xml"),
+                Refused::Misshapen,
+            ),
+        ] {
+            assert_eq!(
+                outcome(fixture, unchanged),
+                Err(refused.clone()),
+                "{refused}"
+            );
+        }
     }
 
     /// A failed status is refused with its codes, and so are the shapes this code
-    /// does not read: an encrypted assertion, two assertions, no authentication
-    /// statement, a comment inside the name, a time with an offset, and a signed
-    /// response with no destination.
+    /// does not read: an encrypted assertion, two assertions, an assertion of
+    /// another version, two names, no authentication statement, a comment inside
+    /// the name, a time with an offset, and a signed response with no destination.
     #[test]
     fn failures_and_shapes_not_read_are_refused() {
         assert_eq!(
@@ -560,6 +632,14 @@ mod tests {
             (
                 include_str!("../tests/fixtures/response-two-assertions.xml"),
                 Refused::NotOneAssertion,
+            ),
+            (
+                include_str!("../tests/fixtures/response-assertion-version.xml"),
+                Refused::Misshapen,
+            ),
+            (
+                include_str!("../tests/fixtures/response-two-names.xml"),
+                Refused::Misshapen,
             ),
             (
                 include_str!("../tests/fixtures/response-no-authn-statement.xml"),
@@ -586,8 +666,9 @@ mod tests {
         }
     }
 
-    /// A signature that does not verify refuses the response, whether it sits on
-    /// the assertion or on the response, and so does a response signed nowhere.
+    /// A signature that does not verify refuses the response, on the assertion or
+    /// on the response; so does a response signed nowhere, and a broken signature
+    /// on the assertion inside a response whose own signature holds.
     #[test]
     fn a_signature_that_does_not_verify_refuses_the_response() {
         let renamed = ASSERTION_SIGNED.replacen(">AAdzZWNyZXQx<", ">AAdzZWNyZXQy<", 1);
@@ -616,6 +697,13 @@ mod tests {
         assert_eq!(
             outcome(&unsigned, unchanged),
             Err(Refused::Unverified(Unverified::Unsigned))
+        );
+        assert_eq!(
+            outcome(
+                include_str!("../tests/fixtures/response-both-signed-inner-broken.xml"),
+                unchanged
+            ),
+            Err(Refused::Unverified(Unverified::Untrusted))
         );
     }
 

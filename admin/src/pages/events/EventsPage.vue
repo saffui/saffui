@@ -18,9 +18,11 @@ import {
   updateIdp,
 } from "@/services/federation";
 import { getRealmSettings, listSignInEvents } from "@/services/settings";
+import { appendHistoryPage, readHistoryCursor } from "./history";
 import {
   connectorRedeliveryRange,
   listDeadLetters,
+  readEventHistory,
   redeliverToConnector,
   requeueDead,
   streamLiveEvents,
@@ -77,6 +79,39 @@ const feedState = ref<"idle" | "connecting" | "live" | "reconnecting">("idle");
 const feedAttempt = ref(0);
 let pouring: AbortController | null = null;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+
+const historyFrom = ref("");
+const historyAsked = computed(() => readHistoryCursor(historyFrom.value));
+const history = ref<LiveEventSummary[] | null>(null);
+const historyCursor = ref(0);
+const historyMore = ref(false);
+const historyReading = ref(false);
+const historyFailed = ref("");
+
+async function readHistoryPage(after: number, laid: LiveEventSummary[] | null) {
+  historyFailed.value = "";
+  historyReading.value = true;
+  try {
+    const page = await readEventHistory(realm.value, after);
+    history.value = laid ? appendHistoryPage(laid, page.items) : page.items;
+    historyCursor.value = page.next_event_id ?? after;
+    historyMore.value = page.more;
+  } catch (refused) {
+    historyFailed.value = refused instanceof Error ? refused.message : String(refused);
+  } finally {
+    historyReading.value = false;
+  }
+}
+
+async function startHistory() {
+  const after = historyAsked.value;
+  if (after === null) return;
+  await readHistoryPage(after, null);
+}
+
+async function readFurther() {
+  await readHistoryPage(historyCursor.value, history.value ?? []);
+}
 function waitForReconnect(controller: AbortController, delay: number): Promise<void> {
   return new Promise((resolve) => {
     reconnectTimer = setTimeout(() => {
@@ -438,6 +473,64 @@ async function prove(row: IdpRow) {
         }}</span>
       </li>
     </ul>
+    <div class="mt-5 flex max-w-3xl flex-wrap items-center gap-2">
+      <h2 class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+        {{ say("events-history") }}
+      </h2>
+      <AppHint name="events-history-help" />
+    </div>
+    <form class="mt-2 flex max-w-3xl flex-wrap items-end gap-2" @submit.prevent="startHistory">
+      <label class="text-[11px] font-medium text-muted">
+        {{ say("events-history-from") }}
+        <input
+          v-model="historyFrom"
+          class="sf-field mt-1 w-48 font-mono"
+          spellcheck="false"
+          placeholder="0"
+        />
+      </label>
+      <button
+        type="submit"
+        class="rounded-md border border-border px-2.5 py-1.5 text-[11px] text-muted hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+        :disabled="historyAsked === null || historyReading"
+      >
+        {{ say("events-history-read") }}
+      </button>
+      <span v-if="historyAsked === null" class="text-[11px] text-warn" role="alert">
+        {{ say("events-history-from-wrong") }}
+      </span>
+    </form>
+    <p v-if="historyFailed" class="mt-2 text-xs text-danger" role="alert">{{ historyFailed }}</p>
+    <p v-else-if="history && !history.length" class="mt-2 text-xs text-muted">
+      {{ say("events-history-none") }}
+    </p>
+    <ul v-if="history && history.length" class="mt-2 max-w-3xl rounded-lg border border-border bg-surface">
+      <li
+        v-for="told in history"
+        :key="told.event_id"
+        class="flex items-center gap-2 border-b border-border/60 px-3 py-1.5 text-xs last:border-0"
+      >
+        <span class="font-mono text-[10.5px] text-faint">#{{ told.event_id }}</span>
+        <span class="font-mono text-[11px]">{{ told.kind }}</span>
+        <span class="text-muted">{{ told.user_id }}</span>
+        <span class="ml-auto text-[10.5px] text-faint">{{
+          instant(Date.parse(told.occurred_at) / 1000)
+        }}</span>
+      </li>
+    </ul>
+    <div v-if="history && history.length" class="mt-2 flex max-w-3xl items-center gap-2">
+      <button
+        v-if="historyMore"
+        type="button"
+        class="rounded-md border border-border px-2.5 py-1 text-[11px] text-muted hover:bg-surface-2 hover:text-ink disabled:opacity-40"
+        :disabled="historyReading"
+        @click="readFurther"
+      >
+        {{ say("events-history-more") }}
+      </button>
+      <span v-else class="text-[11px] text-faint">{{ say("events-history-end") }}</span>
+    </div>
+
     <p v-if="failed" class="mt-4 text-xs text-danger" role="alert">{{ failed }}</p>
 
     <h2 class="mt-5 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">

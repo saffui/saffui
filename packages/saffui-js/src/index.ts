@@ -25,7 +25,23 @@ export interface LoginAsked {
   extra?: Record<string, string>;
 }
 
+/// What a resource server's refusal asks of the sign-in: RFC 6750 names the error,
+/// and RFC 9470 the authentication it wants instead.
+export interface Challenge {
+  error?: string;
+  description?: string;
+  /// The levels a new sign-in has to reach, space-separated.
+  acrValues?: string;
+  /// How recent a new sign-in has to be, in seconds.
+  maxAge?: number;
+}
+
+export interface StepUpAsked extends LoginAsked {
+  challenge: Challenge;
+}
+
 const STATE_KEY = "saffui-js-login";
+const TOKEN = "[!#$%&'*+.^_`|~0-9A-Za-z-]+";
 
 export class Saffui {
   private held: SaffuiConfig;
@@ -59,6 +75,16 @@ export class Saffui {
       ...asked.extra,
     });
     location.assign(`${this.endpoint("auth")}?${query}`);
+  }
+
+  /// Send the browser to sign in again as a refusal's challenge asks (RFC 9470 §4):
+  /// as strongly as its `acr_values` and as recently as its `max_age`. Resolves
+  /// never in practice: the page navigates away.
+  async stepUp(asked: StepUpAsked): Promise<void> {
+    const extra: Record<string, string> = { ...asked.extra };
+    if (asked.challenge.acrValues) extra.acr_values = asked.challenge.acrValues;
+    if (asked.challenge.maxAge !== undefined) extra.max_age = String(asked.challenge.maxAge);
+    await this.login({ redirectUri: asked.redirectUri, scope: asked.scope, extra });
   }
 
   /// Read the answer the redirect carried back and redeem the code. Call on
@@ -131,6 +157,35 @@ export function peek(token: string): Record<string, unknown> {
   const body = token.split(".")[1] ?? "";
   const text = atob(body.replace(/-/g, "+").replace(/_/g, "/"));
   return JSON.parse(text) as Record<string, unknown>;
+}
+
+/// The Bearer challenge of a `WWW-Authenticate` header (RFC 6750 §3), or null when
+/// the header is absent or challenges with another scheme. A quoted value may carry
+/// commas and escaped quotes; the first of a repeated parameter counts.
+export function readChallenge(header: string | null): Challenge | null {
+  const scheme = /^\s*Bearer(?:\s+|$)/i.exec(header ?? "");
+  if (!header || !scheme) return null;
+  const params = new Map<string, string>();
+  const param = new RegExp(
+    `\\s*(${TOKEN})\\s*=\\s*(?:"((?:[^"\\\\]|\\\\.)*)"|(${TOKEN}))\\s*(?:,|$)`,
+    "y",
+  );
+  param.lastIndex = scheme[0].length;
+  while (param.lastIndex < header.length) {
+    const read = param.exec(header);
+    if (!read) break;
+    const name = read[1].toLowerCase();
+    if (!params.has(name)) {
+      params.set(name, read[2] !== undefined ? read[2].replace(/\\(.)/g, "$1") : read[3]);
+    }
+  }
+  const maxAge = params.get("max_age");
+  return {
+    error: params.get("error"),
+    description: params.get("error_description"),
+    acrValues: params.get("acr_values"),
+    maxAge: maxAge !== undefined && /^\d+$/.test(maxAge) ? Number(maxAge) : undefined,
+  };
 }
 
 function base64url(bytes: Uint8Array): string {

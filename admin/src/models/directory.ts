@@ -1,3 +1,5 @@
+import type { AttributeValue } from "@/models/client";
+
 /// Partial mirror of `models::entities::authz::RoleModel`: the fields the
 /// console reads.
 export interface RoleRow {
@@ -27,6 +29,17 @@ export interface OrganizationRow {
   enabled: boolean;
   domains: { name: string; verified: boolean }[];
   redirect_url: string | null;
+  attributes: Record<string, AttributeValue> | null;
+}
+
+/// Mirrors `models::entities::organization::OrganizationMutationModel`.
+export interface OrganizationChange {
+  name: string;
+  display_name: string;
+  description: string;
+  enabled: boolean;
+  redirect_url: string | null;
+  attributes: Record<string, AttributeValue> | null;
 }
 
 /// Mirrors `GET .../roles/{role}/holders`.

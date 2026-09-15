@@ -472,10 +472,7 @@ pub async fn style(
         && let Ok(transaction) = tenancy.transaction(&mut connection, &context).await
     {
         let mut sheet = STYLE.to_owned();
-        if let Ok(Some(theme)) =
-            store::providers::realms::theme_of(&transaction, &context.realm_id).await
-            && let Ok(overrides) = services::theme::css_of(&theme)
-        {
+        if let Some(overrides) = read_realm_overrides(&transaction, &context.realm_id).await {
             sheet.push('\n');
             sheet.push_str(&overrides);
             dressed = Some(sheet.clone());
@@ -508,6 +505,44 @@ pub async fn style(
             .body(body),
         None => serve("text/css; charset=utf-8", STYLE),
     }
+}
+
+/// The realm's look for its account console, which carries the defaults in its
+/// own sheet and wears only what the realm overrides. Empty for a realm left
+/// undressed, for a name that is no realm, and when the store cannot say: the
+/// console keeps its own look, and the answer does not tell the three apart.
+pub async fn serve_realm_theme(
+    realm: web::Path<String>,
+    pool: web::Data<deadpool_postgres::Pool>,
+    tenancy: web::Data<store::tenancy::Tenancy>,
+) -> HttpResponse {
+    let mut overrides = String::new();
+    if let Ok(mut connection) = pool.get().await
+        && let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, &realm).await
+        && let Ok(transaction) = tenancy.transaction(&mut connection, &context).await
+        && let Some(held) = read_realm_overrides(&transaction, &context.realm_id).await
+    {
+        overrides = held;
+    }
+    uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .insert_header(("Content-Type", "text/css; charset=utf-8"))
+        .insert_header(("Content-Security-Policy", POLICY))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("X-Frame-Options", "DENY"))
+        .insert_header(("Referrer-Policy", "no-referrer"))
+        .body(overrides)
+}
+
+/// What the realm overrides of the token contract, when it is dressed and its
+/// theme still passes the door.
+async fn read_realm_overrides(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    realm_id: &str,
+) -> Option<String> {
+    let theme = store::providers::realms::theme_of(transaction, realm_id)
+        .await
+        .ok()??;
+    services::theme::css_of(&theme).ok()
 }
 
 /// The same, for the one page whose job is to be inside somebody else's.

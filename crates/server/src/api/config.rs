@@ -478,6 +478,9 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/form-post.js").route(web::get().to(page::form_post_script)))
         .service(web::resource("/form-post").route(web::get().to(answering::deliver_response)))
         .service(web::resource("/login.css").route(web::get().to(page::style)))
+        // The realm's overrides alone, for the account console, whose own sheet
+        // carries the defaults.
+        .service(web::resource("/theme.css").route(web::get().to(page::serve_realm_theme)))
         .service(web::resource("/token").route(web::post().to(token::ask)))
         .service(web::resource("/bc-authorize").route(web::post().to(ciba::open)))
         .service(web::resource("/bc-pending").route(web::get().to(ciba::pending)))

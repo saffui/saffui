@@ -449,3 +449,69 @@ async fn the_page_shows_the_enrolment_qr_code_it_draws() {
     assert!(directives.contains(&"img-src data:"), "{policy}");
     assert!(directives.contains(&"default-src 'none'"), "{policy}");
 }
+
+/// Ask for the account console's look under a realm's name, and read back the
+/// cache rule, the content type and the sheet.
+async fn read_account_theme(plane: &Plane, realm: &str) -> (String, String, String) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{realm}/protocol/openid-connect/theme.css"
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let header = |named: &str| {
+        response
+            .headers()
+            .get(named)
+            .and_then(|held| held.to_str().ok())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let (caching, kind) = (header("cache-control"), header("content-type"));
+    let sheet = String::from_utf8(test::read_body(response).await.to_vec()).expect("css");
+    (caching, kind, sheet)
+}
+
+/// The account console wears its realm's look from a sheet of the realm's
+/// overrides alone: its defaults stay in its own bundle, so nothing of the hosted
+/// page's sheet comes along, an undressed realm and a name that is no realm both
+/// get nothing, and no browser keeps an answer a theme change would make stale.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_account_console_wears_only_what_the_realm_overrides() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+
+    let (caching, kind, bare) = read_account_theme(&plane, REALM).await;
+    assert_eq!(bare, "", "an undressed realm overrides nothing");
+    assert_eq!(kind, "text/css; charset=utf-8");
+    assert!(caching.contains("no-store"), "{caching}");
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/theme"),
+        &bearer,
+        Some(json!({
+            "light": { "brand-primary": "#12305e" },
+            "dark": { "brand-primary": "#9dbdf0" },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    let (_, _, dressed) = read_account_theme(&plane, REALM).await;
+    assert!(dressed.contains("--brand-primary:#12305e;"), "{dressed}");
+    assert!(dressed.contains("--brand-primary:#9dbdf0;"), "{dressed}");
+    assert!(
+        !dressed.contains("#18181b") && !dressed.contains("body"),
+        "the hosted page's own sheet came along: {dressed}"
+    );
+
+    let (_, _, elsewhere) = read_account_theme(&plane, "no-such-realm").await;
+    assert_eq!(elsewhere, "", "a name that is no realm wore a realm's look");
+}

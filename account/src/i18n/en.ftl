@@ -97,5 +97,5 @@ confirm-end-others-title = Sign out everywhere else?
 confirm-end-others-body = Every other sign-in ends, with the offline access that relies on it. This browser stays signed in.
 confirm-end-others = Sign out everywhere else
 confirm-take-back-title = Take back { $application }'s access?
-confirm-take-back-body = { $application } loses what it got through this sign-in, offline access included. A token it already holds keeps working until it runs out, usually within minutes. You stay signed in.
+confirm-take-back-body = { $application } loses what it got through this sign-in, offline access included. A token it already holds keeps working until it runs out, usually within minutes. This page stays signed in.
 confirm-take-back = Take back access

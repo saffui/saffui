@@ -97,5 +97,5 @@ confirm-end-others-title = Déconnecter partout ailleurs ?
 confirm-end-others-body = Toutes les autres connexions prennent fin, avec les accès hors ligne qui en dépendent. Ce navigateur reste connecté.
 confirm-end-others = Déconnecter partout ailleurs
 confirm-take-back-title = Retirer l'accès de { $application } ?
-confirm-take-back-body = { $application } perd ce qu'elle a obtenu par cette connexion, accès hors ligne compris. Un jeton qu'elle détient déjà fonctionne jusqu'à son expiration, en général quelques minutes. Vous restez connecté.
+confirm-take-back-body = { $application } perd ce qu'elle a obtenu par cette connexion, accès hors ligne compris. Un jeton qu'elle détient déjà fonctionne jusqu'à son expiration, en général quelques minutes. Cette page reste connectée.
 confirm-take-back = Retirer l'accès

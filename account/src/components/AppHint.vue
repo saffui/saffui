@@ -96,7 +96,7 @@ function hideHint() {
   line-height: 1.45;
   letter-spacing: normal;
   text-transform: none;
-  box-shadow: 0 8px 24px color-mix(in srgb, var(--ink) 16%, transparent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   pointer-events: none;
 }
 </style>

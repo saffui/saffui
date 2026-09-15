@@ -433,10 +433,10 @@ h1 {
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--ink);
-  box-shadow: 0 16px 48px color-mix(in srgb, var(--ink) 22%, transparent);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
 }
 .confirm::backdrop {
-  background: color-mix(in srgb, var(--ink) 35%, transparent);
+  background: rgba(0, 0, 0, 0.45);
 }
 .confirm h2 {
   margin-bottom: 8px;

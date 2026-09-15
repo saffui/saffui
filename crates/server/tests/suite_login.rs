@@ -22,6 +22,8 @@ mod hybrid;
 mod login_script;
 #[path = "grouped/mailed.rs"]
 mod mailed;
+#[path = "grouped/notices.rs"]
+mod notices;
 #[path = "grouped/org_login.rs"]
 mod org_login;
 #[path = "grouped/protocol.rs"]

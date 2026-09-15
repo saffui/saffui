@@ -1,0 +1,417 @@
+#[allow(unused_imports)]
+use super::support;
+use std::sync::Arc;
+
+use super::support::{Plane, Postbox};
+use actix_web::http::{Method, StatusCode};
+use actix_web::{App, test};
+use crypto::provider::CryptoProvider as _;
+use models::entities::authz::AdminAction;
+use models::entities::mail::{MailCredentials, MailSettings};
+use secrecy::SecretBox;
+use serde_json::{Value, json};
+use server::api::config::{Plane as Mounted, register};
+use services::notices::NOTICE_ATTEMPTS;
+use store::tenancy::TenantContext;
+
+const REALM: &str = support::REALM;
+
+fn within() -> TenantContext {
+    TenantContext::new(support::TENANT, REALM)
+}
+
+fn mounted(plane: &Plane) -> Mounted {
+    Mounted {
+        pool: plane.pool(),
+        tenancy: plane.tenancy(),
+        policy: server::middleware::admin_policy::AdminPolicy {
+            audiences: vec![support::AUDIENCE.to_owned()],
+            parties: vec![support::PARTY.to_owned()],
+            scope: support::SCOPE.to_owned(),
+        },
+        origin: support::origin(),
+        login_ui: support::login_ui(),
+        hops: config::proxying::Proxying::none(),
+        egress: config::serving::Egress::Anywhere,
+        sealing: support::sealing(),
+        ceiling: support::ceiling(),
+    }
+}
+
+async fn asked(
+    plane: &Plane,
+    method: Method,
+    path: &str,
+    bearer: &str,
+    body: Value,
+) -> (StatusCode, Value) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::default()
+            .method(method)
+            .uri(path)
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .set_json(body)
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    let body = test::read_body(response).await;
+    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+}
+
+/// The realm names a mail server to send with.
+async fn arrange_mail(plane: &Plane) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    let sealing = support::sealing();
+    let ring = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        support::TENANT,
+        support::REALM,
+    )
+    .await
+    .expect("a keyring");
+    store::providers::mail::keep(
+        &transaction,
+        &ring,
+        &sealing.envelope,
+        &MailSettings {
+            host: "mail.example".to_owned(),
+            port: 587,
+            from_address: "no-reply@example.test".to_owned(),
+            from_name: "Acme".to_owned(),
+            reply_to: None,
+            implicit_tls: false,
+            credentials: Some(MailCredentials {
+                username: "acme".to_owned(),
+                password: SecretBox::new(Box::new("a-mail-password".to_owned())),
+            }),
+        },
+    )
+    .await
+    .expect("the settings kept");
+    transaction.commit().await.expect("the settings kept");
+}
+
+/// One walk of every realm's outbox and of the notices it owes, carried out by
+/// `postbox`, or by nothing where the deployment sends nothing. No backoff to wait
+/// out: whatever failed is due again on the next walk.
+async fn walk(plane: &Plane, postbox: Option<&Postbox>) {
+    server::jobs::deliver_every_realm(
+        &plane.pool(),
+        &plane.tenancy(),
+        &support::sealing_sending(
+            postbox.map(|held| Arc::new(held.clone()) as Arc<dyn auth::messaging::Deliver>),
+        ),
+        &support::origin(),
+        0,
+    )
+    .await;
+}
+
+async fn notice_states(plane: &Plane) -> Vec<String> {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    transaction
+        .query("SELECT state FROM security_notices ORDER BY event_id", &[])
+        .await
+        .expect("the notices table")
+        .into_iter()
+        .map(|row| row.get(0))
+        .collect()
+}
+
+async fn mark_email_verified(plane: &Plane, verified: bool) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::users::set_email_verified(&transaction, support::SUBJECT, verified)
+        .await
+        .expect("the users table");
+    transaction.commit().await.expect("the address kept");
+}
+
+async fn switch_notices(plane: &Plane, switched: Option<bool>) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    let mut realm = store::providers::realms::load(&transaction, REALM)
+        .await
+        .expect("the realms table")
+        .expect("a planted realm");
+    realm.security_notices_enabled = switched;
+    store::providers::realms::update(&transaction, &realm)
+        .await
+        .expect("the realms table");
+    transaction.commit().await.expect("the switch kept");
+}
+
+async fn plant_recovery_codes(plane: &Plane) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::credentials::replace_recovery_codes(
+        &transaction,
+        support::provider().digest(),
+        support::REALM,
+        support::SUBJECT,
+        &["first-code", "second-code"],
+        &["sheet-1", "sheet-2"],
+        &models::auditable::AuditableModel::from_creator(
+            support::TENANT.to_owned(),
+            support::SUBJECT.to_owned(),
+        ),
+    )
+    .await
+    .expect("the credentials table");
+    transaction.commit().await.expect("the sheet kept");
+}
+
+/// A factor added to an account is mailed to the person's verified address once,
+/// in plain words and without a link, however many walks follow.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_factor_added_is_mailed_once_to_the_verified_address() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange_mail(&plane).await;
+    walk(&plane, None).await;
+    let postbox = Postbox::default();
+
+    plane.enrol_totp("app-two", support::TOTP_SECRET).await;
+    walk(&plane, Some(&postbox)).await;
+    walk(&plane, Some(&postbox)).await;
+
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].to, support::SUBJECT_EMAIL);
+    assert!(
+        held[0]
+            .subject
+            .ends_with("An authenticator app was added to your account"),
+        "{}",
+        held[0].subject
+    );
+    assert!(
+        held[0]
+            .body
+            .contains(&format!("Account: {}\n", support::SUBJECT)),
+        "{}",
+        held[0].body
+    );
+    assert!(!held[0].body.contains("http"), "{}", held[0].body);
+    assert_eq!(
+        notice_states(&plane).await.last().map(String::as_str),
+        Some("sent")
+    );
+}
+
+/// A connector that keeps failing keeps the change's telling pending, and the
+/// notice it owed is still mailed once: the notice is settled apart from the
+/// telling.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_notice_is_mailed_once_while_a_webhook_keeps_failing() {
+    let plane = Plane::with_actions(&[AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    arrange_mail(&plane).await;
+    let (status, told) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/identity-providers"),
+        &bearer,
+        json!({
+            "provider_id": "siem",
+            "name": "siem",
+            "display_name": "", "description": "", "trust_email": false,
+            "configs": {
+                "kind": { "Str": "webhook" },
+                "url": { "Str": "http://127.0.0.1:9/hook" },
+                "filter": { "Str": "credential.changed" },
+                "secret": { "Str": "a-webhook-secret-of-decent-length" },
+            },
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{told}");
+    walk(&plane, None).await;
+    let postbox = Postbox::default();
+
+    plane.enrol_totp("app-two", support::TOTP_SECRET).await;
+    walk(&plane, Some(&postbox)).await;
+    walk(&plane, Some(&postbox)).await;
+
+    assert_eq!(postbox.held().len(), 1, "{:?}", postbox.held());
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    let telling = transaction
+        .query_one(
+            "SELECT state::text, attempts FROM event_outbox WHERE kind = $1 \
+             ORDER BY event_id DESC LIMIT 1",
+            &[&store::providers::outbox::CREDENTIAL_CHANGED],
+        )
+        .await
+        .expect("the outbox");
+    assert_eq!(telling.get::<_, String>(0), "pending");
+    assert!(telling.get::<_, i32>(1) >= 2, "the telling was not retried");
+}
+
+/// A recovery code spent to sign in is mailed as such, with how many codes are
+/// left, and not as a sheet given up.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_recovery_code_used_to_sign_in_is_mailed_with_the_codes_left() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange_mail(&plane).await;
+    plant_recovery_codes(&plane).await;
+    walk(&plane, None).await;
+    let postbox = Postbox::default();
+
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &within()).await;
+        let spent = store::providers::credentials::spend_recovery_code(
+            &transaction,
+            support::provider().digest(),
+            support::SUBJECT,
+            "first-code",
+        )
+        .await
+        .expect("the credentials table");
+        assert!(spent, "the code was not one of the sheet");
+        transaction.commit().await.expect("the spending kept");
+    }
+    walk(&plane, Some(&postbox)).await;
+
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert!(
+        held[0]
+            .subject
+            .ends_with("A recovery code was used to sign in to your account"),
+        "{}",
+        held[0].subject
+    );
+    assert!(
+        held[0].body.contains("Recovery codes left: 1\n"),
+        "{}",
+        held[0].body
+    );
+}
+
+/// A notice goes only to a verified address, and only while the realm has not
+/// switched its notices off; one that never goes out is settled as skipped.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_notice_goes_only_to_a_verified_address_in_a_realm_that_sends_them() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange_mail(&plane).await;
+    walk(&plane, None).await;
+    let postbox = Postbox::default();
+
+    mark_email_verified(&plane, false).await;
+    plane.enrol_totp("app-two", support::TOTP_SECRET).await;
+    walk(&plane, Some(&postbox)).await;
+    assert!(
+        postbox.held().is_empty(),
+        "an unverified address was written to"
+    );
+
+    mark_email_verified(&plane, true).await;
+    switch_notices(&plane, Some(false)).await;
+    plane.enrol_totp("app-three", support::TOTP_SECRET).await;
+    walk(&plane, Some(&postbox)).await;
+    assert!(
+        postbox.held().is_empty(),
+        "a realm switched off sent a notice"
+    );
+
+    switch_notices(&plane, None).await;
+    plane.enrol_totp("app-four", support::TOTP_SECRET).await;
+    walk(&plane, Some(&postbox)).await;
+    assert_eq!(postbox.held().len(), 1, "{:?}", postbox.held());
+    let states = notice_states(&plane).await;
+    assert_eq!(states[states.len() - 3..], ["skipped", "skipped", "sent"]);
+}
+
+/// An administrator taking a whole sheet away writes an event per code in one
+/// transaction, and the person is told once.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_sheet_revoked_at_once_is_one_notice() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange_mail(&plane).await;
+    walk(&plane, None).await;
+    let postbox = Postbox::default();
+
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &within()).await;
+        for _ in 0..2 {
+            store::providers::outbox::emit(
+                &transaction,
+                store::providers::outbox::CREDENTIAL_CHANGED,
+                support::SUBJECT,
+                &json!({ "credential_type": "recovery-code", "change_type": "revoke" }),
+            )
+            .await
+            .expect("an emission");
+        }
+        transaction.commit().await.expect("the revocation kept");
+    }
+    walk(&plane, Some(&postbox)).await;
+
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert!(
+        held[0]
+            .subject
+            .ends_with("An administrator removed your recovery codes"),
+        "{}",
+        held[0].subject
+    );
+}
+
+/// A mail server that keeps refusing is offered the notice again on each walk,
+/// every attempt on the record, until the last allowed gives it up.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_notice_refused_every_time_is_given_up_on_the_record() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange_mail(&plane).await;
+    walk(&plane, None).await;
+    let refusing = Postbox::refusing();
+
+    plane.enrol_totp("app-two", support::TOTP_SECRET).await;
+    for walked in 1..=NOTICE_ATTEMPTS {
+        walk(&plane, Some(&refusing)).await;
+        let expected = if walked < NOTICE_ATTEMPTS {
+            "pending"
+        } else {
+            "dead"
+        };
+        assert_eq!(
+            notice_states(&plane).await.last().map(String::as_str),
+            Some(expected),
+            "after walk {walked}"
+        );
+    }
+
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    let receipts: Vec<_> =
+        store::providers::deliveries::of_user(&transaction, support::SUBJECT, 50)
+            .await
+            .expect("the deliveries table")
+            .into_iter()
+            .filter(|receipt| receipt.purpose == services::notices::SECURITY_NOTICE)
+            .collect();
+    assert_eq!(
+        receipts.len(),
+        NOTICE_ATTEMPTS as usize,
+        "an attempt went unrecorded"
+    );
+    assert!(
+        receipts.iter().all(|receipt| !receipt.delivered),
+        "a refused notice was recorded as delivered"
+    );
+}

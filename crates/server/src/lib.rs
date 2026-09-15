@@ -13,5 +13,6 @@ pub mod messaging;
 pub mod metrics;
 pub mod middleware;
 pub mod negotiate;
+pub mod notices;
 pub mod otel;
 pub mod smtp_probe;

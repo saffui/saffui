@@ -573,6 +573,11 @@ pub async fn deliver_outbox(
         .await
         .map_err(|_| ())?;
     for event in due {
+        // A change to how someone signs in owes them a notice, settled apart from
+        // this telling: noted once, however often the telling is retried.
+        services::notices::note_owed_notice(transaction, &event)
+            .await
+            .map_err(|_| ())?;
         // The lifecycle converges before anything leaves the house: the
         // provisioned apps should see the person as the rules already made
         // them.

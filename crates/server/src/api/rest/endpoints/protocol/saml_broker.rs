@@ -1,7 +1,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
-use config::serving::PublicOrigin;
+use config::serving::{LoginUi, PublicOrigin};
 use deadpool_postgres::Pool;
 use serde::Deserialize;
 use services::saml_brokering::{
@@ -104,12 +104,16 @@ pub struct Posted {
 /// Where a SAML provider's answer comes back: the realm's assertion consumer for
 /// that provider.
 ///
-/// Everything here is attacker supplied, and every refusal answers the same way,
+/// Everything here is attacker supplied, and every failed check answers the same way,
 /// with the reason kept for the operator log. The provider posts from its own site,
 /// and a browser keeps a Lax cookie off a post from another site: an answer posted
 /// without the login's cookie is posted once more from this origin, where the
 /// cookie travels, and nothing is read or spent before it comes back. Posted once
 /// more and still without the cookie, it is refused.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a piece of app state the consumer reads"
+)]
 pub async fn consume_assertion(
     request: HttpRequest,
     path: web::Path<(String, String)>,
@@ -118,6 +122,7 @@ pub async fn consume_assertion(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
+    login_ui: web::Data<LoginUi>,
 ) -> HttpResponse {
     let (realm, alias) = path.into_inner();
     let now = Utc::now();
@@ -205,6 +210,10 @@ pub async fn consume_assertion(
         }
     };
 
+    let sign_in_page = login_ui
+        .answering()
+        .map(str::to_owned)
+        .unwrap_or_else(|| super::page::location(&origin, &realm));
     let user_id = match link_arrival(
         &transaction,
         &sealing,
@@ -212,6 +221,7 @@ pub async fn consume_assertion(
         &provider,
         &alias,
         &taken.arrival,
+        &sign_in_page,
         now,
     )
     .await

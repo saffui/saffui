@@ -134,6 +134,7 @@ flash-no-key-here = Ce navigateur ne peut pas utiliser de clé de sécurité ici
 flash-key-silent = La clé n'a pas répondu.
 org-choose-title = Choisissez une organisation pour continuer.
 flash-choice-needs-script = Choisir une organisation nécessite les scripts sur cette page.
+flash-address-held = Un compte utilise déjà cette adresse sans l'avoir jamais confirmée : le fournisseur d'où vous venez ne peut donc pas y être rattaché. Connectez-vous directement à ce compte, ou demandez à un administrateur.
 flash-no-such-code = Ce code n'est pas valable. Vérifiez-le sur votre appareil et réessayez.
 flash-device-expired = Cette connexion a expiré. Recommencez sur votre appareil.
 flash-doorbell-signed-out = Connectez-vous d'abord dans ce navigateur, puis revenez sur cette page.

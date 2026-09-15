@@ -15,13 +15,13 @@ use services::saml_brokering::{self, SamlUpstream};
 use store::tenancy::{Tenancy, TenantContext, resolve};
 use ureq::unversioned::resolver::DefaultResolver;
 
-use config::serving::PublicOrigin;
+use config::serving::{LoginUi, PublicOrigin};
 
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::hosted::{Outward, PATIENCE, fetch};
-use crate::api::rest::endpoints::protocol::login::{Spoken, hand_over, told, told_landing};
+use crate::api::rest::endpoints::protocol::login::{Spoken, hand_over, shown, told, told_landing};
 
 /// Send the browser to the upstream provider.
 ///
@@ -171,8 +171,8 @@ pub struct CameBack {
 }
 
 /// Where the browser comes back. The security boundary of the whole slice:
-/// everything here is attacker supplied, and every failure answers the same
-/// way, with the reason kept for the operator log.
+/// everything here is attacker supplied, and every failed check answers the
+/// same way, with the reason kept for the operator log.
 #[allow(
     clippy::too_many_arguments,
     reason = "each is a piece of app state the callback reads"
@@ -186,6 +186,7 @@ pub async fn conclude(
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
     egress: web::Data<Egress>,
+    login_ui: web::Data<LoginUi>,
 ) -> HttpResponse {
     let (realm, alias) = path.into_inner();
     let now = Utc::now();
@@ -308,6 +309,10 @@ pub async fn conclude(
         }
     };
 
+    let sign_in_page = login_ui
+        .answering()
+        .map(str::to_owned)
+        .unwrap_or_else(|| super::page::location(&origin, &realm));
     let user_id = match link_arrival(
         &transaction,
         &sealing,
@@ -315,6 +320,7 @@ pub async fn conclude(
         &provider,
         &alias,
         &arrival,
+        &sign_in_page,
         now,
     )
     .await
@@ -375,6 +381,10 @@ pub async fn conclude(
 /// Every rule runs on every arrival and says itself whether it writes once or
 /// every time: after the link, so a rule reads who the person is here, and before
 /// the admission, so what it wrote is what the tokens are minted from.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a piece of the arrival the way back already holds"
+)]
 pub(crate) async fn link_arrival(
     transaction: &Transaction<'_>,
     sealing: &Sealing,
@@ -382,6 +392,7 @@ pub(crate) async fn link_arrival(
     provider: &IdentityProviderModel,
     alias: &str,
     arrival: &Arrival,
+    sign_in_page: &str,
     now: DateTime<Utc>,
 ) -> Result<String, HttpResponse> {
     let (user_id, first_login) = match brokering::decide_link(
@@ -402,6 +413,15 @@ pub(crate) async fn link_arrival(
         Err(brokering::Unbrokered::Refused) => {
             tracing::warn!(alias, "no local account could be decided for the arrival");
             return Err(told(StatusCode::BAD_REQUEST, "refused"));
+        }
+        // Nothing is committed and the login stays open, so the sign-in page can
+        // still take the password of the account holding the address.
+        Err(brokering::Unbrokered::AddressHeld) => {
+            tracing::warn!(
+                alias,
+                "the arrival's address is held by an account that never proved it"
+            );
+            return Err(shown(sign_in_page, "address-held"));
         }
     };
     if brokering::apply_mappers(transaction, provider, &user_id, arrival, first_login)

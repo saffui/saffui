@@ -1570,7 +1570,10 @@ impl Plane {
     }
 
     /// Let two accounts hold one address, which no realm does until told to.
-    #[allow(dead_code, reason = "only the directory suite asks for it")]
+    #[allow(
+        dead_code,
+        reason = "only the directory and federation suites ask for it"
+    )]
     pub async fn share_addresses(&self, allowed: bool) {
         let mut connection = self.connection().await;
         let transaction = self

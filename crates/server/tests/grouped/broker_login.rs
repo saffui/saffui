@@ -1118,10 +1118,44 @@ async fn a_plain_oauth2_upstream_links_only_by_an_address_its_list_verifies() {
             .email
     };
     assert!(!email.is_empty(), "the local account holds no address");
+    let addresses = served_addresses(&email);
 
-    // The provider's list of addresses, one route verifying the address and
-    // one not, both refusing a call that brings no access token.
-    let listed = email.clone();
+    for (alias, verified) in [("listed", true), ("unlisted", false)] {
+        plain_provider(
+            &plane,
+            &bearer,
+            alias,
+            &base,
+            json!({
+                "emails_endpoint": { "Str": format!("{addresses}/{verified}") },
+            }),
+        )
+        .await;
+        let (status, landing, _) = crossed(&plane, alias).await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "{alias}: {landing:?}");
+
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let linked =
+            store::providers::brokering::linked_user(&transaction, alias, support::SUBJECT)
+                .await
+                .expect("the link table")
+                .expect("the arrival was linked");
+        assert_eq!(
+            linked == support::SUBJECT,
+            verified,
+            "{alias}: the arrival was linked to the wrong account"
+        );
+    }
+}
+
+/// A provider's list of addresses on a real socket: another address, then
+/// `listed` as the primary one, verified or not as the route's last segment
+/// says. A call that brings no access token is refused.
+fn served_addresses(listed: &str) -> String {
+    let listed = listed.to_owned();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
     let port = listener.local_addr().expect("an address").port();
     let addresses = actix_web::HttpServer::new(move || {
@@ -1155,36 +1189,211 @@ async fn a_plain_oauth2_upstream_links_only_by_an_address_its_list_verifies() {
     .disable_signals()
     .run();
     tokio::spawn(addresses);
+    format!("http://127.0.0.1:{port}/emails")
+}
 
-    for (alias, verified) in [("listed", true), ("unlisted", false)] {
-        plain_provider(
-            &plane,
-            &bearer,
-            alias,
-            &base,
-            json!({
-                "emails_endpoint": { "Str": format!("http://127.0.0.1:{port}/emails/{verified}") },
-            }),
-        )
-        .await;
-        let (status, landing, _) = crossed(&plane, alias).await;
-        assert_eq!(status, StatusCode::SEE_OTHER, "{alias}: {landing:?}");
+const VOUCHED: &str = "vouched@example.test";
 
+/// An account born at the realm's own sign-up door, which keeps the address it
+/// is given without proving it.
+async fn register_account(
+    plane: &Plane,
+    user_name: &str,
+    email: &str,
+) -> models::entities::user::UserModel {
+    use store::tenancy::TenantContext;
+    let context = TenantContext::new(support::TENANT, REALM);
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &context).await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.registration_allowed = Some(true);
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.expect("the door opened");
+    }
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/signup"))
+            .set_json(json!({
+                "username": user_name,
+                "email": email,
+                "password": "a-password-of-decent-length",
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &context).await;
+    store::providers::users::load_by_name(&transaction, user_name)
+        .await
+        .expect("the users table")
+        .expect("the registered account")
+}
+
+/// A registration on someone else's address is not handed their sign-in.
+/// Arriving through a provider trusted for addresses that vouches for this one,
+/// the person goes back to the sign-in page told why, the account holding the
+/// address stays unbound, and no second account takes the address. Once that
+/// account proves the address, the same arrival is linked to it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_registration_on_an_unproven_address_is_not_handed_an_arrival_vouching_for_it() {
+    use store::tenancy::TenantContext;
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = served_upstream(&plane);
+    let registered = register_account(&plane, "registered", VOUCHED).await;
+    assert_eq!(registered.email_verified, Some(false));
+    plain_provider(
+        &plane,
+        &bearer,
+        "vouching",
+        &base,
+        json!({
+            "emails_endpoint": { "Str": format!("{}/true", served_addresses(VOUCHED)) },
+        }),
+    )
+    .await;
+
+    let (status, landing, _) = crossed(&plane, "vouching").await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{landing:?}");
+    let sign_in_page = support::login_ui();
+    assert_eq!(
+        landing,
+        Some(format!(
+            "{}#address-held",
+            sign_in_page.answering().expect("a named page")
+        ))
+    );
+    {
         let mut connection = plane.connection().await;
         let transaction = plane
             .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
             .await;
         let linked =
-            store::providers::brokering::linked_user(&transaction, alias, support::SUBJECT)
+            store::providers::brokering::linked_user(&transaction, "vouching", support::SUBJECT)
                 .await
-                .expect("the link table")
-                .expect("the arrival was linked");
-        assert_eq!(
-            linked == support::SUBJECT,
-            verified,
-            "{alias}: the arrival was linked to the wrong account"
+                .expect("the link table");
+        assert_eq!(linked, None, "the arrival was linked");
+        let bound = store::providers::brokering::links_of(&transaction, &registered.user_id)
+            .await
+            .expect("the link table");
+        assert!(
+            bound.is_empty(),
+            "the unproven account was bound: {bound:?}"
         );
+        let holder = store::providers::users::sole_by_email(&transaction, VOUCHED)
+            .await
+            .expect("the users table")
+            .expect("one account alone holds the address");
+        assert_eq!(holder.user_id, registered.user_id);
     }
+
+    // The account proves the address, as its verification would.
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut proven = store::providers::users::load(&transaction, &registered.user_id)
+            .await
+            .expect("the users table")
+            .expect("the registered account");
+        proven.email_verified = Some(true);
+        assert!(
+            store::providers::users::update(&transaction, &proven)
+                .await
+                .expect("the users table")
+        );
+        transaction.commit().await.expect("the proof kept");
+    }
+    let (status, landing, _) = crossed(&plane, "vouching").await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{landing:?}");
+    assert!(
+        landing
+            .as_deref()
+            .is_some_and(|held| held.starts_with(support::REDIRECT)),
+        "{landing:?}"
+    );
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let linked =
+        store::providers::brokering::linked_user(&transaction, "vouching", support::SUBJECT)
+            .await
+            .expect("the link table");
+    assert_eq!(linked, Some(registered.user_id));
+}
+
+/// Where the realm lets accounts share an address, the same arrival is given an
+/// account of its own holding the address it proved, and the account that never
+/// proved it stays unbound.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_arrival_gets_an_account_of_its_own_where_accounts_may_share_an_address() {
+    use store::tenancy::TenantContext;
+    let plane = Plane::with_actions(&[AdminAction::IdpRead, AdminAction::IdpWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = served_upstream(&plane);
+    plane.share_addresses(true).await;
+    let registered = register_account(&plane, "registered", VOUCHED).await;
+    plain_provider(
+        &plane,
+        &bearer,
+        "vouching",
+        &base,
+        json!({
+            "emails_endpoint": { "Str": format!("{}/true", served_addresses(VOUCHED)) },
+        }),
+    )
+    .await;
+
+    let (status, landing, _) = crossed(&plane, "vouching").await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{landing:?}");
+    assert!(
+        landing
+            .as_deref()
+            .is_some_and(|held| held.starts_with(support::REDIRECT)),
+        "{landing:?}"
+    );
+
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .await;
+    let linked =
+        store::providers::brokering::linked_user(&transaction, "vouching", support::SUBJECT)
+            .await
+            .expect("the link table")
+            .expect("the arrival was linked");
+    assert_ne!(
+        linked, registered.user_id,
+        "the unproven account received the arrival"
+    );
+    let own = store::providers::users::load(&transaction, &linked)
+        .await
+        .expect("the users table")
+        .expect("the arrival's own account");
+    assert_eq!(
+        (own.email.as_str(), own.email_verified),
+        (VOUCHED, Some(true))
+    );
+    let bound = store::providers::brokering::links_of(&transaction, &registered.user_id)
+        .await
+        .expect("the link table");
+    assert!(
+        bound.is_empty(),
+        "the unproven account was bound: {bound:?}"
+    );
 }
 
 /// The door the sign-in page shows for a provider opens where the broker

@@ -47,6 +47,10 @@ const ADMIN_BODY: usize = 8 * 1024 * 1024;
 /// with nothing presented.
 const PROTOCOL_BODY: usize = 8 * 1024;
 
+/// How much JSON a person's own account may be sent: its largest request is a
+/// password change.
+const ACCOUNT_BODY: usize = 8 * 1024;
+
 /// The form ceiling on a SAML provider's messages: a posted message is the base64
 /// of up to the 256 KiB a message may hold, a third more once encoded.
 const SAML_BODY: usize = 512 * 1024;
@@ -354,9 +358,23 @@ fn account_api_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
             origin: plane.origin.clone(),
         })
         .wrap(crate::middleware::transport::SecuredTransport)
+        .app_data(web::JsonConfig::default().limit(ACCOUNT_BODY))
         .service(web::resource("/me").route(web::get().to(account::show_me)))
         .service(
             web::resource("/me/recent-sign-in").route(web::get().to(account::check_recent_sign_in)),
+        )
+        .service(web::resource("/me/password").route(web::put().to(account::change_password)))
+        .service(web::resource("/me/credentials").route(web::get().to(account::list_factors)))
+        .service(
+            web::resource("/me/credentials/{credential}")
+                .route(web::delete().to(account::remove_app)),
+        )
+        .service(
+            web::resource("/me/keys/{credential}").route(web::delete().to(account::remove_key)),
+        )
+        .service(
+            web::resource("/me/recovery-codes")
+                .route(web::delete().to(account::remove_recovery_codes)),
         )
 }
 

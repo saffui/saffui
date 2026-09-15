@@ -1,9 +1,11 @@
 #[allow(unused_imports)]
 use super::support;
 use super::support::Plane;
-use actix_web::http::StatusCode;
+use actix_web::http::{Method, StatusCode};
 use actix_web::{App, test};
 use crypto::jose::jwt::JwtPayload;
+use models::sessions::records::{UserSessionModel, UserSessionState};
+use secrecy::SecretBox;
 use serde_json::{Value, json};
 use server::api::config::{Plane as Mounted, register};
 use services::account_api::{ACCOUNT_CONSOLE, compose_account_console_redirect};
@@ -12,6 +14,8 @@ use store::tenancy::TenantContext;
 
 const REALM: &str = support::REALM;
 const INVALID_TOKEN: &str = r#"Bearer error="invalid_token""#;
+const ELSEWHERE: &str = "session-elsewhere";
+const REPLACEMENT: &str = "a-fresh-password-of-decent-length";
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
@@ -98,12 +102,22 @@ async fn prove_sign_in_reaching(plane: &Plane, at: i64, level: i32) {
     transaction.commit().await.expect("the sign-in kept");
 }
 
-/// Ask the account API, and read back the status, the challenge and the body.
-async fn asked(plane: &Plane, path: &str, bearer: Option<&str>) -> (StatusCode, String, Value) {
+/// Send the account API a request, and read back the status, the challenge and the
+/// body.
+async fn sent(
+    plane: &Plane,
+    method: Method,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, String, Value) {
     let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
-    let mut asking = test::TestRequest::get().uri(path);
+    let mut asking = test::TestRequest::default().method(method).uri(path);
     if let Some(bearer) = bearer {
         asking = asking.insert_header(("authorization", format!("Bearer {bearer}")));
+    }
+    if let Some(body) = body {
+        asking = asking.set_json(body);
     }
     let response = test::call_service(&app, asking.to_request()).await;
     let status = response.status();
@@ -119,6 +133,116 @@ async fn asked(plane: &Plane, path: &str, bearer: Option<&str>) -> (StatusCode, 
         challenge,
         serde_json::from_slice(&body).unwrap_or(Value::Null),
     )
+}
+
+/// Ask the account API, and read back the status, the challenge and the body.
+async fn asked(plane: &Plane, path: &str, bearer: Option<&str>) -> (StatusCode, String, Value) {
+    sent(plane, Method::GET, path, bearer, None).await
+}
+
+fn own(leaf: &str) -> String {
+    format!("/realms/{REALM}/account-api/v1/me/{leaf}")
+}
+
+/// A login of the same person on another device.
+async fn open_login_elsewhere(plane: &Plane) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::sessions::open(
+        &transaction,
+        &UserSessionModel {
+            browser_state: None,
+            tenant: support::TENANT.into(),
+            session_id: ELSEWHERE.into(),
+            realm_id: support::REALM.into(),
+            user_id: support::SUBJECT.into(),
+            login_username: support::SUBJECT.into(),
+            broker_session_id: None,
+            broker_user_id: None,
+            auth_method: None,
+            ip_address: None,
+            user_agent: None,
+            started_at: chrono::Utc::now().timestamp(),
+            auth_time: None,
+            loa: None,
+            expiration: None,
+            state: UserSessionState::LoggedIn,
+            remember_me: None,
+            last_session_refresh: None,
+            is_offline: None,
+            notes: None,
+        },
+    )
+    .await
+    .expect("a login elsewhere");
+    transaction.commit().await.expect("the login kept");
+}
+
+async fn login_stands(plane: &Plane, session_id: &str) -> bool {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::sessions::load(&transaction, session_id)
+        .await
+        .expect("the sessions table")
+        .is_some()
+}
+
+async fn held_password_is(plane: &Plane, offered: &str) -> bool {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    auth::password::compare_with_held(
+        &transaction,
+        &support::provider(),
+        support::SUBJECT,
+        &SecretBox::new(Box::new(offered.to_owned())),
+    )
+    .await
+    .expect("the credentials table")
+        == auth::password::Compared::Matches
+}
+
+async fn plant_key(plane: &Plane, credential_id: &[u8]) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::webauthn::enrol(
+        &transaction,
+        &store::providers::webauthn::EnrolledCredential {
+            credential_id: credential_id.to_vec(),
+            user_id: support::SUBJECT.into(),
+            label: "laptop".into(),
+            passkey: json!({}),
+            sign_count: 0,
+            attachment: None,
+            aaguid: None,
+            attestation_format: None,
+            enrolled_at: None,
+            last_used_at: None,
+        },
+    )
+    .await
+    .expect("the keys table");
+    transaction.commit().await.expect("the key kept");
+}
+
+async fn plant_recovery_codes(plane: &Plane) {
+    use crypto::provider::CryptoProvider as _;
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::credentials::replace_recovery_codes(
+        &transaction,
+        support::provider().digest(),
+        support::REALM,
+        support::SUBJECT,
+        &["first-code", "second-code"],
+        &["sheet-1", "sheet-2"],
+        &models::auditable::AuditableModel::from_creator(
+            support::TENANT.to_owned(),
+            support::SUBJECT.to_owned(),
+        ),
+    )
+    .await
+    .expect("the credentials table");
+    transaction.commit().await.expect("the sheet kept");
 }
 
 /// Only a token the account console obtained for an open login reaches the account
@@ -302,5 +426,321 @@ async fn a_sign_in_too_old_or_too_weak_is_asked_to_step_up() {
 
     prove_sign_in_reaching(&plane, now, 2).await;
     let (status, _, told) = asked(&plane, &recent_sign_in(), Some(&bearer)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+}
+
+fn changed_to(current: &str, replacement: &str) -> Option<Value> {
+    Some(json!({ "current_password": current, "new_password": replacement }))
+}
+
+/// A person replaces their own password through the account API only from a login
+/// recent and strong enough, and only on proof of the current one. Without a recent
+/// sign-in they are asked to step up; an empty field is refused, and a body larger
+/// than a password change is not read; a wrong current password changes nothing and
+/// ends no login. The right one keeps the new password and ends every other login,
+/// leaving the one that made the change.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_password_changes_from_a_recent_strong_sign_in_on_proof_of_the_current_one() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    open_login_elsewhere(&plane).await;
+
+    let (status, challenge, told) = sent(
+        &plane,
+        Method::PUT,
+        &own("password"),
+        Some(&bearer),
+        changed_to(support::PASSWORD, REPLACEMENT),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(told["error_code"], "account.step_up_required", "{told}");
+    assert!(
+        challenge.contains(&format!(r#"acr_values="{}""#, support::PASSWORD_ACR)),
+        "{challenge}"
+    );
+    assert!(
+        held_password_is(&plane, support::PASSWORD).await,
+        "a password changed without a recent sign-in"
+    );
+
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+    for (current, replacement) in [("", REPLACEMENT), (support::PASSWORD, "")] {
+        let (status, _, told) = sent(
+            &plane,
+            Method::PUT,
+            &own("password"),
+            Some(&bearer),
+            changed_to(current, replacement),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+        assert_eq!(told["error_code"], "validation_error", "{told}");
+    }
+    let (status, _, told) = sent(
+        &plane,
+        Method::PUT,
+        &own("password"),
+        Some(&bearer),
+        changed_to(support::PASSWORD, &"long".repeat(2048)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{told}");
+
+    let (status, _, told) = sent(
+        &plane,
+        Method::PUT,
+        &own("password"),
+        Some(&bearer),
+        changed_to("not-the-password-at-all", REPLACEMENT),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert_eq!(
+        told["error_code"], "user.password.current_mismatch",
+        "{told}"
+    );
+    assert!(
+        held_password_is(&plane, support::PASSWORD).await,
+        "a wrong current password changed the password"
+    );
+    assert!(
+        login_stands(&plane, ELSEWHERE).await,
+        "a refused change ended a login"
+    );
+
+    let (status, _, told) = sent(
+        &plane,
+        Method::PUT,
+        &own("password"),
+        Some(&bearer),
+        changed_to(support::PASSWORD, REPLACEMENT),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["ended_sessions"], 1, "{told}");
+    assert!(
+        held_password_is(&plane, REPLACEMENT).await,
+        "the new password was not kept"
+    );
+    assert!(
+        !login_stands(&plane, ELSEWHERE).await,
+        "another login outlived the change"
+    );
+    assert!(
+        login_stands(&plane, support::SESSION).await,
+        "the change ended the login that made it"
+    );
+    let (status, _, told) = asked(&plane, &me(), Some(&bearer)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the login that made the change was turned away: {told}"
+    );
+}
+
+/// A wrong current password counts against the lock a sign-in counts against, and
+/// the count holds although the change was refused: the right password is then
+/// locked out as well.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_wrong_current_password_counts_against_the_lock() {
+    let plane = Plane::with_actions(&[]).await;
+    plane.count_logins(2).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+
+    for attempt in 1..=2 {
+        let (status, _, told) = sent(
+            &plane,
+            Method::PUT,
+            &own("password"),
+            Some(&bearer),
+            changed_to("not-the-password-at-all", REPLACEMENT),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "attempt {attempt}: {told}"
+        );
+    }
+    let (status, _, told) = sent(
+        &plane,
+        Method::PUT,
+        &own("password"),
+        Some(&bearer),
+        changed_to(support::PASSWORD, REPLACEMENT),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "the lock let the right password through: {told}"
+    );
+    assert_eq!(told["error_code"], "user.locked_out", "{told}");
+    assert!(
+        held_password_is(&plane, support::PASSWORD).await,
+        "a locked account changed its password"
+    );
+}
+
+/// A person reads what they hold to sign in with through the account API, and
+/// removes a factor only from a login recent and strong enough. Without a recent
+/// sign-in the removal is asked to step up and nothing goes; a factor the person
+/// does not hold is not found; a key spelled in no base64 is a bad request; the last
+/// second factor stays; the sheet of recovery codes may always go.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_lists_and_removes_their_factors_from_a_recent_strong_sign_in() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    plant_key(&plane, b"key-one").await;
+    plant_recovery_codes(&plane).await;
+
+    let (status, _, held) = asked(&plane, &own("credentials"), Some(&bearer)).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    assert_eq!(
+        (
+            held["password"].as_bool(),
+            held["apps"][0]["id"].as_str(),
+            held["keys"][0]["label"].as_str(),
+            held["recovery_codes"].as_i64(),
+        ),
+        (Some(true), Some("cred-totp"), Some("laptop"), Some(2)),
+        "{held}"
+    );
+    assert!(held["fresh_until"].is_null(), "{held}");
+
+    let (status, challenge, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own("credentials/cred-totp"),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert!(
+        challenge.contains(&format!(r#"acr_values="{}""#, support::PASSWORD_ACR)),
+        "{challenge}"
+    );
+
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own("credentials/not-an-app-of-mine"),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, told["error_code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("credential.not_found")),
+        "{told}"
+    );
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own("keys/not*base64"),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own("credentials/cred-totp"),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    let key = data_encoding::BASE64URL_NOPAD.encode(b"key-one");
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own(&format!("keys/{key}")),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, told["error_code"].as_str()),
+        (StatusCode::CONFLICT, Some("account.last_factor")),
+        "the last second factor was taken: {told}"
+    );
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own("recovery-codes"),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+
+    let (_, _, held) = asked(&plane, &own("credentials"), Some(&bearer)).await;
+    assert_eq!(
+        (
+            held["apps"].as_array().map(Vec::len),
+            held["keys"].as_array().map(Vec::len),
+            held["recovery_codes"].as_i64(),
+        ),
+        (Some(0), Some(1), Some(0)),
+        "{held}"
+    );
+    assert!(held["fresh_until"].is_i64(), "{held}");
+}
+
+/// A factor goes only from a sign-in as strong as the flow the account console signs
+/// in with lets the person reach: with a code step behind the password, a recent
+/// password alone is asked to step up to `mfa` and removes nothing, and a recent
+/// code removes it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_factor_goes_only_from_a_sign_in_as_strong_as_the_console_flow_allows() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    plane
+        .bind_browser_flow(ACCOUNT_CONSOLE, support::STRONG_FLOW)
+        .await;
+    plant_key(&plane, b"key-one").await;
+
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+    let (status, challenge, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own("credentials/cred-totp"),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert!(
+        challenge.contains(&format!(r#"acr_values="{}""#, support::STRONG_ACR)),
+        "{challenge}"
+    );
+    let (_, _, held) = asked(&plane, &own("credentials"), Some(&bearer)).await;
+    assert_eq!(held["stronger_sign_in_needed"], true, "{held}");
+    assert_eq!(held["apps"].as_array().map(Vec::len), Some(1), "{held}");
+
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 2).await;
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own("credentials/cred-totp"),
+        Some(&bearer),
+        None,
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
 }

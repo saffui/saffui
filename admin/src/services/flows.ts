@@ -121,3 +121,10 @@ export async function reworkAction(
     subject: say("subject-action", { action }),
   });
 }
+
+export async function unregisterAction(realm: string, action: string): Promise<void> {
+  await api<void>(adminPath(realm, `auth/required-actions/${encodeURIComponent(action)}`), {
+    method: "DELETE",
+    subject: say("subject-action", { action }),
+  });
+}

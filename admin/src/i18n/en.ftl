@@ -1407,6 +1407,7 @@ user-delete = Delete this account
 user-grant-role = Grant a role
 user-join-group = Join a group
 subject-user = user { $user }
+subject-user-action = { $action } for user { $user }
 subject-password = the password of { $user }
 subject-grant = { $role } for { $user }
 subject-membership = { $group } and { $user }

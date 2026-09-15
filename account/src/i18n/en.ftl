@@ -2,6 +2,7 @@ app-title = { $realm } account
 loading = Loading…
 nav-label = Your account
 nav-profile = Profile
+nav-security = Security
 nav-sessions = Sign-ins
 tongue-label = Language
 tongue-help = The language of this page, and of the sign-in pages it sends you to.
@@ -99,3 +100,78 @@ confirm-end-others = Sign out everywhere else
 confirm-take-back-title = Take back { $application }'s access?
 confirm-take-back-body = { $application } loses what it got through this sign-in, offline access included. A token it already holds keeps working until it runs out, usually within minutes. This page stays signed in.
 confirm-take-back = Take back access
+
+security-title = Security
+security-lead = How you sign in to { $realm }: your password, and the other ways you have added.
+security-unreadable = Your ways to sign in could not be read. Reload the page to try again.
+security-step-up = Sign in again
+security-step-up-lead = To change your password or remove a way to sign in, sign in again first. It keeps anyone who finds this browser open from locking you out.
+security-step-up-not-enough = Your new sign-in was not strong enough for this. Sign in again with the strongest way you have, such as your authenticator app or your security key.
+security-step-up-help = You go through the sign-in page and come back here. Anything typed on this page is lost.
+security-step-up-needed = This change needs a more recent sign-in. Sign in again, then try once more.
+security-step-up-refused = The new sign-in did not finish. Nothing was changed.
+security-enrol-refused = { $realm } does not offer that way to sign in here.
+security-password = Password
+security-password-current = Current password
+security-password-new = New password
+security-password-new-help = { $realm } may ask for a length, digits, capitals or punctuation, and may refuse a password used before.
+security-password-again = New password, again
+security-password-change = Change password
+security-password-change-help = Changing your password ends your other sign-ins, so a device that knew the old one has to sign in again.
+security-password-none = No password is kept here for your account.
+security-password-missing = Type your current password and a new one.
+security-password-repeat-differs = The new password and its repeat differ.
+security-password-wrong = The current password is not right. Too many wrong tries can lock the account for a while.
+security-password-locked = Too many wrong tries: your account is locked for a while. Try again later.
+security-password-not-here = Your password is kept by another service, so it cannot be changed here.
+security-password-changed = Password changed. { $count ->
+    [0] No other sign-in was open.
+    [one] One other sign-in ended.
+   *[other] { $count } other sign-ins ended.
+}
+security-rule-too-short = The new password is too short.
+security-rule-too-long = The new password is too long.
+security-rule-digits = The new password needs more digits.
+security-rule-capitals = The new password needs more capital letters.
+security-rule-small-letters = The new password needs more small letters.
+security-rule-punctuation = The new password needs more punctuation.
+security-rule-about-you = The new password is too close to things about you.
+security-rule-refused = This password is not allowed. Choose another.
+security-rule-shape = The new password does not have the form required.
+security-rule-used-before = You used this password before. Choose one you have not used.
+security-apps = Authenticator apps
+security-apps-none = No authenticator app is set up.
+security-apps-add = Add an authenticator app
+security-apps-add-help = You sign in again, then scan a code with the app on your phone.
+security-app-unnamed = Authenticator app
+security-keys = Security keys and passkeys
+security-keys-none = No security key or passkey is set up.
+security-keys-add = Add a security key or passkey
+security-keys-add-help = You sign in again, then your browser asks for the key, or for your device's fingerprint, face or PIN.
+security-codes = Recovery codes
+security-codes-left = { $count ->
+    [0] You have no recovery codes.
+    [one] One recovery code left.
+   *[other] { $count } recovery codes left.
+}
+security-codes-new = Get new codes
+security-codes-new-help = You sign in again, and a new set of codes is shown once. Codes you had before stop working.
+security-codes-remove = Remove codes
+security-added = Added on { $when }
+security-used = Last used on { $when }
+security-remove = Remove
+security-removed = Removed.
+security-gone = That was already removed. The list is up to date.
+security-failed = The change did not go through. Reload the page to see where things stand.
+security-kept-last-second-factor = This is your last second step for signing in: add another before removing it.
+security-kept-only-way-in = This key is the only way you sign in: add another way before removing it.
+confirm-remove = Remove
+confirm-remove-app-title = Remove { $name }?
+confirm-remove-app-body = You will no longer sign in with this authenticator app. Remove its entry from the app too.
+confirm-remove-key-title = Remove { $name }?
+confirm-remove-key-body = You will no longer sign in with this key or passkey.
+confirm-remove-codes-title = Remove your recovery codes?
+confirm-remove-codes-body = { $count ->
+    [one] Your last code stops working.
+   *[other] Your { $count } codes stop working.
+} You can get a new set at any time.

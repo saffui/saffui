@@ -3,9 +3,12 @@ import {
   BadgeCheck,
   CircleAlert,
   Info,
+  KeyRound,
   LogOut,
   Monitor,
   MonitorSmartphone,
+  Plus,
+  ShieldCheck,
   Smartphone,
   UserRound,
   type LucideProps,
@@ -23,6 +26,10 @@ const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
   sessions: MonitorSmartphone,
   desktop: Monitor,
   mobile: Smartphone,
+  security: ShieldCheck,
+  app: Smartphone,
+  key: KeyRound,
+  add: Plus,
 };
 
 const props = defineProps<{ name: keyof typeof GLYPHS; size?: number }>();

@@ -1,20 +1,16 @@
 <script setup lang="ts">
 import { onMounted } from "vue";
 import { useRouter } from "vue-router";
-import { SaffuiError } from "saffui-js";
 import { say } from "@/i18n";
-import { finishSignIn } from "@/services/session";
+import { chooseRefusedRoute, finishSignIn } from "@/services/session";
 
 const router = useRouter();
 
 onMounted(async () => {
   try {
-    await router.replace(await finishSignIn(new URLSearchParams(location.search)));
+    await router.replace((await finishSignIn(new URLSearchParams(location.search))).path);
   } catch (refused) {
-    // A return address kept from an earlier sign-in has nothing left to redeem:
-    // the console signs in afresh. Any other failure is explained.
-    const stale = refused instanceof SaffuiError && refused.error === "no_login";
-    await router.replace(stale ? "/profile" : "/trouble");
+    await router.replace(chooseRefusedRoute(refused));
   }
 });
 </script>

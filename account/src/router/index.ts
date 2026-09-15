@@ -27,6 +27,7 @@ export function createAccountRouter(realm: string): Router {
         children: [
           { path: "", redirect: "/profile" },
           { path: "profile", component: () => import("@/pages/ProfilePage.vue") },
+          { path: "security", component: () => import("@/pages/SecurityPage.vue") },
           { path: "sessions", component: () => import("@/pages/SessionsPage.vue") },
         ],
       },

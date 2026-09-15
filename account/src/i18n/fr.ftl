@@ -2,6 +2,7 @@ app-title = Compte { $realm }
 loading = Chargement…
 nav-label = Votre compte
 nav-profile = Profil
+nav-security = Sécurité
 nav-sessions = Connexions
 tongue-label = Langue
 tongue-help = La langue de cette page, et des pages de connexion vers lesquelles elle vous envoie.
@@ -99,3 +100,78 @@ confirm-end-others = Déconnecter partout ailleurs
 confirm-take-back-title = Retirer l'accès de { $application } ?
 confirm-take-back-body = { $application } perd ce qu'elle a obtenu par cette connexion, accès hors ligne compris. Un jeton qu'elle détient déjà fonctionne jusqu'à son expiration, en général quelques minutes. Cette page reste connectée.
 confirm-take-back = Retirer l'accès
+
+security-title = Sécurité
+security-lead = Comment vous vous connectez à { $realm } : votre mot de passe, et les autres moyens que vous avez ajoutés.
+security-unreadable = Vos moyens de connexion n'ont pas pu être lus. Rechargez la page pour réessayer.
+security-step-up = Se reconnecter
+security-step-up-lead = Pour changer votre mot de passe ou retirer un moyen de connexion, reconnectez-vous d'abord. Cela empêche quiconque trouve ce navigateur ouvert de vous fermer l'accès à votre compte.
+security-step-up-not-enough = Votre nouvelle connexion ne suffit pas pour cela. Reconnectez-vous avec votre moyen le plus fort, comme votre application d'authentification ou votre clé de sécurité.
+security-step-up-help = Vous passez par la page de connexion puis revenez ici. Ce qui a été saisi sur cette page est perdu.
+security-step-up-needed = Cette modification demande une connexion plus récente. Reconnectez-vous, puis réessayez.
+security-step-up-refused = La nouvelle connexion n'a pas abouti. Rien n'a été modifié.
+security-enrol-refused = { $realm } ne propose pas ce moyen de connexion ici.
+security-password = Mot de passe
+security-password-current = Mot de passe actuel
+security-password-new = Nouveau mot de passe
+security-password-new-help = { $realm } peut exiger une longueur, des chiffres, des majuscules ou de la ponctuation, et refuser un mot de passe déjà utilisé.
+security-password-again = Nouveau mot de passe, à nouveau
+security-password-change = Changer le mot de passe
+security-password-change-help = Changer votre mot de passe met fin à vos autres connexions : un appareil qui connaissait l'ancien devra se reconnecter.
+security-password-none = Aucun mot de passe n'est conservé ici pour votre compte.
+security-password-missing = Saisissez votre mot de passe actuel et un nouveau.
+security-password-repeat-differs = Le nouveau mot de passe et sa répétition diffèrent.
+security-password-wrong = Le mot de passe actuel n'est pas le bon. Trop d'essais erronés peuvent verrouiller le compte un moment.
+security-password-locked = Trop d'essais erronés : votre compte est verrouillé pour un moment. Réessayez plus tard.
+security-password-not-here = Votre mot de passe est géré par un autre service : il ne se change pas ici.
+security-password-changed = Mot de passe changé. { $count ->
+    [0] Aucune autre connexion n'était ouverte.
+    [one] Une autre connexion a pris fin.
+   *[other] { $count } autres connexions ont pris fin.
+}
+security-rule-too-short = Le nouveau mot de passe est trop court.
+security-rule-too-long = Le nouveau mot de passe est trop long.
+security-rule-digits = Le nouveau mot de passe demande plus de chiffres.
+security-rule-capitals = Le nouveau mot de passe demande plus de majuscules.
+security-rule-small-letters = Le nouveau mot de passe demande plus de minuscules.
+security-rule-punctuation = Le nouveau mot de passe demande plus de ponctuation.
+security-rule-about-you = Le nouveau mot de passe ressemble trop à des informations vous concernant.
+security-rule-refused = Ce mot de passe n'est pas autorisé. Choisissez-en un autre.
+security-rule-shape = Le nouveau mot de passe n'a pas la forme demandée.
+security-rule-used-before = Vous avez déjà utilisé ce mot de passe. Choisissez-en un nouveau.
+security-apps = Applications d'authentification
+security-apps-none = Aucune application d'authentification n'est configurée.
+security-apps-add = Ajouter une application d'authentification
+security-apps-add-help = Vous vous reconnectez, puis scannez un code avec l'application de votre téléphone.
+security-app-unnamed = Application d'authentification
+security-keys = Clés de sécurité et passkeys
+security-keys-none = Aucune clé de sécurité ni passkey n'est configurée.
+security-keys-add = Ajouter une clé de sécurité ou une passkey
+security-keys-add-help = Vous vous reconnectez, puis votre navigateur demande la clé, ou l'empreinte, le visage ou le code de votre appareil.
+security-codes = Codes de secours
+security-codes-left = { $count ->
+    [0] Vous n'avez aucun code de secours.
+    [one] Il vous reste un code de secours.
+   *[other] Il vous reste { $count } codes de secours.
+}
+security-codes-new = Obtenir de nouveaux codes
+security-codes-new-help = Vous vous reconnectez, et un nouveau jeu de codes s'affiche une seule fois. Les codes précédents cessent de fonctionner.
+security-codes-remove = Retirer les codes
+security-added = Ajout le { $when }
+security-used = Dernière utilisation le { $when }
+security-remove = Retirer
+security-removed = C'est retiré.
+security-gone = C'était déjà retiré. La liste est à jour.
+security-failed = La modification n'a pas abouti. Rechargez la page pour voir où en sont les choses.
+security-kept-last-second-factor = C'est votre dernière seconde étape de connexion : ajoutez-en une autre avant de la retirer.
+security-kept-only-way-in = Cette clé est votre seul moyen de connexion : ajoutez-en un autre avant de la retirer.
+confirm-remove = Retirer
+confirm-remove-app-title = Retirer { $name } ?
+confirm-remove-app-body = Vous ne pourrez plus vous connecter avec cette application d'authentification. Supprimez aussi son entrée dans l'application.
+confirm-remove-key-title = Retirer { $name } ?
+confirm-remove-key-body = Vous ne pourrez plus vous connecter avec cette clé ou cette passkey.
+confirm-remove-codes-title = Retirer vos codes de secours ?
+confirm-remove-codes-body = { $count ->
+    [one] Votre dernier code cesse de fonctionner.
+   *[other] Vos { $count } codes cessent de fonctionner.
+} Vous pouvez en obtenir un nouveau jeu à tout moment.

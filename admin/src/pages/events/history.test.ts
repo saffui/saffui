@@ -17,6 +17,8 @@ describe("the number a history read starts after", () => {
   test("is the number typed, and nothing else is read as one", () => {
     expect(readHistoryCursor(" 42 ")).toBe(42);
     expect(readHistoryCursor("4.2")).toBeNull();
+    expect(readHistoryCursor("4.0")).toBeNull();
+    expect(readHistoryCursor("4.")).toBeNull();
     expect(readHistoryCursor("-1")).toBeNull();
     expect(readHistoryCursor("nine")).toBeNull();
     expect(readHistoryCursor("9007199254740992")).toBeNull();

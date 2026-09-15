@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  addClaimSource,
   closeSession,
   countRecoveryCodes,
   createUser,
@@ -7,6 +8,7 @@ import {
   getLockout,
   getUser,
   liftLockout,
+  listClaimSources,
   listConsents,
   listEffectiveRoles,
   listFederatedIdentities,
@@ -17,6 +19,7 @@ import {
   listUsers,
   readCredentials,
   readPasswordHistory,
+  removeClaimSource,
   revokeCredential,
   revokeSessionGrant,
   revokeWebAuthnKey,
@@ -68,6 +71,28 @@ describe("users", () => {
     const consents = await keepAnswer(listConsents, REALM, ADA);
     expect(consents.some((consent) => consent.client_id === APP)).toBe(true);
     await withdrawConsent(REALM, ADA, APP);
+  });
+
+  test("keeps a claim source of each kind for a person, never reads the fetch token back, and removes both", async () => {
+    const signed = await keepAnswer(addClaimSource, REALM, ADA, {
+      claims: ["contract_badge"],
+      kind: "jwt",
+      jwt: "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2lkcC5leGFtcGxlIn0.c2lnbmF0dXJl",
+    });
+    const fetched = await keepAnswer(addClaimSource, REALM, ADA, {
+      claims: ["contract_level"],
+      kind: "endpoint",
+      endpoint: "https://claims.example/ada",
+      endpoint_token: "contract-fetch-token",
+    });
+    const sources = await keepAnswer(listClaimSources, REALM, ADA);
+    expect(sources.some((source) => source.source_id === signed.source_id)).toBe(true);
+    expect(sources.find((source) => source.source_id === fetched.source_id)?.endpoint_token).toBeTruthy();
+    expect(JSON.stringify([fetched, ...sources])).not.toContain("contract-fetch-token");
+    await removeClaimSource(REALM, ADA, signed);
+    await removeClaimSource(REALM, ADA, fetched);
+    const left = await keepAnswer(listClaimSources, REALM, ADA);
+    expect(left.some((source) => [signed.source_id, fetched.source_id].includes(source.source_id))).toBe(false);
   });
 
   test("creates a person, replaces their password, and removes them", async () => {

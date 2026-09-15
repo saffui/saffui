@@ -1633,7 +1633,7 @@ flow-insert-here = Ajouter une étape ici
 
 ## Le catalogue des actions requises.
 actions-title = Actions requises
-actions-lede = Ce qu'un realm peut exiger d'une personne avant qu'une connexion aboutisse. Le catalogue est celui du build : les lignes se déclarent et se règlent, jamais ne s'inventent, et une action déjà portée par un compte continue de se poser même éteinte ici pour les suivants.
+actions-lede = Ce qu'un realm peut exiger d'une personne avant qu'une connexion aboutisse. Le catalogue est celui du build : les lignes se déclarent, se règlent et se retirent, jamais ne s'inventent, et une action déjà portée par un compte continue de se poser même éteinte ici pour les suivants.
 actions-col-what = Action
 actions-col-enabled = Offerte
 actions-enabled-help = Si un administrateur ou une application peut encore l'exiger de quelqu'un. Ce qu'une personne doit déjà reste dû, et ce que le serveur pose de lui-même, comme un mot de passe expiré, ne se coupe jamais ici.
@@ -1642,6 +1642,13 @@ actions-birth-help = Les nouveaux comptes naissent en la devant, quelle que soit
 actions-register = Déclarer
 actions-register-help = Écrit la ligne que ce realm règle ; jusque-là l'action n'existe que dans le build.
 actions-unregistered = non déclarée ici
+actions-unregister = Retirer la déclaration
+actions-unregister-title = Retirer la déclaration d'une action requise
+actions-unregister-lede = Ce realm oublie sa ligne pour cette action : si elle est offerte, et si les nouveaux comptes naissent en la devant.
+actions-unregister-aside = Les personnes qui la doivent déjà la doivent toujours.
+actions-unregister-warning = Ce realm a coupé cette action. Une fois sa ligne retirée, elle peut de nouveau être demandée aux personnes.
+actions-fact-on = oui
+actions-fact-off = non
 subject-action = l'action { $action }
 
 ## Cadence du backchannel (CIBA).

@@ -45,6 +45,33 @@ const COMPOSITE_ROLES = new Set(["r-2"]);
 const CLIENT_MAPPERS = new Set(["m-1", "m-2"]);
 const REMOVED_REALM_KEYS = new Set<string>();
 const REALM_SETTINGS_CHANGES: Record<string, unknown> = {};
+/// A registered action can be unregistered here, and the table has to show it.
+const REGISTERED_ACTIONS = [
+  {
+    action_id: "ra-1",
+    provider_id: "totp",
+    action: "configure-totp",
+    name: "configure-totp",
+    display_name: "Configure authenticator app",
+    description: "",
+    enabled: true,
+    default_action: false,
+    on_time_action: null,
+    priority: 10,
+  },
+  {
+    action_id: "ra-2",
+    provider_id: "mail",
+    action: "verify-email",
+    name: "verify-email",
+    display_name: "Verify email",
+    description: "",
+    enabled: false,
+    default_action: false,
+    on_time_action: null,
+    priority: 20,
+  },
+];
 
 const PEOPLE: UserBrief[] = [
   {
@@ -1079,21 +1106,14 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       ],
     });
   }
+  if (/\/auth\/required-actions\/[^/]+$/.test(path) && method === "DELETE") {
+    const gone = decodeURIComponent(path.split("/").pop() ?? "");
+    const at = REGISTERED_ACTIONS.findIndex((held) => held.action === gone);
+    if (at >= 0) REGISTERED_ACTIONS.splice(at, 1);
+    return answer(undefined);
+  }
   if (path.endsWith("/auth/required-actions")) {
-    return answer([
-      {
-        action_id: "ra-1",
-        provider_id: "totp",
-        action: "configure-totp",
-        name: "configure-totp",
-        display_name: "Configure authenticator app",
-        description: "",
-        enabled: true,
-        default_action: false,
-        on_time_action: null,
-        priority: 10,
-      },
-    ]);
+    return answer(REGISTERED_ACTIONS.map((held) => ({ ...held })));
   }
   if (path.endsWith("/auth/flows") && method === "POST") {
     return answer({ flow_id: "f-new", alias: "made", description: "", top_level: true, built_in: false });

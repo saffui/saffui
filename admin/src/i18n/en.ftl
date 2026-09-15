@@ -1633,7 +1633,7 @@ flow-insert-here = Add a step here
 
 ## The required-actions catalogue.
 actions-title = Required actions
-actions-lede = What a realm may ask of a person before a sign-in completes. The catalogue is the build's own: rows can be registered and turned, never invented, and an action a user already carries keeps asking even when turned off here for the next one.
+actions-lede = What a realm may ask of a person before a sign-in completes. The catalogue is the build's own: rows can be registered, turned and unregistered, never invented, and an action a user already carries keeps asking even when turned off here for the next one.
 actions-col-what = Action
 actions-col-enabled = Offered
 actions-enabled-help = Whether an administrator or an application may still ask this of someone. What a person already owes stays owed, and what the server attaches on its own, like an expired password, is never switched off here.
@@ -1642,6 +1642,13 @@ actions-birth-help = New accounts are born owing it, whichever door they arrive 
 actions-register = Register
 actions-register-help = Writes the row this realm turns; until then the action exists only in the build.
 actions-unregistered = not registered here
+actions-unregister = Unregister
+actions-unregister-title = Unregister a required action
+actions-unregister-lede = This realm forgets its row for this action: whether it is offered, and whether new accounts are born owing it.
+actions-unregister-aside = People who already owe it keep owing it.
+actions-unregister-warning = The realm has turned this action off. Once its row is gone, it can be asked of people again.
+actions-fact-on = on
+actions-fact-off = off
 subject-action = the { $action } action
 
 ## Backchannel (CIBA) pacing.

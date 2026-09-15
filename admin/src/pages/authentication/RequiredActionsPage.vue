@@ -7,15 +7,19 @@ import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
 import AppToggle from "@/components/AppToggle.vue";
-import { listActions, registerAction, reworkAction } from "@/services/flows";
+import DangerDialog from "@/components/DangerDialog.vue";
+import { listActions, registerAction, reworkAction, unregisterAction } from "@/services/flows";
 import { afterWrites } from "@/services/writes";
 import type { RequiredActionRow } from "@/models/flows";
+import { countUnregistering, warnsOfUnregistering } from "./unregistering";
 
 const route = useRoute();
 const router = useRouter();
 const realm = computed(() => String(route.params.realm));
 const registered = ref<RequiredActionRow[]>([]);
 const failed = ref("");
+const unregistering = ref<RequiredActionRow | null>(null);
+const unregisterFailed = ref("");
 
 /// What the engine compiled: slug, the provider that shows its screen, and
 /// a worded name for the row that has not been registered yet.
@@ -77,6 +81,18 @@ async function rework(row: RequiredActionRow, reshape: Partial<RequiredActionRow
     // The toast already said; the switch stays where the server left it.
   }
 }
+
+async function unregister() {
+  if (!unregistering.value) return;
+  unregisterFailed.value = "";
+  try {
+    await unregisterAction(realm.value, unregistering.value.action);
+    unregistering.value = null;
+    await load();
+  } catch (refused) {
+    unregisterFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
 </script>
 
 <template>
@@ -106,6 +122,7 @@ async function rework(row: RequiredActionRow, reshape: Partial<RequiredActionRow
               {{ say("actions-col-birth") }} <AppHint name="actions-birth-help" />
             </th>
             <th>{{ say("flow-priority") }}</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
@@ -130,6 +147,15 @@ async function rework(row: RequiredActionRow, reshape: Partial<RequiredActionRow
                 />
               </td>
               <td class="font-mono text-[11px]">{{ held.row.priority ?? 0 }}</td>
+              <td class="text-right">
+                <button
+                  type="button"
+                  class="text-[10.5px] text-faint hover:text-danger"
+                  @click="unregistering = held.row"
+                >
+                  {{ say("actions-unregister") }}
+                </button>
+              </td>
             </template>
             <template v-else>
               <td class="px-3 py-2" colspan="2">
@@ -143,10 +169,26 @@ async function rework(row: RequiredActionRow, reshape: Partial<RequiredActionRow
                 <AppHint name="actions-register-help" />
               </td>
               <td class="text-[10.5px] text-faint">{{ say("actions-unregistered") }}</td>
+              <td></td>
             </template>
           </tr>
         </tbody>
       </table>
     </div>
+
+    <DangerDialog
+      v-if="unregistering"
+      :open="unregistering !== null"
+      :title="say('actions-unregister-title')"
+      :named="unregistering.action"
+      :lede="say('actions-unregister-lede')"
+      :facts="countUnregistering(unregistering, say)"
+      :aside="say('actions-unregister-aside')"
+      :warning="warnsOfUnregistering(unregistering) ? say('actions-unregister-warning') : undefined"
+      :confirm-label="say('actions-unregister')"
+      :failed="unregisterFailed"
+      @close="unregistering = null"
+      @confirm="unregister"
+    />
   </div>
 </template>

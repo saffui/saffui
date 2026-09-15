@@ -966,3 +966,157 @@ async fn the_registration_mails_the_verification_its_page_promises() {
     // one that counts.
     assert_eq!(postbox.held().len(), 1, "a second verification went out");
 }
+
+/// What a realm keeps for its sign-in link and its address confirmation: a
+/// subject, and a body carrying the link.
+const SIGN_IN_WORDS: (&str, &str) = ("Acme: your way in", "Acme lets you in here: {{link}}");
+const CONFIRMATION_WORDS: (&str, &str) = (
+    "Acme: is this address yours?",
+    "Acme asks you to confirm it here: {{link}}",
+);
+
+/// Rewrite the realm through the admin plane, the door the console saves by.
+async fn reshape_realm(plane: &Plane, change: serde_json::Value) {
+    let bearer = plane.token(&support::claims());
+    let app = test::init_service(App::new().configure(register(&mounted(plane, None)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::put()
+            .uri(&format!("/admin/realms/{}", support::REALM))
+            .insert_header(("authorization", format!("Bearer {bearer}")))
+            .set_json(change)
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// Both mails reworded at once, so a mail reading the other's key sends the
+/// wrong words rather than the built ones.
+fn reworded_mails() -> serde_json::Value {
+    let [sign_in, confirmation] = [SIGN_IN_WORDS, CONFIRMATION_WORDS]
+        .map(|(subject, body)| serde_json::json!({ "en": { "subject": subject, "body": body } }));
+    serde_json::json!({ "magic_link": sign_in, "verify_email": confirmation })
+}
+
+/// The realm's words, with the link the message carries under `field` put
+/// where `{{link}}` stood.
+fn assert_worded(message: &auth::messaging::Message, (subject, body): (&str, &str), field: &str) {
+    let token = message
+        .body
+        .rsplit_once(&format!("?{field}="))
+        .map(|(_, token)| token.trim())
+        .unwrap_or_else(|| panic!("the message carried no link: {}", message.body));
+    let link = format!(
+        "{}/realms/{}/protocol/openid-connect/login?{field}={token}",
+        support::origin().as_str(),
+        support::REALM,
+    );
+    assert_eq!(
+        message.subject, subject,
+        "the realm's subject was not the one sent"
+    );
+    assert_eq!(
+        message.body,
+        body.replace("{{link}}", &link),
+        "the realm's body was not the one sent"
+    );
+}
+
+/// What a realm saves for a mail is the mail that goes out, read under the key
+/// the admin plane saved it by.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realms_own_words_ride_the_sign_in_link() {
+    let plane = Plane::with_actions(&[models::entities::authz::AdminAction::RealmWrite]).await;
+    arrange(&plane).await;
+    reshape_realm(
+        &plane,
+        serde_json::json!({ "mail_templates": reworded_mails() }),
+    )
+    .await;
+    let postbox = Postbox::default();
+
+    let binding = open(&plane, &postbox).await;
+    answer(
+        &plane,
+        &postbox,
+        &binding,
+        serde_json::json!({ "username": support::SUBJECT }),
+    )
+    .await;
+
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_worded(&held[0], SIGN_IN_WORDS, "magic_link");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realms_own_words_ride_the_address_confirmation() {
+    let plane = Plane::with_actions(&[models::entities::authz::AdminAction::RealmWrite]).await;
+    arrange(&plane).await;
+    require_verify_email(&plane).await;
+    reshape_realm(
+        &plane,
+        serde_json::json!({ "mail_templates": reworded_mails() }),
+    )
+    .await;
+    let postbox = Postbox::default();
+
+    let binding = open(&plane, &postbox).await;
+    answer(
+        &plane,
+        &postbox,
+        &binding,
+        serde_json::json!({
+            "username": support::SUBJECT,
+            "password": support::PASSWORD,
+        }),
+    )
+    .await;
+
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_worded(&held[0], CONFIRMATION_WORDS, "verify_email");
+}
+
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_realms_own_words_ride_the_registration_confirmation() {
+    let plane = Plane::with_actions(&[models::entities::authz::AdminAction::RealmWrite]).await;
+    arrange(&plane).await;
+    reshape_realm(
+        &plane,
+        serde_json::json!({
+            "registration_allowed": true,
+            "verify_email": true,
+            "mail_templates": reworded_mails(),
+        }),
+    )
+    .await;
+    let postbox = Postbox::default();
+
+    let app =
+        test::init_service(App::new().configure(register(&mounted(&plane, Some(&postbox))))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/signup",
+                support::REALM
+            ))
+            .set_json(serde_json::json!({
+                "username": "grace",
+                "email": "grace@example.test",
+                "password": "a-password-of-decent-length",
+            }))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_worded(&held[0], CONFIRMATION_WORDS, "verify_email");
+}

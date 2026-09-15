@@ -209,7 +209,7 @@ pub async fn register_person(
             );
             let (worded_subject, worded_body) = auth::messaging::worded(
                 realm,
-                auth::login::enrolment::VERIFY_EMAIL,
+                auth::login::enrolment::VERIFY_EMAIL_TEMPLATE,
                 &link,
                 "Confirm your address",
                 "Confirm this address to finish creating your account. The link works \

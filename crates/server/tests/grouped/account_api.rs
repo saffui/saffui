@@ -1333,6 +1333,14 @@ async fn the_account_console_contract_holds_against_a_live_server() {
         true,
     )
     .await;
+    // Ways to sign in beside the planted app, and a sign-in recent enough to change
+    // them: what the console lists, removes, and refuses a wrong password against.
+    plane
+        .enrol_totp("cred-contract", support::TOTP_SECRET)
+        .await;
+    plant_key(&plane, b"key-contract").await;
+    plant_recovery_codes(&plane).await;
+    prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
     let bearer = plane.token(&account_claims());
 
     let served = mounted(&plane);

@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { computed, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { say } from "@/i18n";
-import { forgetRealmTheme, getRealmTheme, writeRealmTheme } from "@/services/settings";
+import AppHint from "@/components/AppHint.vue";
+import type { OrganizationRow } from "@/models/directory";
+import { listOrganizations } from "@/services/directory";
 import AppearanceTabs from "./AppearanceTabs.vue";
 import {
   COLOR_TOKENS,
@@ -12,27 +14,71 @@ import {
   invalidThemeToken,
   THEME_DEFAULTS,
   themeDocument,
+  type ThemeDraft,
   type ThemeHalf,
   type ThemeToken,
 } from "./themeForm";
+import {
+  forgetScopedTheme,
+  listThemeChoices,
+  readScopedTheme,
+  readThemeOrganization,
+  writeScopedTheme,
+} from "./themeScope";
 
 const route = useRoute();
+const router = useRouter();
 const realm = computed(() => String(route.params.realm));
+const organization = computed(() => readThemeOrganization(route.query.organization));
+const chosenOrganization = computed({
+  get: () => organization.value,
+  set: (chosen: string) => {
+    void router.replace({ query: chosen ? { organization: chosen } : {} });
+  },
+});
+const organizations = ref<OrganizationRow[]>([]);
+const choices = computed(() => listThemeChoices(organizations.value, organization.value));
 const half = ref<ThemeHalf>("light");
 const held = ref(emptyTheme());
+const beneath = ref<ThemeDraft | undefined>(undefined);
 const failed = ref("");
 const worn = ref(false);
 const saving = ref(false);
+const themeLoaded = ref(false);
 
-onMounted(async () => {
+async function loadOrganizations() {
   try {
-    const theme = await getRealmTheme(realm.value);
+    organizations.value = (await listOrganizations(realm.value, 0, 200)).items;
+  } catch {
+    // The realm's own theme stays within reach.
+  }
+}
+watch(realm, loadOrganizations, { immediate: true });
+
+/// Nothing is saved until the chosen theme has loaded, and an answer that comes back
+/// after the choice moved on is dropped: a draft read for one never lands on another.
+let themeRun = 0;
+async function loadTheme() {
+  const run = ++themeRun;
+  const asked = organization.value;
+  themeLoaded.value = false;
+  failed.value = "";
+  try {
+    const [theme, realmTheme] = await Promise.all([
+      readScopedTheme(realm.value, asked),
+      asked ? readScopedTheme(realm.value, "") : null,
+    ]);
+    if (run !== themeRun) return;
     held.value = emptyTheme(theme ?? undefined);
+    beneath.value = asked ? emptyTheme(realmTheme ?? undefined) : undefined;
     worn.value = theme !== null;
+    themeLoaded.value = true;
   } catch (refused) {
+    if (run !== themeRun) return;
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
-});
+}
+watch([realm, organization], loadTheme, { immediate: true });
 
 const overrideCount = computed(
   () =>
@@ -41,7 +87,7 @@ const overrideCount = computed(
 );
 
 function shown(token: ThemeToken): string {
-  return effective(held.value, half.value, token);
+  return effective(held.value, half.value, token, beneath.value);
 }
 
 function colorValue(token: ThemeToken): string {
@@ -54,6 +100,7 @@ function pickColor(token: ThemeToken, event: Event) {
 }
 
 async function save() {
+  if (!themeLoaded.value) return;
   failed.value = "";
   const invalid = invalidThemeToken(held.value);
   if (invalid) {
@@ -67,7 +114,7 @@ async function save() {
 
   saving.value = true;
   try {
-    await writeRealmTheme(realm.value, themeDocument(held.value));
+    await writeScopedTheme(realm.value, organization.value, themeDocument(held.value));
     worn.value = true;
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
@@ -79,7 +126,7 @@ async function save() {
 async function undress() {
   failed.value = "";
   try {
-    await forgetRealmTheme(realm.value);
+    await forgetScopedTheme(realm.value, organization.value);
     held.value = emptyTheme();
     worn.value = false;
   } catch (refused) {
@@ -111,24 +158,28 @@ const sample = computed(() => ({
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
         <div class="flex flex-wrap items-center gap-2">
-          <h1 class="text-lg font-semibold tracking-tight">{{ say("theme-title") }}</h1>
+          <h1 class="text-lg font-semibold tracking-tight">
+            {{ organization ? say("org-theme-title") : say("theme-title") }}
+          </h1>
           <span class="sf-badge">{{ say("theme-overrides", { count: overrideCount }) }}</span>
         </div>
-        <p class="mt-1 max-w-2xl text-xs leading-5 text-muted">{{ say("theme-lede") }}</p>
+        <p class="mt-1 max-w-2xl text-xs leading-5 text-muted">
+          {{ organization ? say("org-theme-lede") : say("theme-lede") }}
+        </p>
       </div>
       <div class="flex items-center gap-2">
         <button
-          v-if="worn"
+          v-if="worn && themeLoaded"
           type="button"
           class="sf-button sf-button-danger"
           @click="undress"
         >
-          {{ say("theme-undress") }}
+          {{ organization ? say("org-theme-inherit") : say("theme-undress") }}
         </button>
         <button
           type="button"
           class="sf-button sf-button-primary"
-          :disabled="saving"
+          :disabled="saving || !themeLoaded"
           @click="save"
         >
           {{ say("settings-save") }}
@@ -141,6 +192,15 @@ const sample = computed(() => ({
 
     <div class="mt-5 grid min-w-0 gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div class="min-w-0 space-y-5">
+        <label class="block max-w-xs text-[11px] font-medium text-muted">
+          {{ say("theme-scope") }} <AppHint name="theme-scope-help" />
+          <select v-model="chosenOrganization" class="mt-1 sf-field">
+            <option value="">{{ say("theme-scope-realm") }}</option>
+            <option v-for="choice in choices" :key="choice.id" :value="choice.id">
+              {{ choice.label }}
+            </option>
+          </select>
+        </label>
         <div class="inline-flex rounded-md border border-border bg-surface p-0.5" role="tablist">
           <button
             v-for="which in ['light', 'dark'] as const"
@@ -158,7 +218,9 @@ const sample = computed(() => ({
 
         <section class="rounded-lg border border-border bg-surface p-4">
           <h2 class="text-sm font-semibold text-ink">{{ say("theme-colors") }}</h2>
-          <p class="mt-1 text-[11px] leading-4 text-muted">{{ say("theme-colors-help") }}</p>
+          <p class="mt-1 text-[11px] leading-4 text-muted">
+            {{ organization ? say("org-theme-colors-help") : say("theme-colors-help") }}
+          </p>
           <div class="mt-4 grid gap-x-5 gap-y-3 md:grid-cols-2">
             <label
               v-for="field in COLOR_TOKENS"

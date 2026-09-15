@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "admin/**"
+      - "account/**"
       - "packages/**"
       - "pnpm-workspace.yaml"
       - "pnpm-lock.yaml"
@@ -11,6 +12,7 @@ on:
   pull_request:
     paths:
       - "admin/**"
+      - "account/**"
       - "packages/**"
       - "pnpm-workspace.yaml"
       - "pnpm-lock.yaml"
@@ -33,5 +35,8 @@ jobs:
       - run: pnpm --dir admin test
       - run: pnpm --dir admin exec oxlint src
       - run: pnpm --dir admin build
+      - run: pnpm --dir account test
+      - run: pnpm --dir account exec oxlint src
+      - run: pnpm --dir account build
       - name: no em dashes
-        run: "! grep -rn $'—' admin/src packages/saffui-js/src"
+        run: "! grep -rn $'—' admin/src account/src packages/saffui-js/src"

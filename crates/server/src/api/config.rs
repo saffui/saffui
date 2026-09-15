@@ -184,6 +184,9 @@ pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone +
             web::resource(["/console", "/console/{path:.*}"])
                 .route(web::get().to(crate::api::console::serve)),
         );
+        // Each realm's account console, when the build carries one.
+        #[cfg(feature = "embedded-account")]
+        crate::api::account_console::mount_account_console(config);
     }
 }
 

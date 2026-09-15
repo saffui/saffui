@@ -1,3 +1,5 @@
+#[cfg(feature = "embedded-account")]
+pub mod account_console;
 pub mod config;
 #[cfg(feature = "embedded-admin")]
 pub mod console;

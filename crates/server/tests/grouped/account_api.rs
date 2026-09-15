@@ -1696,6 +1696,7 @@ async fn a_person_withdraws_a_consent_and_the_application_keeps_what_it_holds() 
     .await;
     let grace = plant_another_person(&plane).await;
     keep_consent(&plane, &grace, support::PUBLIC, &["openid"]).await;
+    keep_consent(&plane, support::SUBJECT, ACCOUNT_CONSOLE, &["openid"]).await;
 
     let withdrawn = own(&format!("applications/{}/consent", support::CONFIDENTIAL));
     let (status, _, told) = sent(&plane, Method::DELETE, &withdrawn, Some(&bearer), None).await;
@@ -1725,6 +1726,10 @@ async fn a_person_withdraws_a_consent_and_the_application_keeps_what_it_holds() 
     assert!(
         consent_held(&plane, &grace, support::PUBLIC).await,
         "somebody else's consent was withdrawn"
+    );
+    assert!(
+        consent_held(&plane, support::SUBJECT, ACCOUNT_CONSOLE).await,
+        "the console's own consent was withdrawn"
     );
 }
 

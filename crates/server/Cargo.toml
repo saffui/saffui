@@ -44,9 +44,9 @@ ldap3 = { version = "0.11", default-features = false, features = ["tls-native"] 
 # the same strings a themed deployment would translate.
 fluent-bundle = "0.15"
 unic-langid = "0.9"
-# The admin console, embedded at build time when the feature asks for it: one
-# binary carries the whole plane. Building with the feature requires
-# `pnpm --dir admin build` to have produced admin/dist first.
+# The consoles, embedded at build time when a feature asks for them: one binary
+# carries the whole plane. Each feature requires its app to be built first
+# (`pnpm --dir admin build`, `pnpm --dir account build`).
 include_dir = { version = "0.7", optional = true }
 prometheus = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
@@ -71,6 +71,9 @@ kerberos = ["dep:cross-krb5"]
 # Serve the admin console from inside the binary, under /console. Off by
 # default so a build never fails on a front nobody built.
 embedded-admin = ["dep:include_dir"]
+# Serve each realm's account console from inside the binary, under
+# /realms/{realm}/account. Off by default for the same reason.
+embedded-account = ["dep:include_dir"]
 # Request metrics, scraped off the operations port. On by default; a build
 # that leaves it out carries no metrics machinery at all, and the runtime
 # switch is `-metrics` in SAFFUI_FEATURES.

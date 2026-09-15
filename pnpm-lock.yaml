@@ -6,6 +6,46 @@ settings:
 
 importers:
 
+  account:
+    dependencies:
+      '@fluent/bundle':
+        specifier: ^0.19.1
+        version: 0.19.1
+      lucide-vue-next:
+        specifier: ^1.0.0
+        version: 1.0.0(vue@3.5.42(typescript@5.9.3))
+      saffui-js:
+        specifier: workspace:*
+        version: link:../packages/saffui-js
+      vue:
+        specifier: ^3.5.18
+        version: 3.5.42(typescript@5.9.3)
+      vue-router:
+        specifier: ^4.5.1
+        version: 4.6.4(vue@3.5.42(typescript@5.9.3))
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.2
+        version: 22.20.1
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.0
+        version: 6.0.8(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0))(vue@3.5.42(typescript@5.9.3))
+      oxlint:
+        specifier: ^1.8.0
+        version: 1.81.0
+      typescript:
+        specifier: ^5.9.2
+        version: 5.9.3
+      vite:
+        specifier: ^7.0.6
+        version: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)
+      vue-tsc:
+        specifier: ^3.0.5
+        version: 3.3.11(typescript@5.9.3)
+
   admin:
     dependencies:
       '@fluent/bundle':

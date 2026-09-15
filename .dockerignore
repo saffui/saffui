@@ -3,5 +3,7 @@
 **/node_modules
 admin/dist
 admin/.vite
+account/dist
+account/.vite
 .*
 !.config

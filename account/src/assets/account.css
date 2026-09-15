@@ -1,0 +1,345 @@
+/* The token contract the realm's sign-in pages read, with their defaults. The
+   realm's theme.css overrides these same names, and everything below reads them
+   and nothing else. */
+:root {
+  --brand-primary: #18181b;
+  --brand-on-primary: #ffffff;
+  --bg: #f4f4f5;
+  --surface: #ffffff;
+  --ink: #18181b;
+  --muted: #52525b;
+  --border: #d4d4d8;
+  --danger: #b91c1c;
+  --radius: 10px;
+  --font-sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --card-border-width: 1px;
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  --logo-display: grid;
+  --logo-radius: 8px;
+  --field-bg: #ffffff;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand-primary: #e4e4e7;
+    --brand-on-primary: #18181b;
+    --bg: #131316;
+    --surface: #1c1c21;
+    --ink: #e8e8ec;
+    --muted: #a1a1aa;
+    --border: #3a3a42;
+    --danger: #f0857d;
+    --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    --field-bg: #232329;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  min-height: 100vh;
+  font: 15px/1.55 var(--font-sans);
+  color: var(--ink);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+h1,
+h2,
+p,
+dl,
+dd {
+  margin: 0;
+}
+h1 {
+  font-size: 22px;
+  line-height: 1.25;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+:focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The accent stands where the sign-in pages put it: the hairline over the page,
+   the realm's mark, the primary action and the focus ring. */
+.masthead {
+  background: var(--surface);
+  border-top: 2px solid var(--brand-primary);
+  border-bottom: var(--card-border-width) solid var(--border);
+}
+.masthead-row,
+.tabs,
+.page {
+  width: min(760px, 100%);
+  margin-inline: auto;
+  padding-inline: 20px;
+}
+.masthead-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 20px;
+  padding-block: 14px 6px;
+}
+.realm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.realm-mark {
+  display: var(--logo-display);
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--logo-radius);
+  background: var(--brand-primary);
+  color: var(--brand-on-primary);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+}
+.realm-name {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.masthead-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.person {
+  max-width: 16rem;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tongue {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.tongue-select {
+  min-height: 32px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 0.6);
+  background: var(--field-bg);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+}
+.tabs {
+  display: flex;
+  gap: 24px;
+  overflow-x: auto;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 9px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 550;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.tab:hover {
+  color: var(--ink);
+}
+.tab.router-link-active {
+  border-bottom-color: var(--ink);
+  color: var(--ink);
+}
+.page {
+  display: grid;
+  gap: 16px;
+  padding-block: 28px 56px;
+}
+.page-head {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+.lead {
+  color: var(--muted);
+}
+
+.card {
+  padding: 16px 20px;
+  border: var(--card-border-width) solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+.card-title {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.card-narrow {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  width: min(420px, 100%);
+  padding: 28px 24px 24px;
+  border-top: 2px solid var(--brand-primary);
+}
+
+.facts {
+  display: grid;
+}
+.fact {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) 1fr;
+  gap: 2px 16px;
+  padding-block: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.fact:first-child {
+  border-top: 0;
+}
+.fact dt {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--muted);
+}
+.fact dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.absent {
+  color: var(--muted);
+}
+.lines {
+  white-space: pre-line;
+}
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+}
+.numeric {
+  font-variant-numeric: tabular-nums;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px 1px 6px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+}
+.badge-verified {
+  background: color-mix(in srgb, var(--brand-primary) 12%, var(--surface));
+  color: var(--ink);
+}
+.badge-unverified {
+  background: color-mix(in srgb, var(--muted) 14%, var(--surface));
+  color: var(--muted);
+}
+
+.button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) * 0.8);
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.button:hover {
+  border-color: color-mix(in srgb, var(--ink) 35%, var(--border));
+}
+.button-primary {
+  border-color: var(--brand-primary);
+  background: var(--brand-primary);
+  color: var(--brand-on-primary);
+}
+.button-primary:hover {
+  border-color: var(--brand-primary);
+  background: color-mix(in srgb, var(--brand-primary) 86%, var(--bg));
+}
+.button-quiet {
+  padding-inline: 8px;
+  border-color: transparent;
+  background: none;
+  color: var(--muted);
+}
+.button-quiet:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--ink) 6%, transparent);
+  color: var(--ink);
+}
+
+.notice {
+  padding: 12px 14px;
+  border: 1px solid;
+  border-radius: calc(var(--radius) * 0.8);
+}
+.notice-danger {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, var(--surface));
+  color: var(--danger);
+}
+.loading,
+.footnote {
+  color: var(--muted);
+}
+.footnote {
+  font-size: 13px;
+}
+
+.standalone {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px 16px;
+}
+
+@media (max-width: 560px) {
+  .person {
+    display: none;
+  }
+  .fact {
+    grid-template-columns: 1fr;
+  }
+}

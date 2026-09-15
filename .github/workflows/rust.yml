@@ -381,8 +381,8 @@ jobs:
             exit 1
           fi
 
-      # The console contract runs the console's own service calls against the
-      # plane below, so this job holds the console's packages too.
+      # Each console's contract runs its own service calls against the plane
+      # below, so this job holds the consoles' packages too.
       - uses: pnpm/action-setup@v4
         with:
           version: 10

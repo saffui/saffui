@@ -9,6 +9,8 @@ use secrecy::SecretBox;
 use serde_json::{Value, json};
 use server::api::config::{Plane as Mounted, register};
 use services::account_api::{ACCOUNT_CONSOLE, compose_account_console_redirect};
+use std::path::Path;
+use std::process::Command;
 use std::time::SystemTime;
 use store::tenancy::TenantContext;
 
@@ -1302,4 +1304,158 @@ async fn ending_the_login_the_request_rides_signs_the_console_out() {
     let (status, challenge, told) = asked(&plane, &me(), Some(&bearer)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
     assert_eq!(challenge, INVALID_TOKEN, "{told}");
+}
+
+/// The account console's own service calls, run by its contract suite against
+/// this server on a real socket: every path it asks for is taken, and every answer
+/// it keeps fits the type it reads the answer as.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG) and the account console's packages (pnpm install)"]
+async fn the_account_console_contract_holds_against_a_live_server() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+
+    let served = mounted(&plane);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().expect("an address").port();
+    let server = actix_web::HttpServer::new(move || App::new().configure(register(&served)))
+        .listen(listener)
+        .expect("a listener")
+        .workers(1)
+        .disable_signals()
+        .run();
+    tokio::spawn(server);
+
+    let console = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../account");
+    assert!(
+        console.join("node_modules").is_dir(),
+        "the account console's packages are not installed: run pnpm install"
+    );
+    let run = tokio::task::spawn_blocking(move || {
+        Command::new("pnpm")
+            .args(["run", "contract"])
+            .current_dir(console)
+            .env("SAFFUI_CONTRACT_ORIGIN", format!("http://127.0.0.1:{port}"))
+            .env("SAFFUI_CONTRACT_TOKEN", bearer)
+            .env("SAFFUI_CONTRACT_REALM", REALM)
+            .output()
+    })
+    .await
+    .expect("the run comes back")
+    .expect("pnpm starts");
+    assert!(
+        run.status.success(),
+        "the account console contract broke:\n{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+}
+
+/// A person signs in through the account console the way its app does, and the
+/// token that comes back opens the account API: the realm's provisioned console,
+/// its registered return, its scope and the claims the guard reads fit together.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_sign_in_through_the_account_console_opens_the_account_api() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
+    let (verifier, challenge) = support::pkce_pair();
+    let redirect = compose_account_console_redirect(&support::origin().issuer(REALM));
+
+    let asking = [
+        ("response_type", "code"),
+        ("client_id", ACCOUNT_CONSOLE),
+        ("redirect_uri", redirect.as_str()),
+        ("scope", "openid account"),
+        ("state", "opaque-state"),
+        ("code_challenge", challenge.as_str()),
+        ("code_challenge_method", "S256"),
+        ("ui_locales", "fr"),
+    ]
+    .iter()
+    .map(|(key, value)| format!("{key}={}", support::urlencode(value)))
+    .collect::<Vec<_>>()
+    .join("&");
+    let opened = test::call_service(
+        &app,
+        test::TestRequest::get()
+            .uri(&format!(
+                "/realms/{REALM}/protocol/openid-connect/auth?{asking}"
+            ))
+            .to_request(),
+    )
+    .await;
+    assert_eq!(
+        opened.status(),
+        StatusCode::FOUND,
+        "the account console's sign-in did not open"
+    );
+    let set: Vec<String> = opened
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    let binding = support::cookie_value(&set, support::AUTH_SESSION_COOKIE)
+        .expect("a login bound to the browser");
+
+    let answered = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/login"))
+            .insert_header((
+                "cookie",
+                format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+            ))
+            .set_json(json!({ "username": support::SUBJECT, "password": support::PASSWORD }))
+            .to_request(),
+    )
+    .await;
+    let told: Value = test::read_body_json(answered).await;
+    let landing = told["redirect_to"]
+        .as_str()
+        .unwrap_or_else(|| panic!("nobody was admitted: {told}"));
+    assert!(
+        landing.starts_with(&format!("{redirect}?")),
+        "the sign-in did not come back to the console: {landing}"
+    );
+    let code = landing
+        .split_once("code=")
+        .unwrap_or_else(|| panic!("no code came back: {landing}"))
+        .1
+        .split('&')
+        .next()
+        .expect("a code")
+        .to_owned();
+
+    let spent = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!("/realms/{REALM}/protocol/openid-connect/token"))
+            .set_form([
+                ("grant_type", "authorization_code"),
+                ("code", code.as_str()),
+                ("redirect_uri", redirect.as_str()),
+                ("client_id", ACCOUNT_CONSOLE),
+                ("code_verifier", verifier.as_str()),
+            ])
+            .to_request(),
+    )
+    .await;
+    let status = spent.status();
+    let granted: Value = test::read_body_json(spent).await;
+    assert_eq!(status, StatusCode::OK, "the code was not spent: {granted}");
+    let bearer = granted["access_token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no access token: {granted}"));
+
+    let (status, challenge, me) = asked(&plane, &me(), Some(bearer)).await;
+    assert_eq!(status, StatusCode::OK, "{challenge} {me}");
+    assert_eq!(
+        me["preferred_username"].as_str(),
+        Some(support::SUBJECT),
+        "{me}"
+    );
 }

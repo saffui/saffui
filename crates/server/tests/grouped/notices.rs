@@ -476,3 +476,171 @@ async fn settled_notices_age_out_and_owed_ones_stay() {
     assert_eq!(swept.security_notices, settled.len() as u64 - 1);
     assert_eq!(notice_states(&plane).await, ["pending"]);
 }
+
+async fn change_address(plane: &Plane, email: &str, declared_verified: Option<bool>) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    services::admin::users::update(
+        &transaction,
+        support::SUBJECT,
+        &services::admin::users::Spec {
+            email: Some(email.to_owned()),
+            email_verified: declared_verified,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("the address changed");
+    transaction.commit().await.expect("the address kept");
+}
+
+async fn subject_address_verified(plane: &Plane) -> Option<bool> {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::users::load(&transaction, support::SUBJECT)
+        .await
+        .expect("the users table")
+        .expect("ada stands")
+        .email_verified
+}
+
+/// An address moved away from a verified one is told to that old address, with the
+/// new one masked and no advice to reset a password whose link would go to the new
+/// one, and the new address no longer counts as verified. An update that keeps the
+/// address tells nothing and keeps its verification, a move away from an address
+/// never verified is told to nobody, and an address declared verified in the same
+/// update stays so.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_address_moved_away_from_a_verified_one_is_told_to_it() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange_mail(&plane).await;
+    walk(&plane, None).await;
+    let postbox = Postbox::default();
+
+    change_address(&plane, support::SUBJECT_EMAIL, None).await;
+    walk(&plane, Some(&postbox)).await;
+    assert!(
+        postbox.held().is_empty(),
+        "an address kept was told as moved: {:?}",
+        postbox.held()
+    );
+    assert_eq!(
+        subject_address_verified(&plane).await,
+        Some(true),
+        "an address kept lost its verification"
+    );
+
+    change_address(&plane, "ada.lovelace@example.org", None).await;
+    walk(&plane, Some(&postbox)).await;
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].to, support::SUBJECT_EMAIL);
+    assert!(
+        held[0]
+            .subject
+            .ends_with("The email address of your account was changed"),
+        "{}",
+        held[0].subject
+    );
+    assert!(
+        held[0].body.contains("New address: a***@example.org\n"),
+        "{}",
+        held[0].body
+    );
+    assert!(!held[0].body.contains("reset"), "{}", held[0].body);
+    assert_eq!(
+        subject_address_verified(&plane).await,
+        Some(false),
+        "a moved address stayed verified"
+    );
+
+    change_address(&plane, "ada@example.org", Some(true)).await;
+    walk(&plane, Some(&postbox)).await;
+    assert_eq!(
+        postbox.held().len(),
+        1,
+        "an address never verified was told: {:?}",
+        postbox.held()
+    );
+    assert_eq!(
+        subject_address_verified(&plane).await,
+        Some(true),
+        "an address declared verified was not kept so"
+    );
+}
+
+/// An upstream account linked by its address to an account that already existed is
+/// told to that account with the provider named; an account made by its first
+/// sign-in through the provider hears nothing of its own link.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_provider_linked_to_an_existing_account_is_told() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange_mail(&plane).await;
+    walk(&plane, None).await;
+    let postbox = Postbox::default();
+
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &within()).await;
+        let provider = models::entities::authz::IdentityProviderModel {
+            internal_id: "idp-acme".into(),
+            realm_id: REALM.into(),
+            provider_id: "acme".into(),
+            name: "acme".into(),
+            display_name: "Acme Directory".into(),
+            description: String::new(),
+            enabled: Some(true),
+            trust_email: Some(true),
+            configs: None,
+            metadata: models::auditable::AuditableModel::from_creator(
+                support::TENANT.to_owned(),
+                "root".to_owned(),
+            ),
+        };
+        store::providers::brokering::create_provider(&transaction, &provider)
+            .await
+            .expect("a provider");
+        for (upstream, email) in [
+            ("upstream-ada", support::SUBJECT_EMAIL),
+            ("upstream-newcomer", "newcomer@example.test"),
+        ] {
+            services::brokering::decide_link(
+                &transaction,
+                &support::provider(),
+                support::TENANT,
+                REALM,
+                &provider,
+                &services::brokering::Arrival {
+                    external_user_id: upstream.to_owned(),
+                    username: None,
+                    email: Some(email.to_owned()),
+                    email_verified: true,
+                    claims: serde_json::Map::new(),
+                },
+                chrono::Utc::now(),
+            )
+            .await
+            .expect("a link");
+        }
+        transaction.commit().await.expect("the links kept");
+    }
+    walk(&plane, Some(&postbox)).await;
+
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].to, support::SUBJECT_EMAIL);
+    assert!(
+        held[0]
+            .subject
+            .ends_with("An external account was linked to your account"),
+        "{}",
+        held[0].subject
+    );
+    assert!(
+        held[0].body.contains("Provider: Acme Directory\n"),
+        "{}",
+        held[0].body
+    );
+}

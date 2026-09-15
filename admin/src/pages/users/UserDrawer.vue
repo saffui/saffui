@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useStanding } from "@/stores/standing";
 import AppDrawer from "@/components/AppDrawer.vue";
 import { say } from "@/i18n";
 import {
+  addClaimSource,
   closeSession,
   deleteUser,
   getLockout,
@@ -12,6 +13,7 @@ import {
   joinGroup,
   leaveGroup,
   liftLockout,
+  listClaimSources,
   listConsents,
   listFederatedIdentities,
   listMessageDeliveries,
@@ -20,6 +22,7 @@ import {
   listMemberOrganizations,
   listSessions,
   countRecoveryCodes,
+  removeClaimSource,
   revokeRoleFromUser,
   revokeCredential,
   revokeWebAuthnKey,
@@ -34,12 +37,21 @@ import {
 } from "@/services/users";
 import { listRoles, listGroups } from "@/services/directory";
 import { refusalOf } from "./names";
+import {
+  composeClaimSource,
+  emptyClaimSourceDraft,
+  findAnsweredClaims,
+  isKeptBySignIn,
+  readClaimNames,
+  readSignedDocument,
+} from "./claimSources";
 import AppToggle from "@/components/AppToggle.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppPicker from "@/components/AppPicker.vue";
 import { useRouter } from "vue-router";
 import { Eye, EyeOff } from "lucide-vue-next";
 import type {
+  ClaimSource,
   ConsentBrief,
   GroupBrief,
   Lockout,
@@ -52,7 +64,7 @@ import type {
 const props = defineProps<{ realm: string; userId: string }>();
 const emit = defineEmits<{ close: [] }>();
 
-const TABS = ["overview", "credentials", "sessions", "memberships", "consents", "federated", "messages"] as const;
+const TABS = ["overview", "credentials", "sessions", "memberships", "consents", "federated", "claim-sources", "messages"] as const;
 const tab = ref<(typeof TABS)[number]>("overview");
 
 const user = ref<UserFull | null>(null);
@@ -64,6 +76,13 @@ const sessions = ref<SessionBrief[]>([]);
 const consents = ref<ConsentBrief[]>([]);
 const federated = ref<import("@/models/user").FederatedIdentity[]>([]);
 const messages = ref<import("@/models/user").MessageDelivery[]>([]);
+/// Read when the tab is first opened: most people have none, and the drawer opens for
+/// everything else.
+const claimSources = ref<ClaimSource[] | null>(null);
+const claimDraft = ref(emptyClaimSourceDraft());
+const answeredClaims = computed(() =>
+  findAnsweredClaims(readClaimNames(claimDraft.value.claims), claimSources.value ?? []),
+);
 const roles = ref<RoleBrief[]>([]);
 
 /// Realm roles and client roles are the same table apart from whether a
@@ -404,6 +423,51 @@ async function onRevokeSessionGrant(sessionId: string, clientId: string) {
     // The toast already said.
   }
 }
+async function loadClaimSources() {
+  try {
+    claimSources.value = await listClaimSources(props.realm, props.userId);
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+watch(tab, (held) => {
+  if (held === "claim-sources" && claimSources.value === null) void loadClaimSources();
+});
+watch(
+  () => props.userId,
+  () => {
+    claimSources.value = null;
+    if (tab.value === "claim-sources") void loadClaimSources();
+  },
+);
+
+async function onAddClaimSource() {
+  try {
+    await addClaimSource(props.realm, props.userId, composeClaimSource(claimDraft.value));
+    claimDraft.value = emptyClaimSourceDraft();
+    await loadClaimSources();
+  } catch {
+    // The toast already said.
+  }
+}
+
+async function onRemoveClaimSource(source: ClaimSource) {
+  try {
+    await removeClaimSource(props.realm, props.userId, source);
+    await loadClaimSources();
+  } catch {
+    // The toast already said.
+  }
+}
+
+function describeSignedDocument(jwt: string | undefined): string {
+  const said = jwt ? readSignedDocument(jwt) : null;
+  if (!said?.issuer) return "";
+  return said.expiresAt
+    ? say("claim-source-signed-until", { issuer: said.issuer, until: instant(said.expiresAt) })
+    : say("claim-source-signed", { issuer: said.issuer });
+}
+
 async function onWithdrawConsent(clientId: string) {
   try {
     await withdrawConsent(props.realm, props.userId, clientId);
@@ -1020,6 +1084,130 @@ function instant(epoch: number | null | undefined): string {
         </div>
         <div class="mt-1 font-mono text-[11px] text-muted">{{ link.external_username }} · {{ link.external_user_id }}</div>
       </div>
+    </div>
+
+    <div v-if="tab === 'claim-sources'" class="mt-4 flex flex-col gap-3">
+      <p class="flex items-center gap-1 text-[11px] text-muted">
+        {{ say("claim-sources-lede") }}
+        <AppHint name="claim-sources-help" />
+      </p>
+      <p v-if="claimSources && !claimSources.length" class="text-xs text-muted">
+        {{ say("claim-sources-none") }}
+      </p>
+      <div
+        v-for="source in claimSources ?? []"
+        :key="source.source_id"
+        class="rounded-lg border border-border px-3 py-2.5 text-xs"
+      >
+        <div class="flex items-center gap-2">
+          <span class="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted">
+            {{ say(`claim-source-kind-${source.kind}`) }}
+          </span>
+          <span class="min-w-0 truncate font-mono text-[10.5px] text-faint" :title="source.source_id">
+            {{ source.source_id }}
+          </span>
+          <span class="ml-auto shrink-0 font-mono text-[10.5px] text-faint">{{
+            stamp(source.metadata.created_at)
+          }}</span>
+          <button
+            type="button"
+            class="shrink-0 text-[10.5px] text-faint hover:text-danger"
+            @click="onRemoveClaimSource(source)"
+          >
+            {{ say("claim-source-remove") }}
+          </button>
+        </div>
+        <div class="mt-1.5 flex flex-wrap gap-1.5">
+          <span
+            v-for="claim in source.claims"
+            :key="claim"
+            class="rounded border border-border px-1.5 py-0.5 font-mono text-[10.5px] text-muted"
+            >{{ claim }}</span
+          >
+        </div>
+        <p v-if="describeSignedDocument(source.jwt)" class="mt-1.5 text-[11px] text-muted">
+          {{ describeSignedDocument(source.jwt) }}
+        </p>
+        <p v-if="source.endpoint" class="mt-1.5 font-mono text-[10.5px] break-all text-muted">
+          {{ source.endpoint }}
+        </p>
+        <p v-if="source.endpoint_token" class="mt-1 text-[11px] text-faint">
+          {{ say("claim-source-token-kept") }}
+        </p>
+        <p v-if="isKeptBySignIn(source)" class="mt-1 flex items-center gap-1 text-[11px] text-faint">
+          {{ say("claim-source-kept-by-sign-in") }}
+          <AppHint name="claim-source-kept-by-sign-in-help" />
+        </p>
+      </div>
+
+      <form
+        class="flex flex-col gap-2 rounded-lg border border-border px-3 py-2.5 text-xs"
+        @submit.prevent="onAddClaimSource"
+      >
+        <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+          {{ say("claim-source-add") }}
+        </div>
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-[160px_1fr]">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("claim-source-kind") }}
+            <select v-model="claimDraft.kind" class="sf-field mt-1">
+              <option value="jwt">{{ say("claim-source-kind-jwt") }}</option>
+              <option value="endpoint">{{ say("claim-source-kind-endpoint") }}</option>
+            </select>
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("claim-source-claims") }} <AppHint name="claim-source-claims-help" />
+            <input
+              v-model="claimDraft.claims"
+              class="sf-field mt-1 font-mono"
+              spellcheck="false"
+              placeholder="badge, level"
+            />
+          </label>
+        </div>
+        <p v-if="answeredClaims.length" class="text-[11px] text-warn" role="alert">
+          {{ say("claim-source-answered", { claims: answeredClaims.join(", ") }) }}
+        </p>
+        <label v-if="claimDraft.kind === 'jwt'" class="block text-[11px] font-medium text-muted">
+          {{ say("claim-source-jwt") }} <AppHint name="claim-source-jwt-help" />
+          <textarea
+            v-model="claimDraft.jwt"
+            rows="3"
+            class="sf-field mt-1 font-mono text-[10.5px]"
+            spellcheck="false"
+          ></textarea>
+        </label>
+        <template v-else>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("claim-source-endpoint") }} <AppHint name="claim-source-endpoint-help" />
+            <input
+              v-model="claimDraft.endpoint"
+              class="sf-field mt-1 font-mono"
+              spellcheck="false"
+              placeholder="https://claims.example"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("claim-source-endpoint-token") }} <AppHint name="claim-source-endpoint-token-help" />
+            <input
+              v-model="claimDraft.endpointToken"
+              type="password"
+              autocomplete="new-password"
+              class="sf-field mt-1 font-mono"
+              spellcheck="false"
+            />
+          </label>
+        </template>
+        <div>
+          <button
+            type="submit"
+            class="sf-button sf-button-primary"
+            :disabled="!readClaimNames(claimDraft.claims).length || answeredClaims.length > 0"
+          >
+            {{ say("claim-source-add") }}
+          </button>
+        </div>
+      </form>
     </div>
 
     <div v-if="tab === 'messages'" class="mt-4">

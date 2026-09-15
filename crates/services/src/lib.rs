@@ -31,6 +31,7 @@ pub mod mesh;
 pub mod minting;
 pub mod mtls;
 pub mod negotiation;
+pub mod notices;
 pub mod outbound;
 pub mod pairwise;
 pub mod pdp;

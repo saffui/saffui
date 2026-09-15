@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use store::providers::{
-    backchannel, brokering, caep_queue, deliveries, devices, dpop, form_post, login, oidc,
+    backchannel, brokering, caep_queue, deliveries, devices, dpop, form_post, login, notices, oidc,
     one_time_tokens, outbox, pushed, replay, saml_brokering, sessions, sms, ussd,
 };
 
@@ -17,6 +17,10 @@ pub const RECEIPTS_KEPT_DAYS: i64 = 30;
 /// How far back a redelivery can reach: a delivered event leaves the outbox after
 /// this, while a dead one waits for an operator and a pending one is still owed.
 pub const DELIVERED_EVENTS_KEPT_DAYS: i32 = 30;
+
+/// How long a settled security notice is kept. It names what changed on whose
+/// account, and a month is long enough to answer whether someone was told.
+pub const NOTICES_KEPT_DAYS: i64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the sweep could not run")]
@@ -53,6 +57,8 @@ pub struct Swept {
     pub sessions: u64,
     /// Client grants that ran out under logins still standing.
     pub client_sessions: u64,
+    /// Security notices settled past their window.
+    pub security_notices: u64,
 }
 
 impl Swept {
@@ -79,6 +85,7 @@ impl Swept {
             + self.saml_logout_requests
             + self.sessions
             + self.client_sessions
+            + self.security_notices
     }
 
     pub fn add(&mut self, other: Swept) {
@@ -104,6 +111,7 @@ impl Swept {
         self.saml_logout_requests += other.saml_logout_requests;
         self.sessions += other.sessions;
         self.client_sessions += other.client_sessions;
+        self.security_notices += other.security_notices;
     }
 }
 
@@ -162,6 +170,12 @@ pub async fn drop_expired_rows(
         delivered_events: outbox::drop_delivered_older_than(
             transaction,
             DELIVERED_EVENTS_KEPT_DAYS,
+        )
+        .await
+        .map_err(failed)?,
+        security_notices: notices::drop_settled_before(
+            transaction,
+            now - chrono::Duration::days(NOTICES_KEPT_DAYS),
         )
         .await
         .map_err(failed)?,

@@ -19,6 +19,7 @@ import {
   listOrganizationMembers,
   listOrganizations,
   removeOrganizationMember,
+  updateOrganization,
   writeOrganizationTheme,
   verifyDomain,
 } from "@/services/directory";
@@ -28,6 +29,7 @@ import type { Page } from "@/models/paging";
 import type { OrganizationRow, OrgMember } from "@/models/directory";
 import type { RealmTheme } from "@/models/realm";
 import DirectoryTable from "./DirectoryTable.vue";
+import { composeOrganizationChange, type OrganizationDraft } from "./organizationChange";
 import { organizationMemberPickerRows } from "@/pages/adminActionPickers";
 
 const route = useRoute();
@@ -142,10 +144,32 @@ async function dropOrg() {
   }
 }
 
+const draft = ref<OrganizationDraft>({ name: "", display_name: "", description: "" });
+const organizationLoaded = ref(false);
+function fillOrganizationDraft(org: OrganizationRow) {
+  draft.value = { name: org.name, display_name: org.display_name, description: org.description };
+}
+async function saveOrganization() {
+  if (!opened.value) return;
+  try {
+    await updateOrganization(
+      realm.value,
+      opened.value.org_id,
+      composeOrganizationChange(opened.value, draft.value),
+    );
+    opened.value = await getOrganization(realm.value, opened.value.org_id);
+    fillOrganizationDraft(opened.value);
+  } catch {
+    // The toast already said.
+  }
+}
+
 async function open(org: OrganizationRow) {
   challenge.value = null;
   doomName.value = "";
   opened.value = org;
+  organizationLoaded.value = false;
+  fillOrganizationDraft(org);
   members.value = null;
   memberPickerOpen.value = false;
   const [organization, heldMembers, theme, users] = await Promise.all([
@@ -155,6 +179,8 @@ async function open(org: OrganizationRow) {
     listUsers(realm.value, 0, 200).catch(() => null),
   ]);
   opened.value = organization;
+  fillOrganizationDraft(organization);
+  organizationLoaded.value = true;
   members.value = heldMembers;
   memberNames.value = Object.fromEntries(
     (users?.items ?? []).map((user) => [user.user_id, user.user_name]),
@@ -310,9 +336,46 @@ function joined(member: OrgMember): string {
       :subtitle="opened.name"
       @close="opened = null"
     >
-      <dl class="grid grid-cols-[140px_1fr] gap-y-2 text-xs">
-        <dt class="text-muted">{{ say("org-slug") }}</dt>
-        <dd class="font-mono text-[11.5px]">{{ opened.name }}</dd>
+      <form class="flex flex-col gap-2 text-xs" @submit.prevent="saveOrganization">
+        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("org-slug") }} <AppHint name="org-slug-help" />
+            <input
+              v-model="draft.name"
+              class="sf-field mt-1 font-mono"
+              spellcheck="false"
+              :disabled="!organizationLoaded"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("directory-col-display") }}
+            <input
+              v-model="draft.display_name"
+              class="sf-field mt-1"
+              :disabled="!organizationLoaded"
+            />
+          </label>
+        </div>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("scopes-col-description") }}
+          <input
+            v-model="draft.description"
+            class="sf-field mt-1"
+            :disabled="!organizationLoaded"
+          />
+        </label>
+        <div>
+          <button
+            type="submit"
+            class="sf-button sf-button-primary"
+            :disabled="!organizationLoaded"
+          >
+            {{ say("settings-save") }}
+          </button>
+        </div>
+      </form>
+
+      <dl class="mt-4 grid grid-cols-[140px_1fr] gap-y-2 text-xs">
         <dt class="text-muted">{{ say("users-col-state") }}</dt>
         <dd>{{ opened.enabled ? say("users-active") : say("users-disabled") }}</dd>
         <dt v-if="opened.redirect_url" class="text-muted">{{ say("org-landing") }}</dt>

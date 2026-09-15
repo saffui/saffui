@@ -16,6 +16,31 @@ const ORGANIZATION_MEMBERS = new Set([
 ]);
 const SESSION_GRANTS = new Set(["web-dashboard", "kiosk-tv"]);
 const CONSENTS = new Set(["web-dashboard"]);
+const CLAIM_SOURCES: {
+  source_id: string;
+  claims: string[];
+  kind: string;
+  jwt?: string;
+  endpoint?: string;
+  endpoint_token?: string;
+  metadata: { created_by: string; created_at: string };
+}[] = [
+  {
+    source_id: "idp-google-0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
+    claims: ["locale", "picture"],
+    kind: "jwt",
+    jwt: "eyJhbGciOiJSUzI1NiIsImtpZCI6ImcxIn0.eyJpc3MiOiJodHRwczovL2FjY291bnRzLmdvb2dsZS5jb20iLCJleHAiOjE3OTAwMDAwMDAsImxvY2FsZSI6ImZyIiwicGljdHVyZSI6Imh0dHBzOi8vZXhhbXBsZS50ZXN0L2FkYS5wbmcifQ.c2lnbmF0dXJl",
+    metadata: { created_by: "broker:google", created_at: "2026-09-10T08:30:00Z" },
+  },
+  {
+    source_id: "src-Qm9yZXN0",
+    claims: ["training_level"],
+    kind: "endpoint",
+    endpoint: "https://claims.academy.example/people/ada",
+    endpoint_token: "**********",
+    metadata: { created_by: "ada", created_at: "2026-08-22T14:05:00Z" },
+  },
+];
 const COMPOSITE_ROLES = new Set(["r-2"]);
 const CLIENT_MAPPERS = new Set(["m-1", "m-2"]);
 const REMOVED_REALM_KEYS = new Set<string>();
@@ -339,6 +364,29 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
   if (/\/users\/[^/]+\/sessions\/[^/]+\/grants\/[^/]+$/.test(path) && method === "DELETE") {
     SESSION_GRANTS.delete(decodeURIComponent(path.split("/").pop() ?? ""));
     return answer(undefined);
+  }
+  if (/\/users\/[^/]+\/claim-sources\/[^/]+$/.test(path) && method === "DELETE") {
+    const gone = decodeURIComponent(path.split("/").pop() ?? "");
+    const at = CLAIM_SOURCES.findIndex((source) => source.source_id === gone);
+    if (at >= 0) CLAIM_SOURCES.splice(at, 1);
+    return answer(undefined);
+  }
+  if (/\/users\/[^/]+\/claim-sources$/.test(path) && method === "POST") {
+    const asked = body as { claims: string[]; kind: string; jwt?: string; endpoint?: string; endpoint_token?: string };
+    const made = {
+      source_id: `src-preview-${CLAIM_SOURCES.length + 1}`,
+      claims: asked.claims,
+      kind: asked.kind,
+      jwt: asked.jwt,
+      endpoint: asked.endpoint,
+      endpoint_token: asked.endpoint_token ? "**********" : undefined,
+      metadata: { created_by: "ada", created_at: new Date(NOW * 1000).toISOString() },
+    };
+    CLAIM_SOURCES.push(made);
+    return answer(made);
+  }
+  if (/\/users\/[^/]+\/claim-sources$/.test(path)) {
+    return answer(CLAIM_SOURCES.map((source) => ({ ...source })));
   }
   if (/\/users\/[^/]+\/consents\/[^/]+$/.test(path) && method === "DELETE") {
     CONSENTS.delete(decodeURIComponent(path.split("/").pop() ?? ""));

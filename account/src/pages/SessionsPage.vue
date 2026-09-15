@@ -5,23 +5,18 @@ import AppHint from "@/components/AppHint.vue";
 import AppIcon from "@/components/AppIcon.vue";
 import ConfirmDialog from "@/components/ConfirmDialog.vue";
 import { readTongue, say } from "@/i18n";
-import { ApiError } from "@/services/http";
-import { ACCOUNT_CONSOLE, forgetSignIn, session } from "@/services/session";
+import { ACCOUNT_CONSOLE, session } from "@/services/session";
+import { listLogins, type HeldLogin } from "@/services/sessions";
 import {
-  endLogin,
-  endOtherLogins,
-  listLogins,
-  revokeGrant,
-  type HeldGrant,
-  type HeldLogin,
-} from "@/services/sessions";
-import { countOtherLogins, describeDevice, formatMoment, orderLogins } from "./sessions";
-
-/// What the person is about to do, held while they confirm it.
-type Gesture =
-  | { kind: "end"; login: HeldLogin }
-  | { kind: "end-others" }
-  | { kind: "take-back"; login: HeldLogin; grant: HeldGrant };
+  carryOutGesture,
+  composeConfirmation,
+  countOtherLogins,
+  describeDevice,
+  formatMoment,
+  orderLogins,
+  type Gesture,
+  type Outcome,
+} from "./sessions";
 
 const realm = session.realm;
 const tongue = readTongue();
@@ -30,8 +25,9 @@ const logins = ref<HeldLogin[] | null>(null);
 const unreadable = ref(false);
 const pending = ref<Gesture | null>(null);
 const busy = ref(false);
-const outcome = ref<{ tone: "ok" | "danger"; text: string } | null>(null);
+const outcome = ref<Outcome | null>(null);
 const others = computed(() => (logins.value ? countOtherLogins(logins.value) : 0));
+const confirmation = computed(() => (pending.value ? composeConfirmation(pending.value) : null));
 
 async function loadLogins() {
   try {
@@ -42,74 +38,18 @@ async function loadLogins() {
   }
 }
 
-// Each gesture says what it does before it happens: ending a login and taking back
-// what one application got are two gestures with two consequences.
-const asking = computed(() => {
-  const gesture = pending.value;
-  if (gesture?.kind === "end" && gesture.login.current) {
-    return {
-      title: say("confirm-end-current-title"),
-      body: say("confirm-end-current-body"),
-      confirm: say("confirm-end-current"),
-    };
-  }
-  if (gesture?.kind === "end") {
-    return {
-      title: say("confirm-end-title"),
-      body: say("confirm-end-body", { device: describeDevice(gesture.login) }),
-      confirm: say("confirm-end"),
-    };
-  }
-  if (gesture?.kind === "end-others") {
-    return {
-      title: say("confirm-end-others-title"),
-      body: say("confirm-end-others-body"),
-      confirm: say("confirm-end-others"),
-    };
-  }
-  if (gesture?.kind === "take-back") {
-    return {
-      title: say("confirm-take-back-title", { application: gesture.grant.name }),
-      body: say("confirm-take-back-body", { application: gesture.grant.name }),
-      confirm: say("confirm-take-back"),
-    };
-  }
-  return null;
-});
-
-async function carryOutGesture() {
+async function confirmGesture() {
   const gesture = pending.value;
   if (!gesture) return;
   busy.value = true;
-  try {
-    if (gesture.kind === "end") {
-      await endLogin(realm, gesture.login.session_id);
-      if (gesture.login.current) {
-        forgetSignIn();
-        await router.replace("/signed-out");
-        return;
-      }
-      outcome.value = { tone: "ok", text: say("sessions-ended") };
-    } else if (gesture.kind === "end-others") {
-      const { ended_sessions } = await endOtherLogins(realm);
-      outcome.value = { tone: "ok", text: say("sessions-ended-others", { count: ended_sessions }) };
-    } else {
-      await revokeGrant(realm, gesture.login.session_id, gesture.grant.client_id);
-      outcome.value = {
-        tone: "ok",
-        text: say("sessions-taken-back", { application: gesture.grant.name }),
-      };
-    }
-  } catch (refused) {
-    if (refused instanceof ApiError && refused.status === 404) {
-      outcome.value = { tone: "ok", text: say("sessions-gone") };
-    } else {
-      outcome.value = { tone: "danger", text: say("sessions-failed") };
-    }
-  } finally {
-    busy.value = false;
-    pending.value = null;
+  const told = await carryOutGesture(realm, gesture);
+  busy.value = false;
+  pending.value = null;
+  if (told.signedOut) {
+    await router.replace("/signed-out");
+    return;
   }
+  outcome.value = told;
   await loadLogins();
 }
 
@@ -227,12 +167,12 @@ onMounted(loadLogins);
   <p v-else class="loading" aria-busy="true">{{ say("loading") }}</p>
 
   <ConfirmDialog
-    v-if="asking"
-    :title="asking.title"
-    :body="asking.body"
-    :confirm="asking.confirm"
+    v-if="confirmation"
+    :title="confirmation.title"
+    :body="confirmation.body"
+    :confirm="confirmation.confirm"
     :busy="busy"
-    @confirm="carryOutGesture"
+    @confirm="confirmGesture"
     @cancel="pending = null"
   />
 </template>

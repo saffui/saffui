@@ -4,6 +4,7 @@ nav-label = Your account
 nav-profile = Profile
 nav-security = Security
 nav-sessions = Sign-ins
+nav-applications = Applications
 tongue-label = Language
 tongue-help = The language of this page, and of the sign-in pages it sends you to.
 tongue-en = English
@@ -175,3 +176,43 @@ confirm-remove-codes-body = { $count ->
     [one] Your last code stops working.
    *[other] Your { $count } codes stop working.
 } You can get a new set at any time.
+
+applications-title = Applications
+applications-lead = The applications that hold something of yours: what you agreed they may have, and the access they hold from your sign-ins.
+applications-unreadable = Your applications could not be read. Reload the page to try again.
+applications-none = No application holds anything of yours.
+applications-visit = Open
+applications-visit-help = Open { $application } in a new tab.
+applications-consent = What you agreed to
+applications-agreed = Agreed on { $when }
+applications-withdraw-consent = Withdraw consent
+applications-withdraw-consent-help = The application keeps what it already holds, and asks for your agreement again the next time it signs you in.
+applications-withdraw-consent-help-unasked = The application keeps what it already holds, and it does not ask for agreement before signing you in: only the record of your agreement goes.
+applications-access = Access
+applications-access-logins = { $count ->
+    [one] Holds access through one of your sign-ins.
+   *[other] Holds access through { $count } of your sign-ins.
+}
+applications-access-until = Until { $when }
+applications-take-back-access = Take back access
+applications-take-back-access-help = Ends what the application got from all your sign-ins, offline access included. Your sign-ins stay.
+applications-scope-openid = Who you are
+applications-scope-profile = Your name and profile
+applications-scope-email = Your email address
+applications-scope-phone = Your phone number
+applications-scope-address = Your postal address
+applications-scope-offline-access = Access while you are away
+applications-consent-withdrawn = Your consent to { $application } is withdrawn.
+applications-access-taken-back = { $count ->
+    [one] { $application } no longer holds access through one of your sign-ins.
+   *[other] { $application } no longer holds access through { $count } of your sign-ins.
+}
+applications-gone = That was already done. The list is up to date.
+applications-failed = The change did not go through. Reload the page to see where things stand.
+confirm-withdraw-consent = Withdraw consent
+confirm-withdraw-consent-title = Withdraw your consent to { $application }?
+confirm-withdraw-consent-body = { $application } keeps what it already holds. The next time it signs you in, it asks for your agreement again.
+confirm-withdraw-consent-body-unasked = { $application } keeps what it already holds, and it does not ask for agreement before signing you in, so its next sign-in goes ahead. Only the record of your agreement goes.
+confirm-take-back-access = Take back access
+confirm-take-back-access-title = Take back { $application }'s access?
+confirm-take-back-access-body = { $application } loses what it got from all your sign-ins, offline access included, and is told if it asked to be. A token it already holds keeps working until it runs out, usually within minutes. Your consent stays until you withdraw it.

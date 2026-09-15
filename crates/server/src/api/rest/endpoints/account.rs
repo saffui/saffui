@@ -8,9 +8,11 @@ use deadpool_postgres::Pool;
 use secrecy::SecretBox;
 use services::account::{OwnFactor, OwnFactors, Unchanged};
 use services::account_api::{
-    AccountCaller, HeldLogin, LoginStanding, Unended, Unmade, change_caller_password,
-    end_caller_login, end_caller_other_logins, find_needed_step_up, list_caller_logins,
-    read_caller_factors, read_me, remove_caller_factor, revoke_caller_grant,
+    AccountCaller, HeldApplication, HeldLogin, LoginStanding, Unended, Unmade,
+    change_caller_password, end_caller_login, end_caller_other_logins, find_needed_step_up,
+    list_caller_applications, list_caller_logins, list_realm_consoles, read_caller_factors,
+    read_me, remove_caller_factor, revoke_caller_grant, take_back_caller_access,
+    withdraw_caller_consent,
 };
 use services::agent::read_agent;
 use services::grant::Signing;
@@ -22,6 +24,7 @@ use crate::api::rest::endpoints::admin::dto::PasswordChange;
 use crate::api::rest::endpoints::protocol::backchannel;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::middleware::account_guard::AccountRefusal;
+use crate::middleware::admin_policy::AdminPolicy;
 
 /// What the realm holds of the caller, as they read it about themselves.
 pub async fn show_me(
@@ -278,19 +281,8 @@ pub async fn end_session(
         .transaction(&mut connection, &caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
-    let ring = store::keyring::load(
-        &transaction,
-        &sealing.envelope,
-        &caller.tenant.tenant,
-        &caller.tenant.realm_id,
-    )
-    .await
-    .ok();
-    let signing = ring.as_ref().map(|ring| Signing {
-        provider: sealing.provider.as_ref(),
-        ring,
-        envelope: &sealing.envelope,
-    });
+    let ring = open_realm_keys(&transaction, &sealing, &caller).await;
+    let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
     let notices = end_caller_login(
         &transaction,
         &caller,
@@ -322,19 +314,8 @@ pub async fn end_other_sessions(
         .transaction(&mut connection, &caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
-    let ring = store::keyring::load(
-        &transaction,
-        &sealing.envelope,
-        &caller.tenant.tenant,
-        &caller.tenant.realm_id,
-    )
-    .await
-    .ok();
-    let signing = ring.as_ref().map(|ring| Signing {
-        provider: sealing.provider.as_ref(),
-        ring,
-        envelope: &sealing.envelope,
-    });
+    let ring = open_realm_keys(&transaction, &sealing, &caller).await;
+    let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
     let (ended, notices) = end_caller_other_logins(
         &transaction,
         &caller,
@@ -352,11 +333,14 @@ pub async fn end_other_sessions(
         .json(serde_json::json!({ "ended_sessions": ended })))
 }
 
-/// Take back what one application got from one of the caller's logins.
+/// Take back what one application got from one of the caller's logins. The
+/// application is told, when it registered to hear of it, once the taking committed.
 pub async fn revoke_grant(
     caller: web::ReqData<AccountCaller>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let (_, session_id, client_id) = path.into_inner();
@@ -365,9 +349,70 @@ pub async fn revoke_grant(
         .transaction(&mut connection, &caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
-    revoke_caller_grant(&transaction, &caller, &session_id, &client_id)
+    let ring = open_realm_keys(&transaction, &sealing, &caller).await;
+    let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
+    let notices = revoke_caller_grant(
+        &transaction,
+        &caller,
+        signing.as_ref(),
+        &origin.issuer(&caller.tenant.realm_id),
+        &session_id,
+        &client_id,
+    )
+    .await
+    .map_err(refuse_ending)?;
+    transaction
+        .commit()
         .await
-        .map_err(refuse_ending)?;
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    backchannel::deliver(notices).await;
+    Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
+}
+
+/// The applications that hold something of the caller: what they agreed each may have,
+/// and what each holds from their logins. The realm's own consoles are left out.
+pub async fn list_applications(
+    caller: web::ReqData<AccountCaller>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    policy: web::Data<AdminPolicy>,
+) -> Result<HttpResponse, AccountRefusal> {
+    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
+    let transaction = tenancy
+        .transaction(&mut connection, &caller.tenant)
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    let held =
+        list_caller_applications(&transaction, &caller, &list_realm_consoles(&policy.parties))
+            .await
+            .map_err(|_| AccountRefusal::Unavailable)?;
+    Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .json(held.iter().map(describe_application).collect::<Vec<_>>()))
+}
+
+/// Withdraw what the caller agreed one application may have. What it already holds
+/// keeps working.
+pub async fn withdraw_consent(
+    caller: web::ReqData<AccountCaller>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    policy: web::Data<AdminPolicy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, AccountRefusal> {
+    let (_, client_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
+    let transaction = tenancy
+        .transaction(&mut connection, &caller.tenant)
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    withdraw_caller_consent(
+        &transaction,
+        &caller,
+        &client_id,
+        &list_realm_consoles(&policy.parties),
+    )
+    .await
+    .map_err(refuse_ending)?;
     transaction
         .commit()
         .await
@@ -375,11 +420,77 @@ pub async fn revoke_grant(
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
 }
 
+/// Take back everything one application got from the caller's logins, and say how many
+/// grants went. The application is told once for each login, once the taking committed.
+pub async fn take_back_access(
+    caller: web::ReqData<AccountCaller>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
+    policy: web::Data<AdminPolicy>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, AccountRefusal> {
+    let (_, client_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
+    let transaction = tenancy
+        .transaction(&mut connection, &caller.tenant)
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    let ring = open_realm_keys(&transaction, &sealing, &caller).await;
+    let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
+    let (taken, notices) = take_back_caller_access(
+        &transaction,
+        &caller,
+        signing.as_ref(),
+        &origin.issuer(&caller.tenant.realm_id),
+        &client_id,
+        &list_realm_consoles(&policy.parties),
+    )
+    .await
+    .map_err(refuse_ending)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    backchannel::deliver(notices).await;
+    Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .json(serde_json::json!({ "ended_grants": taken })))
+}
+
+/// The realm's keys, opened to sign the logout notices an ending owes. None when they
+/// cannot be opened: the ending goes ahead, and nobody is told.
+async fn open_realm_keys(
+    transaction: &deadpool_postgres::Transaction<'_>,
+    sealing: &Sealing,
+    caller: &AccountCaller,
+) -> Option<store::keyring::RealmKeyring> {
+    store::keyring::load(
+        transaction,
+        &sealing.envelope,
+        &caller.tenant.tenant,
+        &caller.tenant.realm_id,
+    )
+    .await
+    .ok()
+}
+
+fn sign_with<'a>(sealing: &'a Sealing, ring: &'a store::keyring::RealmKeyring) -> Signing<'a> {
+    Signing {
+        provider: sealing.provider.as_ref(),
+        ring,
+        envelope: &sealing.envelope,
+    }
+}
+
 /// An ending refused, in the words the account API answers with.
 fn refuse_ending(why: Unended) -> AccountRefusal {
     match why {
         Unended::NotFound => AccountRefusal::Refused(ApiError::new(ErrorCode::SessionNotFound)),
         Unended::NoSuchGrant => AccountRefusal::Refused(ApiError::new(ErrorCode::GrantNotFound)),
+        Unended::NoSuchConsent => {
+            AccountRefusal::Refused(ApiError::new(ErrorCode::ConsentNotFound))
+        }
         Unended::Backend => AccountRefusal::Unavailable,
     }
 }
@@ -408,5 +519,25 @@ fn describe_login(held: &HeldLogin) -> serde_json::Value {
             "offline": grant.offline,
             "expiration": grant.expiration,
         })).collect::<Vec<_>>(),
+    })
+}
+
+/// An application as its person reads it: what they agreed it may have, and what it
+/// holds from their logins, never a secret nor an address a browser should not follow.
+fn describe_application(held: &HeldApplication) -> serde_json::Value {
+    serde_json::json!({
+        "client_id": held.client_id,
+        "name": held.name,
+        "home": held.home,
+        "consent": held.consent.as_ref().map(|agreed| serde_json::json!({
+            "scopes": agreed.scopes,
+            "granted_at": agreed.granted_at,
+            "asks_consent": agreed.asks_consent,
+        })),
+        "access": held.access.as_ref().map(|access| serde_json::json!({
+            "logins": access.logins,
+            "offline": access.offline,
+            "expiration": access.expiration,
+        })),
     })
 }

@@ -4,6 +4,7 @@ nav-label = Votre compte
 nav-profile = Profil
 nav-security = Sécurité
 nav-sessions = Connexions
+nav-applications = Applications
 tongue-label = Langue
 tongue-help = La langue de cette page, et des pages de connexion vers lesquelles elle vous envoie.
 tongue-en = English
@@ -175,3 +176,43 @@ confirm-remove-codes-body = { $count ->
     [one] Votre dernier code cesse de fonctionner.
    *[other] Vos { $count } codes cessent de fonctionner.
 } Vous pouvez en obtenir un nouveau jeu à tout moment.
+
+applications-title = Applications
+applications-lead = Les applications qui détiennent quelque chose de vous : ce que vous avez accepté qu'elles aient, et les accès qu'elles tiennent de vos connexions.
+applications-unreadable = Vos applications n'ont pas pu être lues. Rechargez la page pour réessayer.
+applications-none = Aucune application ne détient quoi que ce soit de vous.
+applications-visit = Ouvrir
+applications-visit-help = Ouvrir { $application } dans un nouvel onglet.
+applications-consent = Ce que vous avez accepté
+applications-agreed = Accepté le { $when }
+applications-withdraw-consent = Retirer le consentement
+applications-withdraw-consent-help = L'application garde ce qu'elle détient déjà, et vous redemande votre accord à sa prochaine connexion.
+applications-withdraw-consent-help-unasked = L'application garde ce qu'elle détient déjà, et ne demande pas d'accord avant de vous connecter : seule la trace de votre accord disparaît.
+applications-access = Accès
+applications-access-logins = { $count ->
+    [one] Détient un accès par une de vos connexions.
+   *[other] Détient un accès par { $count } de vos connexions.
+}
+applications-access-until = Jusqu'au { $when }
+applications-take-back-access = Retirer l'accès
+applications-take-back-access-help = Met fin à ce que l'application a obtenu de toutes vos connexions, accès hors ligne compris. Vos connexions restent ouvertes.
+applications-scope-openid = Qui vous êtes
+applications-scope-profile = Votre nom et votre profil
+applications-scope-email = Votre adresse e-mail
+applications-scope-phone = Votre numéro de téléphone
+applications-scope-address = Votre adresse postale
+applications-scope-offline-access = Un accès en votre absence
+applications-consent-withdrawn = Votre consentement à { $application } est retiré.
+applications-access-taken-back = { $count ->
+    [one] { $application } ne détient plus d'accès par une de vos connexions.
+   *[other] { $application } ne détient plus d'accès par { $count } de vos connexions.
+}
+applications-gone = C'était déjà fait. La liste est à jour.
+applications-failed = La modification n'a pas abouti. Rechargez la page pour voir où en sont les choses.
+confirm-withdraw-consent = Retirer le consentement
+confirm-withdraw-consent-title = Retirer votre consentement à { $application } ?
+confirm-withdraw-consent-body = { $application } garde ce qu'elle détient déjà. À sa prochaine connexion, elle vous redemande votre accord.
+confirm-withdraw-consent-body-unasked = { $application } garde ce qu'elle détient déjà, et ne demande pas d'accord avant de vous connecter : sa prochaine connexion se fera sans vous le demander. Seule la trace de votre accord disparaît.
+confirm-take-back-access = Retirer l'accès
+confirm-take-back-access-title = Retirer l'accès de { $application } ?
+confirm-take-back-access-body = { $application } perd ce qu'elle a obtenu de toutes vos connexions, accès hors ligne compris, et en est informée si elle l'a demandé. Un jeton qu'elle détient déjà fonctionne jusqu'à son expiration, en général quelques minutes. Votre consentement reste jusqu'à ce que vous le retiriez.

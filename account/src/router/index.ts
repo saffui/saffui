@@ -29,6 +29,7 @@ export function createAccountRouter(realm: string): Router {
           { path: "profile", component: () => import("@/pages/ProfilePage.vue") },
           { path: "security", component: () => import("@/pages/SecurityPage.vue") },
           { path: "sessions", component: () => import("@/pages/SessionsPage.vue") },
+          { path: "applications", component: () => import("@/pages/ApplicationsPage.vue") },
         ],
       },
       { path: "/:unknown(.*)*", redirect: "/profile" },

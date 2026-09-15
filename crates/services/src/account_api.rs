@@ -1,10 +1,12 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use chrono::{DateTime, Utc};
 use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use secrecy::SecretBox;
 use serde_json::{Map, Value};
-use store::providers::{clients, realms, sessions, users};
+use store::providers::{clients, consents, realms, sessions, users};
 use store::tenancy::TenantContext;
 
 use crate::account::{
@@ -13,7 +15,7 @@ use crate::account::{
 };
 use crate::context::minted_at;
 use crate::grant::Signing;
-use crate::logout::{Notice, notices_for};
+use crate::logout::{Notice, notice_for_client, notices_for};
 use crate::token::Verified;
 
 /// The one client whose tokens reach the account API: the realm's account console.
@@ -409,15 +411,10 @@ pub async fn list_caller_logins(
             let name = clients::load(transaction, &grant.client_id)
                 .await
                 .map_err(|_| Unread)?
-                .map(|client| {
-                    if client.display_name.trim().is_empty() {
-                        client.name
-                    } else {
-                        client.display_name
-                    }
-                })
-                .filter(|name| !name.trim().is_empty())
-                .unwrap_or_else(|| grant.client_id.clone());
+                .map_or_else(
+                    || grant.client_id.clone(),
+                    |client| name_application(&grant.client_id, &client.display_name, &client.name),
+                );
             shown.push(HeldGrant {
                 name,
                 offline: grant.offline == Some(true),
@@ -442,6 +439,8 @@ pub enum Unended {
     NotFound,
     #[error("the application holds nothing from that login")]
     NoSuchGrant,
+    #[error("the application holds no consent from the caller")]
+    NoSuchConsent,
     #[error("the store could not be read")]
     Backend,
 }
@@ -513,22 +512,254 @@ pub async fn end_caller_other_logins(
 }
 
 /// Take back what one application got from one of the caller's logins, leaving the
-/// login and every other application alone.
+/// login and every other application alone, and hand back the logout notice the
+/// application is owed for that login.
 pub async fn revoke_caller_grant(
     transaction: &Transaction<'_>,
     caller: &AccountCaller,
+    signing: Option<&Signing<'_>>,
+    issuer: &str,
     session_id: &str,
     client_id: &str,
-) -> Result<(), Unended> {
+) -> Result<Vec<Notice>, Unended> {
     sessions::load(transaction, session_id)
         .await
         .map_err(|_| Unended::Backend)?
         .filter(|session| session.user_id == caller.user_id)
         .ok_or(Unended::NotFound)?;
+    take_back_grant(transaction, caller, signing, issuer, session_id, client_id)
+        .await?
+        .ok_or(Unended::NoSuchGrant)
+}
+
+/// Take back one application's grant from one login, with the notice it is owed when it
+/// registered where to be told; None when it held nothing there. The notice names the
+/// login, which reads the same after the grant is gone.
+async fn take_back_grant(
+    transaction: &Transaction<'_>,
+    caller: &AccountCaller,
+    signing: Option<&Signing<'_>>,
+    issuer: &str,
+    session_id: &str,
+    client_id: &str,
+) -> Result<Option<Vec<Notice>>, Unended> {
     let taken = sessions::close_client_session_of(transaction, session_id, client_id)
         .await
         .map_err(|_| Unended::Backend)?;
-    taken.then_some(()).ok_or(Unended::NoSuchGrant)
+    if !taken {
+        return Ok(None);
+    }
+    let notice = match signing {
+        Some(signing) => {
+            notice_for_client(
+                transaction,
+                signing,
+                issuer,
+                session_id,
+                client_id,
+                caller.now,
+            )
+            .await
+        }
+        None => None,
+    };
+    Ok(Some(notice.into_iter().collect()))
+}
+
+/// The applications the realm keeps for itself, which the account API neither lists nor
+/// takes back: the account console, and each client the admin console signs in as.
+pub fn list_realm_consoles(admin_parties: &[String]) -> Vec<String> {
+    std::iter::once(ACCOUNT_CONSOLE.to_owned())
+        .chain(admin_parties.iter().cloned())
+        .collect()
+}
+
+/// The name the realm shows an application by: its display name, else its name, else
+/// its identifier.
+pub fn name_application(client_id: &str, display_name: &str, name: &str) -> String {
+    [display_name, name]
+        .into_iter()
+        .find(|held| !held.trim().is_empty())
+        .unwrap_or(client_id)
+        .to_owned()
+}
+
+/// Where a person may go to reach an application: its home page, else its root address,
+/// and only an address a browser may safely be sent to.
+pub fn choose_application_home(client_uri: Option<&str>, root_url: Option<&str>) -> Option<String> {
+    [client_uri, root_url]
+        .into_iter()
+        .flatten()
+        .find(|held| commons::address::is_https_or_loopback(held))
+        .map(str::to_owned)
+}
+
+/// What an application holds from the caller's logins, gathered across them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldAccess {
+    /// How many of the caller's logins it holds a grant from.
+    pub logins: usize,
+    /// Whether any of those grants reaches the account while the person is away.
+    pub offline: bool,
+    /// When the last of those grants runs out; None when one never does.
+    pub expiration: Option<i64>,
+}
+
+/// What each application holds across the logins shown, by its identifier.
+pub fn gather_application_access(logins: &[HeldLogin]) -> BTreeMap<String, HeldAccess> {
+    let mut gathered = BTreeMap::<String, HeldAccess>::new();
+    for grant in logins.iter().flat_map(|login| &login.grants) {
+        let access = gathered
+            .entry(grant.client_id.clone())
+            .or_insert(HeldAccess {
+                logins: 0,
+                offline: false,
+                expiration: grant.expiration,
+            });
+        access.logins += 1;
+        access.offline |= grant.offline;
+        access.expiration = access
+            .expiration
+            .zip(grant.expiration)
+            .map(|(one, other)| one.max(other));
+    }
+    gathered
+}
+
+/// What the caller agreed an application may have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgreedConsent {
+    pub scopes: Vec<String>,
+    pub granted_at: DateTime<Utc>,
+    /// Whether the application asks for agreement before it signs the person in, so
+    /// that a withdrawn consent is asked for again.
+    pub asks_consent: bool,
+}
+
+/// An application that holds something of the caller: what they agreed it may have,
+/// what it holds from their logins, or both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldApplication {
+    pub client_id: String,
+    pub name: String,
+    /// Where the person may go to reach it, when the realm gave a safe address.
+    pub home: Option<String>,
+    pub consent: Option<AgreedConsent>,
+    pub access: Option<HeldAccess>,
+}
+
+/// The applications that hold something of the caller, by name, leaving out the realm's
+/// own consoles.
+pub async fn list_caller_applications(
+    transaction: &Transaction<'_>,
+    caller: &AccountCaller,
+    consoles: &[String],
+) -> Result<Vec<HeldApplication>, Unread> {
+    let logins = list_caller_logins(transaction, caller).await?;
+    let mut access = gather_application_access(&logins);
+    let mut agreed: BTreeMap<String, consents::Consent> =
+        consents::of_user(transaction, &caller.user_id)
+            .await
+            .map_err(|_| Unread)?
+            .into_iter()
+            .map(|consent| (consent.client_id.clone(), consent))
+            .collect();
+    let named: BTreeSet<String> = access
+        .keys()
+        .chain(agreed.keys())
+        .filter(|client_id| !consoles.contains(client_id))
+        .cloned()
+        .collect();
+    let mut held = Vec::new();
+    for client_id in named {
+        let client = clients::load(transaction, &client_id)
+            .await
+            .map_err(|_| Unread)?;
+        let asks_consent = client
+            .as_ref()
+            .is_some_and(|client| client.consent_required == Some(true));
+        held.push(HeldApplication {
+            name: client.as_ref().map_or_else(
+                || client_id.clone(),
+                |client| name_application(&client_id, &client.display_name, &client.name),
+            ),
+            home: client.as_ref().and_then(|client| {
+                choose_application_home(client.client_uri.as_deref(), client.root_url.as_deref())
+            }),
+            consent: agreed.remove(&client_id).map(|consent| AgreedConsent {
+                scopes: consent.scopes,
+                granted_at: consent.granted_at,
+                asks_consent,
+            }),
+            access: access.remove(&client_id),
+            client_id,
+        });
+    }
+    held.sort_by(|one, other| {
+        one.name
+            .to_lowercase()
+            .cmp(&other.name.to_lowercase())
+            .then_with(|| one.client_id.cmp(&other.client_id))
+    });
+    Ok(held)
+}
+
+/// Withdraw what the caller agreed an application may have. What it already holds keeps
+/// working, and its next sign-in asks again where the application asks at all.
+pub async fn withdraw_caller_consent(
+    transaction: &Transaction<'_>,
+    caller: &AccountCaller,
+    client_id: &str,
+    consoles: &[String],
+) -> Result<(), Unended> {
+    if consoles.iter().any(|console| console == client_id) {
+        return Err(Unended::NoSuchConsent);
+    }
+    let withdrawn = consents::withdraw(transaction, &caller.user_id, client_id)
+        .await
+        .map_err(|_| Unended::Backend)?;
+    withdrawn.then_some(()).ok_or(Unended::NoSuchConsent)
+}
+
+/// Take back everything one application got from any of the caller's logins, offline
+/// grants included, and hand back how many grants went and the notices the application
+/// is owed, one for each login it was signed in through. A console of the realm's is
+/// not taken back here: ending the login is how it goes.
+pub async fn take_back_caller_access(
+    transaction: &Transaction<'_>,
+    caller: &AccountCaller,
+    signing: Option<&Signing<'_>>,
+    issuer: &str,
+    client_id: &str,
+    consoles: &[String],
+) -> Result<(usize, Vec<Notice>), Unended> {
+    if consoles.iter().any(|console| console == client_id) {
+        return Err(Unended::NoSuchGrant);
+    }
+    let logins = sessions::load_for_user(transaction, &caller.user_id)
+        .await
+        .map_err(|_| Unended::Backend)?;
+    let mut taken = 0;
+    let mut notices = Vec::new();
+    for login in &logins {
+        if let Some(told) = take_back_grant(
+            transaction,
+            caller,
+            signing,
+            issuer,
+            &login.session_id,
+            client_id,
+        )
+        .await?
+        {
+            taken += 1;
+            notices.extend(told);
+        }
+    }
+    if taken == 0 {
+        return Err(Unended::NoSuchGrant);
+    }
+    Ok((taken, notices))
 }
 
 #[cfg(test)]
@@ -785,5 +1016,97 @@ mod tests {
         assert!(!keep_shown_grant(LoginStanding::OfflineOnly, &online, now));
         assert!(keep_shown_grant(LoginStanding::OfflineOnly, &offline, now));
         assert!(!keep_shown_grant(LoginStanding::OfflineOnly, &over, now));
+    }
+
+    /// An application goes by the name the realm shows it by: its display name, else its
+    /// name, else its identifier.
+    #[test]
+    fn an_application_goes_by_the_name_the_realm_shows() {
+        assert_eq!(name_application("app", "Grafana", "grafana"), "Grafana");
+        assert_eq!(name_application("app", "  ", "grafana"), "grafana");
+        assert_eq!(name_application("app", "", " "), "app");
+    }
+
+    /// A person is sent to an application only through an address a browser may safely
+    /// follow: its home page first, then its root address.
+    #[test]
+    fn an_application_is_reached_only_through_a_safe_address() {
+        assert_eq!(
+            choose_application_home(
+                Some("https://app.example/home"),
+                Some("https://app.example")
+            ),
+            Some("https://app.example/home".to_owned())
+        );
+        assert_eq!(
+            choose_application_home(Some("javascript:alert(1)"), Some("https://app.example")),
+            Some("https://app.example".to_owned())
+        );
+        assert_eq!(
+            choose_application_home(Some("http://app.example"), None),
+            None
+        );
+        assert_eq!(
+            choose_application_home(None, Some("http://localhost:3000")),
+            Some("http://localhost:3000".to_owned())
+        );
+        assert_eq!(choose_application_home(None, None), None);
+    }
+
+    /// What an application holds is gathered across the person's logins: how many it
+    /// holds a grant from, whether any reaches the account offline, and when the last runs
+    /// out, which is never when one of them never does.
+    #[test]
+    fn what_an_application_holds_is_gathered_across_logins() {
+        let held = |client_id: &str, offline: bool, expiration: Option<i64>| HeldGrant {
+            client_id: client_id.to_owned(),
+            name: client_id.to_owned(),
+            offline,
+            expiration,
+        };
+        let login = |grants: Vec<HeldGrant>| HeldLogin {
+            session: session(UserSessionState::LoggedIn, None, "main"),
+            standing: LoginStanding::Open,
+            current: false,
+            grants,
+        };
+        let gathered = gather_application_access(&[
+            login(vec![
+                held("app", false, Some(100)),
+                held("spa", false, None),
+            ]),
+            login(vec![held("app", true, Some(300))]),
+        ]);
+        assert_eq!(
+            gathered["app"],
+            HeldAccess {
+                logins: 2,
+                offline: true,
+                expiration: Some(300)
+            }
+        );
+        assert_eq!(
+            gathered["spa"],
+            HeldAccess {
+                logins: 1,
+                offline: false,
+                expiration: None
+            }
+        );
+        let forever = gather_application_access(&[
+            login(vec![held("app", false, None)]),
+            login(vec![held("app", false, Some(300))]),
+        ]);
+        assert_eq!(forever["app"].expiration, None);
+    }
+
+    /// The realm's own consoles are the account console and every client the admin
+    /// console signs in as.
+    #[test]
+    fn the_realms_consoles_are_the_account_console_and_the_admin_parties() {
+        assert_eq!(
+            list_realm_consoles(&["saffui-console".to_owned(), "ops-console".to_owned()]),
+            ["account-console", "saffui-console", "ops-console"]
+        );
     }
 }

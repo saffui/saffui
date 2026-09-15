@@ -391,6 +391,15 @@ fn account_api_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
             web::resource("/me/sessions/{session}/grants/{client}")
                 .route(web::delete().to(account::revoke_grant)),
         )
+        .service(web::resource("/me/applications").route(web::get().to(account::list_applications)))
+        .service(
+            web::resource("/me/applications/{client}/consent")
+                .route(web::delete().to(account::withdraw_consent)),
+        )
+        .service(
+            web::resource("/me/applications/{client}/access")
+                .route(web::delete().to(account::take_back_access)),
+        )
 }
 
 /// The SAML side of a brokered provider, under the address the realm answers to

@@ -88,6 +88,10 @@ onMounted(loadMe);
           <AppIcon name="sessions" :size="15" />
           <span>{{ say("nav-sessions") }}</span>
         </router-link>
+        <router-link to="/applications" class="tab">
+          <AppIcon name="application" :size="15" />
+          <span>{{ say("nav-applications") }}</span>
+        </router-link>
       </nav>
     </header>
     <main class="page">

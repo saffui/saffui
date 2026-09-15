@@ -1234,6 +1234,10 @@ async fn a_person_takes_back_what_one_application_got_from_a_login() {
     )
     .await;
     plant_grant(&plane, ELSEWHERE, support::SUBJECT, support::PUBLIC, false).await;
+    let (uri, heard) = listening_client();
+    plane
+        .register_backchannel(support::CONFIDENTIAL, &uri)
+        .await;
     let grace = plant_another_person(&plane).await;
     open_login(
         &plane,
@@ -1256,6 +1260,8 @@ async fn a_person_takes_back_what_one_application_got_from_a_login() {
         login_stands(&plane, ELSEWHERE).await,
         "the login went with one grant"
     );
+    let told_of = read_logout_claims(&heard);
+    assert_eq!(told_of["sid"], ELSEWHERE, "{told_of}");
     assert_eq!(grants_of(&plane, ELSEWHERE).await, [support::PUBLIC]);
 
     let (status, _, told) = sent(&plane, Method::DELETE, &taken, Some(&bearer), None).await;
@@ -1341,6 +1347,18 @@ async fn the_account_console_contract_holds_against_a_live_server() {
     plant_key(&plane, b"key-contract").await;
     plant_recovery_codes(&plane).await;
     prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+    // A consent to another application, and what one more got from the login the
+    // console rides: what the console withdraws and takes back, leaving the login
+    // elsewhere to the calls on logins.
+    keep_consent(&plane, support::SUBJECT, support::OTHER, &["openid"]).await;
+    plant_grant(
+        &plane,
+        support::SESSION,
+        support::SUBJECT,
+        support::PUBLIC,
+        false,
+    )
+    .await;
     let bearer = plane.token(&account_claims());
 
     let served = mounted(&plane);
@@ -1484,5 +1502,356 @@ async fn a_sign_in_through_the_account_console_opens_the_account_api() {
         me["preferred_username"].as_str(),
         Some(support::SUBJECT),
         "{me}"
+    );
+}
+
+async fn keep_consent(plane: &Plane, user_id: &str, client_id: &str, scopes: &[&str]) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    let scopes: Vec<String> = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+    store::providers::consents::keep(
+        &transaction,
+        user_id,
+        client_id,
+        &scopes,
+        chrono::Utc::now(),
+    )
+    .await
+    .expect("the consents table");
+    transaction.commit().await.expect("the consent kept");
+}
+
+async fn consent_held(plane: &Plane, user_id: &str, client_id: &str) -> bool {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::consents::held(&transaction, user_id, client_id)
+        .await
+        .expect("the consents table")
+        .is_some()
+}
+
+async fn reshape_client(
+    plane: &Plane,
+    client_id: &str,
+    reshape: impl FnOnce(&mut models::entities::client::ClientModel),
+) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    let mut client = store::providers::clients::load(&transaction, client_id)
+        .await
+        .expect("the clients table")
+        .expect("a planted client");
+    reshape(&mut client);
+    store::providers::clients::update(&transaction, &client)
+        .await
+        .expect("the clients table");
+    transaction.commit().await.expect("the client kept");
+}
+
+/// The claims of the logout token an application was posted.
+fn read_logout_claims(heard: &std::sync::mpsc::Receiver<String>) -> Value {
+    let posted = heard
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the application was not told");
+    let token = posted
+        .strip_prefix("logout_token=")
+        .expect("a logout token");
+    let payload = token.split('.').nth(1).expect("a payload");
+    serde_json::from_slice(
+        &data_encoding::BASE64URL_NOPAD
+            .decode(payload.as_bytes())
+            .expect("base64url"),
+    )
+    .expect("claims")
+}
+
+/// A person sees each application that holds something of theirs: what they agreed it
+/// may have, and what it holds from their logins, gathered across them. The realm's own
+/// console is not listed, nor is somebody else's application, and an address a browser
+/// should not follow is not offered.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_sees_the_applications_that_hold_something_of_theirs() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    open_login(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        UserSessionState::LoggedIn,
+        None,
+        None,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        true,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        support::SESSION,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        false,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        support::SESSION,
+        support::SUBJECT,
+        ACCOUNT_CONSOLE,
+        false,
+    )
+    .await;
+    keep_consent(
+        &plane,
+        support::SUBJECT,
+        support::PUBLIC,
+        &["openid", "profile"],
+    )
+    .await;
+    reshape_client(&plane, support::CONFIDENTIAL, |client| {
+        client.client_uri = Some("https://app.example/home".to_owned());
+    })
+    .await;
+    reshape_client(&plane, support::PUBLIC, |client| {
+        client.client_uri = Some("javascript:alert(1)".to_owned());
+        client.consent_required = Some(true);
+    })
+    .await;
+    let grace = plant_another_person(&plane).await;
+    open_login(
+        &plane,
+        "session-grace",
+        &grace,
+        UserSessionState::LoggedIn,
+        None,
+        None,
+    )
+    .await;
+    plant_grant(&plane, "session-grace", &grace, support::OTHER, false).await;
+
+    let (status, _, held) = asked(&plane, &own("applications"), Some(&bearer)).await;
+    assert_eq!(status, StatusCode::OK, "{held}");
+    let listed: Vec<&str> = held
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|application| application["client_id"].as_str())
+        .collect();
+    assert_eq!(listed, [support::CONFIDENTIAL, support::PUBLIC], "{held}");
+    let app = &held[0];
+    assert_eq!(
+        (
+            app["name"].as_str(),
+            app["home"].as_str(),
+            app["access"]["logins"].as_i64(),
+            app["access"]["offline"].as_bool(),
+            app["consent"].is_null(),
+        ),
+        (
+            Some(support::CONFIDENTIAL),
+            Some("https://app.example/home"),
+            Some(2),
+            Some(true),
+            true,
+        ),
+        "{held}"
+    );
+    let agreed = &held[1];
+    assert_eq!(
+        (
+            agreed["home"].is_null(),
+            agreed["access"].is_null(),
+            agreed["consent"]["scopes"].clone(),
+            agreed["consent"]["asks_consent"].as_bool(),
+        ),
+        (true, true, json!(["openid", "profile"]), Some(true)),
+        "{held}"
+    );
+}
+
+/// A person withdraws what they agreed an application may have, and the application
+/// keeps what it holds. A consent already withdrawn, the realm's own console and
+/// somebody else's consent are not found, and nothing of theirs changes.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_withdraws_a_consent_and_the_application_keeps_what_it_holds() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    keep_consent(&plane, support::SUBJECT, support::CONFIDENTIAL, &["openid"]).await;
+    plant_grant(
+        &plane,
+        support::SESSION,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        true,
+    )
+    .await;
+    let grace = plant_another_person(&plane).await;
+    keep_consent(&plane, &grace, support::PUBLIC, &["openid"]).await;
+    keep_consent(&plane, support::SUBJECT, ACCOUNT_CONSOLE, &["openid"]).await;
+
+    let withdrawn = own(&format!("applications/{}/consent", support::CONFIDENTIAL));
+    let (status, _, told) = sent(&plane, Method::DELETE, &withdrawn, Some(&bearer), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    assert!(
+        !consent_held(&plane, support::SUBJECT, support::CONFIDENTIAL).await,
+        "the consent outlived its withdrawal"
+    );
+    assert_eq!(
+        grants_of(&plane, support::SESSION).await,
+        [support::CONFIDENTIAL],
+        "withdrawing a consent took back a grant"
+    );
+
+    for refused in [
+        withdrawn,
+        own(&format!("applications/{ACCOUNT_CONSOLE}/consent")),
+        own(&format!("applications/{}/consent", support::PUBLIC)),
+    ] {
+        let (status, _, told) = sent(&plane, Method::DELETE, &refused, Some(&bearer), None).await;
+        assert_eq!(
+            (status, told["error_code"].as_str()),
+            (StatusCode::NOT_FOUND, Some("auth.consent.not_found")),
+            "{refused}: {told}"
+        );
+    }
+    assert!(
+        consent_held(&plane, &grace, support::PUBLIC).await,
+        "somebody else's consent was withdrawn"
+    );
+    assert!(
+        consent_held(&plane, support::SUBJECT, ACCOUNT_CONSOLE).await,
+        "the console's own consent was withdrawn"
+    );
+}
+
+/// A person takes back everything one application got from their logins, offline
+/// grants included, and the application is told for the login it was signed in
+/// through; the logins and every other application keep theirs. An application
+/// holding nothing more, the realm's own console and somebody else's grants are not
+/// found, and stay.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_takes_back_an_applications_access_from_every_login_and_it_is_told() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    open_login(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        UserSessionState::LoggedIn,
+        None,
+        None,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        true,
+    )
+    .await;
+    plant_grant(&plane, ELSEWHERE, support::SUBJECT, support::PUBLIC, false).await;
+    plant_grant(
+        &plane,
+        support::SESSION,
+        support::SUBJECT,
+        support::PUBLIC,
+        false,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        support::SESSION,
+        support::SUBJECT,
+        ACCOUNT_CONSOLE,
+        false,
+    )
+    .await;
+    let (uri, heard) = listening_client();
+    plane
+        .register_backchannel(support::CONFIDENTIAL, &uri)
+        .await;
+    let grace = plant_another_person(&plane).await;
+    open_login(
+        &plane,
+        "session-grace",
+        &grace,
+        UserSessionState::LoggedIn,
+        None,
+        None,
+    )
+    .await;
+    plant_grant(&plane, "session-grace", &grace, support::PUBLIC, false).await;
+
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own(&format!("applications/{}/access", support::CONFIDENTIAL)),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, told["ended_grants"].as_i64()),
+        (StatusCode::OK, Some(1)),
+        "{told}"
+    );
+    assert_eq!(grants_of(&plane, ELSEWHERE).await, [support::PUBLIC]);
+    let told_of = read_logout_claims(&heard);
+    assert_eq!(told_of["sid"], ELSEWHERE, "{told_of}");
+    assert!(
+        login_stands(&plane, ELSEWHERE).await,
+        "the login went with the application"
+    );
+
+    let taken_everywhere = own(&format!("applications/{}/access", support::PUBLIC));
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &taken_everywhere,
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, told["ended_grants"].as_i64()),
+        (StatusCode::OK, Some(2)),
+        "{told}"
+    );
+    assert!(grants_of(&plane, ELSEWHERE).await.is_empty());
+    assert_eq!(grants_of(&plane, support::SESSION).await, [ACCOUNT_CONSOLE]);
+
+    for refused in [
+        taken_everywhere,
+        own(&format!("applications/{ACCOUNT_CONSOLE}/access")),
+    ] {
+        let (status, _, told) = sent(&plane, Method::DELETE, &refused, Some(&bearer), None).await;
+        assert_eq!(
+            (status, told["error_code"].as_str()),
+            (StatusCode::NOT_FOUND, Some("auth.grant.not_found")),
+            "{refused}: {told}"
+        );
+    }
+    assert_eq!(
+        grants_of(&plane, "session-grace").await,
+        [support::PUBLIC],
+        "somebody else's grant was taken"
+    );
+    let (status, _, told) = asked(&plane, &me(), Some(&bearer)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the console lost its own sign-in: {told}"
     );
 }

@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import {
+  AppWindow,
   BadgeCheck,
   CircleAlert,
+  ExternalLink,
   Info,
   KeyRound,
   LogOut,
@@ -30,6 +32,8 @@ const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
   app: Smartphone,
   key: KeyRound,
   add: Plus,
+  application: AppWindow,
+  visit: ExternalLink,
 };
 
 const props = defineProps<{ name: keyof typeof GLYPHS; size?: number }>();

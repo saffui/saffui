@@ -251,3 +251,165 @@ async fn the_screen_offers_the_registered_pages_and_only_over_https() {
         "a plain-http page rode onto the consent screen: {shown}"
     );
 }
+
+/// Ask for a code, the browser holding the planted login or nothing, and read back
+/// the status, where the browser is sent, and the login opened instead, if any.
+async fn authorized(
+    plane: &Plane,
+    scope: &str,
+    prompt: Option<&str>,
+    holding: bool,
+) -> (StatusCode, String, Option<String>) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let prompted = prompt
+        .map(|asked| format!("&prompt={asked}"))
+        .unwrap_or_default();
+    let mut asking = test::TestRequest::get().uri(&format!(
+        "/realms/{}/protocol/openid-connect/auth?client_id={}&redirect_uri={}\
+         &response_type=code&scope={}&state=s{prompted}",
+        support::REALM,
+        support::CONFIDENTIAL,
+        urlencode(REDIRECT),
+        urlencode(scope),
+    ));
+    if holding {
+        asking = asking.insert_header((
+            "cookie",
+            format!("{}={}", support::SSO_COOKIE, support::SESSION),
+        ));
+    }
+    let response = test::call_service(&app, asking.to_request()).await;
+    let status = response.status();
+    let location = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let cookies: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .filter_map(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .collect();
+    (
+        status,
+        location,
+        cookie_value(&cookies, support::AUTH_SESSION_COOKIE),
+    )
+}
+
+/// A browser holding a login gets no code for a client whose consent it never had:
+/// the person signs in again and is shown the screen, and once they agreed, the
+/// held login is served without one.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_held_login_owing_consent_goes_through_the_login_before_any_code() {
+    let plane = Plane::with_actions(&[]).await;
+    demand_consent(&plane, true).await;
+
+    let (status, location, binding) = authorized(&plane, "openid profile", None, true).await;
+    assert!(
+        !location.contains("code="),
+        "a code was minted without consent: {location}"
+    );
+    let binding = binding.unwrap_or_else(|| panic!("no login was opened: {status} {location}"));
+    let (_, shown) = answered(&plane, &binding, credentials()).await;
+    assert_eq!(shown["status"].as_str(), Some("consent"), "{shown}");
+    let (_, admitted) = answered(&plane, &binding, with_consent("granted")).await;
+    assert_eq!(admitted["status"].as_str(), Some("admitted"), "{admitted}");
+
+    let (_, location, binding) = authorized(&plane, "openid profile", None, true).await;
+    assert!(
+        location.contains("code="),
+        "a client agreed to was not served by the held login: {location}"
+    );
+    assert!(
+        binding.is_none(),
+        "a login was opened for what was already agreed to"
+    );
+}
+
+/// A consent withdrawn is asked for again, even while the browser holds a login.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_withdrawn_consent_is_asked_again_even_with_a_held_login() {
+    let plane = Plane::with_actions(&[]).await;
+    demand_consent(&plane, true).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &within()).await;
+        auth::consent::keep(
+            &transaction,
+            support::SUBJECT,
+            support::CONFIDENTIAL,
+            "openid profile",
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("the consent was not kept"));
+        transaction.commit().await.expect("the consent kept");
+    }
+    let (_, location, _) = authorized(&plane, "openid profile", None, true).await;
+    assert!(location.contains("code="), "{location}");
+
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &within()).await;
+        store::providers::consents::withdraw(&transaction, support::SUBJECT, support::CONFIDENTIAL)
+            .await
+            .expect("the consents table");
+        transaction.commit().await.expect("the withdrawal kept");
+    }
+    let (status, location, binding) = authorized(&plane, "openid profile", None, true).await;
+    assert!(
+        !location.contains("code="),
+        "a withdrawn consent was served by the held login: {location}"
+    );
+    assert!(
+        binding.is_some(),
+        "no login was opened: {status} {location}"
+    );
+}
+
+/// A client that asked for no interaction is told the consent it lacks rather than
+/// shown a screen, and gets no code.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_held_login_asked_not_to_interact_is_told_consent_is_required() {
+    let plane = Plane::with_actions(&[]).await;
+    demand_consent(&plane, true).await;
+
+    let (_, location, binding) = authorized(&plane, "openid profile", Some("none"), true).await;
+    assert!(location.contains("error=consent_required"), "{location}");
+    assert!(!location.contains("code="), "{location}");
+    assert!(
+        binding.is_none(),
+        "a login was opened for a client that asked for none"
+    );
+}
+
+/// `prompt=consent` shows the screen even for a client that does not ask for
+/// consent, whether the browser holds a login or not.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_prompt_for_consent_is_honoured_with_or_without_a_held_login() {
+    let plane = Plane::with_actions(&[]).await;
+
+    for holding in [true, false] {
+        let (status, location, binding) =
+            authorized(&plane, "openid", Some("consent"), holding).await;
+        assert!(
+            !location.contains("code="),
+            "holding {holding}: a code was minted without asking: {location}"
+        );
+        let binding =
+            binding.unwrap_or_else(|| panic!("holding {holding}: no login: {status} {location}"));
+        let (_, shown) = answered(&plane, &binding, credentials()).await;
+        assert_eq!(
+            shown["status"].as_str(),
+            Some("consent"),
+            "holding {holding}: {shown}"
+        );
+    }
+}

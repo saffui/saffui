@@ -9,6 +9,8 @@ use secrecy::SecretBox;
 use serde_json::{Value, json};
 use server::api::config::{Plane as Mounted, register};
 use services::account_api::{ACCOUNT_CONSOLE, compose_account_console_redirect};
+use std::path::Path;
+use std::process::Command;
 use std::time::SystemTime;
 use store::tenancy::TenantContext;
 
@@ -1302,4 +1304,50 @@ async fn ending_the_login_the_request_rides_signs_the_console_out() {
     let (status, challenge, told) = asked(&plane, &me(), Some(&bearer)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
     assert_eq!(challenge, INVALID_TOKEN, "{told}");
+}
+
+/// The account console's own service calls, run by its contract suite against
+/// this server on a real socket: every path it asks for is taken, and every answer
+/// it keeps fits the type it reads the answer as.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG) and the account console's packages (pnpm install)"]
+async fn the_account_console_contract_holds_against_a_live_server() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+
+    let served = mounted(&plane);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().expect("an address").port();
+    let server = actix_web::HttpServer::new(move || App::new().configure(register(&served)))
+        .listen(listener)
+        .expect("a listener")
+        .workers(1)
+        .disable_signals()
+        .run();
+    tokio::spawn(server);
+
+    let console = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../account");
+    assert!(
+        console.join("node_modules").is_dir(),
+        "the account console's packages are not installed: run pnpm install"
+    );
+    let run = tokio::task::spawn_blocking(move || {
+        Command::new("pnpm")
+            .args(["run", "contract"])
+            .current_dir(console)
+            .env("SAFFUI_CONTRACT_ORIGIN", format!("http://127.0.0.1:{port}"))
+            .env("SAFFUI_CONTRACT_TOKEN", bearer)
+            .env("SAFFUI_CONTRACT_REALM", REALM)
+            .output()
+    })
+    .await
+    .expect("the run comes back")
+    .expect("pnpm starts");
+    assert!(
+        run.status.success(),
+        "the account console contract broke:\n{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
 }

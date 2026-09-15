@@ -2,6 +2,7 @@ use chrono::{DateTime, Duration, Utc};
 use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
 use deadpool_postgres::Transaction;
+use models::broker::link::{LinkDecision, LocalAccount, UpstreamIdentity};
 use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::authz::IdentityProviderModel;
 use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel, IdpMapperModel};
@@ -214,13 +215,17 @@ pub struct Departure {
     pub state: BrokerLoginState,
 }
 
-/// Why a brokered login could not begin or end. One public face: everything
-/// reaching the callback is attacker supplied, and telling a browser which
-/// check failed tells an attacker which constraint to work around next.
+/// Why a brokered login could not begin or end. Every check on what reaches the
+/// callback fails with one public face: it is attacker supplied, and telling a
+/// browser which check failed tells an attacker which constraint to work around next.
 #[derive(Debug, thiserror::Error)]
 pub enum Unbrokered {
     #[error("the brokered login was refused")]
     Refused,
+    /// Past every check, so said to the person the provider vouched for: an
+    /// account that never proved their address already holds it.
+    #[error("an account that never proved this address already holds it")]
+    AddressHeld,
     #[error("the store could not be read or written")]
     Backend,
 }
@@ -466,15 +471,15 @@ fn primary_verified_address(list: &EmailList, listed: &Value) -> (Option<String>
     }
 }
 
-/// The local account this arrival is, decided by policy rather than by
-/// default.
+/// The local account this arrival is. The facts are read here; the rule is
+/// `models::broker::link::decide_link`.
 ///
-/// A standing link answers first. Failing that, an existing account is
-/// linked by email only when the upstream asserts the address verified and
-/// the operator marked the provider trusted for it: silent linking on an
-/// unverified email hands the local account to whoever can register the
-/// address upstream. Failing both, a person is created, through the same
-/// door every user creation goes through.
+/// An address counts only from a provider trusted for addresses that asserts it
+/// verified, and names only the sole account holding it. That account is linked
+/// only if it proved the address as well, or a registration on someone else's
+/// address would receive their sign-in. When it did not, the arrival is refused,
+/// or given an account of its own where the realm lets accounts share an address.
+/// Otherwise a person is created, through the door every user creation goes through.
 pub async fn decide_link(
     transaction: &Transaction<'_>,
     crypto: &dyn crypto::provider::CryptoProvider,
@@ -484,34 +489,54 @@ pub async fn decide_link(
     arrival: &Arrival,
     now: DateTime<Utc>,
 ) -> Result<(String, bool), Unbrokered> {
-    if let Some(user_id) = brokering::linked_user(
+    let standing = brokering::linked_user(
         transaction,
         &provider.provider_id,
         &arrival.external_user_id,
     )
     .await
-    .map_err(|_| Unbrokered::Backend)?
-    {
-        return Ok((user_id, false));
-    }
+    .map_err(|_| Unbrokered::Backend)?;
 
-    let trusted = provider.trust_email.unwrap_or(false) && arrival.email_verified;
-    if trusted
-        && let Some(email) = &arrival.email
-        && let Some(standing) = users::load_by_email(transaction, email)
+    let trusts_email = provider.trust_email.unwrap_or(false);
+    let trusted = trusts_email && arrival.email_verified;
+    let holder = match (&standing, &arrival.email) {
+        (None, Some(email)) if trusted => users::sole_by_email(transaction, email)
             .await
             .map_err(|_| Unbrokered::Backend)?
-    {
-        remember(
-            transaction,
-            provider,
-            arrival,
-            &standing.user_id,
-            now,
-            false,
-        )
-        .await?;
-        return Ok((standing.user_id, true));
+            .map(|held| LocalAccount {
+                user_id: held.user_id,
+                email_verified: held.email_verified == Some(true),
+            }),
+        _ => None,
+    };
+    let upstream = UpstreamIdentity {
+        external_user_id: arrival.external_user_id.clone(),
+        external_username: arrival.username.clone(),
+        email: arrival.email.clone(),
+        email_verified: arrival.email_verified,
+    };
+    match models::broker::link::decide_link(
+        standing.as_deref(),
+        &upstream,
+        trusts_email,
+        holder.as_ref(),
+    ) {
+        LinkDecision::AlreadyLinked { user_id } => return Ok((user_id, false)),
+        LinkDecision::LinkToExisting { user_id } => {
+            remember(transaction, provider, arrival, &user_id, now, false).await?;
+            return Ok((user_id, true));
+        }
+        LinkDecision::RequireExplicitLink { .. } => {
+            let shared = store::providers::realms::of_context(transaction)
+                .await
+                .map_err(|_| Unbrokered::Backend)?
+                .and_then(|realm| realm.duplicated_email_allowed)
+                .unwrap_or(false);
+            if !shared {
+                return Err(Unbrokered::AddressHeld);
+            }
+        }
+        LinkDecision::CreateNew => {}
     }
 
     let named = arrival

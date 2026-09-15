@@ -134,6 +134,7 @@ flash-no-key-here = This browser cannot use a security key here.
 flash-key-silent = The key did not answer.
 org-choose-title = Choose an organization to continue.
 flash-choice-needs-script = Choosing an organization needs scripts enabled on this page.
+flash-address-held = An account here already uses this address but never confirmed it, so the provider you came from cannot be linked to it. Sign in to that account directly, or ask an administrator.
 flash-no-such-code = That code does not stand. Check it on your device and try again.
 flash-device-expired = That sign-in has run out. Start again on your device.
 flash-doorbell-signed-out = Sign in on this browser first, then come back to this page.

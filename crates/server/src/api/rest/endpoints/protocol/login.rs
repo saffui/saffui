@@ -612,7 +612,7 @@ pub(crate) fn told(status: StatusCode, status_name: &str) -> HttpResponse {
 /// Back to the page, the outcome in the fragment. A fragment never reaches
 /// this server again, so what the page shows is never something it was told
 /// to show by a request.
-fn shown(page: &str, named: &str) -> HttpResponse {
+pub(crate) fn shown(page: &str, named: &str) -> HttpResponse {
     uncached(&mut HttpResponseBuilder::new(StatusCode::SEE_OTHER))
         .insert_header(("Location", format!("{page}#{named}")))
         .finish()

@@ -118,6 +118,9 @@ describe("organizations", () => {
       name: "contract-org",
       display_name: "Contract organization",
       description: "Under contract",
+      enabled: true,
+      redirect_url: null,
+      attributes: { tier: { Str: "gold" } },
     });
     const page = await keepAnswer(listOrganizations, REALM, 0, 50);
     expect(page.items.some((held) => held.org_id === born.org_id)).toBe(true);
@@ -131,6 +134,7 @@ describe("organizations", () => {
     const claimed = await keepAnswer(claimDomain, REALM, born.org_id, DOMAIN);
     expect(claimed.challenge.length).toBeGreaterThan(0);
     const organization = await keepAnswer(getOrganization, REALM, born.org_id);
+    expect(organization.attributes).toEqual({ tier: { Str: "gold" } });
     expect(organization.domains.some((domain) => domain.name === DOMAIN)).toBe(true);
     await dropDomain(REALM, born.org_id, DOMAIN);
 

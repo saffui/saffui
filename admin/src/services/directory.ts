@@ -4,6 +4,7 @@ import type { Page } from "@/models/paging";
 import type {
   GroupMembership,
   GroupRow,
+  OrganizationChange,
   OrganizationRow,
   OrgMember,
   RoleHolders,
@@ -261,12 +262,12 @@ export async function createOrganization(
 export async function updateOrganization(
   realm: string,
   orgId: string,
-  spec: { name: string; display_name?: string; description?: string },
+  change: OrganizationChange,
 ): Promise<void> {
   await api<unknown>(adminPath(realm, `organizations/${encodeURIComponent(orgId)}`), {
     method: "PUT",
-    json: spec,
-    subject: say("subject-org", { org: spec.name }),
+    json: change,
+    subject: say("subject-org", { org: change.name }),
   });
 }
 

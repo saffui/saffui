@@ -249,6 +249,7 @@ group-grants = Accorde les rôles
 group-grants-none = Ce groupe n'accorde aucun rôle.
 organizations-title = Organisations
 org-slug = Slug
+org-slug-help = Les applications désignent l'organisation par son slug quand elles demandent une connexion à celle-ci. Après un renommage, une demande qui nomme encore l'ancien slug est refusée, et sa page de connexion affiche le thème du realm.
 org-landing = URL d'atterrissage
 org-domains = Domaines
 org-no-domains = Aucun domaine revendiqué.

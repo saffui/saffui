@@ -249,6 +249,7 @@ group-grants = Grants the roles
 group-grants-none = This group grants no role.
 organizations-title = Organizations
 org-slug = Slug
+org-slug-help = Applications name the organization by its slug when they ask for a sign-in into it. After a rename, a request still naming the old slug is refused, and its sign-in page shows the realm's theme.
 org-landing = Landing URL
 org-domains = Domains
 org-no-domains = No domain is claimed.

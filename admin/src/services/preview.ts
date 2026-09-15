@@ -598,13 +598,14 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
         { name: "acme-labs.example", verified: false },
       ],
       redirect_url: "https://app.acme.example/",
+      attributes: null,
     });
   }
   if (path.includes("/organizations?")) {
     return answer({
       items: [
-        { org_id: "o-1", name: "acme", display_name: "Acme Corp", description: "The anchor customer", enabled: true, domains: [], redirect_url: null },
-        { org_id: "o-2", name: "beta", display_name: "Beta LLC", description: "", enabled: false, domains: [], redirect_url: null },
+        { org_id: "o-1", name: "acme", display_name: "Acme Corp", description: "The anchor customer", enabled: true, domains: [], redirect_url: null, attributes: null },
+        { org_id: "o-2", name: "beta", display_name: "Beta LLC", description: "", enabled: false, domains: [], redirect_url: null, attributes: null },
       ],
       first: 0,
       max: 50,

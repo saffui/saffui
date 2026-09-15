@@ -28,6 +28,7 @@ import type {
   ScopeRow,
 } from "@/models/authz";
 import type { ClientBrief } from "@/models/client";
+import { composeCopiedRequest } from "./copiedRequest";
 import { authorizationClients, selectedClient } from "./authorizationClients";
 
 const route = useRoute();
@@ -210,8 +211,7 @@ async function copyAsRequest() {
     asking.value === "token"
       ? { user_id: subject.value.trim(), client_id: clientId.value, scope: tokenScope.value.trim() }
       : { subject: subject.value.trim(), organization: organization.value.trim() || undefined, question: asked };
-  const leaf = asking.value === "token" ? "token-preview" : "authz/evaluate";
-  const text = `POST /admin/realms/${realm.value}/${leaf}\n${JSON.stringify(body, null, 2)}`;
+  const text = composeCopiedRequest(asking.value, realm.value, body);
   try {
     await navigator.clipboard.writeText(text);
     copied.value = true;

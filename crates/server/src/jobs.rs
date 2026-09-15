@@ -55,6 +55,7 @@ pub fn sweep_expired_rows(
                     dpop_proofs = swept.dpop_proofs,
                     security_events = swept.security_events,
                     delivered_events = swept.delivered_events,
+                    security_notices = swept.security_notices,
                     login_events = swept.login_events,
                     backchannel_requests = swept.backchannel_requests,
                     device_codes = swept.device_codes,
@@ -174,7 +175,7 @@ pub async fn deliver_every_realm_with_egress(
     };
     drop(connection);
     let now = chrono::Utc::now();
-    for realm in realms {
+    for realm in realms.clone() {
         let Ok(mut connection) = pool.get().await else {
             continue;
         };
@@ -222,6 +223,11 @@ pub async fn deliver_every_realm_with_egress(
                 );
             }
         }
+    }
+    // Notices go out after every walk and apart from it: a realm another node is
+    // walking still has its notices sent, each claimed by one sender alone.
+    for realm in &realms {
+        crate::notices::send_due_notices(pool, tenancy, sealing, realm, backoff_seconds).await;
     }
 }
 

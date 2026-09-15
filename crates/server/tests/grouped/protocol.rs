@@ -6242,7 +6242,9 @@ async fn a_printed_sheet_is_drawn_once_and_each_code_spent_once() {
         .collect();
     assert_eq!(
         spent.last(),
-        Some(&serde_json::json!({ "credential_type": "recovery-code", "change_type": "delete" })),
+        Some(
+            &serde_json::json!({ "credential_type": "recovery-code", "change_type": "delete", "spent": true })
+        ),
         "a spent code was not told as a deletion"
     );
 

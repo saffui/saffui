@@ -1158,6 +1158,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       acr_loa_map: { mfa: 2 },
       events_enabled: true,
       admin_events_enabled: false,
+      security_notices_enabled: null,
       otp_policy: null,
       webauthn_policy: null,
       mail_templates: null,

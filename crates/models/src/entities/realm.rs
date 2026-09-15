@@ -496,6 +496,8 @@ pub struct RealmModel {
 
     pub events_enabled: Option<bool>,
     pub admin_events_enabled: Option<bool>,
+    /// Whether people are mailed when how they sign in changes. None mails them.
+    pub security_notices_enabled: Option<bool>,
     /// Tokens issued before this instant are refused.
     pub not_before: Option<i32>,
     pub attributes: Option<AttributesMap>,
@@ -574,6 +576,7 @@ impl RealmCreateModel {
             default_locale: None,
             events_enabled: None,
             admin_events_enabled: None,
+            security_notices_enabled: None,
             not_before: None,
             attributes: None,
             acr_loa_map: None,
@@ -616,6 +619,8 @@ pub struct RealmUpdateModel {
     pub access_code_lifespan_login: Option<i32>,
     pub events_enabled: Option<bool>,
     pub admin_events_enabled: Option<bool>,
+    /// Whether people are mailed when how they sign in changes.
+    pub security_notices_enabled: Option<bool>,
     pub not_before: Option<i32>,
     pub attributes: Option<AttributesMap>,
     pub acr_loa_map: Option<AcrLoaMap>,
@@ -783,6 +788,7 @@ impl RealmUpdateModel {
             access_code_lifespan_login,
             events_enabled,
             admin_events_enabled,
+            security_notices_enabled,
             not_before,
             attributes,
             acr_loa_map,
@@ -1102,5 +1108,21 @@ mod tests {
         assert_eq!(after.password_policy, before.password_policy);
         assert_eq!(after.display_name, before.display_name);
         assert!(after.enabled);
+    }
+
+    /// A realm switches its security notices off through an update, and an update
+    /// that does not mention them leaves them as they were.
+    #[test]
+    fn an_update_switches_the_security_notices() {
+        let mut realm = realm();
+        assert_eq!(realm.security_notices_enabled, None);
+        RealmUpdateModel {
+            security_notices_enabled: Some(false),
+            ..RealmUpdateModel::default()
+        }
+        .apply(&mut realm);
+        assert_eq!(realm.security_notices_enabled, Some(false));
+        RealmUpdateModel::default().apply(&mut realm);
+        assert_eq!(realm.security_notices_enabled, Some(false));
     }
 }

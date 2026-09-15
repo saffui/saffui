@@ -19,6 +19,7 @@ pub mod login;
 pub mod login_events;
 pub mod mail;
 pub mod metrics;
+pub mod notices;
 pub mod oidc;
 pub mod one_time_tokens;
 pub mod organizations;

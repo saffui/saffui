@@ -25,7 +25,7 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
                        offline_session_lifespan, \
                        action_tokens_lifespan, access_code_lifespan, \
                        access_code_lifespan_user_action, access_code_lifespan_login, \
-                       events_enabled, admin_events_enabled, not_before, \
+                       events_enabled, admin_events_enabled, security_notices_enabled, not_before, \
                        attributes, acr_loa_map, \
                        browser_flow, otp_policy, webauthn_policy, \
                        mail_templates, device_code_lifespan, device_poll_interval, \
@@ -230,6 +230,7 @@ pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
             ),
             col("events_enabled", &realm.events_enabled),
             col("admin_events_enabled", &realm.admin_events_enabled),
+            col("security_notices_enabled", &realm.security_notices_enabled),
             col("not_before", &realm.not_before),
             col("attributes", &attributes),
             col("acr_loa_map", &acr_loa_map),
@@ -343,6 +344,7 @@ fn read(row: Row) -> RealmModel {
         default_locale: row.get("default_locale"),
         events_enabled: row.get("events_enabled"),
         admin_events_enabled: row.get("admin_events_enabled"),
+        security_notices_enabled: row.get("security_notices_enabled"),
         not_before: row.get("not_before"),
         attributes: row
             .get::<_, Option<serde_json::Value>>("attributes")

@@ -264,6 +264,9 @@ org-theme-title = Thème de l’organisation
 org-theme-lede = Posé sur le thème du realm dans les pages de connexion dès que l'organisation est connue : nommée par l'application, ou choisie par la personne. Seulement tant que l'organisation est activée.
 org-theme-colors-help = Une valeur vide hérite du thème du realm, puis de la palette intégrée pour ce mode.
 org-theme-inherit = Hériter du thème du realm
+org-theme-own = Le sien
+org-theme-realm = Celui du realm
+org-theme-edit = Modifier dans Apparence
 
 settings-title = Réglages du realm
 settings-under = { $realm } · { $about }

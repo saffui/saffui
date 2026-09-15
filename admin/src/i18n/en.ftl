@@ -264,6 +264,9 @@ org-theme-title = Organization theme
 org-theme-lede = Laid over the realm theme on a login's sign-in pages once the organization is known: named by the application, or picked by the person. Only while the organization is switched on.
 org-theme-colors-help = Empty values inherit the realm theme, then the built-in palette for this mode.
 org-theme-inherit = Inherit realm theme
+org-theme-own = Its own
+org-theme-realm = The realm's
+org-theme-edit = Edit in Appearance
 
 settings-title = Realm settings
 settings-under = { $realm } · { $about }

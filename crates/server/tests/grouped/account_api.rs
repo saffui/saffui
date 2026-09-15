@@ -744,3 +744,562 @@ async fn a_factor_goes_only_from_a_sign_in_as_strong_as_the_console_flow_allows(
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
 }
+
+const CHROME_ON_WINDOWS: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+                                 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+async fn open_login(
+    plane: &Plane,
+    session_id: &str,
+    user_id: &str,
+    state: UserSessionState,
+    expiration: Option<i64>,
+    user_agent: Option<&str>,
+) {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::sessions::open(
+        &transaction,
+        &UserSessionModel {
+            browser_state: None,
+            tenant: support::TENANT.into(),
+            session_id: session_id.into(),
+            realm_id: support::REALM.into(),
+            user_id: user_id.into(),
+            login_username: user_id.into(),
+            broker_session_id: None,
+            broker_user_id: None,
+            auth_method: Some("browser".into()),
+            ip_address: Some("203.0.113.7".into()),
+            user_agent: user_agent.map(str::to_owned),
+            started_at: chrono::Utc::now().timestamp(),
+            auth_time: None,
+            loa: None,
+            expiration,
+            state,
+            remember_me: None,
+            last_session_refresh: None,
+            is_offline: None,
+            notes: None,
+        },
+    )
+    .await
+    .expect("a login");
+    transaction.commit().await.expect("the login kept");
+}
+
+async fn plant_grant(
+    plane: &Plane,
+    session_id: &str,
+    user_id: &str,
+    client_id: &str,
+    offline: bool,
+) {
+    let now = chrono::Utc::now().timestamp();
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::sessions::open_client_session(
+        &transaction,
+        &models::sessions::records::ClientSessionModel {
+            tenant: support::TENANT.into(),
+            session_id: format!("{session_id}-{client_id}"),
+            realm_id: support::REALM.into(),
+            user_id: user_id.into(),
+            user_session_id: session_id.into(),
+            client_id: client_id.into(),
+            auth_method: Some("authorization_code".into()),
+            redirect_uri: None,
+            started_at: now,
+            expiration: Some(now + 3600),
+            notes: None,
+            current_refresh_token: None,
+            current_refresh_token_use_count: None,
+            offline: Some(offline),
+            requested_claims: None,
+        },
+    )
+    .await
+    .expect("the client sessions table");
+    transaction.commit().await.expect("the grant kept");
+}
+
+async fn grants_of(plane: &Plane, session_id: &str) -> Vec<String> {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    store::providers::sessions::client_sessions_of(&transaction, session_id)
+        .await
+        .expect("the client sessions table")
+        .into_iter()
+        .map(|grant| grant.client_id)
+        .collect()
+}
+
+async fn plant_another_person(plane: &Plane) -> String {
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    let grace = services::admin::users::create(
+        &transaction,
+        &support::provider(),
+        support::TENANT,
+        REALM,
+        "root",
+        "grace",
+        &services::admin::users::Spec {
+            email: Some("grace@example.test".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap_or_else(|_| panic!("another person was not made"));
+    transaction.commit().await.expect("the person kept");
+    grace.user_id
+}
+
+/// A client's ear: one HTTP request accepted on a port of its own, its body handed
+/// back, a 200 sent. What a relying party's back-channel endpoint is.
+fn listening_client() -> (String, std::sync::mpsc::Receiver<String>) {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().unwrap().port();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("a caller");
+        let mut raw = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut chunk).unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            raw.extend_from_slice(&chunk[..read]);
+            let text = String::from_utf8_lossy(&raw).to_string();
+            if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                let length: usize = head
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("Content-Length: ")
+                            .or_else(|| line.strip_prefix("content-length: "))
+                    })
+                    .and_then(|value| value.trim().parse().ok())
+                    .unwrap_or(0);
+                if body.len() >= length {
+                    let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+                    let _ = sender.send(body[..length].to_owned());
+                    break;
+                }
+            }
+        }
+    });
+    (format!("http://127.0.0.1:{port}/logout-token"), receiver)
+}
+
+/// A person sees the logins that still stand, the one the request rides marked, with
+/// where each came from and what each application holds. A login closed with nothing
+/// left, or run out, is not shown, and a closed login shows only the offline grant
+/// that outlives it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_sees_the_logins_that_still_stand_and_what_applications_hold() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    let now = chrono::Utc::now().timestamp();
+    open_login(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        UserSessionState::LoggedIn,
+        None,
+        Some(CHROME_ON_WINDOWS),
+    )
+    .await;
+    plant_grant(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        false,
+    )
+    .await;
+    open_login(
+        &plane,
+        "session-offline",
+        support::SUBJECT,
+        UserSessionState::LoggedOut,
+        None,
+        None,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        "session-offline",
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        true,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        "session-offline",
+        support::SUBJECT,
+        support::PUBLIC,
+        false,
+    )
+    .await;
+    open_login(
+        &plane,
+        "session-closed",
+        support::SUBJECT,
+        UserSessionState::LoggedOut,
+        None,
+        None,
+    )
+    .await;
+    open_login(
+        &plane,
+        "session-run-out",
+        support::SUBJECT,
+        UserSessionState::LoggedIn,
+        Some(now - 60),
+        None,
+    )
+    .await;
+
+    let (status, _, told) = asked(&plane, &own("sessions"), Some(&bearer)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    let listed = told.as_array().cloned().unwrap_or_default();
+    let login = |id: &str| {
+        listed
+            .iter()
+            .find(|login| login["session_id"] == id)
+            .cloned()
+    };
+    assert!(
+        login("session-closed").is_none(),
+        "a login closed with nothing left was shown: {told}"
+    );
+    assert!(
+        login("session-run-out").is_none(),
+        "a login run out was shown: {told}"
+    );
+    let current = login(support::SESSION).expect("the login the request rides");
+    assert_eq!(
+        (current["current"].as_bool(), current["open"].as_bool()),
+        (Some(true), Some(true)),
+        "{told}"
+    );
+    let elsewhere = login(ELSEWHERE).expect("the other open login");
+    assert_eq!(
+        (elsewhere["current"].as_bool(), elsewhere["open"].as_bool()),
+        (Some(false), Some(true)),
+        "{told}"
+    );
+    assert_eq!(elsewhere["ip_address"], "203.0.113.7", "{told}");
+    assert!(
+        elsewhere["browser"].is_string() && elsewhere["system"].is_string(),
+        "{told}"
+    );
+    assert!(elsewhere.get("user_agent").is_none(), "{told}");
+    assert_eq!(
+        elsewhere["grants"].as_array().map(Vec::len),
+        Some(1),
+        "{told}"
+    );
+    assert_eq!(
+        elsewhere["grants"][0]["client_id"],
+        support::CONFIDENTIAL,
+        "{told}"
+    );
+    assert!(
+        elsewhere["grants"][0]["name"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty()),
+        "{told}"
+    );
+    let offline = login("session-offline").expect("the closed login an offline grant outlives");
+    assert_eq!(offline["open"], false, "{told}");
+    assert_eq!(
+        offline["grants"].as_array().map(Vec::len),
+        Some(1),
+        "{told}"
+    );
+    assert_eq!(
+        (
+            offline["grants"][0]["client_id"].as_str(),
+            offline["grants"][0]["offline"].as_bool()
+        ),
+        (Some(support::CONFIDENTIAL), Some(true)),
+        "{told}"
+    );
+}
+
+/// A person ends one of their logins, and everything its applications got from it
+/// goes with it, offline grants included; the applications registered to hear of it
+/// are told, and the login the request rides keeps working. Somebody else's login,
+/// or one nobody holds, is not found.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_ends_one_of_their_logins_and_its_applications_are_told() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    open_login(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        UserSessionState::LoggedIn,
+        None,
+        None,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        true,
+    )
+    .await;
+    let (uri, heard) = listening_client();
+    plane
+        .register_backchannel(support::CONFIDENTIAL, &uri)
+        .await;
+    let grace = plant_another_person(&plane).await;
+    open_login(
+        &plane,
+        "session-grace",
+        &grace,
+        UserSessionState::LoggedIn,
+        None,
+        None,
+    )
+    .await;
+
+    for foreign in ["session-grace", "no-such-login"] {
+        let (status, _, told) = sent(
+            &plane,
+            Method::DELETE,
+            &own(&format!("sessions/{foreign}")),
+            Some(&bearer),
+            None,
+        )
+        .await;
+        assert_eq!(
+            (status, told["error_code"].as_str()),
+            (StatusCode::NOT_FOUND, Some("auth.session.not_found")),
+            "{told}"
+        );
+    }
+    assert!(
+        login_stands(&plane, "session-grace").await,
+        "somebody else's login was ended"
+    );
+
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own(&format!("sessions/{ELSEWHERE}")),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    assert!(
+        !login_stands(&plane, ELSEWHERE).await,
+        "the login outlived its ending"
+    );
+    assert!(
+        grants_of(&plane, ELSEWHERE).await.is_empty(),
+        "an offline grant outlived its login"
+    );
+    let posted = heard
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the application was not told");
+    let token = posted
+        .strip_prefix("logout_token=")
+        .expect("a logout token");
+    let payload = token.split('.').nth(1).expect("a payload");
+    let claims: Value = serde_json::from_slice(
+        &data_encoding::BASE64URL_NOPAD
+            .decode(payload.as_bytes())
+            .expect("base64url"),
+    )
+    .expect("claims");
+    assert_eq!(claims["sid"], ELSEWHERE, "{claims}");
+    assert!(
+        login_stands(&plane, support::SESSION).await,
+        "the login the request rides ended"
+    );
+    let (status, _, told) = asked(&plane, &me(), Some(&bearer)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+}
+
+/// A person ends every login but the one the request rides, closed logins still
+/// holding an offline grant included, and is told how many ended.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_ends_every_other_login_and_keeps_the_one_they_ride() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    open_login(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        UserSessionState::LoggedIn,
+        None,
+        None,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        true,
+    )
+    .await;
+    open_login(
+        &plane,
+        "session-offline",
+        support::SUBJECT,
+        UserSessionState::LoggedOut,
+        None,
+        None,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        "session-offline",
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        true,
+    )
+    .await;
+
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own("sessions"),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+    assert_eq!(told["ended_sessions"], 2, "{told}");
+    for ended in [ELSEWHERE, "session-offline"] {
+        assert!(
+            !login_stands(&plane, ended).await,
+            "{ended} outlived the ending"
+        );
+        assert!(
+            grants_of(&plane, ended).await.is_empty(),
+            "a grant of {ended} outlived it"
+        );
+    }
+    assert!(
+        login_stands(&plane, support::SESSION).await,
+        "the login the request rides ended"
+    );
+    let (status, _, told) = asked(&plane, &me(), Some(&bearer)).await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+}
+
+/// A person takes back what one application got from one of their logins, and the
+/// login and every other application keep theirs. A grant already taken, a login
+/// nobody holds and somebody else's login are not found.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_person_takes_back_what_one_application_got_from_a_login() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+    open_login(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        UserSessionState::LoggedIn,
+        None,
+        None,
+    )
+    .await;
+    plant_grant(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        true,
+    )
+    .await;
+    plant_grant(&plane, ELSEWHERE, support::SUBJECT, support::PUBLIC, false).await;
+    let grace = plant_another_person(&plane).await;
+    open_login(
+        &plane,
+        "session-grace",
+        &grace,
+        UserSessionState::LoggedIn,
+        None,
+        None,
+    )
+    .await;
+    plant_grant(&plane, "session-grace", &grace, support::CONFIDENTIAL, true).await;
+
+    let taken = own(&format!(
+        "sessions/{ELSEWHERE}/grants/{}",
+        support::CONFIDENTIAL
+    ));
+    let (status, _, told) = sent(&plane, Method::DELETE, &taken, Some(&bearer), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    assert!(
+        login_stands(&plane, ELSEWHERE).await,
+        "the login went with one grant"
+    );
+    assert_eq!(grants_of(&plane, ELSEWHERE).await, [support::PUBLIC]);
+
+    let (status, _, told) = sent(&plane, Method::DELETE, &taken, Some(&bearer), None).await;
+    assert_eq!(
+        (status, told["error_code"].as_str()),
+        (StatusCode::NOT_FOUND, Some("auth.grant.not_found")),
+        "{told}"
+    );
+    for foreign in ["session-grace", "no-such-login"] {
+        let path = own(&format!(
+            "sessions/{foreign}/grants/{}",
+            support::CONFIDENTIAL
+        ));
+        let (status, _, told) = sent(&plane, Method::DELETE, &path, Some(&bearer), None).await;
+        assert_eq!(
+            (status, told["error_code"].as_str()),
+            (StatusCode::NOT_FOUND, Some("auth.session.not_found")),
+            "{told}"
+        );
+    }
+    assert_eq!(
+        grants_of(&plane, "session-grace").await,
+        [support::CONFIDENTIAL],
+        "somebody else's grant was taken"
+    );
+}
+
+/// Ending the login the request rides is allowed, and signs the console out: its
+/// token no longer reaches the account API.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn ending_the_login_the_request_rides_signs_the_console_out() {
+    let plane = Plane::with_actions(&[]).await;
+    provision_account_console(&plane).await;
+    let bearer = plane.token(&account_claims());
+
+    let (status, _, told) = sent(
+        &plane,
+        Method::DELETE,
+        &own(&format!("sessions/{}", support::SESSION)),
+        Some(&bearer),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
+    let (status, challenge, told) = asked(&plane, &me(), Some(&bearer)).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{told}");
+    assert_eq!(challenge, INVALID_TOKEN, "{told}");
+}

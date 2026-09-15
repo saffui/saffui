@@ -376,6 +376,38 @@ pub async fn begin(
     }
 
     if let Some(login) = held {
+        // Consent is given by somebody who has just proved who they are, which is
+        // where the login flow asks for it: a held login that owes it goes through
+        // the login again, and nothing is minted on its standing.
+        if auth::consent::must_ask(
+            transaction,
+            &client,
+            &login.user_id,
+            &granted,
+            prompt.consent,
+        )
+        .await
+        .map_err(|_| Refusal::Redirect("server_error"))?
+        {
+            // OIDC Core §3.1.2.6: a client that asked for no interaction is told
+            // which one it lacks, and no screen is shown.
+            if prompt.none {
+                return Err(Refusal::Redirect("consent_required"));
+            }
+            return start_login(
+                transaction,
+                provider,
+                &client,
+                redirect_uri,
+                mode,
+                asked_for,
+                &granted,
+                requested,
+                stored_claims.as_ref(),
+                now,
+            )
+            .await;
+        }
         // The user is known here, so the organization is answerable here: a
         // pinned one they do not belong to refuses the request before a code
         // exists to argue about.
@@ -574,6 +606,9 @@ async fn start_login(
                 "response_mode": mode.as_str(),
                 // So the end of the login mints what the request asked for.
                 "response_type": asked_for.as_str(),
+                // Whether the person is asked for consent again whatever they
+                // agreed to before: the flow reads it once they are established.
+                "prompt": requested.prompt,
             }),
         },
     )

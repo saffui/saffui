@@ -132,6 +132,7 @@ const draft = ref({
   agent_exchange_enabled: false,
   registration_allowed: false,
   events_enabled: false,
+  security_notices_enabled: true,
   register_email_as_username: false,
   verify_email: false,
   login_with_email_allowed: false,
@@ -271,6 +272,7 @@ function adopt(held: RealmSettings) {
     agent_exchange_enabled: held.agent_exchange_enabled ?? false,
     registration_allowed: held.registration_allowed ?? false,
     events_enabled: held.events_enabled ?? false,
+    security_notices_enabled: held.security_notices_enabled ?? true,
     register_email_as_username: held.register_email_as_username ?? false,
     verify_email: held.verify_email ?? false,
     login_with_email_allowed: held.login_with_email_allowed ?? false,
@@ -456,6 +458,7 @@ function changesOf(which: Group): RealmUpdate {
   if (which === "security") {
     const changes: RealmUpdate = {
       events_enabled: held.events_enabled,
+      security_notices_enabled: held.security_notices_enabled,
       agent_exchange_enabled: held.agent_exchange_enabled,
       brute_force: {
         protected: held.bf_protected,
@@ -1466,6 +1469,13 @@ async function saveSmsTemplate() {
             </div>
             <AppToggle v-model="draft.events_enabled">
               {{ say("signin-events-toggle") }} <AppHint name="signin-events-toggle-help" />
+            </AppToggle>
+
+            <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
+              {{ say("security-notices-title") }} <AppHint name="security-notices-title-help" />
+            </div>
+            <AppToggle v-model="draft.security_notices_enabled">
+              {{ say("security-notices-toggle") }} <AppHint name="security-notices-toggle-help" />
             </AppToggle>
 
             <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">

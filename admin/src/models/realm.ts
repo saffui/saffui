@@ -50,6 +50,7 @@ export interface RealmSettings {
   attributes: Record<string, unknown> | null;
   events_enabled: boolean | null;
   admin_events_enabled: boolean | null;
+  security_notices_enabled: boolean | null;
   otp_policy: OtpPolicy | null;
   webauthn_policy: WebauthnPolicy | null;
   mail_templates: Record<string, Record<string, MailTemplate>> | null;
@@ -163,6 +164,7 @@ export interface RealmUpdate {
   attributes?: Record<string, string>;
   events_enabled?: boolean;
   admin_events_enabled?: boolean;
+  security_notices_enabled?: boolean;
   otp_policy?: OtpPolicy;
   webauthn_policy?: WebauthnPolicy;
   mail_templates?: Record<string, Record<string, MailTemplate>>;

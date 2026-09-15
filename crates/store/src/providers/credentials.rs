@@ -293,13 +293,7 @@ pub async fn spend_recovery_code(
     if spent.is_empty() {
         return Ok(false);
     }
-    announce_credential_change(
-        transaction,
-        user_id,
-        CredentialType::RecoveryCode,
-        CredentialChange::Delete,
-    )
-    .await?;
+    announce_recovery_code_spent(transaction, user_id).await?;
     Ok(true)
 }
 
@@ -461,6 +455,25 @@ async fn announce_credential_change(
         super::outbox::CREDENTIAL_CHANGED,
         user_id,
         &serde_json::json!({ "credential_type": credential_type, "change_type": change }),
+    )
+    .await
+}
+
+/// Tell whoever listens that a person signed in with one of their recovery codes:
+/// a deletion, marked apart from a sheet given up.
+async fn announce_recovery_code_spent(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> StoreResult<()> {
+    super::outbox::emit(
+        transaction,
+        super::outbox::CREDENTIAL_CHANGED,
+        user_id,
+        &serde_json::json!({
+            "credential_type": CredentialType::RecoveryCode,
+            "change_type": CredentialChange::Delete,
+            "spent": true,
+        }),
     )
     .await
 }

@@ -619,6 +619,12 @@ pub fn migrations() -> Vec<Migration> {
             sql: include_str!("../migrations/V102__saml_brokering.sql"),
             transactional: true,
         }),
+        Migration::Sql(SqlMigration {
+            version: 103,
+            name: "security_notices",
+            sql: include_str!("../migrations/V103__security_notices.sql"),
+            transactional: true,
+        }),
     ]
 }
 

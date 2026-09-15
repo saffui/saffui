@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { composeAddressLines, formatUpdated, listOtherFacts } from "./profile";
+import { composeAddressLines, formatUpdated, listOtherFacts, nameLanguage } from "./profile";
 
 describe("the profile's other facts", () => {
   test("lists only what the realm holds, in reading order", () => {
@@ -44,6 +44,23 @@ describe("an address", () => {
   test("is no line at all when the realm holds none", () => {
     expect(composeAddressLines()).toEqual([]);
     expect(composeAddressLines({})).toEqual([]);
+  });
+});
+
+describe("a language", () => {
+  test("is named in the console's tongue", () => {
+    expect(nameLanguage("fr", "en")).toBe("French");
+    expect(nameLanguage("fr", "fr")).toBe("français");
+    expect(nameLanguage("pt-BR", "en")).toBe("Brazilian Portuguese");
+  });
+
+  test("keeps a tag that names no language as it came", () => {
+    expect(nameLanguage("not a tag", "en")).toBe("not a tag");
+  });
+
+  test("is listed by its name among the other facts", () => {
+    const facts = listOtherFacts({ preferred_username: "ada", locale: "fr" });
+    expect(facts.map((fact) => fact.value)).toEqual([nameLanguage("fr", "en")]);
   });
 });
 

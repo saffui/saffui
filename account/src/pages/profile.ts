@@ -1,4 +1,4 @@
-import { say } from "@/i18n";
+import { readTongue, say } from "@/i18n";
 import type { Address, Me } from "@/services/me";
 
 export interface Fact {
@@ -16,7 +16,7 @@ export function listOtherFacts(me: Me): Fact[] {
     [me.middle_name, say("profile-middle-name")],
     [me.birthdate, say("profile-birthdate")],
     [me.gender, say("profile-gender")],
-    [me.locale, say("profile-locale")],
+    [me.locale && nameLanguage(me.locale, readTongue()), say("profile-locale")],
     [me.zoneinfo, say("profile-zoneinfo")],
     [me.website, say("profile-website")],
     [me.profile, say("profile-page")],
@@ -38,6 +38,16 @@ export function composeAddressLines(address?: Address): string[] {
     address.region,
     address.country,
   ].filter((line): line is string => Boolean(line));
+}
+
+/// A language tag by the language's name in the console's tongue, or the tag itself
+/// when it names no language the browser knows.
+export function nameLanguage(tag: string, tongue: string): string {
+  try {
+    return new Intl.DisplayNames([tongue], { type: "language" }).of(tag) ?? tag;
+  } catch {
+    return tag;
+  }
 }
 
 /// When the profile last changed, as a date in the console's tongue.

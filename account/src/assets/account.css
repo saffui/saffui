@@ -286,6 +286,7 @@ h1 {
   font-size: 14px;
   font-weight: 550;
   text-align: left;
+  text-decoration: none;
   cursor: pointer;
 }
 .button:hover {
@@ -549,6 +550,37 @@ h1 {
   font-size: 13px;
 }
 
+.application {
+  display: grid;
+  gap: 14px;
+}
+.application-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+}
+.application-part {
+  display: grid;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
+}
+.scopes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.application-access {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
 .standalone {
   display: grid;
   place-items: center;
@@ -558,6 +590,12 @@ h1 {
 
 @media (max-width: 560px) {
   .person {
+    display: none;
+  }
+  .tabs {
+    gap: 18px;
+  }
+  .tab svg {
     display: none;
   }
   .fact {

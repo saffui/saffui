@@ -376,6 +376,18 @@ fn account_api_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
             web::resource("/me/recovery-codes")
                 .route(web::delete().to(account::remove_recovery_codes)),
         )
+        .service(
+            web::resource("/me/sessions")
+                .route(web::get().to(account::list_sessions))
+                .route(web::delete().to(account::end_other_sessions)),
+        )
+        .service(
+            web::resource("/me/sessions/{session}").route(web::delete().to(account::end_session)),
+        )
+        .service(
+            web::resource("/me/sessions/{session}/grants/{client}")
+                .route(web::delete().to(account::revoke_grant)),
+        )
 }
 
 /// The SAML side of a brokered provider, under the address the realm answers to

@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
 use crypto::provider::CryptoProvider;
 use deadpool_postgres::Transaction;
-use models::sessions::records::{UserSessionModel, UserSessionState};
+use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use secrecy::SecretBox;
 use serde_json::{Map, Value};
-use store::providers::{realms, sessions, users};
+use store::providers::{clients, realms, sessions, users};
 use store::tenancy::TenantContext;
 
 use crate::account::{
@@ -12,6 +12,8 @@ use crate::account::{
     Unremoved, change_own_password, own_factors, read_sign_in_standing, remove_own_factor,
 };
 use crate::context::minted_at;
+use crate::grant::Signing;
+use crate::logout::{Notice, notices_for};
 use crate::token::Verified;
 
 /// The one client whose tokens reach the account API: the realm's account console.
@@ -325,6 +327,210 @@ pub async fn remove_caller_factor(
     }
 }
 
+/// How one of the caller's logins still stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginStanding {
+    Open,
+    /// Closed or run out, while an application keeps an offline grant born of it.
+    OfflineOnly,
+}
+
+fn is_live(grant: &ClientSessionModel, now: i64) -> bool {
+    !grant.expiration.is_some_and(|ends| ends <= now)
+}
+
+/// Whether a login still stands for its person: open, or closed while an offline
+/// grant born of it lives on. Anything else is history the sweeper has not reached.
+pub fn judge_login_standing(
+    session: &UserSessionModel,
+    grants: &[ClientSessionModel],
+    now: i64,
+) -> Option<LoginStanding> {
+    let open = session.state == UserSessionState::LoggedIn
+        && !session.expiration.is_some_and(|ends| ends <= now);
+    if open {
+        return Some(LoginStanding::Open);
+    }
+    grants
+        .iter()
+        .any(|grant| grant.offline == Some(true) && is_live(grant, now))
+        .then_some(LoginStanding::OfflineOnly)
+}
+
+/// Whether a grant is shown under its login: alive, and offline where the login
+/// stands only for its offline grants.
+pub fn keep_shown_grant(standing: LoginStanding, grant: &ClientSessionModel, now: i64) -> bool {
+    is_live(grant, now) && (standing == LoginStanding::Open || grant.offline == Some(true))
+}
+
+/// What an application still holds from one of the caller's logins.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldGrant {
+    pub client_id: String,
+    /// The name the realm shows the application by.
+    pub name: String,
+    pub offline: bool,
+    pub expiration: Option<i64>,
+}
+
+/// One of the caller's logins, as they read it.
+#[derive(Debug, Clone)]
+pub struct HeldLogin {
+    pub session: UserSessionModel,
+    pub standing: LoginStanding,
+    /// Whether the request rides this login.
+    pub current: bool,
+    pub grants: Vec<HeldGrant>,
+}
+
+/// The caller's logins that still stand, newest first, each with what its
+/// applications still hold from it.
+pub async fn list_caller_logins(
+    transaction: &Transaction<'_>,
+    caller: &AccountCaller,
+) -> Result<Vec<HeldLogin>, Unread> {
+    let now = caller.now.timestamp();
+    let logins = sessions::load_for_user(transaction, &caller.user_id)
+        .await
+        .map_err(|_| Unread)?;
+    let mut held = Vec::new();
+    for session in logins {
+        let grants = sessions::client_sessions_of(transaction, &session.session_id)
+            .await
+            .map_err(|_| Unread)?;
+        let Some(standing) = judge_login_standing(&session, &grants, now) else {
+            continue;
+        };
+        let mut shown = Vec::new();
+        for grant in grants
+            .into_iter()
+            .filter(|grant| keep_shown_grant(standing, grant, now))
+        {
+            let name = clients::load(transaction, &grant.client_id)
+                .await
+                .map_err(|_| Unread)?
+                .map(|client| {
+                    if client.display_name.trim().is_empty() {
+                        client.name
+                    } else {
+                        client.display_name
+                    }
+                })
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| grant.client_id.clone());
+            shown.push(HeldGrant {
+                name,
+                offline: grant.offline == Some(true),
+                expiration: grant.expiration,
+                client_id: grant.client_id,
+            });
+        }
+        held.push(HeldLogin {
+            current: session.session_id == caller.session_id,
+            standing,
+            grants: shown,
+            session,
+        });
+    }
+    Ok(held)
+}
+
+/// Why an ending asked by the caller did not happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum Unended {
+    #[error("the caller holds no such login")]
+    NotFound,
+    #[error("the application holds nothing from that login")]
+    NoSuchGrant,
+    #[error("the store could not be read")]
+    Backend,
+}
+
+/// End one of the caller's logins and everything its applications got from it,
+/// offline grants included, and hand back the logout notices they are owed.
+///
+/// The notices are minted while the login can still be read, and sent by the caller
+/// once the ending has committed, the way a logout does it. Named through the
+/// caller, so an identifier from somebody else's listing reaches nothing.
+pub async fn end_caller_login(
+    transaction: &Transaction<'_>,
+    caller: &AccountCaller,
+    signing: Option<&Signing<'_>>,
+    issuer: &str,
+    session_id: &str,
+) -> Result<Vec<Notice>, Unended> {
+    let held = sessions::load(transaction, session_id)
+        .await
+        .map_err(|_| Unended::Backend)?
+        .filter(|session| session.user_id == caller.user_id)
+        .ok_or(Unended::NotFound)?;
+    let notices = match signing {
+        Some(signing) => {
+            notices_for(transaction, signing, issuer, &held.session_id, caller.now).await
+        }
+        None => Vec::new(),
+    };
+    sessions::close(transaction, &held.session_id)
+        .await
+        .map_err(|_| Unended::Backend)?;
+    Ok(notices)
+}
+
+/// End every login of the caller's but the one the request rides, with what their
+/// applications got from them, and hand back how many ended and the logout notices
+/// their applications are owed.
+pub async fn end_caller_other_logins(
+    transaction: &Transaction<'_>,
+    caller: &AccountCaller,
+    signing: Option<&Signing<'_>>,
+    issuer: &str,
+) -> Result<(usize, Vec<Notice>), Unended> {
+    let mut notices = Vec::new();
+    if let Some(signing) = signing {
+        let logins = sessions::load_for_user(transaction, &caller.user_id)
+            .await
+            .map_err(|_| Unended::Backend)?;
+        for session in logins
+            .iter()
+            .filter(|session| session.session_id != caller.session_id)
+        {
+            notices.extend(
+                notices_for(
+                    transaction,
+                    signing,
+                    issuer,
+                    &session.session_id,
+                    caller.now,
+                )
+                .await,
+            );
+        }
+    }
+    let ended = sessions::end_others_of_user(transaction, &caller.user_id, &caller.session_id)
+        .await
+        .map_err(|_| Unended::Backend)?;
+    Ok((ended, notices))
+}
+
+/// Take back what one application got from one of the caller's logins, leaving the
+/// login and every other application alone.
+pub async fn revoke_caller_grant(
+    transaction: &Transaction<'_>,
+    caller: &AccountCaller,
+    session_id: &str,
+    client_id: &str,
+) -> Result<(), Unended> {
+    sessions::load(transaction, session_id)
+        .await
+        .map_err(|_| Unended::Backend)?
+        .filter(|session| session.user_id == caller.user_id)
+        .ok_or(Unended::NotFound)?;
+    let taken = sessions::close_client_session_of(transaction, session_id, client_id)
+        .await
+        .map_err(|_| Unended::Backend)?;
+    taken.then_some(()).ok_or(Unended::NoSuchGrant)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,5 +719,71 @@ mod tests {
             asked(Some("mfa"))
         );
         assert_eq!(read_step_up(&standing(None, None, 0)), asked(None));
+    }
+
+    fn grant(offline: bool, expiration: Option<i64>) -> ClientSessionModel {
+        ClientSessionModel {
+            tenant: "acme".into(),
+            session_id: "grant-1".into(),
+            realm_id: "main".into(),
+            user_id: "ada".into(),
+            user_session_id: "session-1".into(),
+            client_id: "app".into(),
+            auth_method: None,
+            redirect_uri: None,
+            started_at: 1_789_372_800,
+            expiration,
+            notes: None,
+            current_refresh_token: None,
+            current_refresh_token_use_count: None,
+            offline: Some(offline),
+            requested_claims: None,
+        }
+    }
+
+    /// A login stands while it is open, or while an offline grant born of it lives on
+    /// after it closed or ran out; one left with nothing alive, or only with grants
+    /// that end with it, is history.
+    #[test]
+    fn a_login_stands_while_open_or_while_an_offline_grant_outlives_it() {
+        let now = 1_789_372_800;
+        let open = session(UserSessionState::LoggedIn, Some(now + 60), "main");
+        assert_eq!(
+            judge_login_standing(&open, &[], now),
+            Some(LoginStanding::Open)
+        );
+        let closed = session(UserSessionState::LoggedOut, None, "main");
+        let run_out = session(UserSessionState::LoggedIn, Some(now), "main");
+        for ended in [&closed, &run_out] {
+            assert_eq!(
+                judge_login_standing(ended, &[grant(true, Some(now + 60))], now),
+                Some(LoginStanding::OfflineOnly)
+            );
+            assert_eq!(
+                judge_login_standing(
+                    ended,
+                    &[grant(true, Some(now)), grant(false, Some(now + 60))],
+                    now
+                ),
+                None
+            );
+            assert_eq!(judge_login_standing(ended, &[], now), None);
+        }
+    }
+
+    /// An open login shows every grant still alive; a login that stands only for its
+    /// offline grants shows those alone.
+    #[test]
+    fn a_login_shows_the_grants_that_still_hold_something() {
+        let now = 1_789_372_800;
+        let online = grant(false, Some(now + 60));
+        let offline = grant(true, None);
+        let over = grant(true, Some(now));
+        assert!(keep_shown_grant(LoginStanding::Open, &online, now));
+        assert!(keep_shown_grant(LoginStanding::Open, &offline, now));
+        assert!(!keep_shown_grant(LoginStanding::Open, &over, now));
+        assert!(!keep_shown_grant(LoginStanding::OfflineOnly, &online, now));
+        assert!(keep_shown_grant(LoginStanding::OfflineOnly, &offline, now));
+        assert!(!keep_shown_grant(LoginStanding::OfflineOnly, &over, now));
     }
 }

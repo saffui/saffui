@@ -2,19 +2,24 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
+use config::serving::PublicOrigin;
 use data_encoding::BASE64URL_NOPAD;
 use deadpool_postgres::Pool;
 use secrecy::SecretBox;
 use services::account::{OwnFactor, OwnFactors, Unchanged};
 use services::account_api::{
-    AccountCaller, Unmade, change_caller_password, find_needed_step_up, read_caller_factors,
-    read_me, remove_caller_factor,
+    AccountCaller, HeldLogin, LoginStanding, Unended, Unmade, change_caller_password,
+    end_caller_login, end_caller_other_logins, find_needed_step_up, list_caller_logins,
+    read_caller_factors, read_me, remove_caller_factor, revoke_caller_grant,
 };
+use services::agent::read_agent;
+use services::grant::Signing;
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::admin::dto::PasswordChange;
+use crate::api::rest::endpoints::protocol::backchannel;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::middleware::account_guard::AccountRefusal;
 
@@ -233,5 +238,175 @@ pub(crate) fn describe_own_factors(held: &OwnFactors) -> serde_json::Value {
         "recovery_codes": held.recovery_codes,
         "fresh_until": held.fresh_until,
         "stronger_sign_in_needed": held.stronger_sign_in_needed,
+    })
+}
+
+/// The caller's logins that still stand, newest first: which one the request rides,
+/// when each opened and last authenticated, where from, and what each application
+/// still holds from it.
+pub async fn list_sessions(
+    caller: web::ReqData<AccountCaller>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+) -> Result<HttpResponse, AccountRefusal> {
+    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
+    let transaction = tenancy
+        .transaction(&mut connection, &caller.tenant)
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    let held = list_caller_logins(&transaction, &caller)
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .json(held.iter().map(describe_login).collect::<Vec<_>>()))
+}
+
+/// End one of the caller's logins, the one the request rides included, with what its
+/// applications got from it. The applications registered to hear of it are told once
+/// the ending has committed.
+pub async fn end_session(
+    caller: web::ReqData<AccountCaller>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse, AccountRefusal> {
+    let (_, session_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
+    let transaction = tenancy
+        .transaction(&mut connection, &caller.tenant)
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    let ring = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &caller.tenant.tenant,
+        &caller.tenant.realm_id,
+    )
+    .await
+    .ok();
+    let signing = ring.as_ref().map(|ring| Signing {
+        provider: sealing.provider.as_ref(),
+        ring,
+        envelope: &sealing.envelope,
+    });
+    let notices = end_caller_login(
+        &transaction,
+        &caller,
+        signing.as_ref(),
+        &origin.issuer(&caller.tenant.realm_id),
+        &session_id,
+    )
+    .await
+    .map_err(refuse_ending)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    backchannel::deliver(notices).await;
+    Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
+}
+
+/// End every login of the caller's but the one the request rides, and say how many
+/// ended. The applications registered to hear of them are told once it committed.
+pub async fn end_other_sessions(
+    caller: web::ReqData<AccountCaller>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
+) -> Result<HttpResponse, AccountRefusal> {
+    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
+    let transaction = tenancy
+        .transaction(&mut connection, &caller.tenant)
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    let ring = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &caller.tenant.tenant,
+        &caller.tenant.realm_id,
+    )
+    .await
+    .ok();
+    let signing = ring.as_ref().map(|ring| Signing {
+        provider: sealing.provider.as_ref(),
+        ring,
+        envelope: &sealing.envelope,
+    });
+    let (ended, notices) = end_caller_other_logins(
+        &transaction,
+        &caller,
+        signing.as_ref(),
+        &origin.issuer(&caller.tenant.realm_id),
+    )
+    .await
+    .map_err(refuse_ending)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    backchannel::deliver(notices).await;
+    Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .json(serde_json::json!({ "ended_sessions": ended })))
+}
+
+/// Take back what one application got from one of the caller's logins.
+pub async fn revoke_grant(
+    caller: web::ReqData<AccountCaller>,
+    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
+    path: web::Path<(String, String, String)>,
+) -> Result<HttpResponse, AccountRefusal> {
+    let (_, session_id, client_id) = path.into_inner();
+    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
+    let transaction = tenancy
+        .transaction(&mut connection, &caller.tenant)
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    revoke_caller_grant(&transaction, &caller, &session_id, &client_id)
+        .await
+        .map_err(refuse_ending)?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AccountRefusal::Unavailable)?;
+    Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
+}
+
+/// An ending refused, in the words the account API answers with.
+fn refuse_ending(why: Unended) -> AccountRefusal {
+    match why {
+        Unended::NotFound => AccountRefusal::Refused(ApiError::new(ErrorCode::SessionNotFound)),
+        Unended::NoSuchGrant => AccountRefusal::Refused(ApiError::new(ErrorCode::GrantNotFound)),
+        Unended::Backend => AccountRefusal::Unavailable,
+    }
+}
+
+/// A login as its person reads it: the browser and the system read from what the
+/// browser sent, which itself stays behind.
+fn describe_login(held: &HeldLogin) -> serde_json::Value {
+    let read = held.session.user_agent.as_deref().map(read_agent);
+    let brokered = held.session.auth_method.as_deref() == Some("broker");
+    serde_json::json!({
+        "session_id": held.session.session_id,
+        "current": held.current,
+        "open": held.standing == LoginStanding::Open,
+        "auth_method": held.session.auth_method,
+        "provider": held.session.broker_session_id.as_deref().filter(|_| brokered),
+        "ip_address": held.session.ip_address,
+        "browser": read.as_ref().and_then(|read| read.browser),
+        "system": read.as_ref().and_then(|read| read.system),
+        "mobile": read.as_ref().is_some_and(|read| read.mobile),
+        "started_at": held.session.started_at,
+        "auth_time": held.session.auth_time,
+        "expiration": held.session.expiration,
+        "grants": held.grants.iter().map(|grant| serde_json::json!({
+            "client_id": grant.client_id,
+            "name": grant.name,
+            "offline": grant.offline,
+            "expiration": grant.expiration,
+        })).collect::<Vec<_>>(),
     })
 }

@@ -141,3 +141,23 @@ export async function streamLiveEvents(
     }
   }
 }
+
+/// One page of the realm's own event history: what happened after a number, oldest
+/// first, whatever a connector later made of each telling.
+export interface EventHistoryPage {
+  items: LiveEventSummary[];
+  next_event_id: number | null;
+  more: boolean;
+}
+
+export async function readEventHistory(
+  realm: string,
+  afterEventId: number,
+  limit = 100,
+): Promise<EventHistoryPage> {
+  const asked = new URLSearchParams({
+    after_event_id: String(afterEventId),
+    limit: String(limit),
+  });
+  return api<EventHistoryPage>(`${adminPath(realm, "events/replay")}?${asked}`);
+}

@@ -7,9 +7,9 @@ use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::{UserModel, profile};
 use serde_json::Value;
-use store::providers::notices::{self, HeldNotice, Settled};
+use store::providers::notices::{self, HeldNotice, Noted, Settled};
 use store::providers::outbox::{self, OutboxEvent};
-use store::providers::{credentials, users, webauthn};
+use store::providers::{brokering, credentials, users, webauthn};
 
 /// What a receipt for a security notice is recorded under.
 pub const SECURITY_NOTICE: &str = "security-notice";
@@ -34,10 +34,14 @@ pub enum NoticeKind {
     RecoveryCodesRevoked,
     /// A code spent to sign in: an account entered without its usual second factor.
     RecoveryCodeUsed,
+    /// Told to the address the change moved away from.
+    AddressChanged,
+    /// An upstream account linked to an account that already existed.
+    ProviderLinked,
 }
 
 impl NoticeKind {
-    const ALL: [NoticeKind; 12] = [
+    const ALL: [NoticeKind; 14] = [
         NoticeKind::PasswordSet,
         NoticeKind::PasswordChanged,
         NoticeKind::AppAdded,
@@ -50,6 +54,8 @@ impl NoticeKind {
         NoticeKind::RecoveryCodesRemoved,
         NoticeKind::RecoveryCodesRevoked,
         NoticeKind::RecoveryCodeUsed,
+        NoticeKind::AddressChanged,
+        NoticeKind::ProviderLinked,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -66,6 +72,8 @@ impl NoticeKind {
             NoticeKind::RecoveryCodesRemoved => "recovery-codes-removed",
             NoticeKind::RecoveryCodesRevoked => "recovery-codes-revoked",
             NoticeKind::RecoveryCodeUsed => "recovery-code-used",
+            NoticeKind::AddressChanged => "address-changed",
+            NoticeKind::ProviderLinked => "provider-linked",
         }
     }
 
@@ -74,12 +82,54 @@ impl NoticeKind {
     }
 }
 
-/// The notice a happening owes its person, if any: a change to their password or
-/// to a factor. A code spent to sign in is told apart from a sheet given up.
-pub fn read_notice(kind: &str, payload: &Value) -> Option<NoticeKind> {
-    if kind != outbox::CREDENTIAL_CHANGED {
-        return None;
+/// A notice a happening owes: where it goes when that is not the person's current
+/// address, and the provider it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Owed {
+    pub kind: NoticeKind,
+    pub recipient: Option<String>,
+    pub provider_alias: Option<String>,
+}
+
+fn owe_to_person(kind: NoticeKind) -> Owed {
+    Owed {
+        kind,
+        recipient: None,
+        provider_alias: None,
     }
+}
+
+/// The notice a happening owes, if any: a change to a password or a factor, an
+/// address moved away from a verified one, or an upstream account linked to an
+/// account that already existed.
+pub fn read_notice(kind: &str, payload: &Value) -> Option<Owed> {
+    match kind {
+        outbox::CREDENTIAL_CHANGED => read_credential_change(payload).map(owe_to_person),
+        outbox::USER_UPDATED => {
+            let previous = payload["previous_email"]
+                .as_str()
+                .filter(|held| !held.trim().is_empty())?;
+            (payload["previous_email_verified"].as_bool() == Some(true)).then(|| Owed {
+                kind: NoticeKind::AddressChanged,
+                recipient: Some(previous.to_owned()),
+                provider_alias: None,
+            })
+        }
+        outbox::IDENTITY_LINKED => {
+            let provider = payload["provider"].as_str()?;
+            (payload["account_created"].as_bool() == Some(false)).then(|| Owed {
+                kind: NoticeKind::ProviderLinked,
+                recipient: None,
+                provider_alias: Some(provider.to_owned()),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// The notice a change to a password or a factor owes. A code spent to sign in is
+/// told apart from a sheet given up.
+fn read_credential_change(payload: &Value) -> Option<NoticeKind> {
     let change: CredentialChange = payload["change_type"].as_str()?.parse().ok()?;
     let credential = payload["credential_type"].as_str()?;
     if credential == webauthn::CREDENTIAL_TYPE {
@@ -155,6 +205,18 @@ fn flatten(value: &str) -> String {
         .collect()
 }
 
+/// An address shown only enough to be recognised: its first character and its
+/// domain. The mailbox a change moved away from learns no more of the new one.
+fn mask_address(address: &str) -> String {
+    match address.split_once('@') {
+        Some((local, domain)) if !local.is_empty() && !domain.is_empty() => {
+            let first: String = local.chars().take(1).collect();
+            format!("{first}***@{domain}")
+        }
+        _ => "***".to_owned(),
+    }
+}
+
 fn describe(kind: NoticeKind, tongue: Tongue) -> &'static str {
     match tongue {
         Tongue::English => match kind {
@@ -172,6 +234,8 @@ fn describe(kind: NoticeKind, tongue: Tongue) -> &'static str {
             NoticeKind::RecoveryCodesRemoved => "Your recovery codes were removed",
             NoticeKind::RecoveryCodesRevoked => "An administrator removed your recovery codes",
             NoticeKind::RecoveryCodeUsed => "A recovery code was used to sign in to your account",
+            NoticeKind::AddressChanged => "The email address of your account was changed",
+            NoticeKind::ProviderLinked => "An external account was linked to your account",
         },
         Tongue::French => match kind {
             NoticeKind::PasswordSet => "Un mot de passe a été défini pour votre compte",
@@ -198,8 +262,60 @@ fn describe(kind: NoticeKind, tongue: Tongue) -> &'static str {
             NoticeKind::RecoveryCodeUsed => {
                 "Un code de secours a servi à vous connecter à votre compte"
             }
+            NoticeKind::AddressChanged => "L'adresse e-mail de votre compte a été changée",
+            NoticeKind::ProviderLinked => "Un compte externe a été lié à votre compte",
         },
     }
+}
+
+/// The words that frame a notice, in one tongue.
+struct Wording {
+    subject_separator: &'static str,
+    account: &'static str,
+    when: &'static str,
+    when_format: &'static str,
+    new_address: &'static str,
+    provider: &'static str,
+    codes_left: &'static str,
+    or_reset: &'static str,
+    or_administrator: &'static str,
+}
+
+const ENGLISH: Wording = Wording {
+    subject_separator: ": ",
+    account: "Account: ",
+    when: "When: ",
+    when_format: "%Y-%m-%d at %H:%M",
+    new_address: "New address: ",
+    provider: "Provider: ",
+    codes_left: "Recovery codes left: ",
+    or_reset: "If this was you, there is nothing to do. If it was not, reset your password from \
+               the sign-in page and tell your administrator.",
+    or_administrator: "If this was you, there is nothing to do. If it was not, tell your \
+                       administrator at once.",
+};
+
+const FRENCH: Wording = Wording {
+    subject_separator: " : ",
+    account: "Compte : ",
+    when: "Quand : le ",
+    when_format: "%d/%m/%Y à %H:%M",
+    new_address: "Nouvelle adresse : ",
+    provider: "Fournisseur : ",
+    codes_left: "Codes de secours restants : ",
+    or_reset: "Si c'était vous, vous n'avez rien à faire. Sinon, réinitialisez votre mot de passe \
+               depuis la page de connexion et prévenez votre administrateur.",
+    or_administrator: "Si c'était vous, vous n'avez rien à faire. Sinon, prévenez tout de suite \
+                       votre administrateur.",
+};
+
+/// What a notice tells beyond its kind.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Particulars {
+    /// The recovery codes left, after one was used.
+    pub codes_left: Option<i64>,
+    /// The provider a link names, by the name the realm shows.
+    pub provider: Option<String>,
 }
 
 /// What a notice says, as a subject and a body: what changed, on which account and
@@ -210,7 +326,7 @@ pub fn compose_notice(
     person: &UserModel,
     kind: NoticeKind,
     occurred_at: DateTime<Utc>,
-    codes_left: Option<i64>,
+    particulars: &Particulars,
 ) -> (String, String) {
     let tongue = choose_tongue(
         person
@@ -219,51 +335,57 @@ pub fn compose_notice(
             .and_then(|held| attributes::string_at(held, profile::LOCALE)),
         realm.default_locale.as_deref(),
     );
+    let wording = match tongue {
+        Tongue::English => &ENGLISH,
+        Tongue::French => &FRENCH,
+    };
     let realm_name = flatten(if realm.display_name.trim().is_empty() {
         &realm.name
     } else {
         &realm.display_name
     });
-    let account = flatten(&person.user_name);
     let happened = describe(kind, tongue);
-    let resettable = realm.reset_password_allowed == Some(true);
-    let (subject, facts, left, advice) = match tongue {
-        Tongue::English => (
-            format!("{realm_name}: {happened}"),
-            format!(
-                "Account: {account}\nWhen: {} UTC\n",
-                occurred_at.format("%Y-%m-%d at %H:%M")
-            ),
-            codes_left.map(|left| format!("Recovery codes left: {left}\n")),
-            if resettable {
-                "If this was you, there is nothing to do. If it was not, reset your password \
-                 from the sign-in page and tell your administrator."
-            } else {
-                "If this was you, there is nothing to do. If it was not, tell your \
-                 administrator at once."
-            },
+    let mut lines = vec![
+        format!("{}{}", wording.account, flatten(&person.user_name)),
+        format!(
+            "{}{} UTC",
+            wording.when,
+            occurred_at.format(wording.when_format)
         ),
-        Tongue::French => (
-            format!("{realm_name} : {happened}"),
-            format!(
-                "Compte : {account}\nQuand : le {} UTC\n",
-                occurred_at.format("%d/%m/%Y à %H:%M")
+    ];
+    let new_address =
+        (kind == NoticeKind::AddressChanged).then(|| mask_address(&flatten(&person.email)));
+    lines.extend(
+        [
+            (wording.new_address, new_address),
+            (
+                wording.provider,
+                particulars.provider.as_deref().map(flatten),
             ),
-            codes_left.map(|left| format!("Codes de secours restants : {left}\n")),
-            if resettable {
-                "Si c'était vous, vous n'avez rien à faire. Sinon, réinitialisez votre mot de \
-                 passe depuis la page de connexion et prévenez votre administrateur."
-            } else {
-                "Si c'était vous, vous n'avez rien à faire. Sinon, prévenez tout de suite votre \
-                 administrateur."
-            },
-        ),
-    };
-    let body = format!(
-        "{happened}.\n\n{facts}{}\n{advice}\n",
-        left.unwrap_or_default()
+            (
+                wording.codes_left,
+                particulars.codes_left.map(|left| left.to_string()),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(label, value)| value.map(|value| format!("{label}{value}"))),
     );
-    (subject, body)
+    // A reset link goes to the address the account holds now, and a provider stays
+    // linked whatever the password: after these two, only the administrator helps.
+    let resettable = realm.reset_password_allowed == Some(true)
+        && !matches!(
+            kind,
+            NoticeKind::AddressChanged | NoticeKind::ProviderLinked
+        );
+    let advice = if resettable {
+        wording.or_reset
+    } else {
+        wording.or_administrator
+    };
+    (
+        format!("{realm_name}{}{happened}", wording.subject_separator),
+        format!("{happened}.\n\n{}\n\n{advice}\n", lines.join("\n")),
+    )
 }
 
 /// Why a notice owed will never go out.
@@ -277,20 +399,25 @@ pub enum Unsent {
     NoVerifiedAddress,
 }
 
-/// Who a notice goes to: a person still held, at a verified address, in a realm
-/// that has not switched its notices off.
-pub fn find_recipient<'p>(
+/// The address a notice goes to: the one it was owed at, verified when it was
+/// noted, or else the person's own verified address, in a realm that has not
+/// switched its notices off and for a person still held.
+pub fn find_recipient(
     realm: &RealmModel,
-    person: Option<&'p UserModel>,
-) -> Result<&'p UserModel, Unsent> {
+    person: Option<&UserModel>,
+    recipient: Option<&str>,
+) -> Result<String, Unsent> {
     if realm.security_notices_enabled == Some(false) {
         return Err(Unsent::SwitchedOff);
     }
     let person = person.ok_or(Unsent::PersonGone)?;
+    if let Some(recipient) = recipient {
+        return Ok(recipient.to_owned());
+    }
     if person.email_verified != Some(true) || person.email.trim().is_empty() {
         return Err(Unsent::NoVerifiedAddress);
     }
-    Ok(person)
+    Ok(person.email.clone())
 }
 
 /// How an attempt settles its notice: sent once it went out, given up on once the
@@ -315,15 +442,19 @@ pub async fn note_owed_notice(
     transaction: &Transaction<'_>,
     event: &OutboxEvent,
 ) -> Result<(), Unsettled> {
-    let Some(kind) = read_notice(&event.kind, &event.payload) else {
+    let Some(owed) = read_notice(&event.kind, &event.payload) else {
         return Ok(());
     };
     notices::note(
         transaction,
-        event.event_id,
-        &event.user_id,
-        kind.as_str(),
-        event.occurred_at,
+        &Noted {
+            event_id: event.event_id,
+            user_id: &event.user_id,
+            kind: owed.kind.as_str(),
+            occurred_at: event.occurred_at,
+            recipient: owed.recipient.as_deref(),
+            provider_alias: owed.provider_alias.as_deref(),
+        },
     )
     .await
     .map_err(|_| Unsettled)
@@ -363,10 +494,12 @@ pub async fn compose_due_notices(
         let person = users::load(transaction, &notice.user_id)
             .await
             .map_err(|_| Unsettled)?;
-        let (Some(kind), Some(settings), Ok(person)) = (
+        let address = find_recipient(realm, person.as_ref(), notice.recipient.as_deref());
+        let (Some(kind), Some(settings), Some(person), Ok(address)) = (
             NoticeKind::parse(&notice.kind),
             settings,
-            find_recipient(realm, person.as_ref()),
+            person.as_ref(),
+            address,
         ) else {
             notices::settle(transaction, notice.event_id, Settled::Skipped)
                 .await
@@ -381,14 +514,34 @@ pub async fn compose_due_notices(
             ),
             _ => None,
         };
-        let (subject, body) = compose_notice(realm, person, kind, notice.occurred_at, codes_left);
+        let provider = match notice.provider_alias.as_deref() {
+            Some(alias) => Some(
+                brokering::provider_by_alias(transaction, alias)
+                    .await
+                    .map_err(|_| Unsettled)?
+                    .map(|held| held.display_name)
+                    .filter(|shown| !shown.trim().is_empty())
+                    .unwrap_or_else(|| alias.to_owned()),
+            ),
+            None => None,
+        };
+        let (subject, body) = compose_notice(
+            realm,
+            person,
+            kind,
+            notice.occurred_at,
+            &Particulars {
+                codes_left,
+                provider,
+            },
+        );
         due.push(DueNotice {
             event_id: notice.event_id,
             attempts: notice.attempts,
             outgoing: Outgoing {
                 settings: settings.duplicate(),
                 message: Message {
-                    to: person.email.clone(),
+                    to: address,
                     subject,
                     body,
                 },
@@ -473,7 +626,7 @@ mod tests {
         ] {
             assert_eq!(
                 read_notice(outbox::CREDENTIAL_CHANGED, &payload),
-                Some(owed),
+                Some(owe_to_person(owed)),
                 "{payload}"
             );
             assert_eq!(NoticeKind::parse(owed.as_str()), Some(owed));
@@ -486,7 +639,7 @@ mod tests {
     #[test]
     fn a_happening_that_changes_no_way_in_owes_nothing() {
         assert_eq!(
-            read_notice(outbox::USER_UPDATED, &changed("password", "update")),
+            read_notice(outbox::SESSION_REVOKED, &changed("password", "update")),
             None
         );
         for payload in [
@@ -508,6 +661,74 @@ mod tests {
         assert_eq!(NoticeKind::parse("password-renamed"), None);
     }
 
+    /// An address moved away from a verified one owes that old address its notice;
+    /// one moved away from an address never verified, or an update that moved no
+    /// address, owes nothing.
+    #[test]
+    fn an_address_moved_away_from_a_verified_one_owes_the_old_address() {
+        let moved = |verified: bool| {
+            json!({
+                "user_name": "ada", "email": "ada@example.org", "enabled": true,
+                "previous_email": "ada@example.test", "previous_email_verified": verified,
+            })
+        };
+        assert_eq!(
+            read_notice(outbox::USER_UPDATED, &moved(true)),
+            Some(Owed {
+                kind: NoticeKind::AddressChanged,
+                recipient: Some("ada@example.test".to_owned()),
+                provider_alias: None,
+            })
+        );
+        assert_eq!(
+            NoticeKind::parse("address-changed"),
+            Some(NoticeKind::AddressChanged)
+        );
+        for payload in [
+            moved(false),
+            json!({ "user_name": "ada", "email": "ada@example.org", "enabled": true }),
+            json!({ "previous_email": " ", "previous_email_verified": true }),
+        ] {
+            assert_eq!(
+                read_notice(outbox::USER_UPDATED, &payload),
+                None,
+                "{payload}"
+            );
+        }
+    }
+
+    /// An upstream account linked to an account that already existed owes it a notice
+    /// naming the provider; the link an account was made with owes nothing.
+    #[test]
+    fn a_provider_linked_to_an_existing_account_owes_a_notice() {
+        assert_eq!(
+            read_notice(
+                outbox::IDENTITY_LINKED,
+                &json!({ "provider": "acme", "account_created": false })
+            ),
+            Some(Owed {
+                kind: NoticeKind::ProviderLinked,
+                recipient: None,
+                provider_alias: Some("acme".to_owned()),
+            })
+        );
+        assert_eq!(
+            NoticeKind::parse("provider-linked"),
+            Some(NoticeKind::ProviderLinked)
+        );
+        for payload in [
+            json!({ "provider": "acme", "account_created": true }),
+            json!({ "provider": "acme" }),
+            json!({ "account_created": false }),
+        ] {
+            assert_eq!(
+                read_notice(outbox::IDENTITY_LINKED, &payload),
+                None,
+                "{payload}"
+            );
+        }
+    }
+
     /// A notice is written in the person's tongue where it is one of the two the
     /// notices speak, the realm's otherwise, English when neither says.
     #[test]
@@ -518,6 +739,17 @@ mod tests {
         assert_eq!(choose_tongue(None, Some("fr")), Tongue::French);
         assert_eq!(choose_tongue(Some("de"), None), Tongue::English);
         assert_eq!(choose_tongue(None, None), Tongue::English);
+    }
+
+    /// An address is shown by its first character and its domain, and one that is
+    /// not an address shows nothing of itself.
+    #[test]
+    fn an_address_is_shown_only_enough_to_be_recognised() {
+        assert_eq!(mask_address("grace@example.org"), "g***@example.org");
+        assert_eq!(mask_address("é@exemple.fr"), "é***@exemple.fr");
+        for unshaped in ["no-at-sign", "@example.org", "grace@"] {
+            assert_eq!(mask_address(unshaped), "***", "{unshaped}");
+        }
     }
 
     fn realm(display_name: &str, locale: Option<&str>, resettable: bool) -> RealmModel {
@@ -576,7 +808,7 @@ mod tests {
             &person(None, Some(true)),
             NoticeKind::PasswordChanged,
             at_ten_forty_two(),
-            None,
+            &Particulars::default(),
         );
         assert_eq!(subject, "Acme: Your password was changed");
         assert_eq!(
@@ -591,7 +823,10 @@ mod tests {
             &person(Some("fr"), Some(true)),
             NoticeKind::RecoveryCodeUsed,
             at_ten_forty_two(),
-            Some(7),
+            &Particulars {
+                codes_left: Some(7),
+                provider: None,
+            },
         );
         assert_eq!(
             subject,
@@ -602,6 +837,49 @@ mod tests {
             "Un code de secours a servi à vous connecter à votre compte.\n\nCompte : ada\nQuand : \
              le 15/09/2026 à 10:42 UTC\nCodes de secours restants : 7\n\nSi c'était vous, vous \
              n'avez rien à faire. Sinon, prévenez tout de suite votre administrateur.\n"
+        );
+    }
+
+    /// A moved address is told with the new one masked, and a link with the provider
+    /// named; neither advises a reset, whose link would go where the change went.
+    #[test]
+    fn a_moved_address_or_a_link_is_told_without_advising_a_reset() {
+        let mut moved = person(None, Some(false));
+        moved.email = "grace@example.org".into();
+        let (subject, body) = compose_notice(
+            &realm("Acme", None, true),
+            &moved,
+            NoticeKind::AddressChanged,
+            at_ten_forty_two(),
+            &Particulars::default(),
+        );
+        assert_eq!(
+            subject,
+            "Acme: The email address of your account was changed"
+        );
+        assert_eq!(
+            body,
+            "The email address of your account was changed.\n\nAccount: ada\nWhen: 2026-09-15 at \
+             10:42 UTC\nNew address: g***@example.org\n\nIf this was you, there is nothing to do. \
+             If it was not, tell your administrator at once.\n"
+        );
+
+        let (subject, body) = compose_notice(
+            &realm("Acme", Some("fr"), true),
+            &person(None, Some(true)),
+            NoticeKind::ProviderLinked,
+            at_ten_forty_two(),
+            &Particulars {
+                codes_left: None,
+                provider: Some("Annuaire Acme".to_owned()),
+            },
+        );
+        assert_eq!(subject, "Acme : Un compte externe a été lié à votre compte");
+        assert_eq!(
+            body,
+            "Un compte externe a été lié à votre compte.\n\nCompte : ada\nQuand : le 15/09/2026 à \
+             10:42 UTC\nFournisseur : Annuaire Acme\n\nSi c'était vous, vous n'avez rien à faire. \
+             Sinon, prévenez tout de suite votre administrateur.\n"
         );
     }
 
@@ -616,7 +894,7 @@ mod tests {
             &named,
             NoticeKind::KeyAdded,
             at_ten_forty_two(),
-            None,
+            &Particulars::default(),
         );
         assert!(!subject.contains(['\r', '\n']), "{subject:?}");
         assert!(
@@ -625,32 +903,42 @@ mod tests {
         );
     }
 
-    /// Only a verified address is written to, of a person still held, in a realm
-    /// that has not switched its notices off.
+    /// A notice goes to the address it was owed at, or else to the person's verified
+    /// address, only for a person still held and in a realm that has not switched its
+    /// notices off.
     #[test]
-    fn only_a_verified_address_in_a_realm_that_tells_is_written_to() {
+    fn a_notice_goes_to_its_owed_or_verified_address_in_a_realm_that_tells() {
         let telling = realm("Acme", None, false);
         let verified = person(None, Some(true));
-        assert!(find_recipient(&telling, Some(&verified)).is_ok());
+        assert_eq!(
+            find_recipient(&telling, Some(&verified), None),
+            Ok("ada@example.test".to_owned())
+        );
         let mut switched_on = telling.clone();
         switched_on.security_notices_enabled = Some(true);
-        assert!(find_recipient(&switched_on, Some(&verified)).is_ok());
+        assert!(find_recipient(&switched_on, Some(&verified), None).is_ok());
         let mut switched_off = telling.clone();
         switched_off.security_notices_enabled = Some(false);
-        assert_eq!(
-            find_recipient(&switched_off, Some(&verified)).err(),
-            Some(Unsent::SwitchedOff)
-        );
-        assert_eq!(
-            find_recipient(&telling, None).err(),
-            Some(Unsent::PersonGone)
-        );
+        for owed in [None, Some("old@example.test")] {
+            assert_eq!(
+                find_recipient(&switched_off, Some(&verified), owed),
+                Err(Unsent::SwitchedOff)
+            );
+            assert_eq!(
+                find_recipient(&telling, None, owed),
+                Err(Unsent::PersonGone)
+            );
+        }
         let mut addressless = person(None, Some(true));
         addressless.email = " ".into();
         for unverified in [person(None, Some(false)), person(None, None), addressless] {
             assert_eq!(
-                find_recipient(&telling, Some(&unverified)).err(),
-                Some(Unsent::NoVerifiedAddress)
+                find_recipient(&telling, Some(&unverified), None),
+                Err(Unsent::NoVerifiedAddress)
+            );
+            assert_eq!(
+                find_recipient(&telling, Some(&unverified), Some("old@example.test")),
+                Ok("old@example.test".to_owned())
             );
         }
     }

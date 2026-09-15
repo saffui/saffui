@@ -162,7 +162,12 @@ pub async fn update(
     if let Some(email) = &spec.email {
         check_mail(email)?;
         check_unclaimed(transaction, email, Some(user_id)).await?;
-        user.email = email.clone();
+        if *email != user.email {
+            user.email = email.clone();
+            // The address moved, so whatever was verified was the old one: only a
+            // declaration in the same update keeps the new one verified.
+            user.email_verified = Some(false);
+        }
     }
     if let Some(verified) = spec.email_verified {
         user.email_verified = Some(verified && !user.email.is_empty());

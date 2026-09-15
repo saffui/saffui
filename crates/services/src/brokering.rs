@@ -502,7 +502,15 @@ pub async fn decide_link(
             .await
             .map_err(|_| Unbrokered::Backend)?
     {
-        remember(transaction, provider, arrival, &standing.user_id, now).await?;
+        remember(
+            transaction,
+            provider,
+            arrival,
+            &standing.user_id,
+            now,
+            false,
+        )
+        .await?;
         return Ok((standing.user_id, true));
     }
 
@@ -537,7 +545,7 @@ pub async fn decide_link(
         crate::admin::users::Uncreatable::Unwritable => Unbrokered::Backend,
         _ => Unbrokered::Refused,
     })?;
-    remember(transaction, provider, arrival, &made.user_id, now).await?;
+    remember(transaction, provider, arrival, &made.user_id, now, true).await?;
     Ok((made.user_id, true))
 }
 
@@ -899,6 +907,7 @@ async fn remember(
     arrival: &Arrival,
     user_id: &str,
     now: DateTime<Utc>,
+    account_created: bool,
 ) -> Result<(), Unbrokered> {
     brokering::link(
         transaction,
@@ -910,6 +919,7 @@ async fn remember(
             external_username: arrival.username.clone().unwrap_or_default(),
             created_at: now,
         },
+        account_created,
     )
     .await
     .map_err(|_| Unbrokered::Backend)

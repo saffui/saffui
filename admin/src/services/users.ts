@@ -223,6 +223,20 @@ export async function updateUser(realm: string, userId: string, spec: UserSpec):
   });
 }
 
+export async function requireUserAction(realm: string, userId: string, action: string): Promise<void> {
+  await api<void>(
+    adminPath(realm, `users/${encodeURIComponent(userId)}/required-actions/${encodeURIComponent(action)}`),
+    { method: "PUT", subject: say("subject-user-action", { action, user: userId }) },
+  );
+}
+
+export async function releaseUserAction(realm: string, userId: string, action: string): Promise<void> {
+  await api<void>(
+    adminPath(realm, `users/${encodeURIComponent(userId)}/required-actions/${encodeURIComponent(action)}`),
+    { method: "DELETE", subject: say("subject-user-action", { action, user: userId }) },
+  );
+}
+
 export async function deleteUser(realm: string, userId: string): Promise<void> {
   await api<void>(adminPath(realm, `users/${encodeURIComponent(userId)}`), {
     method: "DELETE",

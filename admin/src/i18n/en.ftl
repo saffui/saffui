@@ -1334,7 +1334,7 @@ user-first-password = Initial password
 user-first-password-help = Set one only for accounts that cannot receive mail; a reset link is the safer first credential.
 user-first-password-skip = leave empty to skip
 user-ask-first = Ask for at first sign in
-user-required-actions-help = What the next sign-in demands before it completes. Chips are removable; the engine strikes each once done.
+user-required-actions-help = What the next sign-in demands before it completes. Asking for one or removing one is written at once, apart from the profile's Save; the sign-in strikes each once done.
 user-new-note = Roles are absent here on purpose: a new account gets an identity, not authority. Grants happen on the memberships tab once the account exists.
 user-enabled-help = A disabled account keeps its data and refuses every sign in.
 user-ask-for = Ask for
@@ -1407,6 +1407,7 @@ user-delete = Delete this account
 user-grant-role = Grant a role
 user-join-group = Join a group
 subject-user = user { $user }
+subject-user-action = { $action } for user { $user }
 subject-password = the password of { $user }
 subject-grant = { $role } for { $user }
 subject-membership = { $group } and { $user }
@@ -1632,7 +1633,7 @@ flow-insert-here = Add a step here
 
 ## The required-actions catalogue.
 actions-title = Required actions
-actions-lede = What a realm may ask of a person before a sign-in completes. The catalogue is the build's own: rows can be registered and turned, never invented, and an action a user already carries keeps asking even when turned off here for the next one.
+actions-lede = What a realm may ask of a person before a sign-in completes. The catalogue is the build's own: rows can be registered, turned and unregistered, never invented, and an action a user already carries keeps asking even when turned off here for the next one.
 actions-col-what = Action
 actions-col-enabled = Offered
 actions-enabled-help = Whether an administrator or an application may still ask this of someone. What a person already owes stays owed, and what the server attaches on its own, like an expired password, is never switched off here.
@@ -1641,6 +1642,13 @@ actions-birth-help = New accounts are born owing it, whichever door they arrive 
 actions-register = Register
 actions-register-help = Writes the row this realm turns; until then the action exists only in the build.
 actions-unregistered = not registered here
+actions-unregister = Unregister
+actions-unregister-title = Unregister a required action
+actions-unregister-lede = This realm forgets its row for this action: whether it is offered, and whether new accounts are born owing it.
+actions-unregister-aside = People who already owe it keep owing it.
+actions-unregister-warning = The realm has turned this action off. Once its row is gone, it can be asked of people again.
+actions-fact-on = on
+actions-fact-off = off
 subject-action = the { $action } action
 
 ## Backchannel (CIBA) pacing.

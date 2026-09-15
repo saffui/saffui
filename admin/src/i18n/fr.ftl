@@ -1334,7 +1334,7 @@ user-first-password = Mot de passe initial
 user-first-password-help = À poser seulement pour un compte sans mail ; un lien de réinitialisation est un premier identifiant plus sûr.
 user-first-password-skip = laisser vide pour passer
 user-ask-first = Demander à la première connexion
-user-required-actions-help = Ce que la prochaine connexion exige avant d'aboutir. Les jetons se retirent ; le moteur raye chacun une fois fait.
+user-required-actions-help = Ce que la prochaine connexion exige avant d'aboutir. Demander ou retirer une action s'écrit aussitôt, sans attendre l'enregistrement du profil ; la connexion raye chacune une fois faite.
 user-new-note = Les rôles sont absents ici à dessein : un compte neuf reçoit une identité, pas une autorité. Les octrois se font dans l'onglet appartenances une fois le compte né.
 user-enabled-help = Un compte désactivé garde ses données et refuse toute connexion.
 user-ask-for = Demander
@@ -1407,6 +1407,7 @@ user-delete = Supprimer ce compte
 user-grant-role = Accorder un rôle
 user-join-group = Rejoindre un groupe
 subject-user = compte { $user }
+subject-user-action = { $action } pour le compte { $user }
 subject-password = le mot de passe de { $user }
 subject-grant = { $role } pour { $user }
 subject-membership = { $group } et { $user }
@@ -1632,7 +1633,7 @@ flow-insert-here = Ajouter une étape ici
 
 ## Le catalogue des actions requises.
 actions-title = Actions requises
-actions-lede = Ce qu'un realm peut exiger d'une personne avant qu'une connexion aboutisse. Le catalogue est celui du build : les lignes se déclarent et se règlent, jamais ne s'inventent, et une action déjà portée par un compte continue de se poser même éteinte ici pour les suivants.
+actions-lede = Ce qu'un realm peut exiger d'une personne avant qu'une connexion aboutisse. Le catalogue est celui du build : les lignes se déclarent, se règlent et se retirent, jamais ne s'inventent, et une action déjà portée par un compte continue de se poser même éteinte ici pour les suivants.
 actions-col-what = Action
 actions-col-enabled = Offerte
 actions-enabled-help = Si un administrateur ou une application peut encore l'exiger de quelqu'un. Ce qu'une personne doit déjà reste dû, et ce que le serveur pose de lui-même, comme un mot de passe expiré, ne se coupe jamais ici.
@@ -1641,6 +1642,13 @@ actions-birth-help = Les nouveaux comptes naissent en la devant, quelle que soit
 actions-register = Déclarer
 actions-register-help = Écrit la ligne que ce realm règle ; jusque-là l'action n'existe que dans le build.
 actions-unregistered = non déclarée ici
+actions-unregister = Retirer la déclaration
+actions-unregister-title = Retirer la déclaration d'une action requise
+actions-unregister-lede = Ce realm oublie sa ligne pour cette action : si elle est offerte, et si les nouveaux comptes naissent en la devant.
+actions-unregister-aside = Les personnes qui la doivent déjà la doivent toujours.
+actions-unregister-warning = Ce realm a coupé cette action. Une fois sa ligne retirée, elle peut de nouveau être demandée aux personnes.
+actions-fact-on = oui
+actions-fact-off = non
 subject-action = l'action { $action }
 
 ## Cadence du backchannel (CIBA).

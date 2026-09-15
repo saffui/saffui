@@ -20,6 +20,7 @@ vi.mock("saffui-js", () => ({
 
 import {
   adoptTokens,
+  forgetSignIn,
   holdRealm,
   isFreshlyAdopted,
   isSignedIn,
@@ -140,6 +141,13 @@ describe("signing out", () => {
     await signOut();
     expect(client.logout).toHaveBeenCalledWith("id-1");
     expect(isSignedIn()).toBe(false);
+  });
+
+  test("forgets a sign-in the server already ended, telling the server nothing", () => {
+    adoptTokens(HOUR);
+    forgetSignIn();
+    expect(isSignedIn()).toBe(false);
+    expect(client.logout).not.toHaveBeenCalled();
   });
 
   test("stands when the server cannot be reached", async () => {

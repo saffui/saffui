@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { BadgeCheck, CircleAlert, Info, LogOut, UserRound, type LucideProps } from "lucide-vue-next";
+import {
+  BadgeCheck,
+  CircleAlert,
+  Info,
+  LogOut,
+  Monitor,
+  MonitorSmartphone,
+  Smartphone,
+  UserRound,
+  type LucideProps,
+} from "lucide-vue-next";
 import type { FunctionalComponent } from "vue";
 
 // Pages name icons by role, never by the library's vocabulary, so swapping the
@@ -10,6 +20,9 @@ const GLYPHS: Record<string, FunctionalComponent<LucideProps>> = {
   verified: BadgeCheck,
   unverified: CircleAlert,
   hint: Info,
+  sessions: MonitorSmartphone,
+  desktop: Monitor,
+  mobile: Smartphone,
 };
 
 const props = defineProps<{ name: keyof typeof GLYPHS; size?: number }>();

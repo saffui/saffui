@@ -2,6 +2,8 @@ import { adminPath, api } from "@/services/http";
 import { say } from "@/i18n";
 import type { Page } from "@/models/paging";
 import type {
+  ClaimSource,
+  ClaimSourceChange,
   ConsentBrief,
   FederatedIdentity,
   GroupBrief,
@@ -116,6 +118,36 @@ export async function withdrawConsent(
       `users/${encodeURIComponent(userId)}/consents/${encodeURIComponent(clientId)}`,
     ),
     { method: "DELETE", subject: say("subject-consent", { client: clientId }) },
+  );
+}
+
+export async function listClaimSources(realm: string, userId: string): Promise<ClaimSource[]> {
+  return api<ClaimSource[]>(adminPath(realm, `users/${encodeURIComponent(userId)}/claim-sources`));
+}
+
+export async function addClaimSource(
+  realm: string,
+  userId: string,
+  source: ClaimSourceChange,
+): Promise<ClaimSource> {
+  return api<ClaimSource>(adminPath(realm, `users/${encodeURIComponent(userId)}/claim-sources`), {
+    method: "POST",
+    json: source,
+    subject: say("subject-claim-source", { claims: source.claims.join(", ") }),
+  });
+}
+
+export async function removeClaimSource(
+  realm: string,
+  userId: string,
+  source: ClaimSource,
+): Promise<void> {
+  await api<void>(
+    adminPath(
+      realm,
+      `users/${encodeURIComponent(userId)}/claim-sources/${encodeURIComponent(source.source_id)}`,
+    ),
+    { method: "DELETE", subject: say("subject-claim-source", { claims: source.claims.join(", ") }) },
   );
 }
 

@@ -75,6 +75,27 @@ export interface ConsentBrief {
   granted_at: string;
 }
 
+/// Mirrors `models::entities::brokering::UserClaimSourceModel`. A fetch token comes
+/// back concealed, never as itself.
+export interface ClaimSource {
+  source_id: string;
+  claims: string[];
+  kind: "jwt" | "endpoint";
+  jwt?: string;
+  endpoint?: string;
+  endpoint_token?: string;
+  metadata: { created_by: string | null; created_at: string | null };
+}
+
+/// Mirrors `models::entities::brokering::UserClaimSourceMutationModel`.
+export interface ClaimSourceChange {
+  claims: string[];
+  kind: "jwt" | "endpoint";
+  jwt?: string;
+  endpoint?: string;
+  endpoint_token?: string;
+}
+
 /// One row of `GET .../users/{user}/roles`.
 export interface RoleBrief {
   role_id: string;

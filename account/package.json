@@ -1,0 +1,32 @@
+{
+  "name": "saffui-account",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "test": "vitest run",
+    "contract": "vitest run --config vitest.contract.config.ts && vue-tsc -p tsconfig.contract.json",
+    "lint": "oxlint src"
+  },
+  "dependencies": {
+    "@fluent/bundle": "^0.19.1",
+    "lucide-vue-next": "^1.0.0",
+    "saffui-js": "workspace:*",
+    "vue": "^3.5.18",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "oxlint": "^1.8.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.0.6",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^3.0.5"
+  }
+}

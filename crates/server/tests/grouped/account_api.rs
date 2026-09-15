@@ -1347,6 +1347,18 @@ async fn the_account_console_contract_holds_against_a_live_server() {
     plant_key(&plane, b"key-contract").await;
     plant_recovery_codes(&plane).await;
     prove_sign_in_reaching(&plane, chrono::Utc::now().timestamp(), 1).await;
+    // A consent to another application, and what one more got from the login the
+    // console rides: what the console withdraws and takes back, leaving the login
+    // elsewhere to the calls on logins.
+    keep_consent(&plane, support::SUBJECT, support::OTHER, &["openid"]).await;
+    plant_grant(
+        &plane,
+        support::SESSION,
+        support::SUBJECT,
+        support::PUBLIC,
+        false,
+    )
+    .await;
     let bearer = plane.token(&account_claims());
 
     let served = mounted(&plane);

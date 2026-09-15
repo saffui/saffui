@@ -31,6 +31,9 @@ pub const VERIFY_PHONE: &str = "verify-phone";
 pub const CONFIGURE_RECOVERY_CODES: &str = "recovery-codes-register";
 pub const UPDATE_PASSWORD: &str = "update-password";
 
+/// The mail's template kind, spelled the way a realm's templates are keyed.
+pub const VERIFY_EMAIL_TEMPLATE: &str = "verify_email";
+
 /// How long a mailed verification link lasts, and how soon another may be
 /// asked for. The same reasoning as the sign-in link: without a window a
 /// caller loops the login and this server floods a mailbox on somebody's
@@ -782,7 +785,7 @@ async fn start_verify(
                 message: {
                     let (worded_subject, worded_body) = crate::messaging::worded(
                         realm,
-                        VERIFY_EMAIL,
+                        VERIFY_EMAIL_TEMPLATE,
                         &link,
                         "Confirm your address",
                         "Confirm this address to finish signing in. The link works once, and \

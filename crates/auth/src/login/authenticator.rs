@@ -325,6 +325,8 @@ const LINK_LIFESPAN: i64 = 600;
 const LINK_COOLDOWN: i64 = 60;
 
 const MAGIC_LINK: &str = "magic-link";
+/// The mail's template kind, spelled the way a realm's templates are keyed.
+const MAGIC_LINK_TEMPLATE: &str = "magic_link";
 
 /// Issue a link, or spend one that was followed back.
 ///
@@ -464,7 +466,7 @@ async fn magic_link(
                 let (worded_subject, worded_body) = match &realm_row {
                     Some(realm) => crate::messaging::worded(
                         realm,
-                        MAGIC_LINK,
+                        MAGIC_LINK_TEMPLATE,
                         &link,
                         "Your sign-in link",
                         "Follow this link to sign in. It works once, and only in the \

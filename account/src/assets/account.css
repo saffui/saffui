@@ -285,6 +285,7 @@ h1 {
   font: inherit;
   font-size: 14px;
   font-weight: 550;
+  text-align: left;
   cursor: pointer;
 }
 .button:hover {

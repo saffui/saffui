@@ -62,14 +62,16 @@ describe("the person's logins", () => {
     expect(ordered.map((login) => login.session_id)).toEqual(["here", "new", "old"]);
   });
 
-  test("count every login but this browser's, a closed one included", () => {
+  test("count every login but this browser's, closed ones included", () => {
     expect(
       countOtherLogins([
         composeLogin({ current: true }),
         composeLogin({}),
         composeLogin({ open: false }),
+        composeLogin({ open: false }),
       ]),
-    ).toBe(2);
+    ).toBe(3);
+    expect(countOtherLogins([composeLogin({ current: true })])).toBe(0);
   });
 });
 

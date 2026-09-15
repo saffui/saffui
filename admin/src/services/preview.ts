@@ -386,7 +386,7 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
     return answer(made);
   }
   if (/\/users\/[^/]+\/claim-sources$/.test(path)) {
-    return answer(CLAIM_SOURCES);
+    return answer(CLAIM_SOURCES.map((source) => ({ ...source })));
   }
   if (/\/users\/[^/]+\/consents\/[^/]+$/.test(path) && method === "DELETE") {
     CONSENTS.delete(decodeURIComponent(path.split("/").pop() ?? ""));

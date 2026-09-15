@@ -361,6 +361,15 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
     TAKEN_AWAY.add(path.split("/").pop() ?? "");
     return answer(null);
   }
+  if (/\/users\/[^/]+\/required-actions\/[^/]+$/.test(path) && (method === "PUT" || method === "DELETE")) {
+    const held = person(path);
+    const action = decodeURIComponent(path.split("/").pop() ?? "");
+    if (held) {
+      const standing = held.required_actions.filter((asked) => asked !== action);
+      held.required_actions = method === "PUT" ? [...standing, action] : standing;
+    }
+    return answer(undefined);
+  }
   if (/\/users\/[^/]+\/sessions\/[^/]+\/grants\/[^/]+$/.test(path) && method === "DELETE") {
     SESSION_GRANTS.delete(decodeURIComponent(path.split("/").pop() ?? ""));
     return answer(undefined);

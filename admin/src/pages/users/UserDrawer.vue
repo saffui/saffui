@@ -27,6 +27,8 @@ import {
   revokeCredential,
   revokeWebAuthnKey,
   setUserPassword,
+  releaseUserAction,
+  requireUserAction,
   readPasswordHistory,
   readCredentials,
   revokeSessionGrant,
@@ -48,6 +50,7 @@ import {
 import AppToggle from "@/components/AppToggle.vue";
 import AppHint from "@/components/AppHint.vue";
 import AppPicker from "@/components/AppPicker.vue";
+import { composeProfileChange } from "./profileChange";
 import { useRouter } from "vue-router";
 import { Eye, EyeOff } from "lucide-vue-next";
 import type {
@@ -264,44 +267,46 @@ async function saveProfile() {
     return;
   }
   try {
-    await updateUser(props.realm, props.userId, {
-      user_name: profile.value.user_name.trim() || undefined,
-      email: profile.value.email || undefined,
-      given_name: profile.value.given_name || undefined,
-      family_name: profile.value.family_name || undefined,
-      phone_number: profile.value.phone_number || undefined,
-      enabled: profile.value.enabled,
-      required_actions: askedActions.value,
-    });
+    await updateUser(props.realm, props.userId, composeProfileChange(profile.value));
     await load();
   } catch {
     // The toast already said.
   }
 }
 
-function dropAction(action: string) {
-  askedActions.value = askedActions.value.filter((held) => held !== action);
+/// What the person owes as the realm holds it now, read apart from the rest of the
+/// drawer so a draft of the profile stays as typed.
+async function refreshAskedActions() {
+  askedActions.value = [...(await getUser(props.realm, props.userId)).required_actions];
 }
-/// Ask this person for a fresh sheet, and write it now.
-///
-/// Not the draft the overview saves: a button that changes something two tabs
-/// away and only when somebody remembers to press Save is a button that lies
-/// about what it did.
+
+async function dropAction(action: string) {
+  try {
+    await releaseUserAction(props.realm, props.userId, action);
+    await refreshAskedActions();
+  } catch {
+    // The toast already said.
+  }
+}
+
 async function askForRecoveryCodes() {
   if (askedActions.value.includes("configure-recovery-codes")) return;
   try {
-    await updateUser(props.realm, props.userId, {
-      required_actions: [...askedActions.value, "configure-recovery-codes"],
-    });
-    await load();
+    await requireUserAction(props.realm, props.userId, "configure-recovery-codes");
+    await refreshAskedActions();
   } catch {
     // The toast already said.
   }
 }
 
-function askFor(action: string) {
-  if (!askedActions.value.includes(action)) askedActions.value.push(action);
+async function askFor(action: string) {
   askOpen.value = false;
+  try {
+    await requireUserAction(props.realm, props.userId, action);
+    await refreshAskedActions();
+  } catch {
+    // The toast already said.
+  }
 }
 
 const temporary = ref(true);

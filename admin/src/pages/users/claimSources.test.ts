@@ -56,7 +56,10 @@ describe("a person's claim sources", () => {
   });
 
   test("reads what a signed document says of itself, and nothing from what is not one", () => {
-    expect(readSignedDocument("eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2lkcC5leGFtcGxlIiwiZXhwIjoxNzkwMDAwMDAwLCJuYW1lIjoiQWRcdTAwZThsZSJ9.c2lnbmF0dXJl")).toEqual({ issuer: "https://idp.example", expiresAt: 1790000000 });
+    expect(readSignedDocument("eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiJodHRwczovL2lkcC5leGFtcGxlL8OpcXVpcGUiLCJleHAiOjE3OTAwMDAwMDB9.c2lnbmF0dXJl")).toEqual({
+      issuer: "https://idp.example/équipe",
+      expiresAt: 1790000000,
+    });
     expect(readSignedDocument("eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhZGEifQ.c2lnbmF0dXJl")).toEqual({ issuer: null, expiresAt: null });
     expect(readSignedDocument("not-a-document")).toBeNull();
     expect(readSignedDocument("a.%%%.c")).toBeNull();

@@ -291,6 +291,7 @@ async fn a_provider_is_kept_whole_and_its_secret_is_kept_dark() {
                 external_username: "ada@upstream".into(),
                 created_at: chrono::Utc::now(),
             },
+            false,
         )
         .await
         .unwrap();

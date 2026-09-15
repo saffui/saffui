@@ -511,7 +511,7 @@ function instant(epoch: number | null | undefined): string {
             </span>
           </label>
           <label class="block text-[11px] font-medium text-muted">
-            {{ say("users-col-email") }}
+            {{ say("users-col-email") }} <AppHint name="user-email-help" />
             <span class="inline-flex items-center gap-1">
               <AppIcon v-if="user.email_verified" name="verified" :size="12" class="text-ok" />
             </span>

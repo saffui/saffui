@@ -192,11 +192,26 @@ pub async fn email_taken(transaction: &Transaction<'_>, email: &str) -> StoreRes
 /// name are not written: a realm's users are addressed by them, so an update
 /// that moved one would be a different user wearing the same row.
 pub async fn update(transaction: &Transaction<'_>, user: &UserModel) -> StoreResult<bool> {
+    let previous = transaction
+        .query_opt(
+            "SELECT email, email_verified FROM users WHERE user_id = $1 FOR UPDATE",
+            &[&user.user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    let mut payload = event_payload(user);
+    // The address a change moves away from, for the notice that address is owed:
+    // once this statement has run, the row holds only the new one.
+    if let Some(previous) = previous.filter(|row| row.get::<_, String>("email") != user.email) {
+        payload["previous_email"] = serde_json::json!(previous.get::<_, String>("email"));
+        payload["previous_email_verified"] =
+            serde_json::json!(previous.get::<_, Option<bool>>("email_verified") == Some(true));
+    }
     super::outbox::emit(
         transaction,
         super::outbox::USER_UPDATED,
         &user.user_id,
-        &event_payload(user),
+        &payload,
     )
     .await?;
     let attributes = attributes_json(user)?;

@@ -137,10 +137,12 @@ pub async fn alias_still_linked(transaction: &Transaction<'_>, alias: &str) -> S
     Ok(row.get("held"))
 }
 
-/// Bind a local user to who they are upstream.
+/// Bind a local user to who they are upstream, and tell whoever listens, saying
+/// whether the account was made by this very sign-in.
 pub async fn link(
     transaction: &Transaction<'_>,
     identity: &FederatedIdentityModel,
+    account_created: bool,
 ) -> StoreResult<()> {
     transaction
         .execute(
@@ -159,7 +161,16 @@ pub async fn link(
         )
         .await
         .map_err(|_| StoreError::Backend)?;
-    Ok(())
+    super::outbox::emit(
+        transaction,
+        super::outbox::IDENTITY_LINKED,
+        &identity.user_id,
+        &serde_json::json!({
+            "provider": identity.provider_alias,
+            "account_created": account_created,
+        }),
+    )
+    .await
 }
 
 /// The provider aliases a local account is bound to, for reading a person's

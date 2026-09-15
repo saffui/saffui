@@ -243,75 +243,103 @@ pub async fn notices_for(
     tracing::debug!(session = %session_id, clients = party_ids.len(), "clients of the login");
     let mut notices = Vec::new();
     for client_id in party_ids {
-        let Ok(Some(client)) = clients::load(transaction, &client_id).await else {
-            // A client that took part and cannot be read now: on the record,
-            // since it is one nobody will tell.
-            tracing::warn!(%client_id, "a client of the login could not be read");
-            continue;
-        };
-        let Some(uri) = client
-            .backchannel_logout_uri
-            .clone()
-            .filter(|uri| !uri.is_empty())
-        else {
-            continue;
-        };
-        // Signed as the client reads identity tokens, since that is the key it
-        // verifies logout tokens with (§2.4).
-        let Ok(key) = crate::grant::identity_key_for(transaction, signing, &client).await else {
-            // Registered to be told and cannot be: on the record, since the
-            // client will go on believing the login is live.
-            tracing::warn!(%client_id, "no key to sign a logout token with");
-            continue;
-        };
-        // The name this client knows the person by, §2.4: the `sub` of a logout
-        // token is the `sub` that client was handed, or it names somebody it has
-        // never heard of. Every other minting path already asks pairwise for it;
-        // this one did not, so a client given a pseudonym on purpose was told
-        // the real identifier the moment anybody logged out. Refusing to tell it
-        // at all is better than telling it that: the notice is dropped and said
-        // out loud, the way an unreadable client or a missing key is.
-        let Ok(subject) =
-            crate::pairwise::subject_for(transaction, signing.provider, &client, &session.user_id)
-                .await
-        else {
-            tracing::warn!(%client_id, "no subject to name this client's person by");
-            continue;
-        };
-        let mut extra = serde_json::Map::new();
-        extra.insert(
-            "events".into(),
-            serde_json::json!({ "http://schemas.openid.net/event/backchannel-logout": {} }),
-        );
-        let minted = token::issuance::mint_token(
-            signing.provider,
-            &key,
-            token::issuance::Minting {
-                // Sent by this server to the client, never presented to it.
-                bound_to: None,
-                certified_by: None,
-                kind: token::issuance::Kind::Logout,
-                issuer,
-                subject: &subject,
-                audiences: vec![client_id.clone()],
-                party: &client_id,
-                session_id,
-                scope: "",
-                lifespan: chrono::Duration::seconds(NOTICE_LIFESPAN),
-                now,
-                extra,
-            },
-        );
-        match minted {
-            Ok(minted) => notices.push(Notice {
-                client_id,
-                uri,
-                logout_token: minted.token,
-            }),
-            Err(why) => tracing::warn!(%client_id, why = ?why, "no logout token to tell with"),
-        }
+        notices.extend(mint_notice(transaction, signing, issuer, &session, &client_id, now).await);
     }
     notices
+}
+
+/// The notice for one client of a login, when it registered where to be told: for an
+/// application whose grant alone is taken back while the login goes on.
+pub async fn notice_for_client(
+    transaction: &Transaction<'_>,
+    signing: &crate::grant::Signing<'_>,
+    issuer: &str,
+    session_id: &str,
+    client_id: &str,
+    now: DateTime<Utc>,
+) -> Option<Notice> {
+    let Ok(Some(session)) = sessions::load(transaction, session_id).await else {
+        tracing::warn!(session = %session_id, "no login to tell anybody about");
+        return None;
+    };
+    mint_notice(transaction, signing, issuer, &session, client_id, now).await
+}
+
+async fn mint_notice(
+    transaction: &Transaction<'_>,
+    signing: &crate::grant::Signing<'_>,
+    issuer: &str,
+    session: &models::sessions::records::UserSessionModel,
+    client_id: &str,
+    now: DateTime<Utc>,
+) -> Option<Notice> {
+    let Ok(Some(client)) = clients::load(transaction, client_id).await else {
+        // A client that took part and cannot be read now: on the record,
+        // since it is one nobody will tell.
+        tracing::warn!(%client_id, "a client of the login could not be read");
+        return None;
+    };
+    let uri = client
+        .backchannel_logout_uri
+        .clone()
+        .filter(|uri| !uri.is_empty())?;
+    // Signed as the client reads identity tokens, since that is the key it
+    // verifies logout tokens with (§2.4).
+    let Ok(key) = crate::grant::identity_key_for(transaction, signing, &client).await else {
+        // Registered to be told and cannot be: on the record, since the
+        // client will go on believing the login is live.
+        tracing::warn!(%client_id, "no key to sign a logout token with");
+        return None;
+    };
+    // The name this client knows the person by, §2.4: the `sub` of a logout
+    // token is the `sub` that client was handed, or it names somebody it has
+    // never heard of. Every other minting path already asks pairwise for it;
+    // this one did not, so a client given a pseudonym on purpose was told
+    // the real identifier the moment anybody logged out. Refusing to tell it
+    // at all is better than telling it that: the notice is dropped and said
+    // out loud, the way an unreadable client or a missing key is.
+    let Ok(subject) =
+        crate::pairwise::subject_for(transaction, signing.provider, &client, &session.user_id)
+            .await
+    else {
+        tracing::warn!(%client_id, "no subject to name this client's person by");
+        return None;
+    };
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "events".into(),
+        serde_json::json!({ "http://schemas.openid.net/event/backchannel-logout": {} }),
+    );
+    let minted = token::issuance::mint_token(
+        signing.provider,
+        &key,
+        token::issuance::Minting {
+            // Sent by this server to the client, never presented to it.
+            bound_to: None,
+            certified_by: None,
+            kind: token::issuance::Kind::Logout,
+            issuer,
+            subject: &subject,
+            audiences: vec![client_id.to_owned()],
+            party: client_id,
+            session_id: &session.session_id,
+            scope: "",
+            lifespan: chrono::Duration::seconds(NOTICE_LIFESPAN),
+            now,
+            extra,
+        },
+    );
+    match minted {
+        Ok(minted) => Some(Notice {
+            client_id: client_id.to_owned(),
+            uri,
+            logout_token: minted.token,
+        }),
+        Err(why) => {
+            tracing::warn!(%client_id, why = ?why, "no logout token to tell with");
+            None
+        }
+    }
 }
 
 /// End the logins an upstream's logout names. Every client of each login is told

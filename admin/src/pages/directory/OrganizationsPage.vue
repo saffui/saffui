@@ -2,7 +2,7 @@
 import PageTabs from "@/components/PageTabs.vue";
 import { computed, onMounted, ref } from "vue";
 import { afterWrites } from "@/services/writes";
-import { useRoute } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 import AppDrawer from "@/components/AppDrawer.vue";
 import AppPicker from "@/components/AppPicker.vue";
 import { say } from "@/i18n";
@@ -13,21 +13,18 @@ import {
   createOrganization,
   deleteOrganization,
   dropDomain,
-  forgetOrganizationTheme,
   getOrganization,
   getOrganizationTheme,
   listOrganizationMembers,
   listOrganizations,
   removeOrganizationMember,
   updateOrganization,
-  writeOrganizationTheme,
   verifyDomain,
 } from "@/services/directory";
 import { listUsers } from "@/services/users";
 import AppHint from "@/components/AppHint.vue";
 import type { Page } from "@/models/paging";
 import type { OrganizationRow, OrgMember } from "@/models/directory";
-import type { RealmTheme } from "@/models/realm";
 import DirectoryTable from "./DirectoryTable.vue";
 import { composeOrganizationChange, type OrganizationDraft } from "./organizationChange";
 import { organizationMemberPickerRows } from "@/pages/adminActionPickers";
@@ -56,11 +53,7 @@ const members = ref<OrgMember[] | null>(null);
 const memberNames = ref<Record<string, string>>({});
 const memberPickerOpen = ref(false);
 const memberPickerRows = ref<{ id: string; label: string; held: boolean }[]>([]);
-const themeHalf = ref<"light" | "dark">("light");
-const orgTheme = ref<{ light: Record<string, string>; dark: Record<string, string> }>({ light: {}, dark: {} });
 const themeWorn = ref(false);
-const themeFailed = ref("");
-const THEME_TOKENS = ["brand-primary", "brand-on-primary", "bg", "surface", "ink", "muted", "border", "danger", "radius", "font-sans", "card-border-width", "card-shadow", "logo-display", "logo-radius", "field-bg"];
 
 async function load() {
   try {
@@ -185,7 +178,6 @@ async function open(org: OrganizationRow) {
   memberNames.value = Object.fromEntries(
     (users?.items ?? []).map((user) => [user.user_id, user.user_name]),
   );
-  orgTheme.value = { light: { ...theme?.light }, dark: { ...theme?.dark } };
   themeWorn.value = theme !== null;
 }
 
@@ -222,33 +214,6 @@ async function removeMember(userId: string) {
     await refreshMembers();
   } catch {
     // The toast already said.
-  }
-}
-
-async function saveTheme() {
-  if (!opened.value) return;
-  themeFailed.value = "";
-  const theme: NonNullable<RealmTheme> = {};
-  for (const half of ["light", "dark"] as const) {
-    const values = Object.fromEntries(Object.entries(orgTheme.value[half]).filter(([, value]) => value.trim()));
-    if (Object.keys(values).length) theme[half] = values;
-  }
-  try {
-    await writeOrganizationTheme(realm.value, opened.value.org_id, theme);
-    themeWorn.value = true;
-  } catch (refused) {
-    themeFailed.value = refused instanceof Error ? refused.message : String(refused);
-  }
-}
-
-async function clearTheme() {
-  if (!opened.value) return;
-  try {
-    await forgetOrganizationTheme(realm.value, opened.value.org_id);
-    orgTheme.value = { light: {}, dark: {} };
-    themeWorn.value = false;
-  } catch (refused) {
-    themeFailed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
 
@@ -382,6 +347,18 @@ function joined(member: OrgMember): string {
         <dd v-if="opened.redirect_url" class="font-mono text-[10.5px]">
           {{ opened.redirect_url }}
         </dd>
+        <template v-if="organizationLoaded">
+          <dt class="text-muted">{{ say("nav-theme") }}</dt>
+          <dd class="flex flex-wrap items-center gap-x-2">
+            {{ themeWorn ? say("org-theme-own") : say("org-theme-realm") }}
+            <RouterLink
+              :to="{ path: `/${realm}/theme`, query: { organization: opened.org_id } }"
+              class="text-accent hover:underline"
+            >
+              {{ say("org-theme-edit") }}
+            </RouterLink>
+          </dd>
+        </template>
       </dl>
 
       <div class="mt-4">
@@ -506,34 +483,6 @@ function joined(member: OrgMember): string {
           @add="addMember"
           @close="memberPickerOpen = false"
         />
-      </div>
-      <div class="mt-4 border-t border-border pt-4">
-        <div class="flex items-center gap-2">
-          <div>
-            <div class="text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
-              {{ say("org-theme-title") }}
-            </div>
-            <p class="mt-1 text-[11px] text-muted">{{ say("org-theme-lede") }}</p>
-          </div>
-          <button v-if="themeWorn" type="button" class="ml-auto text-[10.5px] text-danger hover:underline" @click="clearTheme">
-            {{ say("org-theme-inherit") }}
-          </button>
-        </div>
-        <div class="mt-2 flex gap-1">
-          <button v-for="which in ['light', 'dark'] as const" :key="which" type="button" class="rounded px-2 py-1 text-[10.5px] text-muted hover:bg-surface-2" :class="themeHalf === which && 'bg-surface-2 text-ink'" @click="themeHalf = which">
-            {{ say(`theme-half-${which}`) }}
-          </button>
-        </div>
-        <div class="mt-2 grid gap-1.5">
-          <label v-for="token in THEME_TOKENS" :key="token" class="grid grid-cols-[112px_1fr] items-center gap-2 text-[10.5px] text-muted">
-            <span class="font-mono">--{{ token }}</span>
-            <input v-model="orgTheme[themeHalf][token]" class="sf-field font-mono text-[10.5px]" :placeholder="say('theme-inherit')" spellcheck="false" />
-          </label>
-        </div>
-        <p v-if="themeFailed" class="mt-2 text-[10.5px] text-danger" role="alert">{{ themeFailed }}</p>
-        <button type="button" class="sf-button sf-button-secondary mt-2" @click="saveTheme">
-          {{ say("settings-save") }}
-        </button>
       </div>
       <div class="mt-4 rounded-lg border border-danger/40 p-3">
         <div class="text-[11px] font-semibold tracking-[0.08em] text-danger uppercase">

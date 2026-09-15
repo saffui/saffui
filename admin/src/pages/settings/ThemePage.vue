@@ -33,7 +33,7 @@ const organization = computed(() => readThemeOrganization(route.query.organizati
 const chosenOrganization = computed({
   get: () => organization.value,
   set: (chosen: string) => {
-    void router.replace({ query: chosen ? { organization: chosen } : {} });
+    void router.push({ query: chosen ? { organization: chosen } : {} });
   },
 });
 const organizations = ref<OrganizationRow[]>([]);

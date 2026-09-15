@@ -11,6 +11,7 @@ import {
   reorderFlow,
   reworkAction,
   setRequirement,
+  unregisterAction,
 } from "@/services/flows";
 import { keepAnswer, REALM } from "./answers";
 
@@ -18,6 +19,8 @@ const ACTIONS = [
   { action: "verify-email", provider: "mail", title: "Verify email" },
   { action: "configure-totp", provider: "totp", title: "Configure authenticator app" },
   { action: "update-password", provider: "password", title: "Update password" },
+  { action: "configure-recovery-codes", provider: "recovery-code", title: "Draw recovery codes" },
+  { action: "configure-webauthn", provider: "webauthn", title: "Configure passkey" },
 ];
 
 describe("authentication flows", () => {
@@ -46,9 +49,10 @@ describe("authentication flows", () => {
     await deleteFlow(REALM, flow.flow_id);
   });
 
-  test("registers a required action and reworks it", async () => {
+  test("registers a required action, reworks it and unregisters it", async () => {
     const registered = await keepAnswer(listActions, REALM);
     const fresh = ACTIONS.find((held) => !registered.some((row) => row.action === held.action));
+    expect(fresh).toBeDefined();
     const row = fresh
       ? await keepAnswer(registerAction, REALM, {
           provider_id: fresh.provider,
@@ -73,5 +77,8 @@ describe("authentication flows", () => {
       on_time_action: row.on_time_action,
       priority: row.priority,
     });
+    await unregisterAction(REALM, row.action);
+    const left = await keepAnswer(listActions, REALM);
+    expect(left.some((held) => held.action === row.action)).toBe(false);
   });
 });

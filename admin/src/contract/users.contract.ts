@@ -24,6 +24,8 @@ import {
   revokeSessionGrant,
   revokeWebAuthnKey,
   setUserPassword,
+  releaseUserAction,
+  requireUserAction,
   updateUser,
   withdrawConsent,
 } from "@/services/users";
@@ -95,7 +97,7 @@ describe("users", () => {
     expect(left.some((source) => [signed.source_id, fetched.source_id].includes(source.source_id))).toBe(false);
   });
 
-  test("creates a person, replaces their password, and removes them", async () => {
+  test("creates a person, asks one action of them and takes it back, replaces their password, and removes them", async () => {
     const profile = {
       user_name: "grace",
       email: "grace@example.test",
@@ -105,6 +107,12 @@ describe("users", () => {
     };
     const born = await keepAnswer(createUser, REALM, profile);
     await updateUser(REALM, born.user_id, { ...profile, required_actions: [] });
+    await requireUserAction(REALM, born.user_id, "verify-email");
+    const asked = await keepAnswer(getUser, REALM, born.user_id);
+    expect(asked.required_actions).toContain("verify-email");
+    await releaseUserAction(REALM, born.user_id, "verify-email");
+    const released = await keepAnswer(getUser, REALM, born.user_id);
+    expect(released.required_actions).not.toContain("verify-email");
     await setUserPassword(REALM, born.user_id, "a-first-password-of-decent-length");
     await setUserPassword(REALM, born.user_id, "a-second-password-of-decent-length");
     const history = await keepAnswer(readPasswordHistory, REALM, born.user_id);

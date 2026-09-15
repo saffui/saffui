@@ -8,7 +8,7 @@ vi.mock("./session", () => ({
   loseSignIn: (why: string) => void held.lost.push(why),
 }));
 
-import { api, ApiError } from "./http";
+import { api, ApiError, StepUpNeeded } from "./http";
 
 function stubFetch(answer: Response) {
   const fetched = vi.fn(async (_path: string, _init?: RequestInit) => answer);
@@ -65,6 +65,22 @@ describe("the account API door", () => {
     );
     await expect(api("/x")).rejects.toBeInstanceOf(ApiError);
     expect(held.lost).toEqual(["ended"]);
+  });
+
+  test("passes on the sign-in a change needs, and keeps the one held", async () => {
+    stubFetch(
+      new Response(null, {
+        status: 401,
+        headers: {
+          "www-authenticate":
+            'Bearer error="insufficient_user_authentication", error_description="sign in again, recently and as strongly as this account allows", acr_values="password", max_age="300"',
+        },
+      }),
+    );
+    const refused = await api("/x").catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(StepUpNeeded);
+    expect((refused as StepUpNeeded).challenge).toMatchObject({ acrValues: "password", maxAge: 300 });
+    expect(held.lost).toEqual([]);
   });
 
   test("loses a sign-in refused just after it was made, as refused", async () => {

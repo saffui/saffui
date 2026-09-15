@@ -1314,6 +1314,25 @@ async fn ending_the_login_the_request_rides_signs_the_console_out() {
 async fn the_account_console_contract_holds_against_a_live_server() {
     let plane = Plane::with_actions(&[]).await;
     provision_account_console(&plane).await;
+    // The person signed in elsewhere too, and an application got offline access
+    // there: what the console lists, takes back and ends without ending its own.
+    open_login(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        UserSessionState::LoggedIn,
+        None,
+        Some(CHROME_ON_WINDOWS),
+    )
+    .await;
+    plant_grant(
+        &plane,
+        ELSEWHERE,
+        support::SUBJECT,
+        support::CONFIDENTIAL,
+        true,
+    )
+    .await;
     let bearer = plane.token(&account_claims());
 
     let served = mounted(&plane);

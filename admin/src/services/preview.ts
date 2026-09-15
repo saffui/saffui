@@ -53,7 +53,7 @@ const EVENT_HISTORY = [
   { event_id: 809, kind: "user.updated", user_id: "grace", occurred_at: new Date((NOW - 7200) * 1000).toISOString() },
   { event_id: 810, kind: "identity.linked", user_id: "linus", occurred_at: new Date((NOW - 5400) * 1000).toISOString() },
   { event_id: 811, kind: "agent.revoked", user_id: "kiosk-tv", occurred_at: new Date((NOW - 3600) * 1000).toISOString() },
-  { event_id: 812, kind: "user.updated", user_id: "mira", occurred_at: new Date((NOW - 5400) * 1000).toISOString() },
+  { event_id: 812, kind: "user.updated", user_id: "mira", occurred_at: new Date((NOW - 1800) * 1000).toISOString() },
 ];
 /// A registered action can be unregistered here, and the table has to show it.
 const REGISTERED_ACTIONS = [

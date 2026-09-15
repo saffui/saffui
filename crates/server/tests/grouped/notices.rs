@@ -415,3 +415,64 @@ async fn a_notice_refused_every_time_is_given_up_on_the_record() {
         "a refused notice was recorded as delivered"
     );
 }
+
+/// A happening about somebody no longer held owes nothing, and does not stop the
+/// walk: the notice another change owes still goes out.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_happening_about_nobody_held_does_not_stop_the_walk() {
+    let plane = Plane::with_actions(&[]).await;
+    arrange_mail(&plane).await;
+    walk(&plane, None).await;
+    let postbox = Postbox::default();
+
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane.scoped(&mut connection, &within()).await;
+        store::providers::outbox::emit(
+            &transaction,
+            store::providers::outbox::CREDENTIAL_CHANGED,
+            "somebody-gone",
+            &json!({ "credential_type": "password", "change_type": "update" }),
+        )
+        .await
+        .expect("an emission");
+        transaction.commit().await.expect("the happening kept");
+    }
+    plane.enrol_totp("app-two", support::TOTP_SECRET).await;
+    walk(&plane, Some(&postbox)).await;
+
+    assert_eq!(postbox.held().len(), 1, "{:?}", postbox.held());
+}
+
+/// Settled notices leave once their window has passed, and a notice still owed
+/// stays however old it is.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn settled_notices_age_out_and_owed_ones_stay() {
+    let plane = Plane::with_actions(&[]).await;
+    walk(&plane, None).await;
+    let settled = notice_states(&plane).await;
+    assert!(
+        settled.len() >= 2,
+        "the planted world owed too few notices: {settled:?}"
+    );
+
+    let mut connection = plane.connection().await;
+    let transaction = plane.scoped(&mut connection, &within()).await;
+    transaction
+        .batch_execute(
+            "UPDATE security_notices SET occurred_at = now() - interval '31 days'; \
+             UPDATE security_notices SET state = 'pending' \
+             WHERE event_id = (SELECT min(event_id) FROM security_notices)",
+        )
+        .await
+        .expect("the notices aged");
+    let swept = services::housekeeping::drop_expired_rows(&transaction, chrono::Utc::now())
+        .await
+        .expect("a sweep");
+    transaction.commit().await.expect("the sweep kept");
+
+    assert_eq!(swept.security_notices, settled.len() as u64 - 1);
+    assert_eq!(notice_states(&plane).await, ["pending"]);
+}

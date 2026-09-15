@@ -144,7 +144,7 @@ user-session-grant-revoke = Revoke grant
 user-session-grant-revoke-help = Removes what this client obtained from this sign-in, including offline access. The sign-in and other clients remain.
 user-no-consents = Nothing has been consented to.
 user-consent-withdraw = Withdraw
-user-consent-withdraw-help = The client will ask for consent again at the next sign-in. Existing access remains valid; revoke it from Sessions.
+user-consent-withdraw-help = Only the record of the agreement goes. The client asks again at a next sign-in only where it requires consent, or when it asks with prompt=consent. What it already holds stays valid; take it back from Sessions.
 
 user-tab-memberships = Memberships
 user-roles = Roles

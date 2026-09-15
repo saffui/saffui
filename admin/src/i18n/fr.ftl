@@ -144,7 +144,7 @@ user-session-grant-revoke = Révoquer l'octroi
 user-session-grant-revoke-help = Retire ce que ce client a obtenu de cette connexion, accès hors ligne compris. La connexion et les autres clients restent.
 user-no-consents = Rien n'a été consenti.
 user-consent-withdraw = Retirer
-user-consent-withdraw-help = Le client redemandera l'accord à la prochaine connexion. Ce qu'il a déjà obtenu reste valable : pour le couper, révoquer son accès dans l'onglet Sessions.
+user-consent-withdraw-help = Seule la trace de l'accord disparaît. Le client ne redemande l'accord à une prochaine connexion que s'il exige le consentement, ou s'il le demande avec prompt=consent. Ce qu'il a déjà obtenu reste valable : pour le couper, révoquer son accès dans l'onglet Sessions.
 
 user-tab-memberships = Appartenances
 user-roles = Rôles

@@ -106,9 +106,17 @@ export function invalidThemeToken(
   return null;
 }
 
-export function effective(draft: ThemeDraft, half: ThemeHalf, token: ThemeToken): string {
+/// What the pages show for a token: the draft's value, else the value of the theme
+/// beneath it (an organization's lies over the realm's), else the built-in palette.
+export function effective(
+  draft: ThemeDraft,
+  half: ThemeHalf,
+  token: ThemeToken,
+  beneath?: ThemeDraft,
+): string {
   const value = draft[half][token]?.trim();
-  return value && safeThemeValue(value) ? value : THEME_DEFAULTS[half][token];
+  if (value && safeThemeValue(value)) return value;
+  return beneath ? effective(beneath, half, token) : THEME_DEFAULTS[half][token];
 }
 
 export function themeDocument(draft: ThemeDraft): NonNullable<RealmTheme> {

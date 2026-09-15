@@ -41,4 +41,18 @@ describe("theme form", () => {
     expect(invalidThemeToken(draft)).toEqual({ half: "light", token: "bg" });
     expect(effective(draft, "light", "bg")).toBe(THEME_DEFAULTS.light.bg);
   });
+
+  test("shows what an organization inherits from the realm before the built-in palette", () => {
+    const realm = emptyTheme({
+      light: { "brand-primary": "#123456", bg: "url(https://tracker.example/pixel)" },
+    });
+    const organization = emptyTheme({ light: { ink: "#ABCDEF" } });
+
+    expect(effective(organization, "light", "ink", realm)).toBe("#ABCDEF");
+    expect(effective(organization, "light", "brand-primary", realm)).toBe("#123456");
+    expect(effective(organization, "light", "bg", realm)).toBe(THEME_DEFAULTS.light.bg);
+    expect(effective(organization, "dark", "brand-primary", realm)).toBe(
+      THEME_DEFAULTS.dark["brand-primary"],
+    );
+  });
 });

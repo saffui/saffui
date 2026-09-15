@@ -2,6 +2,7 @@ app-title = Compte { $realm }
 loading = Chargement…
 nav-label = Votre compte
 nav-profile = Profil
+nav-sessions = Connexions
 tongue-label = Langue
 tongue-help = La langue de cette page, et des pages de connexion vers lesquelles elle vous envoie.
 tongue-en = English
@@ -50,3 +51,51 @@ trouble-lead = { $realm } n'a pas accepté que cette page utilise votre connexio
 trouble-again = Réessayer
 nowhere-title = Aucune page de compte ici
 nowhere-lead = Cette adresse ne nomme aucun realm. Une page de compte se trouve à /realms/, suivi du nom du realm, puis de /account/.
+
+sessions-title = Connexions
+sessions-lead = Les endroits où votre compte est connecté, et ce que les applications ont obtenu de chaque connexion. Mettez fin à celles que vous ne reconnaissez pas.
+sessions-unreadable = Vos connexions n'ont pas pu être lues. Rechargez la page pour réessayer.
+sessions-end-others = Déconnecter partout ailleurs
+sessions-end-others-help = Met fin à toutes les connexions sauf celle de ce navigateur, avec les accès hors ligne qui en dépendent.
+sessions-no-others = Ce navigateur est votre seule connexion.
+sessions-device = { $browser } sur { $system }
+sessions-device-unknown = Appareil inconnu
+sessions-this-browser = Ce navigateur
+sessions-this-browser-help = La connexion qu'utilise cette page en ce moment.
+sessions-closed = Terminée
+sessions-closed-help = Cette connexion est terminée, mais une application garde un accès hors ligne obtenu grâce à elle.
+sessions-started = Connexion le { $when }
+sessions-from = Depuis { $address }
+sessions-through = Via { $provider }
+sessions-ends = Prend fin le { $when }
+sessions-applications = Applications
+sessions-no-applications = Aucune application ne détient d'accès par cette connexion.
+sessions-offline = Accès hors ligne
+sessions-offline-help = { $application } peut accéder à votre compte en votre absence, jusqu'à ce que cet accès lui soit retiré.
+sessions-take-back = Retirer l'accès
+sessions-take-back-help = Retirer ce que { $application } a obtenu par cette connexion.
+sessions-end = Mettre fin à cette connexion
+sessions-end-current = Se déconnecter de ce navigateur
+sessions-ended = La connexion a pris fin.
+sessions-ended-others = { $count ->
+    [0] Aucune autre connexion n'était ouverte.
+    [one] Une autre connexion a pris fin.
+   *[other] { $count } autres connexions ont pris fin.
+}
+sessions-taken-back = { $application } ne détient plus d'accès par cette connexion.
+sessions-gone = C'était déjà terminé. La liste est à jour.
+sessions-failed = La modification n'a pas abouti. Rechargez la page pour voir où en sont les choses.
+
+confirm-keep = Annuler
+confirm-end-title = Mettre fin à cette connexion ?
+confirm-end-body = { $device } est déconnecté et perd les accès hors ligne qui dépendent de cette connexion. Les applications qui ont demandé à en être informées le sont.
+confirm-end = Mettre fin
+confirm-end-current-title = Se déconnecter de ce navigateur ?
+confirm-end-current-body = Votre connexion ici prend fin, avec les accès hors ligne qui en dépendent. Les applications qui ont demandé à en être informées le sont.
+confirm-end-current = Se déconnecter
+confirm-end-others-title = Déconnecter partout ailleurs ?
+confirm-end-others-body = Toutes les autres connexions prennent fin, avec les accès hors ligne qui en dépendent. Ce navigateur reste connecté.
+confirm-end-others = Déconnecter partout ailleurs
+confirm-take-back-title = Retirer l'accès de { $application } ?
+confirm-take-back-body = { $application } perd ce qu'elle a obtenu par cette connexion, accès hors ligne compris. Un jeton qu'elle détient déjà fonctionne jusqu'à son expiration, en général quelques minutes. Cette page reste connectée.
+confirm-take-back = Retirer l'accès

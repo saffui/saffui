@@ -2,6 +2,7 @@ app-title = { $realm } account
 loading = Loading…
 nav-label = Your account
 nav-profile = Profile
+nav-sessions = Sign-ins
 tongue-label = Language
 tongue-help = The language of this page, and of the sign-in pages it sends you to.
 tongue-en = English
@@ -50,3 +51,51 @@ trouble-lead = { $realm } did not let this page use your sign-in. Try again, and
 trouble-again = Try again
 nowhere-title = No account page here
 nowhere-lead = This address names no realm. An account page lives at /realms/, then the realm's name, then /account/.
+
+sessions-title = Sign-ins
+sessions-lead = Where your account is signed in, and what applications got from each sign-in. End any you do not recognise.
+sessions-unreadable = Your sign-ins could not be read. Reload the page to try again.
+sessions-end-others = Sign out everywhere else
+sessions-end-others-help = Ends every sign-in but this browser's, with the offline access that relies on them.
+sessions-no-others = This browser is your only sign-in.
+sessions-device = { $browser } on { $system }
+sessions-device-unknown = Unknown device
+sessions-this-browser = This browser
+sessions-this-browser-help = The sign-in this page is using right now.
+sessions-closed = Signed out
+sessions-closed-help = This sign-in has ended, but an application still holds offline access from it.
+sessions-started = Signed in on { $when }
+sessions-from = From { $address }
+sessions-through = Through { $provider }
+sessions-ends = Ends on { $when }
+sessions-applications = Applications
+sessions-no-applications = No application holds access through this sign-in.
+sessions-offline = Offline access
+sessions-offline-help = { $application } can keep reaching your account while you are away, until its access is taken back.
+sessions-take-back = Take back access
+sessions-take-back-help = Take back what { $application } got through this sign-in.
+sessions-end = End this sign-in
+sessions-end-current = Sign out of this browser
+sessions-ended = The sign-in ended.
+sessions-ended-others = { $count ->
+    [0] No other sign-in was open.
+    [one] One other sign-in ended.
+   *[other] { $count } other sign-ins ended.
+}
+sessions-taken-back = { $application } no longer holds access through that sign-in.
+sessions-gone = That had already ended. The list is up to date.
+sessions-failed = The change did not go through. Reload the page to see where things stand.
+
+confirm-keep = Cancel
+confirm-end-title = End this sign-in?
+confirm-end-body = { $device } is signed out, and loses the offline access that relies on this sign-in. Applications that asked to hear of it are told.
+confirm-end = End sign-in
+confirm-end-current-title = Sign out of this browser?
+confirm-end-current-body = Your sign-in here ends, with the offline access that relies on it. Applications that asked to hear of it are told.
+confirm-end-current = Sign out
+confirm-end-others-title = Sign out everywhere else?
+confirm-end-others-body = Every other sign-in ends, with the offline access that relies on it. This browser stays signed in.
+confirm-end-others = Sign out everywhere else
+confirm-take-back-title = Take back { $application }'s access?
+confirm-take-back-body = { $application } loses what it got through this sign-in, offline access included. A token it already holds keeps working until it runs out, usually within minutes. This page stays signed in.
+confirm-take-back = Take back access

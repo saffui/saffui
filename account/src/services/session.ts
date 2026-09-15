@@ -96,7 +96,7 @@ export async function readBearer(now = Date.now()): Promise<string> {
 }
 
 export function loseSignIn(why: "ended" | "refused"): void {
-  forgetTokens();
+  forgetSignIn();
   session.lost = why;
 }
 
@@ -104,7 +104,7 @@ export function loseSignIn(why: "ended" | "refused"): void {
 /// cannot be reached still leaves nothing usable behind in the page.
 export async function signOut(): Promise<void> {
   const { realm, idToken } = session;
-  forgetTokens();
+  forgetSignIn();
   try {
     await openClient(realm).logout(idToken || undefined);
   } catch {
@@ -112,7 +112,9 @@ export async function signOut(): Promise<void> {
   }
 }
 
-function forgetTokens(): void {
+/// Forget the sign-in here only: what signing out does in this page, and all that is
+/// left to do once the server has ended the login itself.
+export function forgetSignIn(): void {
   session.accessToken = "";
   session.refreshToken = "";
   session.idToken = "";

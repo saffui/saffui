@@ -319,6 +319,28 @@ pub fn sealing() -> server::api::config::Sealing {
     sealing_sending(None)
 }
 
+/// What the sign-in page writes into its form for this login.
+///
+/// A browser gets this by being served the page. A suite whose subject is not
+/// the page takes it here instead, so the form it posts is one the door will
+/// answer, without every unrelated setup having to fetch and parse a page.
+/// Sealed by the server's own function rather than a copy of it, so a scope
+/// that changed there would fail here rather than drift.
+#[allow(dead_code, reason = "only the suites that post a form need it")]
+pub async fn page_token_for(plane: &Plane, binding: &str) -> String {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
+        .await;
+    let sealing = sealing();
+    let ring = store::keyring::load(&transaction, &sealing.envelope, TENANT, REALM)
+        .await
+        .expect("the realm's keyring");
+    server::api::rest::endpoints::protocol::forgery::mint(&ring, &sealing.envelope, binding)
+        .await
+        .expect("what the page would have carried")
+}
+
 /// The same, with something to carry a message out.
 #[allow(dead_code, reason = "only the mailed suite sends")]
 pub fn sealing_sending(

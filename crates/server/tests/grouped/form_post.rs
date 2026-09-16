@@ -65,6 +65,7 @@ async fn opened(plane: &Plane, mode: Option<&str>) -> (StatusCode, String, Vec<S
 /// Answer the login as a browser posting the form does, and hand back the whole
 /// response.
 async fn answered(plane: &Plane, binding: &str) -> (StatusCode, String, String) {
+    let minted = support::page_token_for(plane, binding).await;
     let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
     let response = test::call_service(
         &app,
@@ -80,6 +81,7 @@ async fn answered(plane: &Plane, binding: &str) -> (StatusCode, String, String) 
             .set_form([
                 ("username", support::SUBJECT),
                 ("password", support::PASSWORD),
+                ("page_token", minted.as_str()),
             ])
             .to_request(),
     )
@@ -131,6 +133,7 @@ async fn a_request_naming_no_mode_is_answered_at_the_redirect() {
     let plane = Plane::with_actions(&[]).await;
     let (_, _, cookies) = opened(&plane, None).await;
     let binding = cookie_value(&cookies, support::AUTH_SESSION_COOKIE).expect("a login");
+    let minted = support::page_token_for(&plane, &binding).await;
 
     let app = test::init_service(App::new().configure(register(&mounted(&plane)))).await;
     let response = test::call_service(
@@ -147,6 +150,7 @@ async fn a_request_naming_no_mode_is_answered_at_the_redirect() {
             .set_form([
                 ("username", support::SUBJECT),
                 ("password", support::PASSWORD),
+                ("page_token", minted.as_str()),
             ])
             .to_request(),
     )

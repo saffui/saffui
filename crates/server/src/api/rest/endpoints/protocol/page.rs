@@ -114,6 +114,9 @@ struct LiveLogin {
     ui_locales: Option<String>,
     /// Where somebody goes back to if the login dies behind the page.
     way_back: Option<WayBack>,
+    /// What the form carries to show it was served here for this login. None
+    /// where no login is open, which is a page whose form is refused anyway.
+    page_token: Option<String>,
 }
 
 /// The application a login came from, as the page offers it back.
@@ -290,6 +293,7 @@ async fn read_live_login(
     request: &actix_web::HttpRequest,
     pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
+    sealing: &crate::api::config::Sealing,
     realm: &str,
 ) -> LiveLogin {
     let Some(binding) = super::binding::read(request, super::binding::AUTH_SESSION) else {
@@ -316,9 +320,24 @@ async fn read_live_login(
         Ok(Some(client)) => find_way_back(&client),
         _ => None,
     };
+    // Minted here rather than on its own trip: this transaction is open and
+    // this login already read, and a page served on every sign-in does not
+    // need a fourth visit to the database to say where its form came from.
+    let page_token = match store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &context.tenant,
+        &context.realm_id,
+    )
+    .await
+    {
+        Ok(ring) => super::forgery::mint(&ring, &sealing.envelope, &binding).await,
+        Err(_) => None,
+    };
     LiveLogin {
         ui_locales,
         way_back,
+        page_token,
     }
 }
 
@@ -419,7 +438,11 @@ fn page(
                         .unwrap_or_default(),
                 )
                 .replace("{back-address}", &escaped(address))
-                .replace("{back-name}", &escaped(name)),
+                .replace("{back-name}", &escaped(name))
+                .replace(
+                    "{token}",
+                    &escaped(live.page_token.as_deref().unwrap_or_default()),
+                ),
         )
 }
 
@@ -586,6 +609,7 @@ pub async fn magic_link(
     realm: web::Path<String>,
     pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<store::tenancy::Tenancy>,
+    sealing: web::Data<crate::api::config::Sealing>,
     asked: web::Query<Followed>,
 ) -> HttpResponse {
     let asked = asked.into_inner();
@@ -603,7 +627,7 @@ pub async fn magic_link(
                 .map(|token| ("verify_email", token))
         });
     let Some((named, token)) = followed else {
-        let live = read_live_login(&request, &pool, &tenancy, &realm).await;
+        let live = read_live_login(&request, &pool, &tenancy, &sealing, &realm).await;
         let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
         let (doors, idps, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
         return page(
@@ -616,13 +640,21 @@ pub async fn magic_link(
             policy.as_ref(),
         );
     };
+    // This page posts to the same door the sign-in form posts to, so it carries
+    // what that door asks of a form. The login is the one this browser already
+    // holds: a link is followed in the browser that started the sign-in.
+    let minted = read_live_login(&request, &pool, &tenancy, &sealing, &realm)
+        .await
+        .page_token
+        .unwrap_or_default();
     let body = LINK_PAGE
         .replace(
             "{action}",
             &escaped(&format!("/realms/{realm}/protocol/openid-connect/login")),
         )
         .replace("{field}", &escaped(named))
-        .replace("{token}", &escaped(&token));
+        .replace("{token}", &escaped(&token))
+        .replace("{page-token}", &escaped(&minted));
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
         .insert_header(("Content-Security-Policy", POLICY))
@@ -648,6 +680,7 @@ const LINK_PAGE: &str = r#"<!doctype html>
 <p>Follow through to finish signing in on this browser.</p>
 <form method="post" action="{action}">
 <input type="hidden" name="{field}" value="{token}">
+<input type="hidden" name="page_token" value="{page-token}">
 <button type="submit">Continue</button>
 </form></main></body></html>
 "#;

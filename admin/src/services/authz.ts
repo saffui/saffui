@@ -7,7 +7,10 @@ import type {
   EvaluateQuestion,
   PolicyListing,
   PolicyRow,
+  ProtectedServer,
+  ProtectionChange,
   ResourceRow,
+  ResourceShare,
   ScopeRow,
   TuplePage,
   UnreadablePolicyRow,
@@ -121,6 +124,58 @@ export async function protectClient(
       user_managed_access: shareable,
     },
     subject: say("subject-server", { client: clientId }),
+  });
+}
+
+export async function readProtectedServer(
+  realm: string,
+  clientId: string,
+): Promise<ProtectedServer> {
+  return api<ProtectedServer>(adminPath(realm, `authz/servers/${encodeURIComponent(clientId)}`));
+}
+
+export async function setProtection(
+  realm: string,
+  clientId: string,
+  change: ProtectionChange,
+): Promise<void> {
+  await api<unknown>(adminPath(realm, `authz/servers/${encodeURIComponent(clientId)}`), {
+    method: "PUT",
+    json: change,
+    subject: say("subject-server", { client: clientId }),
+  });
+}
+
+export async function unprotectClient(realm: string, clientId: string): Promise<void> {
+  await api<void>(adminPath(realm, `authz/servers/${encodeURIComponent(clientId)}`), {
+    method: "DELETE",
+    subject: say("subject-server", { client: clientId }),
+  });
+}
+
+export async function shareResource(
+  realm: string,
+  clientId: string,
+  resourceId: string,
+  share: ResourceShare,
+): Promise<void> {
+  await api<void>(server(realm, clientId, `resources/${encodeURIComponent(resourceId)}/shares`), {
+    method: "POST",
+    json: share,
+    subject: say("subject-share", { relation: share.relation }),
+  });
+}
+
+export async function unshareResource(
+  realm: string,
+  clientId: string,
+  resourceId: string,
+  share: ResourceShare,
+): Promise<void> {
+  await api<void>(server(realm, clientId, `resources/${encodeURIComponent(resourceId)}/shares`), {
+    method: "DELETE",
+    json: share,
+    subject: say("subject-share", { relation: share.relation }),
   });
 }
 

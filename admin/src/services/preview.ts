@@ -45,6 +45,14 @@ const COMPOSITE_ROLES = new Set(["r-2"]);
 const CLIENT_MAPPERS = new Set(["m-1", "m-2"]);
 const REMOVED_REALM_KEYS = new Set<string>();
 const REALM_SETTINGS_CHANGES: Record<string, unknown> = {};
+/// The protection the preview holds, so opening it, changing it and sharing show.
+const PROTECTED_SERVER = {
+  server_id: "console",
+  enforcement_mode: "enforcing",
+  decision_strategy: "affirmative",
+  remote_resource_management: false,
+  user_managed_access: true,
+};
 /// A history the console can read after a number, in two pages.
 const EVENT_HISTORY = [
   { event_id: 806, kind: "user.created", user_id: "mira", occurred_at: new Date((NOW - 172800) * 1000).toISOString() },
@@ -1037,6 +1045,21 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       { event_id: 812, kind: "user.updated", user_id: "mira", attempts: 8,
         occurred_at: new Date((NOW - 5400) * 1000).toISOString() },
     ]);
+  }
+  if (/\/authz\/servers\/[^/]+\/resources\/[^/]+\/shares$/.test(path)) {
+    return answer(undefined);
+  }
+  if (/\/authz\/servers\/[^/]+$/.test(path) && method === "DELETE") {
+    PROTECTED_SERVER.user_managed_access = false;
+    return answer(undefined);
+  }
+  if (/\/authz\/servers\/[^/]+$/.test(path) && method === "PUT") {
+    const asked = body as { user_managed_access?: boolean };
+    PROTECTED_SERVER.user_managed_access = asked.user_managed_access ?? false;
+    return answer({ ...PROTECTED_SERVER });
+  }
+  if (/\/authz\/servers\/[^/]+$/.test(path) && method === "GET") {
+    return answer({ ...PROTECTED_SERVER });
   }
   if (path.includes("/authz/decisions?") && method === "DELETE") {
     return answer({ removed: 184 });

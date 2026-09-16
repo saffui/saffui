@@ -915,6 +915,8 @@ pub async fn ciba(
     let renewal = Duration::seconds(offline_or_refresh_lifespan(within.realm, offline));
 
     let session_id = draw_session_id(signing.provider).map_err(|_| Unpolled::Backend)?;
+    // The login lasts as long as one made in a browser. Nothing slides a login,
+    // so one cut to the first refresh window ends an online grant with it.
     open_login(
         transaction,
         within.tenant,
@@ -924,7 +926,7 @@ pub async fn ciba(
         client,
         seen,
         now,
-        renewal.max(lifespan),
+        Duration::seconds(auth::login::browser::SSO_LIFESPAN),
     )
     .await
     .map_err(|_| Unpolled::Backend)?;
@@ -996,6 +998,36 @@ pub async fn ciba(
         })
         .transpose()
         .map_err(|_| Unpolled::Backend)?;
+
+    // Replaces the row open_login wrote for this login and client: that one
+    // anchors nothing, and the first renewal would read as a replay.
+    sessions::open_client_session(
+        transaction,
+        &ClientSessionModel {
+            tenant: within.tenant.tenant.clone(),
+            session_id: refresh.token_id.clone(),
+            realm_id: within.tenant.realm_id.clone(),
+            user_session_id: session_id.clone(),
+            user_id: person.user_id.clone(),
+            client_id: client.client_id.clone(),
+            auth_method: Some("ciba".to_owned()),
+            redirect_uri: None,
+            started_at: now.timestamp(),
+            expiration: Some((now + renewal).timestamp()),
+            notes: None,
+            current_refresh_token: Some(refresh.token_id.clone()),
+            current_refresh_token_use_count: Some(0),
+            offline: Some(offline),
+            requested_claims: None,
+        },
+    )
+    .await
+    .map_err(|_| Unpolled::Backend)?;
+    if offline {
+        make_room_for_offline(transaction, within.realm, &person.user_id, now)
+            .await
+            .map_err(|_| Unpolled::Backend)?;
+    }
 
     Ok(Granted {
         issued_token_type: None,

@@ -233,6 +233,270 @@ async fn a_counter_signs_ada_in_from_her_own_device() {
     assert_eq!(told["error"], "invalid_grant", "{told}");
 }
 
+/// Open a request for ada, have her approve it, and collect what the poll
+/// mints. Polled once, so the interval never comes into it.
+async fn collected(plane: &Plane, scope: &str) -> Value {
+    let (status, opened) = posted(
+        plane,
+        "/bc-authorize",
+        &[("scope", scope), ("login_hint", support::SUBJECT)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let auth_req_id = opened["auth_req_id"]
+        .as_str()
+        .expect("a request id")
+        .to_owned();
+
+    let bearer = ada_bearer(plane);
+    let (_, pending) = as_person(
+        plane,
+        actix_web::http::Method::GET,
+        "/bc-pending",
+        &bearer,
+        None,
+    )
+    .await;
+    let handle = pending["pending"][0]["request"]
+        .as_str()
+        .expect("a handle")
+        .to_owned();
+    let (status, told) = as_person(
+        plane,
+        actix_web::http::Method::POST,
+        "/bc-decide",
+        &bearer,
+        Some(json!({ "request": handle, "decision": "approve" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{told}");
+
+    let (status, minted) = posted(
+        plane,
+        "/token",
+        &[("grant_type", GRANT), ("auth_req_id", &auth_req_id)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    minted
+}
+
+async fn renewed(plane: &Plane, refresh_token: &str) -> (StatusCode, Value) {
+    posted(
+        plane,
+        "/token",
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+        ],
+    )
+    .await
+}
+
+/// What the poll collects renews: a fresh set comes back, and the grant stands
+/// for the renewal after it.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_refresh_token_a_poll_collects_renews() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane).await;
+    let minted = collected(&plane, "openid").await;
+    let spent = minted["refresh_token"].as_str().expect("a refresh token");
+
+    let (status, renewal) = renewed(&plane, spent).await;
+    assert_eq!(status, StatusCode::OK, "{renewal}");
+    assert!(
+        renewal["access_token"].is_string() && renewal["id_token"].is_string(),
+        "{renewal}"
+    );
+    let successor = renewal["refresh_token"].as_str().expect("a successor");
+    assert_ne!(successor, spent, "the renewal handed back what it spent");
+
+    let (status, told) = renewed(&plane, successor).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the grant fell after one renewal: {told}"
+    );
+}
+
+/// Asked with offline_access, the grant is an offline one: it renews after the
+/// login it hangs off has ended.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_offline_poll_outlives_its_login() {
+    use store::tenancy::TenantContext;
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane).await;
+    let minted = collected(&plane, "openid offline_access").await;
+    assert!(
+        minted["scope"].as_str().is_some_and(|scope| scope
+            .split_whitespace()
+            .any(|held| held == "offline_access")),
+        "{minted}"
+    );
+    let claims = plane
+        .claims_of(minted["access_token"].as_str().expect("a token"))
+        .await;
+    let sid = claims["sid"].as_str().expect("a session id");
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        assert!(
+            store::providers::sessions::set_state(
+                &transaction,
+                sid,
+                models::sessions::records::UserSessionState::LoggedOut,
+            )
+            .await
+            .expect("the session table")
+        );
+        transaction.commit().await.expect("the logout kept");
+    }
+
+    let (status, told) = renewed(
+        &plane,
+        minted["refresh_token"].as_str().expect("a refresh token"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "an offline grant ended with its login: {told}"
+    );
+}
+
+/// The realm's cap on offline grants counts these too, and ends the older one.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_offline_poll_keeps_to_the_realms_cap() {
+    use store::tenancy::TenantContext;
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.max_offline_grants = 1;
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.expect("the cap kept");
+    }
+
+    let older = collected(&plane, "openid offline_access").await;
+    // Started a minute back, or the two grants would tie on their start.
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        transaction
+            .execute(
+                "UPDATE client_sessions SET started_at = started_at - 60 WHERE offline",
+                &[],
+            )
+            .await
+            .expect("an ageing");
+        transaction.commit().await.expect("the ageing kept");
+    }
+    let newer = collected(&plane, "openid offline_access").await;
+
+    let (status, told) = renewed(
+        &plane,
+        older["refresh_token"].as_str().expect("a refresh token"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "the cap left the older grant standing: {told}"
+    );
+    let (status, told) = renewed(
+        &plane,
+        newer["refresh_token"].as_str().expect("a refresh token"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the cap ended the newer grant: {told}"
+    );
+}
+
+/// An online grant renews past the window its first refresh token stated: the
+/// login it hangs off lasts like one made in a browser.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_online_poll_renews_past_its_first_window() {
+    use store::tenancy::TenantContext;
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.access_token_lifespan = Some(2);
+        realm.refresh_token_lifespan = Some(6);
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.expect("the lifespans kept");
+    }
+    let minted = collected(&plane, "openid").await;
+
+    let login = {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::sessions::load_for_user(&transaction, support::SUBJECT)
+            .await
+            .expect("the session table")
+            .into_iter()
+            .find(|held| held.session_id != support::SESSION)
+            .expect("the login the poll opened")
+    };
+    let ends = login.expiration.expect("an end") - chrono::Utc::now().timestamp();
+    assert!(
+        ends >= 30_000,
+        "the login was cut to the grant's first window: it ends in {ends}s"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let (status, renewal) = renewed(
+        &plane,
+        minted["refresh_token"].as_str().expect("a refresh token"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renewal}");
+
+    // Past the instant the first refresh token would have ended the login.
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    let (status, told) = renewed(
+        &plane,
+        renewal["refresh_token"].as_str().expect("a successor"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the grant ended with the window its first token stated: {told}"
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_refusal_an_expiry_and_a_ghost_all_answer_their_own_words() {

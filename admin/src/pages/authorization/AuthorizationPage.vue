@@ -20,6 +20,11 @@ import {
   eraseAuthzRoute,
   eraseRelation,
   protectClient,
+  readProtectedServer,
+  setProtection,
+  shareResource,
+  unprotectClient,
+  unshareResource,
   writeRelation,
 } from "@/services/authz";
 import {
@@ -43,6 +48,7 @@ import {
 } from "@/services/authz";
 import { ApiError } from "@/services/http";
 import { afterWrites } from "@/services/writes";
+import type { ProtectedServer } from "@/models/authz";
 import type {
   EvaluateAnswer,
   EvaluateQuestion,
@@ -55,6 +61,12 @@ import type {
 import type { ClientBrief } from "@/models/client";
 import { authorizationClients, selectedClient } from "./authorizationClients";
 import { canWriteAuthorization } from "./authorizationSetup";
+import {
+  composeShare,
+  emptyShareDraft,
+  shareIsReady,
+  whyShareClosed,
+} from "./sharing";
 import { emptyTimeDraft, timeDraftFrom, timeWindowFrom, TIME_FIELDS } from "./timePolicy";
 
 const NODE_W = 190;
@@ -75,6 +87,13 @@ const resources = ref<ResourceRow[]>([]);
 const scopes = ref<ScopeRow[]>([]);
 const failed = ref("");
 const unprotected = ref(false);
+const protectedServer = ref<ProtectedServer | null>(null);
+const unprotecting = ref(false);
+const sharing = ref<ResourceRow | null>(null);
+const shareDraft = ref(emptyShareDraft());
+const shareClosed = computed(() =>
+  sharing.value ? whyShareClosed(protectedServer.value, sharing.value) : null,
+);
 const loading = ref(false);
 const canWrite = computed(() => canWriteAuthorization(clientId.value, loading.value, unprotected.value));
 const selected = ref<PolicyRow | null>(null);
@@ -133,6 +152,7 @@ async function load() {
   loading.value = Boolean(clientId.value);
   failed.value = "";
   unprotected.value = false;
+  protectedServer.value = null;
   verdict.value = null;
   litPolicies.value = new Set();
   selected.value = null;
@@ -143,21 +163,24 @@ async function load() {
   askedPolicy.value = "";
   if (!clientId.value) return;
   try {
-    const [foundPolicies, foundResources, foundScopes] = await Promise.all([
+    const [foundPolicies, foundResources, foundScopes, foundServer] = await Promise.all([
       listPolicies(realm.value, clientId.value),
       listResources(realm.value, clientId.value),
       listAuthzScopes(realm.value, clientId.value),
+      readProtectedServer(realm.value, clientId.value),
     ]);
     if (current !== resourceLoad) return;
     policies.value = foundPolicies.readable;
     unreadablePolicies.value = foundPolicies.unreadable;
     resources.value = foundResources;
     scopes.value = foundScopes;
+    protectedServer.value = foundServer;
     askedPolicy.value = policies.value[0]?.policy_id ?? "";
   } catch (refused) {
     if (current !== resourceLoad) return;
     if (refused instanceof ApiError && refused.status === 404) {
       unprotected.value = true;
+      protectedServer.value = null;
       if (drawer.value === "policy" || drawer.value === "resource" || drawer.value === "scope") drawer.value = "";
       policies.value = [];
       unreadablePolicies.value = [];
@@ -181,6 +204,7 @@ async function loadClients() {
   resources.value = [];
   scopes.value = [];
   unprotected.value = false;
+  protectedServer.value = null;
   loading.value = false;
   failed.value = "";
   try {
@@ -611,17 +635,69 @@ async function eraseHeld() {
   }
 }
 const protectDraft = ref({ enforcement: "enforcing", strategy: "affirmative", shareable: false });
+
+/// The drawer opens on what the server holds, so a change starts from the settings in
+/// force rather than from the defaults a first protection is offered.
+function openProtection() {
+  const held = protectedServer.value;
+  if (held) {
+    protectDraft.value = {
+      enforcement: held.enforcement_mode,
+      strategy: held.decision_strategy,
+      shareable: held.user_managed_access,
+    };
+  }
+  drawer.value = "protect";
+}
+
 async function doProtect() {
   try {
-    await protectClient(
-      realm.value,
-      clientId.value,
-      protectDraft.value.enforcement,
-      protectDraft.value.strategy,
-      protectDraft.value.shareable,
-    );
+    if (protectedServer.value) {
+      await setProtection(realm.value, clientId.value, {
+        enforcement_mode: protectDraft.value.enforcement,
+        decision_strategy: protectDraft.value.strategy,
+        user_managed_access: protectDraft.value.shareable,
+      });
+    } else {
+      await protectClient(
+        realm.value,
+        clientId.value,
+        protectDraft.value.enforcement,
+        protectDraft.value.strategy,
+        protectDraft.value.shareable,
+      );
+    }
     drawer.value = "";
     await load();
+  } catch {
+    // The toast already said.
+  }
+}
+
+async function doUnprotect() {
+  try {
+    await unprotectClient(realm.value, clientId.value);
+    unprotecting.value = false;
+    drawer.value = "";
+    await load();
+  } catch {
+    unprotecting.value = false;
+  }
+}
+
+function openSharing(held: ResourceRow) {
+  shareDraft.value = emptyShareDraft();
+  sharing.value = held;
+}
+
+async function writeShare(held: boolean) {
+  const resource = sharing.value;
+  if (!resource || shareClosed.value) return;
+  const share = composeShare(shareDraft.value);
+  try {
+    if (held) await shareResource(realm.value, clientId.value, resource.resource_id, share);
+    else await unshareResource(realm.value, clientId.value, resource.resource_id, share);
+    sharing.value = null;
   } catch {
     // The toast already said.
   }
@@ -801,9 +877,9 @@ function nodeStroke(row: PolicyRow): string {
           type="button"
           :disabled="!clientId"
           class="rounded-md border border-border px-2 py-1 text-xs hover:bg-surface-2"
-          @click="drawer = 'protect'"
+          @click="openProtection()"
         >
-          {{ say("authz-protect") }}
+          {{ protectedServer ? say("authz-protection") : say("authz-protect") }}
         </button>
         <button
           type="button"
@@ -850,7 +926,7 @@ function nodeStroke(row: PolicyRow): string {
     <p v-if="clients.length > 1 && !clientId && board !== 'routes' && board !== 'graph'" class="mt-2 text-xs text-muted">{{ say("authz-pick-client") }}</p>
     <div v-if="unprotected && clientId" class="mt-3 flex flex-wrap items-center gap-3 rounded-md border border-accent/40 bg-accent/5 px-3 py-2.5 text-xs">
       <p class="min-w-0 flex-1 text-ink">{{ say("authz-unprotected") }}</p>
-      <button type="button" class="sf-button sf-button-primary" @click="drawer = 'protect'">
+      <button type="button" class="sf-button sf-button-primary" @click="openProtection()">
         {{ say("authz-protect") }}
       </button>
     </div>
@@ -1289,6 +1365,13 @@ function nodeStroke(row: PolicyRow): string {
                 </button>
                 <button
                   type="button"
+                  class="ml-3 text-[11px] text-faint hover:text-ink"
+                  @click="openSharing(held)"
+                >
+                  {{ say("authz-share") }}
+                </button>
+                <button
+                  type="button"
                   class="ml-3 text-[11px] text-faint hover:text-danger"
                   @click="erasing = { leaf: 'resources', id: held.resource_id, named: held.name }"
                 >
@@ -1482,7 +1565,12 @@ function nodeStroke(row: PolicyRow): string {
       </form>
     </AppDrawer>
 
-    <AppDrawer v-if="drawer === 'protect'" :title="say('authz-protect')" :subtitle="clientId" @close="drawer = ''">
+    <AppDrawer
+      v-if="drawer === 'protect'"
+      :title="protectedServer ? say('authz-protection') : say('authz-protect')"
+      :subtitle="clientId"
+      @close="drawer = ''"
+    >
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="doProtect">
         <label class="block text-[11px] font-medium text-muted">
           {{ say("authz-enforcement") }} <AppHint name="authz-enforcement-help" />
@@ -1503,9 +1591,87 @@ function nodeStroke(row: PolicyRow): string {
         <AppToggle v-model="protectDraft.shareable">
           {{ say("authz-server-shareable") }} <AppHint name="authz-server-shareable-help" />
         </AppToggle>
-        <div>
+        <div class="flex items-center gap-3">
           <button type="submit" class="sf-button sf-button-primary">
-            {{ say("authz-protect") }}
+            {{ protectedServer ? say("settings-save") : say("authz-protect") }}
+          </button>
+          <button
+            v-if="protectedServer"
+            type="button"
+            class="text-[11px] text-faint hover:text-danger"
+            @click="unprotecting = true"
+          >
+            {{ say("authz-unprotect") }}
+          </button>
+        </div>
+      </form>
+    </AppDrawer>
+
+    <AppDrawer
+      v-if="sharing"
+      :title="say('authz-share')"
+      :subtitle="sharing.name"
+      @close="sharing = null"
+    >
+      <p class="flex items-center gap-1 text-[11px] text-muted">
+        {{ say("authz-share-lede") }}
+        <AppHint name="authz-share-help" />
+      </p>
+      <p v-if="shareClosed" class="mt-2 text-xs text-warn" role="alert">{{ say(shareClosed) }}</p>
+      <form class="mt-3 flex flex-col gap-3 text-xs" @submit.prevent="writeShare(true)">
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-share-relation") }} <AppHint name="authz-share-relation-help" />
+          <input
+            v-model="shareDraft.relation"
+            class="sf-field mt-1 font-mono"
+            spellcheck="false"
+            :disabled="shareClosed !== null"
+          />
+        </label>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("authz-share-subject-type") }}
+            <input
+              v-model="shareDraft.subject_type"
+              class="sf-field mt-1 font-mono"
+              spellcheck="false"
+              :disabled="shareClosed !== null"
+            />
+          </label>
+          <label class="block text-[11px] font-medium text-muted">
+            {{ say("authz-share-subject-id") }}
+            <input
+              v-model="shareDraft.subject_id"
+              class="sf-field mt-1 font-mono"
+              spellcheck="false"
+              :disabled="shareClosed !== null"
+            />
+          </label>
+        </div>
+        <label class="block text-[11px] font-medium text-muted">
+          {{ say("authz-share-subject-relation") }} <AppHint name="authz-share-subject-relation-help" />
+          <input
+            v-model="shareDraft.subject_relation"
+            class="sf-field mt-1 font-mono"
+            spellcheck="false"
+            :disabled="shareClosed !== null"
+          />
+        </label>
+        <div class="flex items-center gap-3">
+          <button
+            type="submit"
+            class="sf-button sf-button-primary"
+            :disabled="shareClosed !== null || !shareIsReady(shareDraft)"
+          >
+            {{ say("authz-share") }}
+          </button>
+          <button
+            type="button"
+            class="text-[11px] text-faint hover:text-danger"
+            :disabled="!shareIsReady(shareDraft)"
+            @click="writeShare(false)"
+          >
+            {{ say("authz-unshare") }}
           </button>
         </div>
       </form>
@@ -1579,6 +1745,23 @@ function nodeStroke(row: PolicyRow): string {
         </div>
       </form>
     </AppDrawer>
+
+    <DangerDialog
+      v-if="unprotecting && protectedServer"
+      :open="unprotecting"
+      :title="say('authz-unprotect-title')"
+      :named="clientId"
+      :lede="say('authz-unprotect-lede')"
+      :facts="[
+        { value: String(policies.length + unreadablePolicies.length), label: say('authz-board-policies') },
+        { value: String(resources.length), label: say('authz-board-resources') },
+        { value: String(scopes.length), label: say('authz-board-scopes') },
+      ]"
+      :aside="say('authz-unprotect-aside')"
+      :confirm-label="say('authz-unprotect')"
+      @close="unprotecting = false"
+      @confirm="doUnprotect"
+    />
 
     <DangerDialog
       :open="erasing !== null"

@@ -45,6 +45,16 @@ const COMPOSITE_ROLES = new Set(["r-2"]);
 const CLIENT_MAPPERS = new Set(["m-1", "m-2"]);
 const REMOVED_REALM_KEYS = new Set<string>();
 const REALM_SETTINGS_CHANGES: Record<string, unknown> = {};
+/// A history the console can read after a number, in two pages.
+const EVENT_HISTORY = [
+  { event_id: 806, kind: "user.created", user_id: "mira", occurred_at: new Date((NOW - 172800) * 1000).toISOString() },
+  { event_id: 807, kind: "credential.changed", user_id: "mira", occurred_at: new Date((NOW - 171900) * 1000).toISOString() },
+  { event_id: 808, kind: "session.revoked", user_id: "ada", occurred_at: new Date((NOW - 86400) * 1000).toISOString() },
+  { event_id: 809, kind: "user.updated", user_id: "grace", occurred_at: new Date((NOW - 7200) * 1000).toISOString() },
+  { event_id: 810, kind: "identity.linked", user_id: "linus", occurred_at: new Date((NOW - 5400) * 1000).toISOString() },
+  { event_id: 811, kind: "agent.revoked", user_id: "kiosk-tv", occurred_at: new Date((NOW - 3600) * 1000).toISOString() },
+  { event_id: 812, kind: "user.updated", user_id: "mira", occurred_at: new Date((NOW - 1800) * 1000).toISOString() },
+];
 /// A registered action can be unregistered here, and the table has to show it.
 const REGISTERED_ACTIONS = [
   {
@@ -1009,6 +1019,17 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
           { depth: 4, asked: "group:editors#member", rule: "direct: the edges stored against this relation", answered: true, note: null },
         ],
       },
+    });
+  }
+  if (path.includes("/events/replay")) {
+    const asked = new URL(path, "http://preview.local").searchParams;
+    const after = Number(asked.get("after_event_id") ?? 0);
+    const kept = EVENT_HISTORY.filter((held) => held.event_id > after).slice(0, 4);
+    const last = kept.length ? kept[kept.length - 1]!.event_id : after;
+    return answer({
+      items: kept.map((held) => ({ ...held })),
+      next_event_id: kept.length ? last : null,
+      more: EVENT_HISTORY.some((held) => held.event_id > last),
     });
   }
   if (path.includes("/events/dead")) {

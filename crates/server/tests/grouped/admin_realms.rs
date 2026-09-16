@@ -711,6 +711,50 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
         "{shaped}"
     );
 
+    // Words that reach a header carry no control character, and a tongue is a
+    // language tag: a typo filed beside a real tongue sits there unread and
+    // can answer a send of its own accord.
+    for refused in [
+        serde_json::json!({ "mail_templates": { "magic_link": { "fr": {
+            "subject": "Lien\r\nBcc: ailleurs@example.test", "body": "Suivez : {{link}}" } } } }),
+        serde_json::json!({ "mail_templates": { "magic_link": { "fr": {
+            "subject": "Lien", "body": "Suivez\u{0} : {{link}}" } } } }),
+        serde_json::json!({ "mail_templates": { "magic_link": { "fr ": {
+            "subject": "Lien", "body": "Suivez : {{link}}" } } } }),
+        serde_json::json!({ "mail_templates": { "magic_link": { "": {
+            "subject": "Lien", "body": "Suivez : {{link}}" } } } }),
+    ] {
+        let (status, told) = asked(
+            &plane,
+            Method::PUT,
+            &format!("/admin/realms/{}", support::REALM),
+            &bearer,
+            Some(refused.clone()),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "accepted: {refused} -> {told}"
+        );
+    }
+
+    // A realm mails in a tongue its pages are not built in: the door weighs
+    // the shape of the tag, never the list the hosted pages happen to render.
+    let (status, shaped) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        Some(serde_json::json!({
+            "mail_templates": {
+                "magic_link": { "pt-BR": { "subject": "Seu link", "body": "Siga: {{link}}" } }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{shaped}");
+
     // Device pacing is bounded to what a waiting screen can live with.
     let (status, told) = asked(
         &plane,
@@ -1314,6 +1358,8 @@ async fn the_texting_brakes_hold_their_shapes() {
         serde_json::json!({ "sms_templates": { "sms_otp": { "en": "a code with no place for it" } } }),
         serde_json::json!({ "sms_templates": { "ciba_doorbell": { "en": "a doorbell with no way there {{code}}" } } }),
         serde_json::json!({ "sms_templates": { "sms_otp": { "en": format!("{}{}", "x".repeat(155), "{{code}}") } } }),
+        serde_json::json!({ "sms_templates": { "sms_otp": { "en": "Votre code\u{0} : {{code}}" } } }),
+        serde_json::json!({ "sms_templates": { "sms_otp": { "fr ": "Votre code : {{code}}" } } }),
     ] {
         let (status, told) = asked(
             &plane,

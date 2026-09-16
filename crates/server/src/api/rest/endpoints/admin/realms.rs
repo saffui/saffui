@@ -437,6 +437,31 @@ pub async fn forget_registration_secret(
     Ok(HttpResponse::NoContent().finish())
 }
 
+/// The shape of a language tag a template may be filed under. Not a list of
+/// tongues: a realm mails in languages its pages are not built in, and what is
+/// closed here is a typo like `fr ` sitting beside `fr` and winning by chance.
+fn sound_tongue(tongue: &str) -> bool {
+    !tongue.is_empty()
+        && tongue.len() <= 35
+        && !tongue.starts_with('-')
+        && !tongue.ends_with('-')
+        && tongue
+            .chars()
+            .all(|held| held.is_ascii_alphanumeric() || held == '-')
+}
+
+/// A value that reaches a message header unchanged: one line and no control
+/// character, so nothing can hand a reader a header nobody wrote.
+fn plain_line(value: &str) -> bool {
+    !value.chars().any(char::is_control)
+}
+
+/// What a message body may carry: line breaks, and nothing else a gateway or
+/// a header parser would read as more than words.
+fn plain_text(value: &str) -> bool {
+    !value.chars().any(|held| held.is_control() && held != '\n')
+}
+
 /// Rewrite the realm's switches.
 ///
 /// Absent fields stay as they are, so an edit that mentions one setting does
@@ -552,16 +577,25 @@ pub async fn update(
                     format!("{kind} is not a mail this server sends"),
                 ));
             }
-            for template in tongues.values() {
+            for (tongue, template) in tongues {
+                if !sound_tongue(tongue) {
+                    return Err(ApiError::with_detail(
+                        ErrorCode::ValidationError,
+                        format!("`{tongue}` is not the shape of a language tag"),
+                    ));
+                }
                 let sound = !template.subject.trim().is_empty()
                     && template.subject.len() <= 200
+                    && plain_line(&template.subject)
                     && template.body.len() <= 4000
+                    && plain_text(&template.body)
                     && template.body.contains("{{link}}");
                 if !sound {
                     return Err(ApiError::with_detail(
                         ErrorCode::ValidationError,
-                        "a mail template wants a subject up to 200 characters and a body \
-                         up to 4000 that carries {{link}}"
+                        "a mail template wants a subject up to 200 characters on one line \
+                         and a body up to 4000 that carries {{link}}, neither of them \
+                         holding a control character"
                             .to_owned(),
                     ));
                 }
@@ -689,14 +723,24 @@ pub async fn update(
                     ));
                 }
             };
-            for body in tongues.values() {
+            for (tongue, body) in tongues {
+                if !sound_tongue(tongue) {
+                    return Err(ApiError::with_detail(
+                        ErrorCode::ValidationError,
+                        format!("`{tongue}` is not the shape of a language tag"),
+                    ));
+                }
                 let sound = !body.trim().is_empty()
                     && body.chars().count() <= 160
+                    && plain_text(body)
                     && body.contains(carried);
                 if !sound {
                     return Err(ApiError::with_detail(
                         ErrorCode::ValidationError,
-                        format!("a text template carries {carried} and fits in 160 characters"),
+                        format!(
+                            "a text template carries {carried}, fits in 160 characters and \
+                             holds no control character"
+                        ),
                     ));
                 }
             }

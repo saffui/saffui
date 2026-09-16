@@ -431,6 +431,72 @@ async fn an_offline_poll_keeps_to_the_realms_cap() {
     );
 }
 
+/// An online grant renews past the window its first refresh token stated: the
+/// login it hangs off lasts like one made in a browser.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_online_poll_renews_past_its_first_window() {
+    use store::tenancy::TenantContext;
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+    opted_in(&plane).await;
+    {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        let mut realm = store::providers::realms::load(&transaction, REALM)
+            .await
+            .expect("the realms table")
+            .expect("a planted realm");
+        realm.access_token_lifespan = Some(2);
+        realm.refresh_token_lifespan = Some(6);
+        store::providers::realms::update(&transaction, &realm)
+            .await
+            .expect("the realms table");
+        transaction.commit().await.expect("the lifespans kept");
+    }
+    let minted = collected(&plane, "openid").await;
+
+    let login = {
+        let mut connection = plane.connection().await;
+        let transaction = plane
+            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .await;
+        store::providers::sessions::load_for_user(&transaction, support::SUBJECT)
+            .await
+            .expect("the session table")
+            .into_iter()
+            .find(|held| held.session_id != support::SESSION)
+            .expect("the login the poll opened")
+    };
+    let ends = login.expiration.expect("an end") - chrono::Utc::now().timestamp();
+    assert!(
+        ends >= 30_000,
+        "the login was cut to the grant's first window: it ends in {ends}s"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    let (status, renewal) = renewed(
+        &plane,
+        minted["refresh_token"].as_str().expect("a refresh token"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{renewal}");
+
+    // Past the instant the first refresh token would have ended the login.
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+    let (status, told) = renewed(
+        &plane,
+        renewal["refresh_token"].as_str().expect("a successor"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the grant ended with the window its first token stated: {told}"
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_refusal_an_expiry_and_a_ghost_all_answer_their_own_words() {

@@ -13,14 +13,13 @@ use services::brokering::{self, Arrival, Identity, Upstream};
 use services::landing::Landing;
 use services::saml_brokering::{self, SamlUpstream};
 use store::tenancy::{Tenancy, TenantContext, resolve};
-use ureq::unversioned::resolver::DefaultResolver;
 
 use config::serving::{LoginUi, PublicOrigin};
 
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::binding;
-use crate::api::rest::endpoints::protocol::hosted::{Outward, PATIENCE, fetch};
+use crate::api::rest::endpoints::protocol::hosted::{PATIENCE, fetch, may_dial, outward_agent};
 use crate::api::rest::endpoints::protocol::login::{Spoken, hand_over, shown, told, told_landing};
 
 /// Send the browser to the upstream provider.
@@ -580,11 +579,11 @@ async fn post_form(
     form: Vec<(String, String)>,
     basic: Option<(String, String)>,
 ) -> Option<String> {
-    if !dialable(&uri, egress) {
+    if !may_dial(&uri, egress) {
         return None;
     }
     tokio::task::spawn_blocking(move || {
-        let agent = outward_agent(egress);
+        let agent = outward_agent(egress, PATIENCE);
         let pairs: Vec<(&str, &str)> = form
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
@@ -615,12 +614,12 @@ async fn post_form(
 /// Ask a plain OAuth 2.0 provider's API with the access token, under the same
 /// guardrails as the token exchange, and read its JSON answer.
 async fn asked_json(uri: String, egress: Egress, access_token: &str) -> Option<Value> {
-    if !dialable(&uri, egress) {
+    if !may_dial(&uri, egress) {
         return None;
     }
     let bearer = format!("Bearer {access_token}");
     let answered = tokio::task::spawn_blocking(move || {
-        let agent = outward_agent(egress);
+        let agent = outward_agent(egress, PATIENCE);
         let mut response = agent
             .get(&uri)
             .header("authorization", &bearer)
@@ -643,31 +642,6 @@ async fn asked_json(uri: String, egress: Egress, access_token: &str) -> Option<V
     .ok()
     .flatten()?;
     serde_json::from_str(&answered).ok()
-}
-
-/// Whether an upstream address may be dialled: https, or clear http only where
-/// the deployment lets the egress reach anywhere, as a bench does.
-fn dialable(uri: &str, egress: Egress) -> bool {
-    uri.starts_with("https://") || (egress == Egress::Anywhere && uri.starts_with("http://"))
-}
-
-/// An agent for dialling an upstream: bounded in time, following no redirect,
-/// and resolving no address inside the deployment.
-fn outward_agent(egress: Egress) -> ureq::Agent {
-    ureq::Agent::with_parts(
-        ureq::Agent::config_builder()
-            .timeout_global(Some(PATIENCE))
-            .max_redirects(0)
-            .tls_config(
-                ureq::tls::TlsConfig::builder()
-                    .provider(ureq::tls::TlsProvider::NativeTls)
-                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                    .build(),
-            )
-            .build(),
-        ureq::unversioned::transport::DefaultConnector::new(),
-        Outward(DefaultResolver::default(), egress),
-    )
 }
 
 /// What the upstream posts when somebody it vouched for logs out there.
@@ -792,6 +766,6 @@ pub async fn dismiss(
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     }
     tracing::info!(alias, closed = standing.len(), "an upstream logout landed");
-    crate::api::rest::endpoints::protocol::backchannel::deliver(notices).await;
+    crate::api::rest::endpoints::protocol::backchannel::deliver(notices, **egress).await;
     told(StatusCode::OK, "dismissed")
 }

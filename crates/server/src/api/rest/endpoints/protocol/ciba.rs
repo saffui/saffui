@@ -1,7 +1,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
-use config::serving::PublicOrigin;
+use config::serving::{Egress, PublicOrigin};
 use deadpool_postgres::Pool;
 use models::entities::backchannel::{BackchannelRequestModel, BackchannelState};
 use serde::Deserialize;
@@ -13,6 +13,7 @@ use services::client;
 
 use super::caller;
 use super::dto::uncached;
+use super::hosted::{may_dial, outward_agent};
 use crate::api::config::Sealing;
 
 #[derive(Debug, Deserialize)]
@@ -590,6 +591,7 @@ pub async fn decide(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
+    egress: web::Data<Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Some(body) = body.map(|held| held.into_inner()) else {
@@ -669,7 +671,7 @@ pub async fn decide(
                 );
             }
             if let Some((endpoint, bearer, auth_req_id)) = ping {
-                deliver_ping(endpoint, bearer, auth_req_id).await;
+                deliver_ping(endpoint, bearer, auth_req_id, **egress).await;
             }
             uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
                 .json(json!({ "decided": if approved { "approved" } else { "denied" } }))
@@ -729,19 +731,21 @@ pub(crate) async fn ping_of(
 /// it handed in, saying only which request. Fire and forget: the poll grant
 /// stays the source of truth, so a lost ping costs latency, never
 /// correctness.
-pub(crate) async fn deliver_ping(endpoint: String, bearer: String, auth_req_id: String) {
+pub(crate) async fn deliver_ping(
+    endpoint: String,
+    bearer: String,
+    auth_req_id: String,
+    egress: Egress,
+) {
+    // The endpoint is the client's own registration, so it is dialled under the
+    // same policy as every other address a client supplies. A ping that cannot
+    // be sent costs nothing: the client polls, which is the source of truth.
+    if !may_dial(&endpoint, egress) {
+        tracing::warn!("a ciba notification endpoint is not one this egress policy dials");
+        return;
+    }
     let _ = tokio::task::spawn_blocking(move || {
-        let agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(5)))
-            .max_redirects(0)
-            .tls_config(
-                ureq::tls::TlsConfig::builder()
-                    .provider(ureq::tls::TlsProvider::NativeTls)
-                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                    .build(),
-            )
-            .build()
-            .new_agent();
+        let agent = outward_agent(egress, std::time::Duration::from_secs(5));
         let posted = agent
             .post(&endpoint)
             .header("authorization", &format!("Bearer {bearer}"))

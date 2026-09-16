@@ -28,6 +28,10 @@ pub struct Asked {
     pub confirmed: Option<String>,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
 pub async fn end(
     request: HttpRequest,
     realm: web::Path<String>,
@@ -36,11 +40,19 @@ pub async fn end(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let asked = asked.map(web::Query::into_inner).unwrap_or_default();
-    run(&request, &realm, asked, &pool, &tenancy, &sealing, &origin).await
+    run(
+        &request, &realm, asked, &pool, &tenancy, &sealing, &origin, **egress,
+    )
+    .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one request"
+)]
 pub async fn end_posted(
     request: HttpRequest,
     realm: web::Path<String>,
@@ -49,9 +61,13 @@ pub async fn end_posted(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let asked = asked.map(web::Form::into_inner).unwrap_or_default();
-    run(&request, &realm, asked, &pool, &tenancy, &sealing, &origin).await
+    run(
+        &request, &realm, asked, &pool, &tenancy, &sealing, &origin, **egress,
+    )
+    .await
 }
 
 #[allow(
@@ -66,6 +82,7 @@ async fn run(
     tenancy: &Tenancy,
     sealing: &Sealing,
     origin: &PublicOrigin,
+    egress: config::serving::Egress,
 ) -> HttpResponse {
     let now = Utc::now();
     let told = |realm_id: &str, ended: EndedAt, frames: &[Frame]| {
@@ -165,7 +182,7 @@ async fn run(
     if transaction.commit().await.is_err() {
         return told(&context.realm_id, EndedAt::Nowhere, &[]);
     }
-    backchannel::deliver(notices).await;
+    backchannel::deliver(notices, egress).await;
     if let Some(location) = departure {
         return leave_for_provider(&context.realm_id, &location, &frames);
     }

@@ -1071,9 +1071,13 @@ fn plane() -> Result<Plane, String> {
                 config::messaging::Sink::None => None,
                 config::messaging::Sink::Smtp => Some(Arc::new(server::messaging::Smtp)),
                 config::messaging::Sink::Logged => Some(Arc::new(server::messaging::Logged)),
-                config::messaging::Sink::Webhook { url } => Some(Arc::new(
-                    server::messaging::Webhook::new(url, config::optional("MESSAGE_WEBHOOK_TOKEN")),
-                )),
+                config::messaging::Sink::Webhook { url } => {
+                    Some(Arc::new(server::messaging::Webhook::new(
+                        url,
+                        config::optional("MESSAGE_WEBHOOK_TOKEN"),
+                        egress,
+                    )))
+                }
             },
             texter: match config::messaging::TextSink::from_env().map_err(|e| e.to_string())? {
                 config::messaging::TextSink::None => None,

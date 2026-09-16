@@ -3,6 +3,7 @@ use super::support;
 use super::support::Plane;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
+use config::serving::Egress;
 use data_encoding::BASE64;
 use models::entities::authz::AdminAction;
 use serde_json::{Value, json};
@@ -12,6 +13,13 @@ const REALM: &str = support::REALM;
 const GRANT: &str = "urn:openid:params:grant-type:ciba";
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
+    mounted_dialling(plane, Egress::Outward)
+}
+
+/// The same plane, told where it may dial. A rig whose client listens on this
+/// machine is a deployment whose relying parties share its network, which is
+/// what the wider setting is for.
+fn mounted_dialling(plane: &Plane, egress: Egress) -> server::api::config::Plane {
     server::api::config::Plane {
         pool: plane.pool(),
         tenancy: plane.tenancy(),
@@ -23,7 +31,7 @@ fn mounted(plane: &Plane) -> server::api::config::Plane {
         origin: support::origin(),
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
-        egress: config::serving::Egress::Outward,
+        egress,
         sealing: support::sealing(),
         ceiling: support::ceiling(),
     }
@@ -54,7 +62,19 @@ async fn as_person(
     bearer: &str,
     body: Option<Value>,
 ) -> (StatusCode, Value) {
-    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    as_person_dialling(plane, method, path, bearer, body, Egress::Outward).await
+}
+
+async fn as_person_dialling(
+    plane: &Plane,
+    method: actix_web::http::Method,
+    path: &str,
+    bearer: &str,
+    body: Option<Value>,
+    egress: Egress,
+) -> (StatusCode, Value) {
+    let app =
+        test::init_service(App::new().configure(register(&mounted_dialling(plane, egress)))).await;
     let mut asking = test::TestRequest::default()
         .method(method)
         .uri(&format!("/realms/{REALM}/protocol/openid-connect{path}"))
@@ -711,12 +731,15 @@ async fn a_ping_tells_the_client_and_the_poll_still_collects() {
         .as_str()
         .expect("a handle")
         .to_owned();
-    let (status, _) = as_person(
+    // The ear listens on this machine, so the plane is told it may dial its
+    // own network, as a deployment sharing one with its clients says.
+    let (status, _) = as_person_dialling(
         &plane,
         actix_web::http::Method::POST,
         "/bc-decide",
         &bearer,
         Some(json!({ "request": handle, "decision": "approve" })),
+        Egress::Anywhere,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -736,6 +759,107 @@ async fn a_ping_tells_the_client_and_the_poll_still_collects() {
     );
 
     // And the poll still collects, single-collection intact.
+    let (status, minted) = posted(
+        &plane,
+        "/token",
+        &[("grant_type", GRANT), ("auth_req_id", &auth_req_id)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    assert!(minted["access_token"].is_string(), "{minted}");
+}
+
+/// A client that named a notification endpoint inside the deployment is not
+/// pinged, and the decision stands.
+///
+/// The endpoint is the client's own registration, so it is dialled under the
+/// deployment's egress policy like every other address a client supplies. A
+/// ping that does not go costs nothing: the poll is where the truth was all
+/// along, and it still collects.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_notification_endpoint_inside_the_deployment_is_not_dialled() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
+
+    let (heard_tx, mut heard) = tokio::sync::mpsc::unbounded_channel::<(String, Value)>();
+    let ear = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let ear_port = ear.local_addr().unwrap().port();
+    let listening = actix_web::HttpServer::new(move || {
+        let heard_tx = heard_tx.clone();
+        actix_web::App::new().route(
+            "/decided",
+            actix_web::web::post().to(
+                move |request: actix_web::HttpRequest, body: actix_web::web::Json<Value>| {
+                    let bearer = request
+                        .headers()
+                        .get("authorization")
+                        .and_then(|held| held.to_str().ok())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let _ = heard_tx.send((bearer, body.into_inner()));
+                    async { actix_web::HttpResponse::NoContent().finish() }
+                },
+            ),
+        )
+    })
+    .listen(ear)
+    .expect("a listener")
+    .workers(1)
+    .disable_signals()
+    .run();
+    tokio::spawn(listening);
+
+    opted_ping(&plane, &format!("http://127.0.0.1:{ear_port}/decided")).await;
+
+    let (status, opened) = posted(
+        &plane,
+        "/bc-authorize",
+        &[
+            ("login_hint", support::SUBJECT),
+            ("client_notification_token", "ear-bearer-2"),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    let auth_req_id = opened["auth_req_id"].as_str().expect("an id").to_owned();
+
+    let bearer = ada_bearer(&plane);
+    let (_, pending) = as_person(
+        &plane,
+        actix_web::http::Method::GET,
+        "/bc-pending",
+        &bearer,
+        None,
+    )
+    .await;
+    let handle = pending["pending"][0]["request"]
+        .as_str()
+        .expect("a handle")
+        .to_owned();
+
+    // The deployment's own default: nothing inside it is dialled because a
+    // client asked for it.
+    let (status, _) = as_person_dialling(
+        &plane,
+        actix_web::http::Method::POST,
+        "/bc-decide",
+        &bearer,
+        Some(json!({ "request": handle, "decision": "approve" })),
+        Egress::Outward,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a decision is not a ping's to hold up"
+    );
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), heard.recv())
+            .await
+            .is_err(),
+        "a ping was posted to an address inside the deployment"
+    );
+
     let (status, minted) = posted(
         &plane,
         "/token",

@@ -37,6 +37,7 @@ pub async fn callback(
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
+    egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
     let Ok(mut connection) = pool.get().await else {
@@ -145,7 +146,8 @@ pub async fn callback(
                                 return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
                             }
                             if let Some((endpoint, bearer, auth_req_id)) = ping {
-                                super::ciba::deliver_ping(endpoint, bearer, auth_req_id).await;
+                                super::ciba::deliver_ping(endpoint, bearer, auth_req_id, **egress)
+                                    .await;
                             }
                             return plain(StatusCode::OK, &end(decided_words(tongue, approved)));
                         }

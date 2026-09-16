@@ -915,6 +915,8 @@ pub async fn ciba(
     let renewal = Duration::seconds(offline_or_refresh_lifespan(within.realm, offline));
 
     let session_id = draw_session_id(signing.provider).map_err(|_| Unpolled::Backend)?;
+    // The login lasts as long as one made in a browser. Nothing slides a login,
+    // so one cut to the first refresh window ends an online grant with it.
     open_login(
         transaction,
         within.tenant,
@@ -924,7 +926,7 @@ pub async fn ciba(
         client,
         seen,
         now,
-        renewal.max(lifespan),
+        Duration::seconds(auth::login::browser::SSO_LIFESPAN),
     )
     .await
     .map_err(|_| Unpolled::Backend)?;

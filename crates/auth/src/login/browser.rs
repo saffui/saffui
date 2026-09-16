@@ -13,8 +13,9 @@ use crate::login::enrolment::{self, Enrolment};
 use crate::login::{Progress, run_flow};
 use models::claims_request::ClaimsRequest;
 
-/// How long the login it opens lasts.
-const SSO_LIFESPAN: i64 = 36_000;
+/// How long the login it opens lasts, and a login a grant opens with no
+/// browser in front of it.
+pub const SSO_LIFESPAN: i64 = 36_000;
 
 /// What it takes to open a realm's sealed values.
 #[derive(Clone, Copy)]

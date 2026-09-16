@@ -17,6 +17,11 @@ import {
   listResources,
   listTuples,
   protectClient,
+  readProtectedServer,
+  setProtection,
+  shareResource,
+  unprotectClient,
+  unshareResource,
   pruneDecisionsBefore,
   publishRebacSchema,
   readRebacSchema,
@@ -35,11 +40,23 @@ const ADA = "ada";
 const ADMINS = "admins";
 const SERVER = "contract-api";
 const ROUTE = "contract-orders";
+const SHARED_SERVER = "contract-shared";
 
 describe("authorization", () => {
   test("protects a client, models it, routes to it, asks of it, and removes it", async () => {
     await createClient(REALM, { client_id: SERVER, name: "Contract API", confidential: true });
     await protectClient(REALM, SERVER, "enforcing", "affirmative", false);
+    const protection = await keepAnswer(readProtectedServer, REALM, SERVER);
+    expect(protection.enforcement_mode).toBe("enforcing");
+    expect(protection.user_managed_access).toBe(false);
+    await setProtection(REALM, SERVER, {
+      enforcement_mode: "permissive",
+      decision_strategy: "unanimous",
+      user_managed_access: true,
+    });
+    const reshaped = await keepAnswer(readProtectedServer, REALM, SERVER);
+    expect(reshaped.enforcement_mode).toBe("permissive");
+    expect(reshaped.user_managed_access).toBe(true);
 
     const scopeBody = { name: "read", display_name: "read", description: "" };
     await createAuthzScope(REALM, SERVER, scopeBody);
@@ -117,6 +134,8 @@ describe("authorization", () => {
     await erasePolicy(REALM, SERVER, policy.policy_id, policy.name);
     await eraseResource(REALM, SERVER, resource.resource_id, resource.name);
     await eraseAuthzScope(REALM, SERVER, scope.scope_id, scope.name);
+    await unprotectClient(REALM, SERVER);
+    await expect(readProtectedServer(REALM, SERVER)).rejects.toThrow();
     await deleteClient(REALM, SERVER);
   });
 
@@ -147,5 +166,42 @@ describe("authorization", () => {
     });
     expect(walked.computed).toBe("permit");
     await eraseRelation(REALM, edge);
+
+    await createClient(REALM, {
+      client_id: SHARED_SERVER,
+      name: "Contract shared API",
+      confidential: true,
+    });
+    await protectClient(REALM, SHARED_SERVER, "enforcing", "affirmative", true);
+    const folderBody = {
+      name: "contract-folder",
+      display_name: "contract-folder",
+      description: "",
+      resource_type: "folder",
+      resource_uris: ["/folders/contract"],
+      resource_owner: ADA,
+      user_managed_access: true,
+    };
+    await createResource(REALM, SHARED_SERVER, folderBody);
+    const folder = (await listResources(REALM, SHARED_SERVER)).find(
+      (held) => held.name === "contract-folder",
+    );
+    if (!folder) throw new Error("the shared resource did not read back");
+    const share = {
+      relation: "viewer",
+      subject_type: "user",
+      subject_id: ADA,
+      subject_relation: "",
+    };
+    await shareResource(REALM, SHARED_SERVER, folder.resource_id, share);
+    const shared = await keepAnswer(readRelations, REALM, "folder", folder.resource_id, "viewer");
+    expect(shared.some((held) => held.subject_id === ADA)).toBe(true);
+    await unshareResource(REALM, SHARED_SERVER, folder.resource_id, share);
+    const left = await readRelations(REALM, "folder", folder.resource_id, "viewer");
+    expect(left.some((held) => held.subject_id === ADA)).toBe(false);
+
+    await eraseResource(REALM, SHARED_SERVER, folder.resource_id, folder.name);
+    await unprotectClient(REALM, SHARED_SERVER);
+    await deleteClient(REALM, SHARED_SERVER);
   });
 });

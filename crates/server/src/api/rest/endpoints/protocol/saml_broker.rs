@@ -282,6 +282,7 @@ pub async fn take_redirected_logout(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let (realm, alias) = path.into_inner();
     answer_logout_message(
@@ -292,6 +293,7 @@ pub async fn take_redirected_logout(
         &tenancy,
         &sealing,
         &origin,
+        **egress,
     )
     .await
 }
@@ -305,6 +307,7 @@ pub async fn take_posted_logout(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let (realm, alias) = path.into_inner();
     let message = match (
@@ -318,7 +321,10 @@ pub async fn take_posted_logout(
         (None, Some(answer)) => SamlLogoutMessage::PostedAnswer(answer),
         _ => return told(StatusCode::BAD_REQUEST, "refused"),
     };
-    answer_logout_message(&realm, &alias, message, &pool, &tenancy, &sealing, &origin).await
+    answer_logout_message(
+        &realm, &alias, message, &pool, &tenancy, &sealing, &origin, **egress,
+    )
+    .await
 }
 
 /// Take a SAML logout message and answer the browser.
@@ -329,6 +335,10 @@ pub async fn take_posted_logout(
 /// as when an OpenID Connect provider logs somebody out, and the browser carries the
 /// signed answer back to the provider. The provider's answer to a logout the realm
 /// started sends the browser on to where that logout was going.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a distinct fact about one message"
+)]
 async fn answer_logout_message(
     realm: &str,
     alias: &str,
@@ -337,6 +347,7 @@ async fn answer_logout_message(
     tenancy: &Tenancy,
     sealing: &Sealing,
     origin: &PublicOrigin,
+    egress: config::serving::Egress,
 ) -> HttpResponse {
     let now = Utc::now();
     let refused = || told(StatusCode::BAD_REQUEST, "refused");
@@ -436,7 +447,7 @@ async fn answer_logout_message(
         closed = heeded.sessions.len(),
         "a SAML provider's logout landed"
     );
-    crate::api::rest::endpoints::protocol::backchannel::deliver(notices).await;
+    crate::api::rest::endpoints::protocol::backchannel::deliver(notices, egress).await;
     match heeded.answer {
         Some(location) => HttpResponseBuilder::new(StatusCode::SEE_OTHER)
             .insert_header(("location", location))

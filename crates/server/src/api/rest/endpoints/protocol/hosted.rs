@@ -84,27 +84,44 @@ pub(crate) fn may_dial(uri: &str, egress: Egress) -> bool {
     uri.starts_with("https://") || (egress == Egress::Anywhere && uri.starts_with("http://"))
 }
 
+/// An agent that dials outward and nowhere else.
+///
+/// One builder rather than one per sink. A sink that assembles its own is a
+/// sink that can forget the resolver, and a fetch without it is how a server
+/// is made to reach its own network on somebody else's behalf. The wait is the
+/// caller's: a browser held up by a fetch and a gateway taking a message do not
+/// deserve the same patience.
+///
+/// Both halves of the TLS configuration are named rather than defaulted. The
+/// library prefers a provider this build does not carry, and a default it
+/// cannot honour is a panic at the first https call. It also trusts a root set
+/// of its own over the platform's, and a deployment that added an authority to
+/// its system store would find it ignored.
+pub(crate) fn outward_agent(egress: Egress, patience: Duration) -> ureq::Agent {
+    ureq::Agent::with_parts(
+        ureq::Agent::config_builder()
+            .timeout_global(Some(patience))
+            // A redirect is a second address nobody registered.
+            .max_redirects(0)
+            .tls_config(
+                ureq::tls::TlsConfig::builder()
+                    .provider(ureq::tls::TlsProvider::NativeTls)
+                    .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                    .build(),
+            )
+            .build(),
+        ureq::unversioned::transport::DefaultConnector::new(),
+        Outward(DefaultResolver::default(), egress),
+    )
+}
+
 /// What the client hosts at this URI, or nothing.
 pub async fn fetch(uri: String, egress: Egress) -> Option<String> {
     if !may_dial(&uri, egress) {
         return None;
     }
     tokio::task::spawn_blocking(move || {
-        let agent = ureq::Agent::with_parts(
-            ureq::Agent::config_builder()
-                .timeout_global(Some(PATIENCE))
-                // A redirect is a second address the client did not register.
-                .max_redirects(0)
-                .tls_config(
-                    ureq::tls::TlsConfig::builder()
-                        .provider(ureq::tls::TlsProvider::NativeTls)
-                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                        .build(),
-                )
-                .build(),
-            ureq::unversioned::transport::DefaultConnector::new(),
-            Outward(DefaultResolver::default(), egress),
-        );
+        let agent = outward_agent(egress, PATIENCE);
         let mut response = agent.get(&uri).call().ok()?;
         if response.status() != 200 {
             return None;

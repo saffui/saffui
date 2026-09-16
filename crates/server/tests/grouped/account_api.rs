@@ -20,6 +20,13 @@ const ELSEWHERE: &str = "session-elsewhere";
 const REPLACEMENT: &str = "a-fresh-password-of-decent-length";
 
 fn mounted(plane: &Plane) -> Mounted {
+    mounted_dialling(plane, config::serving::Egress::Outward)
+}
+
+/// The same plane, told where it may dial. A rig whose application listens on
+/// this machine is a deployment whose relying parties share its network, which
+/// is what the wider setting is for.
+fn mounted_dialling(plane: &Plane, egress: config::serving::Egress) -> Mounted {
     Mounted {
         pool: plane.pool(),
         tenancy: plane.tenancy(),
@@ -31,7 +38,7 @@ fn mounted(plane: &Plane) -> Mounted {
         origin: support::origin(),
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
-        egress: config::serving::Egress::Outward,
+        egress,
         sealing: support::sealing(),
         ceiling: support::ceiling(),
     }
@@ -113,7 +120,27 @@ async fn sent(
     bearer: Option<&str>,
     body: Option<Value>,
 ) -> (StatusCode, String, Value) {
-    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    sent_dialling(
+        plane,
+        method,
+        path,
+        bearer,
+        body,
+        config::serving::Egress::Outward,
+    )
+    .await
+}
+
+async fn sent_dialling(
+    plane: &Plane,
+    method: Method,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<Value>,
+    egress: config::serving::Egress,
+) -> (StatusCode, String, Value) {
+    let app =
+        test::init_service(App::new().configure(register(&mounted_dialling(plane, egress)))).await;
     let mut asking = test::TestRequest::default().method(method).uri(path);
     if let Some(bearer) = bearer {
         asking = asking.insert_header(("authorization", format!("Bearer {bearer}")));
@@ -1097,12 +1124,13 @@ async fn a_person_ends_one_of_their_logins_and_its_applications_are_told() {
         "somebody else's login was ended"
     );
 
-    let (status, _, told) = sent(
+    let (status, _, told) = sent_dialling(
         &plane,
         Method::DELETE,
         &own(&format!("sessions/{ELSEWHERE}")),
         Some(&bearer),
         None,
+        config::serving::Egress::Anywhere,
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
@@ -1254,7 +1282,15 @@ async fn a_person_takes_back_what_one_application_got_from_a_login() {
         "sessions/{ELSEWHERE}/grants/{}",
         support::CONFIDENTIAL
     ));
-    let (status, _, told) = sent(&plane, Method::DELETE, &taken, Some(&bearer), None).await;
+    let (status, _, told) = sent_dialling(
+        &plane,
+        Method::DELETE,
+        &taken,
+        Some(&bearer),
+        None,
+        config::serving::Egress::Anywhere,
+    )
+    .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
     assert!(
         login_stands(&plane, ELSEWHERE).await,
@@ -1794,12 +1830,13 @@ async fn a_person_takes_back_an_applications_access_from_every_login_and_it_is_t
     .await;
     plant_grant(&plane, "session-grace", &grace, support::PUBLIC, false).await;
 
-    let (status, _, told) = sent(
+    let (status, _, told) = sent_dialling(
         &plane,
         Method::DELETE,
         &own(&format!("applications/{}/access", support::CONFIDENTIAL)),
         Some(&bearer),
         None,
+        config::serving::Egress::Anywhere,
     )
     .await;
     assert_eq!(

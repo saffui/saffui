@@ -2,9 +2,8 @@ use std::time::Duration;
 
 use auth::messaging::{Deliver, Message, Text, Texter, Undelivered};
 use config::serving::Egress;
-use ureq::unversioned::resolver::DefaultResolver;
 
-use crate::api::rest::endpoints::protocol::hosted::{Outward, may_dial};
+use crate::api::rest::endpoints::protocol::hosted::{may_dial, outward_agent};
 use lettre::message::Mailbox;
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
@@ -82,38 +81,43 @@ fn transport(settings: &MailSettings) -> Result<SmtpTransport, Undelivered> {
 }
 
 /// A gateway of the deployment's own, told over HTTP.
+///
+/// An operator names this one rather than a realm, but it is dialled under the
+/// same guardrails as every other outbound call: the egress policy decides the
+/// scheme, the resolver refuses addresses inside the deployment, and no
+/// redirect is followed out of the answer that was checked.
 pub struct Webhook {
     url: String,
     bearer: Option<String>,
+    egress: Egress,
 }
 
 impl Webhook {
-    pub fn new(url: String, bearer: Option<String>) -> Self {
-        Webhook { url, bearer }
+    pub fn new(url: String, bearer: Option<String>, egress: Egress) -> Self {
+        Webhook {
+            url,
+            bearer,
+            egress,
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl Deliver for Webhook {
     async fn send(&self, settings: &MailSettings, message: &Message) -> Result<(), Undelivered> {
+        if !may_dial(&self.url, self.egress) {
+            tracing::warn!("a message webhook url is not one this egress policy dials");
+            return Err(Undelivered::Refused);
+        }
         let body = serde_json::json!({
             "to": message.to,
             "from": settings.from_address,
             "subject": message.subject,
             "text": message.body,
         });
-        let (url, bearer) = (self.url.clone(), self.bearer.clone());
+        let (url, bearer, egress) = (self.url.clone(), self.bearer.clone(), self.egress);
         tokio::task::spawn_blocking(move || {
-            let agent = ureq::Agent::config_builder()
-                .timeout_global(Some(PATIENCE))
-                .tls_config(
-                    ureq::tls::TlsConfig::builder()
-                        .provider(ureq::tls::TlsProvider::NativeTls)
-                        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                        .build(),
-                )
-                .build()
-                .new_agent();
+            let agent = outward_agent(egress, PATIENCE);
             let mut posting = agent.post(&url);
             if let Some(bearer) = &bearer {
                 posting = posting.header("authorization", &format!("Bearer {bearer}"));
@@ -195,20 +199,7 @@ impl Texter for HttpTexter {
             .as_ref()
             .map(|held| secrecy::ExposeSecret::expose_secret(held).clone());
         tokio::task::spawn_blocking(move || {
-            let agent = ureq::Agent::with_parts(
-                ureq::Agent::config_builder()
-                    .timeout_global(Some(PATIENCE))
-                    .max_redirects(0)
-                    .tls_config(
-                        ureq::tls::TlsConfig::builder()
-                            .provider(ureq::tls::TlsProvider::NativeTls)
-                            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-                            .build(),
-                    )
-                    .build(),
-                ureq::unversioned::transport::DefaultConnector::new(),
-                Outward(DefaultResolver::default(), egress),
-            );
+            let agent = outward_agent(egress, PATIENCE);
             let mut posting = agent.post(&url);
             if let Some(bearer) = &bearer {
                 posting = posting.header("authorization", &format!("Bearer {bearer}"));

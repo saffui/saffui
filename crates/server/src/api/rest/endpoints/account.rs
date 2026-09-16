@@ -273,6 +273,7 @@ pub async fn end_session(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let (_, session_id) = path.into_inner();
@@ -296,7 +297,7 @@ pub async fn end_session(
         .commit()
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
-    backchannel::deliver(notices).await;
+    backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
 }
 
@@ -308,6 +309,7 @@ pub async fn end_other_sessions(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
@@ -328,7 +330,7 @@ pub async fn end_other_sessions(
         .commit()
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
-    backchannel::deliver(notices).await;
+    backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .json(serde_json::json!({ "ended_sessions": ended })))
 }
@@ -341,6 +343,7 @@ pub async fn revoke_grant(
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let (_, session_id, client_id) = path.into_inner();
@@ -365,7 +368,7 @@ pub async fn revoke_grant(
         .commit()
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
-    backchannel::deliver(notices).await;
+    backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
 }
 
@@ -422,12 +425,17 @@ pub async fn withdraw_consent(
 
 /// Take back everything one application got from the caller's logins, and say how many
 /// grants went. The application is told once for each login, once the taking committed.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is a piece of app state this door reads"
+)]
 pub async fn take_back_access(
     caller: web::ReqData<AccountCaller>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
+    egress: web::Data<config::serving::Egress>,
     policy: web::Data<AdminPolicy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
@@ -453,7 +461,7 @@ pub async fn take_back_access(
         .commit()
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
-    backchannel::deliver(notices).await;
+    backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .json(serde_json::json!({ "ended_grants": taken })))
 }

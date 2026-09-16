@@ -3,10 +3,18 @@ use super::support;
 use super::support::{Plane, cookie_value, pkce_pair, urlencode};
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
+use config::serving::Egress;
 use data_encoding::BASE64;
 use server::api::config::{Plane as Mounted, register};
 
 fn mounted(plane: &Plane) -> Mounted {
+    mounted_dialling(plane, Egress::Outward)
+}
+
+/// The same plane, told where it may dial. A rig whose client listens on this
+/// machine is a deployment whose relying parties share its network, which is
+/// what the wider setting is for.
+fn mounted_dialling(plane: &Plane, egress: Egress) -> Mounted {
     Mounted {
         pool: plane.pool(),
         tenancy: plane.tenancy(),
@@ -18,7 +26,7 @@ fn mounted(plane: &Plane) -> Mounted {
         origin: support::origin(),
         login_ui: support::login_ui(),
         hops: config::proxying::Proxying::none(),
-        egress: config::serving::Egress::Outward,
+        egress,
         sealing: support::sealing(),
         ceiling: support::ceiling(),
     }
@@ -2585,7 +2593,17 @@ async fn logout(
     query: &[(&str, &str)],
     session: Option<&str>,
 ) -> (StatusCode, String, Vec<String>) {
-    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    logout_dialling(plane, query, session, Egress::Outward).await
+}
+
+async fn logout_dialling(
+    plane: &Plane,
+    query: &[(&str, &str)],
+    session: Option<&str>,
+    egress: Egress,
+) -> (StatusCode, String, Vec<String>) {
+    let app =
+        test::init_service(App::new().configure(register(&mounted_dialling(plane, egress)))).await;
     let asked = query
         .iter()
         .map(|(key, value)| format!("{key}={}", urlencode(value)))
@@ -5153,7 +5171,16 @@ async fn a_client_is_told_when_the_login_it_took_part_in_ends() {
     .await;
     let hint = granted["id_token"].as_str().expect("an id token");
 
-    let (status, _, _) = logout(&plane, &[("id_token_hint", hint)], Some(&session)).await;
+    // The rig's client listens on this machine, so the plane is told it may
+    // dial its own network, as a deployment sharing one with its relying
+    // parties says.
+    let (status, _, _) = logout_dialling(
+        &plane,
+        &[("id_token_hint", hint)],
+        Some(&session),
+        Egress::Anywhere,
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
 
     let body = received
@@ -5184,6 +5211,67 @@ async fn a_client_is_told_when_the_login_it_took_part_in_ends() {
     assert!(
         claims.get("nonce").is_none(),
         "a logout token must carry no nonce"
+    );
+}
+
+/// A client that registered a logout address inside the deployment is not told,
+/// and the logout ends all the same.
+///
+/// Where a notice goes is a client's own registration, so it is dialled under
+/// the deployment's egress policy like every other address a client supplies.
+/// The login still ends: a client that cannot be told is a client left behind,
+/// never a logout the person cannot complete.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_logout_address_inside_the_deployment_is_not_dialled() {
+    let plane = Plane::with_actions(&[]).await;
+    let (uri, received) = listening_client();
+    plane
+        .register_backchannel(support::CONFIDENTIAL, &uri)
+        .await;
+
+    let session = signed_in_once(&plane).await;
+    let (_, landing) = authorize_signed_in(&plane, &asking_for(&[]), &session).await;
+    let code = landing
+        .split_once("code=")
+        .expect("a code")
+        .1
+        .split('&')
+        .next()
+        .unwrap()
+        .to_owned();
+    let (_, granted) = asking(
+        &plane,
+        support::REALM,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", &code),
+            ("redirect_uri", REDIRECT),
+        ],
+        Some((support::CONFIDENTIAL, support::CLIENT_SECRET)),
+    )
+    .await;
+    let hint = granted["id_token"].as_str().expect("an id token");
+
+    // The deployment's own default: nothing inside it is dialled on a
+    // client's say-so.
+    let (status, _, _) = logout_dialling(
+        &plane,
+        &[("id_token_hint", hint)],
+        Some(&session),
+        Egress::Outward,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a logout is not a client's to hold up"
+    );
+    assert!(
+        received
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .is_err(),
+        "a logout token was posted to an address inside the deployment"
     );
 }
 

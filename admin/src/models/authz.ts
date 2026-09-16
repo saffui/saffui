@@ -63,6 +63,32 @@ export interface ResourceRow {
   user_managed_access?: boolean;
 }
 
+/// Mirrors `models::entities::authz::ResourceServerModel`: what the plane holds about
+/// a protected client. `remote_resource_management` is read here and written nowhere.
+export interface ProtectedServer {
+  server_id: string;
+  enforcement_mode: string;
+  decision_strategy: string;
+  remote_resource_management: boolean;
+  user_managed_access: boolean;
+}
+
+/// The three settings a protection write carries, and nothing else.
+export interface ProtectionChange {
+  enforcement_mode: string;
+  decision_strategy: string;
+  user_managed_access: boolean;
+}
+
+/// One share of a resource, written as a relation on it: a named subject, or everybody
+/// standing in a relation to something.
+export interface ResourceShare {
+  relation: string;
+  subject_type: string;
+  subject_id: string;
+  subject_relation: string;
+}
+
 export interface ScopeRow {
   scope_id: string;
   name: string;

@@ -125,14 +125,7 @@ pub fn worded(
         .mail_templates
         .as_ref()
         .and_then(|held| held.get(kind))
-        .and_then(|tongues| {
-            realm
-                .default_locale
-                .as_deref()
-                .and_then(|tongue| tongues.get(tongue))
-                .or_else(|| tongues.get("en"))
-                .or_else(|| tongues.values().next())
-        });
+        .and_then(|tongues| pick_wording(tongues, realm.default_locale.as_deref()));
     match spoken {
         Some(template) => (
             template.subject.replace("{{link}}", link),
@@ -143,6 +136,38 @@ pub fn worded(
             default_body.replace("{{link}}", link),
         ),
     }
+}
+
+/// The wording filed under one tongue, compared without regard to case: a map
+/// filed under `pt-BR` answers a realm whose tongue is written `pt-br`.
+fn wording_in<'a, T>(
+    tongues: &'a std::collections::HashMap<String, T>,
+    wanted: &str,
+) -> Option<&'a T> {
+    tongues
+        .iter()
+        .find(|(held, _)| held.eq_ignore_ascii_case(wanted))
+        .map(|(_, wording)| wording)
+}
+
+/// The one wording a realm's map answers with: its own tongue, then English,
+/// then the first by name.
+fn pick_wording<'a, T>(
+    tongues: &'a std::collections::HashMap<String, T>,
+    default_locale: Option<&str>,
+) -> Option<&'a T> {
+    default_locale
+        .and_then(|tongue| wording_in(tongues, tongue))
+        .or_else(|| wording_in(tongues, "en"))
+        .or_else(|| {
+            // A map hands its entries back in no order of its own, so a realm
+            // holding several tongues and naming none would answer a different
+            // language from one run to the next.
+            tongues
+                .iter()
+                .min_by(|(one, _), (other, _)| one.cmp(other))
+                .map(|(_, wording)| wording)
+        })
 }
 
 #[cfg(test)]
@@ -219,6 +244,84 @@ mod wording {
         let other_kind = realm_with(Some("fr"), &[("verify_email", "fr", "V", "{{link}}")]);
         let (subject, _) = worded(&other_kind, "magic_link", "https://l", "Built", "{{link}}");
         assert_eq!(subject, "Built", "another kind's words leaked");
+    }
+
+    fn texting_realm(
+        default_locale: Option<&str>,
+        templates: &[(&str, &str, &str)],
+    ) -> models::entities::realm::RealmModel {
+        let mut realm = realm_with(default_locale, &[]);
+        let mut map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        for (kind, tongue, body) in templates {
+            map.entry((*kind).to_owned())
+                .or_default()
+                .insert((*tongue).to_owned(), (*body).to_owned());
+        }
+        realm.sms_templates = (!map.is_empty()).then_some(map);
+        realm
+    }
+
+    /// A realm holding several tongues and naming none answers the same one on
+    /// every run, and a tongue answers whatever case it was filed under. The
+    /// realm is built afresh each turn because a map seeds its own order.
+    #[test]
+    fn the_tongue_that_answers_is_chosen_and_not_drawn() {
+        for _ in 0..20 {
+            let unnamed = realm_with(
+                None,
+                &[
+                    ("magic_link", "sv", "Svenska", "{{link}}"),
+                    ("magic_link", "de", "Deutsch", "{{link}}"),
+                    ("magic_link", "fr", "Francais", "{{link}}"),
+                ],
+            );
+            let (subject, _) = worded(&unnamed, "magic_link", "https://l", "Built", "{{link}}");
+            assert_eq!(
+                subject, "Deutsch",
+                "the tongue was drawn rather than chosen"
+            );
+        }
+
+        let cased = realm_with(
+            Some("pt-br"),
+            &[
+                ("magic_link", "de", "Deutsch", "{{link}}"),
+                ("magic_link", "pt-BR", "Portugues", "{{link}}"),
+            ],
+        );
+        let (subject, _) = worded(&cased, "magic_link", "https://l", "Built", "{{link}}");
+        assert_eq!(subject, "Portugues", "case kept a realm from its own words");
+    }
+
+    /// The texts pick their tongue by the rule the mails pick theirs by.
+    #[test]
+    fn a_text_picks_its_tongue_the_way_a_mail_does() {
+        for _ in 0..20 {
+            let unnamed = texting_realm(
+                None,
+                &[
+                    ("sms_otp", "sv", "Svenska {{code}}"),
+                    ("sms_otp", "de", "Deutsch {{code}}"),
+                ],
+            );
+            assert_eq!(
+                texted_words(&unnamed, "sms_otp", "123456"),
+                "Deutsch 123456",
+                "the tongue was drawn rather than chosen"
+            );
+        }
+
+        let cased = texting_realm(
+            Some("pt-br"),
+            &[
+                ("sms_otp", "de", "Deutsch {{code}}"),
+                ("sms_otp", "pt-BR", "Portugues {{code}}"),
+            ],
+        );
+        assert_eq!(
+            texted_words(&cased, "sms_otp", "123456"),
+            "Portugues 123456"
+        );
     }
 }
 
@@ -338,14 +441,7 @@ pub fn texted_words(realm: &RealmModel, kind: &str, code: &str) -> String {
         .sms_templates
         .as_ref()
         .and_then(|held| held.get(kind))
-        .and_then(|tongues| {
-            realm
-                .default_locale
-                .as_deref()
-                .and_then(|tongue| tongues.get(tongue))
-                .or_else(|| tongues.get("en"))
-                .or_else(|| tongues.values().next())
-        });
+        .and_then(|tongues| pick_wording(tongues, realm.default_locale.as_deref()));
     match spoken {
         Some(body) => body.replace("{{code}}", code),
         None => match (kind, realm.default_locale.as_deref()) {
@@ -370,14 +466,7 @@ pub fn texted_link(realm: &models::entities::realm::RealmModel, kind: &str, link
         .sms_templates
         .as_ref()
         .and_then(|held| held.get(kind))
-        .and_then(|tongues| {
-            realm
-                .default_locale
-                .as_deref()
-                .and_then(|tongue| tongues.get(tongue))
-                .or_else(|| tongues.get("en"))
-                .or_else(|| tongues.values().next())
-        });
+        .and_then(|tongues| pick_wording(tongues, realm.default_locale.as_deref()));
     match spoken {
         Some(body) => body.replace("{{link}}", link),
         None => match realm.default_locale.as_deref() {

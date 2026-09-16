@@ -59,6 +59,12 @@ describe("why sharing is closed", () => {
       "authz-share-server-closed",
     );
     expect(whyShareClosed(null, RESOURCE)).toBe("authz-share-server-closed");
+    expect(
+      whyShareClosed(
+        { ...OPEN, user_managed_access: false },
+        { ...RESOURCE, user_managed_access: false },
+      ),
+    ).toBe("authz-share-server-closed");
   });
 
   test("says the resource where the server is open and the resource is not", () => {

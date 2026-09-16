@@ -67,6 +67,7 @@ async fn asked(plane: &Plane, extra: &[(&str, &str)]) -> (StatusCode, String, Ve
 
 /// Answer the login and hand back where the browser was sent.
 async fn signed_in(plane: &Plane, binding: &str) -> String {
+    let minted = support::page_token_for(plane, binding).await;
     let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
     let response = test::call_service(
         &app,
@@ -82,6 +83,7 @@ async fn signed_in(plane: &Plane, binding: &str) -> String {
             .set_form([
                 ("username", support::SUBJECT),
                 ("password", support::PASSWORD),
+                ("page_token", minted.as_str()),
             ])
             .to_request(),
     )

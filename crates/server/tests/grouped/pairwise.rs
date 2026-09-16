@@ -93,6 +93,7 @@ async fn granted_to(
         .map(str::to_owned)
         .collect();
     let binding = cookie_value(&cookies, support::AUTH_SESSION_COOKIE).expect("a login");
+    let minted = support::page_token_for(plane, &binding).await;
 
     let response = test::call_service(
         &app,
@@ -108,6 +109,7 @@ async fn granted_to(
             .set_form([
                 ("username", support::SUBJECT),
                 ("password", support::PASSWORD),
+                ("page_token", minted.as_str()),
             ])
             .to_request(),
     )

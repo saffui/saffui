@@ -14,7 +14,7 @@ use store::tenancy::{Tenancy, resolve};
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::dto::uncached;
-use crate::api::rest::endpoints::protocol::{answering, binding};
+use crate::api::rest::endpoints::protocol::{answering, binding, forgery};
 
 /// What the caller answers with.
 ///
@@ -61,6 +61,11 @@ pub struct Answered {
     /// Whether the person ticked remember-me. Counted only where the realm
     /// says so; a body inventing it against a realm that does not is ignored.
     pub remember_me: Option<bool>,
+    /// What the page this form was served on carried, proving the form came
+    /// from a page this deployment rendered for this login. Read on the form
+    /// path alone: a JSON body cannot be posted from another site without a
+    /// preflight, and the script never sends this.
+    pub page_token: Option<String>,
 }
 
 /// How the answer arrived, which is how the outcome is told.
@@ -101,6 +106,14 @@ pub async fn answer(
         Spoken::Json => told(status, named),
         Spoken::Form => shown(&page, named),
     };
+
+    // A form is the one shape another site can post here without asking first,
+    // so a browser saying the post was started elsewhere is taken at its word.
+    // Where the header is absent it says nothing, which is every caller that is
+    // not a browser; what those meet is the value the page carried.
+    if spoken == Spoken::Form && forgery::came_from_another_site(&request) {
+        return tell(StatusCode::NOT_FOUND, "no-such-login");
+    }
 
     // No cookie, no login. A body naming one would let anybody who read an
     // identifier off a log answer somebody else's sign-in.
@@ -210,6 +223,28 @@ pub async fn answer(
     )
     .await
     .ok();
+
+    // What the page carried, asked of a form and of nothing else: the script
+    // posts JSON, which no other site can send here without asking first.
+    // Weighed before the flow runs, so a forged form spends nothing at all,
+    // not even one password attempt against somebody's account.
+    if spoken == Spoken::Form {
+        let minted = match &ring {
+            Some(ring) => {
+                forgery::minted_here(
+                    ring,
+                    &sealing.envelope,
+                    &auth_session,
+                    answered.page_token.as_deref(),
+                )
+                .await
+            }
+            None => false,
+        };
+        if !minted {
+            return tell(StatusCode::NOT_FOUND, "no-such-login");
+        }
+    }
 
     let signing = ring.as_ref().map(|ring| services::grant::Signing {
         provider: sealing.provider.as_ref(),

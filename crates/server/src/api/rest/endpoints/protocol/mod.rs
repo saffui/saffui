@@ -10,6 +10,7 @@ pub mod ciba;
 pub mod device;
 pub mod discovery;
 pub mod dto;
+pub mod forgery;
 pub mod hosted;
 pub mod i18n;
 pub mod introspect;

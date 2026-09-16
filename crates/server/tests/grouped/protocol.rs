@@ -1375,6 +1375,147 @@ async fn login_step(
     (status, test::read_body_json(response).await, set)
 }
 
+/// Answer a login step the way a browser with no script does, by posting the
+/// form the page was served with rather than the JSON the script sends.
+async fn login_form_step(
+    plane: &Plane,
+    binding: Option<&str>,
+    fields: &[(&str, &str)],
+) -> (StatusCode, String) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let mut request = test::TestRequest::post()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/login",
+            support::REALM
+        ))
+        .set_form(fields);
+    if let Some(binding) = binding {
+        request = request.insert_header((
+            "cookie",
+            format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+        ));
+    }
+    let response = test::call_service(&app, request.to_request()).await;
+    let status = response.status();
+    let location = response
+        .headers()
+        .get("location")
+        .map(|value| value.to_str().unwrap().to_owned())
+        .unwrap_or_default();
+    (status, location)
+}
+
+/// What the form on the page served for this login carries.
+async fn page_token_of(plane: &Plane, binding: &str) -> String {
+    let app = test::init_service(App::new().configure(register(&mounted(plane)))).await;
+    let request = test::TestRequest::get()
+        .uri(&format!(
+            "/realms/{}/protocol/openid-connect/login",
+            support::REALM
+        ))
+        .insert_header((
+            "cookie",
+            format!("{}={binding}", support::AUTH_SESSION_COOKIE),
+        ));
+    let response = test::call_service(&app, request.to_request()).await;
+    let body = String::from_utf8(test::read_body(response).await.to_vec()).expect("a page");
+    let (_, after) = body
+        .split_once(r#"name="page_token" value=""#)
+        .expect("a form that carries what the page minted");
+    let (minted, _) = after.split_once('"').expect("a closed attribute");
+    minted.to_owned()
+}
+
+/// A browser with no script posts the form it was served, and that form carries
+/// what the page minted for this login.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_posted_form_carrying_what_the_page_minted_is_answered() {
+    let plane = Plane::with_actions(&[]).await;
+    let asked = started(support::CONFIDENTIAL);
+    let (_, _, opened) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let minted = page_token_of(&plane, &auth_session).await;
+    assert!(
+        !minted.is_empty(),
+        "the page served for a live login minted nothing"
+    );
+
+    let (status, landed) = login_form_step(
+        &plane,
+        Some(&auth_session),
+        &[
+            ("username", support::SUBJECT),
+            ("password", support::PASSWORD),
+            ("page_token", &minted),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{landed}");
+    assert!(
+        !landed.contains("no-such-login"),
+        "a form the page itself served was refused: {landed}"
+    );
+}
+
+/// A form posted without what the page carried is refused, and refused before
+/// the password it carries is weighed against anybody.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_posted_form_carrying_nothing_the_page_minted_is_refused() {
+    let plane = Plane::with_actions(&[]).await;
+    let asked = started(support::CONFIDENTIAL);
+    let (_, _, opened) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+
+    let (status, landed) = login_form_step(
+        &plane,
+        Some(&auth_session),
+        &[
+            ("username", support::SUBJECT),
+            ("password", support::PASSWORD),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{landed}");
+    assert!(
+        landed.contains("no-such-login"),
+        "a form from nowhere was answered: {landed}"
+    );
+}
+
+/// What one login's page minted does not answer another login. The value is
+/// sealed under the login it was served for, so a form that carries somebody
+/// else's is a form this page never served.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn what_another_logins_page_minted_is_refused() {
+    let plane = Plane::with_actions(&[]).await;
+    let asked = started(support::CONFIDENTIAL);
+    let (_, _, opened) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let mine = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
+    let (_, _, opened_again) = authorize_with_cookies(&plane, &as_pairs(&asked)).await;
+    let theirs = cookie_value(&opened_again, support::AUTH_SESSION_COOKIE).expect("a binding");
+    assert_ne!(mine, theirs, "two logins were opened as one");
+
+    let minted_for_them = page_token_of(&plane, &theirs).await;
+    let (status, landed) = login_form_step(
+        &plane,
+        Some(&mine),
+        &[
+            ("username", support::SUBJECT),
+            ("password", support::PASSWORD),
+            ("page_token", &minted_for_them),
+        ],
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{landed}");
+    assert!(
+        landed.contains("no-such-login"),
+        "one login's page answered another's: {landed}"
+    );
+}
+
 /// The whole loop, once: authorize, answer the step, spend the code. Every
 /// piece was tested against a planted fixture before this; this is the first
 /// time the pieces have to agree with each other.
@@ -3918,14 +4059,17 @@ async fn a_form_is_answered_by_being_sent_on() {
         authorize_with_cookies(&plane, &as_pairs(&started(support::CONFIDENTIAL))).await;
     let auth_session = cookie_value(&opened, support::AUTH_SESSION_COOKIE).expect("a binding");
     let path = format!("/realms/{}/protocol/openid-connect/login", support::REALM);
+    let minted = support::page_token_for(&plane, &auth_session).await;
     let post = |form: &'static [(&'static str, &'static str)]| {
+        let mut fields: Vec<(&str, &str)> = form.to_vec();
+        fields.push(("page_token", minted.as_str()));
         test::TestRequest::post()
             .uri(&path)
             .insert_header((
                 "cookie",
                 format!("{}={auth_session}", support::AUTH_SESSION_COOKIE),
             ))
-            .set_form(form)
+            .set_form(fields)
             .to_request()
     };
 

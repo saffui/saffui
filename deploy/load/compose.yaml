@@ -1,0 +1,78 @@
+# One saffui against one Postgres, provisioned with a machine client and a
+# person, for the load harness to drive. This is a development rig: every
+# value here is a development value, and what it measures is the shape of
+# the hot paths on one machine, never a deployment's capacity.
+
+name: saffui-load
+
+x-saffui: &saffui
+  image: saffui:local
+  pull_policy: never
+  environment: &saffui-env
+    SAFFUI_DATABASE_URL: host=postgres user=saffui_app password=saffui_app dbname=saffui
+    SAFFUI_PUBLIC_ORIGIN: http://localhost:48080
+    SAFFUI_ADMIN_AUDIENCES: saffui-console
+    SAFFUI_ADMIN_PARTIES: saffui-console
+    SAFFUI_CRYPTO_KEK: a-development-wrapping-key-of-decent-length
+    SAFFUI_LOG: ${SAFFUI_LOG:-warn}
+    SAFFUI_LOG_FORMAT: ${SAFFUI_LOG_FORMAT:-text}
+
+services:
+  postgres:
+    image: postgres:16
+    command: ["postgres", "-c", "max_connections=200"]
+    environment:
+      POSTGRES_DB: saffui
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d saffui"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  migrate:
+    <<: *saffui
+    command: ["migrate"]
+    environment:
+      <<: *saffui-env
+      SAFFUI_DATABASE_URL: host=postgres user=postgres password=postgres dbname=saffui
+      SAFFUI_APP_ROLE_PASSWORD: saffui_app
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  provision:
+    <<: *saffui
+    command:
+      - provision
+      - --tenant=local
+      - --realm=main
+      - --console-redirect=http://localhost:48080/console/login/return
+      - --user=ada
+      - --administrator
+      - --email=ada@example.test
+      - --given-name=Ada
+      - --family-name=Lovelace
+    environment:
+      <<: *saffui-env
+      SAFFUI_PROVISION_USER_PASSWORD: ${SAFFUI_USER_PASSWORD:-a-password-of-decent-length}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  saffui:
+    <<: *saffui
+    container_name: saffui-load
+    ports:
+      - "48080:8080"
+      - "48081:8081"
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/readyz"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    depends_on:
+      provision:
+        condition: service_completed_successfully

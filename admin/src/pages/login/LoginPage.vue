@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useRoute } from "vue-router";
+import AppHint from "@/components/AppHint.vue";
 import { say } from "@/i18n";
 import { useSession } from "@/stores/session";
 
@@ -32,7 +33,7 @@ async function begin() {
       <p class="mb-5 max-w-[42ch] text-xs leading-5 text-muted">{{ say("login-lede") }}</p>
       <form @submit.prevent="begin">
         <label for="login-realm" class="block text-[11px] font-medium text-muted">
-          {{ say("login-realm") }}
+          {{ say("login-realm") }} <AppHint name="login-realm-help" />
           <input id="login-realm" v-model="realm" class="sf-field mt-1.5 font-mono" autocomplete="off" spellcheck="false" />
         </label>
         <button

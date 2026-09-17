@@ -578,6 +578,45 @@ async fn the_preview_names_each_claims_author() {
     );
 }
 
+/// §8: a pairwise client is told a subject of its own, and a preview that
+/// showed the raw identifier would show, to whoever may read a client, exactly
+/// the thing pairwise exists to keep from that client.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_preview_shows_the_subject_the_client_is_told_and_not_the_person() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::UserRead]).await;
+    let bearer = plane.token(&support::claims());
+    plane.pair_subjects(support::CONFIDENTIAL).await;
+
+    let (status, previewed) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/preview-token"),
+        &bearer,
+        Some(json!({
+            "user_id": support::SUBJECT,
+            "client_id": support::CONFIDENTIAL,
+            "scope": "openid",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{previewed}");
+    let subject = previewed["access"]["body"]["sub"]
+        .as_str()
+        .expect("a subject");
+    assert!(!subject.is_empty(), "{previewed}");
+    assert_ne!(
+        subject,
+        support::SUBJECT,
+        "the preview shows the identifier a pairwise client is never told: {previewed}"
+    );
+    // One client, one subject, whichever token carries it.
+    assert_eq!(
+        previewed["identity"]["body"]["sub"], previewed["access"]["body"]["sub"],
+        "{previewed}"
+    );
+}
+
 /// A scope that never asked for openid gets no identity token, exactly as a
 /// real grant would decide. Showing one would promise a token this exchange
 /// would not produce.

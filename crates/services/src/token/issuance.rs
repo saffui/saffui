@@ -292,42 +292,6 @@ fn jws_algorithm_name(algorithm: SignAlg) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn minting(audiences: Vec<String>) -> Minting<'static> {
-        Minting {
-            kind: Kind::Access,
-            issuer: "https://saffui.example/realms/main",
-            subject: "ada",
-            audiences,
-            party: "app",
-            session_id: "s-1",
-            scope: "openid",
-            lifespan: Duration::seconds(300),
-            now: DateTime::from_timestamp(1_800_000_000, 0).expect("a moment"),
-            extra: Map::new(),
-            bound_to: None,
-            certified_by: None,
-        }
-    }
-
-    /// A token nobody is the audience of is one every audience check has to
-    /// decide what to do about, so it is refused where the body is assembled
-    /// and not only where one would be signed. A preview goes through the
-    /// assembly and never through the signing.
-    #[test]
-    fn a_body_naming_no_audience_is_refused_where_it_is_assembled() {
-        let moment = DateTime::from_timestamp(1_800_000_300, 0).expect("a moment");
-        assert!(matches!(
-            token_body(minting(Vec::new()), "t-1", moment),
-            Err(Unmintable::NoAudience)
-        ));
-        assert!(token_body(minting(vec!["app".to_owned()]), "t-1", moment).is_ok());
-    }
-}
-
 /// Sign a set of claims as they are, naming the key that signed them.
 ///
 /// Nothing is added and nothing is bounded: the caller has already said what
@@ -372,4 +336,40 @@ fn signer_for(key: &RealmSigningKey) -> Option<Box<dyn JwsSigner>> {
         SignAlg::EdDsa => Box::new(EdDSA.signer_from_pem(pem).ok()?) as Box<dyn JwsSigner>,
     };
     Some(signer)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn minting(audiences: Vec<String>) -> Minting<'static> {
+        Minting {
+            kind: Kind::Access,
+            issuer: "https://saffui.example/realms/main",
+            subject: "ada",
+            audiences,
+            party: "app",
+            session_id: "s-1",
+            scope: "openid",
+            lifespan: Duration::seconds(300),
+            now: DateTime::from_timestamp(1_800_000_000, 0).expect("a moment"),
+            extra: Map::new(),
+            bound_to: None,
+            certified_by: None,
+        }
+    }
+
+    /// A token nobody is the audience of is one every audience check has to
+    /// decide what to do about, so it is refused where the body is assembled
+    /// and not only where one would be signed. A preview goes through the
+    /// assembly and never through the signing.
+    #[test]
+    fn a_body_naming_no_audience_is_refused_where_it_is_assembled() {
+        let moment = DateTime::from_timestamp(1_800_000_300, 0).expect("a moment");
+        assert!(matches!(
+            token_body(minting(Vec::new()), "t-1", moment),
+            Err(Unmintable::NoAudience)
+        ));
+        assert!(token_body(minting(vec!["app".to_owned()]), "t-1", moment).is_ok());
+    }
 }

@@ -175,3 +175,13 @@ sms-code = Code reçu par SMS
 phone-ask = Votre royaume vous demande de prouver un numéro de téléphone. Saisissez-le en forme internationale.
 phone-bad = Cela ne ressemble pas à un numéro international. Il commence par + et l'indicatif du pays.
 phone-number = Numéro de téléphone
+
+## La page qu'ouvre un lien de réinitialisation.
+reset-title = Choisir un nouveau mot de passe
+reset-password = Nouveau mot de passe
+reset-send = Enregistrer le mot de passe
+reset-refused = Ce mot de passe a été refusé. Essayez-en un autre.
+reset-used = Ce lien a déjà servi, ou il a expiré. Demandez-en un autre.
+
+## Affiché seulement quand une page est regardée plutôt qu'utilisée.
+preview-banner = Aperçu. Rien sur cette page ne peut être envoyé.

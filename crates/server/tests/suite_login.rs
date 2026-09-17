@@ -26,6 +26,8 @@ mod mailed;
 mod notices;
 #[path = "grouped/org_login.rs"]
 mod org_login;
+#[path = "grouped/page_preview.rs"]
+mod page_preview;
 #[path = "grouped/protocol.rs"]
 mod protocol;
 #[path = "grouped/provenance.rs"]

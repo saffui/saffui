@@ -308,6 +308,17 @@ a { color: var(--ink); }
 #asking-scopes { margin: .5rem 0 0; padding-left: 1.25rem; font-size: 14.5px; }
 #asking > p { font-size: 14.5px; }
 
+/* Worn only by a page being looked at. It has to be unmissable: somebody
+   arriving at one of these must never take it for the page that signs them in. */
+#preview-banner {
+  margin: 0 0 16px;
+  padding: 8px 12px;
+  border: 1px dashed var(--muted, #888);
+  border-radius: 6px;
+  font-size: 13px;
+  text-align: center;
+}
+
 #notice, .flash {
   margin: 16px 0 0;
   padding: 10px 12px;

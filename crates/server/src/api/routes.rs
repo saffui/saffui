@@ -6,7 +6,8 @@ use models::entities::authz::AdminAction;
 use crate::api::rest::endpoints::admin::{
     account, agents, authorization, claim_sources, client_scopes, clients, compliance, credentials,
     directory, events, features, federation, flows, idps, iga, journal, keys, mail, metrics,
-    negotiation, overview, portability, protocol_mappers, realm_keys, realms, rebac, recert,
+    negotiation, overview, page_drafts, portability, protocol_mappers, realm_keys, realms, rebac,
+    recert,
     requests, sessions, sms, users, ussd,
 };
 use crate::api::rest::endpoints::scim;
@@ -368,6 +369,12 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/preview-token",
             action: AdminAction::UserRead,
             handler: Some(|| web::post().to(protocol_mappers::preview)),
+        },
+        AdminRoute {
+            method: Method::POST,
+            pattern: "/admin/realms/{realm}/page-draft",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::post().to(page_drafts::keep)),
         },
         AdminRoute {
             method: Method::POST,

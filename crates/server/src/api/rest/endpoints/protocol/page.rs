@@ -90,6 +90,147 @@ fn told(
         ))
 }
 
+/// Which page is being looked at, and with whose words.
+#[derive(serde::Deserialize)]
+pub struct Looking {
+    /// A draft the console kept a moment ago. Absent shows what is saved.
+    pub draft: Option<String>,
+}
+
+/// The pages a realm can be shown before anybody uses them.
+const LOOKABLE: [&str; 4] = ["login", "device", "requests", "reset"];
+
+/// Strip a rendered page of everything that could send anything anywhere.
+///
+/// This is the whole security of the preview. The draft behind it is written
+/// by an administrator, but the page is opened by a browser carrying nothing,
+/// so the link is as good as public for as long as it lives. A sign-in page
+/// that cannot post cannot collect a password, and a leaked preview is then a
+/// picture rather than a door.
+///
+/// Blunt on purpose: a form whose method and action are both rewritten has
+/// nowhere to go, whatever the script would have done with it, and the script
+/// is not served here either.
+fn made_inert(body: &str, banner: &str) -> String {
+    body.replace("method=\"post\"", "method=\"get\" action=\"#\"")
+        .replace("<script", "<!-- script")
+        .replace("</script>", "-->")
+        .replacen(
+            "<main>",
+            &format!("<main><p id=\"preview-banner\">{}</p>", escaped(banner)),
+            1,
+        )
+}
+
+/// A hosted page as it would look, with wording that may not be saved yet.
+///
+/// Its own route rather than a flag on the real pages: nothing here can change
+/// how a sign-in behaves, because none of it sits on that path.
+pub async fn looked_at(
+    request: actix_web::HttpRequest,
+    path: web::Path<(String, String)>,
+    pool: web::Data<deadpool_postgres::Pool>,
+    tenancy: web::Data<store::tenancy::Tenancy>,
+    asked: web::Query<Looking>,
+) -> HttpResponse {
+    let (realm, which) = path.into_inner();
+    if !LOOKABLE.contains(&which.as_str()) {
+        return told_nothing(StatusCode::NOT_FOUND);
+    }
+    let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
+    let tongue = tongues.negotiated(
+        None,
+        request
+            .headers()
+            .get("accept-language")
+            .and_then(|held| held.to_str().ok()),
+    );
+    let (doors, idps, saved, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
+
+    // The draft when one is named and still lives, and what is saved otherwise.
+    // A draft that has expired shows the saved wording rather than an error: the
+    // page is the answer to "what does this look like", and it still is.
+    let drafted = match asked.into_inner().draft {
+        Some(held) if !held.is_empty() => draft_of_realm(&pool, &tenancy, &realm, &held).await,
+        _ => None,
+    };
+    let spoken = drafted.as_ref().or(saved.as_ref());
+
+    let body = match (which.as_str(), spoken) {
+        ("login", Some(words)) => i18n::page_over(tongue, words),
+        ("login", None) => i18n::page_in(tongue).to_owned(),
+        ("device", Some(words)) => i18n::device_page_over(tongue, words),
+        ("device", None) => i18n::device_page_in(tongue).to_owned(),
+        ("requests", Some(words)) => i18n::requests_page_over(tongue, words),
+        ("requests", None) => i18n::requests_page_in(tongue).to_owned(),
+        (_, Some(words)) => i18n::reset_page_over(tongue, words),
+        (_, None) => i18n::reset_page_in(tongue).to_owned(),
+    };
+
+    // The same tokens the real pages carry, filled with nothing: the page is
+    // read and never answered, so there is nothing for them to name.
+    let body = body
+        .replace("{doors}", &escaped(&doors))
+        .replace("{idps}", &idps)
+        .replace(
+            "{policy}",
+            &policy
+                .as_ref()
+                .map(|held| i18n::policy_checklist(tongue, held))
+                .unwrap_or_default(),
+        )
+        .replace("{token}", "")
+        .replace("{action}", "#")
+        .replace("{user}", "")
+        .replace("{address}", "")
+        .replace("{name}", "");
+
+    let banner = spoken
+        .and_then(|words| words.get(tongue))
+        .and_then(|words| words.get("preview-banner"))
+        .and_then(serde_json::Value::as_str)
+        .map_or_else(|| built_banner(tongue), str::to_owned);
+
+    uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .insert_header(("Content-Type", "text/html; charset=utf-8"))
+        .insert_header(("Content-Security-Policy", POLICY))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("X-Frame-Options", "DENY"))
+        .insert_header(("Referrer-Policy", "no-referrer"))
+        .insert_header(("X-Robots-Tag", "noindex, nofollow"))
+        .body(made_inert(&body, &banner))
+}
+
+fn built_banner(tongue: &str) -> String {
+    if tongue == "fr" {
+        "Aperçu. Rien sur cette page ne peut être envoyé.".to_owned()
+    } else {
+        "Preview. Nothing on this page can be submitted.".to_owned()
+    }
+}
+
+/// What a kept draft holds, where it is still worth reading.
+async fn draft_of_realm(
+    pool: &deadpool_postgres::Pool,
+    tenancy: &store::tenancy::Tenancy,
+    realm: &str,
+    draft: &str,
+) -> Option<serde_json::Value> {
+    let mut connection = pool.get().await.ok()?;
+    let context = store::tenancy::resolve::realm_by_name(&connection, realm)
+        .await
+        .ok()?;
+    let transaction = tenancy.transaction(&mut connection, &context).await.ok()?;
+    store::providers::page_previews::read(&transaction, draft)
+        .await
+        .ok()
+        .flatten()
+}
+
+fn told_nothing(status: StatusCode) -> HttpResponse {
+    uncached(&mut HttpResponseBuilder::new(status)).finish()
+}
+
 /// The five characters HTML reads as markup, spelled so it does not.
 pub fn escaped(value: &str) -> String {
     value
@@ -718,15 +859,27 @@ pub async fn reset_password(
             policy.as_ref(),
         );
     };
-    let body = RESET_PAGE
-        .replace(
-            "{action}",
-            &escaped(&format!(
-                "/realms/{realm}/protocol/openid-connect/reset-password"
-            )),
-        )
-        .replace("{token}", &escaped(&token))
-        .replace("{user}", &escaped(&user));
+    let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
+    let tongue = tongues.negotiated(
+        None,
+        request
+            .headers()
+            .get("accept-language")
+            .and_then(|held| held.to_str().ok()),
+    );
+    let (.., overrides, _) = doors_of_realm(&pool, &tenancy, &realm).await;
+    let body = match overrides.as_ref() {
+        Some(spoken) => i18n::reset_page_over(tongue, spoken),
+        None => i18n::reset_page_in(tongue).to_owned(),
+    }
+    .replace(
+        "{action}",
+        &escaped(&format!(
+            "/realms/{realm}/protocol/openid-connect/reset-password"
+        )),
+    )
+    .replace("{token}", &escaped(&token))
+    .replace("{user}", &escaped(&user));
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
         .insert_header(("Content-Security-Policy", POLICY))
@@ -736,24 +889,6 @@ pub async fn reset_password(
         .body(body)
 }
 
-const RESET_PAGE: &str = r#"<!doctype html>
-<html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="referrer" content="no-referrer">
-<title>Set a new password</title>
-<link rel="stylesheet" href="login.css"></head>
-<body><main><h1>Set a new password</h1>
-<form method="post" action="{action}">
-<input type="hidden" name="token" value="{token}">
-<input type="hidden" name="user" value="{user}">
-<label for="password">New password</label>
-<input id="password" name="password" type="password" autocomplete="new-password" required>
-<button type="submit">Set password</button>
-</form>
-<p id="refused" class="flash" role="alert">That password was refused. Try another.</p>
-<p id="no-such-link" class="flash" role="alert">This link has been used, or has expired. Ask for another.</p>
-</main></body></html>
-"#;
 
 #[cfg(test)]
 mod tests {

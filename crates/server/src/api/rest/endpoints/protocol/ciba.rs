@@ -852,7 +852,12 @@ async fn doorbell_text(
         settings,
         text: auth::messaging::Text {
             to: phone.to_owned(),
-            body: auth::messaging::texted_link(realm, "ciba_doorbell", &link),
+            body: auth::messaging::texted_link(
+                realm,
+                "ciba_doorbell",
+                &link,
+                auth::messaging::tongue_spoken_by(person),
+            ),
         },
         about: auth::messaging::About {
             user_id: person.user_id.clone(),

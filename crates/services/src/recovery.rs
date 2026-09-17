@@ -102,9 +102,8 @@ pub async fn offer_link(
         realm,
         "reset_password",
         &link,
-        "Set a new password",
-        "Somebody asked to set a new password for this account. If it was not \
-         you, nothing has changed and you can ignore this.\n\n{{link}}\n",
+        auth::messaging::tongue_spoken_by(&subject),
+        &[],
     );
     Ok(Some(Outgoing {
         settings: settings.duplicate(),

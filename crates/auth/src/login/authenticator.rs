@@ -463,22 +463,20 @@ async fn magic_link(
                     .await
                     .ok()
                     .flatten();
+                let reader = crate::messaging::tongue_spoken_by(subject);
                 let (worded_subject, worded_body) = match &realm_row {
-                    Some(realm) => crate::messaging::worded(
-                        realm,
-                        MAGIC_LINK_TEMPLATE,
-                        &link,
-                        "Your sign-in link",
-                        "Follow this link to sign in. It works once, and only in the \
-                         browser you started from.\n\n{{link}}\n",
-                    ),
-                    None => (
-                        "Your sign-in link".to_owned(),
-                        format!(
-                            "Follow this link to sign in. It works once, and only in the \
-                             browser you started from.\n\n{link}\n"
-                        ),
-                    ),
+                    Some(realm) => {
+                        crate::messaging::worded(realm, MAGIC_LINK_TEMPLATE, &link, reader, &[])
+                    }
+                    // No realm row is no rewording, but the person still says
+                    // which tongue they read.
+                    None => {
+                        let (subject, body) = crate::messaging::built_words(
+                            MAGIC_LINK_TEMPLATE,
+                            crate::messaging::choose_tongue(reader, None),
+                        );
+                        (subject.to_owned(), body.replace("{{link}}", &link))
+                    }
                 };
                 Message {
                     to: subject.email.clone(),
@@ -660,7 +658,12 @@ async fn sms_otp(
                 settings: settings.duplicate(),
                 text: crate::messaging::Text {
                     to: phone,
-                    body: crate::messaging::texted_words(realm, SMS_OTP_TEMPLATE, &code),
+                    body: crate::messaging::texted_words(
+                        realm,
+                        SMS_OTP_TEMPLATE,
+                        &code,
+                        crate::messaging::tongue_spoken_by(subject),
+                    ),
                 },
                 about: crate::messaging::About {
                     user_id: subject.user_id.clone(),

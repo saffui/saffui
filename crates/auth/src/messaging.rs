@@ -1,6 +1,8 @@
 use deadpool_postgres::Transaction;
+use models::entities::attributes;
 use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
+use models::entities::user::{UserModel, profile};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
@@ -118,23 +120,156 @@ pub fn worded(
     realm: &models::entities::realm::RealmModel,
     kind: &str,
     link: &str,
-    default_subject: &str,
-    default_body: &str,
+    reader: Option<&str>,
+    said: &[(&str, &str)],
 ) -> (String, String) {
     let spoken = realm
         .mail_templates
         .as_ref()
         .and_then(|held| held.get(kind))
-        .and_then(|tongues| pick_wording(tongues, realm.default_locale.as_deref()));
-    match spoken {
-        Some(template) => (
-            template.subject.replace("{{link}}", link),
-            template.body.replace("{{link}}", link),
+        .and_then(|tongues| pick_wording(tongues, reader, realm.default_locale.as_deref()));
+    let (subject, body) = match spoken {
+        Some(template) => (template.subject.as_str(), template.body.as_str()),
+        None => built_words(kind, choose_tongue(reader, realm.default_locale.as_deref())),
+    };
+    (filled(subject, link, said), filled(body, link, said))
+}
+
+/// This build's own words for one kind of mail, in one tongue. A realm that
+/// wrote nothing is answered from here rather than from its caller, so the
+/// same sentence is not spelled once per place that sends it.
+pub fn built_words(kind: &str, tongue: Tongue) -> (&'static str, &'static str) {
+    match (kind, tongue) {
+        ("magic_link", Tongue::French) => (
+            "Votre lien de connexion",
+            "Suivez ce lien pour vous connecter. Il ne sert qu'une fois, et \
+             seulement dans le navigateur d'où vous êtes parti.\n\n{{link}}\n",
         ),
-        None => (
-            default_subject.replace("{{link}}", link),
-            default_body.replace("{{link}}", link),
+        ("verify_email", Tongue::French) => (
+            "Confirmez votre adresse",
+            "Confirmez cette adresse pour terminer. Le lien ne sert \
+             qu'une fois.\n\n{{link}}\n",
         ),
+        ("reset_password", Tongue::French) => (
+            "Choisissez un nouveau mot de passe",
+            "Quelqu'un a demandé un nouveau mot de passe pour ce compte. Si ce \
+             n'était pas vous, rien n'a changé et vous pouvez ignorer ce \
+             message.\n\n{{link}}\n",
+        ),
+        ("subject_request", Tongue::French) => (
+            "Confirmez votre demande",
+            "Quelqu'un a demandé d'agir sur les données personnelles de ce \
+             compte ({{kind}}). Si c'était vous, suivez le lien pour confirmer. \
+             Sinon, rien ne se passe sans lui.\n\n{{link}}\n",
+        ),
+        ("verify_email", _) => (
+            "Confirm your address",
+            "Confirm this address to finish. The link works \
+             once.\n\n{{link}}\n",
+        ),
+        ("reset_password", _) => (
+            "Set a new password",
+            "Somebody asked to set a new password for this account. If it was \
+             not you, nothing has changed and you can ignore this.\n\n{{link}}\n",
+        ),
+        ("subject_request", _) => (
+            "Confirm your privacy request",
+            "Somebody asked us to act on the personal data of this account \
+             ({{kind}}). If it was you, follow the link to confirm the request. \
+             If not, nothing happens without it.\n\n{{link}}\n",
+        ),
+        // The sign-in link, and also what a kind this build cannot name is
+        // answered with: the door admits four kinds, so nothing reaches here
+        // by accident, and a mail nobody can name is still one somebody waits
+        // for.
+        (_, _) => (
+            "Your sign-in link",
+            "Follow this link to sign in. It works once, and only in the \
+             browser you started from.\n\n{{link}}\n",
+        ),
+    }
+}
+
+/// What a privacy request is called, in the tongue the message is written in.
+pub fn worded_kind(kind: &str, tongue: Tongue) -> &'static str {
+    match (kind, tongue) {
+        ("access", Tongue::French) => "accès",
+        ("rectification", Tongue::French) => "rectification",
+        ("erasure", Tongue::French) => "effacement",
+        ("objection", Tongue::French) => "opposition",
+        ("portability", Tongue::French) => "portabilité",
+        ("access", _) => "access",
+        ("rectification", _) => "rectification",
+        ("erasure", _) => "erasure",
+        ("objection", _) => "objection",
+        ("portability", _) => "portability",
+        (_, Tongue::French) => "demande",
+        (_, _) => "request",
+    }
+}
+
+/// One text with its link and whatever else it names put in. Names are
+/// written `{{like-this}}` and a name nothing supplies is left standing.
+fn filled(text: &str, link: &str, said: &[(&str, &str)]) -> String {
+    let mut whole = text.replace("{{link}}", link);
+    for (name, value) in said {
+        whole = whole.replace(&format!("{{{{{name}}}}}"), value);
+    }
+    whole
+}
+
+/// The two tongues this build writes its own words in. A realm may file a
+/// template under any tag; these are what answers when it filed none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tongue {
+    English,
+    French,
+}
+
+/// The tongue a message is written in: the person's where it is one of the two
+/// spoken here, the realm's otherwise, English when neither says.
+pub fn choose_tongue(person: Option<&str>, realm: Option<&str>) -> Tongue {
+    [person, realm]
+        .into_iter()
+        .flatten()
+        .find_map(|asked| {
+            match asked
+                .split(['-', '_'])
+                .next()
+                .map(str::to_ascii_lowercase)
+                .as_deref()
+            {
+                Some("fr") => Some(Tongue::French),
+                Some("en") => Some(Tongue::English),
+                _ => None,
+            }
+        })
+        .unwrap_or(Tongue::English)
+}
+
+/// The tongue a person says they read, as they wrote it. Any tag, because a
+/// realm's own template may be filed under one this build does not speak.
+pub fn tongue_spoken_by(person: &UserModel) -> Option<&str> {
+    person
+        .attributes
+        .as_ref()
+        .and_then(|held| attributes::string_at(held, profile::LOCALE))
+}
+
+#[cfg(test)]
+mod tongues {
+    use super::*;
+
+    /// A message is written in the person's tongue where it is one of the two
+    /// spoken here, the realm's otherwise, English when neither says.
+    #[test]
+    fn the_person_is_answered_before_the_realm_and_english_answers_last() {
+        assert_eq!(choose_tongue(Some("fr-FR"), Some("en")), Tongue::French);
+        assert_eq!(choose_tongue(Some("EN_us"), Some("fr")), Tongue::English);
+        assert_eq!(choose_tongue(Some("de"), Some("fr")), Tongue::French);
+        assert_eq!(choose_tongue(None, Some("fr")), Tongue::French);
+        assert_eq!(choose_tongue(Some("de"), None), Tongue::English);
+        assert_eq!(choose_tongue(None, None), Tongue::English);
     }
 }
 
@@ -144,9 +279,25 @@ fn wording_in<'a, T>(
     tongues: &'a std::collections::HashMap<String, T>,
     wanted: &str,
 ) -> Option<&'a T> {
+    fn language(tag: &str) -> String {
+        tag.split(['-', '_'])
+            .next()
+            .unwrap_or(tag)
+            .to_ascii_lowercase()
+    }
     tongues
         .iter()
         .find(|(held, _)| held.eq_ignore_ascii_case(wanted))
+        .or_else(|| {
+            // A person says `fr-CA` where a realm filed `fr`, so the language
+            // answers where the exact tag does not. First by name, so two
+            // regional filings cannot answer in turn.
+            let asked = language(wanted);
+            tongues
+                .iter()
+                .filter(|(held, _)| language(held) == asked)
+                .min_by(|(one, _), (other, _)| one.cmp(other))
+        })
         .map(|(_, wording)| wording)
 }
 
@@ -154,10 +305,12 @@ fn wording_in<'a, T>(
 /// then the first by name.
 fn pick_wording<'a, T>(
     tongues: &'a std::collections::HashMap<String, T>,
-    default_locale: Option<&str>,
+    reader: Option<&str>,
+    realm: Option<&str>,
 ) -> Option<&'a T> {
-    default_locale
+    reader
         .and_then(|tongue| wording_in(tongues, tongue))
+        .or_else(|| realm.and_then(|tongue| wording_in(tongues, tongue)))
         .or_else(|| wording_in(tongues, "en"))
         .or_else(|| {
             // A map hands its entries back in no order of its own, so a realm
@@ -210,9 +363,12 @@ mod wording {
     #[test]
     fn the_realms_words_win_and_the_link_always_lands() {
         let bare = realm_with(None, &[]);
-        let (subject, body) = worded(&bare, "magic_link", "https://l", "Built", "Go: {{link}}");
-        assert_eq!(subject, "Built");
-        assert_eq!(body, "Go: https://l");
+        let (subject, body) = worded(&bare, "magic_link", "https://l", None, &[]);
+        assert_eq!(subject, "Your sign-in link");
+        assert!(
+            body.ends_with("https://l\n"),
+            "the link did not land: {body}"
+        );
 
         let french = realm_with(
             Some("fr"),
@@ -221,7 +377,7 @@ mod wording {
                 ("magic_link", "en", "Your link", "Follow: {{link}}"),
             ],
         );
-        let (subject, body) = worded(&french, "magic_link", "https://l", "Built", "{{link}}");
+        let (subject, body) = worded(&french, "magic_link", "https://l", None, &[]);
         assert_eq!(subject, "Votre lien");
         assert_eq!(body, "Suivez : https://l");
 
@@ -229,21 +385,18 @@ mod wording {
             Some("fr"),
             &[("magic_link", "en", "Your link", "Follow: {{link}}")],
         );
-        let (subject, _) = worded(
-            &english_only,
-            "magic_link",
-            "https://l",
-            "Built",
-            "{{link}}",
-        );
+        let (subject, _) = worded(&english_only, "magic_link", "https://l", None, &[]);
         assert_eq!(
             subject, "Your link",
             "english did not answer for a silent tongue"
         );
 
         let other_kind = realm_with(Some("fr"), &[("verify_email", "fr", "V", "{{link}}")]);
-        let (subject, _) = worded(&other_kind, "magic_link", "https://l", "Built", "{{link}}");
-        assert_eq!(subject, "Built", "another kind's words leaked");
+        let (subject, _) = worded(&other_kind, "magic_link", "https://l", None, &[]);
+        assert_eq!(
+            subject, "Votre lien de connexion",
+            "another kind's words leaked, or the realm's own tongue was ignored"
+        );
     }
 
     fn texting_realm(
@@ -275,7 +428,7 @@ mod wording {
                     ("magic_link", "fr", "Francais", "{{link}}"),
                 ],
             );
-            let (subject, _) = worded(&unnamed, "magic_link", "https://l", "Built", "{{link}}");
+            let (subject, _) = worded(&unnamed, "magic_link", "https://l", None, &[]);
             assert_eq!(
                 subject, "Deutsch",
                 "the tongue was drawn rather than chosen"
@@ -289,8 +442,83 @@ mod wording {
                 ("magic_link", "pt-BR", "Portugues", "{{link}}"),
             ],
         );
-        let (subject, _) = worded(&cased, "magic_link", "https://l", "Built", "{{link}}");
+        let (subject, _) = worded(&cased, "magic_link", "https://l", None, &[]);
         assert_eq!(subject, "Portugues", "case kept a realm from its own words");
+    }
+
+    /// What the person reads outranks what the realm reads, for the realm's
+    /// own templates and for this build's words alike.
+    #[test]
+    fn the_person_outranks_the_realm_in_both_kinds_of_wording() {
+        let realm = realm_with(
+            Some("en"),
+            &[
+                ("magic_link", "en", "Your link", "Follow: {{link}}"),
+                ("magic_link", "fr", "Votre lien", "Suivez : {{link}}"),
+            ],
+        );
+        let (subject, _) = worded(&realm, "magic_link", "https://l", Some("fr-CA"), &[]);
+        assert_eq!(
+            subject, "Votre lien",
+            "the realm's tongue beat the reader's"
+        );
+        let (subject, _) = worded(&realm, "magic_link", "https://l", None, &[]);
+        assert_eq!(
+            subject, "Your link",
+            "a silent reader did not fall to the realm"
+        );
+
+        // An exact filing outranks the bare language, so a realm that took the
+        // trouble to separate two regions is not flattened back into one.
+        let regional = realm_with(
+            None,
+            &[
+                ("magic_link", "pt", "Portugues", "{{link}}"),
+                ("magic_link", "pt-BR", "Brasileiro", "{{link}}"),
+            ],
+        );
+        let (subject, _) = worded(&regional, "magic_link", "https://l", Some("pt-BR"), &[]);
+        assert_eq!(subject, "Brasileiro", "the region was flattened away");
+        let (subject, _) = worded(&regional, "magic_link", "https://l", Some("pt-PT"), &[]);
+        assert_eq!(
+            subject, "Portugues",
+            "an unfiled region did not fall back to its language"
+        );
+
+        // Nothing written by the realm, so this build answers, and it answers
+        // in the tongue the person reads rather than the one the realm names.
+        let silent = realm_with(Some("en"), &[]);
+        let (subject, body) = worded(&silent, "reset_password", "https://l", Some("fr"), &[]);
+        assert_eq!(subject, "Choisissez un nouveau mot de passe");
+        assert!(
+            body.contains("mot de passe"),
+            "built words came out English: {body}"
+        );
+        let (subject, _) = worded(&silent, "reset_password", "https://l", None, &[]);
+        assert_eq!(subject, "Set a new password");
+    }
+
+    /// A name beyond the link is put in, and one nothing supplies is left
+    /// standing rather than blanked.
+    #[test]
+    fn a_named_value_beyond_the_link_is_put_in() {
+        let silent = realm_with(None, &[]);
+        let (_, body) = worded(
+            &silent,
+            "subject_request",
+            "https://l",
+            Some("fr"),
+            &[("kind", worded_kind("erasure", Tongue::French))],
+        );
+        assert!(
+            body.contains("(effacement)"),
+            "the request was not named: {body}"
+        );
+        let (_, body) = worded(&silent, "subject_request", "https://l", Some("fr"), &[]);
+        assert!(
+            body.contains("{{kind}}"),
+            "an unsupplied name was blanked: {body}"
+        );
     }
 
     /// The texts pick their tongue by the rule the mails pick theirs by.
@@ -305,7 +533,7 @@ mod wording {
                 ],
             );
             assert_eq!(
-                texted_words(&unnamed, "sms_otp", "123456"),
+                texted_words(&unnamed, "sms_otp", "123456", None),
                 "Deutsch 123456",
                 "the tongue was drawn rather than chosen"
             );
@@ -319,7 +547,7 @@ mod wording {
             ],
         );
         assert_eq!(
-            texted_words(&cased, "sms_otp", "123456"),
+            texted_words(&cased, "sms_otp", "123456", None),
             "Portugues 123456"
         );
     }
@@ -436,22 +664,22 @@ pub async fn record_text(
 /// The words around a code: the realm's rewording where it wrote one, held
 /// to a length at the door, and the built words otherwise. Short on purpose:
 /// an SMS is billed and truncated by length.
-pub fn texted_words(realm: &RealmModel, kind: &str, code: &str) -> String {
+pub fn texted_words(realm: &RealmModel, kind: &str, code: &str, reader: Option<&str>) -> String {
     let spoken = realm
         .sms_templates
         .as_ref()
         .and_then(|held| held.get(kind))
-        .and_then(|tongues| pick_wording(tongues, realm.default_locale.as_deref()));
+        .and_then(|tongues| pick_wording(tongues, reader, realm.default_locale.as_deref()));
     match spoken {
         Some(body) => body.replace("{{code}}", code),
-        None => match (kind, realm.default_locale.as_deref()) {
-            ("verify_phone", Some("fr")) => {
+        None => match (kind, choose_tongue(reader, realm.default_locale.as_deref())) {
+            ("verify_phone", Tongue::French) => {
                 format!("{code} est votre code de vérification. Il expire dans 5 minutes.")
             }
             ("verify_phone", _) => {
                 format!("{code} is your verification code. It expires in 5 minutes.")
             }
-            (_, Some("fr")) => {
+            (_, Tongue::French) => {
                 format!("{code} est votre code de connexion. Il expire dans 5 minutes.")
             }
             (_, _) => format!("{code} is your sign-in code. It expires in 5 minutes."),
@@ -461,17 +689,22 @@ pub fn texted_words(realm: &RealmModel, kind: &str, code: &str) -> String {
 
 /// The words around a doorbell link, the same way: the realm's rewording
 /// where it wrote one, the built words otherwise, with `{{link}}` resolved.
-pub fn texted_link(realm: &models::entities::realm::RealmModel, kind: &str, link: &str) -> String {
+pub fn texted_link(
+    realm: &models::entities::realm::RealmModel,
+    kind: &str,
+    link: &str,
+    reader: Option<&str>,
+) -> String {
     let spoken = realm
         .sms_templates
         .as_ref()
         .and_then(|held| held.get(kind))
-        .and_then(|tongues| pick_wording(tongues, realm.default_locale.as_deref()));
+        .and_then(|tongues| pick_wording(tongues, reader, realm.default_locale.as_deref()));
     match spoken {
         Some(body) => body.replace("{{link}}", link),
-        None => match realm.default_locale.as_deref() {
-            Some("fr") => format!("Une demande de connexion vous attend : {link}"),
-            _ => format!("A sign-in request awaits you: {link}"),
+        None => match choose_tongue(reader, realm.default_locale.as_deref()) {
+            Tongue::French => format!("Une demande de connexion vous attend : {link}"),
+            Tongue::English => format!("A sign-in request awaits you: {link}"),
         },
     }
 }

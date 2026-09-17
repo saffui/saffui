@@ -23,6 +23,11 @@ pub enum Unwritable {
     /// while looking like it does, so the plane refuses it instead.
     #[error("no rule of this name runs here; one of: {0}")]
     UnknownRule(String),
+    /// The rule runs, but its configuration names a key it never reads or
+    /// lacks one it cannot work without. Either way the row would sit in the
+    /// store reading as configured while writing nothing.
+    #[error("{0}")]
+    BadRule(#[from] crate::mappers::BadConfig),
     /// Deletion refused while a client holds the mapper or a scope carries
     /// it. Both joins cascade, so deleting anyway would strip the rule from
     /// every token silently rather than the deletion being told no.
@@ -32,11 +37,16 @@ pub enum Unwritable {
     Backend,
 }
 
-fn check_rule(mapper_type: &str) -> Result<(), Unwritable> {
-    if KNOWN_TYPES.contains(&mapper_type) {
-        return Ok(());
+/// Two questions, in order: is this a rule this build runs, and does its
+/// configuration say something that rule would read. The second is worth
+/// asking at the door because nothing downstream ever complains: an
+/// unreadable key is simply never looked at.
+fn check_rule(asked: &ProtocolMapperMutationModel) -> Result<(), Unwritable> {
+    if !KNOWN_TYPES.contains(&asked.mapper_type.as_str()) {
+        return Err(Unwritable::UnknownRule(KNOWN_TYPES.join(", ")));
     }
-    Err(Unwritable::UnknownRule(KNOWN_TYPES.join(", ")))
+    crate::mappers::check_configs(&asked.mapper_type, &asked.configs)?;
+    Ok(())
 }
 
 fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
@@ -74,7 +84,7 @@ pub async fn create_mapper(
     by: &str,
     asked: ProtocolMapperMutationModel,
 ) -> Result<ProtocolMapperModel, Unwritable> {
-    check_rule(&asked.mapper_type)?;
+    check_rule(&asked)?;
     let mapper = asked.into_model(
         draw(provider)?,
         realm_id.to_owned(),
@@ -92,7 +102,7 @@ pub async fn update_mapper(
     by: &str,
     asked: ProtocolMapperMutationModel,
 ) -> Result<ProtocolMapperModel, Unwritable> {
-    check_rule(&asked.mapper_type)?;
+    check_rule(&asked)?;
     let standing = get_mapper(transaction, mapper_id).await?;
     let mut mapper = asked.into_model(
         mapper_id.to_owned(),

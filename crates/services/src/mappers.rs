@@ -42,6 +42,115 @@ pub const USER_ATTRIBUTE: &str = "user.attribute";
 pub const INCLUDED_CLIENT_AUDIENCE: &str = "included.client.audience";
 pub const INCLUDED_CUSTOM_AUDIENCE: &str = "included.custom.audience";
 
+/// The three flags every rule reads, whatever it is: which answers it joins.
+pub const TARGET_FLAGS: [&str; 3] = [ID_TOKEN_CLAIM, ACCESS_TOKEN_CLAIM, USERINFO_TOKEN_CLAIM];
+
+/// What one rule reads from its configuration.
+///
+/// Taken off the evaluator below, not off the constant names: a client role
+/// rule reads NOTHING, its claim path being fixed, and a full name rule reads
+/// only where to put the claim. A key a rule never reads is a setting that
+/// looks applied and is not, which is the thing this door exists to refuse.
+pub struct RuleKeys {
+    /// Beyond the target flags, which every rule carries.
+    pub allowed: &'static [&'static str],
+    /// Absent, the rule writes nothing at all.
+    pub required: &'static [&'static str],
+    /// One spelling or the other, never neither.
+    pub one_of: &'static [&'static str],
+}
+
+/// The keys of a rule this build runs, or nothing for a name it does not.
+pub fn keys_of(mapper_type: &str) -> Option<RuleKeys> {
+    let keys = match mapper_type {
+        PROPERTY_MAPPER => RuleKeys {
+            allowed: &[CLAIM_NAME, USER_ATTRIBUTE, JSON_TYPE],
+            required: &[CLAIM_NAME, USER_ATTRIBUTE],
+            one_of: &[],
+        },
+        ATTRIBUTE_MAPPER => RuleKeys {
+            allowed: &[CLAIM_NAME, USER_ATTRIBUTE, MULTIVALUED, JSON_TYPE],
+            required: &[CLAIM_NAME, USER_ATTRIBUTE],
+            one_of: &[],
+        },
+        FULL_NAME_MAPPER | REALM_ROLE_MAPPER => RuleKeys {
+            allowed: &[CLAIM_NAME],
+            required: &[],
+            one_of: &[],
+        },
+        CLIENT_ROLE_MAPPER => RuleKeys {
+            allowed: &[],
+            required: &[],
+            one_of: &[],
+        },
+        AUDIENCE_MAPPER => RuleKeys {
+            allowed: &[INCLUDED_CLIENT_AUDIENCE, INCLUDED_CUSTOM_AUDIENCE],
+            required: &[],
+            one_of: &[INCLUDED_CLIENT_AUDIENCE, INCLUDED_CUSTOM_AUDIENCE],
+        },
+        _ => return None,
+    };
+    Some(keys)
+}
+
+/// Why a configuration is not one this build would run.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BadConfig {
+    /// A key this rule never reads. Kept, it would configure nothing while
+    /// reading as configured.
+    #[error("this rule never reads `{key}`; it reads: {allowed}")]
+    Unknown { key: String, allowed: String },
+    /// Without it the rule writes no claim at all, so the row would sit there
+    /// doing nothing rather than being refused where somebody is watching.
+    #[error("without `{key}` this rule writes no claim")]
+    Missing { key: String },
+    /// Several spellings, and the rule needs one of them.
+    #[error("this rule needs one of: {keys}")]
+    MissingOneOf { keys: String },
+}
+
+/// Weigh a rule's configuration against what it actually reads.
+///
+/// The target flags pass everywhere. Everything else has to be a key the rule
+/// consults, and the keys it cannot work without have to be there.
+pub fn check_configs(mapper_type: &str, configs: &Option<AttributesMap>) -> Result<(), BadConfig> {
+    let Some(keys) = keys_of(mapper_type) else {
+        return Ok(());
+    };
+    // No configuration at all is an empty one: the same required keys are
+    // missing from it, and they are reported the same way.
+    let empty = AttributesMap::new();
+    let held = configs.as_ref().unwrap_or(&empty);
+    for key in held.keys() {
+        let known = TARGET_FLAGS.contains(&key.as_str()) || keys.allowed.contains(&key.as_str());
+        if !known {
+            return Err(BadConfig::Unknown {
+                key: key.clone(),
+                allowed: spelled(&keys),
+            });
+        }
+    }
+    for key in keys.required {
+        if !held.contains_key(*key) {
+            return Err(BadConfig::Missing {
+                key: (*key).to_owned(),
+            });
+        }
+    }
+    if !keys.one_of.is_empty() && !keys.one_of.iter().any(|key| held.contains_key(*key)) {
+        return Err(BadConfig::MissingOneOf {
+            keys: keys.one_of.join(", "),
+        });
+    }
+    Ok(())
+}
+
+fn spelled(keys: &RuleKeys) -> String {
+    let mut named: Vec<&str> = keys.allowed.to_vec();
+    named.extend(TARGET_FLAGS);
+    named.join(", ")
+}
+
 /// Which answer a mapper evaluation is shaping. A mapper contributes to a
 /// target only when its flag says so, and an absent flag says yes: a
 /// minimally configured mapper reaches everywhere.
@@ -735,5 +844,111 @@ mod tests {
         let mut claims = Map::from_iter([("realm_access".to_owned(), json!("opaque"))]);
         insert_claim(&mut claims, "realm_access.roles", json!(["auditor"]));
         assert_eq!(claims["realm_access"], json!("opaque"));
+    }
+}
+
+#[cfg(test)]
+mod rule_keys {
+    use super::*;
+
+    fn configs(pairs: &[(&str, &str)]) -> Option<AttributesMap> {
+        let mut map = AttributesMap::new();
+        for (key, value) in pairs {
+            map.insert((*key).to_owned(), AttributeValue::Str((*value).to_owned()));
+        }
+        Some(map)
+    }
+
+    /// A rule is refused a key it never reads, and refused for the absence of
+    /// one it cannot work without. Both would otherwise sit in the store
+    /// reading as configured while writing nothing.
+    #[test]
+    fn a_rule_takes_the_keys_it_reads_and_no_others() {
+        assert_eq!(
+            check_configs(
+                ATTRIBUTE_MAPPER,
+                &configs(&[(CLAIM_NAME, "dept"), (USER_ATTRIBUTE, "dept")]),
+            ),
+            Ok(())
+        );
+
+        let stray = check_configs(
+            ATTRIBUTE_MAPPER,
+            &configs(&[
+                (CLAIM_NAME, "dept"),
+                (USER_ATTRIBUTE, "dept"),
+                ("included.custom.audience", "elsewhere"),
+            ]),
+        );
+        assert!(
+            matches!(stray, Err(BadConfig::Unknown { ref key, .. }) if key == "included.custom.audience"),
+            "a key of another rule was taken: {stray:?}"
+        );
+
+        assert!(matches!(
+            check_configs(ATTRIBUTE_MAPPER, &configs(&[(CLAIM_NAME, "dept")])),
+            Err(BadConfig::Missing { ref key }) if key == USER_ATTRIBUTE
+        ));
+        assert!(matches!(
+            check_configs(PROPERTY_MAPPER, &None),
+            Err(BadConfig::Missing { .. })
+        ));
+    }
+
+    /// The three target flags are read by every rule, so they pass everywhere,
+    /// including on the one rule that reads nothing else.
+    #[test]
+    fn the_target_flags_pass_on_every_rule() {
+        for kind in KNOWN_TYPES {
+            let held = configs(&[
+                (ID_TOKEN_CLAIM, "true"),
+                (ACCESS_TOKEN_CLAIM, "false"),
+                (USERINFO_TOKEN_CLAIM, "true"),
+            ]);
+            let outcome = check_configs(kind, &held);
+            // Only the rules that demand a key of their own refuse here, and
+            // they refuse for the absence, never for the flags.
+            assert!(
+                !matches!(outcome, Err(BadConfig::Unknown { .. })),
+                "{kind} refused a target flag: {outcome:?}"
+            );
+        }
+    }
+
+    /// The client role rule reads NO configuration: its claim path is fixed,
+    /// so even the key every other rule takes is a setting that would lie.
+    #[test]
+    fn the_client_role_rule_takes_no_configuration() {
+        assert_eq!(check_configs(CLIENT_ROLE_MAPPER, &None), Ok(()));
+        assert!(matches!(
+            check_configs(CLIENT_ROLE_MAPPER, &configs(&[(CLAIM_NAME, "roles")])),
+            Err(BadConfig::Unknown { ref key, .. }) if key == CLAIM_NAME
+        ));
+    }
+
+    /// The audience rule needs one spelling or the other, never neither.
+    #[test]
+    fn the_audience_rule_needs_one_of_its_two_spellings() {
+        assert!(matches!(
+            check_configs(AUDIENCE_MAPPER, &None),
+            Err(BadConfig::MissingOneOf { .. })
+        ));
+        for key in [INCLUDED_CLIENT_AUDIENCE, INCLUDED_CUSTOM_AUDIENCE] {
+            assert_eq!(
+                check_configs(AUDIENCE_MAPPER, &configs(&[(key, "api")])),
+                Ok(())
+            );
+        }
+    }
+
+    /// A name this build does not run passes here: refusing it is the other
+    /// door's work, and doing it twice would make two places to keep in step.
+    #[test]
+    fn a_rule_this_build_does_not_run_is_left_to_the_other_door() {
+        assert_eq!(check_configs("oidc-invented-elsewhere", &None), Ok(()));
+        assert_eq!(
+            check_configs("oidc-invented-elsewhere", &configs(&[("whatever", "x")])),
+            Ok(())
+        );
     }
 }

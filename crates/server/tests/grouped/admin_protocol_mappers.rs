@@ -136,6 +136,62 @@ async fn a_mapper_shapes_what_the_realm_answers() {
         "the refusal does not say what runs: {told}"
     );
 
+    // A rule that runs, configured with a key it never reads, or missing one
+    // it cannot work without. Neither is caught anywhere downstream: an
+    // unreadable key is simply never looked at, so the row would sit in the
+    // store reading as configured while writing nothing.
+    for (what, body, says) in [
+        (
+            "a key belonging to another rule",
+            json!({
+                "name": "strayed",
+                "mapper_type": "oidc-usermodel-attribute-mapper",
+                "configs": {
+                    "claim.name": { "Str": "dept" },
+                    "user.attribute": { "Str": "dept" },
+                    "included.custom.audience": { "Str": "elsewhere" },
+                },
+            }),
+            "included.custom.audience",
+        ),
+        (
+            "a rule missing the key it reads its value from",
+            json!({
+                "name": "halfway",
+                "mapper_type": "oidc-usermodel-attribute-mapper",
+                "configs": { "claim.name": { "Str": "dept" } },
+            }),
+            "user.attribute",
+        ),
+        (
+            // The one every other rule takes: a client role rule reads no
+            // configuration at all, its claim path being fixed.
+            "a claim name on the rule whose path is fixed",
+            json!({
+                "name": "renamed",
+                "mapper_type": "oidc-usermodel-client-role-mapper",
+                "configs": { "claim.name": { "Str": "roles" } },
+            }),
+            "claim.name",
+        ),
+        (
+            "an audience rule naming neither spelling",
+            json!({ "name": "nowhere", "mapper_type": "oidc-audience-mapper" }),
+            "included.client.audience",
+        ),
+    ] {
+        let (status, told) = asked(&plane, Method::POST, &base, &bearer, Some(body)).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{what} was taken: {told}"
+        );
+        assert!(
+            told["message"].as_str().unwrap_or_default().contains(says),
+            "the refusal of {what} does not name {says}: {told}"
+        );
+    }
+
     // A department claim on the client itself, everywhere but UserInfo.
     let (status, department) = asked(
         &plane,
@@ -155,6 +211,33 @@ async fn a_mapper_shapes_what_the_realm_answers() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{department}");
     let department_id = department["mapper_id"].as_str().expect("an id").to_owned();
+
+    // The same weighing on the way in as on the way back: a rule already
+    // written cannot be edited into one that reads a key it never consults.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{REALM}/protocol-mappers/{department_id}"),
+        &bearer,
+        Some(json!({
+            "name": "department",
+            "mapper_type": "oidc-usermodel-attribute-mapper",
+            "configs": {
+                "claim.name": { "Str": "department" },
+                "user.attribute": { "Str": "department" },
+                "included.client.audience": { "Str": "elsewhere" },
+            },
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+    assert!(
+        told["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("included.client.audience"),
+        "the refusal on update does not name the stray key: {told}"
+    );
     let (status, told) = asked(
         &plane,
         Method::PUT,

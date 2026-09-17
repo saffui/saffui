@@ -143,7 +143,9 @@ pub async fn foresee(
         )
         .map_err(|_| Unforeseeable::NoKey)?;
         Some(Shown {
-            header: token_header(Kind::Identity, &identity_key).claims_set().clone(),
+            header: token_header(Kind::Identity, &identity_key)
+                .claims_set()
+                .clone(),
             body: body.claims_set().clone(),
         })
     } else {

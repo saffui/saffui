@@ -545,14 +545,19 @@ async fn the_preview_names_each_claims_author() {
     // everything that makes it one.
     let body = &previewed["access"]["body"];
     assert_eq!(body["department"], "engineering", "{previewed}");
-    for named in ["iss", "sub", "aud", "azp", "scope", "iat", "nbf", "exp", "typ"] {
+    for named in [
+        "iss", "sub", "aud", "azp", "scope", "iat", "nbf", "exp", "typ",
+    ] {
         assert!(
             !body[named].is_null(),
             "the assembly's own {named} is missing: {previewed}"
         );
     }
     assert_eq!(body["typ"], "Bearer", "{previewed}");
-    assert_eq!(previewed["access"]["header"]["typ"], "at+jwt", "{previewed}");
+    assert_eq!(
+        previewed["access"]["header"]["typ"], "at+jwt",
+        "{previewed}"
+    );
     assert!(
         previewed["access"]["header"]["kid"].is_string(),
         "the header names no key: {previewed}"
@@ -566,7 +571,10 @@ async fn the_preview_names_each_claims_author() {
     assert!(identity["typ"].is_null(), "{previewed}");
     assert!(identity["scope"].is_null(), "{previewed}");
 
-    assert_eq!(previewed["authors"]["department"], "department", "{previewed}");
+    assert_eq!(
+        previewed["authors"]["department"], "department",
+        "{previewed}"
+    );
 
     // Nothing signed leaves this door. A preview that answered with a compact
     // token would hand a usable credential for any person named to whoever may
@@ -639,7 +647,10 @@ async fn a_preview_without_openid_shows_no_identity_token() {
     .await;
     assert_eq!(status, StatusCode::OK, "{previewed}");
     assert!(previewed["identity"].is_null(), "{previewed}");
-    assert_eq!(previewed["access"]["body"]["scope"], "profile", "{previewed}");
+    assert_eq!(
+        previewed["access"]["body"]["scope"], "profile",
+        "{previewed}"
+    );
 }
 
 #[tokio::test]

@@ -224,7 +224,6 @@ pub fn token_body(
             .map_err(|_| Unmintable::Unsignable)?;
     }
 
-
     Ok(payload)
 }
 

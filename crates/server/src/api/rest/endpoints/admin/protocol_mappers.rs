@@ -133,9 +133,7 @@ pub async fn preview(
     .await
     .map_err(unforeseeable)?;
 
-    let shown = |held: services::token::preview::Shown| {
-        serde_json::json!({ "header": held.header, "body": held.body })
-    };
+    let shown = |held: services::token::preview::Shown| serde_json::json!({ "header": held.header, "body": held.body });
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "scope": scope,
         "access": shown(foreseen.access),

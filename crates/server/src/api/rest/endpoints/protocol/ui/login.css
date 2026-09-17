@@ -333,6 +333,16 @@ a { color: var(--ink); }
 [hidden], .flash { display: none; }
 /* The fragment names the outcome, and the element it names shows itself. */
 #code:target, #texted:target, #phone:target, #phone-code:target, .flash:target { display: block; }
+/* The one line here that reports something going right. Every other flash is
+   a refusal and is drawn in the danger colour, frame and ground included, so
+   all three are taken back rather than only the text. Neutral rather than a
+   new colour: nothing in this sheet names one for success, and inventing one
+   for a single line would leave a token every theme then has to answer for. */
+#password-set {
+  color: var(--muted);
+  border-color: var(--border);
+  background: none;
+}
 
 #which-org > p { font-size: 14.5px; }
 #which-org-list button {

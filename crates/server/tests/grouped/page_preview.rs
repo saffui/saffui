@@ -86,9 +86,16 @@ async fn a_page_shown_to_be_looked_at_can_send_nothing_anywhere() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    // No form at all, rather than a form pointed somewhere harmless: one left
+    // standing and turned to `get` would serialise a typed password into the
+    // address bar, which is a worse place for it than a POST body.
     assert!(
-        !body.contains(r#"method="post""#),
-        "a form on a preview could still post: {body}"
+        !body.contains("<form"),
+        "a preview still carries a form: {body}"
+    );
+    assert!(
+        body.contains("data-was-a-form"),
+        "the form was not unmade, it is simply missing: {body}"
     );
     assert!(
         !body.contains("<script"),
@@ -157,6 +164,100 @@ async fn a_draft_is_what_the_page_says_before_anybody_saves_it() {
     .await;
     assert_eq!(status, StatusCode::OK, "{saved}");
     assert!(!saved.contains("Come in, we kept the light on"), "{saved}");
+}
+
+/// Wording is prose, and prose holds no markup. This door renders text an
+/// administrator typed, so a draft that could carry a tag would turn the
+/// preview into the one thing it was built not to be.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_draft_cannot_write_markup_into_the_page() {
+    let plane = Plane::with_actions(&[AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, kept) = drafted(
+        &plane,
+        &bearer,
+        json!({ "en": { "login-title": "<script>fetch('https://elsewhere.example')</script>" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{kept}");
+    let draft = kept["preview_id"].as_str().expect("an identifier");
+
+    let (status, body) = looked_at(
+        &plane,
+        &format!("/realms/{REALM}/protocol/openid-connect/page-preview/login?draft={draft}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains("&lt;script&gt;"),
+        "a draft's markup was not spelled out: {body}"
+    );
+    assert!(
+        !body.contains("<script>fetch"),
+        "a draft wrote a script into the page: {body}"
+    );
+}
+
+/// A draft outlives the minutes it was given and nothing more: the link is as
+/// good as public while it lives, so how long it lives is the bound.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_draft_stops_being_read_once_it_has_run_out() {
+    let plane = Plane::with_actions(&[AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, kept) = drafted(
+        &plane,
+        &bearer,
+        json!({ "en": { "login-title": "Come in, we kept the light on" } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{kept}");
+    assert!(kept["preview_id"].is_string(), "{kept}");
+
+    // A draft already out of time, written the same way the door writes one.
+    // Inserted rather than aged, because this table is granted no update: the
+    // identifier is drawn and never rewritten.
+    let draft = "0123456789abcdef0123456789abcdef";
+    plant_a_spent_draft(&plane, draft).await;
+
+    // Shown as saved rather than refused: the page is still the answer to what
+    // it looks like, and it is the draft that is gone.
+    let (status, body) = looked_at(
+        &plane,
+        &format!("/realms/{REALM}/protocol/openid-connect/page-preview/login?draft={draft}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        !body.contains("Come in, we kept the light on"),
+        "a draft was read after it ran out: {body}"
+    );
+}
+
+/// A draft whose time is already up, on the database's own clock.
+async fn plant_a_spent_draft(plane: &Plane, draft: &str) {
+    let mut connection = plane.connection().await;
+    let transaction = plane
+        .scoped(
+            &mut connection,
+            &TenantContext::new(support::TENANT, support::REALM),
+        )
+        .await;
+    transaction
+        .execute(
+            "INSERT INTO page_previews (tenant, realm_id, preview_id, overrides, expires_at) \
+             VALUES (current_setting('saffui.current_tenant', true), \
+                     current_setting('saffui.current_realm', true), $1, $2, \
+                     now() - interval '1 minute')",
+            &[
+                &draft,
+                &serde_json::json!({ "en": { "login-title": "Come in, we kept the light on" } }),
+            ],
+        )
+        .await
+        .expect("the previews table");
+    transaction.commit().await.expect("the spent draft kept");
 }
 
 /// One guard for both doors: a draft that could carry what saving refuses

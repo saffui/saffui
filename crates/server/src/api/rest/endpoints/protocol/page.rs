@@ -105,14 +105,19 @@ const LOOKABLE: [&str; 4] = ["login", "device", "requests", "reset"];
 /// This is the whole security of the preview. The draft behind it is written
 /// by an administrator, but the page is opened by a browser carrying nothing,
 /// so the link is as good as public for as long as it lives. A sign-in page
-/// that cannot post cannot collect a password, and a leaked preview is then a
-/// picture rather than a door.
+/// that cannot submit cannot collect a password, and a leaked preview is then
+/// a picture rather than a door.
 ///
-/// Blunt on purpose: a form whose method and action are both rewritten has
-/// nowhere to go, whatever the script would have done with it, and the script
-/// is not served here either.
+/// The form is unmade rather than pointed somewhere harmless. A form left
+/// standing and merely turned to `get` would serialise whatever was typed into
+/// the address bar, which puts a password in a URL, a history and a log: worse
+/// than what it was meant to prevent. Without a form there is nothing to
+/// serialise and nowhere for it to go. The fields still draw, so the page
+/// still looks like itself, and the script that would have worked them is
+/// commented out on the way past.
 fn made_inert(body: &str, banner: &str) -> String {
-    body.replace("method=\"post\"", "method=\"get\" action=\"#\"")
+    body.replace("<form", "<div data-was-a-form")
+        .replace("</form>", "</div>")
         .replace("<script", "<!-- script")
         .replace("</script>", "-->")
         .replacen(

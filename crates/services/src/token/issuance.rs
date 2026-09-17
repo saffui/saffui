@@ -117,34 +117,44 @@ pub enum Unmintable {
     Unsignable,
 }
 
-/// Mint one.
+/// The header a token would carry, naming the key that will sign it.
 ///
-/// The algorithm comes from the key and never from a registration. A header
-/// naming one algorithm over a key published for another produces a token this
-/// realm's own verifier refuses, because that side reads the algorithm off the
-/// stored key too.
-pub fn mint_token(
-    provider: &dyn CryptoProvider,
-    key: &RealmSigningKey,
+/// Split out so a preview can show it with no signature existing anywhere.
+pub fn token_header(kind: Kind, key: &RealmSigningKey) -> JwsHeader {
+    let mut header = JwsHeader::new();
+    header.set_algorithm(jws_algorithm_name(key.algorithm));
+    header.set_token_type(kind.media_type());
+    header.set_key_id(&key.kid);
+    header
+}
+
+/// The body a token would carry, assembled and not yet signed.
+///
+/// Separated from the signing because a preview has to show what issuance
+/// would write without anything presentable coming out of it. A preview that
+/// signed would hand a usable token for any person named to whoever may read
+/// a client, which is a way to become somebody rather than a way to look.
+///
+/// Minting passes the drawn identifier and the computed expiry, so what a
+/// preview shows and what gets signed come off one assembly rather than off
+/// two that would have to be kept alike by hand.
+pub fn token_body(
     minting: Minting<'_>,
-) -> Result<Minted, Unmintable> {
+    token_id: &str,
+    expires_at: DateTime<Utc>,
+) -> Result<JwtPayload, Unmintable> {
+    // Weighed on the body and not beside the signature: a token nobody is the
+    // audience of is one every audience check has to decide what to do about,
+    // whether it ends up signed or only shown.
     if minting.audiences.is_empty() {
         return Err(Unmintable::NoAudience);
     }
-
-    let token_id = draw_token_id(provider)?;
-    let expires_at = minting.now + minting.lifespan;
-
-    let mut header = JwsHeader::new();
-    header.set_algorithm(jws_algorithm_name(key.algorithm));
-    header.set_token_type(minting.kind.media_type());
-    header.set_key_id(&key.kid);
 
     let mut payload = JwtPayload::new();
     payload.set_issuer(minting.issuer);
     payload.set_subject(minting.subject);
     payload.set_audience(minting.audiences.clone());
-    payload.set_jwt_id(&token_id);
+    payload.set_jwt_id(token_id);
 
     // Written as whole seconds rather than through the setters, which render a
     // fraction. A reader that expects an integer gets nothing from a fraction
@@ -213,6 +223,27 @@ pub fn mint_token(
             .set_claim("cnf", Some(Value::Object(confirmation)))
             .map_err(|_| Unmintable::Unsignable)?;
     }
+
+
+    Ok(payload)
+}
+
+/// Mint one.
+///
+/// The algorithm comes from the key and never from a registration. A header
+/// naming one algorithm over a key published for another produces a token this
+/// realm's own verifier refuses, because that side reads the algorithm off the
+/// stored key too.
+pub fn mint_token(
+    provider: &dyn CryptoProvider,
+    key: &RealmSigningKey,
+    minting: Minting<'_>,
+) -> Result<Minted, Unmintable> {
+    let token_id = draw_token_id(provider)?;
+    let expires_at = minting.now + minting.lifespan;
+
+    let header = token_header(minting.kind, key);
+    let payload = token_body(minting, &token_id, expires_at)?;
 
     let signer = signer_for(key).ok_or(Unmintable::UnusableKey)?;
     let token =

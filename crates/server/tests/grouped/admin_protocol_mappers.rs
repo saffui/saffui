@@ -539,17 +539,68 @@ async fn the_preview_names_each_claims_author() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{previewed}");
-    let rows = previewed["claims"].as_array().expect("a listing");
-    let found = rows
-        .iter()
-        .find(|row| row["claim"] == "department")
-        .unwrap_or_else(|| panic!("the department claim went unlisted: {previewed}"));
-    assert_eq!(found["value"], "engineering", "{found}");
-    assert_eq!(found["origin"], "department", "{found}");
+
+    // The body is what issuance would write, not the mapper's part of it: a
+    // preview showing only the registered rules would read as a token missing
+    // everything that makes it one.
+    let body = &previewed["access"]["body"];
+    assert_eq!(body["department"], "engineering", "{previewed}");
+    for named in ["iss", "sub", "aud", "azp", "scope", "iat", "nbf", "exp", "typ"] {
+        assert!(
+            !body[named].is_null(),
+            "the assembly's own {named} is missing: {previewed}"
+        );
+    }
+    assert_eq!(body["typ"], "Bearer", "{previewed}");
+    assert_eq!(previewed["access"]["header"]["typ"], "at+jwt", "{previewed}");
     assert!(
-        found["lands_in"] == "both" || found["lands_in"] == "access",
-        "{found}"
+        previewed["access"]["header"]["kid"].is_string(),
+        "the header names no key: {previewed}"
     );
+
+    // The scope asked for openid, so the identity token is shown beside it,
+    // and it is a different token: an identity token states no typ and no
+    // scope, which is what tells a relying party the two are not the same.
+    let identity = &previewed["identity"]["body"];
+    assert_eq!(identity["department"], "engineering", "{previewed}");
+    assert!(identity["typ"].is_null(), "{previewed}");
+    assert!(identity["scope"].is_null(), "{previewed}");
+
+    assert_eq!(previewed["authors"]["department"], "department", "{previewed}");
+
+    // Nothing signed leaves this door. A preview that answered with a compact
+    // token would hand a usable credential for any person named to whoever may
+    // read a client, so the absence is weighed rather than assumed.
+    let whole = previewed.to_string();
+    assert!(
+        !whole.contains("eyJ"),
+        "something signed came back from a preview: {previewed}"
+    );
+}
+
+/// A scope that never asked for openid gets no identity token, exactly as a
+/// real grant would decide. Showing one would promise a token this exchange
+/// would not produce.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_preview_without_openid_shows_no_identity_token() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::UserRead]).await;
+    let bearer = plane.token(&support::claims());
+    let (status, previewed) = asked(
+        &plane,
+        Method::POST,
+        &format!("/admin/realms/{REALM}/preview-token"),
+        &bearer,
+        Some(json!({
+            "user_id": support::SUBJECT,
+            "client_id": support::CONFIDENTIAL,
+            "scope": "profile",
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{previewed}");
+    assert!(previewed["identity"].is_null(), "{previewed}");
+    assert_eq!(previewed["access"]["body"]["scope"], "profile", "{previewed}");
 }
 
 #[tokio::test]

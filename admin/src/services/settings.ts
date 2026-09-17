@@ -229,6 +229,19 @@ export async function listPageKeys(realm: string): Promise<{ keys: PageKey[] }> 
   return api<{ keys: PageKey[] }>(adminPath(realm, "page-keys"));
 }
 
+/// Leave the wording that is not saved yet where a page can be rendered with
+/// it. Kept for minutes, weighed by the same guard that weighs saving.
+export async function keepPageDraft(
+  realm: string,
+  overrides: Record<string, Record<string, string>>,
+): Promise<{ preview_id: string; expires_at: string }> {
+  return api<{ preview_id: string; expires_at: string }>(adminPath(realm, "page-draft"), {
+    method: "POST",
+    json: { overrides },
+    quiet: true,
+  });
+}
+
 export async function getSms(realm: string): Promise<SmsBrief> {
   return api<SmsBrief>(adminPath(realm, "sms"));
 }

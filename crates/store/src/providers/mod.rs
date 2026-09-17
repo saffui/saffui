@@ -24,6 +24,7 @@ pub mod oidc;
 pub mod one_time_tokens;
 pub mod organizations;
 pub mod outbox;
+pub mod page_previews;
 pub mod pairwise;
 pub mod pushed;
 pub mod realm_features;

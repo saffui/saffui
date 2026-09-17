@@ -5,7 +5,14 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
-import { getRealmSettings, listPageKeys, reshapeRealm, type PageKey } from "@/services/settings";
+import {
+  getRealmSettings,
+  keepPageDraft,
+  listPageKeys,
+  reshapeRealm,
+  type PageKey,
+} from "@/services/settings";
+import { LOOKABLE, packed, previewPath, saysAnything, type Lookable } from "./pagePreview";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
@@ -15,6 +22,28 @@ const tongue = ref<"en" | "fr">("en");
 /// tongue -> key -> the realm's wording. Empty string means nothing said.
 const spoken = ref<Record<string, Record<string, string>>>({ en: {}, fr: {} });
 const filter = ref("");
+const which = ref<Lookable>("login");
+/// Set when a tab could not be opened for us, so the link is offered instead
+/// of the preview silently not happening.
+const draftAt = ref("");
+
+const savedAt = computed(() => previewPath(realm.value, which.value));
+const unsaved = computed(() => saysAnything(spoken.value));
+
+/// Leave what is typed where the server can render a page with it, then open
+/// that page. The draft is packed exactly as saving packs it, so what is shown
+/// is what would be kept.
+async function look() {
+  draftAt.value = "";
+  try {
+    const kept = await keepPageDraft(realm.value, packed(spoken.value));
+    const at = previewPath(realm.value, which.value, kept.preview_id);
+    const tab = window.open(at, "_blank", "noopener");
+    if (!tab) draftAt.value = at;
+  } catch (refused) {
+    failed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
 
 onMounted(async () => {
   try {
@@ -52,18 +81,11 @@ const saidCount = computed(
 );
 
 async function save() {
-  const packed: Record<string, Record<string, string>> = {};
-  for (const held of ["en", "fr"] as const) {
-    const words: Record<string, string> = {};
-    for (const [name, value] of Object.entries(spoken.value[held])) {
-      if (value.trim()) words[name] = value.trim();
-    }
-    if (Object.keys(words).length) packed[held] = words;
-  }
+  const kept = packed(spoken.value);
   try {
     await reshapeRealm(
       realm.value,
-      { page_overrides: Object.keys(packed).length ? packed : null },
+      { page_overrides: Object.keys(kept).length ? kept : null },
       say("pages-subject"),
     );
   } catch {
@@ -80,14 +102,30 @@ async function save() {
         say("pages-said", { count: saidCount })
       }}</span>
       <div class="ml-auto flex flex-wrap items-center gap-2">
+        <label class="flex items-center gap-1.5 text-[11px] text-muted">
+          {{ say("pages-which") }} <AppHint name="pages-which-help" />
+          <select v-model="which" class="sf-field py-1 text-xs">
+            <option v-for="held in LOOKABLE" :key="held" :value="held">
+              {{ say(`pages-page-${held}`) }}
+            </option>
+          </select>
+        </label>
         <a
-          :href="`/realms/${realm}/protocol/openid-connect/login`"
+          :href="savedAt"
           target="_blank"
           rel="noopener"
           class="rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2"
         >
-          {{ say("pages-open") }}
+          {{ say("pages-open-saved") }}
         </a>
+        <button
+          type="button"
+          class="rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2 disabled:opacity-50"
+          :disabled="!unsaved"
+          @click="look"
+        >
+          {{ say("pages-open-draft") }} <AppHint name="pages-open-draft-help" />
+        </button>
         <button
           type="button"
           class="sf-button sf-button-primary"
@@ -97,6 +135,11 @@ async function save() {
         </button>
       </div>
     </div>
+    <p v-if="draftAt" class="mt-2 text-xs">
+      <a :href="draftAt" target="_blank" rel="noopener" class="text-accent hover:underline">
+        {{ say("pages-open-blocked") }}
+      </a>
+    </p>
     <p class="mt-1 max-w-2xl text-xs text-muted">
       {{ say("pages-lede") }} <AppHint name="pages-lede-help" />
     </p>

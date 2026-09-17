@@ -10,6 +10,7 @@ pub const TONGUES: [&str; 2] = ["en", "fr"];
 const TEMPLATE: &str = include_str!("ui/login.html");
 const DEVICE_TEMPLATE: &str = include_str!("ui/device.html");
 const REQUESTS_TEMPLATE: &str = include_str!("ui/requests.html");
+const RESET_TEMPLATE: &str = include_str!("ui/reset.html");
 const STRINGS: [&str; 2] = [
     include_str!("ui/themes/en.ftl"),
     include_str!("ui/themes/fr.ftl"),
@@ -34,6 +35,12 @@ static REQUESTS_PAGES: LazyLock<[String; 2]> = LazyLock::new(|| {
     [
         rendered(REQUESTS_TEMPLATE, TONGUES[0], STRINGS[0]),
         rendered(REQUESTS_TEMPLATE, TONGUES[1], STRINGS[1]),
+    ]
+});
+static RESET_PAGES: LazyLock<[String; 2]> = LazyLock::new(|| {
+    [
+        rendered(RESET_TEMPLATE, TONGUES[0], STRINGS[0]),
+        rendered(RESET_TEMPLATE, TONGUES[1], STRINGS[1]),
     ]
 });
 
@@ -163,11 +170,69 @@ pub fn knows_key(name: &str) -> bool {
     CATALOGUE.iter().any(|(held, _)| held == name)
 }
 
+/// Whether a set of page overrides is one this build could render.
+///
+/// An override nothing reads is a typo kept, and refusing it at the door is
+/// the only moment anybody hears about it. One guard, because a realm saves
+/// its wording through one door and previews it through another, and a draft
+/// that could carry what saving refuses would preview a page nobody can keep.
+pub fn weigh_overrides(overrides: &serde_json::Value) -> Result<(), commons::http::ApiError> {
+    use commons::error::ErrorCode;
+    use commons::http::ApiError;
+
+    let Some(spoken) = overrides.as_object() else {
+        return Err(ApiError::with_detail(
+            ErrorCode::ValidationError,
+            "page overrides are an object of tongue to key to text".to_owned(),
+        ));
+    };
+    for (tongue, words) in spoken {
+        if !TONGUES.contains(&tongue.as_str()) {
+            return Err(ApiError::with_detail(
+                ErrorCode::ValidationError,
+                format!("the build does not render pages in `{tongue}`"),
+            ));
+        }
+        let Some(words) = words.as_object() else {
+            return Err(ApiError::with_detail(
+                ErrorCode::ValidationError,
+                "each tongue holds an object of key to text".to_owned(),
+            ));
+        };
+        for (name, value) in words {
+            if !knows_key(name) {
+                return Err(ApiError::with_detail(
+                    ErrorCode::ValidationError,
+                    format!("no page reads `{name}`"),
+                ));
+            }
+            if !value.is_string() {
+                return Err(ApiError::with_detail(
+                    ErrorCode::ValidationError,
+                    format!("the override for `{name}` is plain text"),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The sign-in page with a realm's words layered over the build's: the same
 /// walk the startup render does, asking the overrides first. Rendered per
 /// request, and only for the rare realm that says anything.
 pub fn page_over(tongue: &str, overrides: &serde_json::Value) -> String {
     rendered_over(TEMPLATE, tongue, overrides)
+}
+
+/// The same for the other pages a realm may speak over.
+pub fn device_page_over(tongue: &str, overrides: &serde_json::Value) -> String {
+    rendered_over(DEVICE_TEMPLATE, tongue, overrides)
+}
+pub fn requests_page_over(tongue: &str, overrides: &serde_json::Value) -> String {
+    rendered_over(REQUESTS_TEMPLATE, tongue, overrides)
+}
+pub fn reset_page_over(tongue: &str, overrides: &serde_json::Value) -> String {
+    rendered_over(RESET_TEMPLATE, tongue, overrides)
 }
 
 fn rendered_over(template: &str, tongue: &str, overrides: &serde_json::Value) -> String {
@@ -220,6 +285,14 @@ pub fn device_page_in(tongue: &str) -> &'static str {
 pub fn requests_page_in(tongue: &str) -> &'static str {
     let at = TONGUES.iter().position(|held| *held == tongue).unwrap_or(0);
     &REQUESTS_PAGES[at]
+}
+
+/// The rendered page a reset link opens. It was written in English and only
+/// in English, so a realm speaking anything else showed one page nobody there
+/// could read.
+pub fn reset_page_in(tongue: &str) -> &'static str {
+    let at = TONGUES.iter().position(|held| *held == tongue).unwrap_or(0);
+    &RESET_PAGES[at]
 }
 
 /// The realm's password rules a signup page can check while the person

@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="{{lang}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>{{reset-title}}</title>
+<link rel="stylesheet" href="login.css">
+</head>
+<body><main><h1>{{reset-title}}</h1>
+<form method="post" action="{action}">
+<input type="hidden" name="token" value="{token}">
+<input type="hidden" name="user" value="{user}">
+<label for="password">{{reset-password}}</label>
+<input id="password" name="password" type="password" autocomplete="new-password" required>
+<button type="submit">{{reset-send}}</button>
+</form>
+<p id="refused" class="flash" role="alert">{{reset-refused}}</p>
+<p id="no-such-link" class="flash" role="alert">{{reset-used}}</p>
+</main></body></html>

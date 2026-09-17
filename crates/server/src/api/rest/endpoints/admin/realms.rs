@@ -747,45 +747,12 @@ pub async fn update(
         }
     }
     // A realm speaks over the pages only in tongues the build renders and
-    // over keys a page actually reads: an override nothing reads is a typo
-    // kept, and refusing it now is the only moment anybody hears about it.
+    // over keys a page actually reads. Weighed by the same guard a draft goes
+    // through, so nothing can be previewed that saving would refuse.
     if let Some(overrides) = asked.page_overrides.as_ref()
         && overrides != &serde_json::Value::Null
     {
-        let Some(spoken) = overrides.as_object() else {
-            return Err(ApiError::with_detail(
-                ErrorCode::ValidationError,
-                "page overrides are an object of tongue to key to text".to_owned(),
-            ));
-        };
-        for (tongue, words) in spoken {
-            if !crate::api::rest::endpoints::protocol::i18n::TONGUES.contains(&tongue.as_str()) {
-                return Err(ApiError::with_detail(
-                    ErrorCode::ValidationError,
-                    format!("the build does not render pages in `{tongue}`"),
-                ));
-            }
-            let Some(words) = words.as_object() else {
-                return Err(ApiError::with_detail(
-                    ErrorCode::ValidationError,
-                    "each tongue holds an object of key to text".to_owned(),
-                ));
-            };
-            for (name, value) in words {
-                if !crate::api::rest::endpoints::protocol::i18n::knows_key(name) {
-                    return Err(ApiError::with_detail(
-                        ErrorCode::ValidationError,
-                        format!("no page reads `{name}`"),
-                    ));
-                }
-                if !value.is_string() {
-                    return Err(ApiError::with_detail(
-                        ErrorCode::ValidationError,
-                        format!("the override for `{name}` is plain text"),
-                    ));
-                }
-            }
-        }
+        crate::api::rest::endpoints::protocol::i18n::weigh_overrides(overrides)?;
     }
     // A shown name a browser dialog can actually render.
     if asked

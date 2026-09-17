@@ -175,3 +175,13 @@ sms-code = Texted code
 phone-ask = Your realm asks you to prove a phone number. Enter it in international form.
 phone-bad = That does not look like an international number. It starts with + and the country code.
 phone-number = Phone number
+
+## The page a reset link opens.
+reset-title = Set a new password
+reset-password = New password
+reset-send = Set password
+reset-refused = That password was refused. Try another.
+reset-used = This link has been used, or has expired. Ask for another.
+
+## Shown only when a page is being looked at rather than used.
+preview-banner = Preview. Nothing on this page can be submitted.

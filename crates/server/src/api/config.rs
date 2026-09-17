@@ -490,6 +490,9 @@ fn protocol_scope() -> impl HttpServiceFactory + 'static {
         .service(web::resource("/form-post.js").route(web::get().to(page::form_post_script)))
         .service(web::resource("/form-post").route(web::get().to(answering::deliver_response)))
         .service(web::resource("/login.css").route(web::get().to(page::style)))
+        // A page shown to be looked at rather than used. Its own address, so
+        // nothing here sits on the path a real sign-in takes.
+        .service(web::resource("/page-preview/{which}").route(web::get().to(page::looked_at)))
         // The realm's overrides alone, for the account console, whose own sheet
         // carries the defaults.
         .service(web::resource("/theme.css").route(web::get().to(page::serve_realm_theme)))

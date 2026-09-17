@@ -20,6 +20,7 @@ pub mod mail;
 pub mod metrics;
 pub mod negotiation;
 pub mod overview;
+pub mod page_drafts;
 pub mod portability;
 pub mod protocol_mappers;
 pub mod realm_keys;

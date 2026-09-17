@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use store::providers::{
     backchannel, brokering, caep_queue, deliveries, devices, dpop, form_post, login, notices, oidc,
-    one_time_tokens, outbox, pushed, replay, saml_brokering, sessions, sms, ussd,
+    one_time_tokens, outbox, page_previews, pushed, replay, saml_brokering, sessions, sms, ussd,
 };
 
 /// How long the sign-in log looks back. A window, not an archive: long
@@ -40,6 +40,8 @@ pub struct Swept {
     pub delivery_receipts: u64,
     pub pushed_requests: u64,
     pub form_post_landings: u64,
+    /// Drafts of a realm's page wording nobody came back to look at.
+    pub page_previews: u64,
     pub dpop_proofs: u64,
     pub security_events: u64,
     /// Delivered outbox events past the replay window.
@@ -74,6 +76,7 @@ impl Swept {
             + self.delivery_receipts
             + self.pushed_requests
             + self.form_post_landings
+            + self.page_previews
             + self.dpop_proofs
             + self.security_events
             + self.delivered_events
@@ -100,6 +103,7 @@ impl Swept {
         self.delivery_receipts += other.delivery_receipts;
         self.pushed_requests += other.pushed_requests;
         self.form_post_landings += other.form_post_landings;
+        self.page_previews += other.page_previews;
         self.dpop_proofs += other.dpop_proofs;
         self.security_events += other.security_events;
         self.delivered_events += other.delivered_events;
@@ -161,6 +165,7 @@ pub async fn drop_expired_rows(
         form_post_landings: form_post::drop_expired_landings(transaction)
             .await
             .map_err(failed)?,
+        page_previews: page_previews::sweep(transaction).await.map_err(failed)?,
         pushed_requests: pushed::drop_expired_requests(transaction)
             .await
             .map_err(failed)?,

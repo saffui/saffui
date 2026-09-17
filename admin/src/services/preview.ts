@@ -1173,6 +1173,9 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       ],
     });
   }
+  if (path.endsWith("/page-draft")) {
+    return answer({ preview_id: "draft-in-review", expires_at: new Date((NOW + 600) * 1000).toISOString() });
+  }
   if (path.endsWith("/page-keys")) {
     return answer({
       keys: [

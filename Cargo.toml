@@ -40,18 +40,18 @@ serde = { version = "1.0.229", features = ["derive"] }
 # signed and break RFC 7638 thumbprints.
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 tokio          = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
-thiserror      = "2.0.19"
+thiserror      = "2.0.20"
 
 # --- Domain models ---
 # Timestamps on every audited row; `serde` so an API response carries RFC 3339
 # rather than a count of seconds nobody can read.
-chrono = { version = "0.4.42", features = ["serde"] }
+chrono = { version = "0.4.45", features = ["serde"] }
 # Derives ToSql/FromSql for the enums that are PostgreSQL enum types, so the
 # database refuses a value the Rust side cannot name and vice versa.
-postgres-types = { version = "0.2.11", features = ["derive", "with-serde_json-1", "with-chrono-0_4"] }
+postgres-types = { version = "0.2.14", features = ["derive", "with-serde_json-1", "with-chrono-0_4"] }
 # Query-string assembly for a brokered authorization request: a configured value
 # holding & or = must not be able to inject a parameter.
-url = "2.5"
+url = "2.5.8"
 
 # --- HTTP ---
 # Only the layers that serve a request pull these; `commons` gates them behind
@@ -60,13 +60,13 @@ url = "2.5"
 # serves HTTP: this renders catalogued errors and carries a request span. Adding
 # a server means turning http2 back on, and h2 0.3 is what RUSTSEC-2026-0258 is
 # about, so check whether actix-http has moved to 0.4 before doing so.
-clap           = { version = "4", features = ["derive", "env"] }
+clap           = { version = "4.6.7", features = ["derive", "env"] }
 # `cookies` is on because the binding between a browser and its login has to be
 # something the URL does not carry: a URL reaches server logs, `Referer` headers
 # and history, and a login identifier that leaks there is one somebody else can
 # answer. Everything else stays off.
-actix-web      = { version = "4.14", default-features = false, features = ["macros", "cookies"] }
-log            = "0.4"
+actix-web      = { version = "4.15.0", default-features = false, features = ["macros", "cookies"] }
+log            = "0.4.34"
 
 # --- Observability ---
 # The subscriber stack is what a binary installs once; a library only ever
@@ -77,63 +77,63 @@ tracing-log          = "0.2.0"
 tracing-actix-web    = "0.7.22"
 # The text exposition format and nothing else: no protobuf, no process
 # collector. One metrics library for the workspace.
-prometheus           = { version = "0.14", default-features = false }
+prometheus           = { version = "0.14.0", default-features = false }
 # The tracing export stack, all behind the server's `otel` feature: traces
 # only, over OTLP http-proto, on the batch processor's own thread.
-opentelemetry        = { version = "0.32", default-features = false, features = ["trace"] }
-opentelemetry_sdk    = { version = "0.32", default-features = false, features = ["trace"] }
-opentelemetry-otlp   = { version = "0.32", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
-tracing-opentelemetry = { version = "0.33", default-features = false }
+opentelemetry        = { version = "0.32.0", default-features = false, features = ["trace"] }
+opentelemetry_sdk    = { version = "0.32.1", default-features = false, features = ["trace"] }
+opentelemetry-otlp   = { version = "0.32.0", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"] }
+tracing-opentelemetry = { version = "0.33.0", default-features = false }
 openssl        = "0.10.81"
 # The raw FFI, for the post-quantum algorithms the safe crate has no bindings
 # for yet. Pinned to what `openssl` already resolves to, so there is one
 # libcrypto and one set of headers rather than two.
 openssl-sys    = "0.9.117"
-tokio-openssl  = "0.6"
+tokio-openssl  = "0.6.5"
 # Only for `ForeignType`, which is how a raw `EVP_PKEY` from the FFI above is
 # adopted into the safe crate's `PKey`. Pinned to the version `openssl` uses,
 # or the trait would be a different trait.
 foreign-types  = "0.3.2"
 
 # PKCS#11, for a key store where the private key never leaves the token.
-cryptoki       = "0.12"
+cryptoki       = "0.12.1"
 tokio-postgres = "0.7.18"
 # One TLS stack for the workspace: the OpenSSL already linked by `crypto`,
 # reached through postgres-openssl. Never a second one.
-postgres-openssl  = "0.5"
-deadpool-postgres = "0.14"
+postgres-openssl  = "0.5.3"
+deadpool-postgres = "0.14.2"
 
 # --- Secret material ---
 # zeroize wipes buffers on drop; subtle gives constant-time equality. Neither is
 # something to hand-roll: a naive `==` short-circuits on the first differing byte
 # and leaks how much of a secret an attacker guessed correctly.
-zeroize        = { version = "1.8", features = ["derive"] }
-subtle         = "2.6"
+zeroize        = { version = "1.9.0", features = ["derive"] }
+subtle         = "2.6.1"
 
 # --- The CryptoProvider seam ---
 # secrecy carries key material through the trait so a `Vec<u8>` cannot be logged
 # or copied by accident; async-trait is what lets the key store be a trait
 # object, since a PKCS#11 or KMS store answers over I/O.
-secrecy        = "0.10"
+secrecy        = "0.10.3"
 # SMTP, with the platform TLS the outbound HTTP client already uses. Default
 # features off: they pull a second TLS stack and an async runtime this crate
 # does not send from.
-lettre         = { version = "0.11", default-features = false, features = ["smtp-transport", "native-tls", "builder"] }
-email_address  = { version = "0.2", default-features = false }
-qrcode         = { version = "0.14", default-features = false, features = ["svg"] }
-async-trait    = "0.1"
+lettre         = { version = "0.11.23", default-features = false, features = ["smtp-transport", "native-tls", "builder"] }
+email_address  = { version = "0.2.9", default-features = false }
+qrcode         = { version = "0.14.1", default-features = false, features = ["svg"] }
+async-trait    = "0.1.92"
 
 # --- Password storage ---
 # argon2 mints and reads PHC strings; bcrypt is verification only, kept for
 # hashes imported from an older system and never used to make new ones.
-argon2         = "0.5"
-bcrypt         = "0.17"
+argon2         = "0.6.0"
+bcrypt         = "0.19.3"
 
 # --- Encodings ---
 # HEXLOWER for random identifiers, BASE32_NOPAD for TOTP shared secrets
 # (otpauth:// URIs), BASE64URL_NOPAD for JOSE compact serialization (RFC 7515
 # §2 mandates base64url *without* padding — standard base64 breaks the format).
-data-encoding  = "2.6"
+data-encoding  = "2.11.1"
 
 # --- SAML ---
 # The one XML parser: what a signature covers and what is read after it come
@@ -141,8 +141,8 @@ data-encoding  = "2.6"
 roxmltree      = "0.21.1"
 
 # --- Required by the vendored josekit JOSE layer (see THIRD-PARTY.md) ---
-anyhow         = "1"
-regex          = "1"
-base64         = "0.22"
-flate2         = "1"
-time           = "0.3"
+anyhow         = "1.0.104"
+regex          = "1.13.1"
+base64         = "0.23.1"
+flate2         = "1.1.10"
+time           = "0.3.55"

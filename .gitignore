@@ -22,3 +22,6 @@ target
 node_modules/
 admin/dist/
 account/dist/
+
+# What macOS leaves in a folder somebody opened in Finder.
+.DS_Store

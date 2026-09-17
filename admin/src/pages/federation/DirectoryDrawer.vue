@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import AppDrawer from "@/components/AppDrawer.vue";
+import AppHint from "@/components/AppHint.vue";
 import AppToggle from "@/components/AppToggle.vue";
 import { say } from "@/i18n";
 import type { DirectoryImportReport, DirectoryRow } from "@/models/federation";
@@ -78,7 +79,7 @@ async function drop() {
           />
         </label>
         <label class="min-w-0 text-[11px] font-medium text-muted">
-          {{ say("federation-priority") }}
+          {{ say("federation-priority") }} <AppHint name="federation-priority-help" />
           <input v-model.number="draft.priority" type="number" class="sf-field mt-1 font-mono" />
         </label>
         <AppToggle v-model="draft.enabled">{{ say("connector-enabled") }}</AppToggle>

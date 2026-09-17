@@ -451,8 +451,12 @@ async function detachMapper(mapperId: string) {
         <div class="mt-2 text-[11px] font-semibold tracking-[0.08em] text-faint uppercase">
           {{ say("client-grants") }} <AppHint name="client-grants-help" />
         </div>
-        <AppToggle v-model="draft.deviceGrant" :label="say('client-grant-device')" />
-        <AppToggle v-model="draft.tokenExchange" :label="say('client-grant-exchange')" />
+        <AppToggle v-model="draft.deviceGrant">
+          {{ say("client-grant-device") }} <AppHint name="client-grant-device-help" />
+        </AppToggle>
+        <AppToggle v-model="draft.tokenExchange">
+          {{ say("client-grant-exchange") }} <AppHint name="client-grant-exchange-help" />
+        </AppToggle>
         <label class="block text-[11px] font-medium text-muted">
           {{ say("client-grant-ciba") }} <AppHint name="client-grant-ciba-help" />
           <select

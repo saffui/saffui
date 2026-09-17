@@ -34,8 +34,4 @@ export const SIDE_NAV_GROUPS = [
       { label: "nav-governance", icon: "governance", leaf: "governance" },
     ],
   },
-  {
-    label: "nav-cap-tools",
-    items: [{ label: "nav-preview", icon: "preview", leaf: "token-preview" }],
-  },
 ] as const;

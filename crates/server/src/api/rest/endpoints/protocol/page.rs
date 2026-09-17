@@ -894,7 +894,6 @@ pub async fn reset_password(
         .body(body)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::SCRIPT;

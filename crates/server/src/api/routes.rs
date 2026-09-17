@@ -7,8 +7,7 @@ use crate::api::rest::endpoints::admin::{
     account, agents, authorization, claim_sources, client_scopes, clients, compliance, credentials,
     directory, events, features, federation, flows, idps, iga, journal, keys, mail, metrics,
     negotiation, overview, page_drafts, portability, protocol_mappers, realm_keys, realms, rebac,
-    recert,
-    requests, sessions, sms, users, ussd,
+    recert, requests, sessions, sms, users, ussd,
 };
 use crate::api::rest::endpoints::scim;
 

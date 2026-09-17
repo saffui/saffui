@@ -44,11 +44,13 @@ pub async fn keep(
         .rand()
         .fill(&mut drawn)
         .map_err(|_| internal())?;
-    let preview_id = drawn.iter().fold(String::with_capacity(32), |mut id, byte| {
-        use std::fmt::Write as _;
-        let _ = write!(id, "{byte:02x}");
-        id
-    });
+    let preview_id = drawn
+        .iter()
+        .fold(String::with_capacity(32), |mut id, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(id, "{byte:02x}");
+            id
+        });
     let expires_at = Utc::now() + Duration::seconds(LOOKING);
 
     let mut connection = pool.get().await.map_err(|_| internal())?;

@@ -3,9 +3,9 @@
 #[allow(unused_imports)]
 use super::support;
 use super::support::Plane;
-use models::entities::authz::AdminAction;
 use actix_web::http::StatusCode;
 use actix_web::{App, test};
+use models::entities::authz::AdminAction;
 use serde_json::{Value, json};
 use server::api::config::register;
 use store::tenancy::TenantContext;

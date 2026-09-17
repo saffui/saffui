@@ -241,6 +241,9 @@ fn refused(why: Unwritable) -> ApiError {
             ErrorCode::ValidationError,
             format!("no rule of this name runs here; one of: {known}"),
         ),
+        Unwritable::BadRule(why) => {
+            ApiError::with_detail(ErrorCode::ValidationError, why.to_string())
+        }
         Unwritable::StillHeld => ApiError::new(ErrorCode::StillGranted),
         Unwritable::Backend => internal(),
     }

@@ -354,6 +354,15 @@ pub fn routes() -> Vec<AdminRoute> {
             action: AdminAction::ClientRead,
             handler: Some(|| web::get().to(protocol_mappers::list)),
         },
+        // Its own prefix rather than a leaf under protocol-mappers, where it
+        // would sit beside `{mapper}` and be told apart only by the order the
+        // two were registered in.
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/mapper-kinds",
+            action: AdminAction::ClientRead,
+            handler: Some(|| web::get().to(protocol_mappers::kinds)),
+        },
         AdminRoute {
             method: Method::POST,
             pattern: "/admin/realms/{realm}/preview-token",

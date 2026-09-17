@@ -574,3 +574,119 @@ async fn token_preview_accepts_the_exact_username_and_user_id() {
         assert_eq!(status, StatusCode::OK, "{named}: {told}");
     }
 }
+
+/// The three rules this build learned, and the door that says what each one
+/// reads.
+///
+/// That door is a contract rather than a convenience: a console builds a rule's
+/// fields from it, so a table that drifted from the rules would offer fields
+/// nothing reads and hide the keys that matter.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_new_rules_are_written_and_the_door_says_what_they_read() {
+    let plane = Plane::with_actions(&[AdminAction::ClientRead, AdminAction::ClientWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/protocol-mappers");
+
+    let (status, kinds) = asked(
+        &plane,
+        Method::GET,
+        &format!("/admin/realms/{REALM}/mapper-kinds"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{kinds}");
+    let named: Vec<&str> = kinds["kinds"]
+        .as_array()
+        .expect("kinds")
+        .iter()
+        .map(|kind| kind["mapper_type"].as_str().unwrap_or_default())
+        .collect();
+    for kind in [
+        "oidc-hardcoded-claim-mapper",
+        "oidc-usermodel-group-mapper",
+        "oidc-usermodel-organization-mapper",
+    ] {
+        assert!(named.contains(&kind), "{kind} is not offered: {kinds}");
+    }
+    let hardcoded = kinds["kinds"]
+        .as_array()
+        .expect("kinds")
+        .iter()
+        .find(|kind| kind["mapper_type"] == "oidc-hardcoded-claim-mapper")
+        .expect("the hardcoded rule");
+    assert_eq!(
+        hardcoded["required"],
+        serde_json::json!(["claim.name", "claim.value"]),
+        "the door does not say what a hardcoded rule cannot work without: {kinds}"
+    );
+    assert!(
+        kinds["target_flags"]
+            .as_array()
+            .expect("flags")
+            .contains(&serde_json::json!("id.token.claim")),
+        "the flags every rule reads are not named: {kinds}"
+    );
+
+    // Written with what each reads, and nothing else.
+    for (name, body) in [
+        (
+            "tier",
+            json!({
+                "name": "tier",
+                "mapper_type": "oidc-hardcoded-claim-mapper",
+                "configs": { "claim.name": { "Str": "tier" }, "claim.value": { "Str": "gold" } },
+            }),
+        ),
+        (
+            "groups",
+            json!({ "name": "groups", "mapper_type": "oidc-usermodel-group-mapper" }),
+        ),
+        (
+            "orgs",
+            json!({
+                "name": "orgs",
+                "mapper_type": "oidc-usermodel-organization-mapper",
+                "configs": { "claim.name": { "Str": "orgs" } },
+            }),
+        ),
+    ] {
+        let (status, told) = asked(&plane, Method::POST, &base, &bearer, Some(body)).await;
+        assert_eq!(status, StatusCode::CREATED, "{name} was refused: {told}");
+    }
+
+    // And refused where the configuration says something the rule never reads,
+    // or lacks what it cannot work without.
+    for (what, body, says) in [
+        (
+            "a hardcoded rule with nothing to write",
+            json!({
+                "name": "empty",
+                "mapper_type": "oidc-hardcoded-claim-mapper",
+                "configs": { "claim.name": { "Str": "tier" } },
+            }),
+            "claim.value",
+        ),
+        (
+            "a group rule carrying a key of another",
+            json!({
+                "name": "strayed",
+                "mapper_type": "oidc-usermodel-group-mapper",
+                "configs": { "user.attribute": { "Str": "department" } },
+            }),
+            "user.attribute",
+        ),
+    ] {
+        let (status, told) = asked(&plane, Method::POST, &base, &bearer, Some(body)).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{what} was taken: {told}"
+        );
+        assert!(
+            told["message"].as_str().unwrap_or_default().contains(says),
+            "the refusal of {what} does not name {says}: {told}"
+        );
+    }
+}

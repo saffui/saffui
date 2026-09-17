@@ -5,7 +5,7 @@ use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::client::{Protocol, ProtocolMapperModel};
 use models::entities::user::{UserModel, profile};
 use serde_json::{Map, Value};
-use store::providers::{client_scopes, roles, users};
+use store::providers::{client_scopes, organizations, roles, users};
 
 /// Map a user scalar (`username` / `email` / `emailVerified`) to a claim.
 pub const PROPERTY_MAPPER: &str = "oidc-usermodel-property-mapper";
@@ -19,17 +19,29 @@ pub const REALM_ROLE_MAPPER: &str = "oidc-usermodel-realm-role-mapper";
 pub const CLIENT_ROLE_MAPPER: &str = "oidc-usermodel-client-role-mapper";
 /// Add a named audience to `aud`.
 pub const AUDIENCE_MAPPER: &str = "oidc-audience-mapper";
+/// A claim whose value is written here rather than read off anybody: the same
+/// value in every token this rule reaches.
+pub const HARDCODED_MAPPER: &str = "oidc-hardcoded-claim-mapper";
+/// The names of the groups the person stands in, the groups above them
+/// included, `groups` unless said.
+pub const GROUP_MAPPER: &str = "oidc-usermodel-group-mapper";
+/// The slugs of the organizations the person belongs to, `organizations`
+/// unless said.
+pub const ORGANIZATION_MAPPER: &str = "oidc-usermodel-organization-mapper";
 
 /// Every rule this build applies. The store keeps no catalogue on purpose, so
 /// this list is the one place that says what a mapper type can mean, and the
 /// plane refuses names outside it rather than recording rules nothing runs.
-pub const KNOWN_TYPES: [&str; 6] = [
+pub const KNOWN_TYPES: [&str; 9] = [
     PROPERTY_MAPPER,
     ATTRIBUTE_MAPPER,
     FULL_NAME_MAPPER,
     REALM_ROLE_MAPPER,
     CLIENT_ROLE_MAPPER,
     AUDIENCE_MAPPER,
+    HARDCODED_MAPPER,
+    GROUP_MAPPER,
+    ORGANIZATION_MAPPER,
 ];
 
 pub const CLAIM_NAME: &str = "claim.name";
@@ -41,6 +53,8 @@ pub const MULTIVALUED: &str = "multivalued";
 pub const USER_ATTRIBUTE: &str = "user.attribute";
 pub const INCLUDED_CLIENT_AUDIENCE: &str = "included.client.audience";
 pub const INCLUDED_CUSTOM_AUDIENCE: &str = "included.custom.audience";
+/// What a hardcoded rule writes, since it reads nothing off anybody.
+pub const CLAIM_VALUE: &str = "claim.value";
 
 /// The three flags every rule reads, whatever it is: which answers it joins.
 pub const TARGET_FLAGS: [&str; 3] = [ID_TOKEN_CLAIM, ACCESS_TOKEN_CLAIM, USERINFO_TOKEN_CLAIM];
@@ -87,6 +101,16 @@ pub fn keys_of(mapper_type: &str) -> Option<RuleKeys> {
             allowed: &[INCLUDED_CLIENT_AUDIENCE, INCLUDED_CUSTOM_AUDIENCE],
             required: &[],
             one_of: &[INCLUDED_CLIENT_AUDIENCE, INCLUDED_CUSTOM_AUDIENCE],
+        },
+        HARDCODED_MAPPER => RuleKeys {
+            allowed: &[CLAIM_NAME, CLAIM_VALUE, JSON_TYPE],
+            required: &[CLAIM_NAME, CLAIM_VALUE],
+            one_of: &[],
+        },
+        GROUP_MAPPER | ORGANIZATION_MAPPER => RuleKeys {
+            allowed: &[CLAIM_NAME],
+            required: &[],
+            one_of: &[],
         },
         _ => return None,
     };
@@ -178,6 +202,10 @@ pub struct Resolved {
     pub mappers: Vec<ProtocolMapperModel>,
     pub realm_roles: Vec<String>,
     pub client_roles: BTreeMap<String, Vec<String>>,
+    /// Names, the groups above them included, and empty unless a rule asks.
+    pub groups: Vec<String>,
+    /// Slugs, empty unless a rule asks.
+    pub organizations: Vec<String>,
 }
 
 impl Resolved {
@@ -210,6 +238,14 @@ pub async fn resolve(
     let needs_client = mappers
         .iter()
         .any(|mapper| mapper.mapper_type == CLIENT_ROLE_MAPPER);
+    // A registry is read only where a rule asks for it, the same bargain the
+    // roles strike: a grant carrying no such rule pays no query for it.
+    let needs_groups = mappers
+        .iter()
+        .any(|mapper| mapper.mapper_type == GROUP_MAPPER);
+    let needs_orgs = mappers
+        .iter()
+        .any(|mapper| mapper.mapper_type == ORGANIZATION_MAPPER);
     let mut realm_roles = Vec::new();
     let mut client_roles: BTreeMap<String, Vec<String>> = BTreeMap::new();
     if needs_realm || needs_client {
@@ -226,8 +262,24 @@ pub async fn resolve(
             }
         }
     }
+    let groups = if needs_groups {
+        users::group_names_of(transaction, user_id)
+            .await
+            .map_err(|_| ())?
+    } else {
+        Vec::new()
+    };
+    let organizations = if needs_orgs {
+        organizations::member_slugs(transaction, user_id)
+            .await
+            .map_err(|_| ())?
+    } else {
+        Vec::new()
+    };
     Ok(Resolved {
         mappers,
+        groups,
+        organizations,
         realm_roles,
         client_roles,
     })
@@ -312,6 +364,8 @@ pub async fn preview(
             mappers: vec![mapper.clone()],
             realm_roles: resolved.realm_roles.clone(),
             client_roles: resolved.client_roles.clone(),
+            groups: resolved.groups.clone(),
+            organizations: resolved.organizations.clone(),
         };
         let access = evaluate(Target::AccessToken, &one, &user);
         one.mappers = vec![mapper.clone()];
@@ -376,6 +430,14 @@ pub fn evaluate(target: Target, resolved: &Resolved, user: &UserModel) -> Map<St
             REALM_ROLE_MAPPER => apply_realm_roles(mapper, &resolved.realm_roles, &mut claims),
             CLIENT_ROLE_MAPPER => apply_client_roles(&resolved.client_roles, &mut claims),
             AUDIENCE_MAPPER => apply_audience(mapper, &mut claims),
+            HARDCODED_MAPPER => apply_hardcoded(mapper, &mut claims),
+            GROUP_MAPPER => apply_named(mapper, &resolved.groups, "groups", &mut claims),
+            ORGANIZATION_MAPPER => apply_named(
+                mapper,
+                &resolved.organizations,
+                "organizations",
+                &mut claims,
+            ),
             // A rule this build does not know decides nothing here; the plane
             // refuses to record one, so this arm answers only rows written
             // some other way, and breaking issuance over them helps nobody.
@@ -397,6 +459,12 @@ fn apply_property(mapper: &ProtocolMapperModel, user: &UserModel, claims: &mut M
         // An empty email is no email: nothing, rather than a blank claim.
         "email" if !user.email.is_empty() => Value::String(user.email.clone()),
         "emailVerified" => Value::Bool(user.email_verified.unwrap_or(false)),
+        // Same rule as the address: an absent or empty number is no number.
+        "phoneNumber" => match user.phone_number.as_deref() {
+            Some(number) if !number.is_empty() => Value::String(number.to_owned()),
+            _ => return,
+        },
+        "phoneNumberVerified" => Value::Bool(user.phone_number_verified.unwrap_or(false)),
         _ => return,
     };
     insert_claim(claims, claim_name, coerce(&mapper.configs, raw));
@@ -476,6 +544,37 @@ fn apply_client_roles(
             string_array(roles),
         );
     }
+}
+
+/// A registry's names under one claim, the rule saying where to put them.
+///
+/// Nothing when the person stands in none: an empty array would say the
+/// question was asked and answered, which reads differently from silence.
+fn apply_named(
+    mapper: &ProtocolMapperModel,
+    named: &[String],
+    resting: &str,
+    claims: &mut Map<String, Value>,
+) {
+    if named.is_empty() {
+        return;
+    }
+    let claim_name = config_str(&mapper.configs, CLAIM_NAME).unwrap_or(resting);
+    insert_claim(claims, claim_name, string_array(named));
+}
+
+/// A value written rather than read: the rule carries it, so the same claim
+/// lands in every token the rule reaches. `jsonType.label` narrows it, so a
+/// hardcoded number is a number and not the string it was typed as.
+fn apply_hardcoded(mapper: &ProtocolMapperModel, claims: &mut Map<String, Value>) {
+    let (Some(claim_name), Some(value)) = (
+        config_str(&mapper.configs, CLAIM_NAME),
+        config_str(&mapper.configs, CLAIM_VALUE),
+    ) else {
+        return;
+    };
+    let raw = Value::String(value.to_owned());
+    insert_claim(claims, claim_name, coerce(&mapper.configs, raw));
 }
 
 /// Emitted under `aud` as an array; the mint site unions it into the token's
@@ -651,11 +750,24 @@ mod tests {
         }
     }
 
+    /// One rule, with a registry already read for it.
+    fn standing(mapper: ProtocolMapperModel, groups: &[&str], orgs: &[&str]) -> Resolved {
+        Resolved {
+            mappers: vec![mapper],
+            realm_roles: Vec::new(),
+            client_roles: BTreeMap::new(),
+            groups: groups.iter().map(|held| (*held).to_string()).collect(),
+            organizations: orgs.iter().map(|held| (*held).to_string()).collect(),
+        }
+    }
+
     fn alone(mapper: ProtocolMapperModel) -> Resolved {
         Resolved {
             mappers: vec![mapper],
             realm_roles: Vec::new(),
             client_roles: BTreeMap::new(),
+            groups: Vec::new(),
+            organizations: Vec::new(),
         }
     }
 
@@ -671,6 +783,58 @@ mod tests {
             &person(),
         );
         assert_eq!(told, Map::from_iter([("who".into(), json!("bob"))]));
+
+        // The number is a property like the address, and absent it writes
+        // nothing rather than an empty claim. The flag stands on its own: a
+        // person with no number is a person whose number is not verified.
+        let mut reachable = person();
+        reachable.phone_number = Some("+33123456789".into());
+        reachable.phone_number_verified = Some(true);
+        let told = evaluate(
+            Target::IdToken,
+            &alone(rule(
+                PROPERTY_MAPPER,
+                &[
+                    (CLAIM_NAME, "phone_number"),
+                    (USER_ATTRIBUTE, "phoneNumber"),
+                ],
+            )),
+            &reachable,
+        );
+        assert_eq!(
+            told,
+            Map::from_iter([("phone_number".into(), json!("+33123456789"))])
+        );
+
+        let told = evaluate(
+            Target::IdToken,
+            &alone(rule(
+                PROPERTY_MAPPER,
+                &[
+                    (CLAIM_NAME, "phone_number_verified"),
+                    (USER_ATTRIBUTE, "phoneNumberVerified"),
+                ],
+            )),
+            &reachable,
+        );
+        assert_eq!(
+            told,
+            Map::from_iter([("phone_number_verified".into(), json!(true))])
+        );
+
+        // Nobody's number: no claim at all, the way an empty address answers.
+        let told = evaluate(
+            Target::IdToken,
+            &alone(rule(
+                PROPERTY_MAPPER,
+                &[
+                    (CLAIM_NAME, "phone_number"),
+                    (USER_ATTRIBUTE, "phoneNumber"),
+                ],
+            )),
+            &person(),
+        );
+        assert!(told.is_empty(), "an absent number was claimed: {told:?}");
 
         let told = evaluate(
             Target::IdToken,
@@ -769,6 +933,8 @@ mod tests {
             mappers: vec![rule(REALM_ROLE_MAPPER, &[]), rule(CLIENT_ROLE_MAPPER, &[])],
             realm_roles: vec!["auditor".into()],
             client_roles: BTreeMap::from([("app".to_owned(), vec!["editor".to_owned()])]),
+            groups: Vec::new(),
+            organizations: Vec::new(),
         };
         let told = evaluate(Target::AccessToken, &resolved, &person());
         assert_eq!(told["realm_access"]["roles"], json!(["auditor"]));
@@ -844,6 +1010,83 @@ mod tests {
         let mut claims = Map::from_iter([("realm_access".to_owned(), json!("opaque"))]);
         insert_claim(&mut claims, "realm_access.roles", json!(["auditor"]));
         assert_eq!(claims["realm_access"], json!("opaque"));
+    }
+
+    /// A value the rule carries rather than reads, narrowed by the label the
+    /// way a property is, and silent without the value to write.
+    #[test]
+    fn a_hardcoded_claim_is_written_as_it_is_typed() {
+        let told = evaluate(
+            Target::IdToken,
+            &alone(rule(
+                HARDCODED_MAPPER,
+                &[(CLAIM_NAME, "tier"), (CLAIM_VALUE, "gold")],
+            )),
+            &person(),
+        );
+        assert_eq!(told, Map::from_iter([("tier".into(), json!("gold"))]));
+
+        let told = evaluate(
+            Target::IdToken,
+            &alone(rule(
+                HARDCODED_MAPPER,
+                &[
+                    (CLAIM_NAME, "seats"),
+                    (CLAIM_VALUE, "12"),
+                    (JSON_TYPE, "int"),
+                ],
+            )),
+            &person(),
+        );
+        assert_eq!(told, Map::from_iter([("seats".into(), json!(12))]));
+
+        let told = evaluate(
+            Target::IdToken,
+            &alone(rule(HARDCODED_MAPPER, &[(CLAIM_NAME, "tier")])),
+            &person(),
+        );
+        assert!(
+            told.is_empty(),
+            "a rule with nothing to write wrote: {told:?}"
+        );
+    }
+
+    /// A registry lands under its own resting claim or the one the rule names,
+    /// and standing in none of it is silence rather than an empty array.
+    #[test]
+    fn a_registry_lands_where_the_rule_says_or_not_at_all() {
+        let told = evaluate(
+            Target::AccessToken,
+            &standing(rule(GROUP_MAPPER, &[]), &["engineering", "staff"], &[]),
+            &person(),
+        );
+        assert_eq!(
+            told,
+            Map::from_iter([("groups".into(), json!(["engineering", "staff"]))])
+        );
+
+        let told = evaluate(
+            Target::AccessToken,
+            &standing(
+                rule(ORGANIZATION_MAPPER, &[(CLAIM_NAME, "orgs")]),
+                &[],
+                &["acme"],
+            ),
+            &person(),
+        );
+        assert_eq!(told, Map::from_iter([("orgs".into(), json!(["acme"]))]));
+
+        for mapper in [GROUP_MAPPER, ORGANIZATION_MAPPER] {
+            let told = evaluate(
+                Target::AccessToken,
+                &standing(rule(mapper, &[]), &[], &[]),
+                &person(),
+            );
+            assert!(
+                told.is_empty(),
+                "{mapper} claimed an empty registry: {told:?}"
+            );
+        }
     }
 }
 
@@ -937,6 +1180,21 @@ mod rule_keys {
             assert_eq!(
                 check_configs(AUDIENCE_MAPPER, &configs(&[(key, "api")])),
                 Ok(())
+            );
+        }
+    }
+
+    /// Every rule this build runs has a row saying what it reads.
+    ///
+    /// Without this the table and the rules drift apart quietly: a rule added
+    /// with no row would have its configuration waved through, and the door
+    /// that serves this table to a console would stop offering it at all.
+    #[test]
+    fn every_rule_this_build_runs_says_what_it_reads() {
+        for kind in KNOWN_TYPES {
+            assert!(
+                keys_of(kind).is_some(),
+                "{kind} runs but says nothing about the keys it reads"
             );
         }
     }

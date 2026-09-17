@@ -17,7 +17,8 @@ import {
   listPolicies,
   listResources,
 } from "@/services/authz";
-import { previewToken, type PreviewedClaim } from "@/services/clients";
+import { previewToken } from "@/services/clients";
+import { authoredRows, type Authored } from "@/pages/clients/tokenPreview";
 import { afterWrites } from "@/services/writes";
 import type {
   DecisionRow,
@@ -72,7 +73,7 @@ const policies = ref<PolicyRow[]>([]);
 const resources = ref<ResourceRow[]>([]);
 const scopes = ref<ScopeRow[]>([]);
 const verdict = ref<EvaluateAnswer | null>(null);
-const claims = ref<PreviewedClaim[] | null>(null);
+const claims = ref<Authored[] | null>(null);
 const copied = ref(false);
 
 const decisions = ref<DecisionRow[]>([]);
@@ -184,7 +185,7 @@ async function ask() {
         scope: tokenScope.value.trim() || undefined,
       });
       if (currentRun !== runNumber) return;
-      claims.value = result.claims;
+      claims.value = authoredRows(result);
       return;
     }
     const result = await evaluate(

@@ -1415,7 +1415,7 @@ impl Plane {
     }
 
     /// Tell this client a different identifier from every other sector, §8.
-    #[allow(dead_code, reason = "only the pairwise suite switches one over")]
+    #[allow(dead_code, reason = "only some suites switch a client over")]
     pub async fn pair_subjects(&self, client_id: &str) {
         let mut connection = self.connection().await;
         let transaction = self

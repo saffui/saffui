@@ -10,6 +10,10 @@ const props = defineProps<{
   placeholder?: string;
 }>();
 const emit = defineEmits<{ "update:modelValue": [value: string] }>();
+// Two roots, the field and the list it reads from, so Vue inherits nothing on
+// its own and a caller's class would land nowhere. Routed to the field, which
+// is the one every caller means.
+defineOptions({ inheritAttrs: false });
 const listId = useId();
 const users = ref<UserBrief[]>([]);
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -45,6 +49,7 @@ onBeforeUnmount(() => {
 
 <template>
   <input
+    v-bind="$attrs"
     :value="modelValue"
     :list="listId"
     :placeholder="placeholder"

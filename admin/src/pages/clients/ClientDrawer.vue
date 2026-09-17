@@ -641,6 +641,12 @@ async function detachMapper(mapperId: string) {
           >
             {{ say("client-mappers-catalogue") }}
           </RouterLink>
+          <RouterLink
+            :to="`/${props.realm}/token-preview?client=${encodeURIComponent(props.clientId)}`"
+            class="ml-2 text-accent hover:underline"
+          >
+            {{ say("preview-title") }}
+          </RouterLink>
         </p>
         <AppHint name="client-mapper-attach-help" />
         <button

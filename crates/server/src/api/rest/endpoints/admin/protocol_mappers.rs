@@ -7,6 +7,8 @@ use models::entities::client::ProtocolMapperMutationModel;
 use services::admin::protocol_mappers::{self, Unwritable};
 use store::tenancy::Tenancy;
 
+use config::serving::PublicOrigin;
+
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
 
@@ -81,6 +83,8 @@ pub async fn preview(
     admin: web::ReqData<Admin>,
     pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
+    sealing: web::Data<Sealing>,
+    origin: web::Data<PublicOrigin>,
     path: web::Path<String>,
     body: web::Json<PreviewAsk>,
 ) -> Result<HttpResponse, ApiError> {
@@ -96,10 +100,56 @@ pub async fn preview(
         .await
         .map_err(|_| internal())?
         .ok_or_else(|| ApiError::new(ErrorCode::UserNotFound))?;
-    let rows = services::mappers::preview(&transaction, &asked.client_id, &user.user_id, &scope)
+    let realm = store::providers::realms::load(&transaction, &realm_id)
         .await
-        .map_err(|()| ApiError::new(ErrorCode::UserNotFound))?;
-    Ok(HttpResponse::Ok().json(serde_json::json!({ "claims": rows, "scope": scope })))
+        .map_err(|_| internal())?
+        .ok_or_else(|| ApiError::new(ErrorCode::RealmNotFound))?;
+
+    // The realm's own keys, opened to name the one that would sign. Opened and
+    // not used to sign: nothing here reaches a signer.
+    let ring = store::keyring::load(
+        &transaction,
+        &sealing.envelope,
+        &admin.context.tenant.tenant,
+        &realm_id,
+    )
+    .await
+    .map_err(|_| internal())?;
+    let signing = services::grant::Signing {
+        provider: sealing.provider.as_ref(),
+        ring: &ring,
+        envelope: &sealing.envelope,
+    };
+
+    let foreseen = services::token::preview::foresee(
+        &transaction,
+        &signing,
+        &realm,
+        &origin.issuer(&realm_id),
+        &asked.client_id,
+        &user.user_id,
+        &scope,
+    )
+    .await
+    .map_err(unforeseeable)?;
+
+    let shown = |held: services::token::preview::Shown| serde_json::json!({ "header": held.header, "body": held.body });
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "scope": scope,
+        "access": shown(foreseen.access),
+        "identity": foreseen.identity.map(shown),
+        "authors": foreseen.authors,
+        "drawn_at_issuance": services::token::preview::DRAWN_AT_ISSUANCE,
+    })))
+}
+
+/// Nothing foreseen, in the words the admin plane answers with.
+fn unforeseeable(why: services::token::preview::Unforeseeable) -> ApiError {
+    use services::token::preview::Unforeseeable;
+    match why {
+        Unforeseeable::NoSuchClient => ApiError::new(ErrorCode::ClientNotFound),
+        Unforeseeable::NoKey | Unforeseeable::Unreadable => internal(),
+    }
 }
 
 pub async fn create(

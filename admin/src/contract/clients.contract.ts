@@ -68,7 +68,13 @@ describe("clients", () => {
       client_id: CLIENT,
       scope: "openid",
     });
-    expect(preview.claims.length).toBeGreaterThan(0);
+    // The body is the whole token, so the rule's claim rides beside the ones
+    // the assembly writes itself, and nothing signed comes back.
+    expect(preview.authors.contract_email).toBe(mapper.name);
+    expect(preview.access.body.contract_email).toBeDefined();
+    expect(preview.access.body.iss).toBeDefined();
+    expect(preview.access.header.kid).toBeDefined();
+    expect(JSON.stringify(preview)).not.toContain("eyJ");
 
     await detachMapperFromClient(REALM, CLIENT, mapper.mapper_id);
     await deleteRealmMapper(REALM, mapper.mapper_id);

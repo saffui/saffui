@@ -21,7 +21,7 @@ use models::claims_request::{self, ClaimsRequest};
 
 /// Short, because an unconfigured realm is not a reason to hand out a
 /// long-lived credential.
-const DEFAULT_ACCESS_LIFESPAN: i64 = 300;
+pub(crate) const DEFAULT_ACCESS_LIFESPAN: i64 = 300;
 
 /// Renewed on every use, so an active client never reaches this. What it bounds
 /// is how long an abandoned one stays spendable.

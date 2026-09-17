@@ -28,6 +28,32 @@ pub async fn list(
     Ok(HttpResponse::Ok().json(listed))
 }
 
+/// What each rule reads, so a console can offer a rule's own fields rather
+/// than a free-text box and a hope.
+///
+/// Metadata: no realm is read. The path names one because every admin route
+/// is realm scoped, and because what a build runs could one day differ by
+/// realm without every caller having to learn a new address.
+pub async fn kinds() -> Result<HttpResponse, ApiError> {
+    let described: Vec<serde_json::Value> = services::mappers::KNOWN_TYPES
+        .iter()
+        .filter_map(|kind| {
+            services::mappers::keys_of(kind).map(|keys| {
+                serde_json::json!({
+                    "mapper_type": kind,
+                    "allowed": keys.allowed,
+                    "required": keys.required,
+                    "one_of": keys.one_of,
+                })
+            })
+        })
+        .collect();
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "kinds": described,
+        "target_flags": services::mappers::TARGET_FLAGS,
+    })))
+}
+
 /// What the mappers would write for one grant, claim by claim with its
 /// author. Mints nothing; the evaluation is issuance's own.
 #[derive(serde::Deserialize)]

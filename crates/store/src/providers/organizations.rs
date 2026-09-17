@@ -337,6 +337,29 @@ pub async fn members(
 /// this to place a caller, so a subject in no organization comes back empty,
 /// which the caller reads as a realm level principal rather than as an unknown.
 /// Ordered by identifier so the answer does not depend on insertion order.
+/// The slugs of the organizations a person belongs to.
+///
+/// The slug rather than the identifier: it is unique within the realm and a
+/// relying party can read it, which an opaque id is not and cannot. One round
+/// trip, because this is read while a token is being minted.
+pub async fn member_slugs(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "SELECT o.name FROM organizations o \
+             JOIN organization_members m ON m.org_id = o.org_id \
+             WHERE m.user_id = $1 ORDER BY o.name ASC",
+            &[&user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("name"))
+        .collect())
+}
+
 pub async fn of_member(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(

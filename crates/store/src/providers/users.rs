@@ -364,6 +364,43 @@ pub async fn load_by_attribute(
 }
 
 /// Which groups this person stands in.
+/// The names of every group a person stands in, the groups above them
+/// included.
+///
+/// The walk up `parent_id` is what makes a sub-group mean something: its
+/// members stand in every group above it, the same reading `effective_roles`
+/// gives. `UNION` inside the walk, so a malformed chain terminates.
+///
+/// `DISTINCT` on the name is not the second mechanism that walk's comment
+/// warns about: the `UNION` settles identifiers, and this settles names, which
+/// two different groups are free to share. One round trip, because this is
+/// read while a token is being minted.
+pub async fn group_names_of(
+    transaction: &Transaction<'_>,
+    user_id: &str,
+) -> StoreResult<Vec<String>> {
+    Ok(transaction
+        .query(
+            "WITH RECURSIVE standing AS ( \
+                 SELECT g.group_id, g.parent_id FROM groups g \
+                 JOIN users_groups ug ON ug.group_id = g.group_id \
+                 WHERE ug.user_id = $1 \
+                 UNION \
+                 SELECT g.group_id, g.parent_id FROM groups g \
+                 JOIN standing s ON g.group_id = s.parent_id \
+             ) \
+             SELECT DISTINCT g.name FROM groups g \
+             JOIN standing s ON s.group_id = g.group_id \
+             ORDER BY g.name ASC",
+            &[&user_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?
+        .into_iter()
+        .map(|row| row.get("name"))
+        .collect())
+}
+
 pub async fn groups_of(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(

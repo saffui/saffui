@@ -7,6 +7,7 @@ import { afterWrites } from "@/services/writes";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppDrawer from "@/components/AppDrawer.vue";
+import AppHint from "@/components/AppHint.vue";
 import GovernanceTabs from "@/pages/governance/GovernanceTabs.vue";
 import { JURISDICTIONS,
   advanceBreach,
@@ -255,11 +256,11 @@ function instant(epoch: number | null): string {
       <table class="sf-table">
         <thead>
           <tr>
-            <th>{{ say("privacy-col-subject") }}</th>
-            <th>{{ say("privacy-col-kind") }}</th>
-            <th>{{ say("privacy-col-stage") }}</th>
-            <th>{{ say("privacy-col-jurisdiction") }}</th>
-            <th class="px-3 py-2 text-right font-medium">{{ say("privacy-col-due") }}</th>
+            <th>{{ say("privacy-col-subject") }} <AppHint name="privacy-col-subject-help" /></th>
+            <th>{{ say("privacy-col-kind") }} <AppHint name="privacy-col-kind-help" /></th>
+            <th>{{ say("privacy-col-stage") }} <AppHint name="privacy-col-stage-help" /></th>
+            <th>{{ say("privacy-col-jurisdiction") }} <AppHint name="privacy-col-jurisdiction-help" /></th>
+            <th class="px-3 py-2 text-right font-medium">{{ say("privacy-col-due") }} <AppHint name="privacy-col-due-help" /></th>
           </tr>
         </thead>
         <tbody>
@@ -385,7 +386,7 @@ function instant(epoch: number | null): string {
           </select>
         </label>
         <label class="block text-[11px] font-medium text-muted">
-          {{ say("privacy-col-jurisdiction") }}
+          {{ say("privacy-col-jurisdiction") }} <AppHint name="privacy-col-jurisdiction-help" />
           <select v-model="breachDraft.jurisdiction" class="sf-field mt-1">
             <option v-for="held in JURISDICTIONS" :key="held" :value="held">{{ held }}</option>
           </select>
@@ -490,7 +491,7 @@ function instant(epoch: number | null): string {
     <AppDrawer v-if="lodging" :title="say('privacy-lodge')" @close="lodging = false">
       <form class="flex flex-col gap-3 text-xs" @submit.prevent="lodge">
         <label class="block text-[11px] font-medium text-muted">
-          {{ say("privacy-identifier") }}
+          {{ say("privacy-identifier") }} <AppHint name="privacy-col-subject-help" />
           <input
             v-model="form.identifier"
             required
@@ -538,7 +539,7 @@ function instant(epoch: number | null): string {
           <span class="font-mono">{{ opened.kind }}</span>
           <span class="text-muted">{{ say("privacy-col-stage") }}</span>
           <span>{{ say(`privacy-stage-${opened.stage}`) }}</span>
-          <span class="text-muted">{{ say("privacy-account") }}</span>
+          <span class="text-muted">{{ say("privacy-account") }} <AppHint name="privacy-account-help" /></span>
           <span class="font-mono">{{ opened.user_id || say("privacy-no-account") }}</span>
           <span class="text-muted">{{ say("privacy-received") }}</span>
           <span class="font-mono text-[11px]">{{ instant(opened.received_at) }}</span>
@@ -560,7 +561,7 @@ function instant(epoch: number | null): string {
             class="self-start rounded-md border border-border px-3 py-1.5 text-xs hover:bg-surface-2"
             @click="prove"
           >
-            {{ say("privacy-verify") }}
+            {{ say("privacy-verify") }} <AppHint name="privacy-verify-help" />
           </button>
           <div
             v-if="opened.stage === 'verified' && opened.kind === 'erasure'"

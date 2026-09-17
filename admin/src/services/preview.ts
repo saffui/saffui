@@ -841,6 +841,40 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       said: "the SCIM root answered as itself",
     });
   }
+  if (path.endsWith("/breaches")) {
+    return answer([
+      {
+        breach_id: "b-1",
+        description: "A backup copy of the sign-in log was readable from a bucket left open.",
+        data_categories: ["identifiers", "addresses"],
+        subjects_affected: 1420,
+        severity: "high",
+        status: "assessed",
+        jurisdiction: "eu",
+        occurred_at: NOW - 260000,
+        discovered_at: NOW - 170000,
+        notify_by: NOW + 90000,
+        notified_at: null,
+        notified_to: null,
+        filed_by: null,
+      },
+      {
+        breach_id: "b-2",
+        description: "A support mailbox forwarded one reset link to the wrong address.",
+        data_categories: ["addresses"],
+        subjects_affected: 1,
+        severity: "low",
+        status: "not-notifiable",
+        jurisdiction: "ke",
+        occurred_at: NOW - 900000,
+        discovered_at: NOW - 880000,
+        notify_by: null,
+        notified_at: null,
+        notified_to: null,
+        filed_by: "ada",
+      },
+    ]);
+  }
   if (path.endsWith("/subject-requests")) {
     return answer([
       { request_id: "d-1", user_id: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40", subject_identifier: "ada", kind: "erasure", stage: "received",

@@ -173,7 +173,7 @@ renew-password = Nouveau mot de passe
 renew-again = Nouveau mot de passe, encore
 sms-sent = Un code vous a été envoyé par SMS. Saisissez-le ci-dessous.
 sms-code = Code reçu par SMS
-phone-ask = Votre royaume vous demande de prouver un numéro de téléphone. Saisissez-le en forme internationale.
+phone-ask = Votre realm vous demande de prouver un numéro de téléphone. Saisissez-le en forme internationale.
 phone-bad = Cela ne ressemble pas à un numéro international. Il commence par + et l'indicatif du pays.
 phone-number = Numéro de téléphone
 

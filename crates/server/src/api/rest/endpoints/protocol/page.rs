@@ -864,7 +864,27 @@ pub async fn reset_password(
             policy.as_ref(),
         );
     };
-    let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
+    reset_form(&request, &pool, &tenancy, &realm, &token, &user, None).await
+}
+
+/// The page a reset link opens, with one of its lines shown where something
+/// has to be said.
+///
+/// Served rather than redirected to, because the only two things worth saying
+/// come out of a form the caller filled: the token it carries has not been
+/// weighed at the point the password is refused, so putting it back into an
+/// address would be writing a caller's text into a URL. Written into the page
+/// it is escaped, which is what the page already does with it.
+pub async fn reset_form(
+    request: &actix_web::HttpRequest,
+    pool: &deadpool_postgres::Pool,
+    tenancy: &store::tenancy::Tenancy,
+    realm: &str,
+    token: &str,
+    user: &str,
+    shown: Option<&str>,
+) -> HttpResponse {
+    let tongues = tongues_of_realm(pool, tenancy, realm).await;
     let tongue = tongues.negotiated(
         None,
         request
@@ -872,8 +892,8 @@ pub async fn reset_password(
             .get("accept-language")
             .and_then(|held| held.to_str().ok()),
     );
-    let (.., overrides, _) = doors_of_realm(&pool, &tenancy, &realm).await;
-    let body = match overrides.as_ref() {
+    let (.., overrides, _) = doors_of_realm(pool, tenancy, realm).await;
+    let mut body = match overrides.as_ref() {
         Some(spoken) => i18n::reset_page_over(tongue, spoken),
         None => i18n::reset_page_in(tongue).to_owned(),
     }
@@ -883,8 +903,18 @@ pub async fn reset_password(
             "/realms/{realm}/protocol/openid-connect/reset-password"
         )),
     )
-    .replace("{token}", &escaped(&token))
-    .replace("{user}", &escaped(&user));
+    .replace("{token}", &escaped(token))
+    .replace("{user}", &escaped(user));
+    // The line shown by taking its hiding class off. The page hides these by
+    // class and reveals by fragment, and a fragment is the one thing a server
+    // cannot set on a response it is writing.
+    if let Some(said) = shown {
+        body = body.replacen(
+            &format!("id=\"{said}\" class=\"flash\""),
+            &format!("id=\"{said}\""),
+            1,
+        );
+    }
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .insert_header(("Content-Type", "text/html; charset=utf-8"))
         .insert_header(("Content-Security-Policy", POLICY))

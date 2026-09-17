@@ -107,6 +107,7 @@ pub async fn ask_for_link(
 
 /// Spend the link and set the password.
 pub async fn set_password(
+    request: actix_web::HttpRequest,
     realm: web::Path<String>,
     asked: Option<web::Either<web::Json<Setting>, web::Form<Setting>>>,
     pool: web::Data<Pool>,
@@ -114,6 +115,11 @@ pub async fn set_password(
     sealing: web::Data<Sealing>,
 ) -> HttpResponse {
     let now = Utc::now();
+    // A browser posted the page's own form and is owed a page back; it has no
+    // way to read a JSON body, so the two lines the page carries for these
+    // outcomes were never once shown. Anything else asked in JSON and is
+    // answered in JSON, unchanged.
+    let in_a_page = super::page::wants_page(&request);
     let asked = match asked {
         Some(web::Either::Left(json)) => json.into_inner(),
         Some(web::Either::Right(form)) => form.into_inner(),
@@ -153,18 +159,47 @@ pub async fn set_password(
     {
         Ok(()) => {}
         Err(Unrecoverable::NotOffered) => return told(StatusCode::NOT_FOUND),
-        Err(Unrecoverable::NoSuchLink) => {
-            return uncached(&mut HttpResponseBuilder::new(StatusCode::BAD_REQUEST))
-                .json(serde_json::json!({ "status": "no-such-link" }));
-        }
-        Err(Unrecoverable::Refused(why)) => {
-            return uncached(&mut HttpResponseBuilder::new(StatusCode::BAD_REQUEST))
-                .json(serde_json::json!({ "status": "refused", "reason": why }));
+        Err(why @ (Unrecoverable::NoSuchLink | Unrecoverable::Refused(_))) => {
+            let said = match why {
+                Unrecoverable::Refused(_) => "refused",
+                _ => "no-such-link",
+            };
+            if in_a_page {
+                drop(transaction);
+                return super::page::reset_form(
+                    &request,
+                    &pool,
+                    &tenancy,
+                    &realm,
+                    &token,
+                    &user,
+                    Some(said),
+                )
+                .await;
+            }
+            let told = match why {
+                Unrecoverable::Refused(reason) => {
+                    serde_json::json!({ "status": "refused", "reason": reason })
+                }
+                _ => serde_json::json!({ "status": "no-such-link" }),
+            };
+            return uncached(&mut HttpResponseBuilder::new(StatusCode::BAD_REQUEST)).json(told);
         }
         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR),
     }
     if transaction.commit().await.is_err() {
         return told(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    if in_a_page {
+        // On to signing in, and never back to the form: the link is spent, so
+        // returning to it would offer a page whose token no longer works. The
+        // address carries nothing the caller wrote.
+        return uncached(&mut HttpResponseBuilder::new(StatusCode::SEE_OTHER))
+            .insert_header((
+                "location",
+                format!("/realms/{realm}/protocol/openid-connect/login#password-set"),
+            ))
+            .finish();
     }
     told(StatusCode::NO_CONTENT)
 }

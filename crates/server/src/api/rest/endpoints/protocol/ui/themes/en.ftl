@@ -123,6 +123,7 @@ totp-one-time = One-time code
 enroll-add = Add this account to your authenticator app, then enter the code it shows.
 enroll-open = Open in your authenticator app
 consent-asking = is asking for access to your account.
+flash-password-set = Your password is set. Sign in with it.
 flash-refused = Sign-in refused.
 flash-no-such-login = This sign-in has expired or was never started. Go back to the application and try again.
 flash-key-needs-script = A security key needs scripts enabled on this page.

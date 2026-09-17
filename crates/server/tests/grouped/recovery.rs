@@ -122,6 +122,39 @@ async fn set_password(
     (status, told)
 }
 
+/// The same door, posted the way a browser posts the page's own form.
+async fn set_password_in_a_browser(
+    plane: &Plane,
+    token: &str,
+    user: &str,
+    password: &str,
+) -> (StatusCode, String, String) {
+    let app = test::init_service(App::new().configure(register(&mounted(plane, None)))).await;
+    let response = test::call_service(
+        &app,
+        test::TestRequest::post()
+            .uri(&format!(
+                "/realms/{}/protocol/openid-connect/reset-password",
+                support::REALM
+            ))
+            .insert_header(("accept", "text/html,application/xhtml+xml"))
+            .set_form(serde_json::json!({
+                "token": token, "user": user, "password": password,
+            }))
+            .to_request(),
+    )
+    .await;
+    let status = response.status();
+    let landing = response
+        .headers()
+        .get("location")
+        .and_then(|held| held.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let body = test::read_body(response).await;
+    (status, landing, String::from_utf8_lossy(&body).into_owned())
+}
+
 fn token_in(body: &str) -> String {
     body.split("token=")
         .nth(1)
@@ -248,4 +281,108 @@ async fn demand_length(plane: &Plane, least: i64) {
         .await
         .expect("the realms table");
     transaction.commit().await.expect("the policy kept");
+}
+
+/// A browser cannot read a JSON body, so the two lines the page carries for
+/// these outcomes were written and never once shown: somebody whose password
+/// was refused saw a raw body where a sentence belonged.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_browser_is_told_in_the_page_why_a_password_was_refused() {
+    let plane = Plane::with_actions(&[]).await;
+    allow_reset(&plane, true).await;
+    arrange_mail(&plane).await;
+    demand_length(&plane, 12).await;
+    let postbox = Postbox::default();
+    assert_eq!(
+        asked_for_link(&plane, &postbox, support::SUBJECT).await,
+        StatusCode::ACCEPTED
+    );
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    let token = token_in(&held[0].body);
+
+    let (status, landing, body) =
+        set_password_in_a_browser(&plane, &token, support::SUBJECT, "short").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        landing.is_empty(),
+        "a refusal sent the browser away: {landing}"
+    );
+    assert!(body.contains("<form"), "the form did not come back: {body}");
+    // The line is shown by having its hiding class taken off, since a server
+    // cannot set the fragment that would otherwise reveal it.
+    assert!(
+        body.contains(r#"id="refused""#) && !body.contains(r#"id="refused" class="flash""#),
+        "the refusal line is still hidden: {body}"
+    );
+    assert!(
+        !body.contains(r#""status""#),
+        "a browser was answered in JSON: {body}"
+    );
+}
+
+/// A link already spent says so on the page, and the page still carries the
+/// form, so nothing about the answer depends on reading a body.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_browser_is_told_in_the_page_that_a_link_is_dead() {
+    let plane = Plane::with_actions(&[]).await;
+    allow_reset(&plane, true).await;
+
+    let (status, _, body) =
+        set_password_in_a_browser(&plane, "never-minted", support::SUBJECT, "Correct-Horse-9")
+            .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        body.contains(r#"id="no-such-link""#)
+            && !body.contains(r#"id="no-such-link" class="flash""#),
+        "the dead-link line is still hidden: {body}"
+    );
+}
+
+/// Set, the browser goes on to sign in. Never back to the form: the link is
+/// spent, so returning to it would offer a page whose token no longer works.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_browser_that_set_its_password_is_sent_on_to_sign_in() {
+    let plane = Plane::with_actions(&[]).await;
+    allow_reset(&plane, true).await;
+    arrange_mail(&plane).await;
+    let postbox = Postbox::default();
+    assert_eq!(
+        asked_for_link(&plane, &postbox, support::SUBJECT).await,
+        StatusCode::ACCEPTED
+    );
+    let held = postbox.held();
+    assert_eq!(held.len(), 1, "{held:?}");
+    let token = token_in(&held[0].body);
+
+    let (status, landing, body) =
+        set_password_in_a_browser(&plane, &token, support::SUBJECT, "Correct-Horse-Battery-9")
+            .await;
+    assert_eq!(status, StatusCode::SEE_OTHER, "{body}");
+    assert_eq!(
+        landing,
+        format!(
+            "/realms/{}/protocol/openid-connect/login#password-set",
+            support::REALM
+        )
+    );
+    // Nothing the caller wrote rides in that address. The token has not been
+    // weighed at the point a password is refused, so putting one back into a
+    // URL would be writing a caller's text into an address.
+    assert!(!landing.contains(&token), "{landing}");
+}
+
+/// The door still answers JSON where JSON was asked, which is what every
+/// caller that is not a browser does.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_caller_that_is_not_a_browser_is_answered_as_before() {
+    let plane = Plane::with_actions(&[]).await;
+    allow_reset(&plane, true).await;
+    let (status, told) = set_password(&plane, "never-minted", support::SUBJECT, "a").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{told}");
+    assert_eq!(told["status"], "no-such-link", "{told}");
 }

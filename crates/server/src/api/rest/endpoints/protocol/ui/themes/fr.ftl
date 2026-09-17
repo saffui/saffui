@@ -123,6 +123,7 @@ totp-one-time = Code à usage unique
 enroll-add = Ajoutez ce compte à votre application de codes, puis saisissez le code affiché.
 enroll-open = Ouvrir dans votre application
 consent-asking = demande l'accès à votre compte.
+flash-password-set = Votre mot de passe est enregistré. Connectez-vous avec.
 flash-refused = Connexion refusée.
 flash-no-such-login = Cette connexion a expiré ou n'a jamais commencé. Retournez à l'application et réessayez.
 flash-key-needs-script = Une clé de sécurité nécessite les scripts sur cette page.

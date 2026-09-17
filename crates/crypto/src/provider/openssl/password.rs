@@ -1,5 +1,4 @@
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{Algorithm, Argon2, Params, PasswordHash, PasswordHasher, PasswordVerifier, Version};
 use secrecy::{ExposeSecret, SecretBox};
 
 use crate::provider::openssl::rand::OpenSslRand;
@@ -105,10 +104,8 @@ impl PasswordProvider for OpenSslPassword {
         // a second one: two sources of randomness is two things to get right.
         let mut salt_bytes = [0u8; 16];
         OpenSslRand.fill(&mut salt_bytes)?;
-        let salt = SaltString::encode_b64(&salt_bytes).map_err(|_| CryptoError::OperationFailed)?;
-
         Argon2::new(Algorithm::Argon2id, Version::V0x13, configured)
-            .hash_password(password.expose_secret().as_bytes(), &salt)
+            .hash_password_with_salt(password.expose_secret().as_bytes(), &salt_bytes)
             .map(|hash| hash.to_string())
             .map_err(|_| CryptoError::OperationFailed)
     }
@@ -293,14 +290,14 @@ mod tests {
         // Minted here rather than pasted, so the test cannot pass against a
         // vector that was wrong to begin with.
         let params = Params::new(MIN_M_COST, 2, 1, Some(32)).unwrap();
-        let salt = SaltString::encode_b64(&[0x2b; 16]).unwrap();
+        let salt = [0x2b; 16];
 
         for (variant, algorithm) in [
             (Algorithm::Argon2i, "argon2i"),
             (Algorithm::Argon2d, "argon2d"),
         ] {
             let encoded = Argon2::new(variant, Version::V0x13, params.clone())
-                .hash_password(b"correct horse", &salt)
+                .hash_password_with_salt(b"correct horse", &salt)
                 .unwrap()
                 .to_string();
             assert!(encoded.starts_with(&format!("${algorithm}$")));
@@ -352,6 +349,34 @@ mod tests {
             OpenSslPassword
                 .verify_legacy_argon2(&password("secret"), "not a hash")
                 .is_err()
+        );
+    }
+
+    /// A record this crate did not mint still verifies.
+    ///
+    /// Every other positive case here hashes and reads back in the same
+    /// process, so all of them would stay green if the stored format stopped
+    /// being the one a previous release wrote. These vectors come from the
+    /// hashing crate's own fixtures, password `password`, and they are what
+    /// says an account created before an upgrade can still sign in.
+    #[test]
+    fn a_record_minted_elsewhere_still_verifies() {
+        // m=65536,t=2,p=1 sits inside the window this crate enforces, so the
+        // case turns on reading the record rather than on the bounds.
+        let stored = "$argon2id$v=19$m=65536,t=2,p=1\
+                      $c29tZXNhbHQ$CTFhFdXPJO1aFaMaO6Mm5c8y7cJHAph8ArZWb2GRPPc";
+
+        assert!(
+            OpenSslPassword
+                .verify(&password("password"), stored)
+                .unwrap(),
+            "a record minted by another build no longer verifies"
+        );
+        assert!(
+            !OpenSslPassword
+                .verify(&password("sassword"), stored)
+                .unwrap(),
+            "the wrong password was accepted against a foreign record"
         );
     }
 

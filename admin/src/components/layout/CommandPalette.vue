@@ -42,7 +42,6 @@ const PAGES: { leaf: string; name: () => string }[] = [
   { leaf: "theme", name: () => say("nav-theme") },
   { leaf: "pages", name: () => say("nav-pages") },
   { leaf: "spnego", name: () => say("nav-spnego") },
-  { leaf: "token-preview", name: () => say("nav-preview") },
 ];
 
 interface Hit {

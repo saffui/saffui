@@ -1,14 +1,15 @@
 <script setup lang="ts">
-// What a token would carry, claim by claim with its author. Mints nothing:
-// the evaluation is issuance's own, reported instead of signed.
+// What a token would carry, header and body, assembled by the same code that
+// issues. Signs nothing: the assembly is issuance's own, the signature is not.
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { say } from "@/i18n";
 import AppHint from "@/components/AppHint.vue";
 import UserSubjectField from "@/components/UserSubjectField.vue";
-import { previewToken, type PreviewedClaim } from "@/services/clients";
+import { previewToken, type Foreseen, type ShownToken } from "@/services/clients";
 import type { ClientBrief } from "@/models/client";
 import { authorizationClients, selectedClient } from "@/pages/authorization/authorizationClients";
+import { asMoment, headerLines, linesOf, windowOf } from "./tokenPreview";
 
 const route = useRoute();
 const realm = computed(() => String(route.params.realm));
@@ -17,8 +18,7 @@ const failed = ref("");
 const userId = ref("");
 const clientId = ref("");
 const scope = ref("openid profile");
-const claims = ref<PreviewedClaim[] | null>(null);
-const askedScope = ref("");
+const foreseen = ref<Foreseen | null>(null);
 
 onMounted(async () => {
   try {
@@ -31,26 +31,37 @@ onMounted(async () => {
 
 async function ask() {
   failed.value = "";
-  claims.value = null;
+  foreseen.value = null;
   if (!userId.value.trim() || !clientId.value) return;
   try {
-    const answered = await previewToken(realm.value, {
+    foreseen.value = await previewToken(realm.value, {
       user_id: userId.value.trim(),
       client_id: clientId.value,
       scope: scope.value.trim() || undefined,
     });
-    claims.value = answered.claims;
-    askedScope.value = answered.scope;
   } catch (refused) {
     failed.value = refused instanceof Error ? refused.message : String(refused);
   }
 }
 
-function landsIn(row: PreviewedClaim): string {
-  return say(`preview-lands-${row.lands_in}`);
+const shown = computed(() => {
+  const held = foreseen.value;
+  if (!held) return [];
+  const tokens: { name: string; token: ShownToken }[] = [
+    { name: say("preview-token-access"), token: held.access },
+  ];
+  if (held.identity) tokens.push({ name: say("preview-token-identity"), token: held.identity });
+  return tokens;
+});
+
+function body(token: ShownToken) {
+  return foreseen.value ? linesOf(token, foreseen.value) : [];
 }
-function worded(value: unknown): string {
-  return typeof value === "string" ? value : JSON.stringify(value);
+
+/// The moment a bounding claim names, beside the seconds it carries: a reader
+/// checking a window should not have to convert an epoch in their head.
+function moment(token: ShownToken, key: string): string {
+  return asMoment(key, token.body[key]);
 }
 </script>
 
@@ -74,10 +85,7 @@ function worded(value: unknown): string {
       </label>
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("clients-title") }}
-        <select
-          v-model="clientId"
-          class="sf-field mt-1 font-mono"
-        >
+        <select v-model="clientId" class="sf-field mt-1 font-mono">
           <option value="" disabled>{{ say("authz-pick-client") }}</option>
           <option v-for="held in clients" :key="held.client_id" :value="held.client_id">
             {{ held.client_id }}
@@ -86,54 +94,80 @@ function worded(value: unknown): string {
       </label>
       <label class="flex-1 text-[11px] font-medium text-muted">
         {{ say("preview-scope") }} <AppHint name="preview-scope-help" />
-        <input
-          v-model="scope"
-          class="sf-field mt-1 font-mono"
-          spellcheck="false"
-        />
+        <input v-model="scope" class="sf-field mt-1 font-mono" spellcheck="false" />
       </label>
-      <button
-        type="submit"
-        class="sf-button sf-button-primary"
-      >
-        {{ say("preview-ask") }}
-      </button>
+      <button type="submit" class="sf-button sf-button-primary">{{ say("preview-ask") }}</button>
     </form>
 
-    <p v-if="claims && !claims.length" class="mt-4 text-xs text-muted">
-      {{ say("preview-none") }}
-    </p>
-    <div v-if="claims?.length" class="sf-list mt-4 overflow-x-auto">
-      <table class="sf-table">
-        <thead>
-          <tr>
-            <th>{{ say("preview-col-claim") }}</th>
-            <th>{{ say("preview-col-value") }}</th>
-            <th>
-              {{ say("preview-col-origin") }} <AppHint name="preview-origin-help" />
-            </th>
-            <th>{{ say("preview-col-lands") }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="row in claims"
-            :key="row.claim + row.origin"
-            class="border-b border-border/60 last:border-0"
+    <div v-if="foreseen" class="mt-5 grid gap-4 xl:grid-cols-2">
+      <section
+        v-for="held in shown"
+        :key="held.name"
+        class="rounded-lg border border-border bg-surface"
+      >
+        <header class="flex flex-wrap items-center gap-2 border-b border-border px-4 py-2.5">
+          <h2 class="text-sm font-semibold">{{ held.name }}</h2>
+          <span
+            v-if="windowOf(held.token) !== null"
+            class="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted"
           >
-            <td class="font-mono text-[11.5px]">{{ row.claim }}</td>
-            <td class="max-w-96 px-3 py-2 font-mono text-[10.5px] break-all">
-              {{ worded(row.value) }}
-            </td>
-            <td>
-              <span class="rounded border border-info/40 px-1.5 py-0.5 text-[10px] text-info"
-                >{{ say("preview-by") }} {{ row.origin }}</span
-              >
-            </td>
-            <td class="text-[10.5px] text-muted">{{ landsIn(row) }}</td>
-          </tr>
-        </tbody>
-      </table>
+            {{ say("preview-window", { seconds: windowOf(held.token) ?? 0 }) }}
+            <AppHint name="preview-window-help" />
+          </span>
+        </header>
+
+        <div class="border-l-2 border-info/60 px-4 py-3">
+          <p class="text-[10px] font-medium tracking-wide text-muted uppercase">
+            {{ say("preview-part-header") }}
+          </p>
+          <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[11px]">
+            <template v-for="line in headerLines(held.token)" :key="line.key">
+              <dt class="text-muted">{{ line.key }}</dt>
+              <dd class="break-all text-ink">{{ line.value }}</dd>
+            </template>
+          </dl>
+        </div>
+
+        <div class="border-t border-l-2 border-t-border border-l-accent/60 px-4 py-3">
+          <p class="text-[10px] font-medium tracking-wide text-muted uppercase">
+            {{ say("preview-part-body") }}
+          </p>
+          <dl class="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[11px]">
+            <template v-for="line in body(held.token)" :key="line.key">
+              <dt class="text-muted">{{ line.key }}</dt>
+              <dd class="break-all text-ink">
+                {{ line.value }}
+                <span v-if="moment(held.token, line.key)" class="ml-1 text-[10px] text-faint">
+                  {{ moment(held.token, line.key) }}
+                </span>
+                <span
+                  v-if="line.author"
+                  class="ml-1 rounded border border-info/40 px-1 py-px text-[9.5px] text-info"
+                >
+                  {{ say("preview-by") }} {{ line.author }}
+                  <AppHint name="preview-origin-help" />
+                </span>
+                <span v-if="line.drawn" class="ml-1 text-[9.5px] text-faint">
+                  {{ say("preview-drawn") }} <AppHint name="preview-drawn-help" />
+                </span>
+              </dd>
+            </template>
+          </dl>
+        </div>
+
+        <div class="border-t border-l-2 border-t-border border-l-border px-4 py-3">
+          <p class="text-[10px] font-medium tracking-wide text-muted uppercase">
+            {{ say("preview-part-signature") }}
+          </p>
+          <p class="mt-1.5 text-[11px] text-muted">
+            {{ say("preview-unsigned") }} <AppHint name="preview-unsigned-help" />
+          </p>
+        </div>
+      </section>
+
+      <p v-if="!foreseen.identity" class="self-start text-xs text-muted xl:mt-3">
+        {{ say("preview-no-identity") }}
+      </p>
     </div>
   </div>
 </template>

@@ -204,19 +204,29 @@ export async function detachScope(realm: string, clientId: string, scope: string
   );
 }
 
-/// One previewed claim: who would write it, and into which token.
-export interface PreviewedClaim {
-  claim: string;
-  value: unknown;
-  origin: string;
-  lands_in: "access" | "identity" | "both";
+/// One token as it would look. There is no third part: nothing is signed.
+export interface ShownToken {
+  header: Record<string, unknown>;
+  body: Record<string, unknown>;
+}
+
+/// What a grant would carry, without the grant happening.
+export interface Foreseen {
+  scope: string;
+  access: ShownToken;
+  /// Absent unless the scope asks for openid, as issuance decides.
+  identity: ShownToken | null;
+  /// The mapper that wrote each claim, by claim name.
+  authors: Record<string, string>;
+  /// Claims whose value only exists once there is a login and a minting.
+  drawn_at_issuance: string[];
 }
 
 export async function previewToken(
   realm: string,
   body: { user_id: string; client_id: string; scope?: string },
-): Promise<{ claims: PreviewedClaim[]; scope: string }> {
-  return api<{ claims: PreviewedClaim[]; scope: string }>(adminPath(realm, "preview-token"), {
+): Promise<Foreseen> {
+  return api<Foreseen>(adminPath(realm, "preview-token"), {
     method: "POST",
     json: body,
     quiet: true,

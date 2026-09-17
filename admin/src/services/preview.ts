@@ -1183,12 +1183,44 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
     });
   }
   if (path.endsWith("/preview-token")) {
+    const opened = NOW;
     return answer({
       scope: "openid profile",
-      claims: [
-        { claim: "department", value: "engineering", origin: "department", lands_in: "both" },
-        { claim: "name", value: "Ada Lovelace", origin: "full name", lands_in: "identity" },
-      ],
+      access: {
+        header: { alg: "ES256", typ: "at+jwt", kid: "k-2026-09" },
+        body: {
+          iss: "https://saffui.example/realms/main",
+          sub: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
+          aud: ["web-dashboard"],
+          jti: "",
+          sid: "",
+          iat: opened,
+          nbf: opened,
+          exp: opened + 300,
+          typ: "Bearer",
+          azp: "web-dashboard",
+          scope: "openid profile",
+          department: "engineering",
+        },
+      },
+      identity: {
+        header: { alg: "RS256", typ: "JWT", kid: "k-2026-09-rs" },
+        body: {
+          iss: "https://saffui.example/realms/main",
+          sub: "0f8a4c31-6b2e-4d59-9c11-2a7f5e8d3b40",
+          aud: ["web-dashboard"],
+          jti: "",
+          sid: "",
+          iat: opened,
+          nbf: opened,
+          exp: opened + 300,
+          azp: "web-dashboard",
+          name: "Ada Lovelace",
+          department: "engineering",
+        },
+      },
+      authors: { department: "department claim", name: "full name" },
+      drawn_at_issuance: ["jti", "sid"],
     });
   }
   if (/\/auth\/required-actions\/[^/]+$/.test(path) && method === "DELETE") {

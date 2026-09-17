@@ -1,4 +1,4 @@
-use auth::messaging::{About, Message, Outgoing};
+use auth::messaging::{About, Message, Outgoing, Tongue, choose_tongue};
 use chrono::{DateTime, Utc};
 use deadpool_postgres::Transaction;
 use models::entities::attributes;
@@ -167,33 +167,6 @@ fn read_credential_change(payload: &Value) -> Option<NoticeKind> {
         }
         _ => None,
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tongue {
-    English,
-    French,
-}
-
-/// The tongue a notice is written in: the person's where it is one of the two the
-/// notices speak, the realm's otherwise, English when neither says.
-fn choose_tongue(person: Option<&str>, realm: Option<&str>) -> Tongue {
-    [person, realm]
-        .into_iter()
-        .flatten()
-        .find_map(|asked| {
-            match asked
-                .split(['-', '_'])
-                .next()
-                .map(str::to_ascii_lowercase)
-                .as_deref()
-            {
-                Some("fr") => Some(Tongue::French),
-                Some("en") => Some(Tongue::English),
-                _ => None,
-            }
-        })
-        .unwrap_or(Tongue::English)
 }
 
 /// A value spoken inside a mail, kept on one line: a name holding a line break
@@ -727,18 +700,6 @@ mod tests {
                 "{payload}"
             );
         }
-    }
-
-    /// A notice is written in the person's tongue where it is one of the two the
-    /// notices speak, the realm's otherwise, English when neither says.
-    #[test]
-    fn a_notice_speaks_the_persons_tongue_then_the_realms() {
-        assert_eq!(choose_tongue(Some("fr-FR"), Some("en")), Tongue::French);
-        assert_eq!(choose_tongue(Some("EN_us"), Some("fr")), Tongue::English);
-        assert_eq!(choose_tongue(Some("de"), Some("fr")), Tongue::French);
-        assert_eq!(choose_tongue(None, Some("fr")), Tongue::French);
-        assert_eq!(choose_tongue(Some("de"), None), Tongue::English);
-        assert_eq!(choose_tongue(None, None), Tongue::English);
     }
 
     /// An address is shown by its first character and its domain, and one that is

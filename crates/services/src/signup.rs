@@ -211,9 +211,9 @@ pub async fn register_person(
                 realm,
                 auth::login::enrolment::VERIFY_EMAIL_TEMPLATE,
                 &link,
-                "Confirm your address",
-                "Confirm this address to finish creating your account. The link works \
-                 once.\n\n{{link}}\n",
+                // The account is being born, so it says no tongue yet.
+                None,
+                &[],
             );
             Some(Box::new(auth::messaging::Outgoing {
                 settings: settings.duplicate(),

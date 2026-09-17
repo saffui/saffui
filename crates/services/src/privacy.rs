@@ -106,18 +106,16 @@ pub async fn offer_link(
         subject.user_id,
         kind.as_str(),
     );
-    let default_body = format!(
-        "Somebody asked us to act on the personal data of this account \
-         ({}). If it was you, follow the link to confirm the request. If \
-         not, nothing happens without it.\n\n{{{{link}}}}\n",
-        kind.as_str()
-    );
+    // The request's own name is put in already worded, so the module that
+    // writes messages does not have to know what a privacy request can be.
+    let reader = auth::messaging::tongue_spoken_by(&subject);
+    let tongue = auth::messaging::choose_tongue(reader, realm.default_locale.as_deref());
     let (worded_subject, worded_body) = auth::messaging::worded(
         realm,
         "subject_request",
         &link,
-        "Confirm your privacy request",
-        &default_body,
+        reader,
+        &[("kind", auth::messaging::worded_kind(kind.as_str(), tongue))],
     );
     Ok(Some(Outgoing {
         settings: settings.duplicate(),

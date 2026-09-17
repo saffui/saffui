@@ -787,9 +787,8 @@ async fn start_verify(
                         realm,
                         VERIFY_EMAIL_TEMPLATE,
                         &link,
-                        "Confirm your address",
-                        "Confirm this address to finish signing in. The link works once, and \
-                     only in the browser you started from.\n\n{{link}}\n",
+                        crate::messaging::tongue_spoken_by(subject),
+                        &[],
                     );
                     crate::messaging::Message {
                         to: subject.email.clone(),
@@ -1041,7 +1040,12 @@ async fn verify_phone_round(
                 settings: settings.duplicate(),
                 text: crate::messaging::Text {
                     to: texting_to,
-                    body: crate::messaging::texted_words(realm, "verify_phone", &code),
+                    body: crate::messaging::texted_words(
+                        realm,
+                        "verify_phone",
+                        &code,
+                        crate::messaging::tongue_spoken_by(subject),
+                    ),
                 },
                 about: crate::messaging::About {
                     user_id: subject.user_id.clone(),

@@ -78,6 +78,12 @@ export async function listRealmMappers(realm: string) {
   return api<import("@/models/client").ProtocolMapper[]>(adminPath(realm, "protocol-mappers"));
 }
 
+/// What each rule reads, so the form can offer a rule's own fields rather than
+/// a free-text box. Read once per screen: the answer is the same for a build.
+export async function listMapperKinds(realm: string) {
+  return api<import("@/pages/scopes/mapperForm").Kinds>(adminPath(realm, "mapper-kinds"));
+}
+
 export type ProtocolMapperWrite = {
   name: string;
   protocol: string;

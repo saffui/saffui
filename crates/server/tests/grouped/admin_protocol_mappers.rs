@@ -625,8 +625,27 @@ async fn the_new_rules_are_written_and_the_door_says_what_they_read() {
         kinds["target_flags"]
             .as_array()
             .expect("flags")
-            .contains(&serde_json::json!("id.token.claim")),
-        "the flags every rule reads are not named: {kinds}"
+            .contains(&serde_json::json!({ "key": "id.token.claim", "resting": true })),
+        "the flags every rule reads are not named with what their absence means: {kinds}"
+    );
+    // A switch's resting value is not the same everywhere, and a screen that
+    // guessed one for all of them would show a rule as multivalued when the
+    // evaluator reads it as single.
+    let attribute = kinds["kinds"]
+        .as_array()
+        .expect("kinds")
+        .iter()
+        .find(|kind| kind["mapper_type"] == "oidc-usermodel-attribute-mapper")
+        .expect("the attribute rule");
+    assert_eq!(
+        attribute["booleans"],
+        serde_json::json!([{ "key": "multivalued", "resting": false }]),
+        "the door does not say that multivalued is a switch resting at one value: {kinds}"
+    );
+    assert_eq!(
+        hardcoded["booleans"],
+        serde_json::json!([]),
+        "a rule with no switch of its own claims one: {kinds}"
     );
 
     // Written with what each reads, and nothing else.

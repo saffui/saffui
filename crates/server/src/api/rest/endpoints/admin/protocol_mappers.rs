@@ -28,6 +28,14 @@ pub async fn list(
     Ok(HttpResponse::Ok().json(listed))
 }
 
+/// The keys a rule reads as a switch, each with what its absence means, so a
+/// screen can render a toggle already sitting where the rule would read it.
+fn switches(keys: &[(&str, bool)]) -> Vec<serde_json::Value> {
+    keys.iter()
+        .map(|(key, resting)| serde_json::json!({ "key": key, "resting": resting }))
+        .collect()
+}
+
 /// What each rule reads, so a console can offer a rule's own fields rather
 /// than a free-text box and a hope.
 ///
@@ -44,13 +52,18 @@ pub async fn kinds() -> Result<HttpResponse, ApiError> {
                     "allowed": keys.allowed,
                     "required": keys.required,
                     "one_of": keys.one_of,
+                    "booleans": switches(keys.booleans),
                 })
             })
         })
         .collect();
+    let flags: Vec<(&str, bool)> = services::mappers::TARGET_FLAGS
+        .iter()
+        .map(|flag| (*flag, services::mappers::FLAG_RESTING))
+        .collect();
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "kinds": described,
-        "target_flags": services::mappers::TARGET_FLAGS,
+        "target_flags": switches(&flags),
     })))
 }
 

@@ -200,10 +200,48 @@ const CLIENTS: ClientDetail[] = [
 ];
 
 const REALM_MAPPERS = [
-  { mapper_id: "m-1", name: "audience for payments", protocol: "openid-connect", mapper_type: "audience" },
-  { mapper_id: "m-2", name: "department claim", protocol: "openid-connect", mapper_type: "user-attribute" },
-  { mapper_id: "m-3", name: "email claims", protocol: "openid-connect", mapper_type: "user-property" },
+  {
+    mapper_id: "m-1", name: "audience for payments", protocol: "openid-connect",
+    mapper_type: "oidc-audience-mapper",
+    configs: { "included.client.audience": { Str: "payments-api" } },
+  },
+  {
+    mapper_id: "m-2", name: "department claim", protocol: "openid-connect",
+    mapper_type: "oidc-usermodel-attribute-mapper",
+    configs: {
+      "claim.name": { Str: "department" },
+      "user.attribute": { Str: "department" },
+      "multivalued": { Str: "true" },
+      "userinfo.token.claim": { Bool: false },
+    },
+  },
+  {
+    mapper_id: "m-3", name: "email claims", protocol: "openid-connect",
+    mapper_type: "oidc-usermodel-property-mapper",
+    configs: { "claim.name": { Str: "email" }, "user.attribute": { Str: "email" } },
+  },
 ];
+
+/// What each rule reads, mirroring the server's own table so the form shown
+/// here is the form a real realm gets.
+const MAPPER_KINDS = {
+  kinds: [
+    { mapper_type: "oidc-usermodel-property-mapper", allowed: ["claim.name", "user.attribute", "jsonType.label"], required: ["claim.name", "user.attribute"], one_of: [], booleans: [] },
+    { mapper_type: "oidc-usermodel-attribute-mapper", allowed: ["claim.name", "user.attribute", "multivalued", "jsonType.label"], required: ["claim.name", "user.attribute"], one_of: [], booleans: [{ key: "multivalued", resting: false }] },
+    { mapper_type: "oidc-full-name-mapper", allowed: ["claim.name"], required: [], one_of: [], booleans: [] },
+    { mapper_type: "oidc-usermodel-realm-role-mapper", allowed: ["claim.name"], required: [], one_of: [], booleans: [] },
+    { mapper_type: "oidc-usermodel-client-role-mapper", allowed: [], required: [], one_of: [], booleans: [] },
+    { mapper_type: "oidc-audience-mapper", allowed: ["included.client.audience", "included.custom.audience"], required: [], one_of: ["included.client.audience", "included.custom.audience"], booleans: [] },
+    { mapper_type: "oidc-hardcoded-claim-mapper", allowed: ["claim.name", "claim.value", "jsonType.label"], required: ["claim.name", "claim.value"], one_of: [], booleans: [] },
+    { mapper_type: "oidc-usermodel-group-mapper", allowed: ["claim.name"], required: [], one_of: [], booleans: [] },
+    { mapper_type: "oidc-usermodel-organization-mapper", allowed: ["claim.name"], required: [], one_of: [], booleans: [] },
+  ],
+  target_flags: [
+    { key: "id.token.claim", resting: true },
+    { key: "access.token.claim", resting: true },
+    { key: "userinfo.token.claim", resting: true },
+  ],
+};
 
 const PREVIEW_ROLES = [
   { role_id: "r-1", name: "auditor", display_name: "Auditor", description: "Reads the journal", client_id: null },
@@ -618,6 +656,9 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
   }
   if (path.endsWith("/protocol-mappers")) {
     return answer(REALM_MAPPERS);
+  }
+  if (path.endsWith("/mapper-kinds")) {
+    return answer(MAPPER_KINDS);
   }
   if (/\/roles\/[^/]+\/composites\/[^/]+$/.test(path) && method !== "GET") {
     const roleId = decodeURIComponent(path.split("/").pop() ?? "");

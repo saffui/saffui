@@ -59,6 +59,14 @@ pub const CLAIM_VALUE: &str = "claim.value";
 /// The three flags every rule reads, whatever it is: which answers it joins.
 pub const TARGET_FLAGS: [&str; 3] = [ID_TOKEN_CLAIM, ACCESS_TOKEN_CLAIM, USERINFO_TOKEN_CLAIM];
 
+/// An absent target flag: the claim rides there unless somebody said not to.
+pub const FLAG_RESTING: bool = true;
+
+/// An absent `multivalued`: one value, not a list. Named because a switch's
+/// resting value is not the same everywhere, and a console that guessed one
+/// for all of them would show a rule as multivalued when it is not.
+pub const MULTIVALUED_RESTING: bool = false;
+
 /// What one rule reads from its configuration.
 ///
 /// Taken off the evaluator below, not off the constant names: a client role
@@ -72,6 +80,9 @@ pub struct RuleKeys {
     pub required: &'static [&'static str],
     /// One spelling or the other, never neither.
     pub one_of: &'static [&'static str],
+    /// Those of its own keys the rule reads as a switch, each with what its
+    /// absence means. The target flags are not here: every rule carries them.
+    pub booleans: &'static [(&'static str, bool)],
 }
 
 /// The keys of a rule this build runs, or nothing for a name it does not.
@@ -81,36 +92,43 @@ pub fn keys_of(mapper_type: &str) -> Option<RuleKeys> {
             allowed: &[CLAIM_NAME, USER_ATTRIBUTE, JSON_TYPE],
             required: &[CLAIM_NAME, USER_ATTRIBUTE],
             one_of: &[],
+            booleans: &[],
         },
         ATTRIBUTE_MAPPER => RuleKeys {
             allowed: &[CLAIM_NAME, USER_ATTRIBUTE, MULTIVALUED, JSON_TYPE],
             required: &[CLAIM_NAME, USER_ATTRIBUTE],
             one_of: &[],
+            booleans: &[(MULTIVALUED, MULTIVALUED_RESTING)],
         },
         FULL_NAME_MAPPER | REALM_ROLE_MAPPER => RuleKeys {
             allowed: &[CLAIM_NAME],
             required: &[],
             one_of: &[],
+            booleans: &[],
         },
         CLIENT_ROLE_MAPPER => RuleKeys {
             allowed: &[],
             required: &[],
             one_of: &[],
+            booleans: &[],
         },
         AUDIENCE_MAPPER => RuleKeys {
             allowed: &[INCLUDED_CLIENT_AUDIENCE, INCLUDED_CUSTOM_AUDIENCE],
             required: &[],
             one_of: &[INCLUDED_CLIENT_AUDIENCE, INCLUDED_CUSTOM_AUDIENCE],
+            booleans: &[],
         },
         HARDCODED_MAPPER => RuleKeys {
             allowed: &[CLAIM_NAME, CLAIM_VALUE, JSON_TYPE],
             required: &[CLAIM_NAME, CLAIM_VALUE],
             one_of: &[],
+            booleans: &[],
         },
         GROUP_MAPPER | ORGANIZATION_MAPPER => RuleKeys {
             allowed: &[CLAIM_NAME],
             required: &[],
             one_of: &[],
+            booleans: &[],
         },
         _ => return None,
     };
@@ -420,7 +438,7 @@ pub fn widen(audiences: &mut Vec<String>, extra: &[String]) {
 pub fn evaluate(target: Target, resolved: &Resolved, user: &UserModel) -> Map<String, Value> {
     let mut claims = Map::new();
     for mapper in &resolved.mappers {
-        if !config_bool(&mapper.configs, target.flag(), true) {
+        if !config_bool(&mapper.configs, target.flag(), FLAG_RESTING) {
             continue;
         }
         match mapper.mapper_type.as_str() {
@@ -488,7 +506,7 @@ fn apply_attribute(
     else {
         return;
     };
-    let multivalued = config_bool(&mapper.configs, MULTIVALUED, false);
+    let multivalued = config_bool(&mapper.configs, MULTIVALUED, MULTIVALUED_RESTING);
     insert_claim(
         claims,
         claim_name,

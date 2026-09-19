@@ -26,7 +26,17 @@
     const named = decodeURIComponent(realmOf[1]);
     const header = document.getElementById("realm");
     document.getElementById("realm-name").textContent = named;
-    document.getElementById("realm-mark").textContent = named.slice(0, 2).toUpperCase();
+    document.getElementById("realm-letters").textContent = named.slice(0, 2).toUpperCase();
+    // The letters are what the mark has always been, and they stay until a
+    // picture has actually arrived. Swapping on load rather than on asking
+    // means a realm keeping none, or one whose mark cannot be fetched, shows
+    // its letters instead of a broken frame.
+    const drawn = document.getElementById("realm-logo");
+    drawn.addEventListener("load", function () {
+      document.getElementById("realm-letters").hidden = true;
+      drawn.hidden = false;
+    });
+    drawn.src = "logo";
     header.hidden = false;
   }
   const form = document.getElementById("login");

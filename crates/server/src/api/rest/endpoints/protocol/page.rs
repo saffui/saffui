@@ -15,7 +15,7 @@ const STYLE: &str = include_str!("ui/login.css");
 /// image), call this server back or post the form to it, and nothing else. No
 /// inline code, no frames, no submission to anywhere but here.
 const POLICY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
-                      img-src data:; connect-src 'self'; form-action 'self'; \
+                      img-src 'self' data:; connect-src 'self'; form-action 'self'; \
                       frame-ancestors 'none'; base-uri 'none'";
 
 /// Where `/auth` sends a browser when the deployment names no other page.
@@ -680,6 +680,41 @@ pub async fn style(
 /// own sheet and wears only what the realm overrides. Empty for a realm left
 /// undressed, for a name that is no realm, and when the store cannot say: the
 /// console keeps its own look, and the answer does not tell the three apart.
+/// The realm's mark, as the bytes that were weighed on the way in.
+///
+/// Served under the type recorded beside them rather than one guessed here, and
+/// with sniffing turned off, so a browser draws what the door accepted and
+/// never something it decided the bytes looked more like.
+pub async fn serve_realm_logo(
+    realm: web::Path<String>,
+    pool: web::Data<deadpool_postgres::Pool>,
+    tenancy: web::Data<store::tenancy::Tenancy>,
+) -> HttpResponse {
+    let Ok(mut connection) = pool.get().await else {
+        return told_nothing(StatusCode::NOT_FOUND);
+    };
+    let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, &realm).await else {
+        return told_nothing(StatusCode::NOT_FOUND);
+    };
+    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+        return told_nothing(StatusCode::NOT_FOUND);
+    };
+    let Ok(Some((bytes, kind))) =
+        store::providers::realms::logo_of(&transaction, &context.realm_id).await
+    else {
+        // A realm keeping none is a mark that is not there, and the page falls
+        // back to the letters it drew before any of this existed.
+        return told_nothing(StatusCode::NOT_FOUND);
+    };
+    uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
+        .insert_header(("Content-Type", kind))
+        .insert_header(("X-Content-Type-Options", "nosniff"))
+        .insert_header(("Content-Security-Policy", "default-src 'none'; sandbox"))
+        .insert_header(("X-Frame-Options", "DENY"))
+        .insert_header(("Referrer-Policy", "no-referrer"))
+        .body(bytes)
+}
+
 pub async fn serve_realm_theme(
     realm: web::Path<String>,
     pool: web::Data<deadpool_postgres::Pool>,

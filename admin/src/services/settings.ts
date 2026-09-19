@@ -120,6 +120,28 @@ export async function disableRealmKey(realm: string, kid: string): Promise<void>
   });
 }
 
+/// Whether this realm keeps a mark, and what it is. The bytes are not answered
+/// here: the console draws it from the public address like any browser.
+export interface MarkHeld {
+  held: boolean;
+  media_type: string | null;
+  bytes: number | null;
+}
+
+export async function describeRealmMark(realm: string): Promise<MarkHeld> {
+  return api<MarkHeld>(adminPath(realm, "logo"));
+}
+
+/// The picture itself is the body, so nothing re-encodes it between the file
+/// somebody chose and the bytes the door weighs.
+export async function keepRealmMark(realm: string, picture: Blob, subject: string): Promise<void> {
+  await api<void>(adminPath(realm, "logo"), { method: "PUT", body: picture, subject });
+}
+
+export async function forgetRealmMark(realm: string, subject: string): Promise<void> {
+  await api<void>(adminPath(realm, "logo"), { method: "DELETE", subject });
+}
+
 export async function getRealmTheme(realm: string): Promise<RealmTheme> {
   return api<RealmTheme>(adminPath(realm, "theme"));
 }

@@ -1207,6 +1207,12 @@ export function previewAnswer<T>(path: string, method = "GET", body?: unknown): 
       ],
     });
   }
+  if (path.endsWith("/logo")) {
+    // The review world keeps none, which is the case worth seeing: the header
+    // falls back to the realm's letters and the section offers to choose one.
+    if (method === "GET") return answer({ held: false, media_type: null, bytes: null });
+    return answer(undefined);
+  }
   if (path.endsWith("/page-draft")) {
     return answer({ preview_id: "draft-in-review", expires_at: new Date((NOW + 600) * 1000).toISOString() });
   }

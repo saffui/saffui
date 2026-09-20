@@ -734,8 +734,30 @@ watch(
 
 /// The realm's rewording of its mails, kept whole and saved whole.
 const MAIL_KINDS = ["magic_link", "verify_email", "reset_password", "subject_request"] as const;
+/// The messages that tell somebody what already happened to their account.
+/// They are read rather than followed, so they carry no link and their body
+/// may leave one out.
+const NOTICE_KINDS = [
+  "password-set",
+  "password-changed",
+  "app-added",
+  "app-removed",
+  "app-revoked",
+  "key-added",
+  "key-removed",
+  "key-revoked",
+  "recovery-codes-issued",
+  "recovery-codes-removed",
+  "recovery-codes-revoked",
+  "recovery-code-used",
+  "address-changed",
+  "provider-linked",
+] as const;
 const templates = ref<Record<string, Record<string, MailTemplate>>>({});
 const templateKind = ref<string>("magic_link");
+/// Only a message that is followed owes a link; demanding one of a notice
+/// would have it refused at the door for what it has nothing to put there.
+const owesLink = computed(() => (MAIL_KINDS as readonly string[]).includes(templateKind.value));
 const templateTongue = ref("en");
 const templateDraft = ref({ subject: "", body: "" });
 
@@ -1826,9 +1848,16 @@ async function saveSmsTemplate() {
                   v-model="templateKind"
                   class="sf-field mt-1 font-mono"
                 >
-                  <option v-for="kind in MAIL_KINDS" :key="kind" :value="kind">
-                    {{ say(`mail-kind-${kind}`) }}
-                  </option>
+                  <optgroup :label="say('mail-kinds-letters')">
+                    <option v-for="kind in MAIL_KINDS" :key="kind" :value="kind">
+                      {{ say(`mail-kind-${kind}`) }}
+                    </option>
+                  </optgroup>
+                  <optgroup :label="say('mail-kinds-notices')">
+                    <option v-for="kind in NOTICE_KINDS" :key="kind" :value="kind">
+                      {{ say(`notice-kind-${kind}`) }}
+                    </option>
+                  </optgroup>
                 </select>
               </label>
               <label class="block text-[11px] font-medium text-muted">
@@ -1853,7 +1882,8 @@ async function saveSmsTemplate() {
               />
             </label>
             <label class="block text-[11px] font-medium text-muted">
-              {{ say("mail-templates-body") }} <AppHint name="mail-templates-body-help" />
+              {{ say("mail-templates-body") }}
+              <AppHint :name="owesLink ? 'mail-templates-body-help' : 'mail-templates-notice-help'" />
               <textarea
                 v-model="templateDraft.body"
                 rows="5"

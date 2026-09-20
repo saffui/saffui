@@ -564,19 +564,18 @@ pub async fn update(
             clash.to_string(),
         ));
     }
-    // A reworded mail still has to work: the body carries the link or the
-    // mail does nothing, and the words stay mail-sized.
+    // A reworded message still has to work. A letter is followed, so its body
+    // carries the link or the letter does nothing; a notice is read and carries
+    // none, and demanding one would refuse every rewording of one. Which is
+    // which is the table's to say, not this door's.
     if let Some(templates) = &asked.mail_templates {
         for (kind, tongues) in templates {
-            if !matches!(
-                kind.as_str(),
-                "magic_link" | "verify_email" | "reset_password" | "subject_request"
-            ) {
+            let Some(owed) = services::wording::rewordable(kind) else {
                 return Err(ApiError::with_detail(
                     ErrorCode::ValidationError,
-                    format!("{kind} is not a mail this server sends"),
+                    format!("{kind} is not a message this server sends"),
                 ));
-            }
+            };
             for (tongue, template) in tongues {
                 if !sound_tongue(tongue) {
                     return Err(ApiError::with_detail(
@@ -589,14 +588,20 @@ pub async fn update(
                     && plain_line(&template.subject)
                     && template.body.len() <= 4000
                     && plain_text(&template.body)
-                    && template.body.contains("{{link}}");
+                    && (!owed.carries_link || template.body.contains("{{link}}"));
                 if !sound {
+                    let owes = if owed.carries_link {
+                        " that carries {{link}}"
+                    } else {
+                        ""
+                    };
                     return Err(ApiError::with_detail(
                         ErrorCode::ValidationError,
-                        "a mail template wants a subject up to 200 characters on one line \
-                         and a body up to 4000 that carries {{link}}, neither of them \
-                         holding a control character"
-                            .to_owned(),
+                        format!(
+                            "a template for {kind} wants a subject up to 200 characters on \
+                             one line and a body up to 4000{owes}, neither of them holding \
+                             a control character"
+                        ),
                     ));
                 }
             }

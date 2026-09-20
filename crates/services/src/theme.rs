@@ -204,7 +204,10 @@ mod marks {
         assert_eq!(weigh_logo(b""), Err(Unusable::NotAPicture));
         assert_eq!(weigh_logo(b"GIF"), Err(Unusable::NotAPicture));
         // RIFF without the second tag is some other RIFF file, not a picture.
-        assert_eq!(weigh_logo(b"RIFF\0\0\0\0AVI LIST"), Err(Unusable::NotAPicture));
+        assert_eq!(
+            weigh_logo(b"RIFF\0\0\0\0AVI LIST"),
+            Err(Unusable::NotAPicture)
+        );
     }
 
     /// The two refusals are distinct so an operator is told which rule they

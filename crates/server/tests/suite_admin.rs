@@ -6,10 +6,10 @@ mod support;
 mod admin_agents;
 #[path = "grouped/admin_auth_flows.rs"]
 mod admin_auth_flows;
-#[path = "grouped/admin_branding.rs"]
-mod admin_branding;
 #[path = "grouped/admin_authz.rs"]
 mod admin_authz;
+#[path = "grouped/admin_branding.rs"]
+mod admin_branding;
 #[path = "grouped/admin_catalogue.rs"]
 mod admin_catalogue;
 #[path = "grouped/admin_client_scopes.rs"]

@@ -132,7 +132,11 @@ async fn a_mark_is_served_back_exactly_as_it_was_kept() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
     let (status, ..) = fetch_mark(&plane).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "the mark outlived its removal");
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "the mark outlived its removal"
+    );
 }
 
 /// The rule that matters. Served from this origin, a drawing that carries a
@@ -170,7 +174,10 @@ async fn a_picture_past_the_cap_is_refused_for_its_size_and_not_its_format() {
     let (status, told) = put_mark(&plane, &bearer, huge).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
     let said = told["message"].as_str().unwrap_or_default().to_owned();
-    assert!(said.contains("64 KiB"), "the size rule went unnamed: {told}");
+    assert!(
+        said.contains("64 KiB"),
+        "the size rule went unnamed: {told}"
+    );
 
     let (_, told) = put_mark(&plane, &bearer, b"not a picture at all".to_vec()).await;
     assert_ne!(

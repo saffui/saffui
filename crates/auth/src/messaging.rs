@@ -8,7 +8,26 @@ use models::entities::user::{UserModel, profile};
 pub struct Message {
     pub to: String,
     pub subject: String,
+    /// The text half, which is what this build has always sent.
     pub body: String,
+    /// The same words laid out, sent beside the text rather than instead of
+    /// it, so a reader whose client shows text loses nothing.
+    pub html: String,
+}
+
+impl Message {
+    /// A letter for one reader, in both halves at once.
+    ///
+    /// The only way a message is made, so nothing can compose one and leave a
+    /// half behind.
+    pub fn to(reader: &str, worded: Worded) -> Self {
+        Message {
+            to: reader.to_owned(),
+            subject: worded.subject,
+            body: worded.text,
+            html: worded.html,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -122,22 +141,90 @@ pub fn worded(
     link: &str,
     reader: Option<&str>,
     said: &[(&str, &str)],
-) -> (String, String) {
+) -> Worded {
     let spoken = realm
         .mail_templates
         .as_ref()
         .and_then(|held| held.get(kind))
         .and_then(|tongues| pick_wording(tongues, reader, realm.default_locale.as_deref()));
+    let tongue = choose_tongue(reader, realm.default_locale.as_deref());
     let (subject, body) = match spoken {
         Some(template) => (template.subject.as_str(), template.body.as_str()),
-        None => built_words(kind, choose_tongue(reader, realm.default_locale.as_deref())),
+        None => built_words(kind, tongue),
     };
-    (filled(subject, link, said), filled(body, link, said))
+    put_in(kind, tongue, subject, body, link, said)
 }
 
 /// This build's own words for one kind of mail, in one tongue. A realm that
 /// wrote nothing is answered from here rather than from its caller, so the
 /// same sentence is not spelled once per place that sends it.
+/// One wording, put into both halves.
+///
+/// The letter is written from the wording BEFORE anything is put in, so the
+/// marker is still standing where it stands and the layout knows where the
+/// button goes. The single place a `Worded` is made, so the two halves cannot
+/// be written from different words.
+pub fn put_in(
+    kind: &str,
+    tongue: Tongue,
+    subject: &str,
+    body: &str,
+    link: &str,
+    said: &[(&str, &str)],
+) -> Worded {
+    Worded {
+        subject: filled(subject, link, said),
+        text: filled(body, link, said),
+        html: crate::letter::written(subject, body, link, said, button_words(kind, tongue)),
+    }
+}
+
+/// A letter with nothing to press: the notices that only tell somebody what
+/// happened, and name no link at all.
+pub fn told(subject: &str, body: &str) -> Worded {
+    Worded {
+        subject: subject.to_owned(),
+        text: body.to_owned(),
+        html: crate::letter::written(subject, body, "", &[], ""),
+    }
+}
+
+/// The build's own wording for a kind, where no realm row says otherwise.
+pub fn built(kind: &str, tongue: Tongue, link: &str, said: &[(&str, &str)]) -> Worded {
+    let (subject, body) = built_words(kind, tongue);
+    put_in(kind, tongue, subject, body, link, said)
+}
+
+/// What the button on a letter says, by what the letter is for.
+///
+/// A label rather than a bare address: a reader is told what pressing it does
+/// before they press it, which is the whole difference between a letter and a
+/// lure. A kind nobody wrote a label for gets the plain one.
+pub fn button_words(kind: &str, tongue: Tongue) -> &'static str {
+    match (kind, tongue) {
+        ("magic_link", Tongue::French) => "Se connecter",
+        ("magic_link", _) => "Sign in",
+        ("verify_email" | "verify_phone", Tongue::French) => "Confirmer l'adresse",
+        ("verify_email" | "verify_phone", _) => "Confirm the address",
+        ("reset_password", Tongue::French) => "Choisir un mot de passe",
+        ("reset_password", _) => "Set a password",
+        (_, Tongue::French) => "Continuer",
+        (_, _) => "Continue",
+    }
+}
+
+/// A message in both halves it is sent in.
+///
+/// One value rather than two calls: the halves are written from the same words
+/// at the same moment, so nothing can compose a letter and forget one of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worded {
+    pub subject: String,
+    /// What this build has always sent, unchanged.
+    pub text: String,
+    pub html: String,
+}
+
 pub fn built_words(kind: &str, tongue: Tongue) -> (&'static str, &'static str) {
     match (kind, tongue) {
         ("magic_link", Tongue::French) => (
@@ -363,7 +450,8 @@ mod wording {
     #[test]
     fn the_realms_words_win_and_the_link_always_lands() {
         let bare = realm_with(None, &[]);
-        let (subject, body) = worded(&bare, "magic_link", "https://l", None, &[]);
+        let held = worded(&bare, "magic_link", "https://l", None, &[]);
+        let (subject, body) = (held.subject, held.text);
         assert_eq!(subject, "Your sign-in link");
         assert!(
             body.ends_with("https://l\n"),
@@ -377,7 +465,8 @@ mod wording {
                 ("magic_link", "en", "Your link", "Follow: {{link}}"),
             ],
         );
-        let (subject, body) = worded(&french, "magic_link", "https://l", None, &[]);
+        let held = worded(&french, "magic_link", "https://l", None, &[]);
+        let (subject, body) = (held.subject, held.text);
         assert_eq!(subject, "Votre lien");
         assert_eq!(body, "Suivez : https://l");
 
@@ -385,14 +474,14 @@ mod wording {
             Some("fr"),
             &[("magic_link", "en", "Your link", "Follow: {{link}}")],
         );
-        let (subject, _) = worded(&english_only, "magic_link", "https://l", None, &[]);
+        let subject = worded(&english_only, "magic_link", "https://l", None, &[]).subject;
         assert_eq!(
             subject, "Your link",
             "english did not answer for a silent tongue"
         );
 
         let other_kind = realm_with(Some("fr"), &[("verify_email", "fr", "V", "{{link}}")]);
-        let (subject, _) = worded(&other_kind, "magic_link", "https://l", None, &[]);
+        let subject = worded(&other_kind, "magic_link", "https://l", None, &[]).subject;
         assert_eq!(
             subject, "Votre lien de connexion",
             "another kind's words leaked, or the realm's own tongue was ignored"
@@ -428,7 +517,7 @@ mod wording {
                     ("magic_link", "fr", "Francais", "{{link}}"),
                 ],
             );
-            let (subject, _) = worded(&unnamed, "magic_link", "https://l", None, &[]);
+            let subject = worded(&unnamed, "magic_link", "https://l", None, &[]).subject;
             assert_eq!(
                 subject, "Deutsch",
                 "the tongue was drawn rather than chosen"
@@ -442,7 +531,7 @@ mod wording {
                 ("magic_link", "pt-BR", "Portugues", "{{link}}"),
             ],
         );
-        let (subject, _) = worded(&cased, "magic_link", "https://l", None, &[]);
+        let subject = worded(&cased, "magic_link", "https://l", None, &[]).subject;
         assert_eq!(subject, "Portugues", "case kept a realm from its own words");
     }
 
@@ -457,12 +546,12 @@ mod wording {
                 ("magic_link", "fr", "Votre lien", "Suivez : {{link}}"),
             ],
         );
-        let (subject, _) = worded(&realm, "magic_link", "https://l", Some("fr-CA"), &[]);
+        let subject = worded(&realm, "magic_link", "https://l", Some("fr-CA"), &[]).subject;
         assert_eq!(
             subject, "Votre lien",
             "the realm's tongue beat the reader's"
         );
-        let (subject, _) = worded(&realm, "magic_link", "https://l", None, &[]);
+        let subject = worded(&realm, "magic_link", "https://l", None, &[]).subject;
         assert_eq!(
             subject, "Your link",
             "a silent reader did not fall to the realm"
@@ -477,9 +566,9 @@ mod wording {
                 ("magic_link", "pt-BR", "Brasileiro", "{{link}}"),
             ],
         );
-        let (subject, _) = worded(&regional, "magic_link", "https://l", Some("pt-BR"), &[]);
+        let subject = worded(&regional, "magic_link", "https://l", Some("pt-BR"), &[]).subject;
         assert_eq!(subject, "Brasileiro", "the region was flattened away");
-        let (subject, _) = worded(&regional, "magic_link", "https://l", Some("pt-PT"), &[]);
+        let subject = worded(&regional, "magic_link", "https://l", Some("pt-PT"), &[]).subject;
         assert_eq!(
             subject, "Portugues",
             "an unfiled region did not fall back to its language"
@@ -488,13 +577,14 @@ mod wording {
         // Nothing written by the realm, so this build answers, and it answers
         // in the tongue the person reads rather than the one the realm names.
         let silent = realm_with(Some("en"), &[]);
-        let (subject, body) = worded(&silent, "reset_password", "https://l", Some("fr"), &[]);
+        let held = worded(&silent, "reset_password", "https://l", Some("fr"), &[]);
+        let (subject, body) = (held.subject, held.text);
         assert_eq!(subject, "Choisissez un nouveau mot de passe");
         assert!(
             body.contains("mot de passe"),
             "built words came out English: {body}"
         );
-        let (subject, _) = worded(&silent, "reset_password", "https://l", None, &[]);
+        let subject = worded(&silent, "reset_password", "https://l", None, &[]).subject;
         assert_eq!(subject, "Set a new password");
     }
 
@@ -503,18 +593,19 @@ mod wording {
     #[test]
     fn a_named_value_beyond_the_link_is_put_in() {
         let silent = realm_with(None, &[]);
-        let (_, body) = worded(
+        let body = worded(
             &silent,
             "subject_request",
             "https://l",
             Some("fr"),
             &[("kind", worded_kind("erasure", Tongue::French))],
-        );
+        )
+        .text;
         assert!(
             body.contains("(effacement)"),
             "the request was not named: {body}"
         );
-        let (_, body) = worded(&silent, "subject_request", "https://l", Some("fr"), &[]);
+        let body = worded(&silent, "subject_request", "https://l", Some("fr"), &[]).text;
         assert!(
             body.contains("{{kind}}"),
             "an unsupplied name was blanked: {body}"
@@ -549,6 +640,86 @@ mod wording {
         assert_eq!(
             texted_words(&cased, "sms_otp", "123456", None),
             "Portugues 123456"
+        );
+    }
+
+    /// Both halves are written from one wording at one moment, so a letter
+    /// cannot say one thing to a client that draws HTML and another to a
+    /// client that does not.
+    #[test]
+    fn the_two_halves_of_a_letter_say_the_same_thing() {
+        let realm = realm_with(None, &[]);
+        let held = worded(&realm, "magic_link", "https://saffui.example/go", None, &[]);
+
+        assert!(!held.text.is_empty() && !held.html.is_empty());
+        // The text half is text. Were the two ever to cross, a reader whose
+        // client shows no HTML would be handed the markup itself.
+        assert!(
+            !held.text.contains('<') && !held.text.contains("&amp;"),
+            "the text half carries markup: {}",
+            held.text
+        );
+        assert!(held.html.starts_with("<!doctype html>"), "{}", held.html);
+        assert!(
+            held.html.contains(&held.subject),
+            "the subject is not on the letter"
+        );
+        // Every word of the text half, punctuation aside, is on the other.
+        for word in held
+            .text
+            .split_whitespace()
+            .filter(|held| held.len() > 4 && !held.starts_with("http"))
+        {
+            assert!(
+                held.html.contains(word),
+                "`{word}` is in the text half and not in the other:\n{}",
+                held.html
+            );
+        }
+        // And the address is a button rather than a line of text.
+        assert!(
+            held.html.contains("href=\"https://saffui.example/go\""),
+            "{}",
+            held.html
+        );
+    }
+
+    /// The halves keep their sides. Crossing them would hand a reader whose
+    /// client shows no HTML the markup itself, and hand a client that draws
+    /// HTML a wall of plain text.
+    #[test]
+    fn a_message_carries_each_half_on_its_own_side() {
+        let realm = realm_with(None, &[]);
+        let worded = worded(&realm, "magic_link", "https://saffui.example/go", None, &[]);
+        let held = Message::to("ada@example.test", worded);
+
+        assert_eq!(held.to, "ada@example.test");
+        assert!(
+            !held.body.contains('<'),
+            "the text side carries markup: {}",
+            held.body
+        );
+        assert!(held.html.starts_with("<!doctype html>"), "{}", held.html);
+        assert_ne!(held.body, held.html);
+    }
+
+    /// A notice names no link, so its letter has nothing to press, and the
+    /// words still cross.
+    #[test]
+    fn a_letter_with_nothing_to_press_still_carries_its_words() {
+        let held = told(
+            "Your password changed",
+            "It changed a moment ago.\n\nIf that was not you, tell your administrator.\n",
+        );
+        assert!(!held.html.contains("href="), "{}", held.html);
+        assert!(
+            held.html.contains("tell your administrator"),
+            "{}",
+            held.html
+        );
+        assert_eq!(
+            held.text,
+            "It changed a moment ago.\n\nIf that was not you, tell your administrator.\n"
         );
     }
 }

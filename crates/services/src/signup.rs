@@ -207,7 +207,7 @@ pub async fn register_person(
                 "{origin}/realms/{}/protocol/openid-connect/login?verify_email={token}",
                 realm.name,
             );
-            let (worded_subject, worded_body) = auth::messaging::worded(
+            let worded = auth::messaging::worded(
                 realm,
                 auth::login::enrolment::VERIFY_EMAIL_TEMPLATE,
                 &link,
@@ -217,11 +217,7 @@ pub async fn register_person(
             );
             Some(Box::new(auth::messaging::Outgoing {
                 settings: settings.duplicate(),
-                message: auth::messaging::Message {
-                    to: email.to_owned(),
-                    subject: worded_subject,
-                    body: worded_body,
-                },
+                message: auth::messaging::Message::to(email, worded),
                 about: auth::messaging::About {
                     user_id: born.user_id.clone(),
                     purpose: auth::login::enrolment::VERIFY_EMAIL.to_owned(),

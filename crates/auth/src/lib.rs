@@ -1,4 +1,5 @@
 pub mod consent;
+pub mod letter;
 pub mod login;
 pub mod messaging;
 pub mod organization;

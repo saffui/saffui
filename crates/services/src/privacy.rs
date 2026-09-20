@@ -110,7 +110,7 @@ pub async fn offer_link(
     // writes messages does not have to know what a privacy request can be.
     let reader = auth::messaging::tongue_spoken_by(&subject);
     let tongue = auth::messaging::choose_tongue(reader, realm.default_locale.as_deref());
-    let (worded_subject, worded_body) = auth::messaging::worded(
+    let worded = auth::messaging::worded(
         realm,
         "subject_request",
         &link,
@@ -119,11 +119,7 @@ pub async fn offer_link(
     );
     Ok(Some(Outgoing {
         settings: settings.duplicate(),
-        message: Message {
-            to: subject.email.clone(),
-            subject: worded_subject,
-            body: worded_body,
-        },
+        message: Message::to(&subject.email, worded),
         about: auth::messaging::About {
             user_id: subject.user_id.clone(),
             purpose,

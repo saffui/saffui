@@ -5,7 +5,7 @@ use config::serving::Egress;
 
 use crate::api::rest::endpoints::protocol::hosted::{may_dial, outward_agent};
 use lettre::message::Mailbox;
-use lettre::message::header::ContentType;
+use lettre::message::{MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Message as Letter, SmtpTransport, Transport};
@@ -48,13 +48,19 @@ fn compose(settings: &MailSettings, message: &Message) -> Result<Letter, Undeliv
     let mut building = Letter::builder()
         .from(from)
         .to(message.to.parse().map_err(|_| Undelivered::Refused)?)
-        .subject(&message.subject)
-        .header(ContentType::TEXT_PLAIN);
+        .subject(&message.subject);
     if let Some(reply_to) = &settings.reply_to {
         building = building.reply_to(reply_to.parse().map_err(|_| Undelivered::Refused)?);
     }
+    // Both halves, text first. An alternative is read last part first, so a
+    // client that draws HTML draws it and one that does not falls back to
+    // exactly what this build has always sent.
     building
-        .body(message.body.clone())
+        .multipart(
+            MultiPart::alternative()
+                .singlepart(SinglePart::plain(message.body.clone()))
+                .singlepart(SinglePart::html(message.html.clone())),
+        )
         .map_err(|_| Undelivered::Refused)
 }
 
@@ -234,5 +240,47 @@ impl Texter for LoggedTexter {
             "a text was written to the log and not sent"
         );
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings() -> MailSettings {
+        MailSettings {
+            host: "smtp.example.test".to_owned(),
+            port: 587,
+            from_address: "noreply@example.test".to_owned(),
+            from_name: "saffui".to_owned(),
+            reply_to: None,
+            implicit_tls: false,
+            credentials: None,
+        }
+    }
+
+    /// The last link nothing else covers. Everything above this weighs the two
+    /// halves as values; this weighs the letter they are actually packed into,
+    /// which is what a relay is handed.
+    #[test]
+    fn a_letter_is_packed_with_both_halves_and_the_text_one_first() {
+        let message = Message::to(
+            "ada@example.test",
+            auth::messaging::told("Hello", "Plain words.\n"),
+        );
+        let built = compose(&settings(), &message).expect("a letter");
+        let raw = String::from_utf8_lossy(&built.formatted()).into_owned();
+
+        assert!(raw.contains("multipart/alternative"), "{raw}");
+        assert!(raw.contains("text/plain"), "{raw}");
+        assert!(raw.contains("text/html"), "{raw}");
+        // An alternative is read last part first, so the text has to come
+        // before the HTML for a client that draws HTML to prefer it.
+        let text_at = raw.find("text/plain").expect("the text half");
+        let html_at = raw.find("text/html").expect("the other half");
+        assert!(
+            text_at < html_at,
+            "the halves are the wrong way round: {raw}"
+        );
     }
 }

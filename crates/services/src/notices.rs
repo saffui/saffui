@@ -513,11 +513,7 @@ pub async fn compose_due_notices(
             attempts: notice.attempts,
             outgoing: Outgoing {
                 settings: settings.duplicate(),
-                message: Message {
-                    to: address,
-                    subject,
-                    body,
-                },
+                message: Message::to(&address, auth::messaging::told(&subject, &body)),
                 about: About {
                     user_id: person.user_id.clone(),
                     purpose: SECURITY_NOTICE.to_owned(),

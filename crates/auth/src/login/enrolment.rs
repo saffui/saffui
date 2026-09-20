@@ -783,18 +783,14 @@ async fn start_verify(
             crate::messaging::Outgoing {
                 settings: settings.duplicate(),
                 message: {
-                    let (worded_subject, worded_body) = crate::messaging::worded(
+                    let worded = crate::messaging::worded(
                         realm,
                         VERIFY_EMAIL_TEMPLATE,
                         &link,
                         crate::messaging::tongue_spoken_by(subject),
                         &[],
                     );
-                    crate::messaging::Message {
-                        to: subject.email.clone(),
-                        subject: worded_subject,
-                        body: worded_body,
-                    }
+                    crate::messaging::Message::to(&subject.email, worded)
                 },
                 about: crate::messaging::About {
                     user_id: subject.user_id.clone(),

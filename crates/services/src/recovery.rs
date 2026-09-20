@@ -98,7 +98,7 @@ pub async fn offer_link(
         realm.name,
         subject.user_id,
     );
-    let (worded_subject, worded_body) = auth::messaging::worded(
+    let worded = auth::messaging::worded(
         realm,
         "reset_password",
         &link,
@@ -107,11 +107,7 @@ pub async fn offer_link(
     );
     Ok(Some(Outgoing {
         settings: settings.duplicate(),
-        message: Message {
-            to: subject.email.clone(),
-            subject: worded_subject,
-            body: worded_body,
-        },
+        message: Message::to(&subject.email, worded),
         about: auth::messaging::About {
             user_id: subject.user_id.clone(),
             purpose: RESET_PASSWORD.to_owned(),

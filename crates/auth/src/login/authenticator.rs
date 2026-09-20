@@ -464,25 +464,20 @@ async fn magic_link(
                     .ok()
                     .flatten();
                 let reader = crate::messaging::tongue_spoken_by(subject);
-                let (worded_subject, worded_body) = match &realm_row {
+                let worded = match &realm_row {
                     Some(realm) => {
                         crate::messaging::worded(realm, MAGIC_LINK_TEMPLATE, &link, reader, &[])
                     }
                     // No realm row is no rewording, but the person still says
                     // which tongue they read.
-                    None => {
-                        let (subject, body) = crate::messaging::built_words(
-                            MAGIC_LINK_TEMPLATE,
-                            crate::messaging::choose_tongue(reader, None),
-                        );
-                        (subject.to_owned(), body.replace("{{link}}", &link))
-                    }
+                    None => crate::messaging::built(
+                        MAGIC_LINK_TEMPLATE,
+                        crate::messaging::choose_tongue(reader, None),
+                        &link,
+                        &[],
+                    ),
                 };
-                Message {
-                    to: subject.email.clone(),
-                    subject: worded_subject,
-                    body: worded_body,
-                }
+                Message::to(&subject.email, worded)
             },
             about: crate::messaging::About {
                 user_id: subject.user_id.clone(),

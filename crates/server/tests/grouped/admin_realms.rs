@@ -693,6 +693,42 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
 
+    // A name this server never sends is refused outright. Without this, an
+    // unknown kind is a rewording kept for a message nobody will ever compose.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        Some(serde_json::json!({
+            "mail_templates": { "invented_elsewhere": { "fr": {
+                "subject": "Bonjour", "body": "Rien.\n"
+            } } }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
+
+    // A notice is read rather than followed, so it owes no link and is kept.
+    // The rule that refuses the one above must not refuse this.
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &format!("/admin/realms/{}", support::REALM),
+        &bearer,
+        Some(serde_json::json!({
+            "mail_templates": { "password-changed": { "fr": {
+                "subject": "{{realm}}", "body": "{{what}} sur {{account}}.\n"
+            } } }
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a notice was refused for a link it has nothing to put there: {told}"
+    );
+
     let (status, shaped) = asked(
         &plane,
         Method::PUT,

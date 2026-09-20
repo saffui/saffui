@@ -41,7 +41,7 @@ pub enum NoticeKind {
 }
 
 impl NoticeKind {
-    const ALL: [NoticeKind; 14] = [
+    pub const ALL: [NoticeKind; 14] = [
         NoticeKind::PasswordSet,
         NoticeKind::PasswordChanged,
         NoticeKind::AppAdded,
@@ -300,14 +300,12 @@ pub fn compose_notice(
     kind: NoticeKind,
     occurred_at: DateTime<Utc>,
     particulars: &Particulars,
-) -> (String, String) {
-    let tongue = choose_tongue(
-        person
-            .attributes
-            .as_ref()
-            .and_then(|held| attributes::string_at(held, profile::LOCALE)),
-        realm.default_locale.as_deref(),
-    );
+) -> auth::messaging::Worded {
+    let reader = person
+        .attributes
+        .as_ref()
+        .and_then(|held| attributes::string_at(held, profile::LOCALE));
+    let tongue = choose_tongue(reader, realm.default_locale.as_deref());
     let wording = match tongue {
         Tongue::English => &ENGLISH,
         Tongue::French => &FRENCH,
@@ -318,8 +316,10 @@ pub fn compose_notice(
         &realm.display_name
     });
     let happened = describe(kind, tongue);
+    let user_name = flatten(&person.user_name);
+    let codes_left = particulars.codes_left.map(|left| left.to_string());
     let mut lines = vec![
-        format!("{}{}", wording.account, flatten(&person.user_name)),
+        format!("{}{}", wording.account, user_name),
         format!(
             "{}{} UTC",
             wording.when,
@@ -330,15 +330,12 @@ pub fn compose_notice(
         (kind == NoticeKind::AddressChanged).then(|| mask_address(&flatten(&person.email)));
     lines.extend(
         [
-            (wording.new_address, new_address),
+            (wording.new_address, new_address.clone()),
             (
                 wording.provider,
                 particulars.provider.as_deref().map(flatten),
             ),
-            (
-                wording.codes_left,
-                particulars.codes_left.map(|left| left.to_string()),
-            ),
+            (wording.codes_left, codes_left.clone()),
         ]
         .into_iter()
         .filter_map(|(label, value)| value.map(|value| format!("{label}{value}"))),
@@ -355,10 +352,41 @@ pub fn compose_notice(
     } else {
         wording.or_administrator
     };
-    (
-        format!("{realm_name}{}{happened}", wording.subject_separator),
-        format!("{happened}.\n\n{}\n\n{advice}\n", lines.join("\n")),
-    )
+    // Every name is supplied, empty where this kind carries none, so a realm
+    // writing one its kind never fills reads as nothing rather than leaving
+    // `{{provider}}` standing in somebody's mail.
+    let when = format!("{} UTC", occurred_at.format(wording.when_format));
+    let said = [
+        ("realm", realm_name.as_str()),
+        ("account", user_name.as_str()),
+        ("when", when.as_str()),
+        ("what", happened),
+        ("advice", advice),
+        ("new_address", new_address.as_deref().unwrap_or_default()),
+        (
+            "provider",
+            particulars.provider.as_deref().unwrap_or_default(),
+        ),
+        ("codes_left", codes_left.as_deref().unwrap_or_default()),
+    ];
+
+    // The realm's words where it wrote any for this kind. A notice has no
+    // fixed wording to fall back to, so the build's is composed here rather
+    // than looked up, and it is what answers when the realm said nothing.
+    match auth::messaging::reworded(realm, kind.as_str(), reader) {
+        Some(template) => auth::messaging::put_in(
+            kind.as_str(),
+            tongue,
+            &template.subject,
+            &template.body,
+            "",
+            &said,
+        ),
+        None => auth::messaging::told(
+            &format!("{realm_name}{}{happened}", wording.subject_separator),
+            &format!("{happened}.\n\n{}\n\n{advice}\n", lines.join("\n")),
+        ),
+    }
 }
 
 /// Why a notice owed will never go out.
@@ -498,7 +526,7 @@ pub async fn compose_due_notices(
             ),
             None => None,
         };
-        let (subject, body) = compose_notice(
+        let worded = compose_notice(
             realm,
             person,
             kind,
@@ -513,7 +541,7 @@ pub async fn compose_due_notices(
             attempts: notice.attempts,
             outgoing: Outgoing {
                 settings: settings.duplicate(),
-                message: Message::to(&address, auth::messaging::told(&subject, &body)),
+                message: Message::to(&address, worded),
                 about: About {
                     user_id: person.user_id.clone(),
                     purpose: SECURITY_NOTICE.to_owned(),
@@ -755,18 +783,96 @@ mod tests {
             .expect("an instant")
     }
 
+    /// The point of the whole thing. A realm that has reworded its letters had
+    /// no way to reword the one message that reaches somebody after their
+    /// account changed under them, which is the one they are most likely to
+    /// read closely.
+    #[test]
+    fn a_realms_own_words_win_for_a_notice_as_they_do_for_a_letter() {
+        let mut realm = realm("Acme", Some("en"), true);
+        let mut tongues = std::collections::HashMap::new();
+        tongues.insert(
+            "en".to_owned(),
+            models::entities::realm::MailTemplate {
+                subject: "{{realm}}: something happened".to_owned(),
+                body: "{{what}} on {{account}} at {{when}}.\n\nCall us.\n".to_owned(),
+            },
+        );
+        let mut templates = std::collections::HashMap::new();
+        templates.insert(NoticeKind::PasswordChanged.as_str().to_owned(), tongues);
+        realm.mail_templates = Some(templates);
+
+        let held = compose_notice(
+            &realm,
+            &person(None, Some(true)),
+            NoticeKind::PasswordChanged,
+            at_ten_forty_two(),
+            &Particulars::default(),
+        );
+        assert_eq!(held.subject, "Acme: something happened");
+        assert_eq!(
+            held.text,
+            "Your password was changed on ada at 2026-09-15 at 10:42 UTC.\n\nCall us.\n"
+        );
+
+        // A kind the realm said nothing about keeps the build's words, so
+        // rewording one notice never silences the others.
+        let other = compose_notice(
+            &realm,
+            &person(None, Some(true)),
+            NoticeKind::KeyAdded,
+            at_ten_forty_two(),
+            &Particulars::default(),
+        );
+        assert!(other.subject.contains("Acme"), "{}", other.subject);
+        assert!(other.text.contains("Account: ada"), "{}", other.text);
+    }
+
+    /// A name this kind never fills reads as nothing rather than leaving the
+    /// marker standing in somebody's mail.
+    #[test]
+    fn a_name_this_kind_does_not_carry_is_left_empty_and_not_shown() {
+        let mut realm = realm("Acme", Some("en"), true);
+        let mut tongues = std::collections::HashMap::new();
+        tongues.insert(
+            "en".to_owned(),
+            models::entities::realm::MailTemplate {
+                subject: "Acme".to_owned(),
+                body: "Provider: {{provider}}. Codes: {{codes_left}}.\n".to_owned(),
+            },
+        );
+        let mut templates = std::collections::HashMap::new();
+        templates.insert(NoticeKind::PasswordChanged.as_str().to_owned(), tongues);
+        realm.mail_templates = Some(templates);
+
+        let held = compose_notice(
+            &realm,
+            &person(None, Some(true)),
+            NoticeKind::PasswordChanged,
+            at_ten_forty_two(),
+            &Particulars::default(),
+        );
+        assert!(
+            !held.text.contains("{{"),
+            "a marker was left standing: {}",
+            held.text
+        );
+        assert_eq!(held.text, "Provider: . Codes: .\n");
+    }
+
     /// A notice names what changed, the account and the minute, then what to do if
     /// it was not the person: reset the password where the realm lets them, tell
     /// the administrator in any case. It carries no link.
     #[test]
     fn a_notice_says_what_changed_on_which_account_and_when_without_a_link() {
-        let (subject, body) = compose_notice(
+        let held = compose_notice(
             &realm("Acme", None, true),
             &person(None, Some(true)),
             NoticeKind::PasswordChanged,
             at_ten_forty_two(),
             &Particulars::default(),
         );
+        let (subject, body) = (held.subject, held.text);
         assert_eq!(subject, "Acme: Your password was changed");
         assert_eq!(
             body,
@@ -775,7 +881,7 @@ mod tests {
              page and tell your administrator.\n"
         );
 
-        let (subject, body) = compose_notice(
+        let held = compose_notice(
             &realm("", Some("en"), false),
             &person(Some("fr"), Some(true)),
             NoticeKind::RecoveryCodeUsed,
@@ -785,6 +891,7 @@ mod tests {
                 provider: None,
             },
         );
+        let (subject, body) = (held.subject, held.text);
         assert_eq!(
             subject,
             "acme : Un code de secours a servi à vous connecter à votre compte"
@@ -803,13 +910,14 @@ mod tests {
     fn a_moved_address_or_a_link_is_told_without_advising_a_reset() {
         let mut moved = person(None, Some(false));
         moved.email = "grace@example.org".into();
-        let (subject, body) = compose_notice(
+        let held = compose_notice(
             &realm("Acme", None, true),
             &moved,
             NoticeKind::AddressChanged,
             at_ten_forty_two(),
             &Particulars::default(),
         );
+        let (subject, body) = (held.subject, held.text);
         assert_eq!(
             subject,
             "Acme: The email address of your account was changed"
@@ -821,7 +929,7 @@ mod tests {
              If it was not, tell your administrator at once.\n"
         );
 
-        let (subject, body) = compose_notice(
+        let held = compose_notice(
             &realm("Acme", Some("fr"), true),
             &person(None, Some(true)),
             NoticeKind::ProviderLinked,
@@ -831,6 +939,7 @@ mod tests {
                 provider: Some("Annuaire Acme".to_owned()),
             },
         );
+        let (subject, body) = (held.subject, held.text);
         assert_eq!(subject, "Acme : Un compte externe a été lié à votre compte");
         assert_eq!(
             body,
@@ -846,13 +955,14 @@ mod tests {
     fn a_name_holding_a_line_break_stays_on_its_line() {
         let mut named = person(None, Some(true));
         named.user_name = "ada\r\nBcc: someone@example.test".into();
-        let (subject, body) = compose_notice(
+        let held = compose_notice(
             &realm("Acme\nBcc: someone@example.test", None, false),
             &named,
             NoticeKind::KeyAdded,
             at_ten_forty_two(),
             &Particulars::default(),
         );
+        let (subject, body) = (held.subject, held.text);
         assert!(!subject.contains(['\r', '\n']), "{subject:?}");
         assert!(
             body.contains("Account: ada  Bcc: someone@example.test\n"),

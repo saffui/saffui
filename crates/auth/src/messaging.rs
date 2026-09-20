@@ -179,6 +179,24 @@ pub fn put_in(
     }
 }
 
+/// The realm's own words for a kind, in a tongue this reader can read.
+///
+/// Opened for the messages this build assembles rather than looks up: a notice
+/// has no fixed wording to fall back to, so it does the lookup itself and
+/// composes its own default. The walk is the same one every other message
+/// takes, so a realm's tongues are chosen the same way everywhere.
+pub fn reworded<'a>(
+    realm: &'a models::entities::realm::RealmModel,
+    kind: &str,
+    reader: Option<&str>,
+) -> Option<&'a models::entities::realm::MailTemplate> {
+    realm
+        .mail_templates
+        .as_ref()
+        .and_then(|held| held.get(kind))
+        .and_then(|tongues| pick_wording(tongues, reader, realm.default_locale.as_deref()))
+}
+
 /// A letter with nothing to press: the notices that only tell somebody what
 /// happened, and name no link at all.
 pub fn told(subject: &str, body: &str) -> Worded {

@@ -383,6 +383,50 @@ pub async fn theme_of(
 }
 
 /// Dress or undress the realm; absent is the default look.
+/// The realm's mark and what it is, or nothing where it keeps none.
+///
+/// Its own query, like the theme's: neither rides in the column list a realm
+/// load reads, so a request that never draws a logo never carries one.
+pub async fn logo_of(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+) -> StoreResult<Option<(Vec<u8>, String)>> {
+    let row = transaction
+        .query_opt(
+            "SELECT logo, logo_type FROM realms WHERE realm_id = $1",
+            &[&realm_id],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(row.and_then(|row| {
+        let held: Option<Vec<u8>> = row.get("logo");
+        let kind: Option<String> = row.get("logo_type");
+        held.zip(kind)
+    }))
+}
+
+/// Keep a mark, or take the one held away. The type rides with the bytes
+/// because what is served has to be what was weighed, not what a later guess
+/// makes of the same bytes.
+pub async fn set_logo(
+    transaction: &Transaction<'_>,
+    realm_id: &str,
+    logo: Option<(&[u8], &str)>,
+) -> StoreResult<bool> {
+    let (bytes, kind) = match logo {
+        Some((bytes, kind)) => (Some(bytes), Some(kind)),
+        None => (None, None),
+    };
+    let changed = transaction
+        .execute(
+            "UPDATE realms SET logo = $2, logo_type = $3 WHERE realm_id = $1",
+            &[&realm_id, &bytes, &kind],
+        )
+        .await
+        .map_err(|_| StoreError::Backend)?;
+    Ok(changed > 0)
+}
+
 pub async fn set_theme(
     transaction: &Transaction<'_>,
     realm_id: &str,

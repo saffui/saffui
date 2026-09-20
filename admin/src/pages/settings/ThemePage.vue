@@ -18,6 +18,13 @@ import {
   type ThemeHalf,
   type ThemeToken,
 } from "./themeForm";
+import { ACCEPTED, LARGEST, markPath, refuses } from "./realmMark";
+import {
+  describeRealmMark,
+  forgetRealmMark,
+  keepRealmMark,
+  type MarkHeld,
+} from "@/services/settings";
 import {
   forgetScopedTheme,
   listThemeChoices,
@@ -38,6 +45,65 @@ const chosenOrganization = computed({
 });
 const organizations = ref<OrganizationRow[]>([]);
 const choices = computed(() => listThemeChoices(organizations.value, organization.value));
+
+/// The mark belongs to the realm and to nothing narrower: the door that keeps
+/// it is the realm's, so the section stays out of sight while a narrower scope
+/// is chosen rather than offering something that would be kept elsewhere.
+const mark = ref<MarkHeld>({ held: false, media_type: null, bytes: null });
+const markFailed = ref("");
+/// Bumped on every change so the picture is fetched again. The address never
+/// moves, and without this an operator who just replaced their logo is shown
+/// the copy the browser already holds.
+const markDrawn = ref(0);
+const markAt = computed(() => markPath(realm.value, markDrawn.value));
+const forRealm = computed(() => organization.value === "");
+
+async function readMark() {
+  if (!forRealm.value) return;
+  try {
+    mark.value = await describeRealmMark(realm.value);
+  } catch (refused) {
+    markFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+async function chooseMark(event: Event) {
+  markFailed.value = "";
+  const picture = (event.target as HTMLInputElement).files?.[0];
+  if (!picture) return;
+  // Said here before the wire, in the door's own two terms. The door still
+  // weighs the bytes and stays the authority.
+  const wrong = refuses(picture);
+  if (wrong) {
+    markFailed.value = say(wrong === "too-big" ? "mark-too-big" : "mark-not-a-picture");
+    (event.target as HTMLInputElement).value = "";
+    return;
+  }
+  try {
+    await keepRealmMark(realm.value, picture, say("mark-subject"));
+    markDrawn.value += 1;
+    await readMark();
+  } catch (refused) {
+    markFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+  (event.target as HTMLInputElement).value = "";
+}
+
+async function dropMark() {
+  markFailed.value = "";
+  try {
+    await forgetRealmMark(realm.value, say("mark-subject"));
+    markDrawn.value += 1;
+    await readMark();
+  } catch (refused) {
+    markFailed.value = refused instanceof Error ? refused.message : String(refused);
+  }
+}
+
+watch(realm, readMark, { immediate: true });
+watch(forRealm, (held) => {
+  if (held) void readMark();
+});
 const half = ref<ThemeHalf>("light");
 const held = ref(emptyTheme());
 const beneath = ref<ThemeDraft | undefined>(undefined);
@@ -201,6 +267,43 @@ const sample = computed(() => ({
             </option>
           </select>
         </label>
+
+        <section v-if="forRealm" class="rounded-lg border border-border p-3">
+          <div class="flex flex-wrap items-center gap-3">
+            <span
+              class="grid size-9 shrink-0 place-items-center overflow-hidden rounded-md border border-border bg-surface-2 text-[11px] text-faint"
+            >
+              <img v-if="mark.held" :src="markAt" alt="" class="size-full object-cover" />
+              <template v-else>{{ say("mark-none") }}</template>
+            </span>
+            <div class="min-w-0">
+              <p class="text-[11px] font-medium text-muted">
+                {{ say("mark-title") }} <AppHint name="mark-help" />
+              </p>
+              <p class="mt-0.5 text-[10.5px] text-faint">{{ say("mark-lede") }}</p>
+            </div>
+            <div class="ml-auto flex items-center gap-2">
+              <label
+                class="cursor-pointer rounded-md border border-border px-2.5 py-1 text-xs text-muted hover:bg-surface-2"
+              >
+                {{ mark.held ? say("mark-replace") : say("mark-choose") }}
+                <input type="file" :accept="ACCEPTED" class="sr-only" @change="chooseMark" />
+              </label>
+              <button
+                v-if="mark.held"
+                type="button"
+                class="rounded-md border border-border px-2.5 py-1 text-xs text-danger hover:bg-surface-2"
+                @click="dropMark"
+              >
+                {{ say("mark-drop") }}
+              </button>
+            </div>
+          </div>
+          <p v-if="markFailed" class="mt-2 text-[10.5px] text-danger" role="alert">
+            {{ markFailed }}
+          </p>
+        </section>
+
         <div class="inline-flex rounded-md border border-border bg-surface p-0.5" role="tablist">
           <button
             v-for="which in ['light', 'dark'] as const"

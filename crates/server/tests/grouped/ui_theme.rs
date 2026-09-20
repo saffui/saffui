@@ -446,7 +446,9 @@ async fn the_page_shows_the_enrolment_qr_code_it_draws() {
         .expect("a content security policy")
         .to_owned();
     let directives: Vec<&str> = policy.split(';').map(str::trim).collect();
-    assert!(directives.contains(&"img-src data:"), "{policy}");
+    // The code is drawn into the page as a `data:` image and the realm's mark
+    // is fetched from this origin, so both are named and nothing else is.
+    assert!(directives.contains(&"img-src 'self' data:"), "{policy}");
     assert!(directives.contains(&"default-src 'none'"), "{policy}");
 }
 

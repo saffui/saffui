@@ -92,6 +92,16 @@ main {
   margin: 0 0 18px;
 }
 #realm[hidden] { display: none; }
+/* The picture fills the mark it replaces, so a realm changing its logo never
+   changes the header's shape, and a square is a square whatever was uploaded. */
+#realm-logo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  display: block;
+}
+
 #realm-mark {
   width: 34px;
   height: 34px;

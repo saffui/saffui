@@ -4,10 +4,10 @@ use actix_web::web;
 use models::entities::authz::AdminAction;
 
 use crate::api::rest::endpoints::admin::{
-    account, agents, authorization, claim_sources, client_scopes, clients, compliance, credentials,
-    directory, events, features, federation, flows, idps, iga, journal, keys, mail, metrics,
-    negotiation, overview, page_drafts, portability, protocol_mappers, realm_keys, realms, rebac,
-    recert, requests, sessions, sms, users, ussd,
+    account, agents, authorization, branding, claim_sources, client_scopes, clients, compliance,
+    credentials, directory, events, features, federation, flows, idps, iga, journal, keys, mail,
+    metrics, negotiation, overview, page_drafts, portability, protocol_mappers, realm_keys, realms,
+    rebac, recert, requests, sessions, sms, users, ussd,
 };
 use crate::api::rest::endpoints::scim;
 
@@ -374,6 +374,27 @@ pub fn routes() -> Vec<AdminRoute> {
             pattern: "/admin/realms/{realm}/page-draft",
             action: AdminAction::RealmWrite,
             handler: Some(|| web::post().to(page_drafts::keep)),
+        },
+        AdminRoute {
+            method: Method::GET,
+            pattern: "/admin/realms/{realm}/logo",
+            action: AdminAction::RealmRead,
+            handler: Some(|| web::get().to(branding::describe)),
+        },
+        AdminRoute {
+            method: Method::PUT,
+            pattern: "/admin/realms/{realm}/logo",
+            action: AdminAction::RealmWrite,
+            // What is buffered is bounded by the extractor's own default,
+            // well under anything alarming; what may be KEPT is bounded by
+            // the format guard, which is also what says which rule was hit.
+            handler: Some(|| web::put().to(branding::keep)),
+        },
+        AdminRoute {
+            method: Method::DELETE,
+            pattern: "/admin/realms/{realm}/logo",
+            action: AdminAction::RealmWrite,
+            handler: Some(|| web::delete().to(branding::forget)),
         },
         AdminRoute {
             method: Method::POST,

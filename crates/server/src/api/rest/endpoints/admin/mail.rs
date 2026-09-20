@@ -88,13 +88,16 @@ pub async fn send_test(
         .await
         .map_err(|_| ApiError::new(ErrorCode::MailSettingsNotFound))?;
 
-    let message = auth::messaging::Message {
-        to,
-        subject: "saffui mail test".to_owned(),
-        body: "This is the test mail. The settings that sent it are the ones \
-               on the email screen; nothing else was used.\n"
-            .to_owned(),
-    };
+    // Sent in both halves like every other letter, so the test proves the relay
+    // carries what the relay will actually be asked to carry.
+    let message = auth::messaging::Message::to(
+        &to,
+        auth::messaging::told(
+            "saffui mail test",
+            "This is the test mail. The settings that sent it are the ones \
+             on the email screen; nothing else was used.\n",
+        ),
+    );
     // Straight through the SMTP transport, never the deployment's sink: a
     // Logged sink would print the mail and prove nothing about the relay.
     // This drives the whole dialogue, connect, TLS, auth, delivery, so a

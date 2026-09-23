@@ -13,7 +13,7 @@ use store::tenancy::{Tenancy, TenantContext};
 const SCHEME: &str = "x-forwarded-proto";
 const PROXY: &str = "10.0.0.1:443";
 
-fn mounted(tenancy: Tenancy) -> Mounted {
+pub(super) fn mounted(tenancy: Tenancy) -> Mounted {
     Mounted {
         tenancy,
         policy: server::middleware::admin_policy::AdminPolicy {
@@ -35,7 +35,7 @@ fn mounted(tenancy: Tenancy) -> Mounted {
     }
 }
 
-fn vouched(request: test::TestRequest) -> test::TestRequest {
+pub(super) fn vouched(request: test::TestRequest) -> test::TestRequest {
     request
         .peer_addr(PROXY.parse().expect("an address"))
         .insert_header((SCHEME, "https"))

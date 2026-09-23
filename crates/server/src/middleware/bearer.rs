@@ -3,7 +3,10 @@ use chrono::Utc;
 use data_encoding::BASE64URL_NOPAD;
 use store::tenancy::RealmNamed;
 
-use crate::error::{refuse_unestablished_caller, unauthenticated};
+use crate::error::{
+    refuse_unestablished_caller, refuse_unestablished_context, report_store_failure,
+    unauthenticated,
+};
 
 pub(crate) fn bearer(request: &ServiceRequest) -> Option<String> {
     let header = request.headers().get("authorization")?.to_str().ok()?;
@@ -53,9 +56,9 @@ pub(crate) async fn admitted(
 
     let keys = services::realm::published_keys(&transaction)
         .await
-        .map_err(|_| unauthenticated())?;
+        .map_err(report_store_failure)?;
 
     services::context::admit_bearer(&transaction, context, &keys, &bearer, now)
         .await
-        .map_err(|_| unauthenticated())
+        .map_err(refuse_unestablished_context)
 }

@@ -38,6 +38,8 @@ mod carte;
 mod cli;
 #[path = "grouped/console_contract.rs"]
 mod console_contract;
+#[path = "grouped/failing_reads.rs"]
+mod failing_reads;
 #[path = "grouped/health.rs"]
 mod health;
 #[path = "grouped/housekeeping.rs"]

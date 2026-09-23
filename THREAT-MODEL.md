@@ -153,9 +153,9 @@ matters: the transport is judged before the token. A request the proxy vouches
 for as https passes without a read, and anything else pays one realm read. Where
 a realm asks for https from outside only, the address judged is the one the
 deployment believes, and the private ranges are spelled out rather than inferred
-(`crates/server/src/middleware/transport.rs:36`, `:93`). A rule that cannot be
-read for want of a connection is answered 503 rather than taken as leave to
-serve in the clear (`:58`).
+(`crates/server/src/middleware/transport.rs:36`, `:94`). A rule the database
+fails to hand over, for want of a connection or on the way to the row, is
+answered 503 rather than taken as leave to serve in the clear (`:58`, `:65`).
 
 ### TB-3, keys and secrets
 
@@ -200,7 +200,9 @@ A full pool refuses after a bounded wait instead of holding requests for ever
 (`:144`), and a pooled transaction nobody talks to is ended by the server with
 its locks (`:158`). The refusal is a 503 in each surface's own words, and the
 guards give it as such rather than as a missing token, which would sign a
-console out (`crates/server/src/error.rs:30`, `:40`).
+console out (`crates/server/src/error.rs:30`, `:40`). A store that fails once
+the realm is found is a 500 there, and only the token's own refusals answer as
+a missing token (`:49`, `:55`, `:63`).
 
 A realm pinned to a region is refused on a node that does not serve it, before
 the transaction opens, so nothing is read on the way to finding out
@@ -246,6 +248,7 @@ answers it, or the word that says nothing does.
 | T-LOG-1 | A form posted from another site, riding the browser's cookie, answering somebody's sign in or their consent | TA-1 | The form carries a value sealed for that login, weighed before the flow runs, so a forged form spends nothing, not even one password attempt against an account (`crates/server/src/api/rest/endpoints/protocol/login.rs:237`, `crates/server/src/api/rest/endpoints/protocol/forgery.rs:35`) |
 | T-LOG-2 | The same, from a browser that says where the post came from | TA-1 | Refused before anything else where the browser says another site started it; absent, the header says nothing and the sealed value is the barrier (`crates/server/src/api/rest/endpoints/protocol/login.rs:113`, `forgery.rs:58`) |
 | T-LOG-3 | A password tried against one account as fast as the caller likes | TA-1 | Lockout per person where the realm turns it on, and nothing per address. See R-1 and R-2 |
+| T-LOG-4 | A sign-out believed done while the login, and every application it reached, stays signed in for whoever sits down next | TA-1 | A sign-out that could not be written says so and keeps the cookies, so it can be tried again (`crates/server/src/api/rest/endpoints/protocol/logout.rs:197`), and a transaction a failed statement aborted is refused at commit rather than reported as written (`crates/store/src/tenancy.rs:344`) |
 
 ### The token path, CJ-1
 
@@ -266,7 +269,7 @@ answers it, or the word that says nothing does.
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-ADM-1 | A token from another deployment, or for another realm | TA-3 | The issuer must be one this deployment mints, and the realm in the path is compared against the token's without ever being looked up, so an existing realm and a missing one are refused alike (`crates/server/src/middleware/admin_guard.rs:181`) |
+| T-ADM-1 | A token from another deployment, or for another realm | TA-3 | The issuer must be one this deployment mints, and the realm in the path is compared against the token's without ever being looked up, so an existing realm and a missing one are refused alike (`crates/server/src/middleware/admin_guard.rs:184`) |
 | T-ADM-2 | Probing which capabilities exist by the shape of a refusal | TA-3 | Audience, party, scope, declared, held, in that order, and every refusal renders as one answer (`crates/server/src/middleware/admin_policy.rs:93`, `crates/server/src/error.rs:12`) |
 | T-ADM-3 | A toxic combination of roles assembled in one pair of hands | TA-3 | Everyone arriving is weighed against the realm's rules, under a lock (`crates/auth/src/sod.rs:81`) |
 | T-ADM-4 | Asking for an entitlement and granting it to yourself | TA-3 | The one who asked cannot decide (`crates/services/src/admin/requests.rs:134`, `:181`) |

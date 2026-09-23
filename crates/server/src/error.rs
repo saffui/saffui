@@ -44,6 +44,32 @@ pub fn refuse_unestablished_caller(why: StoreError) -> ApiError {
     }
 }
 
+/// A store that failed once the caller's realm was found: logged, and answered
+/// as the server's fault, never as a token to go and get again.
+pub fn report_store_failure(why: impl std::fmt::Display) -> ApiError {
+    ApiError::with_detail(ErrorCode::InternalError, why.to_string())
+}
+
+/// A token turned away, or a store that could not say whether to: only the
+/// first is answered as a missing token.
+pub fn refuse_unverified_token(why: services::token::Refused) -> ApiError {
+    match why {
+        services::token::Refused::Unestablished => report_store_failure(why),
+        _ => unauthenticated(),
+    }
+}
+
+/// The same, for what the realm says of a token that verified.
+pub fn refuse_unestablished_context(why: services::context::NotEstablished) -> ApiError {
+    match why {
+        services::context::NotEstablished::Unreadable
+        | services::context::NotEstablished::Unverified(services::token::Refused::Unestablished) => {
+            report_store_failure(why)
+        }
+        _ => unauthenticated(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -36,10 +36,8 @@ pub enum EndedAt {
 
 /// End the login, and say where the browser goes.
 ///
-/// The store failing is not reported either. A logout that could not be written
-/// has not ended the session, but telling the caller so tells them a session
-/// existed, and the cookie is cleared regardless so the browser stops offering
-/// it.
+/// A write that fails is not reported here: it has aborted the transaction, and
+/// the caller learns it when the commit is refused.
 pub async fn end_session(
     transaction: &UnitOfWork,
     keys: &[RealmSigningKeyView],

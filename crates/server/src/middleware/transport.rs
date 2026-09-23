@@ -13,8 +13,8 @@
 //!
 //! An unresolvable realm passes through untouched and the endpoint answers as
 //! it would have, so a disabled realm and an absent one stay the same answer
-//! here as everywhere else. A rule that cannot be read for want of a connection
-//! is answered 503, not taken as leave to serve in the clear.
+//! here as everywhere else. A rule the database fails to hand over is answered
+//! 503, not taken as leave to serve in the clear.
 
 use std::future::{Future, Ready, ready};
 use std::net::IpAddr;
@@ -55,14 +55,15 @@ async fn turn_away_arriving_in_the_clear(request: &ServiceRequest) -> Option<Htt
     let tenancy = request.app_data::<web::Data<Tenancy>>()?;
     let transaction = match tenancy.begin_in(RealmNamed::ByName(realm)).await {
         Ok(transaction) => transaction,
-        Err(StoreError::Unavailable) => return Some(answer_unavailable()),
+        Err(StoreError::Unavailable | StoreError::Backend) => return Some(answer_unavailable()),
         Err(_) => return None,
     };
-    let Ok(Some(held)) =
-        store::providers::realms::load(&transaction, &transaction.context().realm_id).await
-    else {
-        return None;
-    };
+    let held =
+        match store::providers::realms::load(&transaction, &transaction.context().realm_id).await {
+            Ok(Some(held)) => held,
+            Ok(None) => return None,
+            Err(_) => return Some(answer_unavailable()),
+        };
     let in_the_clear_refused = match held.ssl_enforcement {
         None | Some(SslEnforcement::NotRequired) => false,
         Some(SslEnforcement::Always) => true,

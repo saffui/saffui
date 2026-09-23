@@ -93,13 +93,19 @@ async fn run(
         Err(StoreError::Unavailable) => return page::answer_unavailable_to(request),
         Err(_) => return told(realm, EndedAt::Nowhere, &[]),
     };
+    // Past here the realm is known, and a failure is said rather than dressed
+    // as a sign-out: the cookies stay, so the person can try again.
     let transaction = match tenancy.begin(&context).await {
         Ok(transaction) => transaction,
         Err(StoreError::Unavailable) => return page::answer_unavailable_to(request),
-        Err(_) => return told(&context.realm_id, EndedAt::Nowhere, &[]),
+        // A realm pinned elsewhere is not one this node holds, and answers as one.
+        Err(StoreError::Residency { .. }) => {
+            return told(&context.realm_id, EndedAt::Nowhere, &[]);
+        }
+        Err(_) => return unended(request),
     };
     let Ok(keys) = services::realm::published_keys(&transaction).await else {
-        return told(&context.realm_id, EndedAt::Nowhere, &[]);
+        return unended(request);
     };
 
     let signed_in = binding::read(request, binding::SSO_SESSION);
@@ -178,13 +184,31 @@ async fn run(
     }
 
     if transaction.commit().await.is_err() {
-        return told(&context.realm_id, EndedAt::Nowhere, &[]);
+        return unended(request);
     }
     backchannel::deliver(notices, egress).await;
     if let Some(location) = departure {
         return leave_for_provider(&context.realm_id, &location, &frames);
     }
     told(&context.realm_id, ended, &frames)
+}
+
+/// A sign-out that could not be written, told as such.
+fn unended(request: &HttpRequest) -> HttpResponse {
+    if page::wants_page(request) {
+        return page::notice(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Sign-out did not finish",
+            "<p class=\"told\">Nothing was signed out. Try again in a moment.</p>",
+        );
+    }
+    uncached(&mut HttpResponseBuilder::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+    ))
+    .json(json!({
+        "error": "server_error",
+        "error_description": "the sign-out could not be written",
+    }))
 }
 
 /// The browser sent on to the SAML provider its login came through, its cookies

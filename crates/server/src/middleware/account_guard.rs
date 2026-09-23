@@ -227,7 +227,13 @@ async fn establish(
         now,
     )
     .await
-    .map_err(|_| AccountRefusal::InvalidToken)?;
+    .map_err(|why| match why {
+        services::token::Refused::Unestablished => {
+            tracing::warn!(reason = %why, "an account API caller could not be established");
+            AccountRefusal::Failed
+        }
+        _ => AccountRefusal::InvalidToken,
+    })?;
 
     establish_account_caller(&transaction, context, &verified, now)
         .await

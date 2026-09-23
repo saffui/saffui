@@ -11,7 +11,10 @@ use models::entities::authz::AdminAction;
 use services::context::{self, Acting, Context};
 
 use crate::api::routes;
-use crate::error::{refuse_unestablished_caller, refused, unauthenticated};
+use crate::error::{
+    refuse_unestablished_caller, refuse_unestablished_context, refuse_unverified_token, refused,
+    report_store_failure, unauthenticated,
+};
 use crate::middleware::admin_policy::{AdminPolicy, Refusal, decide};
 use crate::middleware::bearer::{bearer, unverified_issuer};
 
@@ -118,10 +121,10 @@ fn named_realm<'a>(pattern: Option<&str>, path: &'a str) -> Option<&'a str> {
 
 /// Establish the caller, then decide.
 ///
-/// Every failure before the decision answers the same way a missing token does,
-/// but a missing connection, which comes before any realm is looked up. A caller
-/// that could tell "your token did not verify" from "no such realm" would have a
-/// probe for which realms exist.
+/// Every refusal before the decision answers the same way a missing token does:
+/// a caller that could tell "your token did not verify" from "no such realm"
+/// would have a probe for which realms exist. A failing database is no refusal:
+/// 503 with no connection, 500 once the realm is found.
 async fn establish(
     guard: &Guard,
     request: &ServiceRequest,
@@ -146,7 +149,7 @@ async fn establish(
 
     let keys = services::realm::published_keys(&transaction)
         .await
-        .map_err(|_| unauthenticated())?;
+        .map_err(report_store_failure)?;
 
     // One gate, and it is not this crate's. Signature, the window the token
     // states, and whether it was withdrawn: a second caller is about to ask the
@@ -161,14 +164,14 @@ async fn establish(
         now,
     )
     .await
-    .map_err(|_| unauthenticated())?;
+    .map_err(refuse_unverified_token)?;
 
     // What the realm says about the token, which the token cannot say about
     // itself: whether the subject is still one this realm holds, whether it has
     // been switched off, and whether it belongs where it claims to be acting.
     let established = context::establish(&transaction, context, &verified, now)
         .await
-        .map_err(|_| unauthenticated())?;
+        .map_err(refuse_unestablished_context)?;
 
     // The path names a realm on every route but the handful that speak for
     // the deployment. It has to be the one that minted the token: an
@@ -244,7 +247,7 @@ async fn capabilities(
     };
     services::authorization::admin_actions(transaction, established.principal.id(), within)
         .await
-        .map_err(|_| unauthenticated())
+        .map_err(report_store_failure)
 }
 
 #[cfg(test)]

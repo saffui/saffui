@@ -112,21 +112,21 @@ is a drawing, so each row carries one.
 The data plane on `127.0.0.1:8080` by default and the operations port on
 `127.0.0.1:8081` by default, bound separately so a probe is never reachable from
 wherever the data plane is published
-(`crates/saffui/src/main.rs:41`, `crates/saffui/src/main.rs:45`,
-`crates/server/src/api/config.rs:548`).
+(`crates/saffui/src/main.rs:39`, `crates/saffui/src/main.rs:43`,
+`crates/server/src/api/config.rs:541`).
 
 Request bodies are bounded explicitly rather than by whatever a dependency
 defaults to: 8 KiB on the protocol doors, 8 KiB on the account plane, 512 KiB
 for a posted SAML message, and 8 MiB on the authenticated admin plane
-(`crates/server/src/api/config.rs:48`, `:52`, `:56`, `:35`).
+(`crates/server/src/api/config.rs:47`, `:51`, `:55`, `:34`).
 
 This boundary is crossed outbound as well as inbound, since the server fetches
 URLs that an administrator or a federation partner supplies. Every such fetch is
 dialled through one builder, which reads the scheme against the deployment's
 egress policy and resolves the address through a resolver that refuses every
 address inside the deployment, checking each address a name answers with rather
-than the first (`crates/server/src/api/rest/endpoints/protocol/hosted.rs:83`,
-`:100`, `:44`, `:20`).
+than the first (`crates/server/src/api/rest/endpoints/protocol/hosted.rs:84`,
+`:101`, `:45`, `:21`).
 
 ### TB-2, the decision core
 
@@ -134,7 +134,7 @@ Nothing the caller writes is authority. The clearest statement of it is the
 account plane, which admits a token only if the account console itself obtained
 it, for a login that is still open, carrying the account scope, and then reads
 the person off that login rather than off the subject the token names
-(`crates/services/src/account_api.rs:82`, `:107`, `:126`, `:145`).
+(`crates/services/src/account_api.rs:81`, `:106`, `:125`, `:144`).
 
 The sign in door keeps the same rule about what the caller writes. It takes two
 shapes of body: the script sends JSON, which a browser will not post to another
@@ -145,7 +145,7 @@ form path and on nothing else. Sealed rather than signed: the scope is
 authenticated, so a value minted for another login opens as nothing here, and
 nothing is stored and nothing expires on its own, because it names the login it
 outlives or does not (`crates/server/src/api/rest/endpoints/protocol/forgery.rs:19`,
-`:24`, `crates/server/src/api/rest/endpoints/protocol/page.rs:334`,
+`:24`, `crates/server/src/api/rest/endpoints/protocol/page.rs:464`,
 `crates/server/src/api/rest/endpoints/protocol/ui/login.html:17`).
 
 A realm's word on plain connections is kept here too, and in the order that
@@ -153,7 +153,7 @@ matters: the transport is judged before the token. A request the proxy vouches
 for as https passes without a read, and anything else pays one realm read. Where
 a realm asks for https from outside only, the address judged is the one the
 deployment believes, and the private ranges are spelled out rather than inferred
-(`crates/server/src/middleware/transport.rs:33`, `:99`).
+(`crates/server/src/middleware/transport.rs:32`, `:90`).
 
 ### TB-3, keys and secrets
 
@@ -177,7 +177,7 @@ realm, against settings placed for the life of one transaction, and 99 tables
 carry row level security forced, which is what makes it apply to the table's
 owner as well. Ninety five of those policies name both keys in their read rule;
 the rest name the tenant alone, as the table of realms does, because a realm is
-not divided by itself (`crates/store/src/tenancy.rs:151`,
+not divided by itself (`crates/store/src/tenancy.rs:12`,
 `crates/store/migrations/V002__users_and_clients.sql:147`,
 `crates/store/migrations/V001__tenancy.sql:114`).
 
@@ -200,7 +200,7 @@ its locks (`:156`).
 
 A realm pinned to a region is refused on a node that does not serve it, before
 the transaction opens, so nothing is read on the way to finding out
-(`crates/store/src/tenancy.rs:141`).
+(`crates/store/src/tenancy.rs:218`).
 
 ### TB-5, nodes and scheduled work
 
@@ -216,8 +216,8 @@ hand the same lock to a second writer.
 
 Scheduled work is claimed per realm with a transaction scoped advisory lock, and
 a node that does not get it moves on rather than doing the work twice: sweeping
-(`crates/server/src/jobs.rs:94`), outbox delivery (`:187`), and federation
-refresh (`:292`). Outbox rows are taken with skip locked, so two deliverers take
+(`crates/server/src/jobs.rs:84`), outbox delivery (`:165`), and federation
+refresh (`:263`). Outbox rows are taken with skip locked, so two deliverers take
 different rows rather than the same ones
 (`crates/store/src/providers/outbox.rs:122`).
 
@@ -231,49 +231,49 @@ answers it, or the word that says nothing does.
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
 | T-EDGE-1 | Anything asked as fast as the caller likes: credential stuffing, enumeration by volume, resource exhaustion | TA-1 | **Nothing inside this product.** No rate limiter exists on any port; the code defines a too many requests answer and never returns it (`crates/commons/src/error.rs:51`). A.EDGE is what stands here |
-| T-EDGE-2 | A body large enough to cost the server more than it costs the caller | TA-1 | Ceilings stated per scope rather than inherited (`crates/server/src/api/config.rs:48`) |
+| T-EDGE-2 | A body large enough to cost the server more than it costs the caller | TA-1 | Ceilings stated per scope rather than inherited (`crates/server/src/api/config.rs:47`) |
 | T-EDGE-3 | A plain request read as a secure one, or a caller's address believed from the caller | TA-1, TA-6 | The scheme and the certificate are read only from a named peer, and a deployment that named none gets nothing rather than everyone's (`crates/config/src/proxying.rs:201`); the address is counted from the right (`:276`) |
-| T-EDGE-4 | The server made to fetch inside its own network on somebody's say so | TA-3, TA-4 | One builder for every outbound call, scheme by policy and address by resolver, no redirect followed (`crates/server/src/api/rest/endpoints/protocol/hosted.rs:100`), including the sinks a client's own registration names (`backchannel.rs:20`, `ciba.rs:734`) |
+| T-EDGE-4 | The server made to fetch inside its own network on somebody's say so | TA-3, TA-4 | One builder for every outbound call, scheme by policy and address by resolver, no redirect followed (`crates/server/src/api/rest/endpoints/protocol/hosted.rs:101`), including the sinks a client's own registration names (`backchannel.rs:20`, `ciba.rs:734`) |
 
 ### The sign in door
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-LOG-1 | A form posted from another site, riding the browser's cookie, answering somebody's sign in or their consent | TA-1 | The form carries a value sealed for that login, weighed before the flow runs, so a forged form spends nothing, not even one password attempt against an account (`crates/server/src/api/rest/endpoints/protocol/login.rs:231`, `crates/server/src/api/rest/endpoints/protocol/forgery.rs:35`) |
-| T-LOG-2 | The same, from a browser that says where the post came from | TA-1 | Refused before anything else where the browser says another site started it; absent, the header says nothing and the sealed value is the barrier (`crates/server/src/api/rest/endpoints/protocol/login.rs:114`, `forgery.rs:58`) |
+| T-LOG-1 | A form posted from another site, riding the browser's cookie, answering somebody's sign in or their consent | TA-1 | The form carries a value sealed for that login, weighed before the flow runs, so a forged form spends nothing, not even one password attempt against an account (`crates/server/src/api/rest/endpoints/protocol/login.rs:233`, `crates/server/src/api/rest/endpoints/protocol/forgery.rs:35`) |
+| T-LOG-2 | The same, from a browser that says where the post came from | TA-1 | Refused before anything else where the browser says another site started it; absent, the header says nothing and the sealed value is the barrier (`crates/server/src/api/rest/endpoints/protocol/login.rs:113`, `forgery.rs:58`) |
 | T-LOG-3 | A password tried against one account as fast as the caller likes | TA-1 | Lockout per person where the realm turns it on, and nothing per address. See R-1 and R-2 |
 
 ### The token path, CJ-1
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-TOK-1 | A stolen code spent by another client, or against another redirect | TA-1, TA-4 | The code carries the client and the redirect it was minted for, compared at redemption (`crates/services/src/grant.rs:427`, `:432`) |
-| T-TOK-2 | A code spent twice | TA-1 | One atomic spend (`crates/store/src/providers/oidc.rs:80`); a replay revokes every token that code bought and closes the client session (`crates/services/src/grant.rs:406`) |
-| T-TOK-3 | A public client's code intercepted in the browser | TA-1 | A challenge is required of a public client, S256 only (`crates/services/src/authorize.rs:769`, `:772`) |
-| T-TOK-4 | The proof key stripped in flight | TA-1 | A verifier presented for a code carrying no challenge is refused whoever the client is (`crates/services/src/grant.rs:658`) |
-| T-TOK-5 | A refresh token stolen and renewed | TA-1, TA-4 | Rotation by default, compared and rotated in one write, and a replay closes the family while leaving the sign in alive (`crates/services/src/grant.rs:1450`, `crates/store/src/providers/sessions.rs:513`, `crates/services/src/grant.rs:1504`) |
+| T-TOK-1 | A stolen code spent by another client, or against another redirect | TA-1, TA-4 | The code carries the client and the redirect it was minted for, compared at redemption (`crates/services/src/grant.rs:426`, `:431`) |
+| T-TOK-2 | A code spent twice | TA-1 | One atomic spend (`crates/store/src/providers/oidc.rs:77`); a replay revokes every token that code bought and closes the client session (`crates/services/src/grant.rs:405`) |
+| T-TOK-3 | A public client's code intercepted in the browser | TA-1 | A challenge is required of a public client, S256 only (`crates/services/src/authorize.rs:768`, `:771`) |
+| T-TOK-4 | The proof key stripped in flight | TA-1 | A verifier presented for a code carrying no challenge is refused whoever the client is (`crates/services/src/grant.rs:657`) |
+| T-TOK-5 | A refresh token stolen and renewed | TA-1, TA-4 | Rotation by default, compared and rotated in one write, and a replay closes the family while leaving the sign in alive (`crates/services/src/grant.rs:1449`, `crates/store/src/providers/sessions.rs:510`, `crates/services/src/grant.rs:1503`) |
 | T-TOK-6 | A bearer token replayed by whoever holds it | TA-1 | Binding compared at presentation and at renewal, and a token naming two bindings satisfies both (`crates/services/src/token/mod.rs:200`) |
 | T-TOK-7 | Algorithm confusion, or an unsecured token | TA-4 | No unsecured variant exists to select, and the verifying algorithm comes from the stored key rather than the token's header (`crates/services/src/token/mod.rs:100`) |
-| T-TOK-8 | A public client acting as a machine | TA-4 | Refused, with the same face as a client that never opted in (`crates/services/src/grant.rs:192`) |
-| T-TOK-9 | Delegation grown wider or deeper than it was given | TA-4 | Scope intersected and never widened, a ceiling of five links, and a bound token cannot be exchanged (`crates/services/src/grant.rs:1884`, `:1766`, `:1689`) |
+| T-TOK-8 | A public client acting as a machine | TA-4 | Refused, with the same face as a client that never opted in (`crates/services/src/grant.rs:191`) |
+| T-TOK-9 | Delegation grown wider or deeper than it was given | TA-4 | Scope intersected and never widened, a ceiling of five links, and a bound token cannot be exchanged (`crates/services/src/grant.rs:1883`, `:1765`, `:1688`) |
 | T-TOK-10 | A revoked authority still spending | TA-2, TA-4 | Realm wide and per client cuts are read at every door that takes a token (`crates/services/src/token/mod.rs:252`, `:265`) |
 
 ### The admin plane, CJ-4
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-ADM-1 | A token from another deployment, or for another realm | TA-3 | The issuer must be one this deployment mints, and the realm in the path is compared against the token's without ever being looked up, so an existing realm and a missing one are refused alike (`crates/server/src/middleware/admin_guard.rs:187`) |
+| T-ADM-1 | A token from another deployment, or for another realm | TA-3 | The issuer must be one this deployment mints, and the realm in the path is compared against the token's without ever being looked up, so an existing realm and a missing one are refused alike (`crates/server/src/middleware/admin_guard.rs:180`) |
 | T-ADM-2 | Probing which capabilities exist by the shape of a refusal | TA-3 | Audience, party, scope, declared, held, in that order, and every refusal renders as one answer (`crates/server/src/middleware/admin_policy.rs:93`, `crates/server/src/error.rs:11`) |
 | T-ADM-3 | A toxic combination of roles assembled in one pair of hands | TA-3 | Everyone arriving is weighed against the realm's rules, under a lock (`crates/auth/src/sod.rs:81`) |
 | T-ADM-4 | Asking for an entitlement and granting it to yourself | TA-3 | The one who asked cannot decide (`crates/services/src/admin/requests.rs:134`, `:181`) |
 | T-ADM-5 | The record of what an administrator did, rewritten | TA-3, TA-7 | Only the database function writes entries, the chain is serialised, and the plane serves verification and anchors (`crates/store/migrations/V011__audit_chain.sql:130`) |
-| T-ADM-6 | Refused attempts leaving no trace | TA-3 | **Nothing.** A knock the guard turns away is not journalled; it is a log line only (`crates/server/src/middleware/admin_audit.rs:97`) |
+| T-ADM-6 | Refused attempts leaving no trace | TA-3 | **Nothing.** A knock the guard turns away is not journalled; it is a log line only (`crates/server/src/middleware/admin_audit.rs:92`) |
 
 ### Tenancy, CJ-2
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-TEN-1 | A query that forgets its filter reading another realm | TA-3 | Policies on two keys, forced, on 99 tables (`crates/store/src/tenancy.rs:151`) |
+| T-TEN-1 | A query that forgets its filter reading another realm | TA-3 | Policies on two keys, forced, on 99 tables (`crates/store/src/tenancy.rs:12`) |
 | T-TEN-2 | Connecting as a role that bypasses the rules | TA-7 | Not defensible inside the product: A.DATABASE, with the role's attributes rewritten on every migration run (`crates/store/migrations/V001__tenancy.sql:141`) |
 | T-TEN-3 | Learning which realms neighbour yours | TA-3 | The tenant level chain the application may append to and may not read (`crates/store/migrations/V094__tenant_chain.sql:13`) |
 
@@ -298,13 +298,13 @@ answers it, or the word that says nothing does.
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
 | T-NOD-1 | Two nodes forking one realm's chain | TA-7 | The append takes the head row for update (`crates/store/migrations/V011__audit_chain.sql:130`) |
-| T-NOD-2 | The same scheduled work done twice, or a message delivered twice | TA-7 | A lock per realm per job, and rows taken with skip locked (`crates/server/src/jobs.rs:94`, `crates/store/src/providers/outbox.rs:122`) |
+| T-NOD-2 | The same scheduled work done twice, or a message delivered twice | TA-7 | A lock per realm per job, and rows taken with skip locked (`crates/server/src/jobs.rs:84`, `crates/store/src/providers/outbox.rs:122`) |
 
 ### The mesh door
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-MESH-1 | Forged headers from a workload behind the proxy | TA-5 | Nothing the proxy hands over is believed: the token is verified against the realm its issuer names, and the identity the upstream reads is overwritten here (`crates/server/src/grpc/mod.rs:155`) |
+| T-MESH-1 | Forged headers from a workload behind the proxy | TA-5 | Nothing the proxy hands over is believed: the token is verified against the realm its issuer names, and the identity the upstream reads is overwritten here (`crates/server/src/grpc/mod.rs:153`) |
 | T-MESH-2 | A door that fails open under load | TA-5 | No decision means no permission, and the deployment is told to decide that at its own filter |
 
 ### The supply chain, TA-8

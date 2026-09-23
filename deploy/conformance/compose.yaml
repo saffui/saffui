@@ -352,3 +352,7 @@ services:
     depends_on:
       - nginx
 
+
+# The database certificate the postgres service draws, shared as ../local does.
+volumes:
+  postgres-certs:

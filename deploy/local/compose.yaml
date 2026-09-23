@@ -9,8 +9,14 @@
 x-saffui: &saffui
   image: saffui:local
   pull_policy: never
+  volumes:
+    - postgres-certs:/certs:ro
   environment: &saffui-env
     SAFFUI_DATABASE_URL: host=postgres user=saffui_app password=saffui_app dbname=saffui
+    # Encrypted and verified, as a deployment is: the database is not on the
+    # machine saffui runs on, so saying nothing would refuse to start.
+    SAFFUI_DATABASE_TLS: verify-full
+    SAFFUI_DATABASE_TLS_CA: /certs/server.crt
     SAFFUI_PUBLIC_ORIGIN: ${SAFFUI_PUBLIC_ORIGIN:-http://localhost:8080}
     SAFFUI_ADMIN_AUDIENCES: saffui-console
     SAFFUI_ADMIN_PARTIES: saffui-console
@@ -27,8 +33,28 @@ x-saffui: &saffui
     SAFFUI_SWEEP_SECONDS: ${SAFFUI_SWEEP_SECONDS:-300}
 
 services:
+  # Its certificate is drawn on first start, for the name the others dial,
+  # into a volume they read. Nothing secret is committed, and `down -v` draws
+  # a new one.
   postgres:
     image: postgres:16
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        if [ ! -s /certs/server.crt ]; then
+          openssl req -new -x509 -days 365 -nodes -subj /CN=postgres \
+            -addext subjectAltName=DNS:postgres \
+            -keyout /certs/server.key -out /certs/server.crt 2>/dev/null
+        fi
+        chown postgres:postgres /certs/server.key
+        chmod 600 /certs/server.key
+        chmod 644 /certs/server.crt
+        exec docker-entrypoint.sh postgres -c ssl=on \
+          -c ssl_cert_file=/certs/server.crt -c ssl_key_file=/certs/server.key
+    volumes:
+      - postgres-certs:/certs
     environment:
       POSTGRES_DB: saffui
       POSTGRES_USER: postgres
@@ -91,3 +117,6 @@ services:
     depends_on:
       provision:
         condition: service_completed_successfully
+
+volumes:
+  postgres-certs:

@@ -14,7 +14,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -408,9 +407,8 @@ async fn with_nothing_pinned_the_memberships_decide() {
     // The user's verified mail domain is a voice, and it may only name an
     // organization they belong to.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::organizations::claim_domain(
             &transaction,

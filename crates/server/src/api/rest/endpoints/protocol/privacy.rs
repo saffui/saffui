@@ -2,10 +2,10 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
-use deadpool_postgres::Pool;
 use models::compliance::subject_request::DsarKind;
 use services::privacy::{self, Undoored};
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -52,7 +52,6 @@ fn shown(status: StatusCode, body: String) -> HttpResponse {
 pub async fn ask_for_link(
     realm: web::Path<String>,
     asked: Option<web::Either<web::Json<Asking>, web::Form<Asking>>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -70,13 +69,16 @@ pub async fn ask_for_link(
         return told(StatusCode::BAD_REQUEST);
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR);
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        Err(_) => {
+            return told(StatusCode::NOT_FOUND);
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(StatusCode::NOT_FOUND);
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR);
     };
     let Ok(Some(held)) = services::realm::named(&transaction, &context.realm_id).await else {
@@ -119,7 +121,7 @@ pub async fn ask_for_link(
         return told(StatusCode::INTERNAL_SERVER_ERROR);
     }
     if let Some(outgoing) = outgoing {
-        deliver(&sealing, &pool, &tenancy, &context, outgoing).await;
+        deliver(&sealing, &tenancy, &context, outgoing).await;
     }
     told(StatusCode::ACCEPTED)
 }
@@ -158,7 +160,6 @@ pub async fn confirmation_page(
 pub async fn confirm_request(
     realm: web::Path<String>,
     asked: Option<web::Either<web::Json<Confirming>, web::Form<Confirming>>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
 ) -> HttpResponse {
@@ -176,13 +177,16 @@ pub async fn confirm_request(
         return told(StatusCode::BAD_REQUEST);
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR);
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        Err(_) => {
+            return told(StatusCode::NOT_FOUND);
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(StatusCode::NOT_FOUND);
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR);
     };
     let Ok(Some(held)) = services::realm::named(&transaction, &context.realm_id).await else {

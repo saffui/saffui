@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::sessions::login_failure::UserLoginFailure;
 use serde_json::Value;
 use tokio_postgres::Row;
@@ -21,7 +21,7 @@ pub struct AuthSession {
 }
 
 /// Open a login.
-pub async fn start(transaction: &Transaction<'_>, session: &AuthSession) -> StoreResult<()> {
+pub async fn start(transaction: &UnitOfWork, session: &AuthSession) -> StoreResult<()> {
     transaction
         .execute(
             "INSERT INTO auth_sessions \
@@ -52,7 +52,7 @@ pub async fn start(transaction: &Transaction<'_>, session: &AuthSession) -> Stor
 /// check, since every caller checking the same thing is every caller able to
 /// forget.
 pub async fn resume(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
 ) -> StoreResult<Option<AuthSession>> {
     Ok(transaction
@@ -73,7 +73,7 @@ pub async fn resume(
 /// The notes are merged rather than replaced, so a step that writes one key does
 /// not silently drop what another wrote.
 pub async fn record_step(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
     user_id: Option<&str>,
     execution_id: Option<&str>,
@@ -94,7 +94,7 @@ pub async fn record_step(
 }
 
 /// Close a login, whether it succeeded or not.
-pub async fn finish(transaction: &Transaction<'_>, session_id: &str) -> StoreResult<bool> {
+pub async fn finish(transaction: &UnitOfWork, session_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM auth_sessions WHERE session_id = $1",
@@ -106,7 +106,7 @@ pub async fn finish(transaction: &Transaction<'_>, session_id: &str) -> StoreRes
 }
 
 /// Drop what stopped progressing.
-pub async fn drop_expired(transaction: &Transaction<'_>) -> StoreResult<u64> {
+pub async fn drop_expired(transaction: &UnitOfWork) -> StoreResult<u64> {
     transaction
         .execute("DELETE FROM auth_sessions WHERE expires_at <= now()", &[])
         .await
@@ -123,7 +123,7 @@ pub async fn drop_expired(transaction: &Transaction<'_>) -> StoreResult<u64> {
 /// Without that, a person who mistypes twice a year is locked out on the tenth
 /// year, and the counter measures nothing anybody meant to measure.
 pub async fn record_failure(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     at: i64,
     ip_address: Option<&str>,
@@ -169,7 +169,7 @@ pub async fn record_failure(
 
 /// What is counted against a user, if anything is.
 pub async fn failures(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<Option<UserLoginFailure>> {
     Ok(transaction
@@ -185,7 +185,7 @@ pub async fn failures(
 }
 
 /// Clear the count, which a successful login does.
-pub async fn clear_failures(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<bool> {
+pub async fn clear_failures(transaction: &UnitOfWork, user_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM user_login_failures WHERE user_id = $1",

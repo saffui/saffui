@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
 use commons::pattern;
 use commons::walk::{self, POLICY_AGGREGATION};
-use deadpool_postgres::Transaction;
 use models::entities::authz::{
     AuthzDecisionRecord, Decision, PolicyModel, PolicyRule, PolicyTerms, PolicyType,
     ReportedDecision, StoredPolicy,
@@ -97,7 +97,7 @@ pub fn validate(terms: &PolicyTerms) -> StoreResult<()> {
 /// One transaction, so a policy and its bindings arrive together. A row written
 /// without its bindings is a policy that names nothing, which is the shape
 /// [`validate`] exists to refuse.
-pub async fn create(transaction: &Transaction<'_>, policy: &PolicyModel) -> StoreResult<()> {
+pub async fn create(transaction: &UnitOfWork, policy: &PolicyModel) -> StoreResult<()> {
     validate(&policy.terms)?;
     let conditions = resolve_conditions(transaction, policy).await?;
     refuse_cycles(transaction, policy).await?;
@@ -135,7 +135,7 @@ pub async fn create(transaction: &Transaction<'_>, policy: &PolicyModel) -> Stor
 
 /// One policy of this application.
 pub async fn load(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     policy_id: &str,
 ) -> StoreResult<Option<StoredPolicy>> {
@@ -157,7 +157,7 @@ pub async fn load(
 /// one permit is enough those two are the difference between refusing and
 /// permitting.
 pub async fn list_for_server(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
 ) -> StoreResult<Vec<StoredPolicy>> {
     let statement =
@@ -180,7 +180,7 @@ pub async fn list_for_server(
 /// from it, so a policy that changed kind would be a different policy wearing
 /// the same identifier, and everything conditioned on it would follow the
 /// change without anybody asking for it.
-pub async fn update(transaction: &Transaction<'_>, policy: &PolicyModel) -> StoreResult<bool> {
+pub async fn update(transaction: &UnitOfWork, policy: &PolicyModel) -> StoreResult<bool> {
     validate(&policy.terms)?;
 
     let Some(stored) = kind_of(transaction, &policy.server_id, &policy.policy_id).await? else {
@@ -229,7 +229,7 @@ pub async fn update(transaction: &Transaction<'_>, policy: &PolicyModel) -> Stor
 ///
 /// Named table by table rather than swept, because there is no one table to
 /// sweep: each kind's members live where that kind reads them.
-async fn unbind(transaction: &Transaction<'_>, policy_id: &str) -> StoreResult<()> {
+async fn unbind(transaction: &UnitOfWork, policy_id: &str) -> StoreResult<()> {
     for table in [
         "policies_roles",
         "policies_groups",
@@ -257,7 +257,7 @@ async fn unbind(transaction: &Transaction<'_>, policy_id: &str) -> StoreResult<(
 /// constraint, so the caller is told what is in the way and the transaction it
 /// asked in is still usable. Removing it would leave a parent requiring one
 /// condition where it required two, and nothing to show the other was there.
-pub async fn delete(transaction: &Transaction<'_>, policy_id: &str) -> StoreResult<bool> {
+pub async fn delete(transaction: &UnitOfWork, policy_id: &str) -> StoreResult<bool> {
     if is_a_condition(transaction, policy_id).await? {
         return Err(StoreError::PolicyIsACondition {
             policy_id: policy_id.to_owned(),
@@ -277,7 +277,7 @@ pub async fn delete(transaction: &Transaction<'_>, policy_id: &str) -> StoreResu
 /// be deleted from under the policy that reads it, and a cascade takes the rows
 /// in whatever order it reaches them, so the edges go before the rows the
 /// constraint is about.
-pub async fn unbind_server(transaction: &Transaction<'_>, server_id: &str) -> StoreResult<()> {
+pub async fn unbind_server(transaction: &UnitOfWork, server_id: &str) -> StoreResult<()> {
     transaction
         .execute(
             "DELETE FROM policies_policies WHERE server_id = $1",
@@ -289,7 +289,7 @@ pub async fn unbind_server(transaction: &Transaction<'_>, server_id: &str) -> St
 }
 
 /// Whether anything is conditioned on this policy.
-async fn is_a_condition(transaction: &Transaction<'_>, policy_id: &str) -> StoreResult<bool> {
+async fn is_a_condition(transaction: &UnitOfWork, policy_id: &str) -> StoreResult<bool> {
     Ok(transaction
         .query_opt(
             "SELECT 1 FROM policies_policies WHERE associated_policy_id = $1 LIMIT 1",
@@ -306,10 +306,7 @@ async fn is_a_condition(transaction: &Transaction<'_>, policy_id: &str) -> Store
 /// reached are the same on an ordinary decision and differ on the two that
 /// matter: a permissive server reporting a permit over a denial, and a policy
 /// that could not be evaluated at all.
-pub async fn record(
-    transaction: &Transaction<'_>,
-    decision: &AuthzDecisionRecord,
-) -> StoreResult<()> {
+pub async fn record(transaction: &UnitOfWork, decision: &AuthzDecisionRecord) -> StoreResult<()> {
     let reported = decision.reported.as_str();
     let computed = decision.computed.as_str();
 
@@ -345,10 +342,7 @@ pub async fn record(
 /// The difference is what the answer is for: an evaluation continues without a
 /// policy it cannot read and says so in its own record, while an audit that
 /// quietly skipped a line would be an audit that reads as complete.
-pub async fn recent(
-    transaction: &Transaction<'_>,
-    limit: i64,
-) -> StoreResult<Vec<AuthzDecisionRecord>> {
+pub async fn recent(transaction: &UnitOfWork, limit: i64) -> StoreResult<Vec<AuthzDecisionRecord>> {
     let statement = format!(
         "SELECT {DECISION_COLUMNS} FROM authz_decisions ORDER BY occurred_at DESC LIMIT $1"
     );
@@ -364,7 +358,7 @@ pub async fn recent(
 /// The decisions one trace made, newest first: what joins a decision to the
 /// writes and requests around it.
 pub async fn decisions_of_trace(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     trace_id: &str,
     limit: i64,
 ) -> StoreResult<Vec<AuthzDecisionRecord>> {
@@ -390,7 +384,7 @@ pub async fn decisions_of_trace(
 /// The log is the realm's memory of what the engine answered; nothing else
 /// prunes it, so retention is an operator's deliberate act over the plane.
 pub async fn prune_decisions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     before: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<u64> {
     transaction
@@ -408,7 +402,7 @@ pub const ERASED_SUBJECT: &str = "erased";
 /// Take a person's name off the decisions that carry it, keeping each decision
 /// under the erased subject, and say how many were renamed.
 pub async fn pseudonymize_decisions_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     subject_type: &str,
     subject_id: &str,
 ) -> StoreResult<u64> {
@@ -423,7 +417,7 @@ pub async fn pseudonymize_decisions_of(
 }
 
 pub async fn disagreements(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     limit: i64,
 ) -> StoreResult<Vec<AuthzDecisionRecord>> {
     let statement = format!(
@@ -501,7 +495,7 @@ fn permission_applies(terms: &PolicyTerms, resource_type: &str) -> StoreResult<(
 /// one has vouched for. Left to the joins' foreign keys, a caller's typo
 /// aborts the whole transaction and answers as a backend fault, after the
 /// policy row has already landed.
-async fn verify_members(transaction: &Transaction<'_>, policy: &PolicyModel) -> StoreResult<()> {
+async fn verify_members(transaction: &UnitOfWork, policy: &PolicyModel) -> StoreResult<()> {
     let terms = &policy.terms;
     match &terms.rule {
         PolicyRule::Role { roles } => {
@@ -568,7 +562,7 @@ async fn verify_members(transaction: &Transaction<'_>, policy: &PolicyModel) -> 
 /// so a resource or scope has to be this server's; everything else the row
 /// level security scopes to the realm on its own.
 async fn verify(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     policy: &PolicyModel,
     held_in: &'static str,
     held_as: &'static str,
@@ -604,7 +598,7 @@ async fn verify(
 }
 
 async fn bind_members(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     policy: &PolicyModel,
     conditions: &[(String, PolicyType)],
 ) -> StoreResult<()> {
@@ -681,7 +675,7 @@ async fn bind_members(
 /// written with everything it names, and a round trip per name is a cost that
 /// grows with how carefully somebody described their realm.
 async fn bind(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     policy: &PolicyModel,
     table: &'static str,
     column: &'static str,
@@ -715,7 +709,7 @@ async fn bind(
 /// what the foreign key points at: a condition cannot change kind while
 /// something is conditioned on it, and a permission cannot be one.
 async fn aggregate(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     policy: &PolicyModel,
     condition: &str,
     condition_kind: PolicyType,
@@ -748,7 +742,7 @@ async fn aggregate(
 /// depend on the caller rolling back, and one that committed anyway would keep
 /// an aggregate with no conditions, which is the shape [`validate`] refuses.
 async fn resolve_conditions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     policy: &PolicyModel,
 ) -> StoreResult<Vec<(String, PolicyType)>> {
     if !aggregates(policy.policy_type()) {
@@ -773,7 +767,7 @@ async fn resolve_conditions(
 /// conditioned on itself. Anything longer is only visible from the whole graph,
 /// which is read once here and walked under a budget rather than followed by
 /// recursion with nothing to stop it.
-async fn refuse_cycles(transaction: &Transaction<'_>, policy: &PolicyModel) -> StoreResult<()> {
+async fn refuse_cycles(transaction: &UnitOfWork, policy: &PolicyModel) -> StoreResult<()> {
     if policy.terms.policies.is_empty() {
         return Ok(());
     }
@@ -798,7 +792,7 @@ async fn refuse_cycles(transaction: &Transaction<'_>, policy: &PolicyModel) -> S
 
 /// Every aggregation edge of one application.
 async fn aggregation_edges(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
 ) -> StoreResult<BTreeMap<String, Vec<String>>> {
     let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -822,7 +816,7 @@ async fn aggregation_edges(
 
 /// What kind one policy is, without reading the rest of it.
 async fn kind_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     policy_id: &str,
 ) -> StoreResult<Option<PolicyType>> {
@@ -868,7 +862,7 @@ impl Bound {
 }
 
 async fn assemble(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     rows: Vec<Row>,
 ) -> StoreResult<Vec<StoredPolicy>> {
@@ -924,7 +918,7 @@ async fn assemble(
 
 /// One binding table, for a set of policies.
 async fn members(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     policy_ids: &[String],
     table: &'static str,

@@ -2,7 +2,6 @@ use chrono::{DateTime, Duration, Utc};
 use crypto::constant_time;
 use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
-use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
 use models::entities::keys::{KeyUse, RealmSigningKey, RealmSigningKeyView};
 use models::entities::oidc::AuthorizationCode;
@@ -13,7 +12,7 @@ use store::providers::backchannel;
 use store::providers::oidc::Redemption;
 use store::providers::sessions::Refreshed;
 use store::providers::{oidc, realm_keys, sessions, users};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::token::issuance::{Kind, Minted, Minting, mint_token};
 use crate::userinfo;
@@ -55,7 +54,7 @@ fn offline_or_refresh_lifespan(realm: &models::entities::realm::RealmModel, offl
 /// Oldest first: nobody is standing in front of the one that has not been
 /// renewed in months, and the newest is the one just asked for.
 async fn make_room_for_offline(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm: &models::entities::realm::RealmModel,
     user_id: &str,
     now: DateTime<Utc>,
@@ -179,7 +178,7 @@ pub enum Ungranted {
 /// would be a second kind of caller for every gate to learn, and the ones that
 /// had not learned it would be the holes.
 pub async fn client_credentials(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     within: &Within<'_>,
     client: &ClientModel,
@@ -273,7 +272,7 @@ pub async fn client_credentials(
     reason = "each is a distinct fact about one grant"
 )]
 pub async fn workload(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     within: &Within<'_>,
     client: &ClientModel,
@@ -359,7 +358,7 @@ pub async fn workload(
 /// the person. Nothing asked is nothing resolved, and no reading of the person
 /// either.
 async fn claims_asked_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     asked: Option<&Value>,
     client_id: &str,
@@ -383,7 +382,7 @@ pub struct Redeeming<'a> {
 /// Spent by the attempt, not by the attempt succeeding: every refusal below
 /// happens after the row is gone.
 pub async fn authorization_code(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     within: &Within<'_>,
     client: &ClientModel,
@@ -679,7 +678,7 @@ fn verify_code_challenge(
 
 /// The active key of this algorithm, or of any when the realm has none of it.
 pub(crate) async fn preferred_key(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     algorithm: SignAlg,
 ) -> Result<RealmSigningKey, Ungranted> {
@@ -704,7 +703,7 @@ pub(crate) async fn preferred_key(
 /// registered, and nothing else when it did; OIDC Core §2's RS256 when it did
 /// not, falling back to what the realm has.
 pub async fn identity_key_for(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     client: &ClientModel,
 ) -> Result<RealmSigningKey, Ungranted> {
@@ -742,7 +741,7 @@ fn code_digest(provider: &dyn CryptoProvider, data: &[u8]) -> Result<String, Ung
     reason = "each is a distinct fact about one login"
 )]
 async fn open_login(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &TenantContext,
     user_id: &str,
     user_name: &str,
@@ -859,7 +858,7 @@ pub enum Unpolled {
 /// The decoupled poll grant, CIBA §10.1: present the auth_req_id, collect
 /// once when the person has said yes.
 pub async fn ciba(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     within: &Within<'_>,
     client: &ClientModel,
@@ -1045,7 +1044,7 @@ pub async fn ciba(
 /// The words are CIBA's words on purpose: §3.5 names the same four, and the
 /// same pending-poll rule holds, so the stamp a refusal writes must commit.
 pub async fn device_code(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     within: &Within<'_>,
     client: &ClientModel,
@@ -1272,7 +1271,7 @@ pub struct Renewing<'a> {
 /// again would re-stamp a strength this chain never established: a step up in
 /// another tab would raise `acr` on a token whose holder never performed it.
 pub async fn refresh_token(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     within: &Within<'_>,
     client: &ClientModel,
@@ -1652,7 +1651,7 @@ pub struct Exchanging<'a> {
     reason = "each is a distinct fact about one grant"
 )]
 pub async fn token_exchange(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     within: &Within<'_>,
     client: &ClientModel,

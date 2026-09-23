@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::credentials::{AuthenticatorAttachment, CredentialChange};
 use serde_json::Value;
 use tokio_postgres::Row;
@@ -32,10 +32,7 @@ pub struct EnrolledCredential {
 }
 
 /// Enrol one, and say so.
-pub async fn enrol(
-    transaction: &Transaction<'_>,
-    credential: &EnrolledCredential,
-) -> StoreResult<()> {
+pub async fn enrol(transaction: &UnitOfWork, credential: &EnrolledCredential) -> StoreResult<()> {
     let written = transaction
         .execute(
             "INSERT INTO webauthn_credentials \
@@ -72,7 +69,7 @@ pub async fn enrol(
 
 /// The one a login is presenting.
 pub async fn by_id(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     credential_id: &[u8],
 ) -> StoreResult<Option<EnrolledCredential>> {
     Ok(transaction
@@ -92,7 +89,7 @@ pub async fn by_id(
 /// The identifier breaks ties, because two keys enrolled in one transaction
 /// carry the same instant: `now()` is the transaction's, not the statement's.
 pub async fn of_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<Vec<EnrolledCredential>> {
     Ok(transaction
@@ -117,7 +114,7 @@ pub async fn of_user(
 /// thing this counter exists to reveal. A counter of zero is exempt: it is what
 /// an authenticator that keeps no counter reports every time.
 pub async fn record_use(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     credential_id: &[u8],
     sign_count: i64,
 ) -> StoreResult<bool> {
@@ -140,7 +137,7 @@ pub async fn record_use(
 /// an identifier must not reach past that user, however it learned the name.
 /// Only a key that was there is announced as gone.
 pub async fn revoke(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     credential_id: &[u8],
 ) -> StoreResult<bool> {
@@ -156,7 +153,7 @@ pub async fn revoke(
 /// Delete one of this user's keys at their own hand. It reaches exactly as far
 /// as [`revoke`]; only what a receiver is told differs.
 pub async fn delete(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     credential_id: &[u8],
 ) -> StoreResult<bool> {
@@ -170,7 +167,7 @@ pub async fn delete(
 }
 
 async fn remove_key(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     credential_id: &[u8],
     change: CredentialChange,
@@ -203,7 +200,7 @@ async fn remove_key(
 /// browser said the key lives, and the backup flag the stored key keeps, the
 /// only hint left for a key enrolled before attachments were recorded.
 async fn announce_key_change(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     change: CredentialChange,
     attachment: Option<AuthenticatorAttachment>,

@@ -1,8 +1,8 @@
 use chrono::Utc;
 use config::serving::PublicOrigin;
-use deadpool_postgres::Pool;
 use services::pdp::{Journal, Question, Resource, decide};
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 /// One request as a proxy hands it over: everything here came from the
 /// caller, which is why none of it names what the caller may do.
@@ -31,12 +31,7 @@ pub enum Weighed {
 /// the HTTP door cannot drift into two answers. What the path puts at stake
 /// is the realm's own statement, never the caller's, and a path the realm
 /// has said nothing about is refused.
-pub async fn weigh(
-    pool: &Pool,
-    tenancy: &Tenancy,
-    origin: &PublicOrigin,
-    asked: Asked<'_>,
-) -> Weighed {
+pub async fn weigh(tenancy: &Tenancy, origin: &PublicOrigin, asked: Asked<'_>) -> Weighed {
     let now = Utc::now();
     let Some(realm_id) = crate::middleware::bearer::unverified_issuer(asked.token)
         .and_then(|issuer| origin.realm_of(&issuer).map(str::to_owned))
@@ -44,13 +39,16 @@ pub async fn weigh(
         return Weighed::Unauthenticated;
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return Weighed::Unavailable;
+    let context = match tenancy.resolve(RealmNamed::ById(&realm_id)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return Weighed::Unavailable;
+        }
+        Err(_) => {
+            return Weighed::Unauthenticated;
+        }
     };
-    let Ok(context) = resolve::realm_by_id(&connection, &realm_id).await else {
-        return Weighed::Unauthenticated;
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return Weighed::Unavailable;
     };
     let Ok(keys) = services::realm::published_keys(&transaction).await else {
@@ -77,7 +75,7 @@ pub async fn weigh(
     let trace = crate::otel::current_trace_id();
     let answer = decide(
         &transaction,
-        &Journal::new(pool.clone(), tenancy.clone()),
+        &Journal::new(tenancy.clone()),
         &established.context,
         Question {
             resource: Resource::Permission {

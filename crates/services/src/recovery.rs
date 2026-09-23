@@ -2,12 +2,12 @@ use chrono::{DateTime, Duration, Utc};
 use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Transaction;
 use models::entities::mail::MailSettings;
 use models::entities::realm::{About, RealmModel};
 use models::entities::user::{RequiredAction, UserModel};
 use secrecy::SecretBox;
 use store::providers::{one_time_tokens, sessions, users};
+use store::tenancy::UnitOfWork;
 
 use auth::messaging::{Message, Outgoing};
 
@@ -34,7 +34,7 @@ pub enum Unrecoverable {
 /// The answer is the same for a name nobody holds. Anything else here is a way
 /// to read a realm's list of people off how the server replies.
 pub async fn offer_link(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
     origin: &PublicOrigin,
@@ -117,7 +117,7 @@ pub async fn offer_link(
 
 /// Spend the link and set the password.
 pub async fn set_from_link(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
     user_id: &str,
@@ -204,10 +204,7 @@ pub async fn set_from_link(
 
 /// What the caller is told. The reason is the policy's, never the password's.
 /// By username, or by address where the realm lets a person sign in with one.
-async fn found(
-    transaction: &Transaction<'_>,
-    named: &str,
-) -> Result<Option<UserModel>, Unrecoverable> {
+async fn found(transaction: &UnitOfWork, named: &str) -> Result<Option<UserModel>, Unrecoverable> {
     if let Some(held) = users::load_by_name(transaction, named)
         .await
         .map_err(|_| Unrecoverable::Unreadable)?

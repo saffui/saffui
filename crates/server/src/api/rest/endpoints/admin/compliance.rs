@@ -2,7 +2,6 @@ use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use models::compliance::breach::{BreachRecord, BreachSeverity};
 use models::compliance::subject_request::{DsarKind, DsarRequest, Jurisdiction};
 use serde::Deserialize;
@@ -43,7 +42,6 @@ pub struct FulfilSpec {
 
 pub async fn lodge(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
@@ -63,9 +61,8 @@ pub async fn lodge(
             "jurisdiction is a code this register knows, or `other` with a due date".to_owned(),
         )
     })?;
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let lodged = compliance::lodge(
@@ -89,14 +86,12 @@ pub async fn lodge(
 
 pub async fn list(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = compliance::list(&transaction).await.map_err(refused)?;
@@ -105,14 +100,12 @@ pub async fn list(
 
 pub async fn get(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, request_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = compliance::get(&transaction, &request_id)
@@ -123,14 +116,12 @@ pub async fn get(
 
 pub async fn verify(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, request_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = compliance::verify(&transaction, &request_id, chrono::Utc::now().timestamp())
@@ -142,15 +133,13 @@ pub async fn verify(
 
 pub async fn refuse(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: web::Json<RefuseSpec>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, request_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = compliance::refuse(
@@ -169,16 +158,14 @@ pub async fn refuse(
 /// execution today; the other kinds say so instead of pretending.
 pub async fn fulfil(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: Option<web::Json<FulfilSpec>>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, request_id) = path.into_inner();
     let asked = body.map(web::Json::into_inner).unwrap_or_default();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let now = chrono::Utc::now().timestamp();
@@ -295,7 +282,6 @@ pub struct BreachStepSpec {
 
 pub async fn discover_breach(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
@@ -315,9 +301,8 @@ pub async fn discover_breach(
             "jurisdiction is a code this register knows".to_owned(),
         )
     })?;
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let found = compliance::record_breach_discovery(
@@ -342,14 +327,12 @@ pub async fn discover_breach(
 
 pub async fn list_breaches(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = compliance::list_breaches(&transaction)
@@ -360,14 +343,12 @@ pub async fn list_breaches(
 
 pub async fn get_breach(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, breach_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = compliance::get_breach(&transaction, &breach_id)
@@ -380,14 +361,12 @@ pub async fn get_breach(
 /// and it says what is outstanding rather than omitting it.
 pub async fn breach_notification_draft(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, breach_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let (breach, jurisdiction) = compliance::get_breach(&transaction, &breach_id)
@@ -398,15 +377,13 @@ pub async fn breach_notification_draft(
 
 async fn advanced_breach(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     step: compliance::BreachStep<'_>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, breach_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = compliance::advance_breach(
@@ -423,7 +400,6 @@ async fn advanced_breach(
 
 pub async fn assess_breach(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: web::Json<BreachStepSpec>,
@@ -442,7 +418,6 @@ pub async fn assess_breach(
         })?;
     advanced_breach(
         admin,
-        pool,
         tenancy,
         path,
         compliance::BreachStep::Assess {
@@ -455,7 +430,6 @@ pub async fn assess_breach(
 
 pub async fn record_breach_filing(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: web::Json<BreachStepSpec>,
@@ -463,7 +437,6 @@ pub async fn record_breach_filing(
     let asked = body.into_inner();
     advanced_breach(
         admin,
-        pool,
         tenancy,
         path,
         compliance::BreachStep::RecordFiling {
@@ -476,13 +449,11 @@ pub async fn record_breach_filing(
 
 pub async fn record_breach_not_notifiable(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     advanced_breach(
         admin,
-        pool,
         tenancy,
         path,
         compliance::BreachStep::RecordNotNotifiable,
@@ -492,11 +463,10 @@ pub async fn record_breach_not_notifiable(
 
 pub async fn close_breach(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
-    advanced_breach(admin, pool, tenancy, path, compliance::BreachStep::Close).await
+    advanced_breach(admin, tenancy, path, compliance::BreachStep::Close).await
 }
 
 /// The record as the plane answers it, its jurisdiction beside it.
@@ -518,7 +488,6 @@ pub struct PackPeriod {
 /// a reader weighs the rest before reading it.
 pub async fn evidence_pack(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
@@ -531,9 +500,8 @@ pub async fn evidence_pack(
             "a period runs forward: from is not after to".to_owned(),
         ));
     }
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let pack = compliance::assemble_evidence_pack(

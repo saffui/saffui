@@ -1,6 +1,5 @@
 use authz::{Caller, Declared, Evaluable, Membership, Presented, Request, Resolved, Through};
 use chrono::Utc;
-use deadpool_postgres::{Pool, Transaction};
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::{
     AuthzDecisionRecord, Decision, ReportedDecision, ResourceServerModel,
@@ -9,7 +8,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use store::providers::{authz_policies, authz_surface, organizations, roles};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
 use crate::context::{Acting, Context};
 use crate::rebac;
@@ -109,15 +108,13 @@ pub struct Question<'a> {
 /// audit outage becomes a service outage. One that misses is counted instead.
 #[derive(Clone)]
 pub struct Journal {
-    pool: Pool,
     tenancy: Tenancy,
     missed: Arc<AtomicU64>,
 }
 
 impl Journal {
-    pub fn new(pool: Pool, tenancy: Tenancy) -> Self {
+    pub fn new(tenancy: Tenancy) -> Self {
         Self {
-            pool,
             tenancy,
             missed: Arc::new(AtomicU64::new(0)),
         }
@@ -130,12 +127,7 @@ impl Journal {
 
     async fn append(&self, tenant: &TenantContext, record: &AuthzDecisionRecord) -> bool {
         let landed = async {
-            let mut connection = self.pool.get().await.ok()?;
-            let transaction = self
-                .tenancy
-                .transaction(&mut connection, tenant)
-                .await
-                .ok()?;
+            let transaction = self.tenancy.begin(tenant).await.ok()?;
             authz_policies::record(&transaction, record).await.ok()?;
             transaction.commit().await.ok()
         }
@@ -165,7 +157,7 @@ pub enum Unanswerable {
 
 /// Decide, and record what was decided.
 pub async fn decide(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     journal: &Journal,
     context: &Context,
     question: Question<'_>,
@@ -220,7 +212,7 @@ struct Facts {
     acting: BTreeSet<String>,
 }
 
-async fn gather(transaction: &Transaction<'_>, context: &Context) -> Result<Facts, Unanswerable> {
+async fn gather(transaction: &UnitOfWork, context: &Context) -> Result<Facts, Unanswerable> {
     let subject = context.principal.id();
 
     let mut roles: BTreeSet<String> = roles::effective_roles(transaction, subject)
@@ -299,7 +291,7 @@ fn asked<'a>(context: &'a Context, facts: &'a Facts) -> Request<'a> {
 
 /// One named policy, tested against this caller.
 async fn tested(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     context: &Context,
     facts: &Facts,
     server_id: &str,
@@ -330,7 +322,7 @@ async fn tested(
 /// neither is ever asked the other's question. Every way the walk fails to
 /// reach an answer is `Indeterminate`, never a refusal.
 async fn related(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     context: &Context,
     object_type: &str,
     object_id: &str,
@@ -385,7 +377,7 @@ fn unwalkable(why: &rebac::Unwalkable) -> Answer {
 
 /// May this caller do this to this?
 async fn enforced(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     context: &Context,
     facts: &Facts,
     server_id: &str,

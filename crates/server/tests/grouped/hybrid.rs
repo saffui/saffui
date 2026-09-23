@@ -9,7 +9,6 @@ const REDIRECT: &str = "https://app.example/callback";
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -318,12 +317,11 @@ async fn an_implicit_request_leaves_no_code_behind() {
     plane.allow_implicit(support::CONFIDENTIAL).await;
     through(&plane, "id_token token").await;
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&store::tenancy::TenantContext::new(
+            support::TENANT,
+            support::REALM,
+        ))
         .await;
     let minted: i64 = transaction
         .query_one("SELECT count(*) FROM oidc_auth_codes", &[])
@@ -389,12 +387,11 @@ async fn what_is_minted_here_is_a_grant_the_login_holds() {
             .expect("a session")
             .to_owned();
 
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         let held = store::providers::sessions::clients_of(&transaction, &session_id)
             .await

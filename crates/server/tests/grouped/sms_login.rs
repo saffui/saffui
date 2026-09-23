@@ -16,7 +16,6 @@ const REDIRECT: &str = "https://app.example/callback";
 
 fn mounted(plane: &Plane, textbox: &Textbox) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -41,8 +40,7 @@ fn within() -> TenantContext {
 
 /// A realm that can text, and a subject whose phone is proven.
 async fn arrange(plane: &Plane, phone_verified: bool) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let sealing = support::sealing();
     let ring = store::keyring::load(
         &transaction,
@@ -77,8 +75,7 @@ async fn arrange(plane: &Plane, phone_verified: bool) {
 
 /// Append a required texted second factor to the browser flow.
 async fn require_sms_otp(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let step = AuthenticationExecutionMutationModel {
         alias: "sms-otp".to_owned(),
         flow_id: "browser".to_owned(),
@@ -102,8 +99,7 @@ async fn require_sms_otp(plane: &Plane) {
 
 /// Tell this person to prove a phone before their next session completes.
 async fn require_verify_phone(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut subject = store::providers::users::load(&transaction, support::SUBJECT)
         .await
         .expect("the users table")
@@ -178,8 +174,7 @@ fn code_in(body: &str) -> String {
 /// Age the one live code past the resend cooldown, so the next pass may send
 /// again without the test waiting a minute of wall clock.
 async fn age_past_cooldown(plane: &Plane, purpose: &str) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     transaction
         .execute(
             "UPDATE one_time_tokens SET created_at = created_at - interval '61 seconds' \
@@ -331,8 +326,7 @@ async fn the_realms_day_budget_stops_the_texts() {
     let textbox = Textbox::default();
 
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         transaction
             .execute(
                 "INSERT INTO sms_spend (tenant, realm_id, day, sent) \
@@ -369,8 +363,7 @@ async fn a_person_is_walked_through_proving_a_phone() {
     require_verify_phone(&plane).await;
     {
         // The ceremony must ask for a number, so the account starts bare.
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         store::providers::users::set_phone(&transaction, support::SUBJECT, None, false)
             .await
             .expect("the phone cleared");
@@ -434,8 +427,7 @@ async fn a_person_is_walked_through_proving_a_phone() {
     assert_eq!(status, StatusCode::OK, "{told}");
     assert_eq!(told["status"], "admitted", "{told}");
 
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let subject = store::providers::users::load(&transaction, support::SUBJECT)
         .await
         .expect("the users table")
@@ -457,8 +449,7 @@ async fn a_person_is_walked_through_proving_a_phone() {
 
 /// Reshape the realm's texting brakes the way an administrator would.
 async fn reshape(plane: &Plane, change: impl FnOnce(&mut models::entities::realm::RealmModel)) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut realm = store::providers::realms::load(&transaction, support::REALM)
         .await
         .expect("the realms table")
@@ -472,8 +463,7 @@ async fn reshape(plane: &Plane, change: impl FnOnce(&mut models::entities::realm
 
 /// The throttle rows the realm's sign-in log holds, brake by brake.
 async fn throttles(plane: &Plane) -> Vec<String> {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     transaction
         .query(
             "SELECT detail->>'brake' FROM login_events WHERE kind = 'sms_throttled' \
@@ -617,8 +607,7 @@ async fn the_realms_own_words_ride_the_text() {
 
 /// Offer the texted code beside the password, the way a deployment would.
 async fn offer_texted_login(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     assert!(
         services::provisioning::provision_texted_login(
             &transaction,
@@ -693,8 +682,7 @@ async fn an_unproven_or_shared_number_names_nobody() {
 
     // Proven on two accounts, the number names neither.
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         store::providers::users::set_phone(
             &transaction,
             support::SUBJECT,

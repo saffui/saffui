@@ -1,5 +1,4 @@
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::authz::{GroupModel, GroupMutationModel, RoleModel, RoleMutationModel};
 use models::entities::organization::{OrganizationModel, OrganizationMutationModel};
@@ -7,6 +6,7 @@ use models::paging::Page;
 use store::error::StoreError;
 use store::providers::{organizations, roles};
 use store::query::list_query::ListQuery;
+use store::tenancy::UnitOfWork;
 
 /// Why a role, group or organization could not be written.
 #[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
@@ -68,7 +68,7 @@ fn refuse_taken_name(why: StoreError) -> Unwritable {
 }
 
 pub async fn create_role(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -94,7 +94,7 @@ pub async fn create_role(
 }
 
 pub async fn list_roles(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> Result<Page<RoleModel>, Unwritable> {
@@ -103,10 +103,7 @@ pub async fn list_roles(
         .map_err(|_| Unwritable::Backend)
 }
 
-pub async fn get_role(
-    transaction: &Transaction<'_>,
-    role_id: &str,
-) -> Result<RoleModel, Unwritable> {
+pub async fn get_role(transaction: &UnitOfWork, role_id: &str) -> Result<RoleModel, Unwritable> {
     roles::load(transaction, role_id)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -117,7 +114,7 @@ pub async fn get_role(
 /// everything granted keeps meaning what it meant; the new name still has to
 /// be free.
 pub async fn update_role(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     role_id: &str,
     by: &str,
     asked: RoleMutationModel,
@@ -145,7 +142,7 @@ pub async fn update_role(
         .ok_or(Unwritable::NotFound)
 }
 
-pub async fn delete_role(transaction: &Transaction<'_>, role_id: &str) -> Result<(), Unwritable> {
+pub async fn delete_role(transaction: &UnitOfWork, role_id: &str) -> Result<(), Unwritable> {
     get_role(transaction, role_id).await?;
     if roles::role_still_held(transaction, role_id)
         .await
@@ -162,7 +159,7 @@ pub async fn delete_role(transaction: &Transaction<'_>, role_id: &str) -> Result
 
 /// Roles included by a composite role.
 pub async fn composite_roles(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     role_id: &str,
 ) -> Result<Vec<RoleModel>, Unwritable> {
     get_role(transaction, role_id).await?;
@@ -173,7 +170,7 @@ pub async fn composite_roles(
 
 /// Include one role in another, preserving a finite role graph.
 pub async fn add_composite_role(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     parent_role_id: &str,
     child_role_id: &str,
 ) -> Result<(), Unwritable> {
@@ -215,7 +212,7 @@ fn closes_composite_cycle(
 
 /// Remove one role from a composite role.
 pub async fn remove_composite_role(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     parent_role_id: &str,
     child_role_id: &str,
 ) -> Result<(), Unwritable> {
@@ -249,7 +246,7 @@ mod tests {
 /// meeting the group being reshaped means the chain would close on itself.
 /// A creation walks too, only to surface a parent deleted underneath it.
 async fn check_parent(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     asked: &Option<String>,
     reshaped: Option<&str>,
 ) -> Result<(), Unwritable> {
@@ -276,7 +273,7 @@ async fn check_parent(
 }
 
 pub async fn create_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -297,7 +294,7 @@ pub async fn create_group(
 }
 
 pub async fn list_groups(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> Result<Page<GroupModel>, Unwritable> {
@@ -306,10 +303,7 @@ pub async fn list_groups(
         .map_err(|_| Unwritable::Backend)
 }
 
-pub async fn get_group(
-    transaction: &Transaction<'_>,
-    group_id: &str,
-) -> Result<GroupModel, Unwritable> {
+pub async fn get_group(transaction: &UnitOfWork, group_id: &str) -> Result<GroupModel, Unwritable> {
     roles::load_group(transaction, group_id)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -317,7 +311,7 @@ pub async fn get_group(
 }
 
 pub async fn update_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
     by: &str,
     asked: GroupMutationModel,
@@ -362,7 +356,7 @@ pub async fn update_group(
     Ok(group)
 }
 
-pub async fn delete_group(transaction: &Transaction<'_>, group_id: &str) -> Result<(), Unwritable> {
+pub async fn delete_group(transaction: &UnitOfWork, group_id: &str) -> Result<(), Unwritable> {
     get_group(transaction, group_id).await?;
     if roles::has_children(transaction, group_id)
         .await
@@ -384,7 +378,7 @@ pub async fn delete_group(transaction: &Transaction<'_>, group_id: &str) -> Resu
 }
 
 pub async fn create_organization(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -404,7 +398,7 @@ pub async fn create_organization(
 }
 
 pub async fn list_organizations(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> Result<Page<OrganizationModel>, Unwritable> {
@@ -414,7 +408,7 @@ pub async fn list_organizations(
 }
 
 pub async fn get_organization(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
 ) -> Result<OrganizationModel, Unwritable> {
     let mut org = organizations::load(transaction, org_id)
@@ -433,7 +427,7 @@ pub async fn get_organization(
 /// challenge the operator will verify against. Claiming routes nothing; only
 /// a proven domain ever discovers anybody.
 pub async fn claim_organization_domain(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     domain: &str,
     challenge: &str,
@@ -454,7 +448,7 @@ pub async fn claim_organization_domain(
 /// operator checked the challenge wherever the domain's owner published it,
 /// and this records that they did.
 pub async fn verify_organization_domain(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     domain: &str,
 ) -> Result<(), Unwritable> {
@@ -470,7 +464,7 @@ pub async fn verify_organization_domain(
 
 /// Take a domain away from the organization, proven or not.
 pub async fn drop_organization_domain(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     domain: &str,
 ) -> Result<(), Unwritable> {
@@ -485,7 +479,7 @@ pub async fn drop_organization_domain(
 }
 
 pub async fn update_organization(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     by: &str,
     asked: OrganizationMutationModel,
@@ -510,10 +504,7 @@ pub async fn update_organization(
 /// confining policies to it cascade, and a policy confined to a gone
 /// organization is muted rather than widened, which the evaluator already
 /// holds. Members lose a label, not an entitlement.
-pub async fn delete_organization(
-    transaction: &Transaction<'_>,
-    org_id: &str,
-) -> Result<(), Unwritable> {
+pub async fn delete_organization(transaction: &UnitOfWork, org_id: &str) -> Result<(), Unwritable> {
     get_organization(transaction, org_id).await?;
     organizations::delete(transaction, org_id)
         .await
@@ -527,7 +518,7 @@ pub async fn delete_organization(
 /// into a backend error, so each end is refused in its own vocabulary first.
 /// The person a caller spelled, by identifier first and by name second, so
 /// an operator's typed name and the console's held identifier both land.
-async fn user_named(transaction: &Transaction<'_>, spelled: &str) -> Result<String, Unwritable> {
+async fn user_named(transaction: &UnitOfWork, spelled: &str) -> Result<String, Unwritable> {
     crate::admin::users::identified(transaction, spelled)
         .await
         .map(|held| held.user_id)
@@ -535,7 +526,7 @@ async fn user_named(transaction: &Transaction<'_>, spelled: &str) -> Result<Stri
 }
 
 pub async fn grant_role_to_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     role_id: &str,
     user_id: &str,
 ) -> Result<(), Unwritable> {
@@ -551,7 +542,7 @@ pub async fn grant_role_to_user(
 }
 
 pub async fn revoke_role_from_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     role_id: &str,
     user_id: &str,
 ) -> Result<(), Unwritable> {
@@ -579,7 +570,7 @@ pub struct RoleHolders {
 
 /// Who holds this role. The refusal a deletion answers with points here.
 pub async fn role_holders(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     role_id: &str,
 ) -> Result<RoleHolders, Unwritable> {
     get_role(transaction, role_id).await?;
@@ -609,7 +600,7 @@ pub async fn role_holders(
 }
 
 pub async fn add_user_to_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
     user_id: &str,
 ) -> Result<(), Unwritable> {
@@ -627,7 +618,7 @@ pub async fn add_user_to_group(
 /// The change is written, so the world weighed is the one the commit would
 /// make: a combination the rules forbid aborts the transaction instead of
 /// landing. The per-person hold above serializes rival weighers.
-async fn weighed(transaction: &Transaction<'_>, user_id: &str) -> Result<(), Unwritable> {
+async fn weighed(transaction: &UnitOfWork, user_id: &str) -> Result<(), Unwritable> {
     match crate::sod::weigh(transaction, user_id).await {
         Ok(()) => Ok(()),
         Err(crate::sod::Toxic::Refused(said)) => Err(Unwritable::Toxic(said)),
@@ -639,7 +630,7 @@ async fn weighed(transaction: &Transaction<'_>, user_id: &str) -> Result<(), Unw
 /// before the write, where one person would be: a rival weighing either landed
 /// before it or waits for its commit.
 async fn weighed_everyone(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     people: &[String],
     arriving: &[String],
 ) -> Result<(), Unwritable> {
@@ -651,7 +642,7 @@ async fn weighed_everyone(
 }
 
 pub async fn remove_user_from_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
     user_id: &str,
 ) -> Result<(), Unwritable> {
@@ -666,7 +657,7 @@ pub async fn remove_user_from_group(
 /// Grant a role through a group: everyone in it holds the role at once, and a
 /// later revocation at the group takes it from all of them at once.
 pub async fn grant_role_to_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
     role_id: &str,
 ) -> Result<(), Unwritable> {
@@ -688,7 +679,7 @@ pub async fn grant_role_to_group(
 }
 
 pub async fn revoke_role_from_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
     role_id: &str,
 ) -> Result<(), Unwritable> {
@@ -700,7 +691,7 @@ pub async fn revoke_role_from_group(
 }
 
 pub async fn group_membership(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
 ) -> Result<(Vec<String>, Vec<String>), Unwritable> {
     get_group(transaction, group_id).await?;
@@ -710,7 +701,7 @@ pub async fn group_membership(
 }
 
 pub async fn add_organization_member(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
     org_id: &str,
@@ -735,7 +726,7 @@ pub async fn add_organization_member(
 }
 
 pub async fn remove_organization_member(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     user_id: &str,
 ) -> Result<(), Unwritable> {
@@ -747,7 +738,7 @@ pub async fn remove_organization_member(
 }
 
 pub async fn organization_members(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
 ) -> Result<Vec<models::entities::organization::OrganizationMemberModel>, Unwritable> {
     get_organization(transaction, org_id).await?;

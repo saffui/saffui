@@ -1,9 +1,8 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use models::entities::user::UserModel;
 use models::sessions::records::UserSessionState;
 use store::providers::{organizations, sessions, users};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::token::Verified;
 
@@ -121,7 +120,7 @@ pub struct Established {
 /// Both planes come through here, since two paths doing this are two places for
 /// one to skip a step nobody notices missing.
 pub async fn admit_bearer(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: TenantContext,
     keys: &[models::entities::keys::RealmSigningKeyView],
     bearer: &str,
@@ -145,7 +144,7 @@ pub async fn admit_bearer(
 /// What is left is everything the realm has to say about it, and every one of
 /// those is a refusal rather than a fact a decision has to make sense of.
 pub async fn establish(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: TenantContext,
     verified: &Verified,
     now: DateTime<Utc>,
@@ -200,7 +199,7 @@ fn access_token(verified: &Verified) -> Result<String, NotEstablished> {
 /// since an identifier alone is a string: somebody else's live session would
 /// otherwise be a way in for anyone who learned it.
 async fn logged_in(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
     tenant: &TenantContext,
     principal: &Principal,
@@ -233,10 +232,7 @@ async fn logged_in(
 }
 
 /// The subject the token names, as a user or as a client acting for itself.
-async fn resolve(
-    transaction: &Transaction<'_>,
-    subject: &str,
-) -> Result<Principal, NotEstablished> {
+async fn resolve(transaction: &UnitOfWork, subject: &str) -> Result<Principal, NotEstablished> {
     users::load(transaction, subject)
         .await
         .map_err(|_| NotEstablished::Unreadable)?
@@ -295,7 +291,7 @@ fn subject_still_admitted(
 
 /// Which organization the caller acts within, claimed and then confirmed.
 async fn acting(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     principal: &Principal,
     verified: &Verified,
 ) -> Result<Acting, NotEstablished> {

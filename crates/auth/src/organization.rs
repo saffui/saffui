@@ -1,5 +1,5 @@
-use deadpool_postgres::Transaction;
 use store::providers::{organizations, users};
+use store::tenancy::UnitOfWork;
 
 /// The organization a login acts within, once resolved: its id and the name
 /// the tokens will speak, which is the display name when one was given and
@@ -34,7 +34,7 @@ pub enum Unresolved {
 /// organization row is gone or disabled degrades to a realm-level login,
 /// because a dangling membership must not lock the user out.
 pub async fn resolve_organization(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     asked: Option<&str>,
 ) -> Result<Option<Acting>, Unresolved> {
@@ -85,7 +85,7 @@ pub async fn resolve_organization(
 /// The organizations behind these memberships that are still there and still
 /// enabled, in membership order.
 async fn enabled_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     memberships: &[String],
 ) -> Result<Vec<models::entities::organization::OrganizationModel>, Unresolved> {
     let mut standing = Vec::new();
@@ -106,7 +106,7 @@ async fn enabled_of(
 /// none but verified domains, and an organization the user is not in is
 /// never picked, whatever its domains say.
 async fn picked_by_domain(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     memberships: &[String],
 ) -> Result<Option<models::entities::organization::OrganizationModel>, Unresolved> {
@@ -143,7 +143,7 @@ pub struct Choice {
 /// silently. `None` everywhere the resolution can settle alone, so the
 /// screen only ever appears where `resolve_organization` would refuse.
 pub async fn offer_choices(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> Result<Option<Vec<Choice>>, Unresolved> {
     let memberships = organizations::of_member(transaction, user_id)
@@ -195,7 +195,7 @@ fn acting_from(org: models::entities::organization::OrganizationModel) -> Acting
 /// that re-stamp an old claim rather than resolve a fresh one. Fails closed:
 /// an unreadable store reads as "no", which drops the claim rather than
 /// carrying a stale one.
-pub async fn still_a_member(transaction: &Transaction<'_>, org_id: &str, user_id: &str) -> bool {
+pub async fn still_a_member(transaction: &UnitOfWork, org_id: &str, user_id: &str) -> bool {
     organizations::of_member(transaction, user_id)
         .await
         .map(|held| held.iter().any(|org| org == org_id))

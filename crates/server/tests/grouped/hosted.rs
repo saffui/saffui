@@ -14,7 +14,6 @@ const REDIRECT: &str = "https://app.example/callback";
 
 fn mounted(plane: &Plane, egress: Egress) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],

@@ -2,7 +2,6 @@ use auth::messaging::Outgoing;
 use chrono::Utc;
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
-use deadpool_postgres::Pool;
 use models::messaging::Delivery;
 use store::providers::deliveries;
 use store::tenancy::{Tenancy, TenantContext};
@@ -19,7 +18,6 @@ use crate::api::config::Sealing;
 /// arrived otherwise leaves nothing behind that outlives the log.
 pub async fn deliver(
     sealing: &Sealing,
-    pool: &Pool,
     tenancy: &Tenancy,
     context: &TenantContext,
     outgoing: Outgoing,
@@ -54,11 +52,7 @@ pub async fn deliver(
     // Its own transaction, because the one that produced the message committed
     // before anything was sent. A receipt that cannot be written is logged and
     // dropped: it is a record of the send, not a part of it.
-    let Ok(mut connection) = pool.get().await else {
-        tracing::warn!("a delivery could not be recorded");
-        return delivered;
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, context).await else {
+    let Ok(transaction) = tenancy.begin(context).await else {
         tracing::warn!("a delivery could not be recorded");
         return delivered;
     };

@@ -3,7 +3,7 @@
 //! Best-effort by contract: every writer treats a refusal here as a warning,
 //! because a login must never fail on account of its own record.
 
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 
 use crate::error::{StoreError, StoreResult};
 
@@ -34,7 +34,7 @@ pub struct LoginEventWrite<'a> {
 }
 
 pub async fn record(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     at: i64,
     event: &LoginEventWrite<'_>,
 ) -> StoreResult<()> {
@@ -64,7 +64,7 @@ pub async fn record(
 
 /// Newest first, one page, with the total when it was paid for.
 pub async fn list(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     first: i64,
     max: i64,
     count: bool,
@@ -108,7 +108,7 @@ pub async fn list(
 }
 
 /// Age the window: everything older than the cutoff goes.
-pub async fn drop_older_than(transaction: &Transaction<'_>, cutoff: i64) -> StoreResult<u64> {
+pub async fn drop_older_than(transaction: &UnitOfWork, cutoff: i64) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM login_events WHERE recorded_at < $1",

@@ -2,7 +2,6 @@ use auth::messaging::OutgoingText;
 use chrono::Utc;
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
-use deadpool_postgres::Pool;
 use models::messaging::Delivery;
 use store::providers::deliveries;
 use store::tenancy::{Tenancy, TenantContext};
@@ -14,7 +13,6 @@ use crate::api::config::Sealing;
 /// leaves nothing behind that outlives the log.
 pub async fn deliver_text(
     sealing: &Sealing,
-    pool: &Pool,
     tenancy: &Tenancy,
     context: &TenantContext,
     outgoing: OutgoingText,
@@ -46,11 +44,7 @@ pub async fn deliver_text(
         detail: outcome.err(),
     };
     // Its own transaction, for the reason the mail receipt takes one.
-    let Ok(mut connection) = pool.get().await else {
-        tracing::warn!("a delivery could not be recorded");
-        return;
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, context).await else {
+    let Ok(transaction) = tenancy.begin(context).await else {
         tracing::warn!("a delivery could not be recorded");
         return;
     };
@@ -64,17 +58,16 @@ pub async fn deliver_text(
 /// Send whichever kind one step produced.
 pub async fn deliver_outbound(
     sealing: &Sealing,
-    pool: &Pool,
     tenancy: &Tenancy,
     context: &TenantContext,
     outbound: auth::messaging::Outbound,
 ) {
     match outbound {
         auth::messaging::Outbound::Mail(outgoing) => {
-            super::mail::deliver(sealing, pool, tenancy, context, outgoing).await;
+            super::mail::deliver(sealing, tenancy, context, outgoing).await;
         }
         auth::messaging::Outbound::Text(outgoing) => {
-            deliver_text(sealing, pool, tenancy, context, outgoing).await;
+            deliver_text(sealing, tenancy, context, outgoing).await;
         }
     }
 }

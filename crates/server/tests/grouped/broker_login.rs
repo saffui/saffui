@@ -15,7 +15,6 @@ const ALIAS: &str = "upstream";
 /// because the upstream lives on the loopback here.
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -295,9 +294,8 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
     // First arrival made a person and a link.
     let (linked, named) = {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let linked =
             store::providers::brokering::linked_user(&transaction, ALIAS, support::SUBJECT)
@@ -314,9 +312,8 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
     {
         use models::entities::attributes::AttributeValue;
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let person = store::providers::users::load(&transaction, &linked)
             .await
@@ -380,9 +377,8 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
     assert_eq!(status, StatusCode::SEE_OTHER);
     let again = {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::brokering::linked_user(&transaction, ALIAS, support::SUBJECT)
             .await
@@ -392,9 +388,8 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
     assert_eq!(again, linked, "a second arrival made a second person");
     let read_back = || async {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::users::load(&transaction, &linked)
             .await
@@ -498,9 +493,8 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
     }
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let sources = store::providers::brokering::claim_sources_of(&transaction, &linked)
             .await
@@ -559,9 +553,8 @@ async fn a_login_crosses_to_the_upstream_and_comes_back_admitted() {
     );
     let held: Vec<String> = {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::roles::effective_roles(&transaction, &linked)
             .await
@@ -627,9 +620,8 @@ async fn an_upstream_logout_reaches_down() {
     // what makes the upstream's own machinery mint a token to carry over.
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
             .await
@@ -701,9 +693,8 @@ async fn an_upstream_logout_reaches_down() {
 
     async fn standing(plane: &Plane) -> Vec<String> {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::sessions::brokered(&transaction, ALIAS, support::SUBJECT)
             .await
@@ -716,9 +707,8 @@ async fn an_upstream_logout_reaches_down() {
     // call mints a fresh one, fresh jti included.
     async fn minted_logout(plane: &Plane) -> String {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let sealing = support::sealing();
         let ring = store::keyring::load(&transaction, &sealing.envelope, support::TENANT, REALM)
@@ -1079,9 +1069,8 @@ async fn a_login_crosses_a_plain_oauth2_upstream_and_comes_back_admitted() {
         assert!(landing.starts_with(support::REDIRECT), "{landing}");
         assert!(param(&landing, "code").is_some(), "{landing}");
 
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let linked =
             store::providers::brokering::linked_user(&transaction, alias, support::SUBJECT)
@@ -1107,9 +1096,8 @@ async fn a_plain_oauth2_upstream_links_only_by_an_address_its_list_verifies() {
     let bearer = plane.token(&support::claims());
     let base = served_upstream(&plane);
     let email = {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::users::load(&transaction, support::SUBJECT)
             .await
@@ -1134,9 +1122,8 @@ async fn a_plain_oauth2_upstream_links_only_by_an_address_its_list_verifies() {
         let (status, landing, _) = crossed(&plane, alias).await;
         assert_eq!(status, StatusCode::SEE_OTHER, "{alias}: {landing:?}");
 
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let linked =
             store::providers::brokering::linked_user(&transaction, alias, support::SUBJECT)
@@ -1204,8 +1191,7 @@ async fn register_account(
     use store::tenancy::TenantContext;
     let context = TenantContext::new(support::TENANT, REALM);
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &context).await;
+        let transaction = plane.scoped(&context).await;
         let mut realm = store::providers::realms::load(&transaction, REALM)
             .await
             .expect("the realms table")
@@ -1230,8 +1216,7 @@ async fn register_account(
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &context).await;
+    let transaction = plane.scoped(&context).await;
     store::providers::users::load_by_name(&transaction, user_name)
         .await
         .expect("the users table")
@@ -1274,9 +1259,8 @@ async fn a_registration_on_an_unproven_address_is_not_handed_an_arrival_vouching
         ))
     );
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let linked =
             store::providers::brokering::linked_user(&transaction, "vouching", support::SUBJECT)
@@ -1299,9 +1283,8 @@ async fn a_registration_on_an_unproven_address_is_not_handed_an_arrival_vouching
 
     // The account proves the address, as its verification would.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut proven = store::providers::users::load(&transaction, &registered.user_id)
             .await
@@ -1323,9 +1306,8 @@ async fn a_registration_on_an_unproven_address_is_not_handed_an_arrival_vouching
             .is_some_and(|held| held.starts_with(support::REDIRECT)),
         "{landing:?}"
     );
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let linked =
         store::providers::brokering::linked_user(&transaction, "vouching", support::SUBJECT)
@@ -1366,9 +1348,8 @@ async fn an_arrival_gets_an_account_of_its_own_where_accounts_may_share_an_addre
         "{landing:?}"
     );
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let linked =
         store::providers::brokering::linked_user(&transaction, "vouching", support::SUBJECT)
@@ -1765,9 +1746,8 @@ async fn a_login_leaves_for_a_saml_provider_on_a_request_the_realm_signs() {
         .attribute("ID")
         .expect("an identifier")
         .to_owned();
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let kept: Vec<(String, String, String)> = transaction
         .query(
@@ -1996,9 +1976,8 @@ async fn a_saml_answer_admits_the_login_that_left_for_it() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     assert!(
         store::providers::brokering::linked_user(&transaction, "corp", "AAdzZWNyZXQx")
@@ -2111,9 +2090,8 @@ async fn read_mapped_person(
 ) -> (models::entities::attributes::AttributesMap, Vec<String>) {
     use store::tenancy::TenantContext;
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let user_id = store::providers::brokering::linked_user(&transaction, alias, name)
         .await
@@ -2322,9 +2300,8 @@ fn redirect_signed_by(
 async fn read_standing_logins(plane: &Plane, alias: &str, name: &str) -> Vec<String> {
     use store::tenancy::TenantContext;
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::saml_brokering::find_named_sessions(&transaction, alias, name, &[])
         .await

@@ -7,7 +7,6 @@ use crypto::password::migration::verify_and_plan;
 use crypto::password::storage::StoredPassword;
 use crypto::provider::{Argon2Params, CryptoProvider, SignAlg};
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Transaction;
 use models::entities::client::{ClientModel, JweRegistration};
 use models::entities::keys::{JweAlgorithm, JweEncryption};
 use models::entities::realm::{ClientRegistration, RealmModel};
@@ -16,6 +15,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use store::keyring::RealmKeyring;
 use store::providers::clients;
+use store::tenancy::UnitOfWork;
 use url::Url;
 
 use crate::admin::clients::{self as admin_clients, Registered, Secret, Spec, Unregistrable};
@@ -174,7 +174,7 @@ fn trusts(hosts: &[String], caller: Option<IpAddr>) -> bool {
     reason = "each is a distinct fact about one registration"
 )]
 pub async fn register(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     sealing: Option<(&RealmKeyring, &Envelope)>,
     tenant: &str,
@@ -250,7 +250,7 @@ pub async fn register(
 
 /// The client this registration access token stands for.
 pub async fn holder_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     client_id: &str,
     presented: Option<&str>,
@@ -278,7 +278,7 @@ pub async fn holder_of(
 /// Replace everything this client registered with what it now says, §2.2 of
 /// RFC 7592: the request is the whole metadata, and what it omits is cleared.
 pub async fn amend(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client: &ClientModel,
     metadata: &Metadata,
 ) -> Result<ClientModel, Refused> {
@@ -289,7 +289,7 @@ pub async fn amend(
     Ok(amended)
 }
 
-pub async fn withdraw(transaction: &Transaction<'_>, client_id: &str) -> Result<(), Refused> {
+pub async fn withdraw(transaction: &UnitOfWork, client_id: &str) -> Result<(), Refused> {
     admin_clients::remove(transaction, client_id).await?;
     Ok(())
 }
@@ -463,7 +463,7 @@ fn read_encryption(
 
 /// A response signed in an algorithm the realm holds no active key for is one
 /// it can never send: refused at registration, not at every sign-in after it.
-async fn check_response_signing(transaction: &Transaction<'_>, spec: &Spec) -> Result<(), Refused> {
+async fn check_response_signing(transaction: &UnitOfWork, spec: &Spec) -> Result<(), Refused> {
     let asked = [
         spec.registered.id_token_signed_response_alg,
         spec.registered.userinfo_signed_response_alg,
@@ -746,7 +746,7 @@ fn draw(provider: &dyn CryptoProvider, bytes: usize) -> Result<String, Refused> 
 }
 
 async fn keep_access_token(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     client_id: &str,
     token: &str,
@@ -785,7 +785,7 @@ fn matches(provider: &dyn CryptoProvider, held: &str, presented: &str) -> bool {
 /// Draw the secret protected registration is opened with, and hand it back
 /// once. Only the hash is kept, so losing the answer means drawing again.
 pub async fn rotate_registration_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm_id: &str,
 ) -> Result<String, Refused> {
@@ -809,7 +809,7 @@ pub async fn rotate_registration_secret(
 /// Take the secret away. Protected registration then admits nobody until a
 /// new one is drawn, which is the safe direction to fail in.
 pub async fn forget_registration_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
 ) -> Result<(), Refused> {
     let mut realm = store::providers::realms::load(transaction, realm_id)

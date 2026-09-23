@@ -12,7 +12,6 @@ const REDIRECT: &str = "https://app.example/callback";
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -66,12 +65,8 @@ async fn granted(plane: &Plane, scope: &str) -> serde_json::Value {
 
 /// End the login the fixture's codes are minted against.
 async fn log_out(plane: &Plane) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let ended = store::providers::sessions::set_state(
         &transaction,
@@ -150,12 +145,8 @@ async fn an_offline_grant_ends_at_its_own_expiry() {
     let refresh = offline["refresh_token"].as_str().expect("a refresh token");
 
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&TenantContext::new(support::TENANT, support::REALM))
             .await;
         transaction
             .execute(
@@ -244,12 +235,8 @@ async fn a_sweep_leaves_a_login_an_offline_grant_still_needs() {
     // The login ran out a month ago and nothing renewed it, which is what a
     // login does while the device that holds the grant is away.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&TenantContext::new(support::TENANT, support::REALM))
             .await;
         transaction
             .execute(
@@ -261,7 +248,7 @@ async fn a_sweep_leaves_a_login_an_offline_grant_still_needs() {
         transaction.commit().await.expect("the ageing kept");
     }
 
-    let swept = server::jobs::sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = server::jobs::sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
     assert_eq!(
@@ -289,12 +276,8 @@ async fn a_sweep_takes_the_login_once_the_offline_grant_is_over() {
     granted(&plane, "openid offline_access").await;
 
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&TenantContext::new(support::TENANT, support::REALM))
             .await;
         let over = chrono::Utc::now().timestamp() - 60;
         transaction
@@ -311,7 +294,7 @@ async fn a_sweep_takes_the_login_once_the_offline_grant_is_over() {
         transaction.commit().await.expect("the ageing kept");
     }
 
-    let swept = server::jobs::sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = server::jobs::sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
     assert_eq!(swept.sessions, 1, "an ended grant kept its login alive");
@@ -351,12 +334,8 @@ async fn checking_in_moves_an_offline_grant_further_out() {
 }
 
 async fn offline_ends_at(plane: &Plane) -> i64 {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     transaction
         .query_one("SELECT expiration FROM client_sessions WHERE offline", &[])
@@ -366,12 +345,8 @@ async fn offline_ends_at(plane: &Plane) -> i64 {
 }
 
 async fn set_offline_end(plane: &Plane, at: i64) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     transaction
         .execute(
@@ -393,12 +368,8 @@ async fn a_grant_that_ran_out_does_not_renew_under_a_login_that_has_not() {
     let refresh = ordinary["refresh_token"].as_str().expect("a refresh token");
 
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&TenantContext::new(support::TENANT, support::REALM))
             .await;
         // The login is untouched and still open. Only the grant is over.
         transaction
@@ -443,12 +414,8 @@ async fn renewing_moves_an_ordinary_grant_further_out() {
 }
 
 async fn ends_at(plane: &Plane) -> i64 {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     transaction
         .query_one("SELECT expiration FROM client_sessions", &[])
@@ -458,12 +425,8 @@ async fn ends_at(plane: &Plane) -> i64 {
 }
 
 async fn set_end(plane: &Plane, at: i64) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     transaction
         .execute("UPDATE client_sessions SET expiration = $1", &[&at])
@@ -614,12 +577,8 @@ async fn admin_status(plane: &Plane, bearer: &str, method: Method, path: &str) -
 }
 
 async fn bound_offline(plane: &Plane, max_lifespan: i32, max_grants: i32) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let mut realm = store::providers::realms::load(&transaction, support::REALM)
         .await
@@ -634,12 +593,8 @@ async fn bound_offline(plane: &Plane, max_lifespan: i32, max_grants: i32) {
 }
 
 async fn age_offline_start(plane: &Plane, by: i64) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     transaction
         .execute(
@@ -652,12 +607,8 @@ async fn age_offline_start(plane: &Plane, by: i64) {
 }
 
 async fn offline_grant_ids(plane: &Plane) -> Vec<String> {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     store::providers::sessions::offline_grants_of(
         &transaction,
@@ -750,12 +701,8 @@ async fn a_cap_ends_the_oldest_grant() {
 }
 
 async fn plant_older_grant(plane: &Plane, session_id: &str, client_id: &str) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let now = chrono::Utc::now().timestamp();
     store::providers::sessions::open_client_session(

@@ -3,7 +3,6 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use crypto::provider::SignAlg;
-use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::json;
 use services::admin::realm_keys::Unturnable;
@@ -17,14 +16,12 @@ use crate::middleware::admin_guard::Admin;
 /// what verifies; this shows what the realm has.
 pub async fn list(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, realm_id))
+        .begin(&within(&admin, realm_id))
         .await
         .map_err(|_| internal())?;
 
@@ -54,7 +51,6 @@ pub struct RotationBody {
 /// fresh one signs in its place.
 pub async fn rotate(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
@@ -62,9 +58,8 @@ pub async fn rotate(
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.as_str();
     let tenant = admin.context.tenant.tenant.clone();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, realm_id))
+        .begin(&within(&admin, realm_id))
         .await
         .map_err(|_| internal())?;
     let ring = keyring::load(&transaction, &sealing.envelope, &tenant, realm_id)
@@ -91,14 +86,12 @@ pub async fn rotate(
 /// is the way out of service, because it keeps signed tokens verifiable.
 pub async fn disable(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, kid) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
 

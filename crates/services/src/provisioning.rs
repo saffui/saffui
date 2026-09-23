@@ -4,7 +4,6 @@ use crypto::jose::jwk::alg::rsa::RsaKeyPair;
 use crypto::jose::jwk::{KeyPair, P_256};
 use crypto::provider::{CryptoProvider, SignAlg};
 use crypto::thumbprint::jwk_sha256_thumbprint;
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::acr::AcrLoaMap;
 use models::entities::auth::{
@@ -22,6 +21,7 @@ use models::entities::tenant::{TenantCreateModel, TenantModel};
 use secrecy::SecretBox;
 use store::error::{StoreError, StoreResult};
 use store::keyring;
+use store::tenancy::UnitOfWork;
 
 use crate::admin;
 use models::entities::authz::{AdminAction, RoleModel};
@@ -87,7 +87,7 @@ pub const STANDARD_SCOPES: [(&str, bool, &str); 5] = [
 /// Idempotent throughout, so a deployment that renames its console or adds a
 /// redirect can run it again.
 pub async fn provision_realm(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm: &RealmModel,
     console: &AdminConsole<'_>,
 ) -> StoreResult<()> {
@@ -105,7 +105,7 @@ pub async fn provision_realm(
 /// transaction may already name the future realm: the realm row is tenant
 /// isolated, while its children are isolated by both settings.
 pub async fn provision_realm_row(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_name: &str,
 ) -> StoreResult<bool> {
@@ -132,7 +132,7 @@ pub async fn provision_realm_row(
 /// decision possible: a scope that does not exist cannot be granted, so a realm
 /// without these rows silently answers every request with less than was asked.
 pub async fn provision_standard_scopes(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
 ) -> StoreResult<Vec<String>> {
@@ -178,7 +178,7 @@ pub async fn provision_standard_scopes(
 /// asking for it. That is what lets the plane require the scope by default
 /// rather than every admin UI having to remember to ask.
 pub async fn provision_admin_console(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
     console: &AdminConsole<'_>,
@@ -209,7 +209,7 @@ pub struct AccountConsole {
 /// Give a realm its account console and the scope the account API requires,
 /// idempotent the way the admin console is.
 pub async fn provision_account_console(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
     console: &AccountConsole,
@@ -241,7 +241,7 @@ struct Console<'a> {
 }
 
 async fn provision_console(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
     console: &Console<'_>,
@@ -332,7 +332,7 @@ pub const ADMINISTRATOR_ROLE: &str = "administrator";
 /// login and no more, and losing it means drawing another administrator
 /// rather than recovering this one.
 pub async fn provision_first_administrator(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -398,7 +398,7 @@ pub async fn provision_first_administrator(
 }
 
 pub async fn provision_realm_administration(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
     user_name: &str,
@@ -459,7 +459,7 @@ pub async fn provision_realm_administration(
 /// A tenant, created unless it already is. Runs tenant wide, because a realm
 /// cannot be scoped to before its tenant exists.
 pub async fn provision_tenant(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant_id: &str,
     display_name: &str,
 ) -> StoreResult<bool> {
@@ -486,7 +486,7 @@ pub async fn provision_tenant(
 /// same key is never written twice under two names; and the private half
 /// never leaves this transaction unsealed.
 pub async fn provision_signing_key(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     envelope: &Envelope,
     tenant: &str,
@@ -585,7 +585,7 @@ pub async fn provision_signing_key(
 /// A realm mapping nothing can be asked for nothing and attests to nothing:
 /// `acr_values` is refused and no `acr` is ever issued. Two levels, one per
 /// factor a fresh realm can run, so a login says how strong it was.
-pub async fn provision_levels(transaction: &Transaction<'_>, realm_id: &str) -> StoreResult<bool> {
+pub async fn provision_levels(transaction: &UnitOfWork, realm_id: &str) -> StoreResult<bool> {
     let Some(mut realm) = realms::load(transaction, realm_id).await? else {
         return Ok(false);
     };
@@ -601,7 +601,7 @@ pub async fn provision_levels(transaction: &Transaction<'_>, realm_id: &str) -> 
 /// realm already has a flow by that alias. `/authorize` refuses a realm that
 /// has none rather than opening a login nothing can advance.
 pub async fn provision_browser_flow(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
 ) -> StoreResult<bool> {
@@ -658,7 +658,7 @@ pub async fn provision_browser_flow(
 /// asks for one" is not among these: the assurance level a login reaches is
 /// reported afterwards, never used to choose the steps.
 pub async fn provision_offered_flows(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
 ) -> StoreResult<u32> {
@@ -794,7 +794,7 @@ pub async fn provision_offered_flows(
 /// flow by that alias. Idempotent, because provisioning runs again on a realm
 /// that was half made.
 async fn offer(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
     alias: &str,
@@ -849,7 +849,7 @@ async fn offer(
 /// Both steps become alternatives: leaving the password required would make the
 /// link a second factor rather than another way in.
 pub async fn provision_mailed_login(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
 ) -> StoreResult<bool> {
@@ -893,7 +893,7 @@ pub async fn provision_mailed_login(
 }
 
 pub async fn provision_texted_login(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
 ) -> StoreResult<bool> {
@@ -955,7 +955,7 @@ pub struct Registration<'a> {
 
 /// Let clients register themselves here. Says whether it changed anything.
 pub async fn open_client_registration(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
     bounds: &RegistrationBounds,
 ) -> StoreResult<bool> {
@@ -976,7 +976,7 @@ pub async fn open_client_registration(
 /// Register a client, unless one by that id exists, and attach it to every
 /// scope a fresh realm grants by default.
 pub async fn provision_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -1033,7 +1033,7 @@ pub async fn provision_client(
 /// profile flag the doors read. The private half stays with the client; what
 /// arrives here is the published set.
 pub async fn provision_fapi_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -1099,7 +1099,7 @@ pub struct Person<'a> {
 
 /// Create a user with a password, unless one by that name exists.
 pub async fn provision_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,

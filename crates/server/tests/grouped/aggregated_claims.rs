@@ -13,7 +13,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -382,8 +381,7 @@ async fn a_fetch_token_is_sealed_and_read_back_only_by_the_release() {
     );
 
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         let row = transaction
             .query_one(
                 "SELECT endpoint_token, sealed_token, sealed_version \
@@ -420,8 +418,7 @@ async fn a_token_kept_in_clear_before_sealing_is_released_and_concealed() {
     let plane = Plane::with_actions(&[AdminAction::UserRead]).await;
     let bearer = plane.token(&support::claims());
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         transaction
             .execute(
                 "INSERT INTO user_claim_sources \

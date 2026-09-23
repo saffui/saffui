@@ -24,10 +24,7 @@ fn entry(kind: &str, actor: &str) -> serde_json::Value {
 async fn entries_chain_and_the_chain_verifies() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         audit::start(&transaction, &digest, "acme", "main")
@@ -78,10 +75,7 @@ async fn entries_chain_and_the_chain_verifies() {
 async fn both_sides_hash_the_same_bytes() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
@@ -113,10 +107,7 @@ async fn both_sides_hash_the_same_bytes() {
 async fn an_altered_entry_is_found_where_it_was_altered() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
@@ -127,7 +118,6 @@ async fn an_altered_entry_is_found_where_it_was_altered() {
     }
 
     transaction.commit().await.unwrap();
-    drop(connection);
 
     // The application role is refused this outright, which is the first line of
     // defence. The chain is the second, for whoever is not refused.
@@ -142,10 +132,7 @@ async fn an_altered_entry_is_found_where_it_was_altered() {
         .await
         .unwrap();
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let verified = audit::verify(&transaction, &digest).await.unwrap();
     assert_eq!(
@@ -161,10 +148,7 @@ async fn an_altered_entry_is_found_where_it_was_altered() {
 async fn a_removed_entry_is_a_gap_and_not_an_ordering_detail() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
@@ -175,7 +159,6 @@ async fn a_removed_entry_is_a_gap_and_not_an_ordering_detail() {
     }
 
     transaction.commit().await.unwrap();
-    drop(connection);
 
     fixture
         .owner()
@@ -184,10 +167,7 @@ async fn a_removed_entry_is_a_gap_and_not_an_ordering_detail() {
         .await
         .unwrap();
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let verified = audit::verify(&transaction, &digest).await.unwrap();
     assert_eq!(verified.broken_at, Some(3), "a removed entry left no trace");
@@ -200,10 +180,7 @@ async fn a_removed_entry_is_a_gap_and_not_an_ordering_detail() {
 async fn entries_removed_from_the_end_are_found_by_the_head() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
@@ -214,7 +191,6 @@ async fn entries_removed_from_the_end_are_found_by_the_head() {
     }
 
     transaction.commit().await.unwrap();
-    drop(connection);
 
     fixture
         .owner()
@@ -223,10 +199,7 @@ async fn entries_removed_from_the_end_are_found_by_the_head() {
         .await
         .unwrap();
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let verified = audit::verify(&transaction, &digest).await.unwrap();
     assert_eq!(
@@ -243,10 +216,7 @@ async fn entries_removed_from_the_end_are_found_by_the_head() {
 async fn the_readable_columns_are_the_envelope() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
@@ -285,10 +255,7 @@ async fn the_readable_columns_are_the_envelope() {
 async fn an_anchor_records_the_head_it_published() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
@@ -325,10 +292,7 @@ async fn an_anchor_records_the_head_it_published() {
 async fn appending_to_a_realm_with_no_chain_is_refused() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         audit::append(&transaction, &entry("a", "root"))
@@ -337,14 +301,10 @@ async fn appending_to_a_realm_with_no_chain_is_refused() {
         "an entry was written to a chain that does not exist"
     );
     drop(transaction);
-    drop(connection);
 
     // Its own transaction: the refusal above aborted the one it was made in,
     // and every later statement there fails for that reason rather than its own.
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     assert!(matches!(
         audit::verify(&transaction, &digest).await,
         Err(StoreError::NoChain)
@@ -362,24 +322,13 @@ async fn appending_to_a_realm_with_no_chain_is_refused() {
 async fn two_appends_at_once_are_serialised() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut first_connection = fixture.connection().await;
-    // The second connection is left unscoped here and scoped inside its own
-    // task, which is what lets the task own it while this one still holds the
-    // first transaction open.
-    let second_connection = fixture.connection().await;
-    let first = fixture
-        .scoped(&mut first_connection, &TenantContext::new("acme", "main"))
-        .await;
+    let first = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     // The first append holds the head and does not commit, so the second one
     // genuinely overlaps it.
@@ -393,19 +342,9 @@ async fn two_appends_at_once_are_serialised() {
     // it waits either way: without the head taken for update it waits on the
     // primary key, having already claimed a sequence that is about to be
     // taken. It is the outcome after the wait that differs.
-    let mut owned = second_connection;
+    let second = fixture.scoped(&TenantContext::new("acme", "main")).await;
     let waiting = tokio::spawn(async move {
-        let transaction = owned.transaction().await.unwrap();
-        for (setting, value) in [
-            ("saffui.current_tenant", "acme"),
-            ("saffui.current_realm", "main"),
-        ] {
-            transaction
-                .execute("SELECT set_config($1, $2, true)", &[&setting, &value])
-                .await
-                .unwrap();
-        }
-        let outcome = transaction
+        let outcome = second
             .query_one(
                 "SELECT seq FROM audit_append($1)",
                 &[&serde_json::json!({
@@ -417,7 +356,7 @@ async fn two_appends_at_once_are_serialised() {
             .await
             .map(|row| row.get::<_, i64>("seq"));
         if outcome.is_ok() {
-            transaction.commit().await.unwrap();
+            second.commit().await.unwrap();
         }
         outcome
     });
@@ -425,7 +364,6 @@ async fn two_appends_at_once_are_serialised() {
     // Long enough for the second to have reached the wait.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     first.commit().await.unwrap();
-    drop(first_connection);
 
     let seq = tokio::time::timeout(std::time::Duration::from_secs(10), waiting)
         .await
@@ -434,10 +372,7 @@ async fn two_appends_at_once_are_serialised() {
         .expect("the second append was refused instead of chaining onto the first");
     assert_eq!(seq, 2, "the second append did not chain onto the first");
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     assert!(audit::verify(&transaction, &digest).await.unwrap().holds());
 }
 
@@ -447,10 +382,7 @@ async fn two_appends_at_once_are_serialised() {
 async fn an_entry_cannot_choose_its_realm() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
@@ -488,10 +420,7 @@ async fn an_entry_cannot_choose_its_realm() {
 async fn the_application_cannot_write_the_record() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
@@ -499,7 +428,6 @@ async fn the_application_cannot_write_the_record() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     let attempts = [
         (
@@ -519,13 +447,9 @@ async fn the_application_cannot_write_the_record() {
     ];
 
     for (statement, what) in attempts {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let refused = transaction.execute(statement, &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -538,10 +462,7 @@ async fn each_realm_starts_from_its_own_genesis() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
@@ -551,13 +472,9 @@ async fn each_realm_starts_from_its_own_genesis() {
         .unwrap()
         .get(0);
     transaction.commit().await.unwrap();
-    drop(connection);
 
     // A second realm of the same tenant, planted for this.
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide("acme")).await;
     let realm = models::entities::realm::RealmCreateModel {
         name: "other".into(),
         display_name: "Other".into(),
@@ -571,12 +488,8 @@ async fn each_realm_starts_from_its_own_genesis() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     audit::start(&transaction, &digest, "acme", "other")
         .await
         .unwrap();
@@ -598,10 +511,7 @@ async fn each_realm_starts_from_its_own_genesis() {
 async fn a_chain_is_not_visible_from_another_realm() {
     let fixture = Fixture::with_user().await;
     let digest = digest();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     audit::start(&transaction, &digest, "acme", "main")
         .await
         .unwrap();
@@ -609,12 +519,8 @@ async fn a_chain_is_not_visible_from_another_realm() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     assert!(
         matches!(
             audit::verify(&transaction, &digest).await,

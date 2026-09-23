@@ -1,6 +1,6 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
 use crypto::envelope::Envelope;
-use deadpool_postgres::Transaction;
 use secrecy::{ExposeSecret, SecretBox};
 
 use crate::error::{StoreError, StoreResult};
@@ -12,7 +12,7 @@ const ID: &str = "secret";
 /// Write the secret the realm's USSD gateway presents, replacing whatever
 /// was there.
 pub async fn keep_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     secret: &SecretBox<String>,
@@ -39,7 +39,7 @@ pub async fn keep_secret(
 
 /// The secret, opened, or nothing where the realm takes no USSD.
 pub async fn load_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
 ) -> StoreResult<Option<SecretBox<String>>> {
@@ -58,7 +58,7 @@ pub async fn load_secret(
 }
 
 /// Forget the gateway, and say whether there was one to forget.
-pub async fn forget_secret(transaction: &Transaction<'_>) -> StoreResult<bool> {
+pub async fn forget_secret(transaction: &UnitOfWork) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM realm_ussd", &[])
         .await
@@ -69,7 +69,7 @@ pub async fn forget_secret(transaction: &Transaction<'_>) -> StoreResult<bool> {
 /// Anchor what this gateway session was shown, replacing whatever it was
 /// shown before: one screen, one pending answer.
 pub async fn anchor(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
     user_id: &str,
     anchored: &[u8],
@@ -96,7 +96,7 @@ pub async fn anchor(
 /// Take the anchor and hand back what the screen showed, once: an answer
 /// spends its screen the way a code spends its token.
 pub async fn take_anchor(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
     now: DateTime<Utc>,
 ) -> StoreResult<Option<(String, Vec<u8>)>> {
@@ -116,7 +116,7 @@ pub async fn take_anchor(
 
 /// Drop anchors nothing will answer any more, and say how many.
 pub async fn drop_expired_anchors(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     now: DateTime<Utc>,
 ) -> StoreResult<u64> {
     transaction

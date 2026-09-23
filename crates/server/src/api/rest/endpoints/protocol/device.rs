@@ -1,9 +1,9 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
-use deadpool_postgres::Pool;
 use serde_json::json;
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use config::serving::LoginUi;
 
@@ -35,7 +35,6 @@ pub async fn open(
     request: HttpRequest,
     realm: web::Path<String>,
     body: Option<web::Form<Opening>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
@@ -45,11 +44,14 @@ pub async fn open(
     let Some(body) = body.map(web::Form::into_inner) else {
         return Denied::InvalidRequest.answer("the body could not be read as a form");
     };
-    let Ok(mut connection) = pool.get().await else {
-        return Denied::InvalidRequest.answer("the realm could not be read");
-    };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return Denied::InvalidClient.answer("the client could not be authenticated");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return Denied::InvalidRequest.answer("the realm could not be read");
+        }
+        Err(_) => {
+            return Denied::InvalidClient.answer("the client could not be authenticated");
+        }
     };
     let (transaction, client) = match caller::establish(
         &request,
@@ -59,7 +61,6 @@ pub async fn open(
             .as_deref()
             .zip(body.client_assertion.as_deref())
             .map(|(kind, assertion)| services::client::Signed { kind, assertion }),
-        &mut connection,
         &tenancy,
         &sealing,
         &origin,
@@ -115,10 +116,9 @@ pub async fn open(
 pub async fn page(
     request: HttpRequest,
     realm: web::Path<String>,
-    pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<store::tenancy::Tenancy>,
 ) -> HttpResponse {
-    let tongues = super::page::tongues_of_realm(&pool, &tenancy, &realm).await;
+    let tongues = super::page::tongues_of_realm(&tenancy, &realm).await;
     let tongue = tongues.negotiated(
         None,
         request
@@ -157,7 +157,6 @@ pub async fn verify(
     _request: HttpRequest,
     realm: web::Path<String>,
     body: Option<web::Form<Typed>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
@@ -172,13 +171,10 @@ pub async fn verify(
         "/realms/{}/protocol/openid-connect/device#no-such-code",
         realm.as_str()
     );
-    let Ok(mut connection) = pool.get().await else {
+    let Ok(context) = tenancy.resolve(RealmNamed::ByName(&realm)).await else {
         return sent_back(&back);
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return sent_back(&back);
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return sent_back(&back);
     };
     let auth_session_id = match services::device::begin_verification(

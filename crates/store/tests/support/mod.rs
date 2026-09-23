@@ -1,6 +1,6 @@
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{CryptoConfig, CryptoProvider};
-use deadpool_postgres::{Manager, Object, Pool, Transaction};
+use deadpool_postgres::{Manager, Object, Pool};
 use models::auditable::AuditableModel;
 use models::entities::client::ClientCreateModel;
 use models::entities::realm::RealmCreateModel;
@@ -10,7 +10,7 @@ use pgcore::migrations::MigrationRunner;
 use pgcore::tls::PgConnector;
 use store::providers::{clients, realms, tenants, users};
 use store::schema::migrations;
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 use tokio::sync::{Mutex, MutexGuard};
 use tokio_postgres::{Config, NoTls};
 
@@ -76,6 +76,7 @@ async fn ensured_database() {
 
 /// A migrated database with a turn on it, and whatever rows were asked for.
 pub struct Fixture {
+    #[allow(dead_code, reason = "each test binary compiles this module on its own")]
     pool: Pool,
     _turn: MutexGuard<'static, ()>,
     tenancy: Tenancy,
@@ -120,9 +121,9 @@ impl Fixture {
             .expect("a pool");
 
         Fixture {
-            pool,
+            pool: pool.clone(),
             _turn: turn,
-            tenancy: Tenancy::unpinned(),
+            tenancy: Tenancy::unpinned(pool.clone()),
         }
     }
 
@@ -158,32 +159,29 @@ impl Fixture {
         fixture
     }
 
-    /// A connection from the pool.
-    ///
-    /// Released once its transaction has committed. A guard stays borrowed until
-    /// it leaves scope and shadowing it does not release one, so a test taking
-    /// more in a row than the pool holds waits on one that is never coming back.
+    /// A connection outside any unit of work, for a test that has to see what
+    /// an unscoped reader sees.
+    #[allow(dead_code, reason = "each test binary compiles this module on its own")]
     pub async fn connection(&self) -> Object {
         self.pool.get().await.expect("a connection")
     }
 
+    /// The only door to the database, as the code under test holds it.
+    #[allow(dead_code, reason = "each test binary compiles this module on its own")]
+    pub fn tenancy(&self) -> &Tenancy {
+        &self.tenancy
+    }
+
     /// A transaction saying who it is for.
-    pub async fn scoped<'c>(
-        &self,
-        connection: &'c mut Object,
-        context: &TenantContext,
-    ) -> Transaction<'c> {
+    pub async fn scoped(&self, context: &TenantContext) -> UnitOfWork {
         self.tenancy
-            .transaction(connection, context)
+            .begin(context)
             .await
-            .expect("a scoped transaction")
+            .expect("a scoped unit of work")
     }
 
     async fn plant(&self, with_client: bool) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
-            .await;
+        let transaction = self.scoped(&TenantContext::tenant_wide("acme")).await;
 
         let tenant: models::entities::tenant::TenantModel = TenantCreateModel {
             tenant_id: "acme".into(),
@@ -206,12 +204,8 @@ impl Fixture {
         );
         realms::create(&transaction, &realm).await.unwrap();
         transaction.commit().await.unwrap();
-        drop(connection);
 
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = self.scoped(&TenantContext::new("acme", "main")).await;
 
         let user = UserCreateModel {
             user_name: "ada".into(),

@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 
 use crate::error::{StoreError, StoreResult};
 
@@ -13,7 +13,7 @@ pub struct Consent {
 
 /// What this person has agreed to give this client, if anything.
 pub async fn held(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     client_id: &str,
 ) -> StoreResult<Option<Consent>> {
@@ -29,7 +29,7 @@ pub async fn held(
 }
 
 /// Everything this person has agreed to, for a page that shows it back.
-pub async fn of_user(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<Consent>> {
+pub async fn of_user(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Vec<Consent>> {
     Ok(transaction
         .query(
             "SELECT user_id, client_id, scopes, granted_at FROM user_consents \
@@ -48,7 +48,7 @@ pub async fn of_user(transaction: &Transaction<'_>, user_id: &str) -> StoreResul
 /// Replacing rather than adding: the row says what stands now, and a person
 /// who agreed to less than last time has agreed to less.
 pub async fn keep(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     client_id: &str,
     scopes: &[String],
@@ -69,7 +69,7 @@ pub async fn keep(
 }
 
 pub async fn withdraw(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     client_id: &str,
 ) -> StoreResult<bool> {

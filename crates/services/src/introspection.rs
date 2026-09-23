@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
 use models::entities::keys::RealmSigningKeyView;
 use serde_json::{Map, Value, json};
 use store::providers::sessions;
+use store::tenancy::UnitOfWork;
 
 use crate::token;
 use crate::token::issuance::Kind;
@@ -30,7 +30,7 @@ pub enum Untellable {
 /// Any confidential client of the realm may ask about any token the realm
 /// issued: a resource server is rarely the client a token was minted for.
 pub async fn introspect(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     keys: &[RealmSigningKeyView],
     caller: &ClientModel,
     token: &str,

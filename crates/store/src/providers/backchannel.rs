@@ -1,6 +1,6 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
 use crypto::provider::{DigestProvider, HashAlg};
-use deadpool_postgres::Transaction;
 use models::entities::backchannel::{BackchannelRequestModel, BackchannelState};
 use tokio_postgres::Row;
 
@@ -17,7 +17,7 @@ fn digest_of(digest: &dyn DigestProvider, auth_req_id: &str) -> StoreResult<Vec<
 }
 
 pub async fn open(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     auth_req_id: &str,
     request: &BackchannelRequestModel,
@@ -52,7 +52,7 @@ pub async fn open(
 }
 
 pub async fn load(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     auth_req_id: &str,
 ) -> StoreResult<Option<BackchannelRequestModel>> {
@@ -68,7 +68,7 @@ pub async fn load(
 /// Stamp one poll and hand back the previous stamp, so the caller can tell a
 /// too-eager client to slow down without a second read.
 pub async fn touch_poll(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     auth_req_id: &str,
     now: DateTime<Utc>,
@@ -89,7 +89,7 @@ pub async fn touch_poll(
 
 /// The pending requests somebody may decide on, oldest first.
 pub async fn pending_for(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     now: DateTime<Utc>,
 ) -> StoreResult<Vec<(Vec<u8>, BackchannelRequestModel)>> {
@@ -111,7 +111,7 @@ pub async fn pending_for(
 /// WHERE is the authorization, so a decision for somebody else's request
 /// writes nothing. The row comes back so a ping delivery knows where to go.
 pub async fn decide(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_digest: &[u8],
     user_id: &str,
     approved: bool,
@@ -142,7 +142,7 @@ pub async fn decide(
 /// Take an approved request off the table and hand it back: the one
 /// collection, by construction.
 pub async fn spend(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     auth_req_id: &str,
 ) -> StoreResult<Option<BackchannelRequestModel>> {
@@ -159,7 +159,7 @@ pub async fn spend(
         .map(read))
 }
 
-pub async fn drop_expired(transaction: &Transaction<'_>, now: DateTime<Utc>) -> StoreResult<u64> {
+pub async fn drop_expired(transaction: &UnitOfWork, now: DateTime<Utc>) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM backchannel_requests WHERE expires_at <= $1",
@@ -191,7 +191,7 @@ fn read(row: Row) -> BackchannelRequestModel {
 
 /// Fell every row this person left here: an erasure walks where no cascade
 /// reaches.
-pub async fn erase_for_user(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<u64> {
+pub async fn erase_for_user(transaction: &UnitOfWork, user_id: &str) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM backchannel_requests WHERE user_id = $1",

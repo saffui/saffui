@@ -1,7 +1,6 @@
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use serde::{Deserialize, Serialize};
 use services::admin::mail::Unsettable;
 use store::keyring;
@@ -51,7 +50,6 @@ pub struct TestAsked {
 
 pub async fn send_test(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<crate::api::config::Sealing>,
     path: web::Path<String>,
@@ -65,15 +63,8 @@ pub async fn send_test(
             "the test wants an address to send to".to_owned(),
         ));
     }
-    let mut connection = pool
-        .get()
-        .await
-        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
     let ring = keyring::load(
@@ -119,18 +110,13 @@ pub async fn send_test(
 
 pub async fn read(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
         .map_err(|_| internal())?;
     let ring = keyring::load(
@@ -160,7 +146,6 @@ pub async fn read(
 
 pub async fn write(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
@@ -168,12 +153,8 @@ pub async fn write(
 ) -> Result<HttpResponse, ApiError> {
     let asked = asked.into_inner();
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
         .map_err(|_| internal())?;
     let ring = keyring::load(
@@ -208,17 +189,12 @@ pub async fn write(
 
 pub async fn forget(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
         .map_err(|_| internal())?;
     services::admin::mail::forget(&transaction)
@@ -249,21 +225,13 @@ fn internal() -> ApiError {
 /// message will it take, and how does it want to be authenticated.
 pub async fn look_at_relay(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool
-        .get()
-        .await
-        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
     let ring = keyring::load(
@@ -290,20 +258,12 @@ pub async fn look_at_relay(
 /// What this realm tried to send lately and could not.
 pub async fn list_refusals(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool
-        .get()
-        .await
-        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
 

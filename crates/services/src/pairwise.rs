@@ -1,8 +1,8 @@
 use crypto::provider::CryptoProvider;
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
 use store::providers::pairwise;
+use store::tenancy::UnitOfWork;
 use url::Url;
 
 /// How many bytes an identifier is drawn from.
@@ -54,7 +54,7 @@ fn host_of(uri: &str) -> Option<String> {
 /// The account's own identifier for a client that is told it, and otherwise
 /// the one this sector already holds or one drawn now.
 pub async fn subject_for(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     client: &ClientModel,
     user_id: &str,
@@ -86,7 +86,7 @@ pub async fn subject_for(
 
 /// The account an identifier stands for, going the other way.
 pub async fn account_for(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client: Option<&ClientModel>,
     sub: &str,
 ) -> Result<String, Unpaired> {

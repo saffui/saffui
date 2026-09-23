@@ -15,7 +15,6 @@ const REDIRECT: &str = "https://till.example/callback";
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -42,9 +41,8 @@ async fn planted_till(plane: &Plane) {
     use models::entities::attributes::AttributeValue;
     use models::entities::client::ClientCreateModel;
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let mut client = ClientCreateModel {
         name: MACHINE.into(),
@@ -181,9 +179,8 @@ async fn a_certificate_is_a_client_credential() {
     // refused whole rather than served loosely.
     {
         use models::entities::attributes::AttributeValue;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut client = store::providers::clients::load(&transaction, MACHINE)
             .await
@@ -218,9 +215,8 @@ async fn a_subject_dn_is_the_third_registered_name() {
     const NAMED: &str = "till-8";
     let plane = Plane::with_actions(&[]).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut client = ClientCreateModel {
             name: NAMED.into(),
@@ -328,9 +324,8 @@ async fn a_subject_dn_is_the_third_registered_name() {
     // rendering is canonical, and only the canonical string admits.
     {
         use models::entities::attributes::AttributeValue;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut client = store::providers::clients::load(&transaction, NAMED)
             .await

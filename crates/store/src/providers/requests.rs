@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
@@ -26,7 +26,7 @@ pub struct AccessRequest {
 const COLUMNS: &str = "request_id, user_id, role_id, reason, expires_at, state, \
                        asked_by, decided_by, decided_at, decided_reason, created_at";
 
-pub async fn lodge(transaction: &Transaction<'_>, asked: &AccessRequest) -> StoreResult<()> {
+pub async fn lodge(transaction: &UnitOfWork, asked: &AccessRequest) -> StoreResult<()> {
     transaction
         .execute(
             "INSERT INTO access_requests \
@@ -47,7 +47,7 @@ pub async fn lodge(transaction: &Transaction<'_>, asked: &AccessRequest) -> Stor
     Ok(())
 }
 
-pub async fn list(transaction: &Transaction<'_>) -> StoreResult<Vec<AccessRequest>> {
+pub async fn list(transaction: &UnitOfWork) -> StoreResult<Vec<AccessRequest>> {
     let statement =
         format!("SELECT {COLUMNS} FROM access_requests ORDER BY created_at DESC, request_id ASC");
     Ok(transaction
@@ -60,7 +60,7 @@ pub async fn list(transaction: &Transaction<'_>) -> StoreResult<Vec<AccessReques
 }
 
 pub async fn load(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
 ) -> StoreResult<Option<AccessRequest>> {
     let statement = format!("SELECT {COLUMNS} FROM access_requests WHERE request_id = $1");
@@ -75,7 +75,7 @@ pub async fn load(
 /// row moved: none did means someone decided first, and the caller stops
 /// rather than deciding twice.
 pub async fn decide(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     to_state: &str,
     by: &str,
@@ -111,7 +111,7 @@ fn read(row: Row) -> AccessRequest {
 }
 
 /// How many access requests are waiting on somebody.
-pub async fn count_pending(transaction: &Transaction<'_>) -> StoreResult<i64> {
+pub async fn count_pending(transaction: &UnitOfWork) -> StoreResult<i64> {
     Ok(transaction
         .query_one(
             "SELECT count(*) FROM access_requests WHERE state = $1",

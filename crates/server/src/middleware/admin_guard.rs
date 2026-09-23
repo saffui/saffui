@@ -1,16 +1,14 @@
 use std::future::{Ready, ready};
 use std::rc::Rc;
+use store::tenancy::{RealmNamed, Tenancy, UnitOfWork};
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::{Error, HttpMessage, ResponseError};
 use chrono::Utc;
 use config::serving::PublicOrigin;
-use deadpool_postgres::Pool;
-use deadpool_postgres::Transaction;
 use models::entities::authz::AdminAction;
 use services::context::{self, Acting, Context};
-use store::tenancy::{Tenancy, resolve};
 
 use crate::api::routes;
 use crate::error::{refused, unauthenticated};
@@ -34,7 +32,6 @@ pub struct Admin {
 /// The guard, and what it needs to do its work.
 #[derive(Clone)]
 pub struct Guard {
-    pub pool: Pool,
     pub tenancy: Tenancy,
     pub policy: AdminPolicy,
     /// What this deployment answers from. A token states an issuer built out of
@@ -139,16 +136,12 @@ async fn establish(
     let issuer = unverified_issuer(&bearer).ok_or_else(unauthenticated)?;
     let named = guard.origin.realm_of(&issuer).ok_or_else(unauthenticated)?;
 
-    let mut connection = guard.pool.get().await.map_err(|_| unauthenticated())?;
-    let context = resolve::realm_by_id(&connection, named)
-        .await
-        .map_err(|_| unauthenticated())?;
-
     let transaction = guard
         .tenancy
-        .transaction(&mut connection, &context)
+        .begin_in(RealmNamed::ById(named))
         .await
         .map_err(|_| unauthenticated())?;
+    let context = transaction.context().clone();
 
     let keys = services::realm::published_keys(&transaction)
         .await
@@ -216,7 +209,7 @@ async fn establish(
 ///
 /// Actions with no capability behind them are always open, which is every one
 /// of them but the few a realm may close.
-async fn action_still_runs(transaction: &Transaction<'_>, action: AdminAction) -> bool {
+async fn action_still_runs(transaction: &UnitOfWork, action: AdminAction) -> bool {
     use commons::feature::Feature;
     let behind = match action {
         AdminAction::ScimRead | AdminAction::ScimWrite => Feature::Scim,
@@ -241,7 +234,7 @@ async fn action_still_runs(transaction: &Transaction<'_>, action: AdminAction) -
 /// realm wide set, a grant made inside one organization would answer for every
 /// other one and for the realm itself.
 async fn capabilities(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     established: &Context,
 ) -> Result<Vec<AdminAction>, commons::http::ApiError> {
     let within = match &established.acting {

@@ -4,12 +4,12 @@ use auth::login::authenticator::Answer;
 use auth::login::browser::{self, Step, Unanswerable};
 use chrono::Utc;
 use config::serving::PublicOrigin;
-use deadpool_postgres::Pool;
 use secrecy::SecretBox;
 use serde::Deserialize;
 use services::form_post;
 use services::landing::{Landing, ResponseMode};
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
@@ -90,7 +90,6 @@ pub async fn answer(
     request: HttpRequest,
     realm: web::Path<String>,
     answered: Option<Either<web::Json<Answered>, web::Form<Answered>>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -120,16 +119,19 @@ pub async fn answer(
     let Some(auth_session) = binding::read(&request, binding::AUTH_SESSION) else {
         return tell(StatusCode::NOT_FOUND, "no-such-login");
     };
-    let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
-    };
     // Resolved before anything is read, and answered the same way a login that
     // does not exist is: which realms a deployment holds is not something an
     // unauthenticated caller gets to enumerate.
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return tell(StatusCode::NOT_FOUND, "no-such-login");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+        }
+        Err(_) => {
+            return tell(StatusCode::NOT_FOUND, "no-such-login");
+        }
     };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
 
@@ -398,10 +400,8 @@ pub async fn answer(
                     sending,
                 } => {
                     if let Some(outbound) = sending {
-                        super::texting::deliver_outbound(
-                            &sealing, &pool, &tenancy, &context, *outbound,
-                        )
-                        .await;
+                        super::texting::deliver_outbound(&sealing, &tenancy, &context, *outbound)
+                            .await;
                     }
                     match spoken {
                         Spoken::Json => {

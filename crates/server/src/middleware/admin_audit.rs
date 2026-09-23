@@ -7,7 +7,6 @@ use actix_web::HttpMessage;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use chrono::Utc;
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Pool;
 use std::sync::Arc;
 use store::tenancy::{Tenancy, TenantContext};
 
@@ -26,7 +25,6 @@ use crate::middleware::admin_guard::Admin;
 /// would turn the audit into a denial lever.
 #[derive(Clone)]
 pub struct Journal {
-    pub pool: Pool,
     pub tenancy: Tenancy,
     /// For the genesis digest, when a realm's chain starts on first write.
     pub provider: Arc<dyn CryptoProvider>,
@@ -46,7 +44,6 @@ where
     fn new_transform(&self, service: S) -> Self::Future {
         ready(Ok(JournalScribe {
             service: Rc::new(service),
-            pool: self.pool.clone(),
             tenancy: self.tenancy.clone(),
             provider: Arc::clone(&self.provider),
         }))
@@ -55,7 +52,6 @@ where
 
 pub struct JournalScribe<S> {
     service: Rc<S>,
-    pool: Pool,
     tenancy: Tenancy,
     provider: Arc<dyn CryptoProvider>,
 }
@@ -73,7 +69,6 @@ where
 
     fn call(&self, request: ServiceRequest) -> Self::Future {
         let service = Rc::clone(&self.service);
-        let pool = self.pool.clone();
         let tenancy = self.tenancy.clone();
         let provider = Arc::clone(&self.provider);
         Box::pin(async move {
@@ -85,7 +80,7 @@ where
             // Writes are journalled unconditionally: that is the design. A
             // read lands in the chain only where the realm switched its
             // admin_events_enabled on, the forensic mode.
-            if !mutates && !reads_are_journalled(&pool, &tenancy, answered.request()).await {
+            if !mutates && !reads_are_journalled(&tenancy, answered.request()).await {
                 return Ok(answered);
             }
             // The identity the guard established. Absent means the request
@@ -126,7 +121,7 @@ where
                 })
             };
             if let Some((context, envelope)) = entry {
-                record_or_warn(&pool, &tenancy, provider.as_ref(), &context, &envelope).await;
+                record_or_warn(&tenancy, provider.as_ref(), &context, &envelope).await;
             }
             Ok(answered)
         })
@@ -136,11 +131,7 @@ where
 /// Whether this realm journals its reads too. One indexed load per admin
 /// GET when consulted; false on any failure, because a read that cannot be
 /// checked is treated the way every realm treats reads by default.
-async fn reads_are_journalled(
-    pool: &Pool,
-    tenancy: &Tenancy,
-    request: &actix_web::HttpRequest,
-) -> bool {
+async fn reads_are_journalled(tenancy: &Tenancy, request: &actix_web::HttpRequest) -> bool {
     let Some(context) = request
         .extensions()
         .get::<Admin>()
@@ -148,11 +139,8 @@ async fn reads_are_journalled(
     else {
         return false;
     };
-    let Ok(mut connection) = pool.get().await else {
-        return false;
-    };
     let realm = context.realm_id.clone();
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return false;
     };
     matches!(
@@ -167,22 +155,18 @@ async fn reads_are_journalled(
 /// transaction, and the start that follows would only ever see the abort.
 /// The start is idempotent, so two first writers race harmlessly.
 async fn record_or_warn(
-    pool: &Pool,
     tenancy: &Tenancy,
     provider: &dyn CryptoProvider,
     context: &TenantContext,
     envelope: &serde_json::Value,
 ) {
     let written = async {
-        {
-            let mut connection = pool.get().await.ok()?;
-            let transaction = tenancy.transaction(&mut connection, context).await.ok()?;
-            if store::audit::append(&transaction, envelope).await.is_ok() {
-                return transaction.commit().await.ok();
-            }
+        let first = tenancy.begin(context).await.ok()?;
+        if store::audit::append(&first, envelope).await.is_ok() {
+            return first.commit().await.ok();
         }
-        let mut connection = pool.get().await.ok()?;
-        let transaction = tenancy.transaction(&mut connection, context).await.ok()?;
+        let _ = first.rollback().await;
+        let transaction = tenancy.begin(context).await.ok()?;
         store::audit::start(
             &transaction,
             provider.digest(),

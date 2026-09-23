@@ -1,6 +1,6 @@
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{CryptoConfig, CryptoProvider};
-use deadpool_postgres::{Manager, Object, Pool, Transaction};
+use deadpool_postgres::{Manager, Pool};
 use models::auditable::AuditableModel;
 use models::entities::client::ClientCreateModel;
 use models::entities::realm::RealmCreateModel;
@@ -10,7 +10,7 @@ use pgcore::migrations::MigrationRunner;
 use pgcore::tls::PgConnector;
 use store::providers::{clients, realms, tenants, users};
 use store::schema::migrations;
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 use tokio::sync::{Mutex, MutexGuard};
 use tokio_postgres::{Config, NoTls};
 
@@ -34,7 +34,6 @@ fn owner_config() -> Config {
 
 /// A migrated database with a turn on it, and whatever rows were asked for.
 pub struct Fixture {
-    pool: Pool,
     _turn: MutexGuard<'static, ()>,
     tenancy: Tenancy,
 }
@@ -77,9 +76,8 @@ impl Fixture {
             .expect("a pool");
 
         Fixture {
-            pool,
             _turn: turn,
-            tenancy: Tenancy::unpinned(),
+            tenancy: Tenancy::unpinned(pool),
         }
     }
 
@@ -114,45 +112,23 @@ impl Fixture {
         fixture
     }
 
-    /// A connection from the pool.
-    ///
-    /// Released once its transaction has committed. A guard stays borrowed until
-    /// it leaves scope and shadowing it does not release one, so a test taking
-    /// more in a row than the pool holds waits on one that is never coming back.
-    /// The pool and the tenancy, for the one caller that opens its own
-    /// connections. Only the decision suite builds a journal, so the other two
-    /// suites in this crate see these as unused.
-    #[allow(dead_code, reason = "only the decision suite builds a journal")]
-    pub fn pool(&self) -> Pool {
-        self.pool.clone()
-    }
-
+    /// The only door to the database, as the code under test holds it. Only the
+    /// decision suite builds a journal, so the other suites see it as unused.
     #[allow(dead_code, reason = "only the decision suite builds a journal")]
     pub fn tenancy(&self) -> Tenancy {
         self.tenancy.clone()
     }
 
-    pub async fn connection(&self) -> Object {
-        self.pool.get().await.expect("a connection")
-    }
-
     /// A transaction saying who it is for.
-    pub async fn scoped<'c>(
-        &self,
-        connection: &'c mut Object,
-        context: &TenantContext,
-    ) -> Transaction<'c> {
+    pub async fn scoped(&self, context: &TenantContext) -> UnitOfWork {
         self.tenancy
-            .transaction(connection, context)
+            .begin(context)
             .await
-            .expect("a scoped transaction")
+            .expect("a scoped unit of work")
     }
 
     async fn plant(&self, with_client: bool) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
-            .await;
+        let transaction = self.scoped(&TenantContext::tenant_wide("acme")).await;
 
         let tenant: models::entities::tenant::TenantModel = TenantCreateModel {
             tenant_id: "acme".into(),
@@ -175,12 +151,8 @@ impl Fixture {
         );
         realms::create(&transaction, &realm).await.unwrap();
         transaction.commit().await.unwrap();
-        drop(connection);
 
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = self.scoped(&TenantContext::new("acme", "main")).await;
 
         let user = UserCreateModel {
             user_name: "ada".into(),

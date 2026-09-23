@@ -6,13 +6,13 @@
 //! credential anywhere. A secret exists only where the operator asked for
 //! one, drawn on the server and handed back exactly once.
 
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::attributes::AttributeValue;
 use models::entities::client::{ClientCreateModel, ClientModel, Protocol};
 use models::entities::user::UserCreateModel;
 use store::error::StoreError;
 use store::providers::{clients, users};
+use store::tenancy::UnitOfWork;
 
 use crate::capability;
 
@@ -116,7 +116,7 @@ fn brief_of(client: &ClientModel, keyed: bool) -> Option<AgentBrief> {
 /// only ever carries the legacy plaintext, and the hash a rotation writes
 /// never surfaces on it, so the fact is asked where it lives.
 async fn briefed(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client: &ClientModel,
 ) -> Result<Option<AgentBrief>, Refused> {
     let Some(brief) = brief_of(client, false) else {
@@ -137,7 +137,7 @@ async fn briefed(
     reason = "a birth names everything it writes, once, in one signature"
 )]
 pub async fn register(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn crypto::provider::CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -241,7 +241,7 @@ pub async fn register(
 }
 
 /// Every agent this realm holds: the clients whose bag names a root.
-pub async fn list(transaction: &Transaction<'_>) -> Result<Vec<AgentBrief>, Refused> {
+pub async fn list(transaction: &UnitOfWork) -> Result<Vec<AgentBrief>, Refused> {
     let query = store::query::list_query::ListQuery::new(models::paging::Window {
         first: 0,
         max: 1000,
@@ -259,7 +259,7 @@ pub async fn list(transaction: &Transaction<'_>) -> Result<Vec<AgentBrief>, Refu
     Ok(kept)
 }
 
-pub async fn get(transaction: &Transaction<'_>, client_id: &str) -> Result<AgentBrief, Refused> {
+pub async fn get(transaction: &UnitOfWork, client_id: &str) -> Result<AgentBrief, Refused> {
     let client = clients::load(transaction, client_id)
         .await
         .map_err(|_| Refused::Unwritable)?
@@ -273,7 +273,7 @@ pub async fn get(transaction: &Transaction<'_>, client_id: &str) -> Result<Agent
 /// validated before anything is written, and a removal that would empty
 /// the root refuses whole rather than leaving an agent that is not one.
 pub async fn reshape(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     add: &[String],
     remove: &[String],

@@ -9,11 +9,11 @@
 use crypto::password::storage::StoredPassword;
 use crypto::provider::{Argon2Params, CryptoProvider};
 use data_encoding::HEXLOWER;
-use deadpool_postgres::Transaction;
 use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
 use models::entities::realm::{About, PasswordPolicy, PasswordRefused};
 use secrecy::SecretBox;
 use store::providers::{credentials, realms, users};
+use store::tenancy::UnitOfWork;
 
 /// Why a password was not kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -42,7 +42,7 @@ pub enum Unkept {
 /// cannot be read refuses, since a password written past a policy nobody could
 /// fetch is exactly the write this exists to stop.
 pub async fn refused_by_the_realm(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm_id: &str,
     user_id: &str,
@@ -84,7 +84,7 @@ pub async fn refused_by_the_realm(
 /// password most likely to be typed. Compared one hash at a time, oldest last,
 /// which is why how deep this goes is bounded where the policy is read back.
 async fn worn_before(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     policy: &PasswordPolicy,
     user_id: &str,
@@ -139,7 +139,7 @@ async fn worn_before(
     reason = "each is a distinct fact about one password"
 )]
 async fn remember_the_password_it_replaces(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -199,7 +199,7 @@ pub enum Compared {
 /// A stored row in a shape this build does not read differs, as it does at a
 /// login: nothing is admitted on a hash nobody can check.
 pub async fn compare_with_held(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     user_id: &str,
     offered: &SecretBox<String>,
@@ -238,7 +238,7 @@ pub async fn compare_with_held(
     reason = "each is a distinct fact about one password"
 )]
 pub async fn keep(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     cost: Argon2Params,
     tenant: &str,

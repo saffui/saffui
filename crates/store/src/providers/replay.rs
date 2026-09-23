@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use crypto::provider::{DigestProvider, HashAlg};
-use deadpool_postgres::Transaction;
 
 use crate::error::{StoreError, StoreResult};
 
@@ -7,7 +7,7 @@ use crate::error::{StoreError, StoreResult};
 /// `expires_at`, which the caller takes from the value's own window, and
 /// the sweep ages it out.
 pub async fn remember_once(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     purpose: &str,
     value: &str,
@@ -30,7 +30,7 @@ pub async fn remember_once(
 }
 
 pub async fn drop_expired(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     now: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<u64> {
     transaction

@@ -1,5 +1,4 @@
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::authz::{
     DecisionStrategy, PolicyEnforcementMode, PolicyModel, PolicyTerms, ResourceModel,
@@ -7,6 +6,7 @@ use models::entities::authz::{
 };
 use store::error::StoreError;
 use store::providers::{authz_policies, authz_surface, clients};
+use store::tenancy::UnitOfWork;
 
 /// Why the authorization surface could not be written.
 ///
@@ -81,7 +81,7 @@ fn refuse_blank_field(value: &str, field: &str) -> Result<(), Unwritable> {
     reason = "each is a distinct fact about one resource server"
 )]
 pub async fn protect(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
     by: &str,
@@ -116,7 +116,7 @@ pub async fn protect(
 }
 
 pub async fn server(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
 ) -> Result<ResourceServerModel, Unwritable> {
     authz_surface::load_server(transaction, server_id)
@@ -126,7 +126,7 @@ pub async fn server(
 }
 
 pub async fn set_protection(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     by: &str,
     enforcement_mode: PolicyEnforcementMode,
@@ -148,7 +148,7 @@ pub async fn set_protection(
 /// Take the surface down: bindings first, then the rows. The condition edge
 /// does not cascade, so a server deleted around its policies would leave
 /// conditions read by nothing.
-pub async fn unprotect(transaction: &Transaction<'_>, server_id: &str) -> Result<(), Unwritable> {
+pub async fn unprotect(transaction: &UnitOfWork, server_id: &str) -> Result<(), Unwritable> {
     server(transaction, server_id).await?;
     authz_policies::unbind_server(transaction, server_id)
         .await
@@ -161,7 +161,7 @@ pub async fn unprotect(transaction: &Transaction<'_>, server_id: &str) -> Result
 }
 
 pub async fn add_resource(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -185,7 +185,7 @@ pub async fn add_resource(
 }
 
 pub async fn resources(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
 ) -> Result<Vec<ResourceModel>, Unwritable> {
     server(transaction, server_id).await?;
@@ -198,7 +198,7 @@ pub async fn resources(
 /// named by the policies that bind it, and a new row under a new id would
 /// break those bindings while looking like an edit.
 pub async fn rework_resource(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     resource_id: &str,
     by: &str,
@@ -231,7 +231,7 @@ pub async fn rework_resource(
 }
 
 pub async fn remove_resource(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     resource_id: &str,
 ) -> Result<(), Unwritable> {
@@ -250,7 +250,7 @@ pub async fn remove_resource(
 }
 
 pub async fn add_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -273,7 +273,7 @@ pub async fn add_scope(
 }
 
 pub async fn scopes(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
 ) -> Result<Vec<ScopeModel>, Unwritable> {
     server(transaction, server_id).await?;
@@ -285,7 +285,7 @@ pub async fn scopes(
 /// Rework one scope in place, for the same reason a resource is reworked in
 /// place: the permissions that bind it name it by identity.
 pub async fn rework_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     scope_id: &str,
     by: &str,
@@ -315,7 +315,7 @@ pub async fn rework_scope(
 }
 
 pub async fn remove_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     scope_id: &str,
 ) -> Result<(), Unwritable> {
@@ -341,7 +341,7 @@ pub async fn remove_scope(
     reason = "each is a distinct fact about one policy"
 )]
 pub async fn add_policy(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -367,7 +367,7 @@ pub async fn add_policy(
 
 /// Every policy of the server, the unreadable ones named rather than dropped.
 pub async fn policies(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
 ) -> Result<Vec<StoredPolicy>, Unwritable> {
     server(transaction, server_id).await?;
@@ -379,7 +379,7 @@ pub async fn policies(
 /// Rewrite a policy's terms. The identity and the kind stay: the store refuses
 /// a rewrite that would make it decide on something else.
 pub async fn rework_policy(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     policy_id: &str,
     by: &str,
@@ -410,10 +410,7 @@ pub async fn rework_policy(
         .ok_or(Unwritable::NotFound)
 }
 
-pub async fn remove_policy(
-    transaction: &Transaction<'_>,
-    policy_id: &str,
-) -> Result<(), Unwritable> {
+pub async fn remove_policy(transaction: &UnitOfWork, policy_id: &str) -> Result<(), Unwritable> {
     authz_policies::delete(transaction, policy_id)
         .await
         .map_err(carried)?
@@ -425,7 +422,7 @@ pub async fn remove_policy(
 /// of what the engine answered; nothing else prunes it, so retention is the
 /// operator's deliberate act, bounded by the instant they name.
 pub async fn prune_decisions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     before: chrono::DateTime<chrono::Utc>,
 ) -> Result<u64, Unwritable> {
     store::providers::authz_policies::prune_decisions(transaction, before)
@@ -472,7 +469,7 @@ pub enum Unshareable {
 /// graph does not describe is refused here instead of becoming a row the walk
 /// will not follow.
 pub async fn share_resource(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     resource_id: &str,
     relation: &str,
@@ -525,7 +522,7 @@ pub async fn share_resource(
 /// Stop sharing, whether sharing is open today or not. A share kept while it is
 /// closed grants nothing, and taking it back cannot wait for sharing to reopen.
 pub async fn unshare_resource(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     resource_id: &str,
     relation: &str,

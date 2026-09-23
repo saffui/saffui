@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::tenant::{TenantLimits, TenantModel, TenantState};
 
 use crate::error::{StoreError, StoreResult};
@@ -12,7 +12,7 @@ const COLUMNS: &str = "tenant_id, display_name, state, limits, region, \
 ///
 /// Which tenant is decided by the transaction, so a model naming another is
 /// refused by the rules rather than written. Nothing here commits.
-pub async fn create(transaction: &Transaction<'_>, tenant: &TenantModel) -> StoreResult<()> {
+pub async fn create(transaction: &UnitOfWork, tenant: &TenantModel) -> StoreResult<()> {
     let limits = limits_json(tenant.limits.as_ref())?;
     let set = WriteSet::insert(vec![
         col("tenant_id", &tenant.tenant_id),
@@ -33,7 +33,7 @@ pub async fn create(transaction: &Transaction<'_>, tenant: &TenantModel) -> Stor
 ///
 /// Another tenant's row is invisible under the rules, so this answers nothing
 /// rather than answering theirs.
-pub async fn load(transaction: &Transaction<'_>) -> StoreResult<Option<TenantModel>> {
+pub async fn load(transaction: &UnitOfWork) -> StoreResult<Option<TenantModel>> {
     let statement = format!("SELECT {COLUMNS} FROM tenants");
     let row = transaction
         .query_opt(statement.as_str(), &[])
@@ -58,7 +58,7 @@ pub async fn load(transaction: &Transaction<'_>) -> StoreResult<Option<TenantMod
 }
 
 /// Whether this transaction's tenant is registered.
-pub async fn exists(transaction: &Transaction<'_>) -> StoreResult<bool> {
+pub async fn exists(transaction: &UnitOfWork) -> StoreResult<bool> {
     let found: i64 = transaction
         .query_one("SELECT count(*) FROM tenants", &[])
         .await
@@ -73,7 +73,7 @@ pub async fn exists(transaction: &Transaction<'_>) -> StoreResult<bool> {
 /// number carried in would be a second opinion about a row the writer last read
 /// some time ago.
 pub async fn set_state(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     state: TenantState,
     actor: &str,
 ) -> StoreResult<bool> {
@@ -103,7 +103,7 @@ pub async fn set_state(
 /// creates one below the ceiling both read a count that passes.
 const PLANTING: i32 = 0x504C_414E_u32 as i32;
 
-pub async fn hold_realms(transaction: &Transaction<'_>, tenant: &str) -> StoreResult<()> {
+pub async fn hold_realms(transaction: &UnitOfWork, tenant: &str) -> StoreResult<()> {
     transaction
         .execute(
             "SELECT pg_advisory_xact_lock($1, hashtext($2))",
@@ -115,7 +115,7 @@ pub async fn hold_realms(transaction: &Transaction<'_>, tenant: &str) -> StoreRe
 }
 
 /// How many realms this tenant has, for a check against its own ceiling.
-pub async fn count_realms(transaction: &Transaction<'_>) -> StoreResult<i64> {
+pub async fn count_realms(transaction: &UnitOfWork) -> StoreResult<i64> {
     Ok(transaction
         .query_one("SELECT count(*) FROM realms", &[])
         .await

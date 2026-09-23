@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::organization::{
     OrgMembershipType, OrganizationDomain, OrganizationMemberModel, OrganizationModel,
 };
@@ -22,7 +22,7 @@ const MEMBER_COLUMNS: &str = "tenant, realm_id, org_id, user_id, membership_type
 /// Its domains are not written here. A claim is proven before it routes
 /// anything, and a create that carried its own domains would let a caller take
 /// delivery of mail addresses it does not own.
-pub async fn create(transaction: &Transaction<'_>, org: &OrganizationModel) -> StoreResult<()> {
+pub async fn create(transaction: &UnitOfWork, org: &OrganizationModel) -> StoreResult<()> {
     let attributes = org
         .attributes
         .as_ref()
@@ -56,7 +56,7 @@ pub async fn create(transaction: &Transaction<'_>, org: &OrganizationModel) -> S
 /// One organization by the name a caller spelled, which the realm holds
 /// unique.
 pub async fn load_by_name(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     name: &str,
 ) -> StoreResult<Option<OrganizationModel>> {
     let statement = format!("SELECT {ORG_COLUMNS} FROM organizations WHERE name = $1");
@@ -69,21 +69,21 @@ pub async fn load_by_name(
 
 /// One page of this realm's organizations, without their domains.
 pub async fn list(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> StoreResult<Page<OrganizationModel>> {
     let rows = transaction
         .query(
             query.select(ORG_COLUMNS, "organizations").as_str(),
-            &query.params(),
+            &query.page_params(),
         )
         .await
         .map_err(|_| StoreError::Backend)?;
     let total = if with_total {
         Some(
             transaction
-                .query_one(query.count("organizations").as_str(), &query.params())
+                .query_one(query.count("organizations").as_str(), &query.bound())
                 .await
                 .map_err(|_| StoreError::Backend)?
                 .get::<_, i64>(0),
@@ -100,7 +100,7 @@ pub async fn list(
 
 /// Rewrite what an organization says about itself. The identity stays, and so
 /// do its members and domains.
-pub async fn update(transaction: &Transaction<'_>, org: &OrganizationModel) -> StoreResult<bool> {
+pub async fn update(transaction: &UnitOfWork, org: &OrganizationModel) -> StoreResult<bool> {
     let attributes = org
         .attributes
         .as_ref()
@@ -134,7 +134,7 @@ pub async fn update(transaction: &Transaction<'_>, org: &OrganizationModel) -> S
 
 /// One organization of this realm, without its domains.
 pub async fn load(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
 ) -> StoreResult<Option<OrganizationModel>> {
     let statement = format!("SELECT {ORG_COLUMNS} FROM organizations WHERE org_id = $1");
@@ -146,7 +146,7 @@ pub async fn load(
 }
 
 /// Remove an organization, and say whether there was one to remove.
-pub async fn delete(transaction: &Transaction<'_>, org_id: &str) -> StoreResult<bool> {
+pub async fn delete(transaction: &UnitOfWork, org_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM organizations WHERE org_id = $1", &[&org_id])
         .await
@@ -162,7 +162,7 @@ pub async fn delete(transaction: &Transaction<'_>, org_id: &str) -> StoreResult<
 ///
 /// The challenge is the caller's to generate and to publish. This records it.
 pub async fn claim_domain(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     domain: &str,
     challenge: &str,
@@ -184,7 +184,7 @@ pub async fn claim_domain(
 ///
 /// The challenge goes with it. A challenge that outlived its proof is a value
 /// still published somewhere that would pass a check already passed.
-pub async fn verify_domain(transaction: &Transaction<'_>, domain: &str) -> StoreResult<bool> {
+pub async fn verify_domain(transaction: &UnitOfWork, domain: &str) -> StoreResult<bool> {
     let proven = transaction
         .execute(
             "UPDATE organization_domains SET verified_at = now(), challenge = NULL \
@@ -198,7 +198,7 @@ pub async fn verify_domain(transaction: &Transaction<'_>, domain: &str) -> Store
 
 /// The challenge a pending claim waits on, if it is still pending.
 pub async fn pending_challenge(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     domain: &str,
 ) -> StoreResult<Option<String>> {
     Ok(transaction
@@ -213,7 +213,7 @@ pub async fn pending_challenge(
 
 /// Every domain an organization claims, proven or not.
 pub async fn domains(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
 ) -> StoreResult<Vec<OrganizationDomain>> {
     let rows = transaction
@@ -234,7 +234,7 @@ pub async fn domains(
 /// own a domain, and honouring it would hand that domain's users to whoever
 /// asked first.
 pub async fn by_domain(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     domain: &str,
 ) -> StoreResult<Option<OrganizationModel>> {
     // Qualified, because the claims carry a creator and a creation time of their
@@ -262,7 +262,7 @@ pub async fn by_domain(
 /// they belong is corrected, because a user provisioned by a broker who is
 /// later invited by hand did not join twice.
 pub async fn add_member(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     member: &OrganizationMemberModel,
 ) -> StoreResult<()> {
     let mut columns = vec![
@@ -294,7 +294,7 @@ pub async fn add_member(
 
 /// Remove a membership, and say whether there was one to remove.
 pub async fn remove_member(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     user_id: &str,
 ) -> StoreResult<bool> {
@@ -310,7 +310,7 @@ pub async fn remove_member(
 
 /// Who belongs to an organization, with the roles each holds in it.
 pub async fn members(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
 ) -> StoreResult<Vec<OrganizationMemberModel>> {
     let statement = format!(
@@ -342,10 +342,7 @@ pub async fn members(
 /// The slug rather than the identifier: it is unique within the realm and a
 /// relying party can read it, which an opaque id is not and cannot. One round
 /// trip, because this is read while a token is being minted.
-pub async fn member_slugs(
-    transaction: &Transaction<'_>,
-    user_id: &str,
-) -> StoreResult<Vec<String>> {
+pub async fn member_slugs(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
             "SELECT o.name FROM organizations o \
@@ -360,7 +357,7 @@ pub async fn member_slugs(
         .collect())
 }
 
-pub async fn of_member(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
+pub async fn of_member(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
             "SELECT org_id FROM organization_members WHERE user_id = $1 ORDER BY org_id ASC",
@@ -377,7 +374,7 @@ pub async fn of_member(transaction: &Transaction<'_>, user_id: &str) -> StoreRes
 ///
 /// Granting twice grants once: the row is keyed by everything it joins.
 pub async fn grant_role(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     user_id: &str,
     role_id: &str,
@@ -404,7 +401,7 @@ pub async fn grant_role(
 /// answer for every other organization too, and for the realm itself, which is
 /// the grant nobody wrote.
 pub async fn roles_of_member(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     user_id: &str,
 ) -> StoreResult<Vec<models::entities::authz::RoleModel>> {
@@ -479,7 +476,7 @@ fn audit(row: &Row) -> models::auditable::AuditableModel {
 /// The organization's stored theme, worn by the hosted pages after the
 /// realm's own; absent is the realm's look.
 pub async fn theme_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
 ) -> StoreResult<Option<serde_json::Value>> {
     let row = transaction
@@ -494,7 +491,7 @@ pub async fn theme_of(
 
 /// Dress or undress the organization; absent is the realm's look.
 pub async fn set_theme(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     theme: Option<&serde_json::Value>,
 ) -> StoreResult<bool> {
@@ -510,7 +507,7 @@ pub async fn set_theme(
 
 /// Take a claimed domain away from the organization, proven or not.
 pub async fn drop_domain(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     org_id: &str,
     domain: &str,
 ) -> StoreResult<bool> {

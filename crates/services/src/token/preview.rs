@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 
 use chrono::{Duration, Utc};
 use crypto::provider::SignAlg;
-use deadpool_postgres::Transaction;
 use models::entities::realm::RealmModel;
 use serde_json::{Map, Value};
 use store::keyring::Signing;
+use store::tenancy::UnitOfWork;
 
 use crate::grant::{DEFAULT_ACCESS_LIFESPAN, identity_key_for, preferred_key};
 use crate::token::issuance::{Kind, Minting, token_body, token_header};
@@ -53,7 +53,7 @@ pub enum Unforeseeable {
 /// Nothing is signed and nothing is recorded: a preview that produced a token
 /// would be a way for whoever may read a client to become anybody in it.
 pub async fn foresee(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     realm: &RealmModel,
     issuer: &str,

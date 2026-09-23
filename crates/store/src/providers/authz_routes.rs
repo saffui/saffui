@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
@@ -20,7 +20,7 @@ const COLUMNS: &str =
     "route_id, method, path, server_id, resource, scope, action, priority, enabled";
 
 /// Every route of the realm, in the order they are asked in.
-pub async fn routes(transaction: &Transaction<'_>) -> StoreResult<Vec<AuthzRoute>> {
+pub async fn routes(transaction: &UnitOfWork) -> StoreResult<Vec<AuthzRoute>> {
     let statement =
         format!("SELECT {COLUMNS} FROM authz_routes ORDER BY priority ASC, route_id ASC");
     Ok(transaction
@@ -32,7 +32,7 @@ pub async fn routes(transaction: &Transaction<'_>) -> StoreResult<Vec<AuthzRoute
         .collect())
 }
 
-pub async fn keep(transaction: &Transaction<'_>, route: &AuthzRoute, by: &str) -> StoreResult<()> {
+pub async fn keep(transaction: &UnitOfWork, route: &AuthzRoute, by: &str) -> StoreResult<()> {
     transaction
         .execute(
             "INSERT INTO authz_routes \
@@ -71,7 +71,7 @@ pub async fn keep(transaction: &Transaction<'_>, route: &AuthzRoute, by: &str) -
     Ok(())
 }
 
-pub async fn drop_route(transaction: &Transaction<'_>, route_id: &str) -> StoreResult<bool> {
+pub async fn drop_route(transaction: &UnitOfWork, route_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM authz_routes WHERE route_id = $1", &[&route_id])
         .await

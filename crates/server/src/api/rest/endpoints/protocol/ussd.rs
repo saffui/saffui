@@ -1,9 +1,9 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::{Duration, Utc};
-use deadpool_postgres::Pool;
 use secrecy::ExposeSecret;
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -34,19 +34,21 @@ pub async fn callback(
     request: HttpRequest,
     realm: web::Path<String>,
     body: Option<web::Form<Dialled>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
-    let Ok(mut connection) = pool.get().await else {
-        return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
+        }
+        Err(_) => {
+            return plain(StatusCode::NOT_FOUND, "");
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return plain(StatusCode::NOT_FOUND, "");
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
     };
     let Ok(ring) = store::keyring::load(

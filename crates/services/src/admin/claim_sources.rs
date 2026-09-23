@@ -1,13 +1,13 @@
 use crypto::envelope::Envelope;
 use crypto::provider::CryptoProvider;
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::brokering::{
     ClaimSourceKind, UserClaimSourceModel, UserClaimSourceMutationModel,
 };
 use store::providers::brokering::{self, CONCEALED_TOKEN, TokenToSeal};
 use store::providers::users;
+use store::tenancy::UnitOfWork;
 
 /// Why a source could not be written. Verified before writing; the store
 /// underneath flattens every refusal into a backend error.
@@ -23,7 +23,7 @@ pub enum Unwritable {
     Backend,
 }
 
-async fn user_exists(transaction: &Transaction<'_>, user_id: &str) -> Result<(), Unwritable> {
+async fn user_exists(transaction: &UnitOfWork, user_id: &str) -> Result<(), Unwritable> {
     users::load(transaction, user_id)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -32,7 +32,7 @@ async fn user_exists(transaction: &Transaction<'_>, user_id: &str) -> Result<(),
 }
 
 pub async fn sources_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> Result<Vec<UserClaimSourceModel>, Unwritable> {
     user_exists(transaction, user_id).await?;
@@ -111,7 +111,7 @@ fn check(
     reason = "each is a distinct fact about one source"
 )]
 pub async fn add(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     envelope: &Envelope,
     tenant: &str,
@@ -162,7 +162,7 @@ pub async fn add(
 }
 
 pub async fn remove(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     source_id: &str,
 ) -> Result<(), Unwritable> {

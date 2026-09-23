@@ -15,7 +15,6 @@ commons = { path = "../commons" }
 crypto = { path = "../crypto" }
 models = { path = "../models" }
 store = { path = "../store" }
-deadpool-postgres = { workspace = true }
 futures-util = "0.3"
 ldap3_proto = { version = "0.8", default-features = false }
 tokio = { workspace = true, features = ["net", "rt", "macros"] }

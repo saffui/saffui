@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use crypto::provider::{DigestProvider, HashAlg};
-use deadpool_postgres::Transaction;
 use serde_json::Value;
 
 use crate::error::{StoreError, StoreResult};
@@ -17,7 +17,7 @@ pub struct Appended {
 /// chain starts itself on the first entry: a tenant has no provisioning moment
 /// where a realm has one, and the first realm to come or go is as good a start
 /// as any.
-pub async fn append(transaction: &Transaction<'_>, entry: &Value) -> StoreResult<Appended> {
+pub async fn append(transaction: &UnitOfWork, entry: &Value) -> StoreResult<Appended> {
     let row = transaction
         .query_one("SELECT seq, hash FROM tenant_append($1)", &[entry])
         .await
@@ -47,7 +47,7 @@ pub struct TenantEntry {
 /// bypasses row security whatever `FORCE` says, so a caller asking for one
 /// tenant would quietly be shown every one of them.
 pub async fn list_entries(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     first: i64,
     max: i64,
@@ -76,7 +76,7 @@ pub async fn list_entries(
 /// The preimage is the previous hash, the sequence as eight big endian bytes,
 /// then the canonical text of the envelope, which is what the function hashed.
 pub async fn verify(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     digest: &dyn DigestProvider,
 ) -> StoreResult<Option<i64>> {

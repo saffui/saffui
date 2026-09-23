@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
+use crate::tenancy::UnitOfWork;
 use crypto::envelope::{Envelope, RealmDek, SecretScope};
 use crypto::provider::CryptoProvider;
 use crypto::secrecy::SecretBox;
-use deadpool_postgres::Transaction;
 
 use crate::error::{StoreError, StoreResult};
 
@@ -87,7 +87,7 @@ impl RealmKeyring {
 /// per row, and because the retired generations are exactly what an export
 /// needs to read rows written before the last rotation.
 pub async fn load(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     envelope: &Envelope,
     tenant: &str,
     realm_id: &str,
@@ -144,7 +144,7 @@ const PURPOSE_DEK: &str = "realm-dek";
 /// the loser conflicts and reads what the winner wrote, rather than minting a
 /// second key under which half the realm's later writes would be sealed.
 pub async fn provision(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     envelope: &Envelope,
     tenant: &str,
     realm_id: &str,
@@ -181,7 +181,7 @@ pub async fn provision(
 /// was sealed under, and that generation keeps opening it; what changes is only
 /// what new writes use. Resealing the old rows is a separate, resumable pass.
 pub async fn rotate(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     envelope: &Envelope,
     tenant: &str,
     realm_id: &str,
@@ -244,7 +244,7 @@ pub async fn rotate(
 /// Rows already under the new key are left alone, so an interrupted sweep
 /// resumes by running again.
 pub async fn rewrap(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     from: &Envelope,
     to: &Envelope,
     tenant: &str,

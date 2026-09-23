@@ -4,7 +4,6 @@ use std::rc::Rc;
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::{Error, HttpMessage, ResponseError};
-use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 
 use config::serving::PublicOrigin;
@@ -18,7 +17,6 @@ use crate::middleware::bearer::admitted;
 /// decision point's question and not the transport's.
 #[derive(Clone)]
 pub struct Caller {
-    pub pool: Pool,
     pub tenancy: Tenancy,
     /// See [`crate::middleware::admin_guard::Guard::origin`].
     pub origin: PublicOrigin,

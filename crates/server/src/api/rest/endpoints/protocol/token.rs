@@ -1,11 +1,11 @@
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
-use deadpool_postgres::Pool;
 use services::client::{self, Unauthenticated};
 use services::grant::{self, Granted, Ungranted};
+use store::error::StoreError;
 use store::keyring;
-use store::tenancy::{Tenancy, resolve};
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::provenance::read_client_certificate;
@@ -24,20 +24,22 @@ pub async fn ask(
     request: HttpRequest,
     realm: web::Path<String>,
     asked: Option<web::Form<Asked>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
     sealing: web::Data<Sealing>,
     egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
-    let Ok(mut connection) = pool.get().await else {
-        return Denied::InvalidRequest.answer("the realm could not be read");
-    };
     // Not "no such realm": telling that from a refused client is a way to read
     // off which realms a deployment holds.
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return Denied::InvalidClient.answer("the client could not be authenticated");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return Denied::InvalidRequest.answer("the realm could not be read");
+        }
+        Err(_) => {
+            return Denied::InvalidClient.answer("the client could not be authenticated");
+        }
     };
 
     // A request failure and not a client one: nothing has identified the client
@@ -57,17 +59,8 @@ pub async fn ask(
         && asked.client_secret.is_none()
         && asked.client_assertion.is_none()
         && request.headers().get("authorization").is_none()
-        && let Some(answered) = x509_exchange(
-            &request,
-            &mut connection,
-            &tenancy,
-            &sealing,
-            &origin,
-            &context,
-            &asked,
-            now,
-        )
-        .await
+        && let Some(answered) =
+            x509_exchange(&request, &tenancy, &sealing, &origin, &context, &asked, now).await
     {
         return answered;
     }
@@ -77,15 +70,7 @@ pub async fn ask(
     // until the platform's own keys have spoken.
     if asked.grant_type.as_deref() == Some(services::workload::GRANT) {
         return workload_exchange(
-            &request,
-            &mut connection,
-            &tenancy,
-            &sealing,
-            &origin,
-            **egress,
-            &context,
-            &asked,
-            now,
+            &request, &tenancy, &sealing, &origin, **egress, &context, &asked, now,
         )
         .await;
     }
@@ -99,7 +84,6 @@ pub async fn ask(
             .as_deref()
             .zip(asked.client_assertion.as_deref())
             .map(|(kind, assertion)| client::Signed { kind, assertion }),
-        &mut connection,
         &tenancy,
         &sealing,
         &origin,
@@ -583,7 +567,6 @@ pub(crate) fn refused(why: Unauthenticated) -> HttpResponse {
 )]
 async fn workload_exchange(
     request: &HttpRequest,
-    connection: &mut deadpool_postgres::Object,
     tenancy: &Tenancy,
     sealing: &Sealing,
     origin: &PublicOrigin,
@@ -598,7 +581,7 @@ async fn workload_exchange(
     let Some(issuer) = services::workload::peeked_issuer(assertion) else {
         return Denied::InvalidGrant.answer("the grant presented was not honoured");
     };
-    let Ok(transaction) = tenancy.transaction(connection, context).await else {
+    let Ok(transaction) = tenancy.begin(context).await else {
         return Denied::InvalidRequest.answer("the realm could not be read");
     };
     let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
@@ -695,7 +678,6 @@ async fn workload_exchange(
 )]
 async fn x509_exchange(
     request: &HttpRequest,
-    connection: &mut deadpool_postgres::Object,
     tenancy: &Tenancy,
     sealing: &Sealing,
     origin: &PublicOrigin,
@@ -722,7 +704,7 @@ async fn x509_exchange(
         return refused();
     }
 
-    let Ok(transaction) = tenancy.transaction(connection, context).await else {
+    let Ok(transaction) = tenancy.begin(context).await else {
         return Some(Denied::InvalidRequest.answer("the realm could not be read"));
     };
     let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {

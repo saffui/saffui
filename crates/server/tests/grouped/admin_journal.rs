@@ -11,7 +11,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -141,12 +140,8 @@ async fn what_happens_to_a_realm_outlives_it() {
 
     // And the served plane genuinely cannot read it, which is what keeps a
     // neighbouring realm's existence as unknowable as the guard makes it.
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::tenant_wide(support::TENANT),
-        )
+        .scoped(&store::tenancy::TenantContext::tenant_wide(support::TENANT))
         .await;
     assert!(
         store::tenant_chain::list_entries(&transaction, support::TENANT, 0, 50)

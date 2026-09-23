@@ -60,10 +60,7 @@ fn client_session(id: &str, user_session: &str) -> ClientSessionModel {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_step_up_moves_the_instant_and_the_level_together() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     sessions::open(&transaction, &session("s-1", 1_000))
         .await
@@ -102,10 +99,7 @@ async fn a_step_up_moves_the_instant_and_the_level_together() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn closing_a_login_takes_what_the_clients_got_with_it() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     sessions::open(&transaction, &session("s-1", 1_000))
         .await
@@ -140,10 +134,7 @@ async fn closing_a_login_takes_what_the_clients_got_with_it() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn ending_the_other_logins_keeps_the_one_named() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     for id in ["s-here", "s-there", "s-away"] {
         sessions::open(&transaction, &session(id, 1_000))
@@ -224,10 +215,7 @@ async fn ending_the_other_logins_keeps_the_one_named() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_token_is_spent_once_and_only_by_its_own_value() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let now = Utc::now();
     let owner = Owner {
@@ -327,10 +315,7 @@ async fn a_token_is_spent_once_and_only_by_its_own_value() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn only_the_newest_and_the_unexpired_is_honoured() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let now = Utc::now();
     let owner = Owner {
@@ -454,10 +439,7 @@ async fn only_the_newest_and_the_unexpired_is_honoured() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_schema_refuses_what_no_provider_would_write() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     // A value where a digest belongs.
     let raw = b"the-raw-link".to_vec();
@@ -510,10 +492,7 @@ async fn the_schema_refuses_what_no_provider_would_write() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn presenting_a_refresh_token_says_which_of_the_four_it_was() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     sessions::open(&transaction, &session("s-1", 1_000))
         .await
@@ -648,10 +627,7 @@ fn grace() -> chrono::DateTime<chrono::Utc> {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_stamp_is_the_caller_s_clock_and_not_the_database_s() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let owner = Owner {
         tenant: "acme",

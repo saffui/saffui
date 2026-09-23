@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use authz::rebac::{CompiledSchema, Rule};
-use deadpool_postgres::Transaction;
 use store::providers::rebac;
+use store::tenancy::UnitOfWork;
 
 /// How far a check may go. No default, since bounds a caller did not choose are
 /// bounds nobody owns.
@@ -130,7 +130,7 @@ impl Unwalkable {
 /// This realm's schema, compiled, or why there is none to walk by. A document
 /// in a shape this build does not read is refused rather than deserialised into
 /// the nearest thing it has.
-pub async fn schema_of(transaction: &Transaction<'_>) -> Result<CompiledSchema, Unwalkable> {
+pub async fn schema_of(transaction: &UnitOfWork) -> Result<CompiledSchema, Unwalkable> {
     let stored = rebac::load_schema(transaction)
         .await
         .map_err(|_| Unwalkable::Unreadable)?
@@ -163,7 +163,7 @@ pub enum Unpublishable {
 /// it. Given the two separately, a realm can show one schema and decide by
 /// another.
 pub async fn publish(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     source: &str,
     actor: Option<&str>,
 ) -> Result<CompiledSchema, Unpublishable> {
@@ -229,7 +229,7 @@ pub enum Unwritable {
 /// only because the declared types survive compilation; and that a userset names
 /// a relation, which the compiler admits a permission for.
 pub async fn relate(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     object_type: &str,
     object_id: &str,
     relation: &str,
@@ -306,7 +306,7 @@ pub async fn relate(
 /// grant nobody can use, removing one takes a grant away. A narrowed schema
 /// leaves edges that can no longer be written, and those must still go.
 pub async fn unrelate(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     object_type: &str,
     object_id: &str,
     relation: &str,
@@ -331,7 +331,7 @@ fn describe(subject: &rebac::Subject) -> String {
 
 /// Whether this subject stands in this member of this object.
 pub async fn check(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     schema: &CompiledSchema,
     object: Object<'_>,
     member: &str,
@@ -365,7 +365,7 @@ pub async fn check(
 /// never reads: without one, no step is built and no string is formatted. The
 /// answer is the answer `check` gives, because it is the same walk.
 pub async fn explain(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     schema: &CompiledSchema,
     object: Object<'_>,
     member: &str,
@@ -411,7 +411,7 @@ fn named(rule: &Rule) -> &'static str {
 
 /// One question's walk: what it has answered, and what it is in the middle of.
 struct Walk<'a> {
-    transaction: &'a Transaction<'a>,
+    transaction: &'a UnitOfWork,
     schema: &'a CompiledSchema,
     subject: Subject<'a>,
     budget: Budget,

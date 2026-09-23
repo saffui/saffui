@@ -412,29 +412,16 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
         .map(pgcore::migrations::Migration::version)
         .max()
         .unwrap_or(0);
-    let vitals = Vitals::new(plane.pool.clone(), schema);
-    let (swept_pool, swept_tenancy) = (plane.pool.clone(), plane.tenancy.clone());
-    let (synced_pool, synced_tenancy, synced_sealing) = (
-        plane.pool.clone(),
+    let vitals = Vitals::new(plane.tenancy.clone(), schema);
+    let swept_tenancy = plane.tenancy.clone();
+    let (synced_tenancy, synced_sealing) = (
         plane.tenancy.clone(),
         std::sync::Arc::new(plane.sealing.clone()),
     );
-    let (front_pool, front_tenancy, front_provider) = (
-        plane.pool.clone(),
-        plane.tenancy.clone(),
-        plane.sealing.provider.clone(),
-    );
+    let (front_tenancy, front_provider) = (plane.tenancy.clone(), plane.sealing.provider.clone());
     #[cfg(feature = "mesh")]
-    let (mesh_pool, mesh_tenancy, mesh_origin) = (
-        plane.pool.clone(),
-        plane.tenancy.clone(),
-        plane.origin.clone(),
-    );
-    let (plane_pool_for_outbox, tenancy_for_outbox, origin_for_outbox) = (
-        plane.pool.clone(),
-        plane.tenancy.clone(),
-        plane.origin.clone(),
-    );
+    let (mesh_tenancy, mesh_origin) = (plane.tenancy.clone(), plane.origin.clone());
+    let (tenancy_for_outbox, origin_for_outbox) = (plane.tenancy.clone(), plane.origin.clone());
 
     // Bound with the other ports: a front asked for and not listenable fails
     // the deployment now, not on the first directory client. So does a key
@@ -452,7 +439,6 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
             Some(tokio::spawn(ldapfront::serve(
                 listener,
                 tls,
-                front_pool,
                 front_tenancy,
                 front_provider,
                 ldapfront::Front {
@@ -475,7 +461,6 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
             Some(tokio::spawn(server::grpc::serve(
                 listener,
                 server::grpc::Door {
-                    pool: mesh_pool,
                     tenancy: mesh_tenancy,
                     origin: mesh_origin,
                 },
@@ -498,7 +483,7 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
 
     // The live feed's own ear on the database, one per process, handed to
     // every worker: the SSE door subscribes here, the store speaks at commit.
-    let live_feed = server::live::listen(
+    let live_feed = store::live::listen(
         config::required("DATABASE_URL")
             .map_err(|e| e.to_string())?
             .parse()
@@ -523,18 +508,15 @@ async fn serve(bind: &str, ops: &str) -> Result<(), String> {
     // After the ports, so a deployment that cannot listen fails before it has
     // deleted anything.
     let sweeping = server::jobs::sweep_expired_rows(
-        swept_pool,
         swept_tenancy,
         config::jobs::sweep_every().map_err(|reason| reason.to_string())?,
     );
     let syncing = server::jobs::sync_federated_shadows(
-        synced_pool,
         synced_tenancy,
         synced_sealing.clone(),
         config::jobs::federation_sync_every().map_err(|reason| reason.to_string())?,
     );
     let delivering = server::jobs::deliver_outbox_events(
-        plane_pool_for_outbox,
         tenancy_for_outbox,
         synced_sealing,
         origin_for_outbox,
@@ -638,10 +620,9 @@ async fn read_chronicle(tenant: &str, max: i64, verify: bool) -> Result<(), Stri
     let pool = Pool::builder(Manager::new(pg, NoTls))
         .build()
         .map_err(|reason| format!("cannot build a pool: {reason}"))?;
-    let tenancy = Tenancy::unpinned();
-    let mut held = pool.get().await.map_err(|e| e.to_string())?;
+    let tenancy = Tenancy::unpinned(pool);
     let transaction = tenancy
-        .transaction(&mut held, &TenantContext::tenant_wide(tenant))
+        .begin(&TenantContext::tenant_wide(tenant))
         .await
         .map_err(|reason| format!("the store refused: {reason:?}"))?;
 
@@ -772,15 +753,11 @@ async fn provision(wanted: &Wanted) -> Result<(), String> {
         config::optional_secret("PROVISION_USER_PASSWORD").map_err(|e| e.to_string())?;
     let unreadable = |reason: store::error::StoreError| format!("the store refused: {reason:?}");
 
-    let mut connection = plane.pool.get().await.map_err(|e| e.to_string())?;
     // The realm row is tenant isolated, so this transaction may name the
     // future realm and keep its whole birth atomic.
     let transaction = plane
         .tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&wanted.tenant, &wanted.realm),
-        )
+        .begin(&TenantContext::new(&wanted.tenant, &wanted.realm))
         .await
         .map_err(|e| e.to_string())?;
     if provisioning::provision_tenant(&transaction, &wanted.tenant, &wanted.tenant)
@@ -1051,10 +1028,9 @@ fn plane() -> Result<Plane, String> {
 
     let egress = config::serving::Egress::from_env().map_err(|e| e.to_string())?;
     Ok(Plane {
-        pool,
         tenancy: match region {
-            Some(region) => Tenancy::in_region(region),
-            None => Tenancy::unpinned(),
+            Some(region) => Tenancy::in_region(pool, region),
+            None => Tenancy::unpinned(pool),
         },
         policy: AdminPolicy {
             audiences,

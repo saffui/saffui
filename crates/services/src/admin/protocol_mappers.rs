@@ -1,8 +1,8 @@
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::client::{ProtocolMapperModel, ProtocolMapperMutationModel};
 use store::providers::{client_scopes, clients};
+use store::tenancy::UnitOfWork;
 
 use crate::mappers::KNOWN_TYPES;
 
@@ -58,16 +58,14 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
     Ok(crypto::provider::uuid_from(bytes))
 }
 
-pub async fn mappers(
-    transaction: &Transaction<'_>,
-) -> Result<Vec<ProtocolMapperModel>, Unwritable> {
+pub async fn mappers(transaction: &UnitOfWork) -> Result<Vec<ProtocolMapperModel>, Unwritable> {
     client_scopes::list_mappers(transaction)
         .await
         .map_err(|_| Unwritable::Backend)
 }
 
 pub async fn get_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     mapper_id: &str,
 ) -> Result<ProtocolMapperModel, Unwritable> {
     client_scopes::load_mapper(transaction, mapper_id)
@@ -77,7 +75,7 @@ pub async fn get_mapper(
 }
 
 pub async fn create_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -97,7 +95,7 @@ pub async fn create_mapper(
 }
 
 pub async fn update_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     mapper_id: &str,
     by: &str,
     asked: ProtocolMapperMutationModel,
@@ -119,10 +117,7 @@ pub async fn update_mapper(
     get_mapper(transaction, mapper_id).await
 }
 
-pub async fn delete_mapper(
-    transaction: &Transaction<'_>,
-    mapper_id: &str,
-) -> Result<(), Unwritable> {
+pub async fn delete_mapper(transaction: &UnitOfWork, mapper_id: &str) -> Result<(), Unwritable> {
     get_mapper(transaction, mapper_id).await?;
     if client_scopes::mapper_still_attached(transaction, mapper_id)
         .await
@@ -137,10 +132,7 @@ pub async fn delete_mapper(
         .ok_or(Unwritable::NotFound)
 }
 
-async fn scope_exists(
-    transaction: &Transaction<'_>,
-    client_scope_id: &str,
-) -> Result<(), Unwritable> {
+async fn scope_exists(transaction: &UnitOfWork, client_scope_id: &str) -> Result<(), Unwritable> {
     client_scopes::load_scope(transaction, client_scope_id)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -148,7 +140,7 @@ async fn scope_exists(
         .ok_or(Unwritable::NoSuchScope)
 }
 
-async fn client_exists(transaction: &Transaction<'_>, client_id: &str) -> Result<(), Unwritable> {
+async fn client_exists(transaction: &UnitOfWork, client_id: &str) -> Result<(), Unwritable> {
     clients::load(transaction, client_id)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -157,7 +149,7 @@ async fn client_exists(transaction: &Transaction<'_>, client_id: &str) -> Result
 }
 
 pub async fn mappers_of_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
 ) -> Result<Vec<ProtocolMapperModel>, Unwritable> {
     scope_exists(transaction, client_scope_id).await?;
@@ -167,7 +159,7 @@ pub async fn mappers_of_scope(
 }
 
 pub async fn mappers_of_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
 ) -> Result<Vec<ProtocolMapperModel>, Unwritable> {
     client_exists(transaction, client_id).await?;
@@ -178,7 +170,7 @@ pub async fn mappers_of_client(
 
 /// Attaching twice is attaching once; the join carries nothing to correct.
 pub async fn attach_to_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
     mapper_id: &str,
 ) -> Result<(), Unwritable> {
@@ -190,7 +182,7 @@ pub async fn attach_to_scope(
 }
 
 pub async fn detach_from_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
     mapper_id: &str,
 ) -> Result<(), Unwritable> {
@@ -204,7 +196,7 @@ pub async fn detach_from_scope(
 }
 
 pub async fn attach_to_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     mapper_id: &str,
 ) -> Result<(), Unwritable> {
@@ -216,7 +208,7 @@ pub async fn attach_to_client(
 }
 
 pub async fn detach_from_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     mapper_id: &str,
 ) -> Result<(), Unwritable> {

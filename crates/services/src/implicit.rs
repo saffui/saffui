@@ -4,7 +4,7 @@ use models::entities::realm::RealmModel;
 use models::sessions::records::ClientSessionModel;
 use serde_json::{Map, Value};
 use store::providers::{sessions, users};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::detached::half_hash;
 use crate::grant::{Signing, identity_key_for};
@@ -40,7 +40,7 @@ pub struct Established<'a> {
 /// The access token first: the identity token carries its hash, and the other
 /// order hashes something that does not exist yet.
 pub async fn issue(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     tenant: &TenantContext,
     asked: ResponseType,
@@ -155,7 +155,7 @@ pub async fn issue(
 /// response type is `id_token`: nothing is minted there to reach it with, so
 /// the token carries them itself.
 async fn identity_claims(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     asked: ResponseType,
     established: &Established<'_>,
@@ -189,7 +189,7 @@ async fn identity_claims(
 /// It outlives the access token deliberately. Expired with it, the row would
 /// be swept minutes into a login that is still open.
 async fn record_grant(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &TenantContext,
     established: &Established<'_>,
     anchor: &str,

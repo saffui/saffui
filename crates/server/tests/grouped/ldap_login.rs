@@ -11,7 +11,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -140,9 +139,8 @@ async fn a_directory_person_signs_in_and_leaves_a_shadow() {
     // Nobody local answers to the name yet.
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         assert!(
             store::providers::users::load_by_name(&transaction, "fedora")
@@ -169,9 +167,8 @@ async fn a_directory_person_signs_in_and_leaves_a_shadow() {
     );
     let shadowed = {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::users::load_by_name(&transaction, "fedora")
             .await
@@ -297,12 +294,8 @@ async fn a_directory_row_is_read_at_the_door() {
     assert!(kept["configs"].get("bind_password_sealed").is_none());
 
     let sealed_before: String = {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         transaction
             .query_one(
@@ -333,12 +326,8 @@ async fn a_directory_row_is_read_at_the_door() {
     assert!(kept["metadata"]["version"].as_i64().unwrap_or(1) > 1);
     assert_eq!(kept["enabled"], false);
     let sealed_after: String = {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         transaction
             .query_one(
@@ -378,12 +367,8 @@ async fn a_directory_row_is_read_at_the_door() {
         "a sealed secret sent by a caller was taken: {refused}"
     );
     let still_kept: String = {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         transaction
             .query_one(
@@ -415,12 +400,8 @@ async fn a_directory_row_is_read_at_the_door() {
     .await;
     assert_eq!(status, StatusCode::OK, "{kept}");
     let secret_after_move: Option<String> = {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         transaction
             .query_one(
@@ -488,10 +469,9 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
     );
 
     let synced = |plane: &Plane| {
-        let pool = plane.pool();
         let tenancy = plane.tenancy();
         async move {
-            server::jobs::sync_every_realm(&pool, &tenancy, &support::sealing())
+            server::jobs::sync_every_realm(&tenancy, &support::sealing())
                 .await
                 .expect("the realms are listable")
         }
@@ -516,9 +496,8 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
     assert_eq!(swept.suspended, 1, "{swept:?}");
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let shadow = store::providers::users::load_by_name(&transaction, "fedora")
             .await
@@ -574,9 +553,8 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
     assert_eq!(outage.total(), 0, "{outage:?}");
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let shadow = store::providers::users::load_by_name(&transaction, "fedora")
             .await
@@ -634,9 +612,8 @@ async fn the_first_directory_dead_does_not_shut_the_second() {
 
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let shadow = store::providers::users::load_by_name(&transaction, "fedora")
             .await
@@ -694,9 +671,8 @@ async fn an_import_mirrors_everybody_once() {
 
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let shadow = store::providers::users::load_by_name(&transaction, "fedora")
             .await
@@ -778,9 +754,8 @@ async fn a_directory_person_is_not_mirrored_into_a_breach() {
     assert_eq!(status, StatusCode::OK, "{told}");
 
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         for role in ["payer", "approver"] {
             let model = models::entities::authz::RoleMutationModel {
@@ -835,9 +810,8 @@ async fn a_directory_person_is_not_mirrored_into_a_breach() {
         StatusCode::UNAUTHORIZED,
         "the directory's person was admitted into a breach"
     );
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     assert!(
         store::providers::users::load_by_name(&transaction, "fedora")

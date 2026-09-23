@@ -28,10 +28,7 @@ fn envelope(kek: &str) -> Envelope {
 async fn a_realm_gets_one_generation_and_only_one() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope(KEK);
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         keyring::provision(&transaction, &envelope, "acme", "main")
@@ -67,10 +64,7 @@ async fn a_realm_gets_one_generation_and_only_one() {
 async fn what_lands_in_the_column_is_sealed_and_not_the_secret() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope(KEK);
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
@@ -107,10 +101,7 @@ async fn what_lands_in_the_column_is_sealed_and_not_the_secret() {
 async fn a_sealed_value_opens_in_one_place_only() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope(KEK);
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
@@ -143,10 +134,7 @@ async fn a_sealed_value_opens_in_one_place_only() {
 async fn a_retired_generation_still_opens_what_it_sealed() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope(KEK);
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
@@ -209,10 +197,7 @@ async fn a_retired_generation_still_opens_what_it_sealed() {
 async fn a_new_wrapping_key_rewrites_the_key_rows_and_nothing_else() {
     let fixture = Fixture::with_user().await;
     let first = envelope(KEK);
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &first, "acme", "main")
         .await
         .unwrap();
@@ -280,10 +265,7 @@ async fn a_new_wrapping_key_rewrites_the_key_rows_and_nothing_else() {
 async fn a_value_from_a_generation_we_do_not_hold_is_refused() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope(KEK);
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
@@ -328,15 +310,11 @@ async fn a_value_from_a_generation_we_do_not_hold_is_refused() {
 async fn the_schema_refuses_what_the_ring_never_tries() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope(KEK);
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     let cases = [
         (
@@ -356,13 +334,9 @@ async fn the_schema_refuses_what_the_ring_never_tries() {
     ];
 
     for (statement, what) in cases {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let refused = transaction.execute(statement, &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -373,10 +347,7 @@ async fn the_schema_refuses_what_the_ring_never_tries() {
 async fn a_realm_without_a_key_says_so() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope(KEK);
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(matches!(
         keyring::load(&transaction, &envelope, "acme", "main").await,
@@ -390,20 +361,13 @@ async fn a_realm_without_a_key_says_so() {
 async fn a_generation_is_not_visible_from_another_realm() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope(KEK);
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     assert!(
         matches!(
             keyring::load(&transaction, &envelope, "acme", "other").await,

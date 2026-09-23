@@ -9,7 +9,6 @@ use store::tenancy::Tenancy;
 /// Ask.
 pub async fn ask(
     established: web::ReqData<Established>,
-    pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<Tenancy>,
     journal: web::Data<Journal>,
     asked: web::Json<Ask>,
@@ -28,9 +27,8 @@ pub async fn ask(
         return Err(ApiError::new(ErrorCode::AccessDenied));
     }
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &established.context.tenant)
+        .begin(&established.context.tenant)
         .await
         .map_err(|_| internal())?;
 

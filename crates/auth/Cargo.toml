@@ -31,7 +31,6 @@ config = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-deadpool-postgres = { workspace = true }
 thiserror = { workspace = true }
 secrecy = { workspace = true }
 data-encoding = { workspace = true }

@@ -9,7 +9,6 @@ use server::api::config::{Plane as Mounted, register};
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -536,12 +535,11 @@ async fn a_client_that_asked_for_a_signature_is_answered_with_one() {
     // A realm can still lose the key a client registered against. Asked then,
     // §5.3.2 still holds: the answer is not given in the clear.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         let mut stranded = store::providers::clients::load(&transaction, &client_id)
             .await
@@ -604,12 +602,8 @@ async fn a_logout_names_the_person_the_client_was_told_about() {
     // Registered to be told, so the logout mints a notice for it.
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&TenantContext::new(support::TENANT, support::REALM))
             .await;
         let mut client = store::providers::clients::load(&transaction, &client_id)
             .await
@@ -624,12 +618,8 @@ async fn a_logout_names_the_person_the_client_was_told_about() {
 
     let notice = {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&TenantContext::new(support::TENANT, support::REALM))
             .await;
         let sealing = support::sealing();
         let ring = store::keyring::load(

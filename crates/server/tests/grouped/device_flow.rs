@@ -12,7 +12,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -34,8 +33,7 @@ fn within() -> TenantContext {
 
 /// Opt the fixture's confidential client into the device grant.
 async fn allow_device(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await
         .expect("the clients table")
@@ -80,8 +78,7 @@ async fn polled(plane: &Plane, device_code: &str) -> (StatusCode, Value) {
 
 /// Rewind the poll stamp, so the bench does not sleep through the interval.
 async fn rewind_poll(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     transaction
         .execute(
             "UPDATE oidc_device_codes SET last_polled_at = now() - interval '1 minute'",
@@ -257,8 +254,7 @@ async fn the_device_doors_refuse_the_unregistered_and_the_expired() {
     let user_code = opened["user_code"].as_str().expect("a code").to_owned();
 
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         transaction
             .execute(
                 "UPDATE oidc_device_codes SET expires_at = now() - interval '1 minute'",
@@ -291,8 +287,7 @@ async fn the_device_doors_refuse_the_unregistered_and_the_expired() {
     assert!(landing.ends_with("#no-such-code"), "{landing}");
 
     // The sweep takes what ran out.
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let swept = services::housekeeping::drop_expired_rows(&transaction, chrono::Utc::now())
         .await
         .expect("a sweep");
@@ -308,15 +303,14 @@ async fn the_realm_paces_its_device_flow() {
     allow_device(&plane).await;
 
     {
-        let mut connection = plane.pool().get().await.expect("a connection");
         let transaction = plane
             .tenancy()
-            .transaction(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .begin(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await
-            .expect("a scoped transaction");
+            .expect("a scoped unit of work");
         let mut realm = store::providers::realms::load(&transaction, support::REALM)
             .await
             .unwrap()

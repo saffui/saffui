@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
@@ -18,7 +18,7 @@ pub struct BirthrightRule {
 
 const COLUMNS: &str = "rule_id, when_attribute, when_value, when_expr, roles, priority, enabled";
 
-pub async fn rules(transaction: &Transaction<'_>) -> StoreResult<Vec<BirthrightRule>> {
+pub async fn rules(transaction: &UnitOfWork) -> StoreResult<Vec<BirthrightRule>> {
     let statement =
         format!("SELECT {COLUMNS} FROM birthright_rules ORDER BY priority ASC, rule_id ASC");
     Ok(transaction
@@ -31,7 +31,7 @@ pub async fn rules(transaction: &Transaction<'_>) -> StoreResult<Vec<BirthrightR
 }
 
 pub async fn keep_rule(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     rule: &BirthrightRule,
     by: &str,
 ) -> StoreResult<()> {
@@ -68,7 +68,7 @@ pub async fn keep_rule(
     Ok(())
 }
 
-pub async fn drop_rule(transaction: &Transaction<'_>, rule_id: &str) -> StoreResult<bool> {
+pub async fn drop_rule(transaction: &UnitOfWork, rule_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM birthright_rules WHERE rule_id = $1",
@@ -82,7 +82,7 @@ pub async fn drop_rule(transaction: &Transaction<'_>, rule_id: &str) -> StoreRes
 /// The rule-born half of the ledger, which is all the rules may revoke: a
 /// grant written by hand answers to its own end, never to a rule's verdict.
 pub async fn governed_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<Vec<(String, String)>> {
     Ok(transaction
@@ -100,7 +100,7 @@ pub async fn governed_of(
 }
 
 pub async fn record_grant(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     role_id: &str,
     rule_id: &str,
@@ -119,7 +119,7 @@ pub async fn record_grant(
 }
 
 pub async fn erase_grant(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     role_id: &str,
 ) -> StoreResult<()> {
@@ -148,7 +148,7 @@ fn read(row: Row) -> BirthrightRule {
 /// A grant written by hand, without a rule, ending on its own: the engine
 /// enforces the end the way it enforces a rule's verdict.
 pub async fn record_timed_grant(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     role_id: &str,
     granted_by: &str,
@@ -172,7 +172,7 @@ pub async fn record_timed_grant(
 /// The whole ledger of one person: role, the rule that granted it or none,
 /// and the end it carries if any.
 pub async fn ledger_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<
     Vec<(
@@ -202,7 +202,7 @@ pub async fn ledger_of(
 
 /// The governed roles whose end has passed, for the engine to take back.
 pub async fn expired_grants(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<Vec<String>> {

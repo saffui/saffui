@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use models::entities::keys::RealmSigningKeyView;
 use models::sessions::records::UserSessionState;
 use serde_json::Value;
 use store::providers::{clients, sessions};
+use store::tenancy::UnitOfWork;
 
 use crate::token;
 
@@ -41,7 +41,7 @@ pub enum EndedAt {
 /// existed, and the cookie is cleared regardless so the browser stops offering
 /// it.
 pub async fn end_session(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     keys: &[RealmSigningKeyView],
     requested: &Requested<'_>,
     signed_in: Option<&str>,
@@ -103,7 +103,7 @@ pub async fn end_session(
 /// URI still has to match what that client registered: the worst a wrong name
 /// buys is a redirect to somewhere its owner already wrote down.
 async fn landing(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     requested: &Requested<'_>,
     hint: Option<&crypto::jose::jwt::JwtPayload>,
     asked: &str,
@@ -183,11 +183,7 @@ pub struct Frame {
 /// The frames for every client that took part and registered where to be
 /// loaded. `iss` and `sid` are added when the client asked to be told which
 /// session (§2.1); nothing else goes in the query.
-pub async fn frames_for(
-    transaction: &Transaction<'_>,
-    issuer: &str,
-    session_id: &str,
-) -> Vec<Frame> {
+pub async fn frames_for(transaction: &UnitOfWork, issuer: &str, session_id: &str) -> Vec<Frame> {
     let Ok(party_ids) = sessions::clients_of(transaction, session_id).await else {
         return Vec::new();
     };
@@ -226,7 +222,7 @@ const NOTICE_LIFESPAN: i64 = 120;
 /// The notices for every client that took part in this login and registered
 /// where to be told. Minted here, delivered by whoever can reach out.
 pub async fn notices_for(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &crate::grant::Signing<'_>,
     issuer: &str,
     session_id: &str,
@@ -251,7 +247,7 @@ pub async fn notices_for(
 /// The notice for one client of a login, when it registered where to be told: for an
 /// application whose grant alone is taken back while the login goes on.
 pub async fn notice_for_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &crate::grant::Signing<'_>,
     issuer: &str,
     session_id: &str,
@@ -266,7 +262,7 @@ pub async fn notice_for_client(
 }
 
 async fn mint_notice(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &crate::grant::Signing<'_>,
     issuer: &str,
     session: &models::sessions::records::UserSessionModel,
@@ -347,7 +343,7 @@ async fn mint_notice(
 /// caller has written the endings, as the realm's own logout does it. Without the
 /// realm's keys the logins still end, and their clients are not told.
 pub async fn end_brokered_sessions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: Option<&crate::grant::Signing<'_>>,
     issuer: &str,
     session_ids: &[String],

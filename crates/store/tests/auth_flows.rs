@@ -51,10 +51,7 @@ fn authenticator(name: &str, config_id: Option<&str>) -> ExecutionStep {
 }
 
 async fn second_realm(fixture: &Fixture) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide("acme")).await;
     let realm = RealmCreateModel {
         name: "other".into(),
         display_name: "Other".into(),
@@ -63,17 +60,13 @@ async fn second_realm(fixture: &Fixture) {
     .into_model("other".into(), metadata());
     realms::create(&transaction, &realm).await.unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 }
 
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_flow_comes_back_by_its_identifier_and_by_its_alias() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     auth_flows::create_flow(&transaction, &flow("flow-1", "browser", true))
         .await
@@ -110,10 +103,7 @@ async fn a_flow_comes_back_by_its_identifier_and_by_its_alias() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_step_runs_an_authenticator_or_a_flow_and_comes_back_as_the_one_it_runs() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     auth_flows::create_flow(&transaction, &flow("flow-1", "browser", true))
         .await
@@ -191,10 +181,7 @@ async fn a_step_runs_an_authenticator_or_a_flow_and_comes_back_as_the_one_it_run
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn two_steps_of_one_flow_cannot_share_a_position() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     auth_flows::create_flow(&transaction, &flow("flow-1", "browser", true))
         .await
@@ -223,10 +210,7 @@ async fn two_steps_of_one_flow_cannot_share_a_position() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn two_steps_may_trade_positions_in_one_transaction() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     auth_flows::create_flow(&transaction, &flow("flow-1", "browser", true))
         .await
@@ -263,10 +247,7 @@ async fn two_steps_may_trade_positions_in_one_transaction() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_step_that_runs_both_or_neither_is_refused() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     auth_flows::create_flow(&transaction, &flow("flow-1", "browser", true))
         .await
         .unwrap();
@@ -274,7 +255,6 @@ async fn a_step_that_runs_both_or_neither_is_refused() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     let cases = [
         (
@@ -304,10 +284,7 @@ async fn a_step_that_runs_both_or_neither_is_refused() {
     ];
 
     for (index, (authenticator, config, sub_flow, what)) in cases.iter().enumerate() {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let statement = format!(
             "INSERT INTO authentication_executions \
                  (tenant, realm_id, execution_id, alias, flow_id, priority, requirement, \
@@ -317,7 +294,6 @@ async fn a_step_that_runs_both_or_neither_is_refused() {
         );
         let refused = transaction.execute(statement.as_str(), &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -326,10 +302,7 @@ async fn a_step_that_runs_both_or_neither_is_refused() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_asks_for_the_actions_it_registered_as_default() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     for (id, action, default, priority) in [
         ("action-1", RequiredAction::VerifyEmail, true, 20),
@@ -373,10 +346,7 @@ async fn a_realm_asks_for_the_actions_it_registered_as_default() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_action_is_registered_once() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     for id in ["action-1", "action-2"] {
         let registered = auth_flows::register_action(
@@ -411,10 +381,7 @@ async fn an_action_is_registered_once() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn removing_a_flow_takes_its_steps() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     auth_flows::create_flow(&transaction, &flow("flow-1", "browser", true))
         .await
@@ -451,10 +418,7 @@ async fn a_flow_is_not_visible_from_another_realm() {
     let fixture = Fixture::with_user().await;
     second_realm(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     auth_flows::create_flow(&transaction, &flow("flow-1", "browser", true))
         .await
         .unwrap();
@@ -465,12 +429,8 @@ async fn a_flow_is_not_visible_from_another_realm() {
     .await
     .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     assert!(
         auth_flows::load_flow(&transaction, "flow-1")
             .await

@@ -1,6 +1,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;
+use store::tenancy::{RealmNamed, UnitOfWork};
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::api::rest::endpoints::protocol::{brands, i18n};
@@ -134,7 +135,6 @@ fn made_inert(body: &str, banner: &str) -> String {
 pub async fn looked_at(
     request: actix_web::HttpRequest,
     path: web::Path<(String, String)>,
-    pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<store::tenancy::Tenancy>,
     asked: web::Query<Looking>,
 ) -> HttpResponse {
@@ -142,7 +142,7 @@ pub async fn looked_at(
     if !LOOKABLE.contains(&which.as_str()) {
         return told_nothing(StatusCode::NOT_FOUND);
     }
-    let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
+    let tongues = tongues_of_realm(&tenancy, &realm).await;
     let tongue = tongues.negotiated(
         None,
         request
@@ -150,13 +150,13 @@ pub async fn looked_at(
             .get("accept-language")
             .and_then(|held| held.to_str().ok()),
     );
-    let (doors, idps, saved, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
+    let (doors, idps, saved, policy) = doors_of_realm(&tenancy, &realm).await;
 
     // The draft when one is named and still lives, and what is saved otherwise.
     // A draft that has expired shows the saved wording rather than an error: the
     // page is the answer to "what does this look like", and it still is.
     let drafted = match asked.into_inner().draft {
-        Some(held) if !held.is_empty() => draft_of_realm(&pool, &tenancy, &realm, &held).await,
+        Some(held) if !held.is_empty() => draft_of_realm(&tenancy, &realm, &held).await,
         _ => None,
     };
     let spoken = drafted.as_ref().or(saved.as_ref());
@@ -216,16 +216,11 @@ fn built_banner(tongue: &str) -> String {
 
 /// What a kept draft holds, where it is still worth reading.
 async fn draft_of_realm(
-    pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     realm: &str,
     draft: &str,
 ) -> Option<serde_json::Value> {
-    let mut connection = pool.get().await.ok()?;
-    let context = store::tenancy::resolve::realm_by_name(&connection, realm)
-        .await
-        .ok()?;
-    let transaction = tenancy.transaction(&mut connection, &context).await.ok()?;
+    let transaction = tenancy.begin_in(RealmNamed::ByName(realm)).await.ok()?;
     store::providers::page_previews::read(&transaction, draft)
         .await
         .ok()
@@ -275,7 +270,6 @@ struct WayBack {
 /// the page reads off its own body. A realm that cannot be read opens none:
 /// a door shown without its mechanism behind it is a lie the page tells.
 async fn doors_of_realm(
-    pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     realm: &str,
 ) -> (
@@ -285,13 +279,10 @@ async fn doors_of_realm(
     Option<models::entities::realm::PasswordPolicy>,
 ) {
     let nothing = || (String::new(), String::new(), None, None);
-    let Ok(mut connection) = pool.get().await else {
+    let Ok(context) = tenancy.resolve(RealmNamed::ByName(realm)).await else {
         return nothing();
     };
-    let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, realm).await else {
-        return nothing();
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return nothing();
     };
     let Ok(Some(held)) = store::providers::realms::load(&transaction, &context.realm_id).await
@@ -385,10 +376,7 @@ fn federated_doors(rows: &[models::entities::authz::IdentityProviderModel]) -> S
 /// One level deep. A sub-flow is walked, because the built browser flow keeps
 /// its second factors in one, and a step buried two flows down is a shape
 /// nothing this build provisions.
-async fn offers_recovery_codes(
-    transaction: &deadpool_postgres::Transaction<'_>,
-    bound: Option<&str>,
-) -> bool {
+async fn offers_recovery_codes(transaction: &UnitOfWork, bound: Option<&str>) -> bool {
     use models::entities::auth::ExecutionStep;
     use store::providers::auth_flows;
 
@@ -437,7 +425,6 @@ async fn offers_recovery_codes(
 /// now, and the script shows it if the login dies behind the page.
 async fn read_live_login(
     request: &actix_web::HttpRequest,
-    pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     sealing: &crate::api::config::Sealing,
     realm: &str,
@@ -445,13 +432,10 @@ async fn read_live_login(
     let Some(binding) = super::binding::read(request, super::binding::AUTH_SESSION) else {
         return LiveLogin::default();
     };
-    let Ok(mut connection) = pool.get().await else {
+    let Ok(context) = tenancy.resolve(RealmNamed::ByName(realm)).await else {
         return LiveLogin::default();
     };
-    let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, realm).await else {
-        return LiveLogin::default();
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return LiveLogin::default();
     };
     let Ok(Some(login)) = store::providers::login::resume(&transaction, &binding).await else {
@@ -510,18 +494,14 @@ fn find_way_back(client: &models::entities::client::ClientModel) -> Option<WayBa
 /// read speaks the whole build, which is what every realm said before it
 /// could say anything.
 pub(in crate::api) async fn tongues_of_realm(
-    pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     realm: &str,
 ) -> i18n::RealmTongues {
     let fallback = || i18n::RealmTongues::of(None, None);
-    let Ok(mut connection) = pool.get().await else {
+    let Ok(context) = tenancy.resolve(RealmNamed::ByName(realm)).await else {
         return fallback();
     };
-    let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, realm).await else {
-        return fallback();
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return fallback();
     };
     match store::providers::realms::load(&transaction, &context.realm_id).await {
@@ -632,14 +612,11 @@ pub async fn script() -> HttpResponse {
 pub async fn style(
     request: actix_web::HttpRequest,
     realm: web::Path<String>,
-    pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<store::tenancy::Tenancy>,
 ) -> HttpResponse {
     let mut dressed: Option<String> = None;
-    if let Ok(mut connection) = pool.get().await
-        && let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, &realm).await
-        && let Ok(transaction) = tenancy.transaction(&mut connection, &context).await
-    {
+    if let Ok(transaction) = tenancy.begin_in(RealmNamed::ByName(&realm)).await {
+        let context = transaction.context().clone();
         let mut sheet = STYLE.to_owned();
         if let Some(overrides) = read_realm_overrides(&transaction, &context.realm_id).await {
             sheet.push('\n');
@@ -687,16 +664,12 @@ pub async fn style(
 /// never something it decided the bytes looked more like.
 pub async fn serve_realm_logo(
     realm: web::Path<String>,
-    pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<store::tenancy::Tenancy>,
 ) -> HttpResponse {
-    let Ok(mut connection) = pool.get().await else {
+    let Ok(context) = tenancy.resolve(RealmNamed::ByName(&realm)).await else {
         return told_nothing(StatusCode::NOT_FOUND);
     };
-    let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, &realm).await else {
-        return told_nothing(StatusCode::NOT_FOUND);
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told_nothing(StatusCode::NOT_FOUND);
     };
     let Ok(Some((bytes, kind))) =
@@ -717,14 +690,12 @@ pub async fn serve_realm_logo(
 
 pub async fn serve_realm_theme(
     realm: web::Path<String>,
-    pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<store::tenancy::Tenancy>,
 ) -> HttpResponse {
     let mut overrides = String::new();
-    if let Ok(mut connection) = pool.get().await
-        && let Ok(context) = store::tenancy::resolve::realm_by_name(&connection, &realm).await
-        && let Ok(transaction) = tenancy.transaction(&mut connection, &context).await
-        && let Some(held) = read_realm_overrides(&transaction, &context.realm_id).await
+    if let Ok(transaction) = tenancy.begin_in(RealmNamed::ByName(&realm)).await
+        && let Some(held) =
+            read_realm_overrides(&transaction, &transaction.context().realm_id).await
     {
         overrides = held;
     }
@@ -739,10 +710,7 @@ pub async fn serve_realm_theme(
 
 /// What the realm overrides of the token contract, when it is dressed and its
 /// theme still passes the door.
-async fn read_realm_overrides(
-    transaction: &deadpool_postgres::Transaction<'_>,
-    realm_id: &str,
-) -> Option<String> {
+async fn read_realm_overrides(transaction: &UnitOfWork, realm_id: &str) -> Option<String> {
     let theme = store::providers::realms::theme_of(transaction, realm_id)
         .await
         .ok()??;
@@ -788,7 +756,6 @@ fn serve(content_type: &'static str, body: &'static str) -> HttpResponse {
 pub async fn magic_link(
     request: actix_web::HttpRequest,
     realm: web::Path<String>,
-    pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<store::tenancy::Tenancy>,
     sealing: web::Data<crate::api::config::Sealing>,
     asked: web::Query<Followed>,
@@ -808,9 +775,9 @@ pub async fn magic_link(
                 .map(|token| ("verify_email", token))
         });
     let Some((named, token)) = followed else {
-        let live = read_live_login(&request, &pool, &tenancy, &sealing, &realm).await;
-        let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
-        let (doors, idps, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
+        let live = read_live_login(&request, &tenancy, &sealing, &realm).await;
+        let tongues = tongues_of_realm(&tenancy, &realm).await;
+        let (doors, idps, overrides, policy) = doors_of_realm(&tenancy, &realm).await;
         return page(
             &request,
             &live,
@@ -824,7 +791,7 @@ pub async fn magic_link(
     // This page posts to the same door the sign-in form posts to, so it carries
     // what that door asks of a form. The login is the one this browser already
     // holds: a link is followed in the browser that started the sign-in.
-    let minted = read_live_login(&request, &pool, &tenancy, &sealing, &realm)
+    let minted = read_live_login(&request, &tenancy, &sealing, &realm)
         .await
         .page_token
         .unwrap_or_default();
@@ -878,7 +845,6 @@ pub struct Resetting {
 pub async fn reset_password(
     request: actix_web::HttpRequest,
     realm: web::Path<String>,
-    pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<store::tenancy::Tenancy>,
     asked: web::Query<Resetting>,
 ) -> HttpResponse {
@@ -887,8 +853,8 @@ pub async fn reset_password(
         asked.token.filter(|held| !held.is_empty()),
         asked.user.filter(|held| !held.is_empty()),
     ) else {
-        let tongues = tongues_of_realm(&pool, &tenancy, &realm).await;
-        let (doors, idps, overrides, policy) = doors_of_realm(&pool, &tenancy, &realm).await;
+        let tongues = tongues_of_realm(&tenancy, &realm).await;
+        let (doors, idps, overrides, policy) = doors_of_realm(&tenancy, &realm).await;
         return page(
             &request,
             &LiveLogin::default(),
@@ -899,7 +865,7 @@ pub async fn reset_password(
             policy.as_ref(),
         );
     };
-    reset_form(&request, &pool, &tenancy, &realm, &token, &user, None).await
+    reset_form(&request, &tenancy, &realm, &token, &user, None).await
 }
 
 /// The page a reset link opens, with one of its lines shown where something
@@ -912,14 +878,13 @@ pub async fn reset_password(
 /// it is escaped, which is what the page already does with it.
 pub async fn reset_form(
     request: &actix_web::HttpRequest,
-    pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     realm: &str,
     token: &str,
     user: &str,
     shown: Option<&str>,
 ) -> HttpResponse {
-    let tongues = tongues_of_realm(pool, tenancy, realm).await;
+    let tongues = tongues_of_realm(tenancy, realm).await;
     let tongue = tongues.negotiated(
         None,
         request
@@ -927,7 +892,7 @@ pub async fn reset_form(
             .get("accept-language")
             .and_then(|held| held.to_str().ok()),
     );
-    let (.., overrides, _) = doors_of_realm(pool, tenancy, realm).await;
+    let (.., overrides, _) = doors_of_realm(tenancy, realm).await;
     let mut body = match overrides.as_ref() {
         Some(spoken) => i18n::reset_page_over(tongue, spoken),
         None => i18n::reset_page_in(tongue).to_owned(),

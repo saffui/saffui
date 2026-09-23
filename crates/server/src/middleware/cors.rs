@@ -9,31 +9,21 @@
 use std::future::{Future, Ready, ready};
 use std::pin::Pin;
 use std::rc::Rc;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use actix_web::body::EitherBody;
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready};
 use actix_web::http::Method;
 use actix_web::http::header;
 use actix_web::{Error, HttpResponse, web};
-use deadpool_postgres::Pool;
-use store::tenancy::{Tenancy, resolve};
 
 /// Whether this realm admits the origin, by any of its clients' say.
 async fn admitted(request: &ServiceRequest, origin: &str) -> bool {
     let realm = request.match_info().get("realm").unwrap_or_default();
-    let (Some(pool), Some(tenancy)) = (
-        request.app_data::<web::Data<Pool>>(),
-        request.app_data::<web::Data<Tenancy>>(),
-    ) else {
+    let Some(tenancy) = request.app_data::<web::Data<Tenancy>>() else {
         return false;
     };
-    let Ok(mut connection) = pool.get().await else {
-        return false;
-    };
-    let Ok(context) = resolve::realm_by_name(&connection, realm).await else {
-        return false;
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin_in(RealmNamed::ByName(realm)).await else {
         return false;
     };
     store::providers::clients::origin_admitted(&transaction, origin)

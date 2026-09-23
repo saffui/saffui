@@ -9,7 +9,6 @@ use config::proxying::Proxying;
 use config::serving::{LoginUi, PublicOrigin};
 use crypto::envelope::Envelope;
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 
 use crate::api::rest::endpoints::account;
@@ -58,7 +57,6 @@ const SAML_BODY: usize = 512 * 1024;
 /// Everything the planes need to answer.
 #[derive(Clone)]
 pub struct Plane {
-    pub pool: Pool,
     pub tenancy: Tenancy,
     pub policy: AdminPolicy,
     /// Where callers reach this deployment. Every issuer minted and every
@@ -115,12 +113,8 @@ pub fn features() -> &'static commons::feature::FeatureSet {
 pub fn register(plane: &Plane) -> impl FnOnce(&mut web::ServiceConfig) + Clone + '_ {
     move |config: &mut web::ServiceConfig| {
         config
-            .app_data(web::Data::new(plane.pool.clone()))
             .app_data(web::Data::new(plane.tenancy.clone()))
-            .app_data(web::Data::new(Journal::new(
-                plane.pool.clone(),
-                plane.tenancy.clone(),
-            )))
+            .app_data(web::Data::new(Journal::new(plane.tenancy.clone())))
             .app_data(web::Data::new(plane.origin.clone()))
             .app_data(web::Data::new(plane.policy.clone()))
             .app_data(web::Data::new(plane.hops.clone()))
@@ -254,7 +248,6 @@ fn admin_scope(
         // The raised ceiling stops here, at the authenticated boundary.
         .app_data(web::JsonConfig::default().limit(ADMIN_BODY))
         .wrap(Guard {
-            pool: plane.pool.clone(),
             tenancy: plane.tenancy.clone(),
             policy: plane.policy.clone(),
             origin: plane.origin.clone(),
@@ -262,7 +255,6 @@ fn admin_scope(
         // Added after the guard so it runs outside it: it reads the identity
         // the guard established and the status the handler answered.
         .wrap(crate::middleware::admin_audit::Journal {
-            pool: plane.pool.clone(),
             tenancy: plane.tenancy.clone(),
             provider: Arc::clone(&plane.sealing.provider),
         });
@@ -322,7 +314,6 @@ fn admin_scope(
                 .content_type_required(false),
         )
         .wrap(Guard {
-            pool: plane.pool.clone(),
             tenancy: plane.tenancy.clone(),
             policy: plane.policy.clone(),
             origin: plane.origin.clone(),
@@ -344,7 +335,6 @@ fn admin_scope(
 fn authz_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
     web::scope("/authz")
         .wrap(Caller {
-            pool: plane.pool.clone(),
             tenancy: plane.tenancy.clone(),
             origin: plane.origin.clone(),
         })
@@ -356,7 +346,6 @@ fn authz_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
 fn account_api_scope(plane: &Plane) -> impl HttpServiceFactory + 'static {
     web::scope("/realms/{realm}/account-api/v1")
         .wrap(AccountGuard {
-            pool: plane.pool.clone(),
             tenancy: plane.tenancy.clone(),
             origin: plane.origin.clone(),
         })

@@ -7,7 +7,6 @@ pub mod federation;
 pub mod grpc;
 pub mod jobs;
 pub mod lifecycle;
-pub mod live;
 pub mod mesh;
 pub mod messaging;
 pub mod metrics;

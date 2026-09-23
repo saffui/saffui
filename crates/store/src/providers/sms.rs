@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use crypto::envelope::Envelope;
-use deadpool_postgres::Transaction;
 use models::entities::sms::SmsSettings;
 use secrecy::{ExposeSecret, SecretBox};
 
@@ -13,7 +13,7 @@ const COLUMNS: &str = "url, sender, sealed_token, sealed_version";
 
 /// Write a realm's settings, replacing whatever was there.
 pub async fn keep(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     settings: &SmsSettings,
@@ -51,7 +51,7 @@ pub async fn keep(
 
 /// A realm's settings, token opened.
 pub async fn load(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
 ) -> StoreResult<Option<SmsSettings>> {
@@ -82,7 +82,7 @@ pub async fn load(
 }
 
 /// Forget how a realm sends SMS, and say whether there was anything to forget.
-pub async fn forget(transaction: &Transaction<'_>) -> StoreResult<bool> {
+pub async fn forget(transaction: &UnitOfWork) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM realm_sms", &[])
         .await
@@ -91,7 +91,7 @@ pub async fn forget(transaction: &Transaction<'_>) -> StoreResult<bool> {
 }
 
 /// How many texts this realm has sent in the UTC day holding `now`.
-pub async fn spent_today(transaction: &Transaction<'_>, now: i64) -> StoreResult<i32> {
+pub async fn spent_today(transaction: &UnitOfWork, now: i64) -> StoreResult<i32> {
     Ok(transaction
         .query_opt(
             "SELECT sent FROM sms_spend \
@@ -107,7 +107,7 @@ pub async fn spent_today(transaction: &Transaction<'_>, now: i64) -> StoreResult
 
 /// Count one text against today, in the same transaction that minted its
 /// code: a counter written after the send is one a failure forgets.
-pub async fn record_send(transaction: &Transaction<'_>, now: i64) -> StoreResult<()> {
+pub async fn record_send(transaction: &UnitOfWork, now: i64) -> StoreResult<()> {
     transaction
         .execute(
             "INSERT INTO sms_spend (tenant, realm_id, day, sent) \
@@ -124,7 +124,7 @@ pub async fn record_send(transaction: &Transaction<'_>, now: i64) -> StoreResult
 
 /// How many texts went to this number in the hour holding `now`.
 pub async fn sent_to_number_this_hour(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     recipient: &str,
     now: i64,
 ) -> StoreResult<i32> {
@@ -144,7 +144,7 @@ pub async fn sent_to_number_this_hour(
 
 /// Count one text against this number's hour, in the minting transaction.
 pub async fn record_send_to_number(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     recipient: &str,
     now: i64,
 ) -> StoreResult<()> {
@@ -165,7 +165,7 @@ pub async fn record_send_to_number(
 
 /// Drop velocity hours nothing will ever ask about again, and old day
 /// totals, and say how many rows went.
-pub async fn drop_stale_counters(transaction: &Transaction<'_>, now: i64) -> StoreResult<u64> {
+pub async fn drop_stale_counters(transaction: &UnitOfWork, now: i64) -> StoreResult<u64> {
     let hours = transaction
         .execute(
             "DELETE FROM sms_velocity \
@@ -192,7 +192,7 @@ pub async fn drop_stale_counters(transaction: &Transaction<'_>, now: i64) -> Sto
 /// it. The day is the one the counter above uses, so the two numbers on the
 /// screen are about the same day.
 pub async fn held_back_today(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     now: i64,
 ) -> StoreResult<Vec<(String, i64)>> {
     Ok(transaction

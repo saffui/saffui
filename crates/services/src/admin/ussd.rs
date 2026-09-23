@@ -1,8 +1,8 @@
 use crypto::envelope::Envelope;
-use deadpool_postgres::Transaction;
 use secrecy::SecretBox;
 use store::keyring::RealmKeyring;
 use store::providers::ussd;
+use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Unsettable {
@@ -17,7 +17,7 @@ pub enum Unsettable {
 /// Whether a gateway is named at all: what a reader may know, which is
 /// never the secret.
 pub async fn held(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
 ) -> Result<bool, Unsettable> {
@@ -28,7 +28,7 @@ pub async fn held(
 }
 
 pub async fn write(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     secret: String,
@@ -47,7 +47,7 @@ pub async fn write(
     .map_err(|_| Unsettable::Unwritable)
 }
 
-pub async fn forget(transaction: &Transaction<'_>) -> Result<(), Unsettable> {
+pub async fn forget(transaction: &UnitOfWork) -> Result<(), Unsettable> {
     ussd::forget_secret(transaction)
         .await
         .map_err(|_| Unsettable::Unwritable)?

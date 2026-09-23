@@ -4,7 +4,6 @@ use crypto::password::migration::burn_verification_time;
 use crypto::password::{StoredPassword, verify_and_plan};
 use crypto::provider::{Argon2Params, CryptoProvider};
 use crypto::secrecy::SecretBox;
-use deadpool_postgres::Pool;
 use futures_util::{SinkExt, StreamExt};
 use ldap3_proto::LdapCodec;
 use ldap3_proto::simple::{
@@ -14,7 +13,7 @@ use ldap3_proto::simple::{
 use models::entities::credentials::CredentialType;
 use models::entities::user::{UserModel, profile};
 use store::providers::{credentials, realms, users};
-use store::tenancy::{Tenancy, resolve};
+use store::tenancy::{RealmNamed, Tenancy, UnitOfWork};
 use tokio_util::codec::{FramedRead, FramedWrite};
 
 /// Where the front answers, and for whom: one listener, one realm, one
@@ -61,7 +60,6 @@ impl Front {
 pub async fn serve(
     listener: tokio::net::TcpListener,
     tls: Option<openssl::ssl::SslContext>,
-    pool: Pool,
     tenancy: Tenancy,
     provider: std::sync::Arc<dyn CryptoProvider>,
     front: Front,
@@ -78,7 +76,6 @@ pub async fn serve(
         let Ok((socket, peer)) = listener.accept().await else {
             continue;
         };
-        let pool = pool.clone();
         let tenancy = tenancy.clone();
         let provider = provider.clone();
         let front = front.clone();
@@ -86,10 +83,10 @@ pub async fn serve(
         tokio::spawn(async move {
             let outcome = match tls {
                 Some(context) => match sealed(&context, socket).await {
-                    Ok(stream) => attended(stream, peer, pool, tenancy, provider, front).await,
+                    Ok(stream) => attended(stream, peer, tenancy, provider, front).await,
                     Err(why) => Err(why),
                 },
-                None => attended(socket, peer, pool, tenancy, provider, front).await,
+                None => attended(socket, peer, tenancy, provider, front).await,
             };
             if let Err(why) = outcome {
                 tracing::debug!(%peer, why, "an ldap conversation ended early");
@@ -117,7 +114,6 @@ async fn sealed(
 async fn attended<S>(
     socket: S,
     peer: std::net::SocketAddr,
-    pool: Pool,
     tenancy: Tenancy,
     provider: std::sync::Arc<dyn CryptoProvider>,
     front: Front,
@@ -139,7 +135,7 @@ where
         };
         match op {
             ServerOps::SimpleBind(asked) => {
-                let answer = bind(&pool, &tenancy, provider.as_ref(), &front, &asked, peer).await;
+                let answer = bind(&tenancy, provider.as_ref(), &front, &asked, peer).await;
                 match answer {
                     Ok(name) => {
                         bound = Some(name);
@@ -172,7 +168,7 @@ where
                         .map_err(|_| "the answer did not send")?;
                     continue;
                 }
-                let found = search(&pool, &tenancy, &front, &asked).await;
+                let found = search(&tenancy, &front, &asked).await;
                 match found {
                     Ok(entries) => {
                         for entry in entries {
@@ -227,15 +223,11 @@ where
 /// switched off went on answering binds and searches here while refusing every
 /// HTTP request, which is a realm nobody can sign into and anybody can read out
 /// of. `every_realm` is for the jobs, which sweep a disabled realm on purpose.
-async fn opened<'c>(
-    connection: &'c mut deadpool_postgres::Object,
-    tenancy: &Tenancy,
-    front: &Front,
-) -> Option<deadpool_postgres::Transaction<'c>> {
-    let named = resolve::realm_by_id(connection, &front.realm_id)
+async fn opened(tenancy: &Tenancy, front: &Front) -> Option<UnitOfWork> {
+    tenancy
+        .begin_in(RealmNamed::ById(&front.realm_id))
         .await
-        .ok()?;
-    tenancy.transaction(connection, &named).await.ok()
+        .ok()
 }
 
 /// A simple bind, against the same credential the HTTP door checks, behind
@@ -250,7 +242,6 @@ async fn opened<'c>(
 /// refusal that never reached a verification burns the time one would have
 /// taken, so the clock does not answer what the code will not.
 async fn bind(
-    pool: &Pool,
     tenancy: &Tenancy,
     provider: &dyn CryptoProvider,
     front: &Front,
@@ -273,8 +264,7 @@ async fn bind(
         return Err(burned(refused()));
     };
 
-    let mut connection = pool.get().await.map_err(|_| refused())?;
-    let Some(transaction) = opened(&mut connection, tenancy, front).await else {
+    let Some(transaction) = opened(tenancy, front).await else {
         return Err(refused());
     };
     let Ok(Some(realm)) = realms::load(&transaction, &front.realm_id).await else {
@@ -552,7 +542,6 @@ fn wanted(filter: &LdapFilter) -> Option<Wanted> {
 const CEILING: i64 = 100;
 
 async fn search(
-    pool: &Pool,
     tenancy: &Tenancy,
     front: &Front,
     asked: &SearchRequest,
@@ -572,8 +561,7 @@ async fn search(
         ));
     };
 
-    let mut connection = pool.get().await.map_err(|_| unavailable())?;
-    let Some(transaction) = opened(&mut connection, tenancy, front).await else {
+    let Some(transaction) = opened(tenancy, front).await else {
         return Err(unavailable());
     };
 
@@ -609,9 +597,7 @@ async fn search(
 }
 
 /// The capped listing every broad answer reads from.
-async fn listed(
-    transaction: &deadpool_postgres::Transaction<'_>,
-) -> Result<Vec<UserModel>, store::error::StoreError> {
+async fn listed(transaction: &UnitOfWork) -> Result<Vec<UserModel>, store::error::StoreError> {
     let query = store::query::list_query::ListQuery::new(models::paging::Window {
         first: 0,
         max: CEILING,

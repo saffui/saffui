@@ -23,7 +23,6 @@ fn kerberos_realm() -> Option<String> {
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -45,9 +44,8 @@ async fn negotiating(plane: &Plane, realm: &str) {
     use models::entities::attributes::AttributeValue;
     use store::tenancy::TenantContext;
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let metadata =
         || models::auditable::AuditableModel::from_creator(support::TENANT.into(), "root".into());

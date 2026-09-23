@@ -3,7 +3,7 @@ mod support;
 use authz::rebac::{CompiledSchema, compile, parse};
 use services::rebac::{Budget, CHECK, Object, Step, Subject, Unwalkable, check, explain};
 use store::providers::rebac;
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 
 const SCHEMA: &str = "
@@ -34,7 +34,7 @@ fn schema() -> CompiledSchema {
     compile(&parse(SCHEMA).expect("it reads")).expect("it compiles")
 }
 
-async fn plant(transaction: &deadpool_postgres::Transaction<'_>, compiled: &CompiledSchema) {
+async fn plant(transaction: &UnitOfWork, compiled: &CompiledSchema) {
     rebac::put_schema(
         transaction,
         &rebac::StoredSchema {
@@ -66,7 +66,7 @@ fn holders(subject_type: &str, subject_id: &str, relation: &str) -> rebac::Subje
 }
 
 async fn relate(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     object_type: &str,
     object_id: &str,
     relation: &str,
@@ -91,8 +91,7 @@ async fn relate(
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_edge_is_followed_directly_through_a_set_and_through_a_parent() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -187,8 +186,7 @@ async fn an_edge_is_followed_directly_through_a_set_and_through_a_parent() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_relation_wider_than_the_ceiling_is_unanswerable() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -257,8 +255,7 @@ async fn a_relation_wider_than_the_ceiling_is_unanswerable() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_walk_that_runs_out_of_budget_says_so() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -336,8 +333,7 @@ async fn a_walk_that_runs_out_of_budget_says_so() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_edge_naming_an_undeclared_subject_type_is_refused() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -376,8 +372,7 @@ async fn an_edge_naming_an_undeclared_subject_type_is_refused() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_type_the_schema_does_not_describe_is_refused() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -409,8 +404,7 @@ async fn a_type_the_schema_does_not_describe_is_refused() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_check_sees_what_its_own_transaction_wrote() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -453,8 +447,7 @@ async fn a_check_sees_what_its_own_transaction_wrote() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_node_reached_by_several_paths_is_walked_once() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -525,8 +518,7 @@ async fn an_edge_the_schema_does_not_describe_is_refused_at_the_door() {
     use services::rebac::{Unwritable, relate as write};
 
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -645,8 +637,7 @@ async fn an_edge_the_schema_does_not_describe_is_refused_at_the_door() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_edge_the_schema_no_longer_describes_can_still_be_taken_back() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -684,8 +675,7 @@ async fn a_published_schema_is_the_compilation_of_its_own_source() {
     use services::rebac::{Unpublishable, publish};
 
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     let compiled = publish(&transaction, SCHEMA, Some("root"))
         .await
@@ -729,8 +719,7 @@ async fn a_published_schema_is_the_compilation_of_its_own_source() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_walk_tells_where_it_went_and_agrees_with_the_answer() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -814,8 +803,7 @@ async fn the_walk_tells_where_it_went_and_agrees_with_the_answer() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_walk_that_reaches_nobody_still_says_where_it_looked() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 
@@ -852,8 +840,7 @@ async fn a_walk_that_reaches_nobody_still_says_where_it_looked() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_long_walk_is_cut_and_says_it_was_cut() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let compiled = schema();
     plant(&transaction, &compiled).await;
 

@@ -15,11 +15,11 @@
 use actix_web::{HttpRequest, HttpResponse, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
-use deadpool_postgres::Pool;
 use serde_json::{Value, json};
 use services::grant::{self, Ungranted};
+use store::error::StoreError;
 use store::keyring;
-use store::tenancy::{Tenancy, resolve};
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 
@@ -56,7 +56,6 @@ pub async fn serve(
     request: HttpRequest,
     realm: web::Path<String>,
     body: web::Json<Value>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -68,14 +67,17 @@ pub async fn serve(
         return refused(id, -32600, "a request names its method");
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return refused(id, -32000, "the realm could not be read");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return refused(id, -32000, "the realm could not be read");
+        }
+        Err(_) => {
+            // The same face a missing realm wears everywhere else.
+            return HttpResponse::NotFound().finish();
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        // The same face a missing realm wears everywhere else.
-        return HttpResponse::NotFound().finish();
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return refused(id, -32000, "the realm could not be read");
     };
     let Ok(held) = store::providers::realms::load(&transaction, &context.realm_id).await else {

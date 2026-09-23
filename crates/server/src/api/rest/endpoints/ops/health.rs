@@ -3,8 +3,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use actix_web::{HttpResponse, web};
-use deadpool_postgres::Pool;
 use serde::Serialize;
+use store::tenancy::{Reached, Tenancy};
 
 /// How long a readiness probe waits on the database before calling it out.
 ///
@@ -15,7 +15,7 @@ const REACH: Duration = Duration::from_secs(2);
 /// What the process knows about itself.
 #[derive(Clone)]
 pub struct Vitals {
-    pool: Pool,
+    tenancy: Tenancy,
     /// The highest migration this build carries, so a schema ahead of it is a
     /// pod that must not serve: a newer peer has migrated and this one cannot
     /// read what it wrote.
@@ -25,9 +25,9 @@ pub struct Vitals {
 }
 
 impl Vitals {
-    pub fn new(pool: Pool, schema: i32) -> Self {
+    pub fn new(tenancy: Tenancy, schema: i32) -> Self {
         Self {
-            pool,
+            tenancy,
             schema,
             draining: Arc::new(AtomicBool::new(false)),
             started: Arc::new(AtomicBool::new(false)),
@@ -79,25 +79,19 @@ pub async fn ready(vitals: web::Data<Vitals>) -> HttpResponse {
         return not_ready("starting");
     }
 
-    let Ok(Ok(connection)) = tokio::time::timeout(REACH, vitals.pool.get()).await else {
-        return not_ready("no connection");
-    };
-    if tokio::time::timeout(REACH, connection.simple_query("SELECT 1"))
-        .await
-        .is_err()
-    {
-        return not_ready("database not answering");
-    }
-
-    match schema_of(&connection).await {
-        Some(applied) if applied <= vitals.schema => HttpResponse::Ok().json(Answer {
-            ready: true,
-            why: None,
-        }),
+    match vitals.tenancy.reach(REACH).await {
+        Reached::NoConnection => not_ready("no connection"),
+        Reached::NotAnswering => not_ready("database not answering"),
+        Reached::Schema(Some(applied)) if applied <= vitals.schema => {
+            HttpResponse::Ok().json(Answer {
+                ready: true,
+                why: None,
+            })
+        }
         // Behind is a pod that has not migrated yet and will; ahead is one a
         // peer migrated past, which cannot read what that peer now writes.
-        Some(_) => not_ready("schema ahead of this build"),
-        None => not_ready("no schema"),
+        Reached::Schema(Some(_)) => not_ready("schema ahead of this build"),
+        Reached::Schema(None) => not_ready("no schema"),
     }
 }
 
@@ -120,18 +114,4 @@ fn not_ready(why: &'static str) -> HttpResponse {
         ready: false,
         why: Some(why),
     })
-}
-
-/// The highest migration the database has applied.
-///
-/// Read at the column's own width. `version` is an `integer`, so anything
-/// wider fails to convert, and a failed conversion reads as a database with no
-/// schema at all.
-async fn schema_of(connection: &deadpool_postgres::Object) -> Option<i32> {
-    connection
-        .query_opt("SELECT max(version) FROM schema_migrations", &[])
-        .await
-        .ok()
-        .flatten()
-        .and_then(|row| row.try_get::<_, Option<i32>>(0).ok().flatten())
 }

@@ -21,7 +21,7 @@ async fn ask(vitals: &Vitals, path: &str) -> (StatusCode, String) {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn alive_answers_before_anything_is_ready() {
     let plane = Plane::with_actions(&[]).await;
-    let vitals = Vitals::new(plane.pool(), 999);
+    let vitals = Vitals::new(plane.tenancy(), 999);
 
     let (status, _) = ask(&vitals, "/livez").await;
     assert_eq!(
@@ -42,7 +42,7 @@ async fn alive_answers_before_anything_is_ready() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn ready_answers_once_the_database_and_the_schema_agree() {
     let plane = Plane::with_actions(&[]).await;
-    let vitals = Vitals::new(plane.pool(), 999);
+    let vitals = Vitals::new(plane.tenancy(), 999);
 
     let (before, why) = ask(&vitals, "/readyz").await;
     assert_eq!(before, StatusCode::SERVICE_UNAVAILABLE);
@@ -63,7 +63,7 @@ async fn ready_answers_once_the_database_and_the_schema_agree() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_schema_ahead_of_this_build_takes_the_pod_out_of_service() {
     let plane = Plane::with_actions(&[]).await;
-    let behind = Vitals::new(plane.pool(), 1);
+    let behind = Vitals::new(plane.tenancy(), 1);
     behind.started();
 
     let (status, why) = ask(&behind, "/readyz").await;
@@ -86,7 +86,7 @@ async fn a_schema_ahead_of_this_build_takes_the_pod_out_of_service() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn draining_stops_new_traffic_and_not_the_process() {
     let plane = Plane::with_actions(&[]).await;
-    let vitals = Vitals::new(plane.pool(), 999);
+    let vitals = Vitals::new(plane.tenancy(), 999);
     vitals.started();
 
     assert_eq!(ask(&vitals, "/readyz").await.0, StatusCode::OK);
@@ -108,7 +108,7 @@ async fn draining_stops_new_traffic_and_not_the_process() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_probes_ask_nothing_of_the_caller() {
     let plane = Plane::with_actions(&[]).await;
-    let vitals = Vitals::new(plane.pool(), 999);
+    let vitals = Vitals::new(plane.tenancy(), 999);
     vitals.started();
 
     for path in ["/livez", "/readyz", "/startupz"] {
@@ -135,7 +135,7 @@ async fn the_probes_ask_nothing_of_the_caller() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_scrape_is_there_exactly_when_it_is_turned_on() {
     let plane = Plane::with_actions(&[]).await;
-    let vitals = Vitals::new(plane.pool(), 999);
+    let vitals = Vitals::new(plane.tenancy(), 999);
     vitals.started();
 
     let exposing = test::init_service(App::new().configure(register_ops(&vitals, true))).await;

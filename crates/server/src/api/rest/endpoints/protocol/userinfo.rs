@@ -1,11 +1,11 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
-use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use services::userinfo::{self, Untold};
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::provenance::read_client_certificate;
 use crate::api::rest::endpoints::protocol::basic;
@@ -23,7 +23,6 @@ pub async fn tell(
     request: HttpRequest,
     realm: web::Path<String>,
     body: Option<web::Form<Carried>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<crate::api::config::Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
@@ -32,15 +31,18 @@ pub async fn tell(
     let Some(bearer) = presented(&request, body.as_deref()) else {
         return challenged("a bearer token is required");
     };
-    let Ok(mut connection) = pool.get().await else {
-        return faulted();
-    };
     // Answered as an unacceptable token, not as a missing realm: which realms
     // exist is not something a caller holding no valid token gets to map.
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return challenged("the token presented is not one this realm accepts");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return faulted();
+        }
+        Err(_) => {
+            return challenged("the token presented is not one this realm accepts");
+        }
     };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return faulted();
     };
     let Ok(keys) = services::realm::published_keys(&transaction).await else {
@@ -95,7 +97,7 @@ pub async fn tell(
         if transaction.commit().await.is_err() {
             return challenged("the proof could not be spent");
         }
-        let Ok(fresh) = tenancy.transaction(&mut connection, &context).await else {
+        let Ok(fresh) = tenancy.begin(&context).await else {
             return challenged("the realm could not be read");
         };
         fresh

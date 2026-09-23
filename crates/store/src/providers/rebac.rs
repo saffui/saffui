@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
@@ -29,7 +29,7 @@ pub struct Subject {
 /// Both halves together. Writing the source without the compiled form would
 /// leave a realm deciding by the previous one while showing the new one.
 pub async fn put_schema(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     schema: &StoredSchema,
     actor: Option<&str>,
 ) -> StoreResult<()> {
@@ -61,7 +61,7 @@ pub async fn put_schema(
 }
 
 /// This realm's schema, if it has one.
-pub async fn load_schema(transaction: &Transaction<'_>) -> StoreResult<Option<StoredSchema>> {
+pub async fn load_schema(transaction: &UnitOfWork) -> StoreResult<Option<StoredSchema>> {
     Ok(transaction
         .query_opt(
             "SELECT format, revision, source, compiled FROM rebac_schemas",
@@ -90,7 +90,7 @@ pub async fn load_schema(transaction: &Transaction<'_>) -> StoreResult<Option<St
 ///
 /// Writing one twice writes it once.
 pub async fn relate(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     object_type: &str,
     object_id: &str,
     relation: &str,
@@ -122,7 +122,7 @@ pub async fn relate(
 
 /// Remove an edge, and say whether there was one.
 pub async fn unrelate(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     object_type: &str,
     object_id: &str,
     relation: &str,
@@ -150,7 +150,7 @@ pub async fn unrelate(
 /// Delete every edge naming this entity, as the subject or as the object, and
 /// say how many went.
 pub async fn unrelate_everything_naming(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     entity_type: &str,
     entity_id: &str,
 ) -> StoreResult<u64> {
@@ -175,7 +175,7 @@ pub async fn unrelate_everything_naming(
 /// One more than asked for is read, so a caller can tell a relation that fits
 /// inside its ceiling from one that was cut off at it.
 pub async fn subjects(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     object_type: &str,
     object_id: &str,
     relation: &str,
@@ -203,7 +203,7 @@ pub async fn subjects(
 /// again once sharing reopens. Every edge on that resource is left out, since a
 /// share is a row like any other; [`subjects`] still lists them all.
 pub async fn granting_subjects(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     object_type: &str,
     object_id: &str,
     relation: &str,
@@ -265,7 +265,7 @@ pub struct TupleFilter<'a> {
 /// Read as written and never walked: a listing says what stands, the engine
 /// says what follows from it.
 pub async fn tuples(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     filter: TupleFilter<'_>,
     first: i64,
     max: i64,

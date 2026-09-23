@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use crypto::provider::{DigestProvider, HashAlg};
-use deadpool_postgres::Transaction;
 
 use crate::error::{StoreError, StoreResult};
 
@@ -30,7 +30,7 @@ pub type Purpose<'a> = &'a str;
 /// one this deployment did not choose, and the whole value of storing one is
 /// that it is the one the verifier will compute.
 pub async fn mint(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     owner: Owner<'_>,
     raw_token: &str,
@@ -86,7 +86,7 @@ pub async fn mint(
 /// An expired token is refused and removed either way, so a stale row does not
 /// sit there being compared against.
 pub async fn spend(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     user_id: &str,
     purpose: Purpose<'_>,
@@ -150,7 +150,7 @@ pub enum Spent {
 /// What a caller deciding whether to send another needs: not its value, and not
 /// merely that one exists, but how long ago the last one went out.
 pub async fn minted_at(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     purpose: Purpose<'_>,
     now: chrono::DateTime<chrono::Utc>,
@@ -171,7 +171,7 @@ pub async fn minted_at(
 /// Says nothing about its value, which is the point: a caller deciding whether
 /// to send another one needs to know there is a live one, not what it is.
 pub async fn outstanding(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     purpose: Purpose<'_>,
     now: chrono::DateTime<chrono::Utc>,
@@ -193,7 +193,7 @@ pub async fn outstanding(
 /// Scoped like everything else, so a sweep clears this realm's and reports on
 /// this realm's.
 pub async fn drop_expired(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     now: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<u64> {
     transaction

@@ -127,8 +127,7 @@ fn answer(key: &RsaKeyPair, said: &Said) -> String {
 }
 
 async fn provision_keyring(fixture: &Fixture, envelope: &Envelope) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     keyring::provision(&transaction, envelope, "acme", "main")
         .await
         .expect("a keyring");
@@ -137,8 +136,7 @@ async fn provision_keyring(fixture: &Fixture, envelope: &Envelope) {
 
 /// Open a request for `corp` under `request_id`, for the browser that left.
 async fn open_request(fixture: &Fixture, request_id: &str) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     store::providers::saml_brokering::open_login_request(
         &transaction,
         &SamlLoginRequest {
@@ -163,8 +161,7 @@ async fn take(
     browser: &str,
 ) -> Result<SamlAnswer, Untaken> {
     let crypto = provider();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let ring = keyring::load(&transaction, envelope, "acme", "main")
         .await
         .expect("the realm's keyring");

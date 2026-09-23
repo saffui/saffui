@@ -1,10 +1,10 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
-use deadpool_postgres::Pool;
 use serde_json::{Map, Value, json};
 use services::pushed::{self, Unpushable};
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::caller;
@@ -18,7 +18,6 @@ pub async fn keep(
     request: HttpRequest,
     realm: web::Path<String>,
     body: Option<web::Form<Vec<(String, String)>>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
@@ -46,11 +45,14 @@ pub async fn keep(
         }
     }
 
-    let Ok(mut connection) = pool.get().await else {
-        return Denied::InvalidRequest.answer("the realm could not be read");
-    };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return Denied::InvalidClient.answer("the client could not be authenticated");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return Denied::InvalidRequest.answer("the realm could not be read");
+        }
+        Err(_) => {
+            return Denied::InvalidClient.answer("the client could not be authenticated");
+        }
     };
     let (transaction, client) = match caller::establish(
         &request,
@@ -60,7 +62,6 @@ pub async fn keep(
             .as_deref()
             .zip(assertion.as_deref())
             .map(|(kind, assertion)| services::client::Signed { kind, assertion }),
-        &mut connection,
         &tenancy,
         &sealing,
         &origin,

@@ -5,12 +5,12 @@ use crypto::jose::jwe::{
 };
 use crypto::jose::jwk::{Jwk, JwkSet};
 use crypto::jose::jwt;
-use deadpool_postgres::Transaction;
 use models::entities::client::{ClientModel, JweRegistration};
 use models::entities::keys::JweAlgorithm;
 use serde_json::Value;
 use store::keyring::RealmKeyring;
 use store::providers::realm_keys;
+use store::tenancy::UnitOfWork;
 
 /// Why a client that registered encryption could not be encrypted to.
 ///
@@ -146,7 +146,7 @@ pub enum Unopenable {
 /// decrypted. A client that registered one pair and sent another is refused on
 /// what it named, not on whether the key happened to work.
 pub async fn opened_request_object(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     client: &ClientModel,

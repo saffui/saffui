@@ -21,7 +21,6 @@ fn mounted(plane: &Plane) -> server::api::config::Plane {
 /// what the wider setting is for.
 fn mounted_dialling(plane: &Plane, egress: Egress) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -91,9 +90,8 @@ async fn as_person_dialling(
 async fn opted_in(plane: &Plane) {
     use models::entities::attributes::AttributeValue;
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await
@@ -360,9 +358,8 @@ async fn an_offline_poll_outlives_its_login() {
         .await;
     let sid = claims["sid"].as_str().expect("a session id");
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         assert!(
             store::providers::sessions::set_state(
@@ -396,9 +393,8 @@ async fn an_offline_poll_keeps_to_the_realms_cap() {
     let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
     opted_in(&plane).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut realm = store::providers::realms::load(&transaction, REALM)
             .await
@@ -414,9 +410,8 @@ async fn an_offline_poll_keeps_to_the_realms_cap() {
     let older = collected(&plane, "openid offline_access").await;
     // Started a minute back, or the two grants would tie on their start.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         transaction
             .execute(
@@ -460,9 +455,8 @@ async fn an_online_poll_renews_past_its_first_window() {
     let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
     opted_in(&plane).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut realm = store::providers::realms::load(&transaction, REALM)
             .await
@@ -478,9 +472,8 @@ async fn an_online_poll_renews_past_its_first_window() {
     let minted = collected(&plane, "openid").await;
 
     let login = {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::sessions::load_for_user(&transaction, support::SUBJECT)
             .await
@@ -641,9 +634,8 @@ async fn a_refusal_an_expiry_and_a_ghost_all_answer_their_own_words() {
 async fn opted_ping(plane: &Plane, endpoint: &str) {
     use models::entities::attributes::AttributeValue;
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await
@@ -889,9 +881,8 @@ async fn a_person_with_a_code_rings_only_for_who_knows_it() {
         data_encoding::HEXLOWER.encode(&held)
     };
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut person = store::providers::users::load(&transaction, support::SUBJECT)
             .await
@@ -1000,12 +991,11 @@ async fn the_realms_pacing_reaches_the_wire() {
     let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
     opted_in(&plane).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         let mut realm = store::providers::realms::load(&transaction, support::REALM)
             .await
@@ -1047,9 +1037,8 @@ async fn the_realms_pacing_reaches_the_wire() {
 /// The realm can text and Ada's phone is proven, or not, as the test needs.
 async fn texting_arranged(plane: &Plane, phone_verified: bool) {
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let sealing = support::sealing();
     let ring = store::keyring::load(&transaction, &sealing.envelope, support::TENANT, REALM)
@@ -1166,9 +1155,8 @@ async fn a_silent_phone_never_costs_the_request() {
     // on the record, and nothing rings.
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::users::set_phone(
             &transaction,
@@ -1199,9 +1187,8 @@ async fn a_silent_phone_never_costs_the_request() {
     assert!(textbox.held().is_empty(), "a shut day still rang a phone");
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let throttled: i64 = transaction
             .query_one(
@@ -1223,9 +1210,8 @@ async fn the_realms_own_doorbell_words_ride() {
     opted_in(&plane).await;
     texting_arranged(&plane, true).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut realm = store::providers::realms::load(&transaction, REALM)
             .await

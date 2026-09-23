@@ -18,10 +18,7 @@ fn parameters() -> serde_json::Value {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_reference_is_spent_once() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     pushed::keep(&transaction, "digest-1", "app", &parameters(), in_secs(60))
         .await
@@ -55,10 +52,7 @@ async fn a_reference_is_spent_once() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_expired_reference_is_unusable_before_it_is_swept() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     pushed::keep(&transaction, "alive", "app", &parameters(), in_secs(60))
         .await

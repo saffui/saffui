@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use deadpool_postgres::Transaction;
 use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::client::{Protocol, ProtocolMapperModel};
 use models::entities::user::{UserModel, profile};
 use serde_json::{Map, Value};
 use store::providers::{client_scopes, organizations, roles, users};
+use store::tenancy::UnitOfWork;
 
 /// Map a user scalar (`username` / `email` / `emailVerified`) to a claim.
 pub const PROPERTY_MAPPER: &str = "oidc-usermodel-property-mapper";
@@ -239,7 +239,7 @@ impl Resolved {
 /// Roles are read only when a role mapper is present, so a grant with none
 /// costs no role query.
 pub async fn resolve(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     user_id: &str,
     scope: &str,
@@ -318,7 +318,7 @@ pub struct Overlay {
 /// The overlay this grant mints under. The person is read only when a mapper
 /// applies, so a grant with none costs nothing new.
 pub async fn overlay_for(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     user_id: &str,
     scope: &str,
@@ -367,7 +367,7 @@ pub struct PreviewedClaim {
 /// author. This mints nothing: it runs the same evaluation issuance runs and
 /// reports who said what instead of saying it into a token.
 pub async fn preview(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     user_id: &str,
     scope: &str,

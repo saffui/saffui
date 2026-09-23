@@ -57,10 +57,7 @@ fn read(policy: StoredPolicy) -> PolicyModel {
 
 /// A server, a resource and a scope to bind to.
 async fn plant_surface(fixture: &Fixture) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     for statement in [
         "INSERT INTO resource_servers (tenant, realm_id, server_id) \
          VALUES ('acme', 'main', 'app')",
@@ -75,7 +72,6 @@ async fn plant_surface(fixture: &Fixture) {
         transaction.execute(statement, &[]).await.unwrap();
     }
     transaction.commit().await.unwrap();
-    drop(connection);
 }
 
 fn policy(id: &str, kind: &str, rule: &str) -> String {
@@ -128,14 +124,10 @@ async fn a_policy_names_its_own_kind() {
     ];
 
     for (statement, allowed, what) in cases {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let outcome = transaction.execute(statement.as_str(), &[]).await;
         let refused = outcome.is_err();
         drop(transaction);
-        drop(connection);
         assert_eq!(!refused, allowed, "{what}");
     }
 }
@@ -150,10 +142,7 @@ async fn a_binding_hangs_only_from_the_kind_that_reads_it() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             policy(
@@ -187,13 +176,9 @@ async fn a_binding_hangs_only_from_the_kind_that_reads_it() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     // The same policy, given a binding of a kind it does not read.
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     let refused = transaction
         .execute(
             "INSERT INTO policies_groups \
@@ -204,7 +189,6 @@ async fn a_binding_hangs_only_from_the_kind_that_reads_it() {
         .await
         .is_err();
     drop(transaction);
-    drop(connection);
     assert!(
         refused,
         "a policy deciding on roles was given a group binding"
@@ -219,10 +203,7 @@ async fn a_bound_policy_cannot_change_its_kind() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             policy(
@@ -266,10 +247,7 @@ async fn aggregation_refuses_what_would_not_terminate_or_be_read() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     for statement in [
         policy("group-of", "aggregated", r#"{"policy_type":"aggregated"}"#),
         policy(
@@ -297,7 +275,6 @@ async fn aggregation_refuses_what_would_not_terminate_or_be_read() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     let cases = [
         (
@@ -326,13 +303,9 @@ async fn aggregation_refuses_what_would_not_terminate_or_be_read() {
     ];
 
     for (statement, what) in cases {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let refused = transaction.execute(statement, &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -344,10 +317,7 @@ async fn a_permission_reaches_its_own_application() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             policy(
@@ -370,13 +340,9 @@ async fn a_permission_reaches_its_own_application() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     // A condition, given resources to apply to.
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             policy(
@@ -399,7 +365,6 @@ async fn a_permission_reaches_its_own_application() {
         .await
         .is_err();
     drop(transaction);
-    drop(connection);
     assert!(
         refused,
         "a condition was bound to resources it would never read"
@@ -414,10 +379,7 @@ async fn removing_the_organization_removes_what_was_confined_to_it() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO organizations (tenant, realm_id, org_id, name, display_name) \
@@ -465,10 +427,7 @@ async fn removing_the_organization_removes_what_was_confined_to_it() {
 async fn the_log_keeps_the_answer_apart_from_the_outcome() {
     let fixture = Fixture::with_user_and_client().await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO authz_decisions \
@@ -524,10 +483,7 @@ async fn the_log_keeps_the_answer_apart_from_the_outcome() {
 async fn policies_are_not_visible_from_another_realm() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             policy(
@@ -541,12 +497,8 @@ async fn policies_are_not_visible_from_another_realm() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     let seen: i64 = transaction
         .query_one("SELECT count(*) FROM policies", &[])
         .await
@@ -564,10 +516,7 @@ async fn a_policy_answers_with_what_still_exists() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO roles (tenant, realm_id, role_id, name, display_name) \
@@ -648,10 +597,7 @@ async fn a_condition_that_leads_back_is_refused() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     for leaf in ["leaf", "twig"] {
         authz_policies::create(
@@ -731,10 +677,7 @@ async fn what_is_refused_is_refused_before_anything_is_written() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let unconditional = stored(
         "grant",
@@ -878,10 +821,7 @@ async fn a_row_nothing_can_read_is_named_and_the_rest_survive() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     authz_policies::create(
         &transaction,
@@ -929,10 +869,7 @@ async fn a_row_nothing_can_read_is_named_and_the_rest_survive() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_decision_keeps_both_answers_through_the_round_trip() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let record = |id: &str, reported, computed| AuthzDecisionRecord {
         decision_id: id.to_owned(),
@@ -1002,10 +939,7 @@ async fn a_policy_does_not_change_what_it_decides_on() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     authz_policies::create(
         &transaction,
@@ -1068,10 +1002,7 @@ async fn a_policy_something_is_conditioned_on_does_not_vanish() {
     let fixture = Fixture::with_user_and_client().await;
     plant_surface(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     for leaf in ["leaf", "twig"] {
         authz_policies::create(
             &transaction,

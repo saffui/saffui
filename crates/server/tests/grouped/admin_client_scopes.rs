@@ -19,7 +19,6 @@ async fn asked(
     use server::api::config::register;
     use server::middleware::admin_policy::AdminPolicy;
     let app = test::init_service(App::new().configure(register(&server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -359,7 +358,6 @@ async fn a_new_client_carries_the_catalogue_defaults() {
         async move {
             let app =
                 test::init_service(App::new().configure(register(&server::api::config::Plane {
-                    pool: plane.pool(),
                     tenancy: plane.tenancy(),
                     policy: server::middleware::admin_policy::AdminPolicy {
                         audiences: vec![support::AUDIENCE.to_owned()],
@@ -430,12 +428,8 @@ async fn a_new_client_carries_the_catalogue_defaults() {
 
     // Offered is not granted: a request naming less gets exactly what it
     // named, and one naming the admin's default gets it like any other.
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, REALM),
-        )
+        .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
         .await;
     assert_eq!(
         services::authorize::granted_scope(&transaction, &newcomer, "openid email")
@@ -451,7 +445,6 @@ async fn a_new_client_carries_the_catalogue_defaults() {
         "openid employment"
     );
     drop(transaction);
-    drop(connection);
 
     // The flag is read live: unmade after, a default stops reaching the next
     // client, and the one already registered keeps what it was given.
@@ -565,12 +558,8 @@ async fn a_new_client_takes_the_standard_scope_holding_its_name() {
 async fn a_scope_of_another_protocol_is_no_part_of_an_openid_grant() {
     let plane = Plane::with_actions(&[]).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::client_scopes::create_scope(
             &transaction,

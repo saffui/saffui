@@ -5,7 +5,6 @@ use config::serving::PublicOrigin;
 use crypto::password::storage::StoredPassword;
 use crypto::provider::Argon2Params;
 use crypto::secrecy::SecretBox;
-use deadpool_postgres::{Pool, Transaction};
 use models::entities::attributes::AttributeValue;
 use models::entities::authz::GroupModel;
 use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
@@ -15,16 +14,13 @@ use services::scim::{self, AssertedUser, Matched, Refusal, UserPatch, list_respo
 use store::error::StoreError;
 use store::providers::{credentials, roles, users};
 use store::query::list_query::ListQuery;
-use store::tenancy::Tenancy;
+use store::tenancy::{Tenancy, UnitOfWork};
 
 use super::{answered, base_of, filter_of, refused, unavailable, window};
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
 
-async fn groups_of(
-    transaction: &Transaction<'_>,
-    person: &UserModel,
-) -> Result<Vec<GroupModel>, ()> {
+async fn groups_of(transaction: &UnitOfWork, person: &UserModel) -> Result<Vec<GroupModel>, ()> {
     let mut held = Vec::new();
     for group_id in users::groups_of(transaction, &person.user_id)
         .await
@@ -40,7 +36,7 @@ async fn groups_of(
     Ok(held)
 }
 
-async fn shown(transaction: &Transaction<'_>, base: &str, person: &UserModel) -> Result<Value, ()> {
+async fn shown(transaction: &UnitOfWork, base: &str, person: &UserModel) -> Result<Value, ()> {
     let groups = groups_of(transaction, person).await?;
     Ok(shown_user(base, person, &groups))
 }
@@ -48,20 +44,13 @@ async fn shown(transaction: &Transaction<'_>, base: &str, person: &UserModel) ->
 pub async fn list(
     request: HttpRequest,
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
     path: web::Path<String>,
 ) -> HttpResponse {
     let realm_id = path.into_inner();
     let base = base_of(&request, &origin, &realm_id);
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
-    let Ok(transaction) = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
-        .await
-    else {
+    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
         return unavailable();
     };
 
@@ -111,20 +100,13 @@ pub async fn list(
 pub async fn get(
     request: HttpRequest,
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
     path: web::Path<(String, String)>,
 ) -> HttpResponse {
     let (realm_id, user_id) = path.into_inner();
     let base = base_of(&request, &origin, &realm_id);
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
-    let Ok(transaction) = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
-        .await
-    else {
+    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
         return unavailable();
     };
     match users::load(&transaction, &user_id).await {
@@ -144,7 +126,6 @@ pub async fn get(
 pub async fn create(
     request: HttpRequest,
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -161,11 +142,8 @@ pub async fn create(
         return refused(&Refusal::invalid("userName is required"));
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
     let context = within(&admin, &realm_id);
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return unavailable();
     };
 
@@ -277,7 +255,6 @@ pub async fn create(
 pub async fn replace(
     request: HttpRequest,
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -291,13 +268,7 @@ pub async fn replace(
         Err(refusal) => return refused(&refusal),
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
-    let Ok(transaction) = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
-        .await
-    else {
+    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
         return unavailable();
     };
     let mut person = match users::load(&transaction, &user_id).await {
@@ -356,7 +327,6 @@ pub async fn replace(
 pub async fn patch(
     request: HttpRequest,
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -370,13 +340,7 @@ pub async fn patch(
         Err(refusal) => return refused(&refusal),
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
-    let Ok(transaction) = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
-        .await
-    else {
+    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
         return unavailable();
     };
     let mut person = match users::load(&transaction, &user_id).await {
@@ -458,18 +422,11 @@ pub async fn patch(
 
 pub async fn delete(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> HttpResponse {
     let (realm_id, user_id) = path.into_inner();
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
-    let Ok(transaction) = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
-        .await
-    else {
+    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
         return unavailable();
     };
     match users::delete(&transaction, &user_id).await {
@@ -492,7 +449,7 @@ pub async fn delete(
 /// refusal is handed back in the realm's own words rather than flattened, so a
 /// directory that pushes a password too short is told which rule it broke.
 async fn planted_password(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &Sealing,
     tenant: &str,
     realm_id: &str,

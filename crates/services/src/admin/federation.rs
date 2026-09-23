@@ -1,11 +1,11 @@
 use crypto::envelope::Envelope;
 use data_encoding::BASE64;
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::attributes::AttributeValue;
 use models::entities::brokering::{UserFederationModel, UserFederationMutationModel};
 use store::keyring::RealmKeyring;
 use store::providers::brokering;
+use store::tenancy::UnitOfWork;
 
 use crate::federation::{CLEAR_BIND, LdapSettings, PURPOSE, SEALED_BIND, check_bag, presentable};
 
@@ -21,7 +21,7 @@ pub enum Unwritable {
 }
 
 /// The realm's directories as an answer may carry them: secrets stripped.
-pub async fn list(transaction: &Transaction<'_>) -> Result<Vec<UserFederationModel>, Unwritable> {
+pub async fn list(transaction: &UnitOfWork) -> Result<Vec<UserFederationModel>, Unwritable> {
     Ok(brokering::federations(transaction)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -30,10 +30,7 @@ pub async fn list(transaction: &Transaction<'_>) -> Result<Vec<UserFederationMod
         .collect())
 }
 
-pub async fn get(
-    transaction: &Transaction<'_>,
-    alias: &str,
-) -> Result<UserFederationModel, Unwritable> {
+pub async fn get(transaction: &UnitOfWork, alias: &str) -> Result<UserFederationModel, Unwritable> {
     brokering::federation(transaction, alias)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -46,7 +43,7 @@ pub async fn get(
 /// unread defers every failure to somebody's sign-in.
 #[allow(clippy::too_many_arguments, reason = "each is a distinct fact")]
 pub async fn put(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     tenant: &str,
@@ -119,7 +116,7 @@ fn keep_bind_secret(standing: Option<&UserFederationModel>, rewritten: &mut User
         .insert(SEALED_BIND.to_owned(), sealed.clone());
 }
 
-pub async fn delete(transaction: &Transaction<'_>, alias: &str) -> Result<(), Unwritable> {
+pub async fn delete(transaction: &UnitOfWork, alias: &str) -> Result<(), Unwritable> {
     brokering::drop_federation(transaction, alias)
         .await
         .map_err(|_| Unwritable::Backend)?

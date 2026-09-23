@@ -9,7 +9,6 @@ use store::tenancy::TenantContext;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -206,12 +205,8 @@ async fn an_administrator_lifts_the_lock() {
 
 /// What the row holds against this person right now.
 async fn counted(plane: &Plane) -> i64 {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     store::providers::login::failures(&transaction, support::SUBJECT)
         .await

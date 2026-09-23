@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use models::entities::brokering::{SamlBrokerSession, SamlLoginRequest, SamlLogoutRequest};
 use tokio_postgres::Row;
 
@@ -7,7 +7,7 @@ use crate::error::{StoreError, StoreResult};
 
 /// Open one SAML authentication request.
 pub async fn open_login_request(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request: &SamlLoginRequest,
 ) -> StoreResult<()> {
     transaction
@@ -34,7 +34,7 @@ pub async fn open_login_request(
 /// a replay finds nothing, a request sent to one provider cannot be answered at
 /// another's endpoint, and a stale one cannot be spent.
 pub async fn consume_login_request(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     alias: &str,
     now: DateTime<Utc>,
@@ -53,7 +53,7 @@ pub async fn consume_login_request(
 
 /// Drop the authentication requests that ran out unanswered.
 pub async fn drop_expired_login_requests(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     now: DateTime<Utc>,
 ) -> StoreResult<u64> {
     transaction
@@ -67,7 +67,7 @@ pub async fn drop_expired_login_requests(
 
 /// Open one logout request sent to a provider.
 pub async fn open_logout_request(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request: &SamlLogoutRequest,
 ) -> StoreResult<()> {
     transaction
@@ -91,7 +91,7 @@ pub async fn open_logout_request(
 /// Spend the logout request a provider's answer names, exactly once, matched as
 /// an authentication request is.
 pub async fn consume_logout_request(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     alias: &str,
     now: DateTime<Utc>,
@@ -110,7 +110,7 @@ pub async fn consume_logout_request(
 
 /// Drop the logout requests no provider answered in time.
 pub async fn drop_expired_logout_requests(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     now: DateTime<Utc>,
 ) -> StoreResult<u64> {
     transaction
@@ -124,7 +124,7 @@ pub async fn drop_expired_logout_requests(
 
 /// Keep what a provider named a login by, for as long as the login stands.
 pub async fn record_broker_session(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session: &SamlBrokerSession,
 ) -> StoreResult<()> {
     transaction
@@ -151,7 +151,7 @@ pub async fn record_broker_session(
 
 /// What a provider named a login by, when a provider opened it.
 pub async fn read_broker_session(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
 ) -> StoreResult<Option<SamlBrokerSession>> {
     Ok(transaction
@@ -175,7 +175,7 @@ pub async fn read_broker_session(
 /// leave out at logout what it wrote at sign-in, and a logout that finds nothing
 /// leaves standing a login the provider meant to end.
 pub async fn find_named_sessions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
     name_id: &str,
     session_indexes: &[String],

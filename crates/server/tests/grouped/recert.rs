@@ -12,7 +12,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -64,9 +63,8 @@ async fn read_bytes(plane: &Plane, path: &str, bearer: &str) -> (StatusCode, Vec
 
 async fn planted_role(plane: &Plane, role: &str) {
     use models::auditable::AuditableModel;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let model = models::entities::authz::RoleMutationModel {
         name: role.into(),
@@ -88,9 +86,8 @@ async fn planted_role(plane: &Plane, role: &str) {
 
 async fn planted_group(plane: &Plane, group: &str, confers: &str) {
     use models::auditable::AuditableModel;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::roles::create_group(
         &transaction,
@@ -115,9 +112,8 @@ async fn planted_group(plane: &Plane, group: &str, confers: &str) {
 
 async fn planted_person(plane: &Plane, named: &str, roles: &[&str], groups: &[&str]) {
     use models::auditable::AuditableModel;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::users::create(
         &transaction,
@@ -158,9 +154,8 @@ async fn planted_person(plane: &Plane, named: &str, roles: &[&str], groups: &[&s
 /// reviewer decides nothing.
 async fn planted_admin_token(plane: &Plane, named: &str) -> String {
     planted_person(plane, named, &["admins"], &[]).await;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::sessions::open(
         &transaction,
@@ -200,9 +195,8 @@ async fn planted_admin_token(plane: &Plane, named: &str) -> String {
 }
 
 async fn roles_of(plane: &Plane, user: &str) -> Vec<String> {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::roles::effective_roles(&transaction, user)
         .await
@@ -215,9 +209,8 @@ async fn roles_of(plane: &Plane, user: &str) -> Vec<String> {
 /// Widen what a group confers after its membership was certified, which is
 /// the drift a certification must not cover.
 async fn group_gains(plane: &Plane, group: &str, role: &str) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::roles::grant_to_group(&transaction, group, role)
         .await
@@ -226,9 +219,8 @@ async fn group_gains(plane: &Plane, group: &str, role: &str) {
 }
 
 async fn chain_holds(plane: &Plane) -> bool {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::audit::verify(&transaction, support::sealing().provider.digest())
         .await

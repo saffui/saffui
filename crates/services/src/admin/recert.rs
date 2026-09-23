@@ -1,9 +1,9 @@
 use chrono::Utc;
 use crypto::provider::{CryptoProvider, HashAlg};
-use deadpool_postgres::Transaction;
 use serde_json::{Value, json};
 use store::providers::recert::{self, Campaign, Item};
 use store::providers::{birthright, roles, users};
+use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
 pub enum Unreviewable {
@@ -81,7 +81,7 @@ fn drawn(provider: &dyn CryptoProvider) -> Result<String, Unreviewable> {
 }
 
 pub async fn open(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     by: &str,
     name: &str,
@@ -145,16 +145,13 @@ pub async fn open(
     Ok(campaign)
 }
 
-pub async fn campaigns(transaction: &Transaction<'_>) -> Result<Vec<Campaign>, Unreviewable> {
+pub async fn campaigns(transaction: &UnitOfWork) -> Result<Vec<Campaign>, Unreviewable> {
     recert::campaigns(transaction)
         .await
         .map_err(|_| Unreviewable::Backend)
 }
 
-pub async fn items(
-    transaction: &Transaction<'_>,
-    campaign_id: &str,
-) -> Result<Vec<Item>, Unreviewable> {
+pub async fn items(transaction: &UnitOfWork, campaign_id: &str) -> Result<Vec<Item>, Unreviewable> {
     recert::items(transaction, campaign_id)
         .await
         .map_err(|_| Unreviewable::Backend)
@@ -165,7 +162,7 @@ pub async fn items(
 /// grant rather than a direct one, because that is the edge a revocation
 /// would take back and it knows where it came from.
 async fn edges_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> Result<Vec<(String, String, Value)>, Unreviewable> {
     let ledger = birthright::ledger_of(transaction, user_id)
@@ -212,7 +209,7 @@ async fn edges_of(
 }
 
 async fn in_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     campaign: &Campaign,
     user_id: &str,
 ) -> Result<bool, Unreviewable> {
@@ -235,7 +232,7 @@ async fn in_scope(
 /// against this picture: a person who gains access after this instant is
 /// out of the campaign by design, and shows up in the next one.
 pub async fn activate(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     campaign_id: &str,
 ) -> Result<(u64, i32), Unreviewable> {
@@ -307,7 +304,7 @@ pub async fn activate(
 }
 
 pub async fn decide(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     campaign_id: &str,
     item_id: &str,
@@ -356,10 +353,7 @@ pub async fn decide(
 }
 
 /// What the world says about this edge right now, or nothing if it is gone.
-async fn edge_now(
-    transaction: &Transaction<'_>,
-    item: &Item,
-) -> Result<Option<Value>, Unreviewable> {
+async fn edge_now(transaction: &UnitOfWork, item: &Item) -> Result<Option<Value>, Unreviewable> {
     Ok(edges_of(transaction, &item.subject_id)
         .await?
         .into_iter()
@@ -367,7 +361,7 @@ async fn edge_now(
         .map(|(_, _, shape)| shape))
 }
 
-async fn pull(transaction: &Transaction<'_>, item: &Item) -> Result<(), Unreviewable> {
+async fn pull(transaction: &UnitOfWork, item: &Item) -> Result<(), Unreviewable> {
     match item.edge_kind.as_str() {
         "group" => {
             roles::remove_from_group(transaction, &item.subject_id, &item.edge_ref)
@@ -404,7 +398,7 @@ pub struct Closed {
 /// is checked against the picture it was certified on, and the whole thing
 /// is rendered into one report whose digest joins the audit chain.
 pub async fn close(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -555,10 +549,7 @@ pub async fn close(
     Ok(told)
 }
 
-pub async fn report(
-    transaction: &Transaction<'_>,
-    campaign_id: &str,
-) -> Result<String, Unreviewable> {
+pub async fn report(transaction: &UnitOfWork, campaign_id: &str) -> Result<String, Unreviewable> {
     recert::report_of(transaction, campaign_id)
         .await
         .map_err(|_| Unreviewable::Backend)?

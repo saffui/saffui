@@ -1,9 +1,8 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
-use deadpool_postgres::Pool;
 use services::form_post;
 use services::landing::{Landing, ResponseMode};
-use store::tenancy::{Tenancy, resolve};
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -129,7 +128,6 @@ fn escaped(value: &str) -> String {
 pub async fn deliver_response(
     request: HttpRequest,
     realm: web::Path<String>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
 ) -> HttpResponse {
@@ -144,13 +142,10 @@ pub async fn deliver_response(
     let Some(ticket) = binding::read(&request, binding::LANDING) else {
         return missing();
     };
-    let Ok(mut connection) = pool.get().await else {
+    let Ok(context) = tenancy.resolve(RealmNamed::ByName(&realm)).await else {
         return missing();
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return missing();
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return missing();
     };
     let taken = form_post::take(&transaction, sealing.provider.as_ref(), &ticket).await;

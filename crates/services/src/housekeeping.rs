@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use store::providers::{
     backchannel, brokering, caep_queue, deliveries, devices, dpop, form_post, login, notices, oidc,
     one_time_tokens, outbox, page_previews, pushed, replay, saml_brokering, sessions, sms, ussd,
 };
+use store::tenancy::UnitOfWork;
 
 /// How long the sign-in log looks back. A window, not an archive: long
 /// enough to answer "who signed in this month", short enough that enabling
@@ -124,7 +124,7 @@ impl Swept {
 /// The caller opens the transaction scoped, which is what keeps a sweep inside
 /// the realm it was asked for even if a predicate here were wrong.
 pub async fn drop_expired_rows(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     now: DateTime<Utc>,
 ) -> Result<Swept, Unswept> {
     let failed = |_| Unswept;

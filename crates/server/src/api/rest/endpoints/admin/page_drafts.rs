@@ -4,7 +4,6 @@ use actix_web::{HttpResponse, web};
 use chrono::{Duration, Utc};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
@@ -28,7 +27,6 @@ const LOOKING: i64 = 600;
 /// submit anything.
 pub async fn keep(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
@@ -53,9 +51,8 @@ pub async fn keep(
         });
     let expires_at = Utc::now() + Duration::seconds(LOOKING);
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     store::providers::page_previews::keep(&transaction, &preview_id, &asked.overrides, expires_at)

@@ -22,8 +22,10 @@ postgres-types = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 chrono = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync", "time"] }
 thiserror = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
 # A realm's mail password is carried through this crate to be sealed, and a
 # `String` on the way there is one that reaches a log by accident.
 secrecy = { workspace = true }

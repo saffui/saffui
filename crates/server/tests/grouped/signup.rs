@@ -14,7 +14,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -47,12 +46,8 @@ async fn reshape_realm(
     plane: &Plane,
     reshape: impl FnOnce(&mut models::entities::realm::RealmModel),
 ) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let mut realm = store::providers::realms::load(&transaction, support::REALM)
         .await
@@ -66,12 +61,8 @@ async fn reshape_realm(
 }
 
 async fn person(plane: &Plane, user_name: &str) -> Option<models::entities::user::UserModel> {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     store::providers::users::load_by_name(&transaction, user_name)
         .await

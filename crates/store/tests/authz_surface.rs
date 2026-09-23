@@ -48,10 +48,7 @@ fn scope(id: &str) -> ScopeModel {
 
 /// Plant a server on the client the fixture already has.
 async fn plant_server(fixture: &Fixture) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO resource_servers (tenant, realm_id, server_id) \
@@ -61,7 +58,6 @@ async fn plant_server(fixture: &Fixture) {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 }
 
 /// A server is a client that has a surface, so it cannot be one that is not.
@@ -69,10 +65,7 @@ async fn plant_server(fixture: &Fixture) {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_server_is_a_client_of_the_realm() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         transaction
@@ -95,10 +88,7 @@ async fn a_resource_cannot_declare_another_server_s_scope() {
     let fixture = Fixture::with_user_and_client().await;
     plant_server(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     // A second client, and a second server on it.
     transaction
@@ -176,14 +166,10 @@ async fn a_name_answers_once_per_server() {
     ];
 
     for (first, second, what) in cases {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         transaction.execute(first, &[]).await.unwrap();
         let refused = transaction.execute(second, &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -208,10 +194,7 @@ async fn a_resource_configuration_is_a_bounded_map() {
     ];
 
     for (index, (configs, what)) in cases.iter().enumerate() {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let statement = format!(
             "INSERT INTO resources \
                  (tenant, realm_id, resource_id, server_id, name, resource_type, \
@@ -221,7 +204,6 @@ async fn a_resource_configuration_is_a_bounded_map() {
         );
         let refused = transaction.execute(statement.as_str(), &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -233,10 +215,7 @@ async fn removing_the_client_takes_the_surface() {
     let fixture = Fixture::with_user_and_client().await;
     plant_server(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO resources \
@@ -283,10 +262,7 @@ async fn removing_the_client_takes_the_surface() {
 async fn the_surface_is_not_visible_from_another_realm() {
     let fixture = Fixture::with_user_and_client().await;
     plant_server(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO resources \
@@ -297,12 +273,8 @@ async fn the_surface_is_not_visible_from_another_realm() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     for table in ["resource_servers", "resources"] {
         let seen: i64 = transaction
             .query_one(format!("SELECT count(*) FROM {table}").as_str(), &[])
@@ -319,10 +291,7 @@ async fn the_surface_is_not_visible_from_another_realm() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_resource_answers_with_the_verbs_it_declares() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     authz_surface::create_server(&transaction, &server("app"))
         .await
@@ -388,10 +357,7 @@ async fn a_resource_answers_with_the_verbs_it_declares() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_surface_answers_by_type() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     authz_surface::create_server(&transaction, &server("app"))
         .await
@@ -451,10 +417,7 @@ async fn the_surface_answers_by_type() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn changing_the_protection_leaves_the_surface_alone() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     authz_surface::create_server(&transaction, &server("app"))
         .await
@@ -517,10 +480,7 @@ async fn changing_the_protection_leaves_the_surface_alone() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn taking_the_surface_away_leaves_the_client() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     authz_surface::create_server(&transaction, &server("app"))
         .await

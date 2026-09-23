@@ -17,7 +17,6 @@ const REDIRECT: &str = "https://app.example/callback";
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -56,9 +55,8 @@ fn rpc(method: &str, params: Value) -> Value {
 /// a capability root, and the realm's switch turned as asked.
 async fn agent_world(plane: &Plane, switch_on: bool) {
     use models::entities::attributes::AttributeValue;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await
@@ -333,9 +331,8 @@ async fn a_minted_capability_records_the_trace_it_ran_in() {
         .unwrap_or_else(|| panic!("no resource: {resource}"))
         .to_owned();
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
             .await
@@ -389,9 +386,8 @@ async fn a_minted_capability_records_the_trace_it_ran_in() {
     let (is_error, minted) = unwrapped(&body);
     assert!(!is_error && minted["access_token"].is_string(), "{body}");
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let decided = store::providers::authz_policies::decisions_of_trace(&transaction, TRACE, 10)
         .await

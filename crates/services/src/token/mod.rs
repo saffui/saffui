@@ -8,11 +8,11 @@ use crypto::jose::jwk::Jwk;
 use crypto::jose::jws::{ES256, ES384, ES512, EdDSA, PS256, PS384, PS512, RS256, RS384, RS512};
 use crypto::jose::jwt::{self, JwtPayload};
 use crypto::provider::SignAlg;
-use deadpool_postgres::Transaction;
 use models::entities::keys::RealmSigningKeyView;
 use models::sessions::records::UserSessionState;
 use serde_json::Value;
 use store::providers::{clients, oidc, realms, sessions};
+use store::tenancy::UnitOfWork;
 
 /// What a token established, once it was accepted.
 ///
@@ -175,7 +175,7 @@ impl<'a> Proofs<'a> {
 }
 
 pub async fn verify_presented(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     keys: &[RealmSigningKeyView],
     token: &str,
     binding: Binding<'_>,

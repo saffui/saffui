@@ -20,7 +20,6 @@ async fn fronted(plane: &Plane, tls: Option<openssl::ssl::SslContext>) -> u16 {
     tokio::spawn(ldapfront::serve(
         listener,
         tls,
-        plane.pool(),
         plane.tenancy(),
         std::sync::Arc::new(support::provider()),
         ldapfront::Front {

@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 
 use crate::error::{StoreError, StoreResult};
 
@@ -29,7 +29,7 @@ pub struct LoginMetrics {
 /// `p95_sample` most recent of them: a percentile sorts every row it reads, and
 /// a month of a busy realm's decisions is a sort nobody should pay for a reading.
 pub async fn decisions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     since: DateTime<Utc>,
     p95_sample: i64,
 ) -> StoreResult<DecisionMetrics> {
@@ -64,7 +64,7 @@ pub async fn decisions(
     })
 }
 
-pub async fn logins(transaction: &Transaction<'_>, since: i64) -> StoreResult<LoginMetrics> {
+pub async fn logins(transaction: &UnitOfWork, since: i64) -> StoreResult<LoginMetrics> {
     let row = transaction
         .query_one(
             "SELECT count(*)::bigint AS total, \

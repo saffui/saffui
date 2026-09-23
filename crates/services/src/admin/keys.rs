@@ -1,5 +1,5 @@
-use deadpool_postgres::Transaction;
 use store::providers::webauthn::{self, EnrolledCredential};
+use store::tenancy::UnitOfWork;
 
 use crate::admin::users;
 
@@ -18,7 +18,7 @@ pub enum Unreachable {
 /// The person is read first, so an empty list means "no keys" and never "no
 /// such person".
 pub async fn of_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> Result<Vec<EnrolledCredential>, Unreachable> {
     users::get(transaction, user_id)
@@ -31,7 +31,7 @@ pub async fn of_user(
 
 /// Revoke one of this person's keys, reaching no further than them.
 pub async fn revoke(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     credential_id: &[u8],
 ) -> Result<(), Unreachable> {

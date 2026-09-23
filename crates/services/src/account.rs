@@ -3,7 +3,6 @@ use auth::login::lockout;
 use auth::password::{self, Compared, Unkept};
 use chrono::{DateTime, Utc};
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::entities::acr::AcrLoaMap;
 use models::entities::auth::{AuthenticationExecutionModel, ExecutionStep};
 use models::entities::credentials::{CredentialModel, CredentialType};
@@ -12,6 +11,7 @@ use models::entities::user::{RequiredAction, UserModel, UserStorage};
 use secrecy::SecretBox;
 use store::providers::webauthn::EnrolledCredential;
 use store::providers::{auth_flows, clients, credentials, realms, sessions, users, webauthn};
+use store::tenancy::UnitOfWork;
 
 /// Why a person's own password was not changed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -56,7 +56,7 @@ pub struct Changing<'a> {
 /// a wrong guess costs nothing. Every other outcome is the caller's to commit
 /// or drop whole.
 pub async fn change_own_password(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     changing: &Changing<'_>,
     current: &SecretBox<String>,
@@ -238,7 +238,7 @@ pub enum OwnFactor<'a> {
 /// client signs in with lets this person reach: a weaker way in offered beside
 /// a second factor does not get to strip it.
 pub async fn own_factors(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     session_id: &str,
     presenter: Option<&str>,
@@ -287,7 +287,7 @@ pub async fn own_factors(
 /// account: whether it is recent, and whether it is as strong as the flow the
 /// presenting client signs in with lets this person reach with what they hold.
 pub async fn read_sign_in_standing(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     session_id: &str,
     presenter: Option<&str>,
@@ -316,7 +316,7 @@ pub async fn read_sign_in_standing(
     judge_sign_in(transaction, session_id, presenter, &holds, now).await
 }
 
-async fn read_verified_phone(transaction: &Transaction<'_>, user_id: &str) -> Result<bool, Unread> {
+async fn read_verified_phone(transaction: &UnitOfWork, user_id: &str) -> Result<bool, Unread> {
     Ok(users::load(transaction, user_id)
         .await
         .map_err(|_| Unread)?
@@ -326,7 +326,7 @@ async fn read_verified_phone(transaction: &Transaction<'_>, user_id: &str) -> Re
 
 /// How a login stands, given what the person holds.
 async fn judge_sign_in(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
     presenter: Option<&str>,
     holds: &Holdings,
@@ -372,7 +372,7 @@ async fn judge_sign_in(
 /// The flow the presenting client signs in with: its own binding, else the
 /// realm's, else the one aliased `browser`.
 async fn flow_signing_in(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     presenter: Option<&str>,
     realm_bound: Option<&str>,
 ) -> Result<Option<String>, Unread> {
@@ -448,7 +448,7 @@ fn reachable_level(
 /// its place, a key stays where it is the only way in, and the sheet of codes
 /// may always go.
 pub async fn remove_own_factor(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     session_id: &str,
     presenter: Option<&str>,

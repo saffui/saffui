@@ -39,7 +39,6 @@ fn console_policy() -> AdminPolicy {
 
 fn mounted(plane: &Plane, policy: &AdminPolicy) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: policy.clone(),
         origin: support::origin(),
@@ -302,10 +301,7 @@ async fn a_subject_the_realm_switched_off_is_refused() {
         "the caller was refused before being switched off, so what follows proves nothing"
     );
 
-    let mut connection = plane.connection().await;
-    let transaction = plane
-        .scoped(&mut connection, &TenantContext::new("acme", REALM))
-        .await;
+    let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
     let mut user = store::providers::users::load(&transaction, SUBJECT)
         .await
         .unwrap()
@@ -316,7 +312,6 @@ async fn a_subject_the_realm_switched_off_is_refused() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     assert_eq!(
         request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
@@ -333,10 +328,7 @@ async fn a_subject_the_realm_switched_off_is_refused() {
 async fn an_organization_grant_is_spent_where_it_was_made() {
     let plane = Plane::with_actions(&[]).await;
 
-    let mut connection = plane.connection().await;
-    let transaction = plane
-        .scoped(&mut connection, &TenantContext::new("acme", REALM))
-        .await;
+    let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
     store::providers::organizations::create(
         &transaction,
         &models::entities::organization::OrganizationModel {
@@ -387,7 +379,6 @@ async fn an_organization_grant_is_spent_where_it_was_made() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     // Acting across the realm, the organization's grant is not held.
     let bearer = plane.token(&claims());
@@ -440,10 +431,7 @@ async fn a_token_whose_identifier_was_revoked_is_refused() {
         "an unrevoked token was refused, so the test that follows proves nothing"
     );
 
-    let mut connection = plane.connection().await;
-    let transaction = plane
-        .scoped(&mut connection, &TenantContext::new("acme", REALM))
-        .await;
+    let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
     store::providers::oidc::revoke(
         &transaction,
         "jti-1",
@@ -453,7 +441,6 @@ async fn a_token_whose_identifier_was_revoked_is_refused() {
     .await
     .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     assert_eq!(
         request(&plane, Method::GET, "/admin/realms", Some(&bearer)).await,
@@ -1699,9 +1686,8 @@ async fn a_password_policy_is_read_at_every_door_a_password_enters_by() {
 
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut realm = store::providers::realms::load(&transaction, REALM)
             .await
@@ -2200,9 +2186,8 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
     // gathers, the rows no cascade reaches included.
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let grace = models::entities::user::UserCreateModel {
             user_name: "grace".into(),
@@ -2398,9 +2383,8 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
 
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         assert!(
             store::providers::users::load(&transaction, "grace")
@@ -2492,9 +2476,8 @@ async fn an_access_copy_holds_everything_and_no_secret_rides_it() {
     let base = format!("/admin/realms/{REALM}/subject-requests");
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::consents::keep(
             &transaction,
@@ -2629,9 +2612,8 @@ async fn a_rectification_moves_named_fields_and_an_objection_withdraws_consents(
     let base = format!("/admin/realms/{REALM}/subject-requests");
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::consents::keep(
             &transaction,
@@ -2718,9 +2700,8 @@ async fn a_rectification_moves_named_fields_and_an_objection_withdraws_consents(
     );
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let person = store::providers::users::load(&transaction, support::SUBJECT)
             .await
@@ -2754,9 +2735,8 @@ async fn a_rectification_moves_named_fields_and_an_objection_withdraws_consents(
     );
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let standing = store::providers::consents::of_user(&transaction, support::SUBJECT)
             .await
@@ -3059,12 +3039,11 @@ async fn the_credential_listing_says_what_is_held_and_never_what_opens_it() {
     // Every secret this realm stores, none of which may appear. The one-time
     // password seed is kept in the clear because a login has to recompute
     // from it, so a listing that leaked it would hand over the second factor.
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&store::tenancy::TenantContext::new(
+            support::TENANT,
+            support::REALM,
+        ))
         .await;
     let held = transaction
         .query("SELECT secret FROM user_credentials", &[])
@@ -3143,9 +3122,8 @@ async fn an_evidence_pack_accounts_for_its_period_with_the_chain_leading() {
     assert_eq!(found["status"], "discovered", "{found}");
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::consents::keep(
             &transaction,
@@ -3460,12 +3438,8 @@ async fn the_days_texting_counters_are_the_ones_the_brakes_read() {
 
     // Two sends and three brakes, written the way the sending path writes
     // them: the day counter, and the throttle log a brake trips.
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let now = Utc::now();
     for _ in 0..2 {

@@ -9,7 +9,6 @@ use server::middleware::admin_policy::AdminPolicy;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![AUDIENCE.to_owned()],

@@ -11,7 +11,6 @@ use store::tenancy::TenantContext;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![AUDIENCE.to_owned()],
@@ -75,9 +74,8 @@ async fn about_route(
 
 /// The decision this identifier was written under, as the record keeps it.
 async fn recorded(plane: &Plane, decision_id: &str) -> Option<(String, String, String)> {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::authz_policies::recent(&transaction, 50)
         .await

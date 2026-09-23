@@ -28,7 +28,6 @@ fn mounted(plane: &Plane) -> Mounted {
 /// is what the wider setting is for.
 fn mounted_dialling(plane: &Plane, egress: config::serving::Egress) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -77,8 +76,7 @@ fn with_claim(mut payload: JwtPayload, name: &str, value: Option<Value>) -> JwtP
 
 /// The realm's account console, provisioned the way a realm's birth provisions it.
 async fn provision_account_console(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     services::provisioning::provision_account_console(
         &transaction,
         support::TENANT,
@@ -98,8 +96,7 @@ async fn provision_account_console(plane: &Plane) {
 }
 
 async fn prove_sign_in_reaching(plane: &Plane, at: i64, level: i32) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::sessions::record_authentication(
         &transaction,
         support::SESSION,
@@ -175,8 +172,7 @@ fn own(leaf: &str) -> String {
 
 /// A login of the same person on another device.
 async fn open_login_elsewhere(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::sessions::open(
         &transaction,
         &UserSessionModel {
@@ -208,8 +204,7 @@ async fn open_login_elsewhere(plane: &Plane) {
 }
 
 async fn login_stands(plane: &Plane, session_id: &str) -> bool {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::sessions::load(&transaction, session_id)
         .await
         .expect("the sessions table")
@@ -217,8 +212,7 @@ async fn login_stands(plane: &Plane, session_id: &str) -> bool {
 }
 
 async fn held_password_is(plane: &Plane, offered: &str) -> bool {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     auth::password::compare_with_held(
         &transaction,
         &support::provider(),
@@ -231,8 +225,7 @@ async fn held_password_is(plane: &Plane, offered: &str) -> bool {
 }
 
 async fn plant_key(plane: &Plane, credential_id: &[u8]) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::webauthn::enrol(
         &transaction,
         &store::providers::webauthn::EnrolledCredential {
@@ -255,8 +248,7 @@ async fn plant_key(plane: &Plane, credential_id: &[u8]) {
 
 async fn plant_recovery_codes(plane: &Plane) {
     use crypto::provider::CryptoProvider as _;
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::credentials::replace_recovery_codes(
         &transaction,
         support::provider().digest(),
@@ -785,8 +777,7 @@ async fn open_login(
     expiration: Option<i64>,
     user_agent: Option<&str>,
 ) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::sessions::open(
         &transaction,
         &UserSessionModel {
@@ -825,8 +816,7 @@ async fn plant_grant(
     offline: bool,
 ) {
     let now = chrono::Utc::now().timestamp();
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::sessions::open_client_session(
         &transaction,
         &models::sessions::records::ClientSessionModel {
@@ -853,8 +843,7 @@ async fn plant_grant(
 }
 
 async fn grants_of(plane: &Plane, session_id: &str) -> Vec<String> {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::sessions::client_sessions_of(&transaction, session_id)
         .await
         .expect("the client sessions table")
@@ -864,8 +853,7 @@ async fn grants_of(plane: &Plane, session_id: &str) -> Vec<String> {
 }
 
 async fn plant_another_person(plane: &Plane) -> String {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let grace = services::admin::users::create(
         &transaction,
         &support::provider(),
@@ -1542,8 +1530,7 @@ async fn a_sign_in_through_the_account_console_opens_the_account_api() {
 }
 
 async fn keep_consent(plane: &Plane, user_id: &str, client_id: &str, scopes: &[&str]) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let scopes: Vec<String> = scopes.iter().map(|scope| (*scope).to_owned()).collect();
     store::providers::consents::keep(
         &transaction,
@@ -1558,8 +1545,7 @@ async fn keep_consent(plane: &Plane, user_id: &str, client_id: &str, scopes: &[&
 }
 
 async fn consent_held(plane: &Plane, user_id: &str, client_id: &str) -> bool {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::consents::held(&transaction, user_id, client_id)
         .await
         .expect("the consents table")
@@ -1571,8 +1557,7 @@ async fn reshape_client(
     client_id: &str,
     reshape: impl FnOnce(&mut models::entities::client::ClientModel),
 ) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut client = store::providers::clients::load(&transaction, client_id)
         .await
         .expect("the clients table")

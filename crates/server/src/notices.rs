@@ -1,4 +1,3 @@
-use deadpool_postgres::Pool;
 use services::notices::{Attempted, claim_due_notices, compose_due_notices, settle_attempts};
 use store::tenancy::{Tenancy, TenantContext};
 
@@ -14,16 +13,12 @@ const NOTICE_CEILING: i64 = 50;
 /// between them: no pooled connection waits on somebody else's mail server. The
 /// realm's keys are only opened when a notice is due.
 pub async fn send_due_notices(
-    pool: &Pool,
     tenancy: &Tenancy,
     sealing: &Sealing,
     context: &TenantContext,
     backoff_seconds: i64,
 ) {
-    let Ok(mut connection) = pool.get().await else {
-        return;
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, context).await else {
+    let Ok(transaction) = tenancy.begin(context).await else {
         return;
     };
     let claimed = match claim_due_notices(&transaction, NOTICE_CEILING, backoff_seconds).await {
@@ -75,11 +70,10 @@ pub async fn send_due_notices(
     if transaction.commit().await.is_err() {
         return;
     }
-    drop(connection);
 
     let mut attempted = Vec::with_capacity(due.len());
     for notice in due {
-        let went_out = deliver(sealing, pool, tenancy, context, notice.outgoing).await;
+        let went_out = deliver(sealing, tenancy, context, notice.outgoing).await;
         attempted.push(Attempted {
             event_id: notice.event_id,
             attempts: notice.attempts,
@@ -89,10 +83,7 @@ pub async fn send_due_notices(
     if attempted.is_empty() {
         return;
     }
-    let Ok(mut connection) = pool.get().await else {
-        return;
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, context).await else {
+    let Ok(transaction) = tenancy.begin(context).await else {
         return;
     };
     if settle_attempts(&transaction, &attempted).await.is_err()

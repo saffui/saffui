@@ -1,6 +1,7 @@
-#[allow(unused_imports)]
 use super::support;
 use std::process::ExitCode;
+#[allow(unused_imports)]
+use store::tenancy::UnitOfWork;
 
 use super::support::Plane;
 use actix_web::{App, HttpServer, test};
@@ -13,7 +14,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         // The CLI client is named to the plane the way an operator names it
         // in the serve configuration: its tokens carry its own id as both
@@ -81,9 +81,8 @@ async fn the_plane_is_operated_from_a_terminal() {
     // must sit on its service account, the way an operator grants them.
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::roles::grant_to_user(
             &transaction,
@@ -114,7 +113,7 @@ async fn the_plane_is_operated_from_a_terminal() {
     }
 
     #[allow(dead_code)]
-    async fn plant_admin_scope(transaction: &deadpool_postgres::Transaction<'_>) {
+    async fn plant_admin_scope(transaction: &UnitOfWork) {
         store::providers::client_scopes::create_scope(
             transaction,
             &models::entities::client::ClientScopeModel {

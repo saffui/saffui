@@ -22,7 +22,6 @@ fn within() -> TenantContext {
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -63,8 +62,7 @@ async fn asked(
 
 /// The realm names a mail server to send with.
 async fn arrange_mail(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let sealing = support::sealing();
     let ring = store::keyring::load(
         &transaction,
@@ -101,7 +99,6 @@ async fn arrange_mail(plane: &Plane) {
 /// out: whatever failed is due again on the next walk.
 async fn walk(plane: &Plane, postbox: Option<&Postbox>) {
     server::jobs::deliver_every_realm(
-        &plane.pool(),
         &plane.tenancy(),
         &support::sealing_sending(
             postbox.map(|held| Arc::new(held.clone()) as Arc<dyn auth::messaging::Deliver>),
@@ -113,8 +110,7 @@ async fn walk(plane: &Plane, postbox: Option<&Postbox>) {
 }
 
 async fn notice_states(plane: &Plane) -> Vec<String> {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     transaction
         .query("SELECT state FROM security_notices ORDER BY event_id", &[])
         .await
@@ -125,8 +121,7 @@ async fn notice_states(plane: &Plane) -> Vec<String> {
 }
 
 async fn mark_email_verified(plane: &Plane, verified: bool) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::users::set_email_verified(&transaction, support::SUBJECT, verified)
         .await
         .expect("the users table");
@@ -134,8 +129,7 @@ async fn mark_email_verified(plane: &Plane, verified: bool) {
 }
 
 async fn switch_notices(plane: &Plane, switched: Option<bool>) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut realm = store::providers::realms::load(&transaction, REALM)
         .await
         .expect("the realms table")
@@ -148,8 +142,7 @@ async fn switch_notices(plane: &Plane, switched: Option<bool>) {
 }
 
 async fn plant_recovery_codes(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::credentials::replace_recovery_codes(
         &transaction,
         support::provider().digest(),
@@ -241,8 +234,7 @@ async fn a_notice_is_mailed_once_while_a_webhook_keeps_failing() {
     walk(&plane, Some(&postbox)).await;
 
     assert_eq!(postbox.held().len(), 1, "{:?}", postbox.held());
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let telling = transaction
         .query_one(
             "SELECT state::text, attempts FROM event_outbox WHERE kind = $1 \
@@ -267,8 +259,7 @@ async fn a_recovery_code_used_to_sign_in_is_mailed_with_the_codes_left() {
     let postbox = Postbox::default();
 
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         let spent = store::providers::credentials::spend_recovery_code(
             &transaction,
             support::provider().digest(),
@@ -344,8 +335,7 @@ async fn a_sheet_revoked_at_once_is_one_notice() {
     let postbox = Postbox::default();
 
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         for _ in 0..2 {
             store::providers::outbox::emit(
                 &transaction,
@@ -396,8 +386,7 @@ async fn a_notice_refused_every_time_is_given_up_on_the_record() {
         );
     }
 
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let receipts: Vec<_> =
         store::providers::deliveries::of_user(&transaction, support::SUBJECT, 50)
             .await
@@ -427,8 +416,7 @@ async fn a_happening_about_nobody_held_does_not_stop_the_walk() {
     let postbox = Postbox::default();
 
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         store::providers::outbox::emit(
             &transaction,
             store::providers::outbox::CREDENTIAL_CHANGED,
@@ -458,8 +446,7 @@ async fn settled_notices_age_out_and_owed_ones_stay() {
         "the planted world owed too few notices: {settled:?}"
     );
 
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     transaction
         .batch_execute(
             "UPDATE security_notices SET occurred_at = now() - interval '31 days'; \
@@ -478,8 +465,7 @@ async fn settled_notices_age_out_and_owed_ones_stay() {
 }
 
 async fn change_address(plane: &Plane, email: &str, declared_verified: Option<bool>) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     services::admin::users::update(
         &transaction,
         support::SUBJECT,
@@ -495,8 +481,7 @@ async fn change_address(plane: &Plane, email: &str, declared_verified: Option<bo
 }
 
 async fn subject_address_verified(plane: &Plane) -> Option<bool> {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::users::load(&transaction, support::SUBJECT)
         .await
         .expect("the users table")
@@ -582,8 +567,7 @@ async fn a_provider_linked_to_an_existing_account_is_told() {
     let postbox = Postbox::default();
 
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         let provider = models::entities::authz::IdentityProviderModel {
             internal_id: "idp-acme".into(),
             realm_id: REALM.into(),

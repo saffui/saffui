@@ -3,7 +3,7 @@ mod support;
 use models::entities::credentials::AuthenticatorAttachment;
 use store::providers::login::{self, AuthSession};
 use store::providers::webauthn::{self, EnrolledCredential};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 
 fn session(id: &str, seconds: i64) -> AuthSession {
@@ -36,10 +36,7 @@ fn credential(id: &[u8], user: &str, label: &str) -> EnrolledCredential {
 
 /// A flow needs somewhere to keep a login while it is still deciding.
 async fn plant_flow(fixture: &Fixture) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO authentication_flows (tenant, realm_id, flow_id, alias, provider_id) \
@@ -59,7 +56,6 @@ async fn plant_flow(fixture: &Fixture) {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 }
 
 #[tokio::test]
@@ -67,10 +63,7 @@ async fn plant_flow(fixture: &Fixture) {
 async fn a_login_is_resumed_until_it_expires() {
     let fixture = Fixture::with_user_and_client().await;
     plant_flow(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     login::start(&transaction, &session("login-1", 300))
         .await
@@ -120,10 +113,7 @@ async fn a_login_is_resumed_until_it_expires() {
 async fn a_step_adds_to_the_notes_without_erasing_them() {
     let fixture = Fixture::with_user_and_client().await;
     plant_flow(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     login::start(&transaction, &session("login-1", 300))
         .await
         .unwrap();
@@ -192,10 +182,7 @@ async fn the_notes_are_a_map_and_have_a_ceiling() {
     ];
 
     for (index, (notes, what)) in cases.iter().enumerate() {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let statement = format!(
             "INSERT INTO auth_sessions \
                  (tenant, realm_id, session_id, client_id, flow_id, redirect_uri, \
@@ -205,7 +192,6 @@ async fn the_notes_are_a_map_and_have_a_ceiling() {
         );
         let refused = transaction.execute(statement.as_str(), &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -217,10 +203,7 @@ async fn the_notes_are_a_map_and_have_a_ceiling() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_quiet_spell_forgets_what_was_counted() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     for (at, expected) in [(1_000, 1), (1_010, 2)] {
         let counted = login::record_failure(&transaction, "ada", at, None, 5, 60, 900)
@@ -267,10 +250,7 @@ async fn a_quiet_spell_forgets_what_was_counted() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn failures_are_counted_and_earn_a_lockout() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         login::failures(&transaction, "ada")
@@ -323,10 +303,7 @@ async fn failures_are_counted_and_earn_a_lockout() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_counter_that_does_not_advance_is_refused() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     webauthn::enrol(&transaction, &credential(b"key-1", "ada", "yubikey"))
         .await
@@ -382,10 +359,7 @@ async fn a_counter_that_does_not_advance_is_refused() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_user_presents_what_they_enrolled() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     // Written in the opposite order to the one expected: enrolled in one
     // transaction they share an instant, so the identifier is what decides.
@@ -429,7 +403,7 @@ async fn a_user_presents_what_they_enrolled() {
 
 /// What was announced about a person's credentials, oldest first.
 async fn announced_credential_changes(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> Vec<serde_json::Value> {
     transaction
@@ -453,10 +427,7 @@ async fn announced_credential_changes(
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_key_enrolled_or_removed_is_announced_once_with_what_happened() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     webauthn::enrol(
         &transaction,
@@ -560,10 +531,7 @@ async fn a_key_enrolled_or_removed_is_announced_once_with_what_happened() {
 async fn an_expired_login_does_not_advance() {
     let fixture = Fixture::with_user_and_client().await;
     plant_flow(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO auth_sessions \
@@ -597,10 +565,7 @@ async fn an_expired_login_does_not_advance() {
 async fn a_later_step_does_not_forget_the_user() {
     let fixture = Fixture::with_user_and_client().await;
     plant_flow(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     login::start(&transaction, &session("login-1", 300))
         .await
         .unwrap();
@@ -642,10 +607,7 @@ async fn a_later_step_does_not_forget_the_user() {
 async fn a_login_cannot_expire_before_it_starts() {
     let fixture = Fixture::with_user_and_client().await;
     plant_flow(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         transaction
@@ -668,10 +630,7 @@ async fn a_login_cannot_expire_before_it_starts() {
 async fn none_of_it_is_visible_from_another_realm() {
     let fixture = Fixture::with_user_and_client().await;
     plant_flow(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     login::start(&transaction, &session("login-1", 300))
         .await
         .unwrap();
@@ -682,12 +641,8 @@ async fn none_of_it_is_visible_from_another_realm() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     assert!(
         login::resume(&transaction, "login-1")
             .await

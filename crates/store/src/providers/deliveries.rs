@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use models::messaging::Delivery;
 
 use crate::error::{StoreError, StoreResult};
@@ -8,7 +8,7 @@ use crate::error::{StoreError, StoreResult};
 /// that answers with a page of text should not decide the size of a row.
 const DETAIL: usize = 500;
 
-pub async fn record(transaction: &Transaction<'_>, delivery: &Delivery) -> StoreResult<()> {
+pub async fn record(transaction: &UnitOfWork, delivery: &Delivery) -> StoreResult<()> {
     let detail = delivery.detail.as_deref().map(|held| {
         let end = held
             .char_indices()
@@ -41,7 +41,7 @@ pub async fn record(transaction: &Transaction<'_>, delivery: &Delivery) -> Store
 
 /// What was attempted for this person, most recent first.
 pub async fn of_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     limit: i64,
 ) -> StoreResult<Vec<Delivery>> {
@@ -68,10 +68,7 @@ pub async fn of_user(
 }
 
 /// Forget what is older than this, which the sweep does.
-pub async fn drop_older_than(
-    transaction: &Transaction<'_>,
-    cut: DateTime<Utc>,
-) -> StoreResult<u64> {
+pub async fn drop_older_than(transaction: &UnitOfWork, cut: DateTime<Utc>) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM message_deliveries WHERE attempted_at <= $1",
@@ -87,7 +84,7 @@ pub async fn drop_older_than(
 /// answers a probe and still refuses real mail is the case an operator cannot
 /// otherwise see: the settings are right and the messages are not arriving.
 pub async fn read_refusals_since(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     since: DateTime<Utc>,
     max: i64,
 ) -> StoreResult<Vec<Delivery>> {

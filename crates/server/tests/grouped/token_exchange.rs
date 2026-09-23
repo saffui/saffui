@@ -14,7 +14,6 @@ const ACCESS_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -72,9 +71,8 @@ async fn subject_tokens(plane: &Plane, scope: &str) -> Value {
 async fn opted_in(plane: &Plane, client_id: &str) {
     use models::entities::attributes::AttributeValue;
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let mut client = store::providers::clients::load(&transaction, client_id)
         .await
@@ -95,9 +93,8 @@ async fn opted_in(plane: &Plane, client_id: &str) {
 /// Turn the realm's agent surface, the way the console or the CLI does.
 async fn agents_turned(plane: &Plane, on: bool) {
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     transaction
         .execute(
@@ -452,9 +449,8 @@ async fn an_exchange_points_only_where_the_operator_said() {
     let plane = Plane::with_actions(&[AdminAction::RealmRead]).await;
     opted_in(&plane, support::CONFIDENTIAL).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
             .await
@@ -515,9 +511,8 @@ async fn an_agents_exchange_narrows_capabilities_and_never_widens() {
     let plane = Plane::with_actions(&[]).await;
     opted_in(&plane, support::CONFIDENTIAL).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
             .await
@@ -618,9 +613,8 @@ async fn an_agents_exchange_narrows_capabilities_and_never_widens() {
     // And the realm's lifespan stays the ceiling: an agent registered past
     // it is clamped to it, never granted past it.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
             .await
@@ -846,9 +840,8 @@ async fn discovered(plane: &Plane) -> (StatusCode, Value) {
 /// a token that may switch capabilities.
 async fn exchange_turned(plane: &Plane, on: bool) {
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     transaction
         .execute(
@@ -920,9 +913,8 @@ async fn an_exchange_decision_records_the_trace_it_ran_in() {
         .unwrap_or_else(|| panic!("no resource: {resource}"))
         .to_owned();
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
             .await
@@ -976,9 +968,8 @@ async fn an_exchange_decision_records_the_trace_it_ran_in() {
     let body: Value = test::read_body_json(response).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let decided = store::providers::authz_policies::decisions_of_trace(&transaction, TRACE, 10)
         .await

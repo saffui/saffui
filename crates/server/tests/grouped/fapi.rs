@@ -18,7 +18,6 @@ const VERIFIER: &str = "a-code-verifier-of-plausible-length-for-s256";
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -44,9 +43,8 @@ async fn planted_fintech(plane: &Plane) -> SigningKey {
     use models::entities::client::ClientCreateModel;
 
     let key = SigningKey::generate("fintech-key");
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let mut client = ClientCreateModel {
         name: FINTECH.into(),
@@ -390,9 +388,8 @@ async fn the_profile_holds_at_every_door() {
     // front door rather than served under it.
     {
         use crypto::provider::SignAlg;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut client = store::providers::clients::load(&transaction, FINTECH)
             .await

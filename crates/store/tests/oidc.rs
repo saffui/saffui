@@ -33,10 +33,7 @@ fn in_secs(seconds: i64) -> chrono::DateTime<chrono::Utc> {
 
 /// A code needs a session to speak for.
 async fn plant_session(fixture: &Fixture) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO user_sessions \
@@ -48,7 +45,6 @@ async fn plant_session(fixture: &Fixture) {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 }
 
 /// Everything /token re-checks is bound to the code rather than looked up
@@ -58,10 +54,7 @@ async fn plant_session(fixture: &Fixture) {
 async fn a_code_carries_what_redemption_must_recheck() {
     let fixture = Fixture::with_user_and_client().await;
     plant_session(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     oidc::mint_code(&transaction, &code("hash-1"), in_secs(60))
         .await
@@ -87,10 +80,7 @@ async fn a_code_carries_what_redemption_must_recheck() {
 async fn a_code_is_spent_once_and_a_replay_names_what_it_bought() {
     let fixture = Fixture::with_user_and_client().await;
     plant_session(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     oidc::mint_code(&transaction, &code("hash-1"), in_secs(60))
         .await
@@ -128,10 +118,7 @@ async fn a_code_is_spent_once_and_a_replay_names_what_it_bought() {
 async fn an_expired_code_is_refused_until_swept() {
     let fixture = Fixture::with_user_and_client().await;
     plant_session(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     // Planted raw: the schema refuses a code expiring before it was issued, so
     // the provider cannot write one that has already expired.
@@ -187,10 +174,7 @@ async fn a_challenge_cannot_stand_without_its_method() {
     ];
 
     for (index, (values, what)) in cases.iter().enumerate() {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let statement = format!(
             "INSERT INTO oidc_auth_codes \
                  (tenant, realm_id, code_hash, client_id, user_id, session_id, redirect_uri, \
@@ -200,7 +184,6 @@ async fn a_challenge_cannot_stand_without_its_method() {
         );
         let refused = transaction.execute(statement.as_str(), &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -212,10 +195,7 @@ async fn a_challenge_cannot_stand_without_its_method() {
 async fn a_code_cannot_expire_before_it_is_issued() {
     let fixture = Fixture::with_user_and_client().await;
     plant_session(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         transaction
@@ -239,10 +219,7 @@ async fn a_code_cannot_expire_before_it_is_issued() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_revoked_token_is_refused_until_it_would_have_expired() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(!oidc::is_revoked(&transaction, "token-1").await.unwrap());
 
@@ -279,10 +256,7 @@ async fn a_revoked_token_is_refused_until_it_would_have_expired() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_assertion_identifier_is_used_once_per_client() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         oidc::claim_assertion(&transaction, "app", "jti-1", in_secs(60))
@@ -318,10 +292,7 @@ async fn an_assertion_identifier_is_used_once_per_client() {
 async fn what_expired_is_swept() {
     let fixture = Fixture::with_user_and_client().await;
     plant_session(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     oidc::mint_code(&transaction, &code("live"), in_secs(300))
         .await
@@ -362,10 +333,7 @@ async fn what_expired_is_swept() {
 async fn none_of_it_is_visible_from_another_realm() {
     let fixture = Fixture::with_user_and_client().await;
     plant_session(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     oidc::mint_code(&transaction, &code("hash-1"), in_secs(300))
         .await
         .unwrap();
@@ -376,12 +344,8 @@ async fn none_of_it_is_visible_from_another_realm() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     assert!(
         matches!(
             oidc::redeem_code(&transaction, "hash-1").await.unwrap(),

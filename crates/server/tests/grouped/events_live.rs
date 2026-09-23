@@ -12,7 +12,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -49,16 +48,15 @@ async fn asked(plane: &Plane, method: Method, path: &str, bearer: &str) -> (Stat
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_feed_speaks_at_commit_and_never_before() {
     let plane = Plane::with_actions(&[AdminAction::EventRead]).await;
-    let feed = server::live::listen(support::owner());
+    let feed = store::live::listen(support::owner());
     let mut watching = feed.subscribe();
     // The LISTEN has to stand before the emission, or the notify lands on
     // nobody; a moment is what the connection needs.
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::outbox::emit(
             &transaction,
@@ -96,9 +94,8 @@ async fn the_feed_speaks_at_commit_and_never_before() {
 
     // Rolled back is never spoken.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::outbox::emit(
             &transaction,
@@ -124,9 +121,8 @@ async fn the_live_replay_answers_after_a_cursor_without_payloads() {
     let plane = Plane::with_actions(&[AdminAction::EventRead]).await;
     let bearer = plane.token(&support::claims());
     let baseline = {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let baseline = transaction
             .query_one("SELECT coalesce(max(event_id), 0) FROM event_outbox", &[])
@@ -137,9 +133,8 @@ async fn the_live_replay_answers_after_a_cursor_without_payloads() {
         baseline
     };
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::outbox::emit(
         &transaction,
@@ -197,9 +192,8 @@ async fn a_reconnect_hears_each_missed_event_once() {
 
     let plane = Plane::with_actions(&[AdminAction::EventRead]).await;
     let bearer = plane.token(&support::claims());
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let baseline: i64 = transaction
         .query_one("SELECT coalesce(max(event_id), 0) FROM event_outbox", &[])
@@ -227,7 +221,7 @@ async fn a_reconnect_hears_each_missed_event_once() {
     transaction.commit().await.unwrap();
     assert_eq!(missed.len(), 2, "two events after the cursor");
 
-    let (feed, _) = tokio::sync::broadcast::channel::<server::live::Told>(16);
+    let (feed, _) = tokio::sync::broadcast::channel::<store::live::Told>(16);
     let app = test::init_service(
         App::new()
             .app_data(actix_web::web::Data::new(feed.clone()))
@@ -245,7 +239,7 @@ async fn a_reconnect_hears_each_missed_event_once() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let told = |event_id: i64| server::live::Told {
+    let told = |event_id: i64| store::live::Told {
         tenant: support::TENANT.into(),
         realm: REALM.into(),
         event_id,

@@ -1,9 +1,9 @@
 use crypto::envelope::Envelope;
-use deadpool_postgres::Transaction;
 use models::entities::mail::{MailCredentials, MailSettings};
 use secrecy::SecretBox;
 use store::keyring::RealmKeyring;
 use store::providers::mail;
+use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Unsettable {
@@ -17,7 +17,7 @@ pub enum Unsettable {
 }
 
 pub async fn read(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
 ) -> Result<MailSettings, Unsettable> {
@@ -41,7 +41,7 @@ pub struct Wanted {
 }
 
 pub async fn write(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     wanted: Wanted,
@@ -80,7 +80,7 @@ pub async fn write(
     .map_err(|_| Unsettable::Unwritable)
 }
 
-pub async fn forget(transaction: &Transaction<'_>) -> Result<(), Unsettable> {
+pub async fn forget(transaction: &UnitOfWork) -> Result<(), Unsettable> {
     mail::forget(transaction)
         .await
         .map_err(|_| Unsettable::Unwritable)?

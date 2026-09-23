@@ -1,9 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
-use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
 use models::entities::keys::RealmSigningKeyView;
 use serde_json::Value;
 use store::providers::{oidc, sessions};
+use store::tenancy::UnitOfWork;
 
 use crate::token;
 use crate::token::issuance::Kind;
@@ -24,7 +24,7 @@ pub enum Unrevokable {
 /// every renewal descended from the same grant. Either kind of token, since
 /// §2 asks that the other be invalidated too when possible, and here it is.
 pub async fn revoke(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     keys: &[RealmSigningKeyView],
     caller: &ClientModel,
     token: &str,

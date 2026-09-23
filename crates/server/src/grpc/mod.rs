@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 use tonic::{Request, Response, Status};
 use tracing::Instrument;
@@ -71,7 +70,6 @@ const SUBJECT_HEADER: &str = "x-saffui-subject";
 const DECISION_HEADER: &str = "x-saffui-decision-id";
 
 pub struct Door {
-    pub pool: Pool,
     pub tenancy: Tenancy,
     pub origin: config::serving::PublicOrigin,
 }
@@ -171,7 +169,6 @@ impl Authorization for Door {
         let decision_id = format!("mesh-{}", http.id);
         let span = crate::otel::open_check_span(&http.headers);
         match crate::mesh::weigh(
-            &self.pool,
             &self.tenancy,
             &self.origin,
             crate::mesh::Asked {

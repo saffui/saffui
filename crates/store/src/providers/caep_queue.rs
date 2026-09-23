@@ -1,11 +1,11 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 
 use crate::error::{StoreError, StoreResult};
 
 /// Hold one Security Event Token for one collecting receiver.
 pub async fn queue(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     receiver_id: &str,
     jti: &str,
     set_body: &str,
@@ -27,7 +27,7 @@ pub async fn queue(
 
 /// What one receiver has waiting, oldest first, and whether there is more.
 pub async fn pending(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     receiver_id: &str,
     ceiling: i64,
 ) -> StoreResult<(Vec<(String, String)>, bool)> {
@@ -50,11 +50,7 @@ pub async fn pending(
 }
 
 /// Let go of what the receiver said it has, and say how many went.
-pub async fn ack(
-    transaction: &Transaction<'_>,
-    receiver_id: &str,
-    jtis: &[String],
-) -> StoreResult<u64> {
+pub async fn ack(transaction: &UnitOfWork, receiver_id: &str, jtis: &[String]) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM security_event_queue \
@@ -66,7 +62,7 @@ pub async fn ack(
 }
 
 /// Take away what nobody collected before it ran out.
-pub async fn drop_expired(transaction: &Transaction<'_>, now: DateTime<Utc>) -> StoreResult<u64> {
+pub async fn drop_expired(transaction: &UnitOfWork, now: DateTime<Utc>) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM security_event_queue WHERE expires_at <= $1",

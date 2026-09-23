@@ -331,7 +331,6 @@ dependencies = [
  "config",
  "crypto",
  "data-encoding",
- "deadpool-postgres",
  "models",
  "qrcode",
  "secrecy",
@@ -1820,7 +1819,6 @@ dependencies = [
  "chrono",
  "commons",
  "crypto",
- "deadpool-postgres",
  "futures-util",
  "ldap3_proto",
  "models",
@@ -3362,10 +3360,12 @@ dependencies = [
  "pgcore",
  "postgres-types",
  "secrecy",
+ "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "tokio-postgres",
+ "tracing",
 ]
 
 [[package]]

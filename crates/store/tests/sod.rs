@@ -13,15 +13,13 @@ async fn the_realm_hold_and_a_person_hold_wait_for_each_other() {
     let fixture = Fixture::with_user().await;
     let within = TenantContext::new("acme", "main");
 
-    let mut first = fixture.connection().await;
-    let weighing = fixture.scoped(&mut first, &within).await;
+    let weighing = fixture.scoped(&within).await;
     store::providers::sod::hold_person(&weighing, "ada")
         .await
         .expect("the person is held");
 
     {
-        let mut second = fixture.connection().await;
-        let beside = fixture.scoped(&mut second, &within).await;
+        let beside = fixture.scoped(&within).await;
         beside
             .batch_execute("SET LOCAL lock_timeout = '300ms'")
             .await
@@ -31,8 +29,7 @@ async fn the_realm_hold_and_a_person_hold_wait_for_each_other() {
             .expect("a second person waited for the first");
     }
     {
-        let mut second = fixture.connection().await;
-        let reaching = fixture.scoped(&mut second, &within).await;
+        let reaching = fixture.scoped(&within).await;
         reaching
             .batch_execute("SET LOCAL lock_timeout = '300ms'")
             .await
@@ -44,13 +41,11 @@ async fn the_realm_hold_and_a_person_hold_wait_for_each_other() {
     }
     weighing.rollback().await.unwrap();
 
-    let mut third = fixture.connection().await;
-    let reaching = fixture.scoped(&mut third, &within).await;
+    let reaching = fixture.scoped(&within).await;
     store::providers::sod::hold_realm(&reaching)
         .await
         .expect("the realm is held");
-    let mut fourth = fixture.connection().await;
-    let weighing = fixture.scoped(&mut fourth, &within).await;
+    let weighing = fixture.scoped(&within).await;
     weighing
         .batch_execute("SET LOCAL lock_timeout = '300ms'")
         .await

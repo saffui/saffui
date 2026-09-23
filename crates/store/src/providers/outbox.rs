@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use serde_json::Value;
 
 use crate::error::{StoreError, StoreResult};
@@ -35,7 +35,7 @@ pub const CHANNEL: &str = "saffui_events";
 /// notify rides the same transaction, and Postgres only speaks it at
 /// commit: nothing is announced that did not happen.
 pub async fn emit(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     kind: &str,
     user_id: &str,
     payload: &Value,
@@ -62,7 +62,7 @@ pub async fn emit(
 
 /// The tellings given up on, newest first: the dead-letter queue, as rows
 /// an operator can see and requeue instead of a state only a SELECT knows.
-pub async fn dead_list(transaction: &Transaction<'_>, limit: i64) -> StoreResult<Vec<OutboxEvent>> {
+pub async fn dead_list(transaction: &UnitOfWork, limit: i64) -> StoreResult<Vec<OutboxEvent>> {
     Ok(transaction
         .query(
             "SELECT realm_id, event_id, kind, user_id, payload, attempts, occurred_at \
@@ -87,7 +87,7 @@ pub async fn dead_list(transaction: &Transaction<'_>, limit: i64) -> StoreResult
 
 /// Put one dead telling back in the queue, due at once. The attempts stay
 /// counted: a requeue is another chance, not a clean record.
-pub async fn requeue(transaction: &Transaction<'_>, event_id: i64) -> StoreResult<bool> {
+pub async fn requeue(transaction: &UnitOfWork, event_id: i64) -> StoreResult<bool> {
     let changed = transaction
         .execute(
             "UPDATE event_outbox SET state = 'pending', next_attempt_at = now() \
@@ -106,7 +106,7 @@ pub async fn requeue(transaction: &Transaction<'_>, event_id: i64) -> StoreResul
 /// Due is read on the database's clock, the one that stamps every row here: a
 /// caller's clock running behind it would leave a change just written for later.
 pub async fn due(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ceiling: i64,
     backoff_seconds: i64,
 ) -> StoreResult<Vec<OutboxEvent>> {
@@ -144,7 +144,7 @@ pub async fn due(
         .collect())
 }
 
-pub async fn delivered(transaction: &Transaction<'_>, event_id: i64) -> StoreResult<()> {
+pub async fn delivered(transaction: &UnitOfWork, event_id: i64) -> StoreResult<()> {
     transaction
         .execute(
             "UPDATE event_outbox SET state = 'delivered' WHERE event_id = $1",
@@ -157,7 +157,7 @@ pub async fn delivered(transaction: &Transaction<'_>, event_id: i64) -> StoreRes
 
 /// Give up on one telling, out loud: dead is a state an operator can see,
 /// not a silent drop.
-pub async fn dead(transaction: &Transaction<'_>, event_id: i64) -> StoreResult<()> {
+pub async fn dead(transaction: &UnitOfWork, event_id: i64) -> StoreResult<()> {
     transaction
         .execute(
             "UPDATE event_outbox SET state = 'dead' WHERE event_id = $1",
@@ -172,7 +172,7 @@ pub async fn dead(transaction: &Transaction<'_>, event_id: i64) -> StoreResult<(
 /// reach. Delivered and dead alike are replayable; pending ones are not
 /// offered, because the delivery pass owns them.
 pub async fn retained(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     from: i64,
     to: Option<i64>,
     limit: i64,
@@ -204,7 +204,7 @@ pub async fn retained(
 /// console watches committed changes, not connector delivery, so pending rows
 /// belong in this read as well.
 pub async fn list_events_after_id(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     event_id: i64,
     limit: i64,
 ) -> StoreResult<Vec<OutboxEvent>> {
@@ -233,10 +233,7 @@ pub async fn list_events_after_id(
 
 /// Take away delivered tellings older than the window, on the database's clock
 /// that stamped them. Dead and pending ones are never this sweep's to take.
-pub async fn drop_delivered_older_than(
-    transaction: &Transaction<'_>,
-    days: i32,
-) -> StoreResult<u64> {
+pub async fn drop_delivered_older_than(transaction: &UnitOfWork, days: i32) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM event_outbox WHERE state = 'delivered' \
@@ -250,10 +247,7 @@ pub async fn drop_delivered_older_than(
 /// Fell this person's queued events, before the one that says the account
 /// is gone is emitted: telling the world about somebody being erased must
 /// not first deliver their profile.
-pub async fn erase_pending_for_user(
-    transaction: &Transaction<'_>,
-    user_id: &str,
-) -> StoreResult<u64> {
+pub async fn erase_pending_for_user(transaction: &UnitOfWork, user_id: &str) -> StoreResult<u64> {
     transaction
         .execute("DELETE FROM event_outbox WHERE user_id = $1", &[&user_id])
         .await
@@ -264,7 +258,7 @@ pub async fn erase_pending_for_user(
 ///
 /// The state is indexed and the rows are the realm's, so this is a reading an
 /// operator can take often without paying for it.
-pub async fn count_waiting(transaction: &Transaction<'_>) -> StoreResult<i64> {
+pub async fn count_waiting(transaction: &UnitOfWork) -> StoreResult<i64> {
     Ok(transaction
         .query_one(
             "SELECT count(*) FROM event_outbox WHERE state = 'pending'",

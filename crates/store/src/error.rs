@@ -24,6 +24,10 @@ pub enum StoreError {
     /// a driver's message carries the statement and its bound values.
     #[error("the database operation failed")]
     Backend,
+    /// No connection could be had: every one is in use, or the database is
+    /// out of reach. Its own variant so a caller can answer "try again".
+    #[error("no database connection is available")]
+    Unavailable,
 
     /// An identifier or a name another row already answers to, where only one may.
     #[error("this identifier is already in use")]

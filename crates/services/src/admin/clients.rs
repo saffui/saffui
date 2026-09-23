@@ -3,7 +3,6 @@ use crypto::password::storage::StoredPassword;
 use crypto::provider::SignAlg;
 use crypto::provider::{Argon2Params, CryptoProvider};
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::client::{ClientCreateModel, ClientModel, JweRegistration, Protocol};
 use models::paging::Page;
@@ -11,6 +10,7 @@ use secrecy::{ExposeSecret, SecretBox};
 use store::error::StoreError;
 use store::providers::{client_scopes, clients};
 use store::query::list_query::ListQuery;
+use store::tenancy::UnitOfWork;
 use url::Url;
 
 use crate::provisioning::provision_standard_scopes;
@@ -230,7 +230,7 @@ pub enum Unregistrable {
     reason = "each is a distinct fact about one registration"
 )]
 pub async fn register(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -313,7 +313,7 @@ pub async fn register(
 
 /// One page of the realm's clients.
 pub async fn list(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> Result<Page<ClientModel>, Unregistrable> {
@@ -322,10 +322,7 @@ pub async fn list(
         .map_err(|_| Unregistrable::Unwritable)
 }
 
-pub async fn get(
-    transaction: &Transaction<'_>,
-    client_id: &str,
-) -> Result<ClientModel, Unregistrable> {
+pub async fn get(transaction: &UnitOfWork, client_id: &str) -> Result<ClientModel, Unregistrable> {
     clients::load(transaction, client_id)
         .await
         .map_err(|_| Unregistrable::Unwritable)?
@@ -334,7 +331,7 @@ pub async fn get(
 
 /// Reshape a registered client. A list left out is a list left alone.
 pub async fn update(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     reshape: &Reshape,
 ) -> Result<ClientModel, Unregistrable> {
@@ -555,7 +552,7 @@ pub(crate) fn check_public_jwks(document: &serde_json::Value) -> Result<(), Unre
 /// §2.2 replaces the registration, so a value the request left out is cleared
 /// and not kept.
 pub async fn reshape_registered(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     spec: &Spec,
 ) -> Result<ClientModel, Unregistrable> {
@@ -576,7 +573,7 @@ pub async fn reshape_registered(
 
 /// Draw a new secret for a confidential client and hand it back once.
 pub async fn rotate_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     client_id: &str,
 ) -> Result<String, Unregistrable> {
@@ -595,7 +592,7 @@ pub async fn rotate_secret(
     Ok(drawn)
 }
 
-pub async fn remove(transaction: &Transaction<'_>, client_id: &str) -> Result<bool, Unregistrable> {
+pub async fn remove(transaction: &UnitOfWork, client_id: &str) -> Result<bool, Unregistrable> {
     // Its service account leaves with it, rather than keep grants nobody answers
     // for and a name the next client under this identifier could not take.
     if let Some(account) = store::providers::users::load_service_account(transaction, client_id)
@@ -773,7 +770,7 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Unregistrable> {
 }
 
 async fn keep_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     client_id: &str,
     secret: &SecretBox<String>,

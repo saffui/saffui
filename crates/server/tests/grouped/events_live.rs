@@ -48,7 +48,7 @@ async fn asked(plane: &Plane, method: Method, path: &str, bearer: &str) -> (Stat
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_feed_speaks_at_commit_and_never_before() {
     let plane = Plane::with_actions(&[AdminAction::EventRead]).await;
-    let feed = store::live::listen(support::owner());
+    let feed = store::live::listen(support::owner(), pgcore::tls::PgConnector::disabled());
     let mut watching = feed.subscribe();
     // The LISTEN has to stand before the emission, or the notify lands on
     // nobody; a moment is what the connection needs.

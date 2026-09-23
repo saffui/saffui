@@ -186,6 +186,18 @@ so: a superuser or a role holding `BYPASSRLS` reads every realm while every
 policy still reads as if it were being applied, which is the failure that looks
 most like success (`crates/store/migrations/V001__tenancy.sql:141`).
 
+The link to it carries every query and every answer, sessions and personal
+data alike. Every connection the process opens is built from one policy, the
+served pool, the migrations and the notification listener alike
+(`crates/pgcore/src/database.rs:85`): `verify-full` checks the server's
+certificate against a named bundle and the host it was dialled by
+(`crates/pgcore/src/tls.rs:101`), and a database that is not on this machine is
+refused at startup until a mode is stated, because the driver's own default
+falls back to the clear without a word (`crates/pgcore/src/database.rs:111`).
+A full pool refuses after a bounded wait instead of holding requests for ever
+(`:142`), and a pooled transaction nobody talks to is ended by the server with
+its locks (`:156`).
+
 A realm pinned to a region is refused on a node that does not serve it, before
 the transaction opens, so nothing is read on the way to finding out
 (`crates/store/src/tenancy.rs:141`).
@@ -272,6 +284,14 @@ answers it, or the word that says nothing does.
 | T-KEY-1 | Keys read out of a database dump | TA-7 | Sealed per purpose and per row (`crates/store/src/keyring.rs:30`) |
 | T-KEY-2 | A sealed value moved into another column to be read as something else | TA-7 | The scope is authenticated, so it opens as nothing |
 | T-KEY-3 | The wrapping key shipped in the image | TA-8 | A reference rather than a value (`crates/commons/src/secret.rs:43`), and A.KEY-STORE |
+
+### The database link, TB-4
+
+| Id | Threat | Agent | What answers it |
+|---|---|---|---|
+| T-DB-1 | Queries and answers read or rewritten between a node and the database | TA-6 | `verify-full` on every connection the process opens (`crates/pgcore/src/database.rs:85`); `require` encrypts without judging the certificate, and the operator's guide says so |
+| T-DB-2 | A deployment running in the clear without anyone having chosen it | TA-6 | A database off this machine with no stated mode refuses to start, and an address and a setting that disagree about encrypting refuse too (`crates/pgcore/src/database.rs:111`, `:103`) |
+| T-DB-3 | The application role's password read on its way to the server or out of its statement log | TA-6 | Sent as a SCRAM verifier and never as itself (`crates/pgcore/src/password.rs:5`) |
 
 ### Nodes and scheduled work, TB-5
 

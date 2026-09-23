@@ -35,6 +35,8 @@ saying what it proves. They are driven deliberately, not by CI.
 
 - `deploy/proxy` says what to set when anything stands in front, and why
   nothing is believed until it is set.
+- `deploy/database` says how the database is reached, and why the clear is
+  refused for one that is not on this machine.
 - `deploy/ha/RUNBOOK.md` says how several instances are operated together.
 - `deploy/observability/README.md` says how to see what a request did.
 - `SECURITY.md` says how to report a vulnerability.

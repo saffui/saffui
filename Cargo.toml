@@ -98,6 +98,7 @@ foreign-types  = "0.3.2"
 # PKCS#11, for a key store where the private key never leaves the token.
 cryptoki       = "0.12.1"
 tokio-postgres = "0.7.18"
+postgres-protocol = "0.6.12"
 # One TLS stack for the workspace: the OpenSSL already linked by `crypto`,
 # reached through postgres-openssl. Never a second one.
 postgres-openssl  = "0.5.3"

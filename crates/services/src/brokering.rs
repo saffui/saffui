@@ -1,13 +1,13 @@
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
-use deadpool_postgres::Transaction;
 use models::broker::link::{LinkDecision, LocalAccount, UpstreamIdentity};
 use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::authz::IdentityProviderModel;
 use models::entities::brokering::{BrokerLoginState, FederatedIdentityModel, IdpMapperModel};
 use serde_json::{Map, Value};
 use store::providers::{brokering, users};
+use store::tenancy::UnitOfWork;
 
 use crate::mappers::{MULTIVALUED, config_bool};
 
@@ -284,7 +284,7 @@ pub fn depart(
 
 /// Spend the state the way back names, exactly once, on this provider only.
 pub async fn returned(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     alias: &str,
     state: &str,
@@ -481,7 +481,7 @@ fn primary_verified_address(list: &EmailList, listed: &Value) -> (Option<String>
 /// or given an account of its own where the realm lets accounts share an address.
 /// Otherwise a person is created, through the door every user creation goes through.
 pub async fn decide_link(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     crypto: &dyn crypto::provider::CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -760,7 +760,7 @@ fn read_rules<'a>(
 /// are, and a stale rule is the operator's to mend, not theirs to be
 /// locked out over.
 pub async fn apply_mappers(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &IdentityProviderModel,
     user_id: &str,
     arrival: &Arrival,
@@ -811,7 +811,7 @@ pub async fn apply_mappers(
 
 /// Grant a rule's role to who arrived.
 async fn grant_mapped_role(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     rule: &IdpMapperModel,
     user_id: &str,
     role_id: &str,
@@ -875,7 +875,7 @@ const SPOKEN_FOR_NOBODY: [&str; 17] = [
 /// arrival asserting nothing person-shaped takes the stale source away
 /// rather than leaving a document with nothing to say.
 pub async fn keep_assertions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &IdentityProviderModel,
     user_id: &str,
     id_token: &str,
@@ -927,7 +927,7 @@ pub async fn keep_assertions(
 }
 
 async fn remember(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &IdentityProviderModel,
     arrival: &Arrival,
     user_id: &str,

@@ -13,7 +13,6 @@ const REDIRECT: &str = "https://app.example/callback";
 
 fn mounted(plane: &Plane, proxying: Proxying) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -79,12 +78,8 @@ async fn log_in(plane: &Plane, proxying: Proxying, peer: &str, headers: &[(&str,
 
 /// What the row holds for the login the fixture's user just opened.
 async fn recorded(plane: &Plane) -> (Option<String>, Option<String>) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let held = store::providers::sessions::load_for_user(&transaction, support::SUBJECT)
         .await

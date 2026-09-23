@@ -2,7 +2,6 @@ use actix_web::{HttpResponse, web};
 use chrono::Utc;
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use models::entities::export::{ExportedRealm, ImportCollisionPolicy};
 use serde::Deserialize;
 use services::admin::portability::{self, Unportable};
@@ -15,18 +14,13 @@ use crate::middleware::admin_guard::Admin;
 /// section can come from a different state than another.
 pub async fn export(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     options: web::Query<ExportOptions>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     let mut document = portability::export_realm(&transaction, &realm_id, Utc::now())
@@ -65,7 +59,6 @@ pub struct Landing {
 
 pub async fn import(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     landing: web::Query<Landing>,
     sealing: web::Data<Sealing>,
@@ -84,12 +77,11 @@ pub async fn import(
         ));
     }
     let tenant = admin.context.tenant.tenant.clone();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
 
     // The lock and the write share one transaction. Releasing it after the
     // count would let two imports both pass one place below the ceiling.
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new(&tenant, &realm_id))
+        .begin(&TenantContext::new(&tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     store::providers::tenants::hold_realms(&transaction, &tenant)
@@ -181,18 +173,13 @@ pub struct PartialImportRequest {
 
 pub async fn partial_preview(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     body: web::Json<PartialImportRequest>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     if store::providers::realms::load(&transaction, &realm_id)
@@ -216,16 +203,14 @@ pub async fn partial_preview(
 
 pub async fn partial_import(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     body: web::Json<PartialImportRequest>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
     let tenant = admin.context.tenant.tenant.clone();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new(&tenant, &realm_id))
+        .begin(&TenantContext::new(&tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     if store::providers::realms::load(&transaction, &realm_id)

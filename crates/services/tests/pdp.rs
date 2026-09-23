@@ -8,14 +8,14 @@ use services::context::{Context, establish};
 use services::pdp::{Journal, Question, Resource, decide};
 use services::token::Verified;
 use store::providers::{authz_policies, sessions};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 
 const SESSION: &str = "session-1";
 
 /// A journal on its own connections, as the running server gives it.
 fn journal(fixture: &Fixture) -> Journal {
-    Journal::new(fixture.pool(), fixture.tenancy())
+    Journal::new(fixture.tenancy())
 }
 
 fn tenant() -> TenantContext {
@@ -36,7 +36,7 @@ fn presented(subject: &str) -> Verified {
 }
 
 /// A realm with an application, one resource, one verb, and a caller logged in.
-async fn plant(transaction: &deadpool_postgres::Transaction<'_>) {
+async fn plant(transaction: &UnitOfWork) {
     sessions::open(
         transaction,
         &UserSessionModel {
@@ -86,7 +86,7 @@ async fn plant(transaction: &deadpool_postgres::Transaction<'_>) {
 
 /// A role policy naming `editor`, and a permission on the document conditioned
 /// on it.
-async fn protect(transaction: &deadpool_postgres::Transaction<'_>) {
+async fn protect(transaction: &UnitOfWork) {
     let editors = models::entities::authz::PolicyTerms {
         name: "editors".into(),
         description: String::new(),
@@ -148,7 +148,7 @@ fn question<'a>(resource: Resource<'a>, action: &'a str) -> Question<'a> {
     }
 }
 
-async fn caller(transaction: &deadpool_postgres::Transaction<'_>) -> Context {
+async fn caller(transaction: &UnitOfWork) -> Context {
     establish(transaction, tenant(), &presented("ada"), Utc::now())
         .await
         .expect("a caller this realm holds")
@@ -160,8 +160,7 @@ async fn caller(transaction: &deadpool_postgres::Transaction<'_>) -> Context {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_permission_answers_on_what_the_caller_holds() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
     protect(&transaction).await;
     store::providers::roles::grant_to_user(&transaction, "ada", "editor")
@@ -221,8 +220,7 @@ async fn a_permission_answers_on_what_the_caller_holds() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn what_nothing_protects_is_refused_for_its_own_reason() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
     protect(&transaction).await;
 
@@ -277,8 +275,7 @@ async fn what_nothing_protects_is_refused_for_its_own_reason() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn testing_a_policy_reports_what_it_reached() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
     protect(&transaction).await;
 
@@ -325,8 +322,7 @@ async fn testing_a_policy_reports_what_it_reached() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_with_no_schema_cannot_answer() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
 
     let context = caller(&transaction).await;
@@ -362,8 +358,7 @@ async fn a_realm_with_no_schema_cannot_answer() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn every_decision_is_written_down() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
     protect(&transaction).await;
 
@@ -424,8 +419,7 @@ async fn every_decision_is_written_down() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_relationship_question_reaches_the_engine_next_door() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
 
     let source = "
@@ -538,8 +532,7 @@ definition document {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_journal_that_cannot_write_does_not_take_the_decision_with_it() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     plant(&transaction).await;
     protect(&transaction).await;
     let context = caller(&transaction).await;

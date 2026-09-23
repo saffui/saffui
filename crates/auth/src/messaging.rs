@@ -1,8 +1,8 @@
-use deadpool_postgres::Transaction;
 use models::entities::attributes;
 use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::{UserModel, profile};
+use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Message {
@@ -774,7 +774,7 @@ impl Held {
 /// throttle is recorded where a failed sign-in is, because a throttle
 /// tripping is the fact an operator hunting inflated traffic reads.
 pub async fn text_brakes(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm: &RealmModel,
     user_id: &str,
     recipient: &str,
@@ -802,7 +802,7 @@ pub async fn text_brakes(
 }
 
 async fn brakes_say(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm: &RealmModel,
     recipient: &str,
     now: chrono::DateTime<chrono::Utc>,
@@ -838,7 +838,7 @@ async fn brakes_say(
 /// Count one send everywhere a brake reads: the realm's day and this
 /// number's hour, in the same transaction that minted the code.
 pub async fn record_text(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     recipient: &str,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(), ()> {

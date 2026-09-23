@@ -8,9 +8,8 @@ use store::tenancy::{Tenancy, TenantContext};
 /// nothing but the realm, so a realm with no client and no user can still be
 /// given something to sweep.
 async fn plant_expired_revocation(plane: &Plane, realm: &str, token_id: &str) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, realm))
+        .scoped(&TenantContext::new(support::TENANT, realm))
         .await;
     transaction
         .execute(
@@ -24,9 +23,8 @@ async fn plant_expired_revocation(plane: &Plane, realm: &str, token_id: &str) {
 }
 
 async fn revocations_left(plane: &Plane, realm: &str) -> i64 {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, realm))
+        .scoped(&TenantContext::new(support::TENANT, realm))
         .await;
     transaction
         .query_one("SELECT count(*) FROM revoked_tokens", &[])
@@ -44,7 +42,7 @@ async fn a_pass_sweeps_every_realm() {
     plant_expired_revocation(&plane, support::REALM, "sweep-1").await;
     plant_expired_revocation(&plane, "second", "sweep-2").await;
 
-    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
     assert_eq!(swept.revocations, 2, "a realm was left behind: {swept:?}");
@@ -52,7 +50,7 @@ async fn a_pass_sweeps_every_realm() {
     assert_eq!(revocations_left(&plane, "second").await, 0);
 
     // Nothing left to take, and the pass says so rather than failing.
-    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
     assert_eq!(swept.total(), 0, "{swept:?}");
@@ -66,12 +64,8 @@ async fn a_realm_another_node_is_sweeping_is_left_alone() {
     let plane = Plane::with_actions(&[]).await;
     plant_expired_revocation(&plane, support::REALM, "sweep-held").await;
 
-    let mut connection = plane.connection().await;
     let held = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let taken: bool = held
         .query_one(
@@ -86,15 +80,14 @@ async fn a_realm_another_node_is_sweeping_is_left_alone() {
         .get(0);
     assert!(taken, "the lock was already held before the test took it");
 
-    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
     assert_eq!(swept.total(), 0, "a held realm was swept anyway: {swept:?}");
 
     held.commit().await.expect("the lock released");
-    drop(connection);
 
-    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
     assert_eq!(
@@ -113,7 +106,7 @@ async fn a_realm_pinned_elsewhere_is_not_swept_here() {
     plant_expired_revocation(&plane, support::REALM, "sweep-pinned").await;
     plane.pin_tenant("here").await;
 
-    let swept = sweep_every_realm(&plane.pool(), &Tenancy::in_region("somewhere-else"))
+    let swept = sweep_every_realm(&Tenancy::in_region(plane.pool(), "somewhere-else"))
         .await
         .expect("the realms were listed");
     assert_eq!(swept.total(), 0, "{swept:?}");
@@ -128,12 +121,8 @@ async fn a_realm_pinned_elsewhere_is_not_swept_here() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_client_grant_that_ran_out_goes_before_its_login_does() {
     let plane = Plane::with_actions(&[]).await;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let plant_login = |id: &'static str, alive: bool| {
         let transaction = &transaction;
@@ -211,7 +200,7 @@ async fn a_client_grant_that_ran_out_goes_before_its_login_does() {
     .await;
     transaction.commit().await.expect("the seed kept");
 
-    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
     assert_eq!(
@@ -219,12 +208,8 @@ async fn a_client_grant_that_ran_out_goes_before_its_login_does() {
         "other than the ended grant was taken: {swept:?}"
     );
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let left: Vec<String> = transaction
         .query(
@@ -258,12 +243,8 @@ async fn a_client_grant_that_ran_out_goes_before_its_login_does() {
 async fn a_delivered_event_leaves_when_its_replay_window_closes() {
     let plane = Plane::with_actions(&[]).await;
     let kept = services::housekeeping::DELIVERED_EVENTS_KEPT_DAYS;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     // Only this test's events count: the planted world emits its own.
     transaction
@@ -298,16 +279,12 @@ async fn a_delivered_event_leaves_when_its_replay_window_closes() {
     }
     transaction.commit().await.expect("the seed kept");
 
-    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let left: Vec<String> = transaction
         .query("SELECT kind FROM event_outbox ORDER BY kind", &[])
@@ -334,12 +311,8 @@ async fn a_delivered_event_leaves_when_its_replay_window_closes() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_broker_login_state_that_ran_out_is_taken_away() {
     let plane = Plane::with_actions(&[]).await;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     // Ends stamped from the host's clock, as opening a brokered login does.
     let now = chrono::Utc::now();
@@ -360,16 +333,12 @@ async fn a_broker_login_state_that_ran_out_is_taken_away() {
     }
     transaction.commit().await.expect("the states kept");
 
-    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let left: Vec<String> = transaction
         .query(
@@ -396,12 +365,8 @@ async fn a_broker_login_state_that_ran_out_is_taken_away() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn saml_requests_that_ran_out_are_taken_away() {
     let plane = Plane::with_actions(&[]).await;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let now = chrono::Utc::now();
     for (table, kept, request_id, expires_at) in [
@@ -444,16 +409,12 @@ async fn saml_requests_that_ran_out_are_taken_away() {
     }
     transaction.commit().await.expect("the requests kept");
 
-    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     for table in ["saml_login_requests", "saml_logout_requests"] {
         let census = format!("SELECT request_id FROM {table} ORDER BY request_id");
@@ -479,9 +440,8 @@ async fn a_pass_counts_the_text_counters_and_anchors_of_every_realm() {
     plane.plant_realm("second").await;
     let now = chrono::Utc::now();
     for realm in [support::REALM, "second"] {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, realm))
+            .scoped(&TenantContext::new(support::TENANT, realm))
             .await;
         transaction
             .execute(
@@ -509,7 +469,7 @@ async fn a_pass_counts_the_text_counters_and_anchors_of_every_realm() {
         transaction.commit().await.expect("the seed kept");
     }
 
-    let swept = sweep_every_realm(&plane.pool(), &plane.tenancy())
+    let swept = sweep_every_realm(&plane.tenancy())
         .await
         .expect("the realms were listed");
     assert_eq!(

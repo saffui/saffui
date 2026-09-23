@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::{ResourceModel, ResourceServerModel, ScopeModel};
 use tokio_postgres::Row;
@@ -27,7 +27,7 @@ const SCOPE_COLUMNS: &str = "tenant, realm_id, scope_id, server_id, name, displa
 /// application is called is the client's answer, and a copy would be a second
 /// one.
 pub async fn create_server(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server: &ResourceServerModel,
 ) -> StoreResult<()> {
     let set = WriteSet::insert(vec![
@@ -56,7 +56,7 @@ pub async fn create_server(
 
 /// One protected application of this realm.
 pub async fn load_server(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
 ) -> StoreResult<Option<ResourceServerModel>> {
     let statement = format!("SELECT {SERVER_COLUMNS} FROM resource_servers WHERE server_id = $1");
@@ -73,7 +73,7 @@ pub async fn load_server(
 /// Settable without rewriting the surface underneath: a permissive rollout
 /// changes the mode, closing sharing changes the ceiling.
 pub async fn set_server_protection(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server: &ResourceServerModel,
 ) -> StoreResult<bool> {
     let set = WriteSet::update(
@@ -103,7 +103,7 @@ pub async fn set_server_protection(
 ///
 /// The client stays. Removing a surface stops an application being protected;
 /// removing the client is a different act with a different blast radius.
-pub async fn delete_server(transaction: &Transaction<'_>, server_id: &str) -> StoreResult<bool> {
+pub async fn delete_server(transaction: &UnitOfWork, server_id: &str) -> StoreResult<bool> {
     // The aggregation edges first. A policy something is conditioned on cannot
     // be deleted from under it, and the cascade below reaches the two ends of an
     // edge in whichever order it finds them.
@@ -125,7 +125,7 @@ pub async fn delete_server(transaction: &Transaction<'_>, server_id: &str) -> St
 /// operation, so creating a resource cannot quietly widen what is meaningful on
 /// it.
 /// Every protected application of this realm.
-pub async fn list_servers(transaction: &Transaction<'_>) -> StoreResult<Vec<ResourceServerModel>> {
+pub async fn list_servers(transaction: &UnitOfWork) -> StoreResult<Vec<ResourceServerModel>> {
     let statement = format!("SELECT {SERVER_COLUMNS} FROM resource_servers ORDER BY server_id ASC");
     Ok(transaction
         .query(statement.as_str(), &[])
@@ -137,7 +137,7 @@ pub async fn list_servers(transaction: &Transaction<'_>) -> StoreResult<Vec<Reso
 }
 
 pub async fn create_resource(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     resource: &ResourceModel,
 ) -> StoreResult<()> {
     let configs = resource
@@ -176,7 +176,7 @@ pub async fn create_resource(
 /// permissions, so replacing it with a new row under a new id would break the
 /// bindings that point at it while looking like an edit.
 pub async fn update_resource(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     resource: &ResourceModel,
 ) -> StoreResult<bool> {
     let configs = resource
@@ -214,7 +214,7 @@ pub async fn update_resource(
 
 /// One resource, with the verbs it declares.
 pub async fn load_resource(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     resource_id: &str,
 ) -> StoreResult<Option<ResourceModel>> {
     let statement = format!("SELECT {RESOURCE_COLUMNS} FROM resources WHERE resource_id = $1");
@@ -233,7 +233,7 @@ pub async fn load_resource(
 
 /// Everything one application protects.
 pub async fn resources_of_server(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
 ) -> StoreResult<Vec<ResourceModel>> {
     let statement =
@@ -254,7 +254,7 @@ pub async fn resources_of_server(
 /// nothing answers to applies to nothing, which is a permission that cannot
 /// grant, never one that grants everywhere.
 pub async fn resources_of_type(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     resource_type: &str,
 ) -> StoreResult<Vec<ResourceModel>> {
@@ -273,10 +273,7 @@ pub async fn resources_of_type(
 }
 
 /// Remove a resource, and say whether there was one to remove.
-pub async fn delete_resource(
-    transaction: &Transaction<'_>,
-    resource_id: &str,
-) -> StoreResult<bool> {
+pub async fn delete_resource(transaction: &UnitOfWork, resource_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM resources WHERE resource_id = $1",
@@ -288,7 +285,7 @@ pub async fn delete_resource(
 }
 
 /// Record a verb the application knows.
-pub async fn create_scope(transaction: &Transaction<'_>, scope: &ScopeModel) -> StoreResult<()> {
+pub async fn create_scope(transaction: &UnitOfWork, scope: &ScopeModel) -> StoreResult<()> {
     let set = WriteSet::insert(vec![
         col("tenant", &scope.metadata.tenant),
         col("realm_id", &scope.realm_id),
@@ -310,7 +307,7 @@ pub async fn create_scope(transaction: &Transaction<'_>, scope: &ScopeModel) -> 
 /// One verb of this realm.
 /// Rework one scope in place, and say whether there was one. The identity
 /// does not move, for the same reason a resource's does not.
-pub async fn update_scope(transaction: &Transaction<'_>, scope: &ScopeModel) -> StoreResult<bool> {
+pub async fn update_scope(transaction: &UnitOfWork, scope: &ScopeModel) -> StoreResult<bool> {
     let set = WriteSet::update(
         vec![
             col("name", &scope.name),
@@ -332,7 +329,7 @@ pub async fn update_scope(transaction: &Transaction<'_>, scope: &ScopeModel) -> 
 }
 
 pub async fn load_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     scope_id: &str,
 ) -> StoreResult<Option<ScopeModel>> {
     let statement = format!("SELECT {SCOPE_COLUMNS} FROM scopes WHERE scope_id = $1");
@@ -345,7 +342,7 @@ pub async fn load_scope(
 
 /// Every verb one application knows.
 pub async fn scopes_of_server(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
 ) -> StoreResult<Vec<ScopeModel>> {
     let statement =
@@ -360,7 +357,7 @@ pub async fn scopes_of_server(
 }
 
 /// Remove a verb, and say whether there was one to remove.
-pub async fn delete_scope(transaction: &Transaction<'_>, scope_id: &str) -> StoreResult<bool> {
+pub async fn delete_scope(transaction: &UnitOfWork, scope_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM scopes WHERE scope_id = $1", &[&scope_id])
         .await
@@ -374,7 +371,7 @@ pub async fn delete_scope(transaction: &Transaction<'_>, scope_id: &str) -> Stor
 /// otherwise have to know which it had already declared, and reading that from
 /// a failure is reading it from an error message.
 pub async fn declare_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     server_id: &str,
     resource_id: &str,
     scope_id: &str,
@@ -395,7 +392,7 @@ pub async fn declare_scope(
 
 /// Take a verb back off a resource, and say whether it declared it.
 pub async fn undeclare_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     resource_id: &str,
     scope_id: &str,
 ) -> StoreResult<bool> {
@@ -410,10 +407,7 @@ pub async fn undeclare_scope(
 }
 
 /// Attach the declared verbs to resources already read.
-async fn with_scopes(
-    transaction: &Transaction<'_>,
-    rows: Vec<Row>,
-) -> StoreResult<Vec<ResourceModel>> {
+async fn with_scopes(transaction: &UnitOfWork, rows: Vec<Row>) -> StoreResult<Vec<ResourceModel>> {
     let ids: Vec<String> = rows.iter().map(|row| row.get("resource_id")).collect();
     let mut declared = declared_scopes(transaction, &ids).await?;
 
@@ -433,7 +427,7 @@ async fn with_scopes(
 /// grow a query per resource. A resource with no row here declares none, which
 /// is why the caller defaults to the empty list and never to "unknown".
 async fn declared_scopes(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     resource_ids: &[String],
 ) -> StoreResult<HashMap<String, Vec<String>>> {
     let mut declared: HashMap<String, Vec<String>> = HashMap::new();

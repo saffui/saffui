@@ -9,10 +9,7 @@ use support::Fixture;
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn metrics_are_aggregated_inside_the_current_realm() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     transaction
         .execute(

@@ -2,14 +2,13 @@ use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use models::entities::authz::{
     DecisionStrategy, PolicyEnforcementMode, PolicyTerms, ResourceMutationModel,
     ScopeMutationModel, StoredPolicy,
 };
 use serde::Deserialize;
 use services::admin::authorization::{self as authz, Unwritable};
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
 use crate::api::config::Sealing;
 use crate::middleware::admin_guard::Admin;
@@ -48,16 +47,14 @@ pub struct Protection {
 
 pub async fn protect(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: web::Json<Protection>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, client_id) = path.into_inner();
     let asked = body.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let made = authz::protect(
@@ -84,14 +81,12 @@ pub async fn protect(
 
 pub async fn server(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, client_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = authz::server(&transaction, &client_id)
@@ -108,16 +103,14 @@ pub async fn server(
 
 pub async fn set_protection(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: web::Json<Protection>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, client_id) = path.into_inner();
     let asked = body.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = authz::set_protection(
@@ -142,14 +135,12 @@ pub async fn set_protection(
 
 pub async fn unprotect(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, client_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     authz::unprotect(&transaction, &client_id)
@@ -173,16 +164,14 @@ macro_rules! surface {
      $delete_call:ident, $missing:ident, $exists:ident) => {
         pub async fn $create(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             sealing: web::Data<Sealing>,
             path: web::Path<(String, String)>,
             body: web::Json<$mutation>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, server_id) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             let made = authz::$create_call(
@@ -202,14 +191,12 @@ macro_rules! surface {
 
         pub async fn $list(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String)>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, server_id) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             let found = authz::$list_call(&transaction, &server_id)
@@ -222,15 +209,13 @@ macro_rules! surface {
 
         pub async fn $rework(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String, String)>,
             body: web::Json<$mutation>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, server_id, id) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             let made = authz::$rework_call(
@@ -248,14 +233,12 @@ macro_rules! surface {
 
         pub async fn $delete(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String, String)>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, server_id, id) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             authz::$delete_call(&transaction, &server_id, &id)
@@ -305,7 +288,6 @@ pub struct PolicyBody {
 
 pub async fn add_policy(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<(String, String)>,
@@ -313,9 +295,8 @@ pub async fn add_policy(
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, server_id) = path.into_inner();
     let asked = body.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let made = authz::add_policy(
@@ -354,14 +335,12 @@ fn render_policy_row(stored: StoredPolicy) -> Result<serde_json::Value, ApiError
 
 pub async fn policies(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, server_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let found = authz::policies(&transaction, &server_id)
@@ -382,15 +361,13 @@ pub async fn policies(
 
 pub async fn rework_policy(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
     body: web::Json<PolicyTerms>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, server_id, policy_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = authz::rework_policy(
@@ -414,14 +391,12 @@ pub async fn rework_policy(
 
 pub async fn remove_policy(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, _server, policy_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     authz::remove_policy(&transaction, &policy_id)
@@ -452,15 +427,13 @@ fn hundred() -> i64 {
 /// What the engine decided lately, newest first.
 pub async fn decisions(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     window: web::Query<Window>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let limit = window.limit.clamp(1, 1000);
@@ -478,15 +451,13 @@ pub async fn decisions(
 /// permissive mode masked.
 pub async fn disagreements(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     window: web::Query<Window>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let found =
@@ -508,15 +479,13 @@ pub struct Retention {
 /// everything must be asked for in so many words.
 pub async fn prune_decisions(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     asked: web::Query<Retention>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let removed = services::admin::authorization::prune_decisions(&transaction, asked.before)
@@ -562,7 +531,6 @@ pub struct Evaluation {
 /// under the action `simulated`: an evaluation is an act worth remembering.
 pub async fn evaluate(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     journal: web::Data<services::pdp::Journal>,
     sealing: web::Data<Sealing>,
@@ -578,12 +546,8 @@ pub async fn evaluate(
         ));
     };
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
 
@@ -699,7 +663,7 @@ pub async fn evaluate(
 /// The steps a relationship question took, as the reader of a simulation
 /// wants them: in order, with the depth to indent by.
 async fn walk_of(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     object_type: &str,
     object_id: &str,
     relation: &str,
@@ -732,14 +696,12 @@ async fn walk_of(
 /// The realm's route map: which permission a request path puts at stake.
 pub async fn routes(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = store::providers::authz_routes::routes(&transaction)
@@ -787,7 +749,6 @@ fn a_hundred() -> i32 {
 
 pub async fn put_route(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: web::Json<AskedRoute>,
@@ -827,9 +788,8 @@ pub async fn put_route(
         }
     }
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     // The resource server has to be one this realm protects: a route naming
@@ -862,14 +822,12 @@ pub async fn put_route(
 
 pub async fn delete_route(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, route_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let removed = store::providers::authz_routes::drop_route(&transaction, &route_id)
@@ -917,16 +875,14 @@ fn unshareable(why: services::admin::authorization::Unshareable) -> ApiError {
 /// Share one user-managed resource, as a relation on it.
 pub async fn share(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
     body: web::Json<ShareBody>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, server_id, resource_id) = path.into_inner();
     let asked = body.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
 
@@ -951,16 +907,14 @@ pub async fn share(
 /// Stop sharing one user-managed resource.
 pub async fn unshare(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
     body: web::Json<ShareBody>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, server_id, resource_id) = path.into_inner();
     let asked = body.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
 

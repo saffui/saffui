@@ -11,7 +11,6 @@ const REDIRECT: &str = "https://app.example/callback";
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -32,8 +31,7 @@ fn within() -> TenantContext {
 }
 
 async fn demand_consent(plane: &Plane, demanded: bool) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await
         .expect("the clients table")
@@ -102,8 +100,7 @@ fn with_consent(answer: &str) -> Value {
 }
 
 async fn agreed_scopes(plane: &Plane) -> Option<Vec<String>> {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     store::providers::consents::held(&transaction, support::SUBJECT, support::CONFIDENTIAL)
         .await
         .expect("the consents table")
@@ -222,8 +219,7 @@ async fn a_client_that_asks_for_nothing_is_never_asked_about() {
 async fn the_screen_offers_the_registered_pages_and_only_over_https() {
     let plane = Plane::with_actions(&[]).await;
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
             .await
             .expect("the clients table")
@@ -337,8 +333,7 @@ async fn a_withdrawn_consent_is_asked_again_even_with_a_held_login() {
     let plane = Plane::with_actions(&[]).await;
     demand_consent(&plane, true).await;
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         auth::consent::keep(
             &transaction,
             support::SUBJECT,
@@ -354,8 +349,7 @@ async fn a_withdrawn_consent_is_asked_again_even_with_a_held_login() {
     assert!(location.contains("code="), "{location}");
 
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         store::providers::consents::withdraw(&transaction, support::SUBJECT, support::CONFIDENTIAL)
             .await
             .expect("the consents table");

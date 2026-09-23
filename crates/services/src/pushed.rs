@@ -1,10 +1,10 @@
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::{CryptoProvider, HashAlg};
 use data_encoding::{BASE64URL_NOPAD, HEXLOWER};
-use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
 use serde_json::{Map, Value};
 use store::providers::pushed::{self, Pushed};
+use store::tenancy::UnitOfWork;
 
 /// What every reference this server hands out starts with, §2.2. A value
 /// that does not is one this server never issued.
@@ -31,7 +31,7 @@ pub enum Unpushable {
 
 /// Keep a pushed request, and hand back the reference and how long it lives.
 pub async fn keep_request(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     client: &ClientModel,
     parameters: &Map<String, Value>,
@@ -82,7 +82,7 @@ pub async fn keep_request(
 
 /// The parameters a reference stands for, spent by the asking.
 pub async fn spend_reference(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     handle: &str,
 ) -> Option<PushedRequest> {

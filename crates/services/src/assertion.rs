@@ -4,11 +4,11 @@ use crypto::jose::jws::{HS256, HS384, HS512, JwsVerifier};
 use crypto::jose::jwt;
 use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
 use secrecy::{ExposeSecret, SecretBox};
 use serde_json::Value;
 use store::providers::oidc;
+use store::tenancy::UnitOfWork;
 
 use crate::token::verifier_for;
 
@@ -158,7 +158,7 @@ fn published_key(keys: &Value, token: &str, algorithm: SignAlg) -> Result<Jwk, U
 /// The spend is part of verifying, not a step after it: an assertion checked
 /// and not recorded is one the next caller may present again.
 pub async fn verify(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     client: &ClientModel,
     assertion: &str,

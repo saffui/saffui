@@ -1,5 +1,7 @@
 use std::future::{Ready, ready};
 use std::rc::Rc;
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use actix_web::body::{BoxBody, EitherBody};
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
@@ -9,12 +11,10 @@ use chrono::Utc;
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use config::serving::PublicOrigin;
-use deadpool_postgres::Pool;
 use services::account_api::{
     ACCOUNT_SCOPE, AccountCaller, NotAdmitted, StepUp, establish_account_caller,
 };
 use services::token::{Binding, Proofs};
-use store::tenancy::{Tenancy, resolve};
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::middleware::bearer::{bearer, unverified_issuer};
@@ -103,7 +103,6 @@ fn write_step_up_challenge(step_up: &StepUp) -> String {
 /// The account API's guard, and what it needs to establish the caller.
 #[derive(Clone)]
 pub struct AccountGuard {
-    pub pool: Pool,
     pub tenancy: Tenancy,
     /// What this deployment answers from, which every issuer it accepts is
     /// built out of.
@@ -189,17 +188,14 @@ async fn establish(
         return Err(AccountRefusal::InvalidToken);
     }
 
-    let mut connection = guard
-        .pool
-        .get()
-        .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
-    let context = resolve::realm_by_id(&connection, named)
-        .await
-        .map_err(|_| AccountRefusal::InvalidToken)?;
+    let context = match guard.tenancy.resolve(RealmNamed::ById(named)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return Err(AccountRefusal::Unavailable),
+        Err(_) => return Err(AccountRefusal::InvalidToken),
+    };
     let transaction = guard
         .tenancy
-        .transaction(&mut connection, &context)
+        .begin(&context)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     let keys = services::realm::published_keys(&transaction)

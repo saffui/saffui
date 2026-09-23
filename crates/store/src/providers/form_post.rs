@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use serde_json::Value;
 
 use crate::error::{StoreError, StoreResult};
@@ -13,7 +13,7 @@ pub struct Waiting {
 
 /// Put a response aside for the page that posts it.
 pub async fn keep(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ticket_hash: &str,
     redirect_uri: &str,
     parameters: &Value,
@@ -36,10 +36,7 @@ pub async fn keep(
 ///
 /// One statement, so a ticket presented twice is answered once: the second
 /// caller deletes no row and is told nothing.
-pub async fn take(
-    transaction: &Transaction<'_>,
-    ticket_hash: &str,
-) -> StoreResult<Option<Waiting>> {
+pub async fn take(transaction: &UnitOfWork, ticket_hash: &str) -> StoreResult<Option<Waiting>> {
     Ok(transaction
         .query_opt(
             "DELETE FROM form_post_landings \
@@ -56,7 +53,7 @@ pub async fn take(
 }
 
 /// Drop what no browser came back for.
-pub async fn drop_expired_landings(transaction: &Transaction<'_>) -> StoreResult<u64> {
+pub async fn drop_expired_landings(transaction: &UnitOfWork) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM form_post_landings WHERE expires_at <= now()",

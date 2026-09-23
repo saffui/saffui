@@ -2,11 +2,11 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;
 use crypto::provider::SignAlg;
-use deadpool_postgres::Pool;
 use models::entities::keys::{JweAlgorithm, JweEncryption};
 use models::entities::realm::ClientRegistration;
 use serde_json::{Value, json};
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
 
@@ -28,14 +28,13 @@ const AUTHENTICATED: [&str; 6] = [
 /// endpoints of the spec are absent rather than refused.
 pub async fn ssf_configuration(
     realm: web::Path<String>,
-    pool: web::Data<Pool>,
+    tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
-    let Ok(connection) = pool.get().await else {
-        return refused(StatusCode::INTERNAL_SERVER_ERROR);
-    };
-    if resolve::realm_by_name(&connection, &realm).await.is_err() {
-        return refused(StatusCode::NOT_FOUND);
+    match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(_) => {}
+        Err(StoreError::Unavailable) => return refused(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => return refused(StatusCode::NOT_FOUND),
     }
     let issuer = origin.issuer(&realm);
     HttpResponse::Ok().json(serde_json::json!({
@@ -51,17 +50,19 @@ pub async fn ssf_configuration(
 
 pub async fn published(
     realm: web::Path<String>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
-    let Ok(mut connection) = pool.get().await else {
-        return refused(StatusCode::INTERNAL_SERVER_ERROR);
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return refused(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        Err(_) => {
+            return refused(StatusCode::NOT_FOUND);
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return refused(StatusCode::NOT_FOUND);
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return refused(StatusCode::INTERNAL_SERVER_ERROR);
     };
     // From the keys this realm signs with, not from the build's catalogue. A

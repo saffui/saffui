@@ -2,7 +2,6 @@ use actix_web::{HttpRequest, HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Pool;
 use secrecy::SecretBox;
 use services::account::{self, Changing, OwnFactor, Unchanged, Unremoved};
 use store::tenancy::Tenancy;
@@ -24,7 +23,6 @@ use crate::middleware::admin_guard::Admin;
 )]
 pub async fn change_own_password(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     request: HttpRequest,
@@ -48,9 +46,8 @@ pub async fn change_own_password(
             "a new password is required",
         ));
     }
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let realm = store::providers::realms::load(&transaction, &realm_id)
@@ -101,14 +98,12 @@ pub async fn change_own_password(
 /// and `stronger_sign_in_needed` says a recent one was weaker than it may be.
 pub async fn list_own_factors(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = account::own_factors(
@@ -126,25 +121,16 @@ pub async fn list_own_factors(
 /// Take away one of the caller's authenticator apps.
 pub async fn remove_own_app(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, credential_id) = path.into_inner();
-    remove_own(
-        &admin,
-        &pool,
-        &tenancy,
-        &realm_id,
-        OwnFactor::App(&credential_id),
-    )
-    .await
+    remove_own(&admin, &tenancy, &realm_id, OwnFactor::App(&credential_id)).await
 }
 
 /// Take away one of the caller's passkeys, named as the listing spells it.
 pub async fn remove_own_key(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
@@ -152,37 +138,27 @@ pub async fn remove_own_key(
     let credential_id = BASE64URL_NOPAD
         .decode(credential.as_bytes())
         .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
-    remove_own(
-        &admin,
-        &pool,
-        &tenancy,
-        &realm_id,
-        OwnFactor::Key(&credential_id),
-    )
-    .await
+    remove_own(&admin, &tenancy, &realm_id, OwnFactor::Key(&credential_id)).await
 }
 
 /// Take away the caller's whole sheet of recovery codes.
 pub async fn remove_own_recovery_codes(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    remove_own(&admin, &pool, &tenancy, &realm_id, OwnFactor::RecoveryCodes).await
+    remove_own(&admin, &tenancy, &realm_id, OwnFactor::RecoveryCodes).await
 }
 
 async fn remove_own(
     admin: &Admin,
-    pool: &Pool,
     tenancy: &Tenancy,
     realm_id: &str,
     factor: OwnFactor<'_>,
 ) -> Result<HttpResponse, ApiError> {
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(admin, realm_id))
+        .begin(&within(admin, realm_id))
         .await
         .map_err(|_| internal())?;
     account::remove_own_factor(

@@ -2,12 +2,11 @@ use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use models::paging::PagingParams;
 use secrecy::SecretBox;
 use services::admin::users::{self as people, Spec, Uncreatable};
 use store::query::list_query::{ListQuery, SortDirection};
-use store::tenancy::Tenancy;
+use store::tenancy::{Tenancy, UnitOfWork};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::{PasswordSpec, UserBrief, UserSpec};
@@ -25,7 +24,6 @@ pub struct Narrowing {
 
 pub async fn list(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     paging: web::Query<PagingParams>,
@@ -36,9 +34,8 @@ pub async fn list(
     let window = paging
         .window()
         .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     // The trailing `%` is added here and the rest is bound, so nothing a
@@ -76,14 +73,12 @@ pub async fn list(
 
 pub async fn get(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let found = services::admin::users::identified(&transaction, &user_id)
@@ -112,7 +107,6 @@ pub async fn get(
 /// Create a person, with what they first sign in with when it was given.
 pub async fn create(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
@@ -129,9 +123,8 @@ pub async fn create(
         })?;
     let spec = spec_of(&asked);
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let tenant = admin.context.tenant.tenant.clone();
@@ -166,16 +159,14 @@ pub async fn create(
 
 pub async fn update(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: web::Json<UserSpec>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
     let spec = spec_of(&body.into_inner());
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -188,7 +179,6 @@ pub async fn update(
 
 pub async fn set_password(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<(String, String)>,
@@ -203,9 +193,8 @@ pub async fn set_password(
             "password is required",
         ));
     }
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -243,14 +232,12 @@ pub async fn set_password(
 /// answer carries the dates and the actors and nothing more.
 pub async fn read_password_history(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -276,14 +263,12 @@ pub async fn read_password_history(
 
 pub async fn remove(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -333,14 +318,12 @@ fn internal() -> ApiError {
 /// What is counted against this person, and whether they are refused now.
 pub async fn lockout(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -363,14 +346,12 @@ pub async fn lockout(
 /// How many recovery codes are left on this person's sheet.
 pub async fn recovery_codes(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -383,14 +364,12 @@ pub async fn recovery_codes(
 /// Lift a lockout and forget the count.
 pub async fn lift_lockout(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -404,14 +383,12 @@ pub async fn lift_lockout(
 /// What this server tried to send this person, and how it went.
 pub async fn messages(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -424,14 +401,12 @@ pub async fn messages(
 /// What this person has agreed to give, and to whom.
 pub async fn consents(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -456,14 +431,12 @@ pub async fn consents(
 /// ending what it permitted are two acts, and the second has its own route.
 pub async fn withdraw_consent(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id, client_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -481,14 +454,12 @@ pub async fn withdraw_consent(
 /// way a decision reads it.
 pub async fn effective_roles(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -512,14 +483,12 @@ pub async fn effective_roles(
 /// The groups this user belongs to, as the directory shows them.
 pub async fn member_groups(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -545,14 +514,12 @@ pub async fn member_groups(
 /// The organizations this user belongs to, as the directory shows them.
 pub async fn member_organizations(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -578,7 +545,7 @@ pub async fn member_organizations(
 /// console holds identifiers, an operator types names, and rows born before
 /// drawn identifiers answer to both because theirs are their names.
 pub(crate) async fn named_user(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     spelled: &str,
 ) -> Result<String, ApiError> {
     services::admin::users::identified(transaction, spelled)

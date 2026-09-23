@@ -1,13 +1,13 @@
 use crypto::provider::CryptoProvider;
 use crypto::provider::DigestProvider;
 use data_encoding::HEXLOWER;
-use deadpool_postgres::Transaction;
 use models::compliance::breach::{BreachDiscovery, BreachRecord, BreachSeverity};
 use models::compliance::evidence_pack::{
     ChainAttestation, ChainVerification, EvidencePack, PackSection,
 };
 use models::compliance::subject_request::{DsarKind, DsarLodgement, DsarRequest, Jurisdiction};
 use store::providers::{compliance, users};
+use store::tenancy::UnitOfWork;
 
 /// Why the register could not do what was asked.
 #[derive(Debug, thiserror::Error)]
@@ -37,7 +37,7 @@ pub struct Lodging<'a> {
 /// whether an account matched or not, so the register is not a way to ask
 /// which addresses hold accounts.
 pub async fn lodge(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -70,16 +70,13 @@ pub async fn lodge(
     Ok(request)
 }
 
-pub async fn list(transaction: &Transaction<'_>) -> Result<Vec<DsarRequest>, Unactionable> {
+pub async fn list(transaction: &UnitOfWork) -> Result<Vec<DsarRequest>, Unactionable> {
     compliance::list(transaction)
         .await
         .map_err(|_| Unactionable::Backend)
 }
 
-pub async fn get(
-    transaction: &Transaction<'_>,
-    request_id: &str,
-) -> Result<DsarRequest, Unactionable> {
+pub async fn get(transaction: &UnitOfWork, request_id: &str) -> Result<DsarRequest, Unactionable> {
     compliance::load(transaction, request_id)
         .await
         .map_err(|_| Unactionable::Backend)?
@@ -89,7 +86,7 @@ pub async fn get(
 /// Record that the subject proved who they are. The lifecycle is the
 /// model's: whatever it refuses is answered in its own words.
 pub async fn verify(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     now: i64,
 ) -> Result<DsarRequest, Unactionable> {
@@ -102,7 +99,7 @@ pub async fn verify(
 
 /// Close a request as refused, with the reason the subject is owed.
 pub async fn refuse(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     reason: &str,
     now: i64,
@@ -127,7 +124,7 @@ pub async fn refuse(
 /// the event the connectors and receivers de-provision by. The register's
 /// own row survives on its own legal ground, as the record of compliance.
 pub async fn fulfil_erasure(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     by: &str,
     now: i64,
@@ -235,7 +232,7 @@ impl Corrections {
 /// verified flag comes off with it and the realm's own ceremony re-proves
 /// it. The outcome names the fields that moved and nothing they moved to.
 pub async fn fulfil_rectification(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     corrections: Corrections,
     now: i64,
@@ -292,7 +289,7 @@ pub async fn fulfil_rectification(
 /// governed is not stopped here, and refusing with the legal ground is the
 /// register's other verb for that.
 pub async fn fulfil_objection(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     client_id: Option<&str>,
     now: i64,
@@ -369,7 +366,7 @@ enum BundleScope {
 /// answered once, and the register records that it was handed over. The
 /// copy is never stored: producing a second one is running this again.
 pub async fn fulfil_access(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     now: i64,
 ) -> Result<(DsarRequest, serde_json::Value), Unactionable> {
@@ -387,7 +384,7 @@ pub async fn fulfil_access(
 /// Fulfil a portability request: the machine-readable copy of what the
 /// subject provided, and nothing the realm derived on its own.
 pub async fn fulfil_portability(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     now: i64,
 ) -> Result<(DsarRequest, serde_json::Value), Unactionable> {
@@ -403,7 +400,7 @@ pub async fn fulfil_portability(
 }
 
 async fn fulfil_with_a_copy(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     kind: DsarKind,
     scope: BundleScope,
@@ -450,7 +447,7 @@ async fn fulfil_with_a_copy(
 /// credential appears as its kind and dates, and the hash that verifies it
 /// is nobody's data to receive, the subject included.
 async fn drawn_subject_bundle(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     scope: BundleScope,
 ) -> Result<serde_json::Value, Unactionable> {
@@ -563,7 +560,7 @@ async fn drawn_subject_bundle(
 }
 
 async fn saved(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request: DsarRequest,
 ) -> Result<DsarRequest, Unactionable> {
     if !compliance::save(transaction, &request)
@@ -576,7 +573,7 @@ async fn saved(
 }
 
 async fn resolved_subject(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     identifier: &str,
 ) -> Result<Option<String>, Unactionable> {
     if let Some(person) = users::load_by_name(transaction, identifier)
@@ -603,7 +600,7 @@ pub struct Discovery<'a> {
 /// Record a found breach; the notification clock is settled here, under the
 /// law as it stands, and stays absent where no source fixes one.
 pub async fn record_breach_discovery(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -636,7 +633,7 @@ pub async fn record_breach_discovery(
 }
 
 pub async fn list_breaches(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
 ) -> Result<Vec<(BreachRecord, Jurisdiction)>, Unactionable> {
     compliance::list_breaches(transaction)
         .await
@@ -644,7 +641,7 @@ pub async fn list_breaches(
 }
 
 pub async fn get_breach(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     breach_id: &str,
 ) -> Result<(BreachRecord, Jurisdiction), Unactionable> {
     compliance::load_breach(transaction, breach_id)
@@ -656,7 +653,7 @@ pub async fn get_breach(
 /// Move a breach through its handling; every rule is the model's own, and
 /// its refusals are answered in its words.
 pub async fn advance_breach(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     breach_id: &str,
     step: BreachStep<'_>,
     now: i64,
@@ -710,7 +707,7 @@ pub type AssembledEvidencePack =
 /// the period with its completeness said honestly. A section that cannot be
 /// read says so instead of looking empty, and the pack is never stored.
 pub async fn assemble_evidence_pack(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     tenant: &str,
     realm_id: &str,

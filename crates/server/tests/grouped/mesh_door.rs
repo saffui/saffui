@@ -19,7 +19,6 @@ use store::tenancy::TenantContext;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![AUDIENCE.to_owned()],
@@ -66,7 +65,6 @@ async fn opened(plane: &Plane) -> AuthorizationClient<tonic::transport::Channel>
     tokio::spawn(server::grpc::serve(
         listener,
         server::grpc::Door {
-            pool: plane.pool(),
             tenancy: plane.tenancy(),
             origin: support::origin(),
         },
@@ -136,9 +134,8 @@ fn stated(
 }
 
 async fn recorded(plane: &Plane, decision_id: &str) -> Option<(String, String)> {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::authz_policies::recent(&transaction, 50)
         .await
@@ -401,9 +398,8 @@ async fn a_check_records_the_trace_of_the_request_it_weighs() {
         assert_eq!(denied(&answer), None, "{id}: {answer:?}");
     }
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let found: Vec<String> =
         store::providers::authz_policies::decisions_of_trace(&transaction, TRACE, 10)

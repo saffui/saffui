@@ -2,7 +2,6 @@ use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use models::entities::authz::IdentityProviderMutationModel;
 use models::entities::brokering::IdpMapperMutationModel;
 use services::admin::idps::{self, Unwritable};
@@ -13,14 +12,12 @@ use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let listed = idps::providers(&transaction).await.map_err(refused)?;
@@ -29,14 +26,12 @@ pub async fn list(
 
 pub async fn get(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let found = idps::get_provider(&transaction, &alias)
@@ -47,16 +42,14 @@ pub async fn get(
 
 pub async fn create(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
     body: web::Json<IdentityProviderMutationModel>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     // Provisioned on demand: sealing an upstream secret is the first thing
@@ -95,16 +88,14 @@ pub async fn create(
 
 pub async fn update(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<(String, String)>,
     body: web::Json<IdentityProviderMutationModel>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     // Provisioned on demand: sealing an upstream secret is the first thing
@@ -141,14 +132,12 @@ pub async fn update(
 
 pub async fn delete(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     idps::delete_provider(&transaction, &alias)
@@ -162,14 +151,12 @@ pub async fn delete(
 /// user's record rather than the provider's configuration.
 pub async fn identities_of_user(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     if store::providers::users::load(&transaction, &user_id)
@@ -191,7 +178,6 @@ pub async fn identities_of_user(
 /// the round-trip is the point.
 pub async fn prove(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
@@ -199,12 +185,8 @@ pub async fn prove(
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let context = within(&admin, &realm_id);
-    let transaction = tenancy
-        .transaction(&mut connection, &context)
-        .await
-        .map_err(|_| internal())?;
+    let transaction = tenancy.begin(&context).await.map_err(|_| internal())?;
     let proof = crate::federation::prove_delivery(
         &transaction,
         &sealing,
@@ -254,14 +236,12 @@ fn internal() -> ApiError {
 
 pub async fn list_mappers(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let listed = idps::mappers_of(&transaction, &alias)
@@ -272,16 +252,14 @@ pub async fn list_mappers(
 
 pub async fn add_mapper(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<(String, String)>,
     body: web::Json<IdpMapperMutationModel>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let made = idps::add_mapper(
@@ -301,14 +279,12 @@ pub async fn add_mapper(
 
 pub async fn get_mapper(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias, mapper_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let found = idps::get_mapper(&transaction, &alias, &mapper_id)
@@ -319,15 +295,13 @@ pub async fn get_mapper(
 
 pub async fn rework_mapper(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
     body: web::Json<IdpMapperMutationModel>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias, mapper_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let rewritten = idps::rework_mapper(
@@ -345,14 +319,12 @@ pub async fn rework_mapper(
 
 pub async fn remove_mapper(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias, mapper_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     idps::remove_mapper(&transaction, &alias, &mapper_id)

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
 use store::providers::consents;
+use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the store could not be read")]
@@ -14,7 +14,7 @@ pub struct Unreadable;
 /// that had `openid profile` and now asks for `openid` has asked for nothing
 /// new, and asking again would train people to click through.
 pub async fn must_ask(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client: &ClientModel,
     user_id: &str,
     scope: &str,
@@ -44,7 +44,7 @@ fn covered(agreed: &[String], asked: &str) -> bool {
 
 /// Record what was agreed to.
 pub async fn keep(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     client_id: &str,
     scope: &str,

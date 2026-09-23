@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::user::{RequiredAction, UserModel, UserStorage};
 use models::paging::Page;
 use tokio_postgres::Row;
@@ -18,7 +18,7 @@ const COLUMNS: &str = "tenant, realm_id, user_id, user_name, email, email_verifi
 ///
 /// The realm and the tenant come from the transaction, so a model naming another
 /// pair is refused by the rules rather than written where nobody will look.
-pub async fn create(transaction: &Transaction<'_>, user: &UserModel) -> StoreResult<()> {
+pub async fn create(transaction: &UnitOfWork, user: &UserModel) -> StoreResult<()> {
     let attributes = attributes_json(user)?;
     super::outbox::emit(
         transaction,
@@ -57,13 +57,13 @@ pub async fn create(transaction: &Transaction<'_>, user: &UserModel) -> StoreRes
 }
 
 /// One user of this realm, by identifier.
-pub async fn load(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Option<UserModel>> {
+pub async fn load(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Option<UserModel>> {
     one(transaction, "user_id = $1", user_id).await
 }
 
 /// One user by the name they sign in with.
 pub async fn load_by_name(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_name: &str,
 ) -> StoreResult<Option<UserModel>> {
     one(transaction, "user_name = $1", user_name).await
@@ -71,7 +71,7 @@ pub async fn load_by_name(
 
 /// Resolve an exact account id first, then an exact username in this realm.
 pub async fn load_by_id_or_name(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     named: &str,
 ) -> StoreResult<Option<UserModel>> {
     if let Some(user) = load(transaction, named).await? {
@@ -86,7 +86,7 @@ pub async fn load_by_id_or_name(
 /// so this takes the first and the caller that permits sharing must not use it
 /// to resolve a login.
 pub async fn load_by_email(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     email: &str,
 ) -> StoreResult<Option<UserModel>> {
     one(transaction, "email = $1", email).await
@@ -97,7 +97,7 @@ pub async fn load_by_email(
 /// The login resolver's read: an address two accounts share names neither,
 /// and saying which existed would say more than an unknown name does.
 pub async fn sole_by_email(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     email: &str,
 ) -> StoreResult<Option<UserModel>> {
     let statement = format!("SELECT {COLUMNS} FROM users WHERE email = $1 LIMIT 2");
@@ -117,7 +117,7 @@ pub async fn sole_by_email(
 /// and one two accounts share names neither, for the reason an address
 /// does not.
 pub async fn sole_by_proven_phone(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     phone_number: &str,
 ) -> StoreResult<Option<UserModel>> {
     let statement = format!(
@@ -136,7 +136,7 @@ pub async fn sole_by_proven_phone(
 
 /// One user by phone number, which is a login identifier where it is used.
 pub async fn load_by_phone(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     phone_number: &str,
 ) -> StoreResult<Option<UserModel>> {
     one(transaction, "phone_number = $1", phone_number).await
@@ -150,7 +150,7 @@ pub async fn load_by_phone(
 /// name would silently become somebody else's the moment one was.
 /// Every person of this realm the directory owns: the mirrors a sync pass
 /// walks.
-pub async fn shadows(transaction: &Transaction<'_>) -> StoreResult<Vec<UserModel>> {
+pub async fn shadows(transaction: &UnitOfWork) -> StoreResult<Vec<UserModel>> {
     let statement =
         format!("SELECT {COLUMNS} FROM users WHERE user_storage = 'ldap' ORDER BY user_id ASC");
     Ok(transaction
@@ -163,7 +163,7 @@ pub async fn shadows(transaction: &Transaction<'_>) -> StoreResult<Vec<UserModel
 }
 
 pub async fn load_service_account(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
 ) -> StoreResult<Option<UserModel>> {
     let statement = format!(
@@ -177,12 +177,12 @@ pub async fn load_service_account(
         .map(read))
 }
 
-pub async fn name_taken(transaction: &Transaction<'_>, user_name: &str) -> StoreResult<bool> {
+pub async fn name_taken(transaction: &UnitOfWork, user_name: &str) -> StoreResult<bool> {
     exists(transaction, "user_name = $1", user_name).await
 }
 
 /// Whether the address is in use in this realm.
-pub async fn email_taken(transaction: &Transaction<'_>, email: &str) -> StoreResult<bool> {
+pub async fn email_taken(transaction: &UnitOfWork, email: &str) -> StoreResult<bool> {
     exists(transaction, "email = $1", email).await
 }
 
@@ -191,7 +191,7 @@ pub async fn email_taken(transaction: &Transaction<'_>, email: &str) -> StoreRes
 /// The stamp and the version are the statement's own. The identifiers and the
 /// name are not written: a realm's users are addressed by them, so an update
 /// that moved one would be a different user wearing the same row.
-pub async fn update(transaction: &Transaction<'_>, user: &UserModel) -> StoreResult<bool> {
+pub async fn update(transaction: &UnitOfWork, user: &UserModel) -> StoreResult<bool> {
     let previous = transaction
         .query_opt(
             "SELECT email, email_verified FROM users WHERE user_id = $1 FOR UPDATE",
@@ -251,7 +251,7 @@ pub async fn update(transaction: &Transaction<'_>, user: &UserModel) -> StoreRes
 /// stands. Says whether the user was there, not whether the action was.
 /// Mark this person's address as checked, or unchecked.
 pub async fn set_email_verified(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     verified: bool,
 ) -> StoreResult<bool> {
@@ -271,7 +271,7 @@ pub async fn set_email_verified(
 /// is unproven by definition, and proving one must not race an edit that
 /// swapped it for another.
 pub async fn set_phone(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     phone_number: Option<&str>,
     verified: bool,
@@ -290,7 +290,7 @@ pub async fn set_phone(
 /// stacked twice, so a login that keeps finding the same stale password does
 /// not grow the list on every round.
 pub async fn require_action(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     action: RequiredAction,
 ) -> StoreResult<bool> {
@@ -307,7 +307,7 @@ pub async fn require_action(
 }
 
 pub async fn clear_required_action(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     action: RequiredAction,
 ) -> StoreResult<bool> {
@@ -322,7 +322,7 @@ pub async fn clear_required_action(
     Ok(cleared > 0)
 }
 
-pub async fn delete(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<bool> {
+pub async fn delete(transaction: &UnitOfWork, user_id: &str) -> StoreResult<bool> {
     super::outbox::emit(
         transaction,
         super::outbox::USER_DELETED,
@@ -338,7 +338,7 @@ pub async fn delete(transaction: &Transaction<'_>, user_id: &str) -> StoreResult
 }
 
 /// How many users this realm has.
-pub async fn count(transaction: &Transaction<'_>) -> StoreResult<i64> {
+pub async fn count(transaction: &UnitOfWork) -> StoreResult<i64> {
     Ok(transaction
         .query_one("SELECT count(*) FROM users", &[])
         .await
@@ -350,7 +350,7 @@ pub async fn count(transaction: &Transaction<'_>) -> StoreResult<i64> {
 /// The one person whose attribute bag holds this exact string value, for
 /// the reconciliation questions a provisioner asks (externalId above all).
 pub async fn load_by_attribute(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     key: &str,
     value: &str,
 ) -> StoreResult<Option<UserModel>> {
@@ -375,10 +375,7 @@ pub async fn load_by_attribute(
 /// warns about: the `UNION` settles identifiers, and this settles names, which
 /// two different groups are free to share. One round trip, because this is
 /// read while a token is being minted.
-pub async fn group_names_of(
-    transaction: &Transaction<'_>,
-    user_id: &str,
-) -> StoreResult<Vec<String>> {
+pub async fn group_names_of(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
             "WITH RECURSIVE standing AS ( \
@@ -401,7 +398,7 @@ pub async fn group_names_of(
         .collect())
 }
 
-pub async fn groups_of(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
+pub async fn groups_of(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
             "SELECT group_id FROM users_groups WHERE user_id = $1 ORDER BY group_id ASC",
@@ -415,7 +412,7 @@ pub async fn groups_of(transaction: &Transaction<'_>, user_id: &str) -> StoreRes
 }
 
 pub async fn list(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> StoreResult<Page<UserModel>> {
@@ -444,7 +441,7 @@ pub async fn list(
 }
 
 async fn one(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     predicate: &str,
     value: &str,
 ) -> StoreResult<Option<UserModel>> {
@@ -456,7 +453,7 @@ async fn one(
         .map(read))
 }
 
-async fn exists(transaction: &Transaction<'_>, predicate: &str, value: &str) -> StoreResult<bool> {
+async fn exists(transaction: &UnitOfWork, predicate: &str, value: &str) -> StoreResult<bool> {
     let statement = format!("SELECT count(*) FROM users WHERE {predicate}");
     let found: i64 = transaction
         .query_one(statement.as_str(), &[&value])

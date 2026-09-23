@@ -7,12 +7,12 @@ use crypto::jose::jwk::{Ed25519, Jwk, KeyPair, P_256, P_384, P_521};
 use crypto::jose::util::HashAlgorithm;
 use crypto::provider::{CryptoProvider, SignAlg};
 use crypto::thumbprint::jwk_sha256_thumbprint;
-use deadpool_postgres::Transaction;
 use models::entities::keys::{
     KeyStatus, KeyUse, RealmEncryptionKeyView, RealmSigningKey, RealmSigningKeyView,
 };
 use store::keyring::RealmKeyring;
 use store::providers::realm_keys;
+use store::tenancy::UnitOfWork;
 
 /// Why the plane could not turn a key.
 #[derive(Debug)]
@@ -39,7 +39,7 @@ pub struct Held {
 }
 
 /// Every key the realm holds, disabled ones included.
-pub async fn held(transaction: &Transaction<'_>) -> Result<Held, Unturnable> {
+pub async fn held(transaction: &UnitOfWork) -> Result<Held, Unturnable> {
     Ok(Held {
         signing: realm_keys::held(transaction, KeyUse::Sig).await?,
         encryption: realm_keys::held_encryption(transaction).await?,
@@ -58,7 +58,7 @@ pub async fn held(transaction: &Transaction<'_>) -> Result<Held, Unturnable> {
     reason = "each is a distinct fact about the key being minted"
 )]
 pub async fn rotate(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     provider: &dyn CryptoProvider,
@@ -106,7 +106,7 @@ pub async fn rotate(
 /// Refused while the key is active: tokens are being signed with it right now,
 /// and the way out of service runs through [`rotate`], which keeps them
 /// verifiable. Disabling twice changes nothing and is not an error.
-pub async fn disable(transaction: &Transaction<'_>, kid: &str) -> Result<(), Unturnable> {
+pub async fn disable(transaction: &UnitOfWork, kid: &str) -> Result<(), Unturnable> {
     let keys = held(transaction).await?;
     let status = keys
         .signing

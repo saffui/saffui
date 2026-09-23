@@ -2,7 +2,6 @@ use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use models::entities::authz::{GroupMutationModel, RoleMutationModel};
 use models::entities::organization::OrganizationMutationModel;
 use models::paging::PagingParams;
@@ -24,16 +23,14 @@ macro_rules! crud {
      $exists:ident, $missing:ident) => {
         pub async fn $create(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             sealing: web::Data<Sealing>,
             path: web::Path<String>,
             body: web::Json<$mutation>,
         ) -> Result<HttpResponse, ApiError> {
             let realm_id = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             let made = directory::$create_call(
@@ -52,7 +49,6 @@ macro_rules! crud {
 
         pub async fn $list(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<String>,
             paging: web::Query<PagingParams>,
@@ -61,9 +57,8 @@ macro_rules! crud {
             let window = paging
                 .window()
                 .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             let query = ListQuery::new(window).sorted_by("name", SortDirection::Ascending);
@@ -75,14 +70,12 @@ macro_rules! crud {
 
         pub async fn $get(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String)>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, id) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             let found = directory::$get_call(&transaction, &id)
@@ -93,15 +86,13 @@ macro_rules! crud {
 
         pub async fn $update(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String)>,
             body: web::Json<$mutation>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, id) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             let changed = directory::$update_call(
@@ -118,14 +109,12 @@ macro_rules! crud {
 
         pub async fn $delete(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String)>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, id) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             directory::$delete_call(&transaction, &id)
@@ -214,14 +203,12 @@ macro_rules! joining {
      $exists:ident, $missing:ident) => {
         pub async fn $attach(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String, String)>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, owner, other) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             directory::$attach_call(&transaction, &owner, &other)
@@ -233,14 +220,12 @@ macro_rules! joining {
 
         pub async fn $detach(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String, String)>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, owner, other) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             directory::$detach_call(&transaction, &owner, &other)
@@ -281,14 +266,12 @@ joining!(
 /// `directory.still_granted` points an administrator at.
 pub async fn role_holders(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, role_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let holders = directory::role_holders(&transaction, &role_id)
@@ -300,14 +283,12 @@ pub async fn role_holders(
 /// Roles included directly by this composite role.
 pub async fn composite_roles(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, role_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let children = directory::composite_roles(&transaction, &role_id)
@@ -319,14 +300,12 @@ pub async fn composite_roles(
 /// Add a direct child role to a composite role.
 pub async fn add_composite_role(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, parent_role_id, child_role_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     directory::add_composite_role(&transaction, &parent_role_id, &child_role_id)
@@ -339,14 +318,12 @@ pub async fn add_composite_role(
 /// Remove a direct child role from a composite role.
 pub async fn remove_composite_role(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, parent_role_id, child_role_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     directory::remove_composite_role(&transaction, &parent_role_id, &child_role_id)
@@ -359,14 +336,12 @@ pub async fn remove_composite_role(
 /// Who is in this group, and which roles it grants them.
 pub async fn group_membership(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, group_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let (users, roles) = directory::group_membership(&transaction, &group_id)
@@ -377,14 +352,12 @@ pub async fn group_membership(
 
 pub async fn add_organization_member(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, org_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     directory::add_organization_member(
@@ -408,14 +381,12 @@ pub async fn add_organization_member(
 
 pub async fn remove_organization_member(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, org_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     directory::remove_organization_member(&transaction, &org_id, &user_id)
@@ -433,14 +404,12 @@ pub async fn remove_organization_member(
 
 pub async fn organization_members(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, org_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let members = directory::organization_members(&transaction, &org_id)
@@ -458,14 +427,12 @@ pub async fn organization_members(
 /// The organization's stored theme, or `null` when it wears the realm's look.
 pub async fn get_organization_theme(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, org_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     store::providers::organizations::load(&transaction, &org_id)
@@ -483,7 +450,6 @@ pub async fn get_organization_theme(
 /// first value that could leave its declaration.
 pub async fn set_organization_theme(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: web::Json<serde_json::Value>,
@@ -496,9 +462,8 @@ pub async fn set_organization_theme(
             why.to_owned(),
         ));
     }
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let worn = store::providers::organizations::set_theme(&transaction, &org_id, Some(&asked))
@@ -514,14 +479,12 @@ pub async fn set_organization_theme(
 /// Undress the organization; its pages fall back to the realm's look.
 pub async fn clear_organization_theme(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, org_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let undressed = store::providers::organizations::set_theme(&transaction, &org_id, None)
@@ -544,7 +507,6 @@ pub struct DomainClaim {
 /// checks before verifying; nothing routes until verification.
 pub async fn claim_organization_domain(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<(String, String)>,
@@ -571,9 +533,8 @@ pub async fn claim_organization_domain(
         .fill(&mut drawn)
         .map_err(|_| internal())?;
     let challenge = format!("saffui-domain-{}", data_encoding::HEXLOWER.encode(&drawn));
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     directory::claim_organization_domain(&transaction, &org_id, &domain, &challenge)
@@ -595,14 +556,12 @@ pub async fn claim_organization_domain(
 /// Record that the challenge was seen where the domain's owner published it.
 pub async fn verify_organization_domain(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, org_id, domain) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     directory::verify_organization_domain(&transaction, &org_id, &domain)
@@ -620,14 +579,12 @@ pub async fn verify_organization_domain(
 
 pub async fn drop_organization_domain(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, org_id, domain) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     directory::drop_organization_domain(&transaction, &org_id, &domain)

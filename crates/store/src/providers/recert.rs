@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
@@ -59,7 +59,7 @@ const CAMPAIGN_COLUMNS: &str = "campaign_id, name, scope_kind, scope_ref, review
 const ITEM_COLUMNS: &str = "item_id, campaign_id, subject_id, edge_kind, edge_ref, frozen, \
                             snapshot_hash, state, resolution";
 
-pub async fn open_campaign(transaction: &Transaction<'_>, campaign: &Campaign) -> StoreResult<()> {
+pub async fn open_campaign(transaction: &UnitOfWork, campaign: &Campaign) -> StoreResult<()> {
     transaction
         .execute(
             "INSERT INTO recert_campaigns \
@@ -81,7 +81,7 @@ pub async fn open_campaign(transaction: &Transaction<'_>, campaign: &Campaign) -
     Ok(())
 }
 
-pub async fn campaigns(transaction: &Transaction<'_>) -> StoreResult<Vec<Campaign>> {
+pub async fn campaigns(transaction: &UnitOfWork) -> StoreResult<Vec<Campaign>> {
     let statement =
         format!("SELECT {CAMPAIGN_COLUMNS} FROM recert_campaigns ORDER BY created_at DESC");
     Ok(transaction
@@ -94,7 +94,7 @@ pub async fn campaigns(transaction: &Transaction<'_>) -> StoreResult<Vec<Campaig
 }
 
 pub async fn campaign(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     campaign_id: &str,
 ) -> StoreResult<Option<Campaign>> {
     let statement =
@@ -110,7 +110,7 @@ pub async fn campaign(
 /// Answers whether a row moved: none did means somebody moved it first, and
 /// the caller stops rather than snapshotting or closing twice.
 pub async fn set_state(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     campaign_id: &str,
     from: &str,
     to: &str,
@@ -127,7 +127,7 @@ pub async fn set_state(
 }
 
 pub async fn stamp_snapshot(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     campaign_id: &str,
     excluded: i32,
 ) -> StoreResult<()> {
@@ -146,7 +146,7 @@ pub async fn stamp_snapshot(
 /// Seal the campaign with its report, and only if it carries none: a retried
 /// close finds the row already sealed and writes no second anchor.
 pub async fn seal(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     campaign_id: &str,
     digest: &[u8],
     envelope: &str,
@@ -165,10 +165,7 @@ pub async fn seal(
     Ok(sealed > 0)
 }
 
-pub async fn report_of(
-    transaction: &Transaction<'_>,
-    campaign_id: &str,
-) -> StoreResult<Option<String>> {
+pub async fn report_of(transaction: &UnitOfWork, campaign_id: &str) -> StoreResult<Option<String>> {
     Ok(transaction
         .query_opt(
             "SELECT report_envelope FROM recert_campaigns WHERE campaign_id = $1",
@@ -181,7 +178,7 @@ pub async fn report_of(
 
 /// Write one frozen edge. Conflicts do nothing, so a snapshot interrupted
 /// and run again adds what is missing and disturbs nothing that stands.
-pub async fn freeze_item(transaction: &Transaction<'_>, item: &Item) -> StoreResult<()> {
+pub async fn freeze_item(transaction: &UnitOfWork, item: &Item) -> StoreResult<()> {
     transaction
         .execute(
             "INSERT INTO recert_items \
@@ -206,7 +203,7 @@ pub async fn freeze_item(transaction: &Transaction<'_>, item: &Item) -> StoreRes
     Ok(())
 }
 
-pub async fn items(transaction: &Transaction<'_>, campaign_id: &str) -> StoreResult<Vec<Item>> {
+pub async fn items(transaction: &UnitOfWork, campaign_id: &str) -> StoreResult<Vec<Item>> {
     let statement = format!(
         "SELECT {ITEM_COLUMNS} FROM recert_items WHERE campaign_id = $1 \
          ORDER BY subject_id ASC, edge_kind ASC, edge_ref ASC"
@@ -220,7 +217,7 @@ pub async fn items(transaction: &Transaction<'_>, campaign_id: &str) -> StoreRes
         .collect())
 }
 
-pub async fn item(transaction: &Transaction<'_>, item_id: &str) -> StoreResult<Option<Item>> {
+pub async fn item(transaction: &UnitOfWork, item_id: &str) -> StoreResult<Option<Item>> {
     let statement = format!("SELECT {ITEM_COLUMNS} FROM recert_items WHERE item_id = $1");
     Ok(transaction
         .query_opt(statement.as_str(), &[&item_id])
@@ -232,7 +229,7 @@ pub async fn item(transaction: &Transaction<'_>, item_id: &str) -> StoreResult<O
 /// Append a decision and carry it onto the item in one write each, in one
 /// transaction: the denormalised state can never lag the trail.
 pub async fn decide(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     decision_id: &str,
     campaign_id: &str,
     item_id: &str,
@@ -272,7 +269,7 @@ pub async fn decide(
 /// The decision that stands for each item of a campaign: the last one
 /// written, by the sequence rather than by a clock.
 pub async fn standing_decisions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     campaign_id: &str,
 ) -> StoreResult<Vec<Decision>> {
     Ok(transaction
@@ -291,7 +288,7 @@ pub async fn standing_decisions(
 }
 
 pub async fn decisions_of_item(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     item_id: &str,
 ) -> StoreResult<Vec<Decision>> {
     Ok(transaction
@@ -308,7 +305,7 @@ pub async fn decisions_of_item(
 }
 
 pub async fn resolve_item(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     item_id: &str,
     state: &str,
     resolution: &str,

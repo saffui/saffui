@@ -11,7 +11,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -49,14 +48,8 @@ async fn asked(
 }
 
 async fn walked(plane: &Plane) {
-    server::jobs::deliver_every_realm(
-        &plane.pool(),
-        &plane.tenancy(),
-        &support::sealing(),
-        &support::origin(),
-        1,
-    )
-    .await;
+    server::jobs::deliver_every_realm(&plane.tenancy(), &support::sealing(), &support::origin(), 1)
+        .await;
 }
 
 /// A collector's whole visit: subscribe by row, let the walker queue what
@@ -98,9 +91,8 @@ async fn a_collector_takes_its_events_and_acknowledges_them() {
     // A second login for ada, revoked by the admin: something to collect.
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::sessions::open(
             &transaction,

@@ -25,7 +25,6 @@ secrecy = { workspace = true }
 
 actix-web = { workspace = true }
 chrono = { workspace = true }
-deadpool-postgres = { workspace = true }
 futures-util = "0.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -95,6 +94,7 @@ otel = [
 ]
 
 [dev-dependencies]
+deadpool-postgres = { workspace = true }
 # The in-memory half of the export pipeline, so a test can read back the
 # spans a request produced and the trace they claim to belong to.
 opentelemetry = { workspace = true }

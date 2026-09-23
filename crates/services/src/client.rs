@@ -4,12 +4,11 @@ use crypto::envelope::Envelope;
 use crypto::password::migration::verify_and_plan;
 use crypto::password::storage::StoredPassword;
 use crypto::provider::{Argon2Params, CryptoProvider};
-use deadpool_postgres::Transaction;
 use models::entities::client::ClientModel;
 use secrecy::{ExposeSecret, SecretBox};
 use store::keyring::RealmKeyring;
 use store::providers::clients::{self, StoredSecret};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 
 /// How a client offered to prove who it is.
 #[derive(Debug)]
@@ -182,7 +181,7 @@ pub const KEYS_KEPT: chrono::Duration = chrono::Duration::seconds(30);
 /// Nothing when the client hands its keys over rather than publishing them,
 /// and nothing while what was read last is still fresh.
 pub async fn keys_due(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     now: DateTime<Utc>,
 ) -> Option<String> {
@@ -198,7 +197,7 @@ pub async fn keys_due(
 
 /// Keep the key set just read from where the client publishes it.
 pub async fn keep_keys(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     jwks: &serde_json::Value,
     now: DateTime<Utc>,
@@ -210,7 +209,7 @@ pub async fn keep_keys(
 
 /// Establish the client, or refuse without saying which part failed.
 pub async fn authenticate(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     within: &Establishing<'_>,
     presented: &Presented,
     now: DateTime<Utc>,
@@ -352,7 +351,7 @@ pub async fn authenticate(
 
 /// RFC 7523 §2.2, for whichever of the two methods the client registered.
 async fn by_assertion(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     within: &Establishing<'_>,
     client: &ClientModel,
     registered: &str,
@@ -401,7 +400,7 @@ async fn by_assertion(
 
 /// The secret this deployment can read back, for the method that needs it.
 async fn shared_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     within: &Establishing<'_>,
     client_id: &str,
 ) -> Result<SecretBox<String>, Unauthenticated> {
@@ -426,7 +425,7 @@ async fn shared_secret(
 /// A failure here is not one of the authentication: the row stays readable
 /// until the next attempt, which is where it was a moment ago.
 async fn convert(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     cost: Argon2Params,
     client_id: &str,

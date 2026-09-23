@@ -8,7 +8,7 @@ use models::sessions::records::{UserSessionModel, UserSessionState};
 use services::context::{Acting, NotEstablished, establish};
 use services::token::Verified;
 use store::providers::{organizations, sessions, users};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 use support::Fixture;
 
 fn tenant() -> TenantContext {
@@ -60,7 +60,7 @@ fn login(session_id: &str, user_id: &str) -> UserSessionModel {
 }
 
 /// Plant the login the tokens are bound to.
-async fn open_login(transaction: &deadpool_postgres::Transaction<'_>, user_id: &str) {
+async fn open_login(transaction: &UnitOfWork, user_id: &str) {
     sessions::open(transaction, &login(SESSION, user_id))
         .await
         .unwrap();
@@ -99,8 +99,7 @@ fn member(org_id: &str, user_id: &str) -> OrganizationMemberModel {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_subject_the_realm_holds_is_established() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     open_login(&transaction, "ada").await;
 
     let context = establish(&transaction, tenant(), &presented("ada"), Utc::now())
@@ -124,8 +123,7 @@ async fn a_subject_the_realm_holds_is_established() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_subject_the_realm_will_not_stand_behind_is_refused() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     assert_eq!(
         establish(&transaction, tenant(), &presented("nobody"), Utc::now())
@@ -170,8 +168,7 @@ async fn a_subject_the_realm_will_not_stand_behind_is_refused() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_token_minted_before_the_cut_is_refused() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     open_login(&transaction, "ada").await;
 
@@ -213,8 +210,7 @@ async fn a_token_minted_before_the_cut_is_refused() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_organization_is_claimed_and_then_confirmed() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     open_login(&transaction, "ada").await;
     for id in ["north", "east"] {
@@ -259,8 +255,7 @@ async fn the_organization_is_claimed_and_then_confirmed() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn only_an_access_token_bound_to_a_login_gets_in() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     open_login(&transaction, "ada").await;
 
     // A refresh token and an identity token are minted for other purposes and
@@ -296,8 +291,7 @@ async fn only_an_access_token_bound_to_a_login_gets_in() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_token_whose_login_has_ended_is_refused() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     open_login(&transaction, "ada").await;
 
     assert!(
@@ -349,8 +343,7 @@ async fn a_token_whose_login_has_ended_is_refused() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_login_belonging_to_somebody_else_is_not_a_way_in() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     let bob = UserCreateModel {
         user_name: "bob".into(),
@@ -389,8 +382,7 @@ async fn a_login_belonging_to_somebody_else_is_not_a_way_in() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_client_that_asked_for_the_token_is_carried() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     open_login(&transaction, "ada").await;
 
@@ -413,8 +405,7 @@ async fn the_client_that_asked_for_the_token_is_carried() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_cut_reads_the_instant_a_minted_token_actually_carries() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     open_login(&transaction, "ada").await;
 

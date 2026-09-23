@@ -50,10 +50,7 @@ fn role(id: &str, client_id: Option<&str>) -> models::entities::authz::RoleModel
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_client_holds_the_scopes_it_was_given() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     client_scopes::create_scope(&transaction, &scope("scope-1", "profile", true))
         .await
@@ -113,10 +110,7 @@ async fn a_client_holds_the_scopes_it_was_given() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_scope_is_rewritten_and_removed_over_the_store() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     client_scopes::create_scope(&transaction, &scope("scope-1", "profile", true))
         .await
@@ -208,10 +202,7 @@ async fn a_scope_is_rewritten_and_removed_over_the_store() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_mapper_reached_by_two_routes_is_one_rule() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     for (id, name) in [("mapper-1", "zulu"), ("mapper-2", "alpha")] {
         client_scopes::create_mapper(&transaction, &mapper(id, name))
@@ -277,10 +268,7 @@ async fn a_mapper_reached_by_two_routes_is_one_rule() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn two_clients_may_each_own_a_role_of_the_same_name() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     // A second client to own the homonymous role.
     transaction
@@ -328,10 +316,7 @@ async fn two_clients_may_each_own_a_role_of_the_same_name() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_realm_keeps_one_role_of_each_name() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let mut first = role("first", None);
     first.name = "auditor".to_owned();
@@ -350,10 +335,7 @@ async fn the_realm_keeps_one_role_of_each_name() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_scope_grants_the_roles_attached_to_it() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     client_scopes::create_scope(&transaction, &scope("scope-1", "profile", false))
         .await
@@ -382,10 +364,7 @@ async fn a_scope_grants_the_roles_attached_to_it() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn only_the_default_scopes_are_offered_to_a_new_client() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     client_scopes::create_scope(&transaction, &scope("scope-1", "profile", true))
         .await
@@ -411,10 +390,7 @@ async fn only_the_default_scopes_are_offered_to_a_new_client() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn one_scope_answers_to_a_name() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     client_scopes::create_scope(&transaction, &scope("scope-1", "profile", false))
         .await
@@ -450,13 +426,9 @@ async fn the_flag_and_the_owner_cannot_disagree() {
     ];
 
     for (statement, what) in cases {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let refused = transaction.execute(statement, &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -465,10 +437,7 @@ async fn the_flag_and_the_owner_cannot_disagree() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_scope_is_not_visible_from_another_realm() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     client_scopes::create_scope(&transaction, &scope("scope-1", "profile", true))
         .await
         .unwrap();
@@ -476,12 +445,8 @@ async fn a_scope_is_not_visible_from_another_realm() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     assert!(
         client_scopes::load_scope(&transaction, "scope-1")
             .await

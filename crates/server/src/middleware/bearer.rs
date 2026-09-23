@@ -1,7 +1,7 @@
 use actix_web::dev::ServiceRequest;
 use chrono::Utc;
 use data_encoding::BASE64URL_NOPAD;
-use store::tenancy::resolve;
+use store::tenancy::RealmNamed;
 
 use crate::error::unauthenticated;
 
@@ -44,15 +44,12 @@ pub(crate) async fn admitted(
     let issuer = unverified_issuer(&bearer).ok_or_else(unauthenticated)?;
     let named = gate.origin.realm_of(&issuer).ok_or_else(unauthenticated)?;
 
-    let mut connection = gate.pool.get().await.map_err(|_| unauthenticated())?;
-    let context = resolve::realm_by_id(&connection, named)
-        .await
-        .map_err(|_| unauthenticated())?;
     let transaction = gate
         .tenancy
-        .transaction(&mut connection, &context)
+        .begin_in(RealmNamed::ById(named))
         .await
         .map_err(|_| unauthenticated())?;
+    let context = transaction.context().clone();
 
     let keys = services::realm::published_keys(&transaction)
         .await

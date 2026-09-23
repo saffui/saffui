@@ -4,9 +4,9 @@ use crypto::jose::jwt;
 use crypto::provider::{CryptoProvider, HashAlg, SignAlg};
 use crypto::thumbprint::jwk_sha256_thumbprint;
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Transaction;
 use serde_json::Value;
 use store::providers::dpop;
+use store::tenancy::UnitOfWork;
 
 use crate::token::verifier_for;
 
@@ -66,7 +66,7 @@ pub struct Bound<'a> {
 /// and not recorded is one the next caller may present again, which is the
 /// replay this whole mechanism exists to stop.
 pub async fn proven(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     proof: &str,
     bound: Bound<'_>,

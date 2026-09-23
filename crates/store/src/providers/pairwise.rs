@@ -1,10 +1,10 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 
 use crate::error::{StoreError, StoreResult};
 
 /// The identifier this account already wears here, or nothing.
 pub async fn subject_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     sector: &str,
     user_id: &str,
 ) -> StoreResult<Option<String>> {
@@ -22,7 +22,7 @@ pub async fn subject_of(
 /// kept: two requests racing the first login both draw one and one of them
 /// loses, and the loser must read rather than fail.
 pub async fn keep_subject(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     sector: &str,
     user_id: &str,
     drawn: &str,
@@ -43,7 +43,7 @@ pub async fn keep_subject(
 }
 
 /// The account behind an identifier, or nothing when none wears it.
-pub async fn account_of(transaction: &Transaction<'_>, sub: &str) -> StoreResult<Option<String>> {
+pub async fn account_of(transaction: &UnitOfWork, sub: &str) -> StoreResult<Option<String>> {
     Ok(transaction
         .query_opt(
             "SELECT user_id FROM pairwise_subjects WHERE sub = $1",

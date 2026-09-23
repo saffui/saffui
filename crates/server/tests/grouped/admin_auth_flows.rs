@@ -19,7 +19,6 @@ async fn asked(
     use server::api::config::register;
     use server::middleware::admin_policy::AdminPolicy;
     let app = test::init_service(App::new().configure(register(&server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],

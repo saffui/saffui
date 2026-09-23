@@ -8,11 +8,11 @@ pub mod step;
 use chrono::{DateTime, Utc};
 use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::entities::auth::ExecutionStep;
 use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
 use store::providers::auth_flows;
+use store::tenancy::UnitOfWork;
 
 use crate::login::authenticator::{Answer, Authenticator, Posting};
 use crate::login::step::{Decided, Outcome, Step};
@@ -73,7 +73,7 @@ pub enum Unrunnable {
     reason = "each is a distinct fact about one pass of one flow"
 )]
 pub async fn run_flow(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
     origin: &PublicOrigin,

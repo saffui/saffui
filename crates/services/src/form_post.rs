@@ -1,9 +1,9 @@
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::{CryptoProvider, HashAlg};
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Transaction;
 use serde_json::Value;
 use store::providers::form_post;
+use store::tenancy::UnitOfWork;
 
 use crate::landing::Landing;
 
@@ -33,7 +33,7 @@ pub enum Unkeepable {
 /// code it stands for: a ticket that outlived a rolled back login would name a
 /// response the redemption cannot find.
 pub async fn keep(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     landing: &Landing,
     now: DateTime<Utc>,
@@ -65,7 +65,7 @@ pub async fn keep(
 
 /// The response this ticket stands for, taken away as it is read.
 pub async fn take(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     ticket: &str,
 ) -> Result<Option<Posted>, Unkeepable> {

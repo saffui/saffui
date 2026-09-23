@@ -2,7 +2,6 @@ use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::json;
 use services::admin::recert::{self, Unreviewable};
@@ -41,14 +40,12 @@ fn shaped(campaign: &store::providers::recert::Campaign) -> serde_json::Value {
 
 pub async fn campaigns(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = recert::campaigns(&transaction).await.map_err(refused)?;
@@ -66,7 +63,6 @@ pub struct AskedCampaign {
 
 pub async fn open(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
@@ -84,9 +80,8 @@ pub async fn open(
         .ok_or_else(|| worded("reviewer_id names who reviews"))?;
     let scope_kind = asked.scope_kind.as_deref().unwrap_or(recert::SCOPE_REALM);
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let opened = recert::open(
@@ -110,15 +105,13 @@ pub async fn open(
 
 pub async fn activate(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, campaign_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let (frozen, excluded) =
@@ -131,14 +124,12 @@ pub async fn activate(
 
 pub async fn items(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, campaign_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = recert::items(&transaction, &campaign_id)
@@ -169,7 +160,6 @@ pub struct AskedDecision {
 
 pub async fn decide(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<(String, String, String)>,
@@ -177,9 +167,8 @@ pub async fn decide(
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, campaign_id, item_id) = path.into_inner();
     let asked = body.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     recert::decide(
@@ -199,15 +188,13 @@ pub async fn decide(
 
 pub async fn close(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, campaign_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let told = recert::close(
@@ -235,14 +222,12 @@ pub async fn close(
 /// does not match.
 pub async fn report(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, campaign_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let rendered = recert::report(&transaction, &campaign_id)

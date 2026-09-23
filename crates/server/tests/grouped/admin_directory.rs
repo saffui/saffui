@@ -1,11 +1,11 @@
-#[allow(unused_imports)]
 use super::support;
 use super::support::Plane;
 use actix_web::http::{Method, StatusCode};
 use models::entities::authz::AdminAction;
 use serde_json::Value;
 use store::providers::roles;
-use store::tenancy::TenantContext;
+#[allow(unused_imports)]
+use store::tenancy::{TenantContext, UnitOfWork};
 
 const REALM: &str = support::REALM;
 
@@ -21,7 +21,6 @@ async fn asked(
     use server::api::config::register;
     use server::middleware::admin_policy::AdminPolicy;
     let app = test::init_service(App::new().configure(register(&server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -256,9 +255,8 @@ async fn composite_roles_are_resolved_and_cycles_are_refused() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let effective = roles::effective_roles(&transaction, support::SUBJECT)
         .await
@@ -1244,12 +1242,8 @@ async fn a_name_two_roles_already_share_is_still_a_conflict() {
     // The plane refuses a client role under a realm role's name, so the second
     // of the pair is written the way an import writes it.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::roles::create(
             &transaction,
@@ -1307,8 +1301,7 @@ async fn a_role_name_taken_after_the_check_is_refused_by_the_write() {
         admin_actions: None,
     };
 
-    let mut connection = plane.connection().await;
-    let standing = plane.scoped(&mut connection, &context).await;
+    let standing = plane.scoped(&context).await;
     let renamable = directory::create_role(
         &standing,
         &provider,
@@ -1324,8 +1317,7 @@ async fn a_role_name_taken_after_the_check_is_refused_by_the_write() {
 
     for asked in ["create", "rename"] {
         let taken = format!("taken-on-{asked}");
-        let mut rival_connection = plane.connection().await;
-        let rival = plane.scoped(&mut rival_connection, &context).await;
+        let rival = plane.scoped(&context).await;
         directory::create_role(
             &rival,
             &provider,
@@ -1336,8 +1328,7 @@ async fn a_role_name_taken_after_the_check_is_refused_by_the_write() {
         )
         .await
         .expect("the rival's role, not yet committed");
-        let mut late_connection = plane.connection().await;
-        let late = plane.scoped(&mut late_connection, &context).await;
+        let late = plane.scoped(&context).await;
         let written = async {
             if asked == "create" {
                 directory::create_role(
@@ -1363,7 +1354,7 @@ async fn a_role_name_taken_after_the_check_is_refused_by_the_write() {
 
 /// Commit the rival once another request's write queues behind one of its
 /// locks: the window a check read before a write cannot see into.
-async fn commit_once_a_write_queues_behind(rival: deadpool_postgres::Transaction<'_>) {
+async fn commit_once_a_write_queues_behind(rival: UnitOfWork) {
     let queued = async {
         loop {
             let behind: i64 = rival
@@ -1420,13 +1411,11 @@ async fn a_domain_claim_refuses_a_foreign_script_and_a_vanished_organization() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{told}");
 
     let context = store::tenancy::TenantContext::new(support::TENANT, REALM);
-    let mut rival_connection = plane.connection().await;
-    let rival = plane.scoped(&mut rival_connection, &context).await;
+    let rival = plane.scoped(&context).await;
     directory::delete_organization(&rival, &org)
         .await
         .expect("the organization, going away");
-    let mut late_connection = plane.connection().await;
-    let late = plane.scoped(&mut late_connection, &context).await;
+    let late = plane.scoped(&context).await;
     let (refused, ()) = tokio::join!(
         directory::claim_organization_domain(&late, &org, "race.example", "saffui-domain-race"),
         commit_once_a_write_queues_behind(rival)

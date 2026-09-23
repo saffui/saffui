@@ -1,12 +1,11 @@
 use chrono::{DateTime, Duration, Utc};
 use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::Value;
 use store::providers::login::AuthSession;
 use store::providers::{login, realms, sessions, users};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::login::authenticator::Answer;
 use crate::login::enrolment::{self, Enrolment};
@@ -111,7 +110,7 @@ pub enum Unanswerable {
     reason = "each is a distinct fact about one step"
 )]
 pub async fn answer_step(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     origin: &PublicOrigin,
@@ -446,7 +445,7 @@ pub async fn answer_step(
     reason = "each is a distinct fact about one login"
 )]
 pub async fn admit_federated(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     auth_session_id: &str,
@@ -493,7 +492,7 @@ pub async fn admit_federated(
 
 /// The client this is being minted for.
 async fn client_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
 ) -> Result<models::entities::client::ClientModel, Unanswerable> {
     store::providers::clients::load(transaction, client_id)
@@ -518,7 +517,7 @@ pub enum Way {
     reason = "each is a distinct fact about one login"
 )]
 async fn admit(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     login: &AuthSession,
@@ -603,7 +602,7 @@ async fn admit(
 /// Two rounds can both resume a login, since it is read without a lock. Only
 /// the one whose delete removed it answers the client; the other is answered
 /// as if it came a moment later, so one authorization never gets two answers.
-async fn finish_login(transaction: &Transaction<'_>, session_id: &str) -> Result<(), Unanswerable> {
+async fn finish_login(transaction: &UnitOfWork, session_id: &str) -> Result<(), Unanswerable> {
     login::finish(transaction, session_id)
         .await
         .map_err(|_| Unanswerable::Unreadable)?
@@ -627,7 +626,7 @@ fn noted<'a>(notes: &'a Value, named: &str) -> Option<&'a str> {
     reason = "each is a distinct fact about who is answering"
 )]
 async fn named_subject(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     realm: &models::entities::realm::RealmModel,

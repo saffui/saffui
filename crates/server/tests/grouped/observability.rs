@@ -11,7 +11,6 @@ use tracing_subscriber::fmt::MakeWriter;
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -521,12 +520,11 @@ async fn a_trace_joins_the_log_line_and_the_journal_row() {
         "the log line does not carry the trace: {line}"
     );
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&store::tenancy::TenantContext::new(
+            support::TENANT,
+            support::REALM,
+        ))
         .await;
     let journalled: String = transaction
         .query_one(
@@ -569,12 +567,11 @@ async fn a_trace_finds_its_own_decisions_and_writes() {
     ])
     .await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         services::rebac::publish(
             &transaction,
@@ -730,12 +727,11 @@ async fn a_simulated_decision_records_the_trace_it_ran_in() {
     ])
     .await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         services::rebac::publish(
             &transaction,

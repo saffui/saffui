@@ -22,8 +22,7 @@ async fn the_chain_does_not_fork_under_racing_writers() {
     let plane = Plane::with_actions(&[]).await;
     let sealing = support::sealing();
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         store::audit::start(
             &transaction,
             sealing.provider.digest(),
@@ -35,8 +34,7 @@ async fn the_chain_does_not_fork_under_racing_writers() {
         transaction.commit().await.expect("the chain kept");
     }
     let before: i64 = {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         transaction
             .query_one("SELECT count(*) FROM audit_events", &[])
             .await
@@ -46,15 +44,10 @@ async fn the_chain_does_not_fork_under_racing_writers() {
 
     let mut racing = Vec::new();
     for writer in 0..12 {
-        let pool = plane.pool();
         let tenancy = plane.tenancy();
         racing.push(tokio::spawn(async move {
             for entry in 0..6 {
-                let mut connection = pool.get().await.expect("a connection");
-                let transaction = tenancy
-                    .transaction(&mut connection, &within())
-                    .await
-                    .expect("a scope");
+                let transaction = tenancy.begin(&within()).await.expect("a scope");
                 store::audit::append(
                     &transaction,
                     &serde_json::json!({
@@ -74,8 +67,7 @@ async fn the_chain_does_not_fork_under_racing_writers() {
         task.await.expect("a writer finished");
     }
 
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let after: i64 = transaction
         .query_one("SELECT count(*) FROM audit_events", &[])
         .await
@@ -128,8 +120,7 @@ async fn the_chain_does_not_fork_under_racing_writers() {
 async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
     let plane = Plane::with_actions(&[]).await;
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         // Only this test's events count: the planted world emits its own.
         transaction
             .execute("DELETE FROM event_outbox", &[])
@@ -150,10 +141,8 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
 
     // Both claims open at once, the second while the first still holds its
     // rows: SKIP LOCKED hands it the rest, never the same rows again.
-    let mut first_connection = plane.connection().await;
-    let first = plane.scoped(&mut first_connection, &within()).await;
-    let mut second_connection = plane.connection().await;
-    let second = plane.scoped(&mut second_connection, &within()).await;
+    let first = plane.scoped(&within()).await;
+    let second = plane.scoped(&within()).await;
 
     let first_claim = store::providers::outbox::due(&first, 20, 60)
         .await
@@ -184,11 +173,9 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
             .expect("a delivery mark");
     }
     drop(first);
-    drop(first_connection);
     second.commit().await.expect("the deliveries kept");
 
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let refreed = store::providers::outbox::due(&transaction, 30, 60)
         .await
         .expect("the after-crash claim");
@@ -215,8 +202,7 @@ async fn two_outbox_claims_are_disjoint_and_a_crash_frees_its_claim() {
 async fn two_sweepers_take_exactly_what_expired() {
     let plane = Plane::with_actions(&[]).await;
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         for n in 0..40 {
             transaction
                 .execute(
@@ -235,10 +221,10 @@ async fn two_sweepers_take_exactly_what_expired() {
         transaction.commit().await.expect("the seed kept");
     }
 
-    let (pool, tenancy) = (plane.pool(), plane.tenancy());
+    let tenancy = plane.tenancy();
     let (one, other) = tokio::join!(
-        server::jobs::sweep_every_realm(&pool, &tenancy),
-        server::jobs::sweep_every_realm(&pool, &tenancy),
+        server::jobs::sweep_every_realm(&tenancy),
+        server::jobs::sweep_every_realm(&tenancy),
     );
     let taken = one.map_or(0, |swept| swept.one_time_tokens)
         + other.map_or(0, |swept| swept.one_time_tokens);
@@ -247,8 +233,7 @@ async fn two_sweepers_take_exactly_what_expired() {
         "the two sweepers together took other than what expired"
     );
 
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let left: i64 = transaction
         .query_one(
             "SELECT count(*) FROM one_time_tokens WHERE purpose LIKE 'two-writers-%'",

@@ -2,7 +2,6 @@ use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use models::entities::client::ProtocolMapperMutationModel;
 use services::admin::protocol_mappers::{self, Unwritable};
 use store::tenancy::Tenancy;
@@ -14,14 +13,12 @@ use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let listed = protocol_mappers::mappers(&transaction)
@@ -81,7 +78,6 @@ pub struct PreviewAsk {
 
 pub async fn preview(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -90,9 +86,8 @@ pub async fn preview(
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
     let asked = body.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let scope = asked.scope.unwrap_or_else(|| "openid".to_owned());
@@ -154,16 +149,14 @@ fn unforeseeable(why: services::token::preview::Unforeseeable) -> ApiError {
 
 pub async fn create(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
     body: web::Json<ProtocolMapperMutationModel>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let made = protocol_mappers::create_mapper(
@@ -182,14 +175,12 @@ pub async fn create(
 
 pub async fn get(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, mapper_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let found = protocol_mappers::get_mapper(&transaction, &mapper_id)
@@ -200,15 +191,13 @@ pub async fn get(
 
 pub async fn update(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: web::Json<ProtocolMapperMutationModel>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, mapper_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let rewritten = protocol_mappers::update_mapper(
@@ -225,14 +214,12 @@ pub async fn update(
 
 pub async fn delete(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, mapper_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     protocol_mappers::delete_mapper(&transaction, &mapper_id)
@@ -248,14 +235,12 @@ macro_rules! carrying {
     ($list:ident, $attach:ident, $detach:ident, $list_call:ident, $attach_call:ident, $detach_call:ident) => {
         pub async fn $list(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String)>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, owner) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             let listed = protocol_mappers::$list_call(&transaction, &owner)
@@ -266,14 +251,12 @@ macro_rules! carrying {
 
         pub async fn $attach(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String, String)>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, owner, mapper_id) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             protocol_mappers::$attach_call(&transaction, &owner, &mapper_id)
@@ -285,14 +268,12 @@ macro_rules! carrying {
 
         pub async fn $detach(
             admin: web::ReqData<Admin>,
-            pool: web::Data<Pool>,
             tenancy: web::Data<Tenancy>,
             path: web::Path<(String, String, String)>,
         ) -> Result<HttpResponse, ApiError> {
             let (realm_id, owner, mapper_id) = path.into_inner();
-            let mut connection = pool.get().await.map_err(|_| internal())?;
             let transaction = tenancy
-                .transaction(&mut connection, &within(&admin, &realm_id))
+                .begin(&within(&admin, &realm_id))
                 .await
                 .map_err(|_| internal())?;
             protocol_mappers::$detach_call(&transaction, &owner, &mapper_id)

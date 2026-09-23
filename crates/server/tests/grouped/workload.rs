@@ -29,7 +29,6 @@ async fn platform_base(plane: &Plane) -> String {
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],

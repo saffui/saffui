@@ -1,5 +1,4 @@
 use crypto::provider::{Argon2Params, CryptoProvider};
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::attributes::AttributeValue;
 use models::entities::user::{RequiredAction, UserCreateModel, UserModel, profile};
@@ -9,6 +8,7 @@ use secrecy::SecretBox;
 use store::error::StoreError;
 use store::providers::{auth_flows, login, users};
 use store::query::list_query::ListQuery;
+use store::tenancy::UnitOfWork;
 
 /// What a person is created or reshaped as. `None` leaves a field alone on
 /// an update; on a creation it is the absence it reads as.
@@ -44,7 +44,7 @@ pub enum Uncreatable {
 }
 
 pub async fn create(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -121,7 +121,7 @@ pub async fn create(
 
 /// One page of the realm's people.
 pub async fn list(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> Result<Page<UserModel>, Uncreatable> {
@@ -130,7 +130,7 @@ pub async fn list(
         .map_err(|_| Uncreatable::Unwritable)
 }
 
-pub async fn get(transaction: &Transaction<'_>, user_id: &str) -> Result<UserModel, Uncreatable> {
+pub async fn get(transaction: &UnitOfWork, user_id: &str) -> Result<UserModel, Uncreatable> {
     users::load(transaction, user_id)
         .await
         .map_err(|_| Uncreatable::Unwritable)?
@@ -138,7 +138,7 @@ pub async fn get(transaction: &Transaction<'_>, user_id: &str) -> Result<UserMod
 }
 
 pub async fn update(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     spec: &Spec,
 ) -> Result<UserModel, Uncreatable> {
@@ -195,7 +195,7 @@ pub async fn update(
 /// Replace what the person signs in with. The credential is one row per
 /// person, so a second password is a replacement and never a second way in.
 pub async fn set_password(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -232,7 +232,7 @@ fn unkept(why: auth::password::Unkept) -> Uncreatable {
 
 /// Refuse a password the realm will not have, without writing anything.
 pub async fn refuse_password_against_policy(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm_id: &str,
     user_id: &str,
@@ -252,7 +252,7 @@ pub async fn refuse_password_against_policy(
     reason = "each is a distinct fact about one password"
 )]
 pub async fn keep_password(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     cost: Argon2Params,
     tenant: &str,
@@ -278,7 +278,7 @@ pub async fn keep_password(
 /// Add an instruction the next sign-in has to satisfy, leaving the ones
 /// already standing alone.
 pub async fn require_action(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     action: RequiredAction,
 ) -> Result<(), Uncreatable> {
@@ -294,7 +294,7 @@ pub async fn require_action(
     Ok(())
 }
 
-pub async fn remove(transaction: &Transaction<'_>, user_id: &str) -> Result<bool, Uncreatable> {
+pub async fn remove(transaction: &UnitOfWork, user_id: &str) -> Result<bool, Uncreatable> {
     users::delete(transaction, user_id)
         .await
         .map_err(|_| Uncreatable::Unwritable)
@@ -339,10 +339,7 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Uncreatable> {
 /// One person, by identifier first and by name second: the console holds
 /// identifiers, an operator types names, and accounts born before drawn
 /// identifiers answer to both because theirs are their names.
-pub async fn identified(
-    transaction: &Transaction<'_>,
-    spelled: &str,
-) -> Result<UserModel, Uncreatable> {
+pub async fn identified(transaction: &UnitOfWork, spelled: &str) -> Result<UserModel, Uncreatable> {
     if let Some(held) = users::load(transaction, spelled)
         .await
         .map_err(|_| Uncreatable::Unwritable)?
@@ -359,7 +356,7 @@ pub async fn identified(
 /// sharing is allowed. The guard lives at this door and not in the schema:
 /// the permission is per realm, and a table constraint cannot be.
 async fn check_unclaimed(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     email: &str,
     but: Option<&str>,
 ) -> Result<(), Uncreatable> {
@@ -409,7 +406,7 @@ fn check_name(user_name: &str) -> Result<(), Uncreatable> {
 
 /// What is counted against this person, and until when they are refused.
 pub async fn lockout(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> Result<Option<UserLoginFailure>, Uncreatable> {
     login::failures(transaction, user_id)
@@ -423,7 +420,7 @@ pub async fn lockout(
 /// running out so they can ask for a fresh one; handing them the codes would
 /// make the way back into somebody else's second factor.
 pub async fn recovery_codes_left(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> Result<i64, Uncreatable> {
     store::providers::credentials::count_recovery_codes(transaction, user_id)
@@ -436,10 +433,7 @@ pub async fn recovery_codes_left(
 /// An administrator is the way out of a lock somebody else can cause: without
 /// this, a person whose account is being guessed at waits for a window they
 /// did not choose.
-pub async fn lift_lockout(
-    transaction: &Transaction<'_>,
-    user_id: &str,
-) -> Result<bool, Uncreatable> {
+pub async fn lift_lockout(transaction: &UnitOfWork, user_id: &str) -> Result<bool, Uncreatable> {
     login::clear_failures(transaction, user_id)
         .await
         .map_err(|_| Uncreatable::Unwritable)

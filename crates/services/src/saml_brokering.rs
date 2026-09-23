@@ -6,7 +6,6 @@ use crypto::x509::{
     CertifiedKey, Issuance, issue_certificate, public_key_of, read_certificate_facts,
 };
 use data_encoding::HEXLOWER;
-use deadpool_postgres::Transaction;
 use models::entities::attributes::AttributesMap;
 use models::entities::authz::IdentityProviderModel;
 use models::entities::brokering::{SamlBrokerSession, SamlLoginRequest, SamlLogoutRequest};
@@ -28,6 +27,7 @@ use saml::response::{Accepted, Expected, Refused, accept_response, read_answered
 use saml::xml::{Limits, read_message};
 use serde_json::{Map, Value};
 use store::providers::{realm_keys, replay};
+use store::tenancy::UnitOfWork;
 
 use crate::brokering::{Arrival, STATE_LIFESPAN, Unbrokered, text};
 use crate::grant::Signing;
@@ -197,7 +197,7 @@ pub fn compose_saml_address(issuer: &str, alias: &str) -> String {
 /// The realm keys a SAML provider is shown: the active RSA key the realm signs
 /// with, and an active RSA key assertions may be encrypted to when it holds one.
 pub async fn load_published_keys(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
 ) -> Result<(RealmSigningKey, Option<RealmEncryptionKey>), Undescribed> {
     let signing_key = load_signing_key(transaction, signing).await?;
@@ -301,7 +301,7 @@ pub struct SamlDeparture {
 
 /// The realm's active RSA key, the one it signs what it sends SAML providers with.
 pub async fn load_signing_key(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
 ) -> Result<RealmSigningKey, Undescribed> {
     realm_keys::active(
@@ -481,7 +481,7 @@ pub struct SamlAnswer {
     reason = "each is a piece of the answer the consumer already holds"
 )]
 pub async fn take_answer(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     upstream: &SamlUpstream,
     issuer: &str,
@@ -556,7 +556,7 @@ pub async fn take_answer(
 
 /// Keep what a SAML provider named an admitted login by, so its logout finds it.
 pub async fn record_named_session(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
     session_id: &str,
     accepted: &Accepted,
@@ -685,7 +685,7 @@ pub enum TakenLogout {
     reason = "each is a piece of the logout the address already holds"
 )]
 pub async fn take_logout_message(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     upstream: &SamlUpstream,
     issuer: &str,
@@ -776,7 +776,7 @@ pub async fn take_logout_message(
     reason = "each is a piece of the logout the address already holds"
 )]
 async fn heed_logout_request(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     upstream: &SamlUpstream,
     base: &str,
@@ -847,7 +847,7 @@ async fn heed_logout_request(
 /// request before anything in it is verified, only to find that logout's row, and is
 /// then held to that request.
 async fn take_logout_answer(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     alias: &str,
     delivered: Delivered<'_>,
@@ -945,7 +945,7 @@ pub fn depart_for_logout(
 /// goes. The row the provider's answer is held to is kept in the logout's own
 /// transaction.
 pub async fn open_provider_logout(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &Signing<'_>,
     issuer: &str,
     session_id: &str,

@@ -2,7 +2,6 @@ use std::str::FromStr;
 
 use auth::login::authenticator::Authenticator;
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::auth::{
     AuthenticationExecutionModel, AuthenticationExecutionMutationModel, AuthenticationFlowModel,
@@ -12,6 +11,7 @@ use models::entities::auth::{
 use models::entities::user::RequiredAction;
 use store::error::StoreError;
 use store::providers::{auth_flows, users};
+use store::tenancy::UnitOfWork;
 
 /// The alias every realm's browser login rests on when no client says
 /// otherwise. Spelled in the authorize path; deleting the flow it names
@@ -57,16 +57,14 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
     Ok(crypto::provider::uuid_from(bytes))
 }
 
-pub async fn flows(
-    transaction: &Transaction<'_>,
-) -> Result<Vec<AuthenticationFlowModel>, Unwritable> {
+pub async fn flows(transaction: &UnitOfWork) -> Result<Vec<AuthenticationFlowModel>, Unwritable> {
     auth_flows::list_flows(transaction)
         .await
         .map_err(|_| Unwritable::Backend)
 }
 
 pub async fn get_flow(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     flow_id: &str,
 ) -> Result<(AuthenticationFlowModel, Vec<AuthenticationExecutionModel>), Unwritable> {
     let flow = auth_flows::load_flow(transaction, flow_id)
@@ -80,7 +78,7 @@ pub async fn get_flow(
 }
 
 pub async fn create_flow(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -109,7 +107,7 @@ pub async fn create_flow(
 
 /// Whether a login runs this flow: it is the realm's resting one, or a
 /// client is bound to its alias by name.
-async fn still_run(transaction: &Transaction<'_>, alias: &str) -> Result<bool, Unwritable> {
+async fn still_run(transaction: &UnitOfWork, alias: &str) -> Result<bool, Unwritable> {
     if alias == RESTING_FLOW {
         return Ok(true);
     }
@@ -124,7 +122,7 @@ async fn still_run(transaction: &Transaction<'_>, alias: &str) -> Result<bool, U
         .map_err(|_| Unwritable::Backend)
 }
 
-pub async fn delete_flow(transaction: &Transaction<'_>, flow_id: &str) -> Result<(), Unwritable> {
+pub async fn delete_flow(transaction: &UnitOfWork, flow_id: &str) -> Result<(), Unwritable> {
     let flow = auth_flows::load_flow(transaction, flow_id)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -142,7 +140,7 @@ pub async fn delete_flow(transaction: &Transaction<'_>, flow_id: &str) -> Result
 }
 
 pub async fn add_execution(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -198,7 +196,7 @@ pub async fn add_execution(
 }
 
 pub async fn set_requirement(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     execution_id: &str,
     requirement: AuthenticatorRequirement,
 ) -> Result<(), Unwritable> {
@@ -210,7 +208,7 @@ pub async fn set_requirement(
 }
 
 pub async fn remove_execution(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     execution_id: &str,
 ) -> Result<(), Unwritable> {
     let step = auth_flows::load_execution(transaction, execution_id)
@@ -239,7 +237,7 @@ pub async fn remove_execution(
 }
 
 pub async fn reorder(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     flow_id: &str,
     moves: &[(String, i32)],
 ) -> Result<(), Unwritable> {
@@ -268,16 +266,14 @@ pub async fn reorder(
         })
 }
 
-pub async fn actions(
-    transaction: &Transaction<'_>,
-) -> Result<Vec<RequiredActionModel>, Unwritable> {
+pub async fn actions(transaction: &UnitOfWork) -> Result<Vec<RequiredActionModel>, Unwritable> {
     auth_flows::list_actions(transaction)
         .await
         .map_err(|_| Unwritable::Backend)
 }
 
 pub async fn register_action(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -299,7 +295,7 @@ pub async fn register_action(
 }
 
 pub async fn rework_action(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     action: RequiredAction,
     by: &str,
     asked: RequiredActionMutationModel,
@@ -332,7 +328,7 @@ pub async fn rework_action(
 }
 
 pub async fn unregister_action(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     action: RequiredAction,
 ) -> Result<(), Unwritable> {
     let standing = auth_flows::load_action(transaction, action)
@@ -353,7 +349,7 @@ pub async fn unregister_action(
 /// stays owed, and what the server attaches on its own, an expired or a
 /// temporary password, a reset, does not come through this door.
 pub async fn require_of_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     action: RequiredAction,
 ) -> Result<(), Unwritable> {
@@ -383,7 +379,7 @@ pub async fn require_of_user(
 /// Stop asking. Clearing what was never asked changes nothing and is not an
 /// error, which is also what the login's own clearing does.
 pub async fn release_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     action: RequiredAction,
 ) -> Result<(), Unwritable> {

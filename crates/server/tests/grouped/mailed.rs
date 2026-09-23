@@ -14,7 +14,6 @@ const REDIRECT: &str = "https://app.example/callback";
 
 fn mounted(plane: &Plane, postbox: Option<&Postbox>) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -34,12 +33,8 @@ fn mounted(plane: &Plane, postbox: Option<&Postbox>) -> Mounted {
 
 /// A realm that can send, and a flow that offers a link instead of a password.
 async fn arrange(plane: &Plane) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let sealing = support::sealing();
     let ring = store::keyring::load(
@@ -349,12 +344,8 @@ async fn a_deployment_that_sends_nothing_refuses_rather_than_waits() {
     // What proves the mailed step refused rather than merely came second: no
     // token was minted. A step that reported a challenge would have left one
     // behind for a message nobody is going to send.
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let minted: i64 = transaction
         .query_one(
@@ -383,12 +374,8 @@ async fn a_mail_password_is_sealed_and_never_answered_with() {
     arrange(&plane).await;
     let bearer = plane.token(&support::claims());
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let held: Vec<u8> = transaction
         .query_one("SELECT sealed_password FROM realm_mail", &[])
@@ -400,7 +387,6 @@ async fn a_mail_password_is_sealed_and_never_answered_with() {
         "the password is readable in the column"
     );
     drop(transaction);
-    drop(connection);
 
     let app = test::init_service(App::new().configure(register(&mounted(&plane, None)))).await;
     let response = test::call_service(
@@ -447,12 +433,8 @@ async fn writing_without_a_password_keeps_the_one_held() {
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let sealing = support::sealing();
     let ring = store::keyring::load(
@@ -477,12 +459,8 @@ async fn writing_without_a_password_keeps_the_one_held() {
 }
 
 async fn receipts(plane: &Plane) -> Vec<models::messaging::Delivery> {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     store::providers::deliveries::of_user(&transaction, support::SUBJECT, 50)
         .await
@@ -545,12 +523,8 @@ async fn a_message_the_far_end_refused_leaves_one_saying_so() {
 }
 
 async fn require_verify_email(plane: &Plane) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let mut person = store::providers::users::load(&transaction, support::SUBJECT)
         .await
@@ -565,12 +539,8 @@ async fn require_verify_email(plane: &Plane) {
 }
 
 async fn address_is_verified(plane: &Plane) -> bool {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     store::providers::users::load(&transaction, support::SUBJECT)
         .await
@@ -872,12 +842,8 @@ async fn the_registration_mails_the_verification_its_page_promises() {
     let plane = Plane::with_actions(&[]).await;
     arrange(&plane).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&TenantContext::new(support::TENANT, support::REALM))
             .await;
         let mut realm = store::providers::realms::load(&transaction, support::REALM)
             .await
@@ -940,12 +906,8 @@ async fn the_registration_mails_the_verification_its_page_promises() {
     assert_eq!(status, StatusCode::OK, "{told}");
     assert_eq!(told["status"], "admitted", "{told}");
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&TenantContext::new(support::TENANT, support::REALM))
             .await;
         let person = store::providers::users::load_by_name(&transaction, "grace")
             .await

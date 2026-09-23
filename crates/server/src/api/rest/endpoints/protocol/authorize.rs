@@ -3,12 +3,12 @@ use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::Egress;
 use config::serving::{LoginUi, PublicOrigin};
-use deadpool_postgres::Pool;
 use serde::Deserialize;
 use services::authorize::{self, Begun, Refusal, Requested};
 use services::landing::{Landing, ResponseMode};
 use services::response_type::ResponseType;
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -58,7 +58,6 @@ pub async fn begin(
     request: HttpRequest,
     realm: web::Path<String>,
     asked: Option<web::Query<Asked>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     login_ui: web::Data<LoginUi>,
@@ -67,7 +66,7 @@ pub async fn begin(
 ) -> HttpResponse {
     let asked = asked.map(web::Query::into_inner);
     start(
-        request, &realm, asked, &pool, &tenancy, &sealing, &login_ui, &origin, **egress,
+        request, &realm, asked, &tenancy, &sealing, &login_ui, &origin, **egress,
     )
     .await
 }
@@ -82,7 +81,6 @@ pub async fn begin_posted(
     request: HttpRequest,
     realm: web::Path<String>,
     asked: Option<web::Form<Asked>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     login_ui: web::Data<LoginUi>,
@@ -91,7 +89,7 @@ pub async fn begin_posted(
 ) -> HttpResponse {
     let asked = asked.map(web::Form::into_inner);
     start(
-        request, &realm, asked, &pool, &tenancy, &sealing, &login_ui, &origin, **egress,
+        request, &realm, asked, &tenancy, &sealing, &login_ui, &origin, **egress,
     )
     .await
 }
@@ -104,7 +102,6 @@ async fn start(
     request: HttpRequest,
     realm: &str,
     asked: Option<Asked>,
-    pool: &Pool,
     tenancy: &Tenancy,
     sealing: &Sealing,
     login_ui: &LoginUi,
@@ -115,13 +112,16 @@ async fn start(
     // What a refusal nobody can be sent to looks like: a page for a browser,
     // JSON for anything else.
     let shown = |error: &'static str, description: &str| shown(&request, error, description);
-    let Ok(mut connection) = pool.get().await else {
-        return shown("server_error", "the realm could not be read");
+    let context = match tenancy.resolve(RealmNamed::ByName(realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return shown("server_error", "the realm could not be read");
+        }
+        Err(_) => {
+            return shown("unauthorized_client", "no login can start here");
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, realm).await else {
-        return shown("unauthorized_client", "no login can start here");
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return shown("server_error", "the realm could not be read");
     };
     let Some(mut asked) = asked else {

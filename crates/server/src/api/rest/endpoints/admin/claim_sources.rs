@@ -2,7 +2,6 @@ use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use models::entities::brokering::UserClaimSourceMutationModel;
 use services::admin::claim_sources::{self, Unwritable};
 use store::tenancy::Tenancy;
@@ -13,14 +12,12 @@ use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -32,16 +29,14 @@ pub async fn list(
 
 pub async fn add(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<(String, String)>,
     body: web::Json<UserClaimSourceMutationModel>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let user_id = named_user(&transaction, &user_id).await?;
@@ -63,14 +58,12 @@ pub async fn add(
 
 pub async fn remove(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id, source_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     claim_sources::remove(&transaction, &user_id, &source_id)

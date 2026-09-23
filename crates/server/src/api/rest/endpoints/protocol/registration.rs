@@ -1,12 +1,12 @@
 use actix_web::http::{StatusCode, header};
 use actix_web::{HttpRequest, HttpResponse, web};
 use chrono::Utc;
-use deadpool_postgres::Pool;
 use models::entities::client::ClientModel;
 use serde_json::{Value, json};
 use services::registration::{self, Metadata, Refused};
+use store::error::StoreError;
 use store::providers::realms;
-use store::tenancy::{Tenancy, resolve};
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
@@ -64,7 +64,6 @@ pub async fn create(
     request: HttpRequest,
     realm: web::Path<String>,
     body: Option<web::Json<Metadata>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -74,13 +73,16 @@ pub async fn create(
     let Some(body) = body else {
         return refused(&Refused::Invalid("the body could not be read as json"));
     };
-    let Ok(mut connection) = pool.get().await else {
-        return refused(&Refused::Unwritable);
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return refused(&Refused::Unwritable);
+        }
+        Err(_) => {
+            return refused(&Refused::Closed);
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return refused(&Refused::Closed);
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return refused(&Refused::Unwritable);
     };
     let Ok(Some(held)) = realms::load(&transaction, &context.realm_id).await else {
@@ -157,14 +159,13 @@ pub async fn create(
 pub async fn read(
     request: HttpRequest,
     path: web::Path<(String, String)>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
     let now = Utc::now();
     let (realm, client_id) = path.into_inner();
-    let held = match held_client(&request, &realm, &client_id, &pool, &tenancy, &sealing).await {
+    let held = match held_client(&request, &realm, &client_id, &tenancy, &sealing).await {
         Ok(client) => client,
         Err(why) => return refused(&why),
     };
@@ -184,7 +185,6 @@ pub async fn replace(
     request: HttpRequest,
     path: web::Path<(String, String)>,
     body: Option<web::Json<Metadata>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -194,14 +194,12 @@ pub async fn replace(
     let Some(body) = body else {
         return refused(&Refused::Invalid("the body could not be read as json"));
     };
-    let mut connection = match pool.get().await {
-        Ok(connection) => connection,
-        Err(_) => return refused(&Refused::Unwritable),
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return refused(&Refused::Unwritable),
+        Err(_) => return refused(&Refused::Closed),
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return refused(&Refused::Closed);
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return refused(&Refused::Unwritable);
     };
     let held = match registration::holder_of(
@@ -245,19 +243,16 @@ pub async fn replace(
 pub async fn withdraw(
     request: HttpRequest,
     path: web::Path<(String, String)>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
 ) -> HttpResponse {
     let (realm, client_id) = path.into_inner();
-    let mut connection = match pool.get().await {
-        Ok(connection) => connection,
-        Err(_) => return refused(&Refused::Unwritable),
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return refused(&Refused::Unwritable),
+        Err(_) => return refused(&Refused::Closed),
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return refused(&Refused::Closed);
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return refused(&Refused::Unwritable);
     };
     if let Err(why) = registration::holder_of(
@@ -284,16 +279,16 @@ async fn held_client(
     request: &HttpRequest,
     realm: &str,
     client_id: &str,
-    pool: &Pool,
     tenancy: &Tenancy,
     sealing: &Sealing,
 ) -> Result<ClientModel, Refused> {
-    let mut connection = pool.get().await.map_err(|_| Refused::Unwritable)?;
-    let context = resolve::realm_by_name(&connection, realm)
-        .await
-        .map_err(|_| Refused::Closed)?;
+    let context = match tenancy.resolve(RealmNamed::ByName(realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return Err(Refused::Unwritable),
+        Err(_) => return Err(Refused::Closed),
+    };
     let transaction = tenancy
-        .transaction(&mut connection, &context)
+        .begin(&context)
         .await
         .map_err(|_| Refused::Unwritable)?;
     registration::holder_of(

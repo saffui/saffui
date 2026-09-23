@@ -13,7 +13,6 @@ fn mounted(plane: &Plane, postbox: Option<&Postbox>) -> Mounted {
         std::sync::Arc::new(held.clone()) as std::sync::Arc<dyn auth::messaging::Deliver>
     });
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -34,8 +33,7 @@ fn within() -> TenantContext {
 }
 
 async fn allow_reset(plane: &Plane, allowed: bool) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut realm = store::providers::realms::load(&transaction, support::REALM)
         .await
         .expect("the realms table")
@@ -48,8 +46,7 @@ async fn allow_reset(plane: &Plane, allowed: bool) {
 }
 
 async fn arrange_mail(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let sealing = support::sealing();
     let ring = store::keyring::load(
         &transaction,
@@ -192,8 +189,7 @@ async fn a_link_sets_a_password_and_ends_every_session() {
 
     // Somebody resetting is often somebody whose old password is known to
     // another person, and that person's session must not survive it.
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let left: i64 = transaction
         .query_one(
             "SELECT count(*) FROM user_sessions WHERE user_id = $1",
@@ -267,8 +263,7 @@ async fn a_password_the_policy_refuses_does_not_cost_the_link() {
 }
 
 async fn demand_length(plane: &Plane, least: i64) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut realm = store::providers::realms::load(&transaction, support::REALM)
         .await
         .expect("the realms table")

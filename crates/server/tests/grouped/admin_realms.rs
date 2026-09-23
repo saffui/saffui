@@ -37,7 +37,6 @@ async fn asked_under(
     use server::api::config::register;
     use server::middleware::admin_policy::AdminPolicy;
     let app = test::init_service(App::new().configure(register(&server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -106,12 +105,11 @@ async fn a_birth_hands_back_the_one_way_into_what_it_made() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, "annex"),
-        )
+        .scoped(&store::tenancy::TenantContext::new(
+            support::TENANT,
+            "annex",
+        ))
         .await;
     let root = store::providers::users::load_by_name(&transaction, "root")
         .await
@@ -434,12 +432,8 @@ async fn concurrent_births_share_one_ceiling_count() {
         "{left:?} {right:?}"
     );
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::tenant_wide(support::TENANT),
-        )
+        .scoped(&store::tenancy::TenantContext::tenant_wide(support::TENANT))
         .await;
     assert_eq!(
         store::providers::tenants::count_realms(&transaction)
@@ -468,12 +462,8 @@ async fn a_failed_birth_leaves_no_realm_row() {
     .await;
     assert!(!status.is_success());
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::tenant_wide(support::TENANT),
-        )
+        .scoped(&store::tenancy::TenantContext::tenant_wide(support::TENANT))
         .await;
     assert!(
         store::providers::realms::load(&transaction, "unfinished")
@@ -542,12 +532,8 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
     // come from. What is under test is what provisioning wrote.
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, "staging"),
-            )
+            .scoped(&TenantContext::new(support::TENANT, "staging"))
             .await;
         let scopes = store::providers::client_scopes::list_scopes(&transaction)
             .await
@@ -1090,7 +1076,6 @@ async fn a_realm_speaks_over_its_pages() {
     use server::api::config::register;
     use server::middleware::admin_policy::AdminPolicy;
     let app = test::init_service(App::new().configure(register(&server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],

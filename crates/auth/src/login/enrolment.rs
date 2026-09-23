@@ -3,7 +3,6 @@ use crypto::otp::totp::{TotpParams, totp_verify_step};
 use crypto::otp::{find_matching_code, generate_recovery_codes};
 use crypto::provider::CryptoProvider;
 use data_encoding::{BASE32_NOPAD, HEXLOWER};
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::credentials::{
     AuthenticatorAttachment, CredentialModel, CredentialSecret, OtpParameters,
@@ -14,7 +13,7 @@ use secrecy::SecretBox;
 use serde_json::{Value, json};
 use std::str::FromStr;
 use store::providers::{credentials, one_time_tokens, users, webauthn};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 use uuid::Uuid;
 use webauthn_rs::prelude::{
     CredentialID, PasskeyRegistration, RegisterPublicKeyCredential, Webauthn,
@@ -107,7 +106,7 @@ pub enum Enrolment {
     reason = "each is a distinct fact about one round"
 )]
 pub async fn required(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     realm: &RealmModel,
@@ -320,7 +319,7 @@ fn qr_svg(uri: &str) -> Option<String> {
 /// The finish leg: the code against the remembered secret, the credential
 /// into the store with that step spent, the instruction struck.
 async fn finish_totp(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     subject: &UserModel,
@@ -424,7 +423,7 @@ async fn finish_totp(
 /// person has already proved who they are, and a policy refusal is theirs to
 /// correct, not a wrong answer to be thrown out over.
 async fn update_password(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     subject: &UserModel,
@@ -495,7 +494,7 @@ fn start_recovery_codes(provider: &dyn CryptoProvider) -> Enrolment {
 /// naming which one to type back would prove nothing further; what typing one
 /// proves is that the sheet was taken down before the screen went away.
 async fn finish_recovery_codes(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     subject: &UserModel,
@@ -561,7 +560,7 @@ fn percent(value: &str) -> String {
 }
 
 /// The start leg: creation options out, registration state remembered.
-async fn start(transaction: &Transaction<'_>, party: &Webauthn, subject: &UserModel) -> Enrolment {
+async fn start(transaction: &UnitOfWork, party: &Webauthn, subject: &UserModel) -> Enrolment {
     // Everything already enrolled is excluded, so a browser offers the user
     // their unregistered keys rather than re-registering one it finds first.
     let Ok(held) = webauthn::of_user(transaction, &subject.user_id).await else {
@@ -599,7 +598,7 @@ async fn start(transaction: &Transaction<'_>, party: &Webauthn, subject: &UserMo
 /// The finish leg: the attestation against the remembered state, the passkey
 /// into the store, the instruction struck.
 async fn finish(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     party: &Webauthn,
     subject: &UserModel,
     answered: &str,
@@ -703,7 +702,7 @@ fn read_reported_attachment(answered: &str) -> Option<AuthenticatorAttachment> {
 
 /// Mail a link, or say a recent one is still good for it.
 async fn start_verify(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     origin: &PublicOrigin,
     realm: &RealmModel,
@@ -803,7 +802,7 @@ async fn start_verify(
 
 /// Spend what came back, and take the instruction off.
 async fn finish_verify(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     subject: &UserModel,
     auth_session_id: &str,
@@ -857,7 +856,7 @@ async fn finish_verify(
 /// back. The code is bound to this login, and the number it went to rides
 /// the notes, so proving it cannot bless a number swapped in behind it.
 async fn verify_phone_round(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
     subject: &UserModel,

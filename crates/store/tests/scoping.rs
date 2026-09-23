@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{CryptoConfig, CryptoProvider};
 use deadpool_postgres::{Manager, Pool};
@@ -65,12 +67,11 @@ async fn one_connection_pool() -> Pool {
         .expect("a pool of one")
 }
 
-async fn plant(pool: &Pool, tenancy: &Tenancy, tenant: &str) {
-    let mut connection = pool.get().await.expect("a connection");
+async fn plant(tenancy: &Tenancy, tenant: &str) {
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide(tenant))
+        .begin(&TenantContext::tenant_wide(tenant))
         .await
-        .expect("a scoped transaction");
+        .expect("a scoped unit of work");
     transaction
         .execute(
             "INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $1)",
@@ -87,15 +88,14 @@ async fn plant(pool: &Pool, tenancy: &Tenancy, tenant: &str) {
 async fn a_scoped_transaction_reads_only_its_own() {
     let _turn = DATABASE.lock().await;
     let pool = one_connection_pool().await;
-    let tenancy = Tenancy::unpinned();
+    let tenancy = Tenancy::unpinned(pool.clone());
 
-    plant(&pool, &tenancy, "acme").await;
-    plant(&pool, &tenancy, "globex").await;
+    plant(&tenancy, "acme").await;
+    plant(&tenancy, "globex").await;
 
     for tenant in ["acme", "globex"] {
-        let mut connection = pool.get().await.unwrap();
         let transaction = tenancy
-            .transaction(&mut connection, &TenantContext::tenant_wide(tenant))
+            .begin(&TenantContext::tenant_wide(tenant))
             .await
             .unwrap();
         let seen: Vec<String> = transaction
@@ -121,9 +121,9 @@ async fn a_scoped_transaction_reads_only_its_own() {
 async fn a_returned_connection_carries_no_tenant() {
     let _turn = DATABASE.lock().await;
     let pool = one_connection_pool().await;
-    let tenancy = Tenancy::unpinned();
+    let tenancy = Tenancy::unpinned(pool.clone());
 
-    plant(&pool, &tenancy, "acme").await;
+    plant(&tenancy, "acme").await;
 
     let connection = pool.get().await.unwrap();
     let left_over: Option<String> = connection
@@ -148,15 +148,14 @@ async fn a_returned_connection_carries_no_tenant() {
 /// than a call somebody has to remember.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
-async fn dropping_the_transaction_rolls_it_back() {
+async fn dropping_a_unit_rolls_it_back() {
     let _turn = DATABASE.lock().await;
     let pool = one_connection_pool().await;
-    let tenancy = Tenancy::unpinned();
+    let tenancy = Tenancy::unpinned(pool.clone());
 
     {
-        let mut connection = pool.get().await.unwrap();
         let transaction = tenancy
-            .transaction(&mut connection, &TenantContext::tenant_wide("acme"))
+            .begin(&TenantContext::tenant_wide("acme"))
             .await
             .unwrap();
         transaction
@@ -169,9 +168,8 @@ async fn dropping_the_transaction_rolls_it_back() {
         // No commit.
     }
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide("acme"))
+        .begin(&TenantContext::tenant_wide("acme"))
         .await
         .unwrap();
     let seen: i64 = transaction
@@ -179,43 +177,94 @@ async fn dropping_the_transaction_rolls_it_back() {
         .await
         .unwrap()
         .get(0);
-    assert_eq!(seen, 0, "a dropped transaction left a row behind");
+    assert_eq!(seen, 0, "a dropped unit left a row behind");
 }
 
-/// A pinned node refuses a realm pinned elsewhere before opening anything.
+/// A unit whose rollback never gets to run leaves the pool instead of going
+/// back into it half way through a transaction.
+///
+/// The connection is opened on the test's runtime, so it outlives the one the
+/// unit is abandoned on, and the unit is dropped as that runtime stops, which
+/// is exactly when the rollback it hands over is thrown away unrun.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn an_abandoned_unit_never_goes_back_dirty() {
+    let _turn = DATABASE.lock().await;
+    let pool = one_connection_pool().await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    drop(pool.get().await.unwrap());
+
+    let abandoning = tenancy.clone();
+    tokio::task::spawn_blocking(move || {
+        let stopping = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        stopping.block_on(async {
+            let unit = abandoning
+                .begin(&TenantContext::tenant_wide("acme"))
+                .await
+                .unwrap();
+            unit.execute(
+                "INSERT INTO tenants (tenant_id, display_name) VALUES ($1, $1)",
+                &[&"acme"],
+            )
+            .await
+            .unwrap();
+            drop(unit);
+        });
+        drop(stopping);
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        pool.status().size,
+        0,
+        "the abandoned connection went back into the pool"
+    );
+    let next = tenancy
+        .begin(&TenantContext::tenant_wide("acme"))
+        .await
+        .unwrap();
+    let seen: i64 = next
+        .query_one("SELECT count(*) FROM tenants", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(seen, 0, "the next caller saw an abandoned write");
+}
+
+/// A pinned node refuses a realm pinned elsewhere before a connection is taken.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_mismatched_region_is_refused_before_anything_opens() {
     let _turn = DATABASE.lock().await;
     let pool = one_connection_pool().await;
 
-    let elsewhere = Tenancy::in_region("eu-west");
+    let elsewhere = Tenancy::in_region(pool.clone(), "eu-west");
     let context = TenantContext::new("acme", "realm-1").with_region(Some("af-south".into()));
 
-    let mut connection = pool.get().await.unwrap();
     assert_eq!(
         elsewhere
-            .transaction(&mut connection, &context)
+            .begin(&context)
             .await
-            .expect_err("a mismatched region is refused"),
+            .err()
+            .expect("a mismatched region is refused"),
         StoreError::Residency {
             node: "eu-west".to_owned(),
             pin: "af-south".to_owned()
         }
     );
-
-    // And nothing was left open on the connection.
-    let inside: bool = connection
-        .query_one("SELECT pg_current_xact_id_if_assigned() IS NOT NULL", &[])
-        .await
-        .unwrap()
-        .get(0);
-    assert!(!inside, "a refused call left a transaction open");
+    assert_eq!(
+        pool.status().size,
+        0,
+        "a refused unit took a connection on its way to the refusal"
+    );
 
     // The same node serves a realm that pins nothing.
-    let unpinned = TenantContext::tenant_wide("acme");
     let transaction = elsewhere
-        .transaction(&mut connection, &unpinned)
+        .begin(&TenantContext::tenant_wide("acme"))
         .await
         .expect("an unpinned realm is served anywhere");
     transaction.commit().await.unwrap();
@@ -228,9 +277,9 @@ async fn a_mismatched_region_is_refused_before_anything_opens() {
 async fn a_snapshot_does_not_move_under_a_reader() {
     let _turn = DATABASE.lock().await;
     let pool = one_connection_pool().await;
-    let tenancy = Tenancy::unpinned();
+    let tenancy = Tenancy::unpinned(pool.clone());
 
-    plant(&pool, &tenancy, "acme").await;
+    plant(&tenancy, "acme").await;
 
     // A second connection, so the write is not on the reader's own.
     let (writer, connection) = app_config().connect(NoTls).await.expect("a second client");
@@ -238,9 +287,8 @@ async fn a_snapshot_does_not_move_under_a_reader() {
         let _ = connection.await;
     });
 
-    let mut reading = pool.get().await.unwrap();
     let snapshot = tenancy
-        .snapshot(&mut reading, &TenantContext::tenant_wide("acme"))
+        .begin_snapshot(&TenantContext::tenant_wide("acme"))
         .await
         .unwrap();
 
@@ -304,5 +352,159 @@ async fn a_snapshot_does_not_move_under_a_reader() {
             .await
             .is_err(),
         "a read only transaction wrote"
+    );
+}
+
+/// A statement is prepared once on a connection and kept, so running it again
+/// is one round trip rather than a preparation and then an execution.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_statement_is_prepared_once_per_connection() {
+    let _turn = DATABASE.lock().await;
+    let pool = one_connection_pool().await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    let acme = TenantContext::tenant_wide("acme");
+
+    for _ in 0..2 {
+        let unit = tenancy.begin(&acme).await.unwrap();
+        unit.query("SELECT tenant_id FROM tenants", &[])
+            .await
+            .unwrap();
+        unit.commit().await.unwrap();
+    }
+
+    let unit = tenancy.begin(&acme).await.unwrap();
+    let kept: i64 = unit
+        .query_one(
+            "SELECT count(*) FROM pg_prepared_statements \
+             WHERE statement = 'SELECT tenant_id FROM tenants'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(kept, 1, "the statement was not kept between the two units");
+}
+
+/// What a connection keeps has a ceiling. A paging window is written into its
+/// statement, so every page is a new text, and a long lived connection would
+/// otherwise keep one of each on both sides of the wire.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn kept_statements_stay_under_a_ceiling() {
+    let _turn = DATABASE.lock().await;
+    let pool = one_connection_pool().await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+
+    let unit = tenancy
+        .begin(&TenantContext::tenant_wide("acme"))
+        .await
+        .unwrap();
+    for page in 0..600 {
+        unit.query_one(format!("SELECT {page}::int").as_str(), &[])
+            .await
+            .unwrap();
+    }
+    let kept: i64 = unit
+        .query_one("SELECT count(*) FROM pg_prepared_statements", &[])
+        .await
+        .unwrap()
+        .get(0);
+    assert!(
+        kept < 512,
+        "600 distinct statements left {kept} prepared on one connection"
+    );
+}
+
+/// What the unit saves, measured rather than claimed.
+///
+/// Opening used to be a `BEGIN` and two settings sent as text, each prepared
+/// and then executed: five round trips. The unit pipelines one. A statement
+/// sent as text is prepared on every run; the unit prepares it once per
+/// connection. Both shapes run here side by side on the same connection, and
+/// the figures are printed. The assertion is loose on purpose: a noisy runner
+/// must not turn this into a coin toss, and the gap is wide enough that a
+/// weak bound still catches a unit that stopped pipelining or keeping.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn a_unit_opens_and_reads_in_fewer_round_trips() {
+    const RUNS: u32 = 200;
+
+    let _turn = DATABASE.lock().await;
+    let pool = one_connection_pool().await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant(&tenancy, "acme").await;
+    let acme = TenantContext::tenant_wide("acme");
+
+    let started = Instant::now();
+    {
+        let connection = pool.get().await.unwrap();
+        for _ in 0..RUNS {
+            connection.batch_execute("BEGIN").await.unwrap();
+            connection
+                .execute(
+                    "SELECT set_config($1, $2, true)",
+                    &[&"saffui.current_tenant", &"acme"],
+                )
+                .await
+                .unwrap();
+            connection
+                .execute(
+                    "SELECT set_config($1, $2, true)",
+                    &[&"saffui.current_realm", &""],
+                )
+                .await
+                .unwrap();
+            connection.batch_execute("COMMIT").await.unwrap();
+        }
+    }
+    let opened_one_by_one = started.elapsed();
+
+    let started = Instant::now();
+    for _ in 0..RUNS {
+        tenancy.begin(&acme).await.unwrap().commit().await.unwrap();
+    }
+    let opened_as_units = started.elapsed();
+
+    let started = Instant::now();
+    {
+        let connection = pool.get().await.unwrap();
+        connection.batch_execute("BEGIN").await.unwrap();
+        for _ in 0..RUNS {
+            connection
+                .query("SELECT tenant_id FROM tenants", &[])
+                .await
+                .unwrap();
+        }
+        connection.batch_execute("COMMIT").await.unwrap();
+    }
+    let read_prepared_each_time = started.elapsed();
+
+    let started = Instant::now();
+    {
+        let unit = tenancy.begin(&acme).await.unwrap();
+        for _ in 0..RUNS {
+            unit.query("SELECT tenant_id FROM tenants", &[])
+                .await
+                .unwrap();
+        }
+        unit.commit().await.unwrap();
+    }
+    let read_kept = started.elapsed();
+
+    eprintln!(
+        "{RUNS} openings: one statement at a time {opened_one_by_one:?}, as units \
+         {opened_as_units:?} ({:.1}x) | {RUNS} reads: prepared each time \
+         {read_prepared_each_time:?}, kept {read_kept:?} ({:.1}x)",
+        opened_one_by_one.as_secs_f64() / opened_as_units.as_secs_f64(),
+        read_prepared_each_time.as_secs_f64() / read_kept.as_secs_f64(),
+    );
+    assert!(
+        opened_as_units < opened_one_by_one,
+        "opening a unit is no longer cheaper than five round trips"
+    );
+    assert!(
+        read_kept < read_prepared_each_time,
+        "reading through a unit is no longer cheaper than preparing every time"
     );
 }

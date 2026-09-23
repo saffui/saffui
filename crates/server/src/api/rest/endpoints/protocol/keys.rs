@@ -1,26 +1,25 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
-use deadpool_postgres::Pool;
 use serde_json::{Value, json};
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
 
 /// The realm's key set.
-pub async fn published(
-    realm: web::Path<String>,
-    pool: web::Data<Pool>,
-    tenancy: web::Data<Tenancy>,
-) -> HttpResponse {
-    let Ok(mut connection) = pool.get().await else {
-        return refused(StatusCode::INTERNAL_SERVER_ERROR);
-    };
+pub async fn published(realm: web::Path<String>, tenancy: web::Data<Tenancy>) -> HttpResponse {
     // A realm's existence is not what this hides. Which clients it holds and
     // which users are, and neither is answerable here.
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return refused(StatusCode::NOT_FOUND);
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return refused(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        Err(_) => {
+            return refused(StatusCode::NOT_FOUND);
+        }
     };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return refused(StatusCode::INTERNAL_SERVER_ERROR);
     };
     let Ok(keys) = services::realm::published_keys(&transaction).await else {

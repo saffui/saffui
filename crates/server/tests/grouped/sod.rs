@@ -12,7 +12,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -51,9 +50,8 @@ async fn asked(
 
 async fn planted_role(plane: &Plane, role: &str) {
     use models::auditable::AuditableModel;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let model = models::entities::authz::RoleMutationModel {
         name: role.into(),
@@ -77,9 +75,8 @@ async fn planted_role(plane: &Plane, role: &str) {
 /// reach the toxic pair.
 async fn planted_group_holding(plane: &Plane, group: &str, role: &str) {
     use models::auditable::AuditableModel;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let model = models::entities::authz::GroupModel {
         group_id: group.into(),
@@ -101,9 +98,8 @@ async fn planted_group_holding(plane: &Plane, group: &str, role: &str) {
 }
 
 async fn roles_of(plane: &Plane, user: &str) -> Vec<String> {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::roles::effective_roles(&transaction, user)
         .await
@@ -115,9 +111,8 @@ async fn roles_of(plane: &Plane, user: &str) -> Vec<String> {
 
 /// Age the one standing exception past its end, the way the clock would.
 async fn lapsed_exception(plane: &Plane) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let aged = transaction
         .execute(
@@ -467,9 +462,8 @@ async fn duties_separate_at_every_door_and_an_excuse_covers_exactly() {
 /// A group of no role of its own, at the top or under another.
 async fn planted_group_under(plane: &Plane, group: &str, parent: Option<&str>) {
     use models::auditable::AuditableModel;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let model = models::entities::authz::GroupModel {
         group_id: group.into(),
@@ -488,9 +482,8 @@ async fn planted_group_under(plane: &Plane, group: &str, parent: Option<&str>) {
 }
 
 async fn parent_of(plane: &Plane, group: &str) -> Option<String> {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::roles::load_group(&transaction, group)
         .await
@@ -685,9 +678,8 @@ async fn a_change_reaching_many_people_is_weighed_for_each_of_them() {
 /// A default group carrying these roles: the seat every newcomer takes.
 async fn planted_default_group(plane: &Plane, group: &str, carried: &[&str]) {
     use models::auditable::AuditableModel;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let model = models::entities::authz::GroupModel {
         group_id: group.into(),
@@ -711,9 +703,8 @@ async fn planted_default_group(plane: &Plane, group: &str, carried: &[&str]) {
 }
 
 async fn somebody_named(plane: &Plane, name: &str) -> bool {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::users::load_by_name(&transaction, name)
         .await
@@ -750,9 +741,8 @@ async fn a_newcomer_is_refused_when_the_default_groups_break_a_separation() {
     .await;
     assert_eq!(status, StatusCode::OK, "{told}");
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::roles::add_composite(&transaction, "desk", "approver")
             .await
@@ -823,9 +813,8 @@ async fn a_newcomer_is_refused_when_the_default_groups_break_a_separation() {
 }
 
 async fn identifier_of(plane: &Plane, name: &str) -> String {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::users::load_by_name(&transaction, name)
         .await

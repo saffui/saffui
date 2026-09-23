@@ -45,10 +45,7 @@ fn rule(mapper_id: &str, mapper_type: &str) -> ProtocolMapperModel {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_group_rule_reads_every_group_the_person_stands_in() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     // Ada joins the child only. The parent is hers by standing in the child,
     // which is the whole reason the walk exists.
@@ -132,10 +129,7 @@ fn membership(org_id: &str, user_id: &str) -> OrganizationMemberModel {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_organization_rule_reads_the_organizations_the_person_belongs_to() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     // Two of them, so the answer is a list and its order is the one the store
     // promises rather than the one the rows happened to arrive in.

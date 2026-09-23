@@ -1,6 +1,7 @@
 pub mod audit;
 pub mod error;
 pub mod keyring;
+pub mod live;
 pub mod providers;
 pub mod query;
 pub mod schema;

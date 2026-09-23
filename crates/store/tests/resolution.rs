@@ -5,15 +5,12 @@ use models::entities::realm::RealmCreateModel;
 use models::entities::tenant::TenantCreateModel;
 use store::error::StoreError;
 use store::providers::{realms, tenants};
-use store::tenancy::{TenantContext, resolve};
+use store::tenancy::{RealmNamed, TenantContext};
 use support::Fixture;
 
 /// Plant a second tenant and one globally distinct realm.
 async fn rival_tenant(fixture: &Fixture, tenant_id: &str, realm_name: &str, region: Option<&str>) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide(tenant_id))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide(tenant_id)).await;
 
     let tenant: models::entities::tenant::TenantModel = TenantCreateModel {
         tenant_id: tenant_id.into(),
@@ -36,7 +33,6 @@ async fn rival_tenant(fixture: &Fixture, tenant_id: &str, realm_name: &str, regi
     );
     realms::create(&transaction, &realm).await.unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 }
 
 /// The reason these functions exist, asserted rather than explained.
@@ -61,7 +57,9 @@ async fn the_resolver_answers_what_the_rules_keep() {
         "an ungoverned connection read the table the resolver exists for"
     );
 
-    let resolved = resolve::realm_by_name(&connection, "main")
+    let resolved = fixture
+        .tenancy()
+        .resolve(RealmNamed::ByName("main"))
         .await
         .expect("the resolver found nothing");
     assert_eq!(resolved.tenant, "acme");
@@ -76,9 +74,10 @@ async fn the_resolver_answers_what_the_rules_keep() {
 async fn a_realm_carries_its_tenant_and_its_residency_back() {
     let fixture = Fixture::with_user().await;
     rival_tenant(&fixture, "globex", "elsewhere", Some("eu-west")).await;
-    let connection = fixture.connection().await;
 
-    let resolved = resolve::realm_by_name(&connection, "elsewhere")
+    let resolved = fixture
+        .tenancy()
+        .resolve(RealmNamed::ByName("elsewhere"))
         .await
         .unwrap();
     assert_eq!(resolved.tenant, "globex");
@@ -95,10 +94,7 @@ async fn a_realm_carries_its_tenant_and_its_residency_back() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_name_is_unique_across_tenants() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide("globex"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide("globex")).await;
     let tenant: models::entities::tenant::TenantModel = TenantCreateModel {
         tenant_id: "globex".into(),
         display_name: "Globex".into(),
@@ -129,10 +125,7 @@ async fn a_name_is_unique_across_tenants() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_id_is_unique_across_tenants() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide("globex"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide("globex")).await;
     let tenant: models::entities::tenant::TenantModel = TenantCreateModel {
         tenant_id: "globex".into(),
         display_name: "Globex".into(),
@@ -162,9 +155,12 @@ async fn a_realm_id_is_unique_across_tenants() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_name_nobody_uses_is_not_found() {
     let fixture = Fixture::with_user().await;
-    let connection = fixture.connection().await;
 
-    match resolve::realm_by_name(&connection, "absent").await {
+    match fixture
+        .tenancy()
+        .resolve(RealmNamed::ByName("absent"))
+        .await
+    {
         Err(StoreError::NotFound { asked }) => assert_eq!(asked, "absent"),
         other => panic!("a name nobody uses resolved to {other:?}"),
     }
@@ -176,10 +172,7 @@ async fn a_name_nobody_uses_is_not_found() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_disabled_realm_does_not_answer() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "UPDATE realms SET enabled = false WHERE realm_id = 'main'",
@@ -188,12 +181,10 @@ async fn a_disabled_realm_does_not_answer() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let connection = fixture.connection().await;
     assert!(
         matches!(
-            resolve::realm_by_name(&connection, "main").await,
+            fixture.tenancy().resolve(RealmNamed::ByName("main")).await,
             Err(StoreError::NotFound { .. })
         ),
         "a realm an operator turned off still answered"
@@ -205,13 +196,16 @@ async fn a_disabled_realm_does_not_answer() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_is_found_by_the_identifier_a_token_carries() {
     let fixture = Fixture::with_user().await;
-    let connection = fixture.connection().await;
 
-    let resolved = resolve::realm_by_id(&connection, "main").await.unwrap();
+    let resolved = fixture
+        .tenancy()
+        .resolve(RealmNamed::ById("main"))
+        .await
+        .unwrap();
     assert_eq!(resolved.tenant, "acme");
 
     assert!(matches!(
-        resolve::realm_by_id(&connection, "absent").await,
+        fixture.tenancy().resolve(RealmNamed::ById("absent")).await,
         Err(StoreError::NotFound { .. })
     ));
 }
@@ -221,10 +215,7 @@ async fn a_realm_is_found_by_the_identifier_a_token_carries() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_session_resolves_the_realm_it_belongs_to() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO user_sessions \
@@ -236,10 +227,10 @@ async fn a_session_resolves_the_realm_it_belongs_to() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let connection = fixture.connection().await;
-    let resolved = resolve::user_session(&connection, "session-1")
+    let resolved = fixture
+        .tenancy()
+        .resolve(RealmNamed::BySession("session-1"))
         .await
         .unwrap();
     assert_eq!(resolved.tenant, "acme");

@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 
 use crate::error::{StoreError, StoreResult};
 
@@ -17,7 +17,7 @@ pub enum Spent {
 /// One statement, so two requests arriving together cannot both be told they
 /// were first: the insert either takes the row or finds it taken.
 pub async fn spend(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     proof_hash: &str,
     expires_at: DateTime<Utc>,
 ) -> StoreResult<Spent> {
@@ -40,7 +40,7 @@ pub async fn spend(
 }
 
 /// Drop the proofs that can no longer be presented.
-pub async fn drop_expired_proofs(transaction: &Transaction<'_>) -> StoreResult<u64> {
+pub async fn drop_expired_proofs(transaction: &UnitOfWork) -> StoreResult<u64> {
     transaction
         .execute("DELETE FROM dpop_proofs WHERE expires_at <= now()", &[])
         .await

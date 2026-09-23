@@ -1,6 +1,6 @@
-use deadpool_postgres::Transaction;
 use models::entities::user::UserModel;
 use store::providers::{birthright, roles, sessions, users};
+use store::tenancy::UnitOfWork;
 
 pub struct Converged {
     pub granted: u64,
@@ -12,7 +12,7 @@ pub struct Converged {
 /// due. The ledger is the boundary: a role the engine did not grant is a
 /// role the engine will not touch.
 pub async fn converge_person(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     person: &UserModel,
 ) -> Result<Converged, ()> {
     let rules = birthright::rules(transaction).await.map_err(|_| ())?;
@@ -83,7 +83,7 @@ pub async fn converge_person(
 /// One outbox happening, folded into a convergence. Deletion needs no work
 /// of ours: the ledger and the roles go with the person by cascade.
 pub async fn converge_event(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     event: &store::providers::outbox::OutboxEvent,
 ) -> Result<(), ()> {
     if !event.kind.starts_with("user.") || event.kind == store::providers::outbox::USER_DELETED {
@@ -109,7 +109,7 @@ pub async fn converge_event(
 }
 
 /// Every person of the realm, for the first fill and for drift repair.
-pub async fn converge_realm(transaction: &Transaction<'_>) -> Result<(u64, Converged), ()> {
+pub async fn converge_realm(transaction: &UnitOfWork) -> Result<(u64, Converged), ()> {
     let mut walked = 0;
     let mut totals = Converged {
         granted: 0,

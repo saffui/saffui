@@ -2,7 +2,6 @@ use crate::api::rest::endpoints::within;
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, web};
 use config::serving::PublicOrigin;
-use deadpool_postgres::{Pool, Transaction};
 use models::entities::authz::GroupModel;
 use models::entities::user::UserModel;
 use serde_json::Value;
@@ -10,15 +9,12 @@ use services::scim::{self, GroupPatch, Refusal, list_response, shown_group};
 use store::error::StoreError;
 use store::providers::{roles, users};
 use store::query::list_query::ListQuery;
-use store::tenancy::Tenancy;
+use store::tenancy::{Tenancy, UnitOfWork};
 
 use super::{answered, base_of, filter_of, refused, unavailable, window};
 use crate::middleware::admin_guard::Admin;
 
-async fn members_of(
-    transaction: &Transaction<'_>,
-    group: &GroupModel,
-) -> Result<Vec<UserModel>, ()> {
+async fn members_of(transaction: &UnitOfWork, group: &GroupModel) -> Result<Vec<UserModel>, ()> {
     let (people, _) = roles::group_membership(transaction, &group.group_id)
         .await
         .map_err(|_| ())?;
@@ -31,7 +27,7 @@ async fn members_of(
     Ok(held)
 }
 
-async fn shown(transaction: &Transaction<'_>, base: &str, group: &GroupModel) -> Result<Value, ()> {
+async fn shown(transaction: &UnitOfWork, base: &str, group: &GroupModel) -> Result<Value, ()> {
     let members = members_of(transaction, group).await?;
     Ok(shown_group(base, group, &members))
 }
@@ -39,20 +35,13 @@ async fn shown(transaction: &Transaction<'_>, base: &str, group: &GroupModel) ->
 pub async fn list(
     request: HttpRequest,
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
     path: web::Path<String>,
 ) -> HttpResponse {
     let realm_id = path.into_inner();
     let base = base_of(&request, &origin, &realm_id);
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
-    let Ok(transaction) = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
-        .await
-    else {
+    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
         return unavailable();
     };
 
@@ -89,20 +78,13 @@ pub async fn list(
 pub async fn get(
     request: HttpRequest,
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
     path: web::Path<(String, String)>,
 ) -> HttpResponse {
     let (realm_id, group_id) = path.into_inner();
     let base = base_of(&request, &origin, &realm_id);
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
-    let Ok(transaction) = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
-        .await
-    else {
+    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
         return unavailable();
     };
     match roles::load_group(&transaction, &group_id).await {
@@ -118,7 +100,6 @@ pub async fn get(
 pub async fn create(
     request: HttpRequest,
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
     path: web::Path<String>,
@@ -134,11 +115,8 @@ pub async fn create(
         return refused(&Refusal::invalid("displayName is required"));
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
     let context = within(&admin, &realm_id);
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return unavailable();
     };
     let mut metadata = models::auditable::AuditableModel::from_creator(
@@ -190,7 +168,6 @@ pub async fn create(
 pub async fn patch(
     request: HttpRequest,
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
     path: web::Path<(String, String)>,
@@ -203,13 +180,7 @@ pub async fn patch(
         Err(refusal) => return refused(&refusal),
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
-    let Ok(transaction) = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
-        .await
-    else {
+    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
         return unavailable();
     };
     let mut group = match roles::load_group(&transaction, &group_id).await {
@@ -335,7 +306,6 @@ pub async fn patch(
 pub async fn replace(
     request: HttpRequest,
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
     path: web::Path<(String, String)>,
@@ -343,13 +313,7 @@ pub async fn replace(
 ) -> HttpResponse {
     let (realm_id, group_id) = path.into_inner();
     let base = base_of(&request, &origin, &realm_id);
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
-    let Ok(transaction) = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
-        .await
-    else {
+    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
         return unavailable();
     };
     let mut group = match roles::load_group(&transaction, &group_id).await {
@@ -437,7 +401,7 @@ pub async fn replace(
 /// so one breach refuses all of it. Members already standing are not weighed,
 /// the write handing them nothing they did not hold.
 async fn weigh_seated(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
     standing_before: &[String],
     seated: Vec<String>,
@@ -466,18 +430,11 @@ async fn weigh_seated(
 
 pub async fn delete(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> HttpResponse {
     let (realm_id, group_id) = path.into_inner();
-    let Ok(mut connection) = pool.get().await else {
-        return unavailable();
-    };
-    let Ok(transaction) = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
-        .await
-    else {
+    let Ok(transaction) = tenancy.begin(&within(&admin, &realm_id)).await else {
         return unavailable();
     };
     match roles::delete_group(&transaction, &group_id).await {

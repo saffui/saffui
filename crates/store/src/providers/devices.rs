@@ -1,6 +1,6 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
 use crypto::provider::{DigestProvider, HashAlg};
-use deadpool_postgres::Transaction;
 use models::entities::device::DeviceCodeModel;
 use tokio_postgres::Row;
 
@@ -17,7 +17,7 @@ fn digest_of(digest: &dyn DigestProvider, device_code: &str) -> StoreResult<Vec<
 }
 
 pub async fn open(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     device_code: &str,
     request: &DeviceCodeModel,
@@ -46,7 +46,7 @@ pub async fn open(
 }
 
 pub async fn load(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     device_code: &str,
 ) -> StoreResult<Option<DeviceCodeModel>> {
@@ -61,7 +61,7 @@ pub async fn load(
 
 /// The live row behind a short code, for the page a person types it into.
 pub async fn pending_by_user_code(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_code: &str,
     now: DateTime<Utc>,
 ) -> StoreResult<Option<DeviceCodeModel>> {
@@ -79,7 +79,7 @@ pub async fn pending_by_user_code(
 /// Stamp one poll and hand back the previous stamp, so the caller can tell a
 /// too-eager device to slow down without a second read.
 pub async fn touch_poll(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     device_code: &str,
     now: DateTime<Utc>,
@@ -106,7 +106,7 @@ pub async fn touch_poll(
     reason = "each is a distinct fact frozen at approval"
 )]
 pub async fn approve(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_code: &str,
     user_id: &str,
     session_id: &str,
@@ -141,7 +141,7 @@ pub async fn approve(
 /// Take an approved row off the table and hand it back: the one redemption,
 /// by construction.
 pub async fn spend(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     device_code: &str,
 ) -> StoreResult<Option<DeviceCodeModel>> {
@@ -158,7 +158,7 @@ pub async fn spend(
         .map(read))
 }
 
-pub async fn drop_expired(transaction: &Transaction<'_>, now: DateTime<Utc>) -> StoreResult<u64> {
+pub async fn drop_expired(transaction: &UnitOfWork, now: DateTime<Utc>) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM oidc_device_codes WHERE expires_at <= $1",
@@ -192,7 +192,7 @@ fn read(row: Row) -> DeviceCodeModel {
 
 /// Fell every row this person left here: an erasure walks where no cascade
 /// reaches.
-pub async fn erase_for_user(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<u64> {
+pub async fn erase_for_user(transaction: &UnitOfWork, user_id: &str) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM oidc_device_codes WHERE user_id = $1",

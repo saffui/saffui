@@ -2,12 +2,12 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::{Egress, PublicOrigin};
-use deadpool_postgres::Pool;
 use models::entities::backchannel::{BackchannelRequestModel, BackchannelState};
 use serde::Deserialize;
 use serde_json::json;
 use services::ciba::{self, Hint};
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy, UnitOfWork};
 
 use services::client;
 
@@ -50,26 +50,28 @@ pub async fn open(
     request: HttpRequest,
     realm: web::Path<String>,
     asked: Option<web::Form<Opening>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     origin: web::Data<PublicOrigin>,
     sealing: web::Data<Sealing>,
     egress: web::Data<config::serving::Egress>,
 ) -> HttpResponse {
     let now = Utc::now();
-    let Ok(mut connection) = pool.get().await else {
-        return told(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "the realm could not be read",
-        );
-    };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(
-            StatusCode::UNAUTHORIZED,
-            "invalid_client",
-            "the client could not be authenticated",
-        );
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "the realm could not be read",
+            );
+        }
+        Err(_) => {
+            return told(
+                StatusCode::UNAUTHORIZED,
+                "invalid_client",
+                "the client could not be authenticated",
+            );
+        }
     };
     let Some(asked) = asked else {
         return told(
@@ -88,7 +90,6 @@ pub async fn open(
             .as_deref()
             .zip(asked.client_assertion.as_deref())
             .map(|(kind, assertion)| client::Signed { kind, assertion }),
-        &mut connection,
         &tenancy,
         &sealing,
         &origin,
@@ -421,7 +422,7 @@ pub async fn open(
         );
     }
     if let Some(outgoing) = texting {
-        super::texting::deliver_text(&sealing, &pool, &tenancy, &context, outgoing).await;
+        super::texting::deliver_text(&sealing, &tenancy, &context, outgoing).await;
     }
 
     uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(json!({
@@ -442,7 +443,7 @@ fn drawn_request_id(provider: &dyn crypto::provider::CryptoProvider) -> Option<S
 /// presenting client, and still enabled.
 async fn bearer_person(
     request: &HttpRequest,
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     now: chrono::DateTime<Utc>,
 ) -> Result<models::entities::user::UserModel, HttpResponse> {
     let refused = || {
@@ -501,7 +502,7 @@ async fn bearer_person(
 /// for.
 async fn asking_person(
     request: &HttpRequest,
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     now: chrono::DateTime<Utc>,
 ) -> Result<models::entities::user::UserModel, HttpResponse> {
     if request.headers().get("authorization").is_some() {
@@ -532,25 +533,27 @@ async fn asking_person(
 pub async fn pending(
     request: HttpRequest,
     realm: web::Path<String>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
 ) -> HttpResponse {
     let now = Utc::now();
-    let Ok(mut connection) = pool.get().await else {
-        return told(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "the realm could not be read",
-        );
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "the realm could not be read",
+            );
+        }
+        Err(_) => {
+            return told(
+                StatusCode::UNAUTHORIZED,
+                "invalid_token",
+                "a bearer token of this realm decides here",
+            );
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(
-            StatusCode::UNAUTHORIZED,
-            "invalid_token",
-            "a bearer token of this realm decides here",
-        );
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -588,7 +591,6 @@ pub async fn decide(
     request: HttpRequest,
     realm: web::Path<String>,
     body: Option<web::Json<Decision>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     egress: web::Data<Egress>,
@@ -624,21 +626,24 @@ pub async fn decide(
         }
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return told(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "the realm could not be read",
-        );
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "the realm could not be read",
+            );
+        }
+        Err(_) => {
+            return told(
+                StatusCode::UNAUTHORIZED,
+                "invalid_token",
+                "a bearer token of this realm decides here",
+            );
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(
-            StatusCode::UNAUTHORIZED,
-            "invalid_token",
-            "a bearer token of this realm decides here",
-        );
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -693,7 +698,7 @@ pub async fn decide(
 /// What a ping needs, opened from the decided row: the client's registered
 /// endpoint, the bearer it handed in, and the request id out of its seal.
 pub(crate) async fn ping_of(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &Sealing,
     context: &store::tenancy::TenantContext,
     decided: &BackchannelRequestModel,
@@ -764,10 +769,9 @@ pub(crate) async fn deliver_ping(
 pub async fn doorbell(
     request: HttpRequest,
     realm: web::Path<String>,
-    pool: web::Data<deadpool_postgres::Pool>,
     tenancy: web::Data<store::tenancy::Tenancy>,
 ) -> HttpResponse {
-    let tongues = super::page::tongues_of_realm(&pool, &tenancy, &realm).await;
+    let tongues = super::page::tongues_of_realm(&tenancy, &realm).await;
     let tongue = tongues.negotiated(
         None,
         request
@@ -809,7 +813,7 @@ const REQUESTS_SCRIPT: &str = include_str!("ui/requests.js");
 /// the number is unproven, or a brake held it back. Counted where it is
 /// decided, in the same transaction that opens the request.
 async fn doorbell_text(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &Sealing,
     context: &store::tenancy::TenantContext,
     origin: &PublicOrigin,

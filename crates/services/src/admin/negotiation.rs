@@ -1,9 +1,9 @@
 //! The plane's hands on the one ticket door a realm holds.
 
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::brokering::{RealmSpnegoModel, RealmSpnegoMutationModel};
 use store::providers::brokering;
+use store::tenancy::UnitOfWork;
 
 use crate::negotiation::{SpnegoSettings, check_bag};
 
@@ -18,7 +18,7 @@ pub enum Unwritable {
     Backend,
 }
 
-pub async fn get(transaction: &Transaction<'_>) -> Result<RealmSpnegoModel, Unwritable> {
+pub async fn get(transaction: &UnitOfWork) -> Result<RealmSpnegoModel, Unwritable> {
     brokering::spnego(transaction)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -28,7 +28,7 @@ pub async fn get(transaction: &Transaction<'_>) -> Result<RealmSpnegoModel, Unwr
 /// Write the door, whole. The bag is read here the way a login will read it:
 /// a bag accepted unread defers every failure to somebody's sign-in.
 pub async fn put(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
     by: &str,
@@ -50,7 +50,7 @@ pub async fn put(
     get(transaction).await
 }
 
-pub async fn delete(transaction: &Transaction<'_>) -> Result<(), Unwritable> {
+pub async fn delete(transaction: &UnitOfWork) -> Result<(), Unwritable> {
     brokering::drop_spnego(transaction)
         .await
         .map_err(|_| Unwritable::Backend)?

@@ -1,6 +1,6 @@
-use deadpool_postgres::Transaction;
 use models::entities::authz::AdminAction;
 use store::providers::{organizations, roles};
+use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("what this caller may do could not be read")]
@@ -13,7 +13,7 @@ pub struct Unreadable;
 /// person outright: reading only the first answers for the wrong scope, and
 /// reading only the second loses everything a person holds on their own.
 pub async fn admin_actions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     subject: &str,
     within_organization: Option<&str>,
 ) -> Result<Vec<AdminAction>, Unreadable> {

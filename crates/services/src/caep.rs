@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use models::entities::authz::IdentityProviderModel;
 use models::entities::credentials::{AuthenticatorAttachment, CredentialChange, CredentialType};
 use serde_json::{Value, json};
+use store::tenancy::UnitOfWork;
 
 pub const KIND: &str = "caep-push";
 
@@ -218,7 +218,7 @@ fn translate_credential_type(payload: &Value) -> Value {
     reason = "each is a distinct fact about one event"
 )]
 pub async fn minted_set(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &crate::grant::Signing<'_>,
     issuer: &str,
     receiver: &Receiver,
@@ -265,7 +265,7 @@ pub async fn minted_set(
 /// event so the far side verifies the real thing. No person is its subject;
 /// it speaks about the subscription, named by the receiver's alias.
 pub async fn verification_set(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &crate::grant::Signing<'_>,
     issuer: &str,
     receiver: &Receiver,

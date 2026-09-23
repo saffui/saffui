@@ -2,12 +2,12 @@ use chrono::{DateTime, Duration, Utc};
 use config::serving::PublicOrigin;
 use crypto::provider::CryptoProvider;
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Transaction;
 use models::compliance::subject_request::{DsarKind, DsarRequest};
 use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
 use store::providers::{one_time_tokens, users};
+use store::tenancy::UnitOfWork;
 
 use auth::messaging::{Message, Outgoing};
 
@@ -43,7 +43,7 @@ pub fn confirmation_purpose(kind: DsarKind) -> String {
 /// answer the question this endpoint refuses to.
 #[allow(clippy::too_many_arguments, reason = "each is a distinct fact")]
 pub async fn offer_link(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
     origin: &PublicOrigin,
@@ -131,7 +131,7 @@ pub async fn offer_link(
 /// mail round-trip is the identity proof, made by the one person who could
 /// have followed it.
 pub async fn lodge_from_link(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
     user_id: &str,
@@ -194,7 +194,7 @@ fn from_register(_: Unactionable) -> Undoored {
 
 /// By username, or by address where the realm lets a person sign in with
 /// one: the same two ways the login form finds them.
-async fn found(transaction: &Transaction<'_>, named: &str) -> Result<Option<UserModel>, Undoored> {
+async fn found(transaction: &UnitOfWork, named: &str) -> Result<Option<UserModel>, Undoored> {
     if let Some(held) = users::load_by_name(transaction, named)
         .await
         .map_err(|_| Undoored::Unreadable)?

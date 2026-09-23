@@ -4,10 +4,10 @@
 //! an attacker cannot pick the entrance that does not count.
 
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use models::entities::realm::RealmModel;
 use store::error::StoreResult;
 use store::providers::login as login_store;
+use store::tenancy::UnitOfWork;
 
 /// When this person's lockout ends, or nothing when they are not locked.
 ///
@@ -16,7 +16,7 @@ use store::providers::login as login_store;
 /// attempt would let anybody hold somebody else's account shut
 /// indefinitely.
 pub async fn until(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm: &RealmModel,
     user_id: &str,
     now: DateTime<Utc>,
@@ -32,7 +32,7 @@ pub async fn until(
 
 /// Count one failure, and lock when the count says to.
 pub async fn count(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm: &RealmModel,
     user_id: &str,
     from: Option<&str>,
@@ -77,7 +77,7 @@ pub async fn count(
 
 /// Forget what was counted. A login that succeeded says the person is the
 /// person, so what was counted against them was noise.
-pub async fn clear(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<()> {
+pub async fn clear(transaction: &UnitOfWork, user_id: &str) -> StoreResult<()> {
     login_store::clear_failures(transaction, user_id).await?;
     Ok(())
 }

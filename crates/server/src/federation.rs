@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
+use store::tenancy::UnitOfWork;
 
 use crate::api::rest::endpoints::protocol::hosted::{Outward, PATIENCE, may_dial};
 use auth::login::directory::{Bound, Directory, DirectoryPerson};
@@ -209,7 +210,7 @@ impl Directory for LdapDirectory {
 /// The directory as the login will speak to it, its bind secret opened from
 /// the realm's seal for this attempt and dropped with it.
 pub async fn directory_for(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &crate::api::config::Sealing,
     context: &store::tenancy::TenantContext,
     held: &models::entities::brokering::UserFederationModel,
@@ -223,7 +224,7 @@ pub async fn directory_for(
 }
 
 pub async fn opened_bind(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &crate::api::config::Sealing,
     context: &store::tenancy::TenantContext,
     held: &models::entities::brokering::UserFederationModel,
@@ -304,7 +305,7 @@ impl Synced {
 /// departure, and suspending a realm's people over a cable would be the
 /// outage deciding who may log in.
 pub async fn sync_shadows(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
     first: bool,
     directory: &LdapDirectory,
@@ -418,7 +419,7 @@ pub enum Unimported {
 /// way a first login would make them, known mirrors are refreshed the way
 /// the sync refreshes them. Local people keep their names.
 pub async fn import_everyone(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn crypto::provider::CryptoProvider,
     context: &store::tenancy::TenantContext,
     alias: &str,
@@ -465,7 +466,7 @@ pub async fn import_everyone(
 }
 
 async fn refresh_shadow(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     mut shadow: models::entities::user::UserModel,
     person: &auth::login::directory::DirectoryPerson,
 ) -> Result<bool, store::error::StoreError> {
@@ -511,7 +512,7 @@ const DEAD_AFTER: i32 = 8;
 /// One realm's outbox pass: each due telling goes to every connector, and a
 /// telling only counts delivered when every connector took it.
 pub async fn deliver_outbox(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &crate::api::config::Sealing,
     origin: &config::serving::PublicOrigin,
     context: &store::tenancy::TenantContext,
@@ -721,7 +722,7 @@ pub async fn deliver_outbox(
 }
 
 pub(crate) async fn opened_bearer(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &crate::api::config::Sealing,
     context: &store::tenancy::TenantContext,
     provider: &models::entities::authz::IdentityProviderModel,
@@ -807,7 +808,7 @@ async fn ask_webhook(
 }
 
 pub(crate) async fn opened_webhook_secret(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &crate::api::config::Sealing,
     context: &store::tenancy::TenantContext,
     provider: &models::entities::authz::IdentityProviderModel,
@@ -1026,7 +1027,7 @@ pub enum Unprovable {
 /// ServiceProviderConfig; a push receiver is handed a freshly signed
 /// verification event; a collector has one queued to take on its next poll.
 pub async fn prove_delivery(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &crate::api::config::Sealing,
     origin: &config::serving::PublicOrigin,
     context: &store::tenancy::TenantContext,

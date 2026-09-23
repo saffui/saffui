@@ -1,7 +1,6 @@
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use serde::{Deserialize, Serialize};
 use services::admin::ussd::Unsettable;
 use store::keyring;
@@ -26,18 +25,13 @@ pub struct UssdWrite {
 
 pub async fn read(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
         .map_err(|_| internal())?;
     let ring = keyring::load(
@@ -56,19 +50,14 @@ pub async fn read(
 
 pub async fn write(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
     asked: web::Json<UssdWrite>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
         .map_err(|_| internal())?;
     let ring = keyring::load(
@@ -93,17 +82,12 @@ pub async fn write(
 
 pub async fn forget(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
         .map_err(|_| internal())?;
     services::admin::ussd::forget(&transaction)

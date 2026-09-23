@@ -44,10 +44,7 @@ fn scope(name: &str, realm_default: bool) -> ClientScopeModel {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_console_carries_the_admin_scope_without_asking_for_it() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     provision_admin_console(&transaction, "acme", "main", &console())
         .await
@@ -79,10 +76,7 @@ async fn the_console_carries_the_admin_scope_without_asking_for_it() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_optional_scope_is_granted_only_when_it_is_asked_for() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     // Both marked as realm defaults, which is the flag that says what a new
     // client is offered and not what an attached one holds. Reading that one
@@ -118,10 +112,7 @@ async fn an_optional_scope_is_granted_only_when_it_is_asked_for() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn provisioning_twice_keeps_what_the_operator_changed() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     provision_admin_console(&transaction, "acme", "main", &console())
         .await
@@ -172,10 +163,7 @@ async fn provisioning_twice_keeps_what_the_operator_changed() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_account_console_carries_the_account_scope_and_keeps_what_the_operator_changed() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     let console = AccountConsole {
         redirect_uris: vec!["https://id.test/realms/main/account/login/return".to_owned()],
     };
@@ -270,19 +258,13 @@ async fn the_account_console_carries_the_account_scope_and_keeps_what_the_operat
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
     let fixture = Fixture::empty().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide("acme")).await;
     store::providers::tenants::create(&transaction, &tenant())
         .await
         .unwrap();
     transaction.commit().await.unwrap();
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     services::provisioning::provision_realm(&transaction, &realm(), &console())
         .await
@@ -322,27 +304,20 @@ async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_late_failure_rolls_back_the_whole_realm_birth() {
     let fixture = Fixture::empty().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide("acme")).await;
     store::providers::tenants::create(&transaction, &tenant())
         .await
         .unwrap();
     transaction.commit().await.unwrap();
 
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     services::provisioning::provision_realm(&transaction, &realm(), &console())
         .await
         .unwrap();
     assert!(transaction.query_one("SELECT 1 / 0", &[]).await.is_err());
     transaction.rollback().await.unwrap();
 
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide("acme")).await;
     assert!(
         store::providers::realms::load(&transaction, "main")
             .await
@@ -405,10 +380,7 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
     let secret = SecretBox::new(Box::new("a-client-secret".to_owned()));
     let password = SecretBox::new(Box::new("a-password-of-decent-length".to_owned()));
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide("local"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide("local")).await;
     assert!(
         provision_tenant(&transaction, "local", "Local")
             .await
@@ -433,9 +405,7 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         .unwrap();
     transaction.commit().await.unwrap();
 
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("local", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("local", "main")).await;
     let registration = Registration {
         client_id: "app",
         secret: Some(&secret),
@@ -617,10 +587,7 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_provisioned_administrator_holds_the_whole_plane() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let created = provision_realm_administration(&transaction, "acme", "main", "ada")
         .await
@@ -695,10 +662,7 @@ async fn a_provisioned_administrator_holds_the_whole_plane() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_realm_is_offered_flows_and_binds_none_of_them() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     let made = provision_offered_flows(&transaction, "acme", "main")
         .await

@@ -11,7 +11,6 @@ const REDIRECT: &str = "https://app.example/callback";
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -32,8 +31,7 @@ fn within() -> TenantContext {
 }
 
 async fn realm_requires(plane: &Plane, required: bool) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut realm = store::providers::realms::load(&transaction, support::REALM)
         .await
         .expect("the realms table")
@@ -46,8 +44,7 @@ async fn realm_requires(plane: &Plane, required: bool) {
 }
 
 async fn client_says(plane: &Plane, says: Option<bool>) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await
         .expect("the clients table")

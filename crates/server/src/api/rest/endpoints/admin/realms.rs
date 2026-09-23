@@ -2,12 +2,11 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use config::serving::PublicOrigin;
-use deadpool_postgres::Pool;
 use models::compliance::subject_request::Jurisdiction;
 use models::entities::realm::{RealmCreateModel, RealmUpdateModel};
 use models::representation::RepresentationParams;
 use services::provisioning;
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::RealmBrief;
@@ -23,12 +22,10 @@ use crate::middleware::admin_policy::AdminPolicy;
 /// to learn what else the deployment holds.
 pub async fn list(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
 ) -> Result<HttpResponse, ApiError> {
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &admin.context.tenant)
+        .begin(&admin.context.tenant)
         .await
         .map_err(|_| internal())?;
 
@@ -48,19 +45,14 @@ pub async fn list(
 /// One realm.
 pub async fn get(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     representation: web::Query<RepresentationParams>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
 
@@ -152,7 +144,6 @@ pub struct Administrator {
 )]
 pub async fn create(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     policy: web::Data<AdminPolicy>,
     origin: web::Data<PublicOrigin>,
@@ -172,9 +163,8 @@ pub async fn create(
     let realm_id = asked.name.clone();
     let now = chrono::Utc::now().timestamp();
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new(&tenant, &realm_id))
+        .begin(&TenantContext::new(&tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     if store::providers::realms::load(&transaction, &realm_id)
@@ -300,7 +290,7 @@ pub async fn create(
 /// which keeps a neighbouring realm's existence as unknowable as the guard
 /// makes it.
 async fn record_what_happened(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     admin: &Admin,
     realm_id: &str,
     kind: &str,
@@ -339,7 +329,6 @@ pub struct Confirmation {
 
 pub async fn delete(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     confirm: web::Query<Confirmation>,
@@ -354,12 +343,8 @@ pub async fn delete(
             "name the realm back to confirm what is about to be taken away".to_owned(),
         ));
     }
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     if !store::providers::realms::delete(&transaction, &realm_id)
@@ -388,18 +373,13 @@ pub async fn delete(
 /// it exactly once. Only the hash is kept.
 pub async fn rotate_registration_secret(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     let secret = services::registration::rotate_registration_secret(
@@ -417,17 +397,12 @@ pub async fn rotate_registration_secret(
 /// nobody until a new one is drawn.
 pub async fn forget_registration_secret(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     services::registration::forget_registration_secret(&transaction, &realm_id)
@@ -469,7 +444,6 @@ fn plain_text(value: &str) -> bool {
 /// issuer is built from them, and tokens outlive a rename.
 pub async fn update(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     hops: web::Data<config::proxying::Proxying>,
     path: web::Path<String>,
@@ -496,12 +470,8 @@ pub async fn update(
                 .to_owned(),
         ));
     }
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
 
@@ -803,17 +773,12 @@ pub async fn update(
 /// The realm's theme tokens, for the console that edits them.
 pub async fn theme(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = store::providers::realms::theme_of(&transaction, &realm_id)
@@ -827,7 +792,6 @@ pub async fn theme(
 /// executable enough that this door is the security boundary.
 pub async fn set_theme(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     body: web::Json<serde_json::Value>,
@@ -840,12 +804,8 @@ pub async fn set_theme(
             why.to_owned(),
         ));
     }
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     if !store::providers::realms::set_theme(&transaction, &realm_id, Some(&asked))
@@ -861,17 +821,12 @@ pub async fn set_theme(
 /// Back to the default look.
 pub async fn clear_theme(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     if !store::providers::realms::set_theme(&transaction, &realm_id, None)

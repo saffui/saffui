@@ -2,12 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use secrecy::SecretBox;
 use serde_json::{Map, Value};
 use store::providers::{clients, consents, realms, sessions, users};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::account::{
     Changing, FRESH_SIGN_IN_SECONDS, OwnFactor, OwnFactors, SignInStanding, Unchanged, Unread,
@@ -143,7 +142,7 @@ pub fn judge_person(
 /// The person is the one the token's login belongs to, read off that login and
 /// never off the subject.
 pub async fn establish_account_caller(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: TenantContext,
     verified: &Verified,
     now: DateTime<Utc>,
@@ -184,7 +183,7 @@ fn compose_step_up(standing: &SignInStanding) -> StepUp {
 /// What the caller's login still has to prove before a sensitive change, judged
 /// against the flow the account console signs in with.
 pub async fn find_needed_step_up(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
 ) -> Result<Option<StepUp>, Unread> {
     let standing = read_sign_in_standing(
@@ -203,7 +202,7 @@ pub async fn find_needed_step_up(
 /// All of it, since it is theirs, with nothing held back by scope. The subject is
 /// left out: it may be pairwise, and the console has no use for it.
 pub async fn read_me(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
 ) -> Result<Map<String, Value>, Unread> {
     let person = users::load(transaction, &caller.user_id)
@@ -237,7 +236,7 @@ pub enum Unmade {
 /// A wrong current password has written its count against the lock by the time it
 /// is refused, and the caller commits that count.
 pub async fn change_caller_password(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     caller: &AccountCaller,
     from: Option<&str>,
@@ -278,7 +277,7 @@ pub async fn change_caller_password(
 /// What the caller holds to sign in with, judged against the flow the account
 /// console signs in with.
 pub async fn read_caller_factors(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
 ) -> Result<OwnFactors, Unremoved> {
     own_factors(
@@ -296,7 +295,7 @@ pub async fn read_caller_factors(
 /// The removal judges the login itself, under the lock on the person's factors, so
 /// the level to step up to is read only once it has refused.
 pub async fn remove_caller_factor(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
     factor: OwnFactor<'_>,
 ) -> Result<(), Unmade> {
@@ -388,7 +387,7 @@ pub struct HeldLogin {
 /// The caller's logins that still stand, newest first, each with what its
 /// applications still hold from it.
 pub async fn list_caller_logins(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
 ) -> Result<Vec<HeldLogin>, Unread> {
     let now = caller.now.timestamp();
@@ -452,7 +451,7 @@ pub enum Unended {
 /// once the ending has committed, the way a logout does it. Named through the
 /// caller, so an identifier from somebody else's listing reaches nothing.
 pub async fn end_caller_login(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
     signing: Option<&Signing<'_>>,
     issuer: &str,
@@ -479,7 +478,7 @@ pub async fn end_caller_login(
 /// applications got from them, and hand back how many ended and the logout notices
 /// their applications are owed.
 pub async fn end_caller_other_logins(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
     signing: Option<&Signing<'_>>,
     issuer: &str,
@@ -515,7 +514,7 @@ pub async fn end_caller_other_logins(
 /// login and every other application alone, and hand back the logout notice the
 /// application is owed for that login.
 pub async fn revoke_caller_grant(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
     signing: Option<&Signing<'_>>,
     issuer: &str,
@@ -536,7 +535,7 @@ pub async fn revoke_caller_grant(
 /// registered where to be told; None when it held nothing there. The notice names the
 /// login, which reads the same after the grant is gone.
 async fn take_back_grant(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
     signing: Option<&Signing<'_>>,
     issuer: &str,
@@ -651,7 +650,7 @@ pub struct HeldApplication {
 /// The applications that hold something of the caller, by name, leaving out the realm's
 /// own consoles.
 pub async fn list_caller_applications(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
     consoles: &[String],
 ) -> Result<Vec<HeldApplication>, Unread> {
@@ -707,7 +706,7 @@ pub async fn list_caller_applications(
 /// Withdraw what the caller agreed an application may have. What it already holds keeps
 /// working, and its next sign-in asks again where the application asks at all.
 pub async fn withdraw_caller_consent(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
     client_id: &str,
     consoles: &[String],
@@ -726,7 +725,7 @@ pub async fn withdraw_caller_consent(
 /// is owed, one for each login it was signed in through. A console of the realm's is
 /// not taken back here: ending the login is how it goes.
 pub async fn take_back_caller_access(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     caller: &AccountCaller,
     signing: Option<&Signing<'_>>,
     issuer: &str,

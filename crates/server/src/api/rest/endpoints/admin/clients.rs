@@ -2,14 +2,13 @@ use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use models::paging::PagingParams;
 use serde_json::json;
 use services::admin::clients::{
     self as registry, CibaOptIn, Gates, Reshape, Secret, Spec, Unregistrable,
 };
 use store::query::list_query::{ListQuery, SortDirection};
-use store::tenancy::Tenancy;
+use store::tenancy::{Tenancy, UnitOfWork};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::{ClientBrief, ClientSpec};
@@ -17,7 +16,6 @@ use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     paging: web::Query<PagingParams>,
@@ -26,9 +24,8 @@ pub async fn list(
     let window = paging
         .window()
         .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let query = ListQuery::new(window).sorted_by("client_id", SortDirection::Ascending);
@@ -49,14 +46,12 @@ pub async fn list(
 
 pub async fn get(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, client_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let found = registry::get(&transaction, &client_id)
@@ -70,7 +65,6 @@ pub async fn get(
 /// once and never again.
 pub async fn create(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
@@ -87,9 +81,8 @@ pub async fn create(
         })?;
     let spec = spec_of(&asked)?;
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let (client, secret) = registry::register(
@@ -180,7 +173,6 @@ fn gates_of(asked: &ClientSpec) -> Result<Gates, ApiError> {
 
 pub async fn update(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     body: web::Json<ClientSpec>,
@@ -188,9 +180,8 @@ pub async fn update(
     let (realm_id, client_id) = path.into_inner();
     let asked = body.into_inner();
     refuse_a_cut_in_the_future(asked.not_before)?;
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let reshape = Reshape {
@@ -230,7 +221,7 @@ pub async fn update(
 /// What the realm signs responses with, read in the answer's own transaction so
 /// the console is offered exactly what the next issuance will accept.
 async fn response_signing_algorithms(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
 ) -> Result<Vec<crypto::provider::SignAlg>, ApiError> {
     services::realm::active_signing_algorithms(transaction)
         .await
@@ -257,15 +248,13 @@ pub(super) fn refuse_a_cut_in_the_future(asked: Option<i32>) -> Result<(), ApiEr
 
 pub async fn rotate_secret(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, client_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let secret = registry::rotate_secret(&transaction, sealing.provider.as_ref(), &client_id)
@@ -277,14 +266,12 @@ pub async fn rotate_secret(
 
 pub async fn remove(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, client_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     if !registry::remove(&transaction, &client_id)

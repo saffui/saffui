@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 
 use crate::error::{StoreError, StoreResult};
 
@@ -53,7 +53,7 @@ impl Settled {
 ///
 /// The same happening told again adds nothing, nor does another happening the
 /// same change wrote, nor one about a person no longer held.
-pub async fn note(transaction: &Transaction<'_>, noted: &Noted<'_>) -> StoreResult<()> {
+pub async fn note(transaction: &UnitOfWork, noted: &Noted<'_>) -> StoreResult<()> {
     transaction
         .execute(
             "INSERT INTO security_notices \
@@ -80,7 +80,7 @@ pub async fn note(transaction: &Transaction<'_>, noted: &Noted<'_>) -> StoreResu
 /// The notices due, oldest first, claimed for this pass the way the outbox claims
 /// its tellings: the next attempt moves out before anything is sent.
 pub async fn claim_due(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ceiling: i64,
     backoff_seconds: i64,
 ) -> StoreResult<Vec<HeldNotice>> {
@@ -115,11 +115,7 @@ pub async fn claim_due(
 }
 
 /// Settle a notice for good.
-pub async fn settle(
-    transaction: &Transaction<'_>,
-    event_id: i64,
-    settled: Settled,
-) -> StoreResult<()> {
+pub async fn settle(transaction: &UnitOfWork, event_id: i64, settled: Settled) -> StoreResult<()> {
     transaction
         .execute(
             "UPDATE security_notices SET state = $2 WHERE event_id = $1",
@@ -133,7 +129,7 @@ pub async fn settle(
 /// Take away the notices settled about happenings before `cutoff`, and say how
 /// many went. A notice still pending is still owed.
 pub async fn drop_settled_before(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     cutoff: DateTime<Utc>,
 ) -> StoreResult<u64> {
     transaction

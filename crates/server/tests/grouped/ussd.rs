@@ -14,7 +14,6 @@ const SECRET: &str = "a-gateway-secret-of-length";
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -37,8 +36,7 @@ fn within() -> TenantContext {
 /// A CIBA client, a proven phone, and a gateway that knows the secret.
 async fn arranged(plane: &Plane) {
     use models::entities::attributes::AttributeValue;
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await
         .unwrap()
@@ -249,8 +247,7 @@ async fn an_unanchored_answer_buys_nothing_and_a_refusal_lands() {
     let _shown = opened(&plane, "M-2").await;
     dialled(&plane, Some(SECRET), "s10", "+22890123456", "").await;
     {
-        let mut connection = plane.connection().await;
-        let transaction = plane.scoped(&mut connection, &within()).await;
+        let transaction = plane.scoped(&within()).await;
         transaction
             .execute(
                 "UPDATE backchannel_requests SET expires_at = now() - interval '1 second' \

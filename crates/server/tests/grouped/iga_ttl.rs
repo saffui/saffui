@@ -12,7 +12,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -50,21 +49,14 @@ async fn asked(
 }
 
 async fn walked(plane: &Plane) {
-    server::jobs::deliver_every_realm(
-        &plane.pool(),
-        &plane.tenancy(),
-        &support::sealing(),
-        &support::origin(),
-        1,
-    )
-    .await;
+    server::jobs::deliver_every_realm(&plane.tenancy(), &support::sealing(), &support::origin(), 1)
+        .await;
 }
 
 async fn planted_role(plane: &Plane, role: &str) {
     use models::auditable::AuditableModel;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let model = models::entities::authz::RoleMutationModel {
         name: role.into(),
@@ -85,9 +77,8 @@ async fn planted_role(plane: &Plane, role: &str) {
 }
 
 async fn roles_of(plane: &Plane, user: &str) -> Vec<String> {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::roles::effective_roles(&transaction, user)
         .await

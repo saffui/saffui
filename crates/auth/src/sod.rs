@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use store::providers::sod::{SodException, SodRule};
+use store::tenancy::UnitOfWork;
 
 /// One toxic combination actually reached: the rule, and the members of
 /// its set this person holds.
@@ -64,7 +64,7 @@ pub enum Toxic {
 /// changed them: an offence no exception covers aborts the change. Callers
 /// take the per-person hold first, so two halves of a pair cannot each
 /// weigh a world without the other.
-pub async fn weigh(transaction: &Transaction<'_>, user_id: &str) -> Result<(), Toxic> {
+pub async fn weigh(transaction: &UnitOfWork, user_id: &str) -> Result<(), Toxic> {
     let rules = store::providers::sod::rules(transaction)
         .await
         .map_err(|_| Toxic::Backend)?;
@@ -79,7 +79,7 @@ pub async fn weigh(transaction: &Transaction<'_>, user_id: &str) -> Result<(), T
 /// no enabled rule names one of them, the change cannot have brought an offence
 /// about, and nobody is weighed: that is the common case, and it costs one read.
 pub async fn weigh_everyone(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     people: &[String],
     arriving: &[String],
 ) -> Result<(), Toxic> {
@@ -114,7 +114,7 @@ pub async fn weigh_everyone(
 /// The person is held only once an enabled rule names a role that would
 /// arrive, so a grant no rule concerns costs a read and takes no lock.
 pub async fn weigh_grant(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     role_id: &str,
 ) -> Result<(), Toxic> {
@@ -171,7 +171,7 @@ pub async fn weigh_grant(
 /// Each receives the same roles and none holds an exception yet, so one
 /// reading answers for all of them, and a set that breaks a separation refuses
 /// the person instead of seating them in breach. The caller holds the realm.
-pub async fn weigh_newcomer(transaction: &Transaction<'_>) -> Result<(), Toxic> {
+pub async fn weigh_newcomer(transaction: &UnitOfWork) -> Result<(), Toxic> {
     let rules = store::providers::sod::rules(transaction)
         .await
         .map_err(|_| Toxic::Backend)?;
@@ -191,7 +191,7 @@ pub async fn weigh_newcomer(transaction: &Transaction<'_>) -> Result<(), Toxic> 
 }
 
 async fn weigh_against(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     rules: &[SodRule],
     user_id: &str,
 ) -> Result<(), Toxic> {

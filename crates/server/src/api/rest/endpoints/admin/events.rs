@@ -6,7 +6,6 @@ use std::collections::{HashSet, VecDeque};
 use actix_web::{HttpRequest, HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use models::paging::PagingParams;
 use store::tenancy::{Tenancy, TenantContext};
 
@@ -35,8 +34,8 @@ fn live_events_replay_limit(asked: &LiveEventsReplayQuery) -> Result<i64, ApiErr
 fn to_live_event_summary(
     tenant: &str,
     event: &store::providers::outbox::OutboxEvent,
-) -> crate::live::Told {
-    crate::live::Told {
+) -> store::live::Told {
+    store::live::Told {
         tenant: tenant.to_owned(),
         realm: event.realm_id.clone(),
         event_id: event.event_id,
@@ -48,7 +47,6 @@ fn to_live_event_summary(
 
 pub async fn list_sign_ins(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     paging: web::Query<PagingParams>,
@@ -57,15 +55,8 @@ pub async fn list_sign_ins(
     let window = paging
         .window()
         .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
-    let mut connection = pool
-        .get()
-        .await
-        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
 
@@ -106,7 +97,6 @@ pub async fn list_sign_ins(
 /// a connector replay.
 pub async fn replay_live_events(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     query: web::Query<LiveEventsReplayQuery>,
@@ -118,12 +108,8 @@ pub async fn replay_live_events(
         return Err(ApiError::new(ErrorCode::BadRequest));
     }
     let limit = live_events_replay_limit(&asked)?;
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     let stored_events =
@@ -150,10 +136,9 @@ pub async fn replay_live_events(
 pub async fn stream(
     admin: web::ReqData<Admin>,
     request: HttpRequest,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
-    feed: Option<web::Data<tokio::sync::broadcast::Sender<crate::live::Told>>>,
+    feed: Option<web::Data<tokio::sync::broadcast::Sender<store::live::Told>>>,
 ) -> HttpResponse {
     let Some(feed) = feed else {
         return HttpResponse::ServiceUnavailable()
@@ -172,13 +157,7 @@ pub async fn stream(
     let mut replay_events = VecDeque::new();
     let mut has_more_replay_events = false;
     if last_event_id > 0 {
-        let Ok(mut connection) = pool.get().await else {
-            return HttpResponse::InternalServerError().finish();
-        };
-        let Ok(transaction) = tenancy
-            .transaction(&mut connection, &TenantContext::new(&tenant, &realm_id))
-            .await
-        else {
+        let Ok(transaction) = tenancy.begin(&TenantContext::new(&tenant, &realm_id)).await else {
             return HttpResponse::InternalServerError().finish();
         };
         let Ok(stored_events) = store::providers::outbox::list_events_after_id(
@@ -285,17 +264,12 @@ pub async fn stream(
 /// The dead-letter queue: every telling given up on, newest first.
 pub async fn dead_letters(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = store::providers::outbox::dead_list(&transaction, 200)
@@ -319,17 +293,12 @@ pub async fn dead_letters(
 /// Put one dead telling back in the queue, due at once.
 pub async fn requeue(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, i64)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, event_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     let requeued = store::providers::outbox::requeue(&transaction, event_id)
@@ -370,7 +339,6 @@ const REPLAY_CEILING: i64 = 500;
 /// side's dedup makes the operation safe to repeat.
 pub async fn redeliver_to_connector(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<crate::api::config::Sealing>,
     egress: web::Data<config::serving::Egress>,
@@ -379,12 +347,8 @@ pub async fn redeliver_to_connector(
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, alias) = path.into_inner();
     let asked = body.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let context = TenantContext::new(&admin.context.tenant.tenant, &realm_id);
-    let transaction = tenancy
-        .transaction(&mut connection, &context)
-        .await
-        .map_err(|_| internal())?;
+    let transaction = tenancy.begin(&context).await.map_err(|_| internal())?;
 
     let row = store::providers::brokering::provider_by_alias(&transaction, &alias)
         .await

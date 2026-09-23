@@ -16,7 +16,6 @@ fn mounted(plane: &Plane) -> Mounted {
 /// what the wider setting is for.
 fn mounted_dialling(plane: &Plane, egress: Egress) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -1662,12 +1661,11 @@ async fn login_step_while_another_round_ends_it(
     auth_session: &str,
     body: serde_json::Value,
 ) -> (StatusCode, serde_json::Value, Vec<String>) {
-    let mut connection = plane.connection().await;
     let other_round = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&store::tenancy::TenantContext::new(
+            support::TENANT,
+            support::REALM,
+        ))
         .await;
     assert!(
         store::providers::login::finish(&other_round, auth_session)
@@ -3660,12 +3658,11 @@ async fn a_required_key_is_enrolled_and_then_lets_the_subject_in() {
 
     // The key's model and its attestation format were kept beside it.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         let kept = store::providers::webauthn::of_user(&transaction, support::SUBJECT)
             .await
@@ -4280,12 +4277,11 @@ async fn the_profile_scope_releases_everything_the_realm_holds_of_it() {
 
     let plane = Plane::with_actions(&[]).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         let mut user = store::providers::users::load(&transaction, support::SUBJECT)
             .await
@@ -4435,12 +4431,11 @@ async fn a_claim_asked_by_name_is_released_within_what_the_client_may_have() {
 async fn a_scope_of_another_protocol_entitles_no_claim_asked_by_name() {
     let plane = Plane::with_actions(&[]).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         store::providers::client_scopes::create_scope(
             &transaction,
@@ -4661,12 +4656,11 @@ async fn the_address_scope_releases_one_object_of_what_is_held() {
 
     let plane = Plane::with_actions(&[]).await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         let mut user = store::providers::users::load(&transaction, support::SUBJECT)
             .await
@@ -5735,12 +5729,11 @@ async fn a_pushed_request_is_spent_once_by_the_client_that_pushed_it() {
         .expect("a reference")
         .to_owned();
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         transaction
             .execute(
@@ -5798,12 +5791,11 @@ async fn reshape_realm(
     plane: &Plane,
     reshape: impl FnOnce(&mut models::entities::realm::RealmModel),
 ) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&store::tenancy::TenantContext::new(
+            support::TENANT,
+            support::REALM,
+        ))
         .await;
     let mut realm = store::providers::realms::load(&transaction, support::REALM)
         .await
@@ -6116,12 +6108,11 @@ async fn reshape_client(
     client_id: &str,
     reshape: impl FnOnce(&mut models::entities::client::ClientModel),
 ) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&store::tenancy::TenantContext::new(
+            support::TENANT,
+            support::REALM,
+        ))
         .await;
     let mut client = store::providers::clients::load(&transaction, client_id)
         .await
@@ -6753,12 +6744,11 @@ async fn a_demanded_password_change_happens_at_the_login_and_a_stale_one_demands
     })
     .await;
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         transaction
             .execute(
@@ -6835,12 +6825,11 @@ async fn the_clients_cut_refuses_its_tokens_and_spares_its_neighbours() {
     assert_eq!(status, StatusCode::OK, "{told}");
 
     async fn strike(plane: &Plane, client_id: &str, at: Option<i64>) {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         let mut client = store::providers::clients::load(&transaction, client_id)
             .await
@@ -7021,12 +7010,11 @@ async fn a_clients_registered_defaults_speak_when_the_request_is_silent() {
         plane: &Plane,
         change: impl FnOnce(&mut models::entities::client::ClientModel),
     ) {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
             .await
@@ -7329,12 +7317,11 @@ async fn only_a_factor_can_be_asked_for_and_only_with_a_screen() {
     }
 
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, support::REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(
+                support::TENANT,
+                support::REALM,
+            ))
             .await;
         for (action, enabled) in [
             (RequiredAction::ConfigureTotp, false),

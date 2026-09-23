@@ -44,10 +44,7 @@ fn session(id: &str) -> UserSessionModel {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_login_request_is_spent_once_by_its_provider_before_it_runs_out() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     let now = now_in_seconds();
     let open = SamlLoginRequest {
         request_id: "_open".into(),
@@ -113,10 +110,7 @@ async fn a_login_request_is_spent_once_by_its_provider_before_it_runs_out() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_logout_request_is_spent_once_and_keeps_where_the_browser_goes() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     let now = now_in_seconds();
     let placed = SamlLogoutRequest {
         request_id: "_logout-3".into(),
@@ -183,10 +177,7 @@ async fn a_logout_request_is_spent_once_and_keeps_where_the_browser_goes() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_broker_session_is_found_by_the_name_a_logout_gives_and_goes_with_its_login() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     for id in ["s-1", "s-2", "s-3", "s-4"] {
         sessions::open(&transaction, &session(id)).await.unwrap();
     }

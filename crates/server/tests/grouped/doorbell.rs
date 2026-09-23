@@ -14,7 +14,6 @@ const SSO_COOKIE: &str = server::api::rest::endpoints::protocol::binding::SSO_SE
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -35,8 +34,7 @@ fn within() -> TenantContext {
 }
 
 async fn opted_in(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await
         .unwrap()
@@ -55,8 +53,7 @@ async fn opted_in(plane: &Plane) {
 
 /// A live browser login for ada, whose id is what the SSO cookie carries.
 async fn signed_in_session(plane: &Plane) -> String {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let session_id = "a-browser-session".to_owned();
     store::providers::sessions::open(
         &transaction,

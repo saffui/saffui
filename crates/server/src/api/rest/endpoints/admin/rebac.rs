@@ -2,7 +2,6 @@ use crate::api::rest::endpoints::within;
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::json;
 use services::rebac::{Unpublishable, Unwritable};
@@ -14,14 +13,12 @@ use crate::middleware::admin_guard::Admin;
 /// compiled half, which is the engine's shape and not an API.
 pub async fn schema(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let stored = store::providers::rebac::load_schema(&transaction)
@@ -45,15 +42,13 @@ pub struct SchemaBody {
 /// refused in the compiler's own words.
 pub async fn publish(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     body: web::Json<SchemaBody>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let source = body.into_inner().source;
@@ -104,15 +99,13 @@ fn refused_write(why: Unwritable) -> ApiError {
 
 pub async fn relate(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     body: web::Json<EdgeBody>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let edge = body.into_inner();
@@ -132,15 +125,13 @@ pub async fn relate(
 
 pub async fn unrelate(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     body: web::Json<EdgeBody>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let edge = body.into_inner();
@@ -171,15 +162,13 @@ pub struct EdgeQuery {
 /// and subject sets alike, without walking anything.
 pub async fn subjects(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     asked: web::Query<EdgeQuery>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = store::providers::rebac::subjects(
@@ -222,7 +211,6 @@ fn named(held: &Option<String>) -> Option<&str> {
 /// query names: what stands, never what the engine derives from it.
 pub async fn list_tuples(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     paging: web::Query<models::paging::PagingParams>,
@@ -232,9 +220,8 @@ pub async fn list_tuples(
     let window = paging
         .window()
         .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = store::providers::rebac::tuples(

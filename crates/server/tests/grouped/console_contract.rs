@@ -15,7 +15,6 @@ const SPARE_APP: &str = "cred-contract";
 
 fn mounted(plane: &Plane) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -39,12 +38,8 @@ async fn plant_what_the_console_lists(plane: &Plane) {
     plane.enrol_soft_passkey().await;
     plane.enrol_soft_passkey().await;
     plane.enrol_totp(SPARE_APP, support::TOTP_SECRET).await;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     store::providers::consents::keep(
         &transaction,

@@ -17,7 +17,7 @@ use crypto::provider::SignAlg;
 use store::providers::{realms, tenants};
 use store::query::list_query::ListQuery;
 use store::schema::migrations;
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 use tokio_postgres::{Config, NoTls};
 
 static DATABASE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -91,10 +91,9 @@ fn realm(tenant: &str, id: &str) -> RealmModel {
 }
 
 /// Plant a tenant and its realms, each under its own scope.
-async fn plant(pool: &Pool, tenancy: &Tenancy, name: &str, realm_ids: &[&str]) {
-    let mut connection = pool.get().await.unwrap();
+async fn plant(tenancy: &Tenancy, name: &str, realm_ids: &[&str]) {
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide(name))
+        .begin(&TenantContext::tenant_wide(name))
         .await
         .unwrap();
 
@@ -113,12 +112,11 @@ async fn plant(pool: &Pool, tenancy: &Tenancy, name: &str, realm_ids: &[&str]) {
 async fn a_tenant_reads_itself_back() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant(&pool, &tenancy, "acme", &["one"]).await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant(&tenancy, "acme", &["one"]).await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide("acme"))
+        .begin(&TenantContext::tenant_wide("acme"))
         .await
         .unwrap();
 
@@ -148,12 +146,11 @@ async fn a_tenant_reads_itself_back() {
 async fn another_tenant_reads_as_nothing() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant(&pool, &tenancy, "acme", &["one", "two"]).await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant(&tenancy, "acme", &["one", "two"]).await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide("globex"))
+        .begin(&TenantContext::tenant_wide("globex"))
         .await
         .unwrap();
 
@@ -182,13 +179,12 @@ async fn another_tenant_reads_as_nothing() {
 async fn a_model_naming_another_tenant_is_refused() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant(&pool, &tenancy, "acme", &[]).await;
-    plant(&pool, &tenancy, "globex", &[]).await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant(&tenancy, "acme", &[]).await;
+    plant(&tenancy, "globex", &[]).await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide("acme"))
+        .begin(&TenantContext::tenant_wide("acme"))
         .await
         .unwrap();
 
@@ -206,13 +202,12 @@ async fn a_model_naming_another_tenant_is_refused() {
 async fn a_page_is_bounded_and_its_total_is_not() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant(&pool, &tenancy, "acme", &["a", "b", "c", "d", "e"]).await;
-    plant(&pool, &tenancy, "globex", &["x", "y"]).await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant(&tenancy, "acme", &["a", "b", "c", "d", "e"]).await;
+    plant(&tenancy, "globex", &["x", "y"]).await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide("acme"))
+        .begin(&TenantContext::tenant_wide("acme"))
         .await
         .unwrap();
 
@@ -256,12 +251,11 @@ async fn a_page_is_bounded_and_its_total_is_not() {
 async fn a_state_change_bumps_the_stored_version() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant(&pool, &tenancy, "acme", &[]).await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant(&tenancy, "acme", &[]).await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide("acme"))
+        .begin(&TenantContext::tenant_wide("acme"))
         .await
         .unwrap();
 
@@ -278,9 +272,8 @@ async fn a_state_change_bumps_the_stored_version() {
     transaction.commit().await.unwrap();
 
     // A tenant that is not there is not an error, and says nothing changed.
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide("nobody"))
+        .begin(&TenantContext::tenant_wide("nobody"))
         .await
         .unwrap();
     assert!(
@@ -319,14 +312,9 @@ fn user(tenant: &str, realm: &str, id: &str) -> UserModel {
 }
 
 /// Plant a tenant, a realm, and whatever lives in it.
-/// A pool guard stays borrowed until it leaves scope, and shadowing it does not
-/// release it. A test that takes more of them in a row than the pool holds waits
-/// on one that is never coming back, so each is dropped once its transaction has
-/// committed.
-async fn plant_realm(pool: &Pool, tenancy: &Tenancy, name: &str, realm_id: &str) {
-    let mut connection = pool.get().await.unwrap();
+async fn plant_realm(tenancy: &Tenancy, name: &str, realm_id: &str) {
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide(name))
+        .begin(&TenantContext::tenant_wide(name))
         .await
         .unwrap();
     tenants::create(&transaction, &tenant(name)).await.unwrap();
@@ -343,13 +331,12 @@ async fn plant_realm(pool: &Pool, tenancy: &Tenancy, name: &str, realm_id: &str)
 async fn a_user_is_found_by_what_a_login_arrives_with() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant_realm(&pool, &tenancy, "acme", "main").await;
-    plant_realm(&pool, &tenancy, "globex", "globex-main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant_realm(&tenancy, "acme", "main").await;
+    plant_realm(&tenancy, "globex", "globex-main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
     users::create(&transaction, &user("acme", "main", "ada"))
@@ -383,12 +370,8 @@ async fn a_user_is_found_by_what_a_login_arrives_with() {
     transaction.commit().await.unwrap();
 
     // The same name in another tenant's realm is a different user, and free.
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new("globex", "globex-main"),
-        )
+        .begin(&TenantContext::new("globex", "globex-main"))
         .await
         .unwrap();
     assert!(users::load(&transaction, "ada").await.unwrap().is_none());
@@ -407,12 +390,11 @@ async fn a_user_is_found_by_what_a_login_arrives_with() {
 async fn an_update_moves_the_name_and_never_the_identity() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant_realm(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant_realm(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
     users::create(&transaction, &user("acme", "main", "ada"))
@@ -460,12 +442,11 @@ async fn an_update_moves_the_name_and_never_the_identity() {
 async fn a_loaded_client_carries_no_credential() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant_realm(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant_realm(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
 
@@ -527,12 +508,11 @@ async fn a_loaded_client_carries_no_credential() {
 async fn rotating_a_secret_stamps_when_it_happened() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant_realm(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant_realm(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
 
@@ -610,11 +590,10 @@ fn password(tenant: &str, realm: &str, id: &str, priority: i64) -> CredentialMod
     }
 }
 
-async fn realm_with_user(pool: &Pool, tenancy: &Tenancy, name: &str, realm_id: &str) {
-    plant_realm(pool, tenancy, name, realm_id).await;
-    let mut connection = pool.get().await.unwrap();
+async fn realm_with_user(tenancy: &Tenancy, name: &str, realm_id: &str) {
+    plant_realm(tenancy, name, realm_id).await;
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new(name, realm_id))
+        .begin(&TenantContext::new(name, realm_id))
         .await
         .unwrap();
     users::create(&transaction, &user(name, realm_id, "ada"))
@@ -630,12 +609,11 @@ async fn realm_with_user(pool: &Pool, tenancy: &Tenancy, name: &str, realm_id: &
 async fn credentials_come_back_in_the_order_they_are_tried() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    realm_with_user(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    realm_with_user(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
 
@@ -680,12 +658,11 @@ async fn credentials_come_back_in_the_order_they_are_tried() {
 async fn the_parameters_and_the_rank_survive_the_round_trip() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    realm_with_user(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    realm_with_user(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
     credentials::create(&transaction, &otp_credential("acme", "main", "totp-1", 5))
@@ -718,12 +695,11 @@ async fn the_parameters_and_the_rank_survive_the_round_trip() {
 async fn the_parameters_have_to_match_the_kind() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    realm_with_user(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    realm_with_user(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
 
@@ -744,12 +720,11 @@ async fn the_parameters_have_to_match_the_kind() {
 async fn replacing_the_secret_replaces_its_parameters() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    realm_with_user(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    realm_with_user(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
     credentials::create(&transaction, &otp_credential("acme", "main", "totp-1", 0))
@@ -802,12 +777,11 @@ async fn replacing_the_secret_replaces_its_parameters() {
 async fn the_kinds_held_are_answerable_without_the_material() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    realm_with_user(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    realm_with_user(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
 
@@ -852,10 +826,7 @@ async fn the_kinds_held_are_answerable_without_the_material() {
 
 /// What was announced about a person's credentials, oldest first, as a type and
 /// what happened to it.
-async fn announced_changes(
-    transaction: &deadpool_postgres::Transaction<'_>,
-    user_id: &str,
-) -> Vec<String> {
+async fn announced_changes(transaction: &UnitOfWork, user_id: &str) -> Vec<String> {
     transaction
         .query(
             "SELECT concat_ws(' ', payload->>'credential_type', payload->>'change_type') \
@@ -878,17 +849,16 @@ async fn announced_changes(
 async fn each_credential_change_is_announced_once_with_what_happened() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    realm_with_user(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    realm_with_user(&tenancy, "acme", "main").await;
     let crypto = OpenSslProvider::new(&CryptoConfig {
         fips_required: false,
         pkcs11: None,
     })
     .unwrap();
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
 
@@ -997,26 +967,23 @@ async fn each_credential_change_is_announced_once_with_what_happened() {
 async fn credentials_belong_to_their_realm_and_to_their_user() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    realm_with_user(&pool, &tenancy, "acme", "main").await;
-    realm_with_user(&pool, &tenancy, "globex", "globex-main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    realm_with_user(&tenancy, "acme", "main").await;
+    realm_with_user(&tenancy, "globex", "globex-main").await;
 
     // A second realm under the same tenant, so the read half of the rule is
     // exercised and not only the tenant half.
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide("acme"))
+        .begin(&TenantContext::tenant_wide("acme"))
         .await
         .unwrap();
     realms::create(&transaction, &realm("acme", "other"))
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
     credentials::create(&transaction, &password("acme", "main", "pw", 0))
@@ -1026,9 +993,8 @@ async fn credentials_belong_to_their_realm_and_to_their_user() {
 
     // Another realm of the same tenant sees none of them. Crossing tenants
     // would be isolated by the tenant alone, so it proves only half the rule.
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "other"))
+        .begin(&TenantContext::new("acme", "other"))
         .await
         .unwrap();
     assert!(
@@ -1052,14 +1018,9 @@ async fn credentials_belong_to_their_realm_and_to_their_user() {
         "nor the kinds they hold"
     );
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new("globex", "globex-main"),
-        )
+        .begin(&TenantContext::new("globex", "globex-main"))
         .await
         .unwrap();
     assert!(
@@ -1078,9 +1039,8 @@ async fn credentials_belong_to_their_realm_and_to_their_user() {
     transaction.commit().await.unwrap();
 
     // Removing the user removes what they held.
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
     assert!(users::delete(&transaction, "ada").await.unwrap());
@@ -1103,12 +1063,11 @@ async fn credentials_belong_to_their_realm_and_to_their_user() {
 async fn a_realms_rules_survive_being_written_and_read_back() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant_realm(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant_realm(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide("acme"))
+        .begin(&TenantContext::tenant_wide("acme"))
         .await
         .unwrap();
 
@@ -1168,12 +1127,11 @@ async fn a_realms_rules_survive_being_written_and_read_back() {
 async fn a_clients_registrations_survive_being_written_and_read_back() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant_realm(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant_realm(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
 
@@ -1258,7 +1216,7 @@ async fn a_clients_registrations_survive_being_written_and_read_back() {
     // check refuses to store it whatever wrote the row. Its own transaction,
     // because a refused statement aborts the one it was issued in.
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
     assert!(
@@ -1282,12 +1240,11 @@ async fn a_clients_registrations_survive_being_written_and_read_back() {
 async fn the_raw_column_yields_nothing_a_client_could_present() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant_realm(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant_realm(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
 
@@ -1353,12 +1310,11 @@ async fn the_raw_column_yields_nothing_a_client_could_present() {
 async fn a_row_written_before_the_migration_converts_when_it_authenticates() {
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant_realm(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant_realm(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
 
@@ -1464,12 +1420,11 @@ async fn a_required_action_is_struck_alone() {
 
     let _turn = DATABASE.lock().await;
     let pool = pool().await;
-    let tenancy = Tenancy::unpinned();
-    plant_realm(&pool, &tenancy, "acme", "main").await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    plant_realm(&tenancy, "acme", "main").await;
 
-    let mut connection = pool.get().await.unwrap();
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new("acme", "main"))
+        .begin(&TenantContext::new("acme", "main"))
         .await
         .unwrap();
     let mut planted = user("acme", "main", "ada");

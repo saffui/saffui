@@ -41,10 +41,7 @@ fn member(org_id: &str, user_id: &str, kind: OrgMembershipType) -> OrganizationM
 /// Plant a second realm of the same tenant, so a boundary test crosses a realm
 /// that exists rather than one that does not.
 async fn second_realm(fixture: &Fixture) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide("acme")).await;
     let realm = RealmCreateModel {
         name: "other".into(),
         display_name: "Other".into(),
@@ -56,17 +53,13 @@ async fn second_realm(fixture: &Fixture) {
     );
     realms::create(&transaction, &realm).await.unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 }
 
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_organization_comes_back_as_it_was_written() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
@@ -92,10 +85,7 @@ async fn an_organization_comes_back_as_it_was_written() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_claim_does_not_route_until_it_is_proven() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
@@ -170,10 +160,7 @@ async fn a_claim_does_not_route_until_it_is_proven() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn one_domain_answers_for_one_organization() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
@@ -212,10 +199,7 @@ async fn the_same_domain_may_be_claimed_in_another_realm() {
     let fixture = Fixture::with_user().await;
     second_realm(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
         .unwrap();
@@ -231,12 +215,8 @@ async fn the_same_domain_may_be_claimed_in_another_realm() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     organizations::create(&transaction, &org("customer-z", "other"))
         .await
         .unwrap();
@@ -272,10 +252,7 @@ async fn the_same_domain_may_be_claimed_in_another_realm() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_domain_is_stored_in_one_casing() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
@@ -297,10 +274,7 @@ async fn a_domain_is_stored_in_one_casing() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_member_comes_back_with_the_roles_it_holds() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
@@ -365,10 +339,7 @@ async fn a_member_comes_back_with_the_roles_it_holds() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_role_granted_in_an_organization_is_not_held_across_the_realm() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
@@ -441,10 +412,7 @@ async fn a_role_granted_in_an_organization_is_not_held_across_the_realm() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_subject_answers_with_the_organizations_it_belongs_to() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         organizations::of_member(&transaction, "ada")
@@ -477,10 +445,7 @@ async fn a_subject_answers_with_the_organizations_it_belongs_to() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_second_add_corrects_how_a_member_belongs() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
@@ -527,15 +492,11 @@ async fn a_second_add_corrects_how_a_member_belongs() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_claim_is_pending_or_proven_and_never_both() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     for (challenge, verified_at, what) in [
         (
@@ -549,10 +510,7 @@ async fn a_claim_is_pending_or_proven_and_never_both() {
             "a claim was recorded as pending and proven at once",
         ),
     ] {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let statement = format!(
             "INSERT INTO organization_domains \
                  (tenant, realm_id, org_id, domain, challenge, verified_at) \
@@ -562,7 +520,6 @@ async fn a_claim_is_pending_or_proven_and_never_both() {
         );
         let refused = transaction.execute(statement.as_str(), &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -571,10 +528,7 @@ async fn a_claim_is_pending_or_proven_and_never_both() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn removing_an_organization_takes_what_hung_from_it() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
@@ -621,10 +575,7 @@ async fn an_organization_is_not_visible_from_another_realm() {
     let fixture = Fixture::with_user().await;
     second_realm(&fixture).await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     organizations::create(&transaction, &org("customer-x", "main"))
         .await
         .unwrap();
@@ -641,12 +592,8 @@ async fn an_organization_is_not_visible_from_another_realm() {
     .await
     .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     assert!(
         organizations::load(&transaction, "customer-x")
             .await

@@ -1,6 +1,6 @@
+use crate::tenancy::UnitOfWork;
 use crypto::envelope::Envelope;
 use crypto::provider::SignAlg;
-use deadpool_postgres::Transaction;
 use models::entities::keys::{
     JweAlgorithm, KeyStatus, KeyUse, RealmEncryptionKey, RealmEncryptionKeyView, RealmSigningKey,
     RealmSigningKeyView,
@@ -19,7 +19,7 @@ const COLUMNS: &str = "tenant, realm_id, kid, algorithm, key_use, status, priori
 
 /// Record a key, sealing its private half.
 pub async fn create(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     key: &RealmSigningKey,
@@ -59,7 +59,7 @@ pub async fn create(
 /// The key a realm signs with, private half opened: the active one of the
 /// algorithm asked for, or of any when none is, highest priority first.
 pub async fn active(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     key_use: KeyUse,
@@ -84,7 +84,7 @@ pub async fn active(
 
 /// One key by the identifier a token carries.
 pub async fn by_kid(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     kid: &str,
@@ -111,7 +111,7 @@ pub async fn by_kid(
 /// opening a private key to answer a public endpoint is work done to throw
 /// away.
 pub async fn published(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     key_use: KeyUse,
 ) -> StoreResult<Vec<RealmSigningKeyView>> {
     let rows = transaction
@@ -133,7 +133,7 @@ pub async fn published(
 /// The plane's view, not the public one: publication hides a disabled key on
 /// purpose, and an administrator auditing what was disabled needs to see it.
 pub async fn held(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     key_use: KeyUse,
 ) -> StoreResult<Vec<RealmSigningKeyView>> {
     let rows = transaction
@@ -160,7 +160,7 @@ pub async fn held(
 /// algorithm's active key alone: a successor of another algorithm would not
 /// succeed it, it would silence it.
 pub async fn rotate(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     next: &RealmSigningKey,
@@ -182,7 +182,7 @@ pub async fn rotate(
 }
 
 /// Stop publishing a key, and stop verifying with it.
-pub async fn disable(transaction: &Transaction<'_>, kid: &str) -> StoreResult<bool> {
+pub async fn disable(transaction: &UnitOfWork, kid: &str) -> StoreResult<bool> {
     let changed = transaction
         .execute(
             "UPDATE realm_signing_keys SET status = 'disabled' WHERE kid = $1",
@@ -237,7 +237,7 @@ fn algorithm(row: &Row) -> StoreResult<crypto::provider::SignAlg> {
 
 /// Write a key this realm publishes to be encrypted to.
 pub async fn create_encryption(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     key: &RealmEncryptionKey,
@@ -271,7 +271,7 @@ pub async fn create_encryption(
 /// By algorithm, because the header names one and a key of another cannot open
 /// what that one closed.
 pub async fn active_encryption(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     algorithm: JweAlgorithm,
@@ -304,7 +304,7 @@ pub async fn active_encryption(
 /// active one and those rotated away, which a party that imported them before the
 /// rotation may still encrypt to. Disabled keys are not opened.
 pub async fn load_usable_encryption_keys(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
 ) -> StoreResult<Vec<RealmEncryptionKey>> {
@@ -335,7 +335,7 @@ pub async fn load_usable_encryption_keys(
 
 /// The keys this realm publishes to be encrypted to.
 pub async fn published_encryption(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
 ) -> StoreResult<Vec<RealmEncryptionKeyView>> {
     let rows = transaction
         .query(
@@ -361,9 +361,7 @@ pub async fn published_encryption(
 
 /// Every encryption key the realm holds, disabled ones included, for the
 /// same audit [`held`] serves on the signing side.
-pub async fn held_encryption(
-    transaction: &Transaction<'_>,
-) -> StoreResult<Vec<RealmEncryptionKeyView>> {
+pub async fn held_encryption(transaction: &UnitOfWork) -> StoreResult<Vec<RealmEncryptionKeyView>> {
     let rows = transaction
         .query(
             "SELECT kid, algorithm, status, public_jwk FROM realm_signing_keys \

@@ -1,9 +1,9 @@
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::client::{ClientScopeModel, ClientScopeMutationModel};
 use store::error::StoreError;
 use store::providers::{client_scopes, clients};
+use store::tenancy::UnitOfWork;
 
 /// Why a scope could not be written. The store underneath flattens every
 /// refusal into a backend error, so this manager verifies before writing,
@@ -52,14 +52,14 @@ fn draw(provider: &dyn CryptoProvider) -> Result<String, Unwritable> {
     Ok(crypto::provider::uuid_from(bytes))
 }
 
-pub async fn scopes(transaction: &Transaction<'_>) -> Result<Vec<ClientScopeModel>, Unwritable> {
+pub async fn scopes(transaction: &UnitOfWork) -> Result<Vec<ClientScopeModel>, Unwritable> {
     client_scopes::list_scopes(transaction)
         .await
         .map_err(|_| Unwritable::Backend)
 }
 
 pub async fn get_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
 ) -> Result<ClientScopeModel, Unwritable> {
     client_scopes::load_scope(transaction, client_scope_id)
@@ -69,7 +69,7 @@ pub async fn get_scope(
 }
 
 pub async fn create_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -92,7 +92,7 @@ pub async fn create_scope(
 }
 
 pub async fn update_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
     by: &str,
     asked: ClientScopeMutationModel,
@@ -119,7 +119,7 @@ pub async fn update_scope(
 }
 
 pub async fn delete_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
 ) -> Result<(), Unwritable> {
     get_scope(transaction, client_scope_id).await?;
@@ -136,7 +136,7 @@ pub async fn delete_scope(
         .ok_or(Unwritable::NotFound)
 }
 
-async fn client_exists(transaction: &Transaction<'_>, client_id: &str) -> Result<(), Unwritable> {
+async fn client_exists(transaction: &UnitOfWork, client_id: &str) -> Result<(), Unwritable> {
     clients::load(transaction, client_id)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -146,7 +146,7 @@ async fn client_exists(transaction: &Transaction<'_>, client_id: &str) -> Result
 
 /// The scopes a client holds, each marked optional or not.
 pub async fn scopes_of_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
 ) -> Result<Vec<(ClientScopeModel, bool)>, Unwritable> {
     client_exists(transaction, client_id).await?;
@@ -157,7 +157,7 @@ pub async fn scopes_of_client(
 
 /// Give a client a scope. Attaching again corrects how it is held.
 pub async fn attach_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     client_scope_id: &str,
     optional: bool,
@@ -172,7 +172,7 @@ pub async fn attach_scope(
 /// Take a scope away from a client. An attachment that was never made is
 /// reported missing rather than silently confirmed.
 pub async fn detach_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     client_scope_id: &str,
 ) -> Result<(), Unwritable> {

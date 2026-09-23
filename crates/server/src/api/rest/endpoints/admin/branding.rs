@@ -3,7 +3,6 @@
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use services::theme::{Unusable, weigh_logo};
 use store::tenancy::Tenancy;
 
@@ -17,7 +16,6 @@ use crate::middleware::admin_guard::Admin;
 /// between the weighing and the keeping.
 pub async fn keep(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     body: web::Bytes,
@@ -25,9 +23,8 @@ pub async fn keep(
     let realm_id = path.into_inner();
     let kind = weigh_logo(&body).map_err(refused)?;
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = store::providers::realms::set_logo(&transaction, &realm_id, Some((&body, kind)))
@@ -43,14 +40,12 @@ pub async fn keep(
 /// Take the mark away; the pages fall back to the letters they drew before.
 pub async fn forget(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = store::providers::realms::set_logo(&transaction, &realm_id, None)
@@ -67,14 +62,12 @@ pub async fn forget(
 /// here: a console draws the mark from the public address like any browser.
 pub async fn describe(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
     let held = store::providers::realms::logo_of(&transaction, &realm_id)

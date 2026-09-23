@@ -14,7 +14,6 @@ const SECRET: &str = "a-webhook-secret-of-decent-length";
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -102,7 +101,6 @@ fn listening() -> (String, Arc<Mutex<Vec<Heard>>>) {
 
 async fn one_pass(plane: &Plane) {
     server::jobs::deliver_every_realm(
-        &plane.pool(),
         &plane.tenancy(),
         &support::sealing(),
         &support::origin(),
@@ -229,12 +227,8 @@ async fn a_happening_lands_signed_filtered_and_redeliverable() {
     // A kind the filter never asked for passes the webhook by, and with
     // nobody else listening the telling is put away, not retried.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::outbox::emit(
             &transaction,

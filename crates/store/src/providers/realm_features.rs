@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 
 use crate::error::{StoreError, StoreResult};
 
@@ -12,7 +12,7 @@ pub struct FeatureWish {
 }
 
 /// Everything this realm has asked for, in slug order.
-pub async fn read_wishes(transaction: &Transaction<'_>) -> StoreResult<Vec<FeatureWish>> {
+pub async fn read_wishes(transaction: &UnitOfWork) -> StoreResult<Vec<FeatureWish>> {
     Ok(transaction
         .query(
             "SELECT slug, enabled, changed_by, changed_at FROM realm_features \
@@ -33,7 +33,7 @@ pub async fn read_wishes(transaction: &Transaction<'_>) -> StoreResult<Vec<Featu
 
 /// Say what this realm wants of one capability.
 pub async fn keep_wish(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     slug: &str,
     enabled: bool,
     by: &str,
@@ -56,7 +56,7 @@ pub async fn keep_wish(
 
 /// Stop saying anything about one capability, which returns the realm to
 /// whatever the process runs. Not the same as asking for it to be off.
-pub async fn forget_wish(transaction: &Transaction<'_>, slug: &str) -> StoreResult<bool> {
+pub async fn forget_wish(transaction: &UnitOfWork, slug: &str) -> StoreResult<bool> {
     Ok(transaction
         .execute("DELETE FROM realm_features WHERE slug = $1", &[&slug])
         .await
@@ -75,10 +75,7 @@ pub async fn forget_wish(transaction: &Transaction<'_>, slug: &str) -> StoreResu
 /// It lives here, at the bottom, because a capability is refused where it is
 /// used and the places it is used run from the login engine to the admin
 /// doors. Every layer above can ask without being handed the answer.
-pub async fn runs_for_realm(
-    transaction: &Transaction<'_>,
-    feature: commons::feature::Feature,
-) -> bool {
+pub async fn runs_for_realm(transaction: &UnitOfWork, feature: commons::feature::Feature) -> bool {
     let process = commons::feature::installed();
     if !process.is_enabled(feature) {
         return false;

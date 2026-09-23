@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::compliance::breach::{BreachRecord, BreachSeverity, BreachStatus};
 use models::compliance::subject_request::{DsarKind, DsarRequest, DsarStatus, Jurisdiction};
 use tokio_postgres::Row;
@@ -10,7 +10,7 @@ const COLUMNS: &str = "request_id, tenant, realm_id, user_id, subject_identifier
                        verified_at, closed_at";
 
 /// Keep a freshly lodged request.
-pub async fn lodge(transaction: &Transaction<'_>, request: &DsarRequest) -> StoreResult<()> {
+pub async fn lodge(transaction: &UnitOfWork, request: &DsarRequest) -> StoreResult<()> {
     let (stage, outcome, reason) = status_columns(&request.status);
     transaction
         .execute(
@@ -41,10 +41,7 @@ pub async fn lodge(transaction: &Transaction<'_>, request: &DsarRequest) -> Stor
     Ok(())
 }
 
-pub async fn load(
-    transaction: &Transaction<'_>,
-    request_id: &str,
-) -> StoreResult<Option<DsarRequest>> {
+pub async fn load(transaction: &UnitOfWork, request_id: &str) -> StoreResult<Option<DsarRequest>> {
     let statement = format!("SELECT {COLUMNS} FROM subject_requests WHERE request_id = $1");
     transaction
         .query_opt(statement.as_str(), &[&request_id])
@@ -56,7 +53,7 @@ pub async fn load(
 
 /// The realm's register, the open requests first and the tightest clock on
 /// top: the order an operator works it in.
-pub async fn list(transaction: &Transaction<'_>) -> StoreResult<Vec<DsarRequest>> {
+pub async fn list(transaction: &UnitOfWork) -> StoreResult<Vec<DsarRequest>> {
     let statement = format!(
         "SELECT {COLUMNS} FROM subject_requests \
          ORDER BY (closed_at IS NOT NULL), due_at, request_id"
@@ -71,7 +68,7 @@ pub async fn list(transaction: &Transaction<'_>) -> StoreResult<Vec<DsarRequest>
 }
 
 /// Write a request back whole, as its lifecycle moved it.
-pub async fn save(transaction: &Transaction<'_>, request: &DsarRequest) -> StoreResult<bool> {
+pub async fn save(transaction: &UnitOfWork, request: &DsarRequest) -> StoreResult<bool> {
     let (stage, outcome, reason) = status_columns(&request.status);
     let written = transaction
         .execute(
@@ -145,7 +142,7 @@ const BREACH_COLUMNS: &str = "breach_id, tenant, realm_id, description, data_cat
 /// Keep a freshly discovered breach, with the jurisdiction its filing draft
 /// will be shaped for.
 pub async fn record_breach(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     breach: &BreachRecord,
     jurisdiction: Jurisdiction,
 ) -> StoreResult<()> {
@@ -180,7 +177,7 @@ pub async fn record_breach(
 }
 
 pub async fn load_breach(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     breach_id: &str,
 ) -> StoreResult<Option<(BreachRecord, Jurisdiction)>> {
     let statement = format!("SELECT {BREACH_COLUMNS} FROM breaches WHERE breach_id = $1");
@@ -195,7 +192,7 @@ pub async fn load_breach(
 /// The register, the ticking clocks first: what awaits a filing on top,
 /// tightest deadline leading.
 pub async fn list_breaches(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
 ) -> StoreResult<Vec<(BreachRecord, Jurisdiction)>> {
     let statement = format!(
         "SELECT {BREACH_COLUMNS} FROM breaches \
@@ -212,10 +209,7 @@ pub async fn list_breaches(
 }
 
 /// Write a breach back whole, as its handling moved it.
-pub async fn save_breach(
-    transaction: &Transaction<'_>,
-    breach: &BreachRecord,
-) -> StoreResult<bool> {
+pub async fn save_breach(transaction: &UnitOfWork, breach: &BreachRecord) -> StoreResult<bool> {
     let written = transaction
         .execute(
             "UPDATE breaches SET subjects_affected = $2, severity = $3, status = $4, \
@@ -269,7 +263,7 @@ fn read_breach(row: Row) -> StoreResult<(BreachRecord, Jurisdiction)> {
 /// The consents granted inside a period, oldest first, capped, with the
 /// period's true total beside them so a cut section says it was cut.
 pub async fn consents_granted_in_period(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     from: i64,
     to: i64,
     cap: i64,
@@ -311,7 +305,7 @@ pub async fn consents_granted_in_period(
 /// The accounts created inside a period, capped the same way. Identifiers
 /// and instants only: a pack for a regulator carries no addresses.
 pub async fn registrations_in_period(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     from: i64,
     to: i64,
     cap: i64,

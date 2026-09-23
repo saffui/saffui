@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use serde_json::Value;
 
 use crate::error::{StoreError, StoreResult};
@@ -17,7 +17,7 @@ pub enum Pushed {
 }
 
 pub async fn keep(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     handle_hash: &str,
     client_id: &str,
     parameters: &Value,
@@ -38,7 +38,7 @@ pub async fn keep(
 
 /// Spend a reference. One statement, so two browsers arriving together cannot
 /// both be served.
-pub async fn spend(transaction: &Transaction<'_>, handle_hash: &str) -> StoreResult<Pushed> {
+pub async fn spend(transaction: &UnitOfWork, handle_hash: &str) -> StoreResult<Pushed> {
     Ok(transaction
         .query_opt(
             "UPDATE pushed_requests SET redeemed_at = now() \
@@ -54,7 +54,7 @@ pub async fn spend(transaction: &Transaction<'_>, handle_hash: &str) -> StoreRes
         }))
 }
 
-pub async fn drop_expired_requests(transaction: &Transaction<'_>) -> StoreResult<u64> {
+pub async fn drop_expired_requests(transaction: &UnitOfWork) -> StoreResult<u64> {
     transaction
         .execute("DELETE FROM pushed_requests WHERE expires_at <= now()", &[])
         .await

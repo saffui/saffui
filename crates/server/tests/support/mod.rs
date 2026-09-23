@@ -8,7 +8,7 @@ use crypto::jose::jwt::{self, JwtPayload};
 use crypto::password::storage::StoredPassword;
 use crypto::provider::openssl::OpenSslProvider;
 use crypto::provider::{Argon2Params, CryptoConfig, CryptoProvider, SignAlg};
-use deadpool_postgres::{Manager, Object, Pool, Transaction};
+use deadpool_postgres::{Manager, Pool};
 use models::auditable::AuditableModel;
 use models::entities::authz::{AdminAction, RoleMutationModel};
 use models::entities::client::ClientCreateModel;
@@ -22,7 +22,7 @@ use secrecy::SecretBox;
 use store::keyring;
 use store::providers::{clients, realm_keys, realms, roles, sessions, tenants, users};
 use store::schema::migrations;
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 use tokio::sync::{Mutex, MutexGuard};
 use tokio_postgres::{Config, NoTls};
 use webauthn_rs::WebauthnBuilder;
@@ -276,7 +276,7 @@ async fn the_template_stands() {
                 .max_size(2)
                 .build()
                 .expect("a template pool");
-            plant_the_common_world(&pool, &Tenancy::unpinned()).await;
+            plant_the_common_world(&Tenancy::unpinned(pool.clone())).await;
             drop(pool);
 
             // A pool's sockets close a beat after it drops, and CREATE
@@ -328,10 +328,7 @@ pub fn sealing() -> server::api::config::Sealing {
 /// that changed there would fail here rather than drift.
 #[allow(dead_code, reason = "only the suites that post a form need it")]
 pub async fn page_token_for(plane: &Plane, binding: &str) -> String {
-    let mut connection = plane.connection().await;
-    let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-        .await;
+    let transaction = plane.scoped(&TenantContext::new(TENANT, REALM)).await;
     let sealing = sealing();
     let ring = store::keyring::load(&transaction, &sealing.envelope, TENANT, REALM)
         .await
@@ -737,6 +734,7 @@ pub fn claims() -> JwtPayload {
 
 /// A migrated database with a realm that signs, and a turn on it.
 pub struct Plane {
+    #[allow(dead_code, reason = "only the sweep builds a node of its own")]
     pool: Pool,
     _turn: MutexGuard<'static, ()>,
     /// The same turn, taken against every other process rather than every
@@ -818,10 +816,7 @@ impl Plane {
             .hash(crypto::provider::HashAlg::Sha256, raw.as_bytes())
             .expect("a digest");
 
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::oidc::mint_code(
             &transaction,
             &models::entities::oidc::AuthorizationCode {
@@ -854,10 +849,7 @@ impl Plane {
     /// Whether the login is still one a grant would accept.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn login_is_open(&self, session_id: &str) -> bool {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         sessions::load(&transaction, session_id)
             .await
             .expect("the session table")
@@ -869,10 +861,7 @@ impl Plane {
     /// Whether the record of the login is still there at all, open or closed.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn login_exists(&self, session_id: &str) -> bool {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         sessions::load(&transaction, session_id)
             .await
             .expect("the session table")
@@ -922,10 +911,7 @@ impl Plane {
         credential_id: Vec<u8>,
         attachment: Option<models::entities::credentials::AuthenticatorAttachment>,
     ) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::webauthn::enrol(
             &transaction,
             &store::providers::webauthn::EnrolledCredential {
@@ -950,10 +936,7 @@ impl Plane {
     /// lands.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn login_notes(&self, auth_session: &str) -> serde_json::Value {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::login::resume(&transaction, auth_session)
             .await
             .expect("the auth session table")
@@ -967,10 +950,7 @@ impl Plane {
         reason = "only the protocol and own account suites ask for a second factor"
     )]
     pub async fn bind_browser_flow(&self, client_id: &str, flow: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -989,10 +969,7 @@ impl Plane {
     /// credential to be set up at the next login.
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn require_of_subject(&self, action: models::entities::user::RequiredAction) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut user = store::providers::users::load(&transaction, SUBJECT)
             .await
             .expect("the users table")
@@ -1014,10 +991,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the ldap front suite plants one")]
     pub async fn plant_shadow(&self, user_name: &str, password: &str) {
         let metadata = || AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned());
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let user = models::entities::user::UserCreateModel {
             user_name: user_name.into(),
             enabled: true,
@@ -1066,10 +1040,7 @@ impl Plane {
     /// A realm that counts, with a threshold a test can reach.
     #[allow(dead_code, reason = "only the suites that hammer a password arm it")]
     pub async fn count_logins(&self, max_failures: i32) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut realm = store::providers::realms::load(&transaction, REALM)
             .await
             .expect("the realms table")
@@ -1090,10 +1061,7 @@ impl Plane {
     /// How many codes are left on the subject's sheet.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn recovery_codes_left(&self) -> i64 {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::credentials::count_recovery_codes(&transaction, SUBJECT)
             .await
             .expect("the credentials table")
@@ -1102,10 +1070,7 @@ impl Plane {
     /// What still stands against the subject.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn subject_owes(&self) -> Vec<models::entities::user::RequiredAction> {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::users::load(&transaction, SUBJECT)
             .await
             .expect("the users table")
@@ -1119,10 +1084,7 @@ impl Plane {
         reason = "the admin suites distinguish username from user id"
     )]
     pub async fn rename_subject(&self, name: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut user = store::providers::users::load(&transaction, SUBJECT)
             .await
             .unwrap()
@@ -1139,10 +1101,7 @@ impl Plane {
     /// The keys the subject holds, by identifier.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn subject_keys(&self) -> Vec<Vec<u8>> {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::webauthn::of_user(&transaction, SUBJECT)
             .await
             .expect("the credential table")
@@ -1154,10 +1113,7 @@ impl Plane {
     /// What was announced about a person's credentials, oldest first.
     #[allow(dead_code, reason = "only the suites that change credentials ask")]
     pub async fn credential_changes_of(&self, user_id: &str) -> Vec<serde_json::Value> {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         transaction
             .query(
                 "SELECT payload FROM event_outbox WHERE kind = $1 AND user_id = $2 \
@@ -1174,10 +1130,7 @@ impl Plane {
     /// The authenticator-app secrets the subject holds, base32 as stored.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn subject_totp_secrets(&self) -> Vec<String> {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::credentials::load_for_user_of_type(
             &transaction,
             SUBJECT,
@@ -1195,10 +1148,7 @@ impl Plane {
         reason = "only the protocol suite checks logout event context"
     )]
     pub async fn record_login_events(&self) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut realm = store::providers::realms::load(&transaction, REALM)
             .await
             .unwrap()
@@ -1215,10 +1165,7 @@ impl Plane {
         reason = "only the protocol suite checks logout event context"
     )]
     pub async fn last_logout_event(&self) -> store::providers::login_events::LoginEvent {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::login_events::list(&transaction, 0, 100, false)
             .await
             .unwrap()
@@ -1231,10 +1178,7 @@ impl Plane {
     /// Add another authenticator app to the subject.
     #[allow(dead_code, reason = "only the protocol suite enrols another app")]
     pub async fn enrol_totp(&self, credential_id: &str, secret: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::credentials::create(
             &transaction,
             &models::entities::credentials::CredentialModel::otp(
@@ -1256,10 +1200,7 @@ impl Plane {
     /// Register where a client is posted a logout token.
     #[allow(dead_code, reason = "only the protocol suite is told")]
     pub async fn register_backchannel(&self, client_id: &str, uri: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1275,10 +1216,7 @@ impl Plane {
     /// Register where a client is loaded in the browser at logout.
     #[allow(dead_code, reason = "only the protocol suite is loaded")]
     pub async fn register_frontchannel(&self, client_id: &str, uri: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1295,10 +1233,7 @@ impl Plane {
     /// algorithm it signs them at.
     #[allow(dead_code, reason = "only the protocol suite signs an object")]
     pub async fn register_client_keys(&self, client_id: &str, key: &SigningKey, alg: SignAlg) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1321,10 +1256,7 @@ impl Plane {
         id_token: Option<models::entities::client::JweRegistration>,
         userinfo: Option<models::entities::client::JweRegistration>,
     ) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1341,10 +1273,7 @@ impl Plane {
     /// The algorithm a client registered to have its userinfo answer signed at.
     #[allow(dead_code, reason = "only the encryption suite asks")]
     pub async fn register_userinfo_signature(&self, client_id: &str, alg: SignAlg) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1365,10 +1294,7 @@ impl Plane {
         signing: SignAlg,
         encryption: models::entities::client::JweRegistration,
     ) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1384,10 +1310,7 @@ impl Plane {
     /// The key this realm publishes to be encrypted to, public half.
     #[allow(dead_code, reason = "only the encryption suite encrypts to it")]
     pub async fn realm_encryption_key(&self) -> models::entities::keys::RealmEncryptionKeyView {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::realm_keys::published_encryption(&transaction)
             .await
             .expect("the keys table")
@@ -1399,10 +1322,7 @@ impl Plane {
     /// Where this client hosts request objects, §6.2.
     #[allow(dead_code, reason = "only the hosted suite fetches one")]
     pub async fn register_request_uris(&self, client_id: &str, uris: &[String]) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1417,10 +1337,7 @@ impl Plane {
     /// Tell this client a different identifier from every other sector, §8.
     #[allow(dead_code, reason = "only some suites switch a client over")]
     pub async fn pair_subjects(&self, client_id: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1436,10 +1353,7 @@ impl Plane {
     /// read again.
     #[allow(dead_code, reason = "only the assertion suite rotates a client key")]
     pub async fn age_client_keys(&self, client_id: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         transaction
             .execute(
                 "UPDATE clients SET jwks_fetched_at = now() - interval '1 hour' \
@@ -1454,10 +1368,7 @@ impl Plane {
     /// Switch the subject off, the way an administrator shuts down an account.
     #[allow(dead_code, reason = "only the protocol suite does")]
     pub async fn disable_subject(&self) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut user = store::providers::users::load(&transaction, SUBJECT)
             .await
             .expect("the users table")
@@ -1476,10 +1387,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn backdate_authentication(&self, session_id: &str, seconds: i64) -> i64 {
         let when = chrono::Utc::now().timestamp() - seconds;
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         sessions::record_authentication(&transaction, session_id, when, None)
             .await
             .expect("the session table");
@@ -1490,10 +1398,7 @@ impl Plane {
     /// Turn a client's authorization-code flow on, off, or back to unset.
     #[allow(dead_code, reason = "only the protocol suite flips it")]
     pub async fn set_standard_flow(&self, client_id: &str, enabled: Option<bool>) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1512,10 +1417,7 @@ impl Plane {
         policy: models::entities::realm::ClientRegistration,
         secret: Option<&str>,
     ) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut realm = store::providers::realms::load(&transaction, REALM)
             .await
             .expect("the realms table")
@@ -1538,10 +1440,7 @@ impl Plane {
     /// Whether this client is one the person has to agree to.
     #[allow(dead_code, reason = "only the registration suite asks")]
     pub async fn consent_required(&self, client_id: &str) -> Option<bool> {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1552,10 +1451,7 @@ impl Plane {
     /// Put a person in an organization.
     #[allow(dead_code, reason = "only the directory suite adds a member")]
     pub async fn add_org_member(&self, org_id: &str, user_id: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         store::providers::organizations::add_member(
             &transaction,
             &models::entities::organization::OrganizationMemberModel {
@@ -1576,10 +1472,7 @@ impl Plane {
     /// What bounds an open registration here.
     #[allow(dead_code, reason = "only the registration suite asks")]
     pub async fn bound_registration(&self, bounds: models::entities::realm::RegistrationBounds) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut realm = store::providers::realms::load(&transaction, REALM)
             .await
             .expect("the realms table")
@@ -1597,10 +1490,7 @@ impl Plane {
         reason = "only the directory and federation suites ask for it"
     )]
     pub async fn share_addresses(&self, allowed: bool) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut realm = store::providers::realms::load(&transaction, REALM)
             .await
             .expect("the realms table")
@@ -1616,10 +1506,7 @@ impl Plane {
     /// everywhere until a test says otherwise, as it is on a deployment.
     #[allow(dead_code, reason = "only the hybrid suite asks for it")]
     pub async fn allow_implicit(&self, client_id: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1649,10 +1536,7 @@ impl Plane {
 
     #[allow(dead_code, reason = "only the suites that publish a key reach it")]
     async fn publish_key_as(&self, key: &SigningKey, status: KeyStatus) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let ring = keyring::load(&transaction, &envelope(), TENANT, REALM)
             .await
             .expect("the realm's ring");
@@ -1681,10 +1565,7 @@ impl Plane {
     /// Register how a client wants its identity tokens signed.
     #[allow(dead_code, reason = "only the protocol suite asks")]
     pub async fn register_id_token_alg(&self, client_id: &str, algorithm: Option<SignAlg>) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let mut client = clients::load(&transaction, client_id)
             .await
             .expect("the clients table")
@@ -1699,10 +1580,7 @@ impl Plane {
     /// End the login every code here was minted from.
     #[allow(dead_code, reason = "only the protocol suite ends one")]
     pub async fn end_login(&self) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         sessions::set_state(
             &transaction,
             SESSION,
@@ -1720,10 +1598,7 @@ impl Plane {
     /// claim came from.
     #[allow(dead_code, reason = "only the suites that mint read a token back")]
     pub async fn claims_of(&self, token: &str) -> serde_json::Value {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let keys = realm_keys::published(&transaction, KeyUse::Sig)
             .await
             .expect("the published keys");
@@ -1737,10 +1612,7 @@ impl Plane {
     /// Whether the login a token names is on the table.
     #[allow(dead_code, reason = "only the suites that mint ask")]
     pub async fn session_exists(&self, session_id: &str) -> bool {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         sessions::load(&transaction, session_id)
             .await
             .expect("the session table")
@@ -1789,10 +1661,10 @@ impl Plane {
             .expect("a pool");
 
         let plane = Plane {
-            pool,
+            pool: pool.clone(),
             _turn: turn,
             _across_processes: across_processes,
-            tenancy: Tenancy::unpinned(),
+            tenancy: Tenancy::unpinned(pool.clone()),
             key: shared_signing_key(),
             second: shared_second_key(),
             encrypting: shared_encryption_key(),
@@ -1801,6 +1673,8 @@ impl Plane {
         plane
     }
 
+    /// The raw pool, for the one sweep that builds a node pinned elsewhere.
+    #[allow(dead_code, reason = "only the sweep builds a node of its own")]
     pub fn pool(&self) -> Pool {
         self.pool.clone()
     }
@@ -1813,18 +1687,11 @@ impl Plane {
         self.tenancy.clone()
     }
 
-    pub async fn connection(&self) -> Object {
-        self.pool.get().await.expect("a connection")
-    }
-
     /// A second realm of the same tenant, for work that has to visit more than
     /// the one every other suite uses.
     #[allow(dead_code, reason = "only the sweep visits more than one realm")]
     pub async fn plant_realm(&self, realm_id: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::tenant_wide(TENANT))
-            .await;
+        let transaction = self.scoped(&TenantContext::tenant_wide(TENANT)).await;
         let realm = RealmCreateModel {
             name: realm_id.into(),
             display_name: realm_id.into(),
@@ -1852,10 +1719,7 @@ impl Plane {
     #[allow(dead_code, reason = "only the suites crossing realms ask")]
     pub async fn plant_credential_in(&self, realm_id: &str, held: &[AdminAction]) {
         let metadata = || AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned());
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, realm_id))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, realm_id)).await;
         let envelope = envelope();
         keyring::provision(&transaction, &envelope, TENANT, realm_id)
             .await
@@ -1950,10 +1814,7 @@ impl Plane {
     /// something infinite, so a test of the refusal has to write one.
     #[allow(dead_code, reason = "only the suites that create realms ask")]
     pub async fn cap_realms(&self, ceiling: i64) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::tenant_wide(TENANT))
-            .await;
+        let transaction = self.scoped(&TenantContext::tenant_wide(TENANT)).await;
         let limits = serde_json::json!({ "max_realms": ceiling });
         transaction
             .execute(
@@ -1970,10 +1831,7 @@ impl Plane {
     /// to write the tenant's half.
     #[allow(dead_code, reason = "only the sweep is tested against a pin")]
     pub async fn pin_tenant(&self, region: &str) {
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::tenant_wide(TENANT))
-            .await;
+        let transaction = self.scoped(&TenantContext::tenant_wide(TENANT)).await;
         transaction
             .execute(
                 "UPDATE tenants SET region = $1 WHERE tenant_id = $2",
@@ -1984,15 +1842,11 @@ impl Plane {
         transaction.commit().await.unwrap();
     }
 
-    pub async fn scoped<'c>(
-        &self,
-        connection: &'c mut Object,
-        context: &TenantContext,
-    ) -> Transaction<'c> {
+    pub async fn scoped(&self, context: &TenantContext) -> UnitOfWork {
         self.tenancy
-            .transaction(connection, context)
+            .begin(context)
             .await
-            .expect("a scoped transaction")
+            .expect("a scoped unit of work")
     }
 
     /// A token this realm signed, naming the key it published.
@@ -2010,10 +1864,7 @@ impl Plane {
     /// test asked for.
     async fn plant(&self, held: &[AdminAction]) {
         let metadata = || AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned());
-        let mut connection = self.connection().await;
-        let transaction = self
-            .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-            .await;
+        let transaction = self.scoped(&TenantContext::new(TENANT, REALM)).await;
         let envelope = envelope();
         let ring = keyring::load(&transaction, &envelope, TENANT, REALM)
             .await
@@ -2126,12 +1977,11 @@ impl Plane {
 /// scopes, flows, the console, and ada herself. Everything here is
 /// action-independent and survives copying; what cannot survive copying
 /// stays in `Plane::plant`.
-async fn plant_the_common_world(pool: &Pool, tenancy: &Tenancy) {
+async fn plant_the_common_world(tenancy: &Tenancy) {
     let metadata = || AuditableModel::from_creator(TENANT.to_owned(), "root".to_owned());
 
-    let mut connection = pool.get().await.expect("a connection");
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::tenant_wide(TENANT))
+        .begin(&TenantContext::tenant_wide(TENANT))
         .await
         .expect("a scoped transaction");
 
@@ -2163,11 +2013,9 @@ async fn plant_the_common_world(pool: &Pool, tenancy: &Tenancy) {
     ]));
     realms::update(&transaction, &settings).await.unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = pool.get().await.expect("a connection");
     let transaction = tenancy
-        .transaction(&mut connection, &TenantContext::new(TENANT, REALM))
+        .begin(&TenantContext::new(TENANT, REALM))
         .await
         .expect("a scoped transaction");
 
@@ -2591,7 +2439,6 @@ pub async fn granted_scope_of(plane: &Plane, asked: &[(&str, &str)]) -> String {
         .collect::<Vec<_>>()
         .join("&");
     let mounted = server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![AUDIENCE.to_owned()],
@@ -2630,10 +2477,7 @@ pub async fn granted_scope_of(plane: &Plane, asked: &[(&str, &str)]) -> String {
         })
         .expect("a login was opened");
 
-    let mut connection = plane.connection().await;
-    let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(TENANT, REALM))
-        .await;
+    let transaction = plane.scoped(&TenantContext::new(TENANT, REALM)).await;
     let login = store::providers::login::resume(&transaction, &binding)
         .await
         .expect("the login")

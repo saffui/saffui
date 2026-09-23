@@ -50,10 +50,7 @@ fn group(id: &str, is_default: bool) -> GroupModel {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_grant_comes_back_as_the_capabilities_it_names() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     roles::create(
         &transaction,
@@ -100,10 +97,7 @@ async fn a_grant_comes_back_as_the_capabilities_it_names() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn every_role_a_user_holds_is_one_answer() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     // Identifiers ascend, names do not: ordering by one is visibly not the other.
     for (id, name) in [("role-1", "zulu"), ("role-2", "alpha"), ("role-3", "mike")] {
@@ -159,10 +153,7 @@ async fn every_role_a_user_holds_is_one_answer() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn granting_twice_grants_once() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     roles::create(&transaction, &role("reader", None))
         .await
@@ -219,10 +210,7 @@ async fn granting_twice_grants_once() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn removing_a_role_takes_its_grants() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     roles::create(&transaction, &role("temporary", None))
         .await
@@ -276,10 +264,7 @@ async fn removing_a_role_takes_its_grants() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_subject_answers_with_the_groups_it_belongs_to() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         roles::groups_of(&transaction, "ada")
@@ -312,10 +297,7 @@ async fn a_subject_answers_with_the_groups_it_belongs_to() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn only_the_default_groups_are_joined_by_default() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     roles::create_group(&transaction, &group("everyone", true))
         .await
@@ -348,10 +330,7 @@ async fn only_the_default_groups_are_joined_by_default() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_grant_cannot_reach_another_realm() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     roles::create(&transaction, &role("reader", None))
         .await
         .unwrap();
@@ -359,13 +338,9 @@ async fn a_grant_cannot_reach_another_realm() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     // A role identifier is not a way past the rules.
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     assert!(roles::load(&transaction, "reader").await.unwrap().is_none());
     assert!(
         roles::effective_roles(&transaction, "ada")

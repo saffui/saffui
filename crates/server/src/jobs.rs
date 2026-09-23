@@ -1,9 +1,8 @@
 use std::time::Duration;
 
 use chrono::Utc;
-use deadpool_postgres::Pool;
 use services::housekeeping::{self, Swept};
-use store::tenancy::{Tenancy, resolve};
+use store::tenancy::Tenancy;
 use tokio::task::JoinHandle;
 
 /// Which job the advisory lock is for. The other half says which realm.
@@ -22,11 +21,7 @@ const SWEEP: i32 = 0x5746_4545_u32 as i32;
 ///
 /// No interval means never, and says so: a deployment that keeps everything
 /// should be readable in its log rather than inferred from silence.
-pub fn sweep_expired_rows(
-    pool: Pool,
-    tenancy: Tenancy,
-    every: Option<Duration>,
-) -> Option<JoinHandle<()>> {
+pub fn sweep_expired_rows(tenancy: Tenancy, every: Option<Duration>) -> Option<JoinHandle<()>> {
     let Some(every) = every else {
         tracing::info!("expired rows are never swept");
         return None;
@@ -39,7 +34,7 @@ pub fn sweep_expired_rows(
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            match sweep_every_realm(&pool, &tenancy).await {
+            match sweep_every_realm(&tenancy).await {
                 Some(swept) if swept.total() > 0 => tracing::info!(
                     codes = swept.codes,
                     revocations = swept.revocations,
@@ -74,19 +69,14 @@ pub fn sweep_expired_rows(
 }
 
 /// One visit to every realm, or nothing when they could not be listed.
-pub async fn sweep_every_realm(pool: &Pool, tenancy: &Tenancy) -> Option<Swept> {
-    let connection = pool.get().await.ok()?;
-    let realms = resolve::every_realm(&connection).await.ok()?;
-    drop(connection);
+pub async fn sweep_every_realm(tenancy: &Tenancy) -> Option<Swept> {
+    let realms = tenancy.every_realm().await.ok()?;
 
     let mut total = Swept::default();
     for realm in realms {
-        let Ok(mut connection) = pool.get().await else {
-            continue;
-        };
         // A realm pinned to another region belongs to the nodes there, and is
         // refused here exactly as a request for it would be.
-        let Ok(transaction) = tenancy.transaction(&mut connection, &realm).await else {
+        let Ok(transaction) = tenancy.begin(&realm).await else {
             continue;
         };
         let held = transaction
@@ -116,7 +106,6 @@ pub async fn sweep_every_realm(pool: &Pool, tenancy: &Tenancy) -> Option<Swept> 
 const OUTBOX: i32 = 0x4F55_5442;
 
 pub fn deliver_outbox_events(
-    pool: deadpool_postgres::Pool,
     tenancy: store::tenancy::Tenancy,
     sealing: std::sync::Arc<crate::api::config::Sealing>,
     origin: config::serving::PublicOrigin,
@@ -129,7 +118,6 @@ pub fn deliver_outbox_events(
         loop {
             ticking.tick().await;
             deliver_every_realm_with_egress(
-                &pool,
                 &tenancy,
                 &sealing,
                 &origin,
@@ -142,14 +130,12 @@ pub fn deliver_outbox_events(
 }
 
 pub async fn deliver_every_realm(
-    pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     sealing: &crate::api::config::Sealing,
     origin: &config::serving::PublicOrigin,
     backoff_seconds: i64,
 ) {
     deliver_every_realm_with_egress(
-        pool,
         tenancy,
         sealing,
         origin,
@@ -160,26 +146,18 @@ pub async fn deliver_every_realm(
 }
 
 pub async fn deliver_every_realm_with_egress(
-    pool: &deadpool_postgres::Pool,
     tenancy: &store::tenancy::Tenancy,
     sealing: &crate::api::config::Sealing,
     origin: &config::serving::PublicOrigin,
     backoff_seconds: i64,
     egress: config::serving::Egress,
 ) {
-    let Ok(connection) = pool.get().await else {
+    let Ok(realms) = tenancy.every_realm().await else {
         return;
     };
-    let Ok(realms) = resolve::every_realm(&connection).await else {
-        return;
-    };
-    drop(connection);
     let now = chrono::Utc::now();
     for realm in realms.clone() {
-        let Ok(mut connection) = pool.get().await else {
-            continue;
-        };
-        let Ok(transaction) = tenancy.transaction(&mut connection, &realm).await else {
+        let Ok(transaction) = tenancy.begin(&realm).await else {
             continue;
         };
         let held = transaction
@@ -227,7 +205,7 @@ pub async fn deliver_every_realm_with_egress(
     // Notices go out after every walk and apart from it: a realm another node is
     // walking still has its notices sent, each claimed by one sender alone.
     for realm in &realms {
-        crate::notices::send_due_notices(pool, tenancy, sealing, realm, backoff_seconds).await;
+        crate::notices::send_due_notices(tenancy, sealing, realm, backoff_seconds).await;
     }
 }
 
@@ -238,7 +216,6 @@ const FEDERATE: i32 = 0x4C44_4150_u32 as i32;
 /// long as this node runs. Off by default: a sync dials out, and a
 /// deployment says so before this server does.
 pub fn sync_federated_shadows(
-    pool: Pool,
     tenancy: Tenancy,
     sealing: std::sync::Arc<crate::api::config::Sealing>,
     every: Option<Duration>,
@@ -253,7 +230,7 @@ pub fn sync_federated_shadows(
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            match sync_every_realm(&pool, &tenancy, &sealing).await {
+            match sync_every_realm(&tenancy, &sealing).await {
                 Some(synced) if synced.total() > 0 => tracing::info!(
                     refreshed = synced.refreshed,
                     suspended = synced.suspended,
@@ -271,20 +248,14 @@ pub fn sync_federated_shadows(
 /// listed. A realm whose directory is unreachable is left exactly as it
 /// stands: an outage is not a departure.
 pub async fn sync_every_realm(
-    pool: &Pool,
     tenancy: &Tenancy,
     sealing: &crate::api::config::Sealing,
 ) -> Option<crate::federation::Synced> {
-    let connection = pool.get().await.ok()?;
-    let realms = resolve::every_realm(&connection).await.ok()?;
-    drop(connection);
+    let realms = tenancy.every_realm().await.ok()?;
 
     let mut total = crate::federation::Synced::default();
     for realm in realms {
-        let Ok(mut connection) = pool.get().await else {
-            continue;
-        };
-        let Ok(transaction) = tenancy.transaction(&mut connection, &realm).await else {
+        let Ok(transaction) = tenancy.begin(&realm).await else {
             continue;
         };
         let held = transaction

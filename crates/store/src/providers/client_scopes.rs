@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::client::{ClientScopeModel, Protocol, ProtocolMapperModel};
 use tokio_postgres::Row;
 
@@ -14,10 +14,7 @@ const MAPPER_COLUMNS: &str = "tenant, realm_id, mapper_id, name, protocol, mappe
                               configs, created_by, created_at, updated_by, updated_at, version";
 
 /// Record a scope.
-pub async fn create_scope(
-    transaction: &Transaction<'_>,
-    scope: &ClientScopeModel,
-) -> StoreResult<()> {
+pub async fn create_scope(transaction: &UnitOfWork, scope: &ClientScopeModel) -> StoreResult<()> {
     let configs = json(&scope.configs)?;
     let default_scope = scope.default_scope.unwrap_or(false);
     let set = WriteSet::insert(vec![
@@ -44,7 +41,7 @@ pub async fn create_scope(
 
 /// One scope of this realm.
 pub async fn load_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
 ) -> StoreResult<Option<ClientScopeModel>> {
     let statement = format!("SELECT {SCOPE_COLUMNS} FROM client_scopes WHERE client_scope_id = $1");
@@ -56,7 +53,7 @@ pub async fn load_scope(
 }
 
 /// Every scope of this realm.
-pub async fn list_scopes(transaction: &Transaction<'_>) -> StoreResult<Vec<ClientScopeModel>> {
+pub async fn list_scopes(transaction: &UnitOfWork) -> StoreResult<Vec<ClientScopeModel>> {
     let statement = format!("SELECT {SCOPE_COLUMNS} FROM client_scopes ORDER BY name ASC");
     Ok(transaction
         .query(statement.as_str(), &[])
@@ -71,7 +68,7 @@ pub async fn list_scopes(transaction: &Transaction<'_>) -> StoreResult<Vec<Clien
 /// gives the name its meaning: the same word names different scopes to
 /// different protocols, and the unique index is drawn the same way.
 pub async fn load_scope_by_name(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     protocol: Protocol,
     name: &str,
 ) -> StoreResult<Option<ClientScopeModel>> {
@@ -85,10 +82,7 @@ pub async fn load_scope_by_name(
 }
 
 /// Rewrite a scope, and say whether it was there to rewrite.
-pub async fn update_scope(
-    transaction: &Transaction<'_>,
-    scope: &ClientScopeModel,
-) -> StoreResult<bool> {
+pub async fn update_scope(transaction: &UnitOfWork, scope: &ClientScopeModel) -> StoreResult<bool> {
     let configs = json(&scope.configs)?;
     let default_scope = scope.default_scope.unwrap_or(false);
     let set = WriteSet::update(
@@ -114,10 +108,7 @@ pub async fn update_scope(
 }
 
 /// Remove a scope, and say whether it was there to remove.
-pub async fn delete_scope(
-    transaction: &Transaction<'_>,
-    client_scope_id: &str,
-) -> StoreResult<bool> {
+pub async fn delete_scope(transaction: &UnitOfWork, client_scope_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM client_scopes WHERE client_scope_id = $1",
@@ -132,7 +123,7 @@ pub async fn delete_scope(
 /// conditioned on it. Both joins cascade, so an unchecked deletion would strip
 /// the scope from every holder silently instead of being told no.
 pub async fn scope_still_attached(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
 ) -> StoreResult<bool> {
     let row = transaction
@@ -157,7 +148,7 @@ pub async fn scope_still_attached(
 /// since the index exists for uniqueness and could be replaced by one that does
 /// not sort this way.
 pub async fn default_scopes(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     protocol: Protocol,
 ) -> StoreResult<Vec<ClientScopeModel>> {
     let statement = format!(
@@ -175,7 +166,7 @@ pub async fn default_scopes(
 
 /// Record a mapper.
 pub async fn create_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     mapper: &ProtocolMapperModel,
 ) -> StoreResult<()> {
     let configs = json(&mapper.configs)?;
@@ -201,7 +192,7 @@ pub async fn create_mapper(
 }
 
 /// Every mapper of this realm.
-pub async fn list_mappers(transaction: &Transaction<'_>) -> StoreResult<Vec<ProtocolMapperModel>> {
+pub async fn list_mappers(transaction: &UnitOfWork) -> StoreResult<Vec<ProtocolMapperModel>> {
     let statement = format!("SELECT {MAPPER_COLUMNS} FROM protocol_mappers ORDER BY name ASC");
     Ok(transaction
         .query(statement.as_str(), &[])
@@ -214,7 +205,7 @@ pub async fn list_mappers(transaction: &Transaction<'_>) -> StoreResult<Vec<Prot
 
 /// One mapper of this realm.
 pub async fn load_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     mapper_id: &str,
 ) -> StoreResult<Option<ProtocolMapperModel>> {
     let statement = format!("SELECT {MAPPER_COLUMNS} FROM protocol_mappers WHERE mapper_id = $1");
@@ -227,7 +218,7 @@ pub async fn load_mapper(
 
 /// Rewrite a mapper, and say whether it was there to rewrite.
 pub async fn update_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     mapper: &ProtocolMapperModel,
 ) -> StoreResult<bool> {
     let configs = json(&mapper.configs)?;
@@ -253,7 +244,7 @@ pub async fn update_mapper(
 }
 
 /// Remove a mapper, and say whether it was there to remove.
-pub async fn delete_mapper(transaction: &Transaction<'_>, mapper_id: &str) -> StoreResult<bool> {
+pub async fn delete_mapper(transaction: &UnitOfWork, mapper_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM protocol_mappers WHERE mapper_id = $1",
@@ -267,10 +258,7 @@ pub async fn delete_mapper(transaction: &Transaction<'_>, mapper_id: &str) -> St
 /// Whether anything still applies this mapper: a client holding it directly,
 /// or a scope carrying it. Both joins cascade, so an unchecked deletion would
 /// strip the rule from every token silently instead of being told no.
-pub async fn mapper_still_attached(
-    transaction: &Transaction<'_>,
-    mapper_id: &str,
-) -> StoreResult<bool> {
+pub async fn mapper_still_attached(transaction: &UnitOfWork, mapper_id: &str) -> StoreResult<bool> {
     let row = transaction
         .query_one(
             "SELECT EXISTS ( \
@@ -287,7 +275,7 @@ pub async fn mapper_still_attached(
 
 /// Take a mapper off a scope, and say whether it was there.
 pub async fn detach_mapper_from_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
     mapper_id: &str,
 ) -> StoreResult<bool> {
@@ -304,7 +292,7 @@ pub async fn detach_mapper_from_scope(
 
 /// Take a mapper off a client, and say whether it was there.
 pub async fn detach_mapper_from_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     mapper_id: &str,
 ) -> StoreResult<bool> {
@@ -320,7 +308,7 @@ pub async fn detach_mapper_from_client(
 
 /// The mappers a scope carries.
 pub async fn mappers_of_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
 ) -> StoreResult<Vec<ProtocolMapperModel>> {
     let columns = mapper_columns_of("m");
@@ -340,7 +328,7 @@ pub async fn mappers_of_scope(
 
 /// The mappers attached to a client itself, scopes aside.
 pub async fn mappers_of_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
 ) -> StoreResult<Vec<ProtocolMapperModel>> {
     let columns = mapper_columns_of("m");
@@ -366,7 +354,7 @@ pub async fn mappers_of_client(
 /// One membership test rather than a union deduplicated after: a mapper
 /// reached through the client and a scope at once is one rule.
 pub async fn mappers_for_grant(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     granted: &[String],
     protocol: Protocol,
@@ -402,7 +390,7 @@ fn mapper_columns_of(alias: &str) -> String {
 
 /// Give a client a scope, or leave the attachment as it stands.
 pub async fn attach_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     client_scope_id: &str,
     optional: bool,
@@ -424,7 +412,7 @@ pub async fn attach_scope(
 
 /// Take a scope away from a client, and say whether it had it.
 pub async fn detach_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     client_scope_id: &str,
 ) -> StoreResult<bool> {
@@ -440,7 +428,7 @@ pub async fn detach_scope(
 
 /// Attach a mapper to a scope.
 pub async fn attach_mapper_to_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
     mapper_id: &str,
 ) -> StoreResult<()> {
@@ -457,7 +445,7 @@ pub async fn attach_mapper_to_scope(
 
 /// Attach a mapper to a client, bypassing scopes.
 pub async fn attach_mapper_to_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     mapper_id: &str,
 ) -> StoreResult<()> {
@@ -474,7 +462,7 @@ pub async fn attach_mapper_to_client(
 
 /// Say that holding a scope grants a role.
 pub async fn attach_role_to_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
     role_id: &str,
 ) -> StoreResult<()> {
@@ -495,7 +483,7 @@ pub async fn attach_role_to_scope(
 /// depends on what the request asked for, and that decision does not belong to
 /// a query.
 pub async fn scopes_of_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
 ) -> StoreResult<Vec<(ClientScopeModel, bool)>> {
     attached_scopes(transaction, client_id, None).await
@@ -505,7 +493,7 @@ pub async fn scopes_of_client(
 /// protocol may name and always carries. A scope of another protocol attached
 /// to the same client is no part of it.
 pub async fn scopes_of_client_for(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     protocol: Protocol,
 ) -> StoreResult<Vec<(ClientScopeModel, bool)>> {
@@ -513,7 +501,7 @@ pub async fn scopes_of_client_for(
 }
 
 async fn attached_scopes(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     protocol: Option<Protocol>,
 ) -> StoreResult<Vec<(ClientScopeModel, bool)>> {
@@ -548,7 +536,7 @@ async fn attached_scopes(
 /// not observable here, which is worth knowing rather than assuming a test
 /// covers it.
 pub async fn roles_of_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_scope_id: &str,
 ) -> StoreResult<Vec<String>> {
     Ok(transaction
@@ -567,7 +555,7 @@ pub async fn roles_of_scope(
 /// The shared attachment, since all four are the same statement over different
 /// names and a second copy of it drifts a column at a time.
 async fn attach(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     table: &str,
     left: &str,
     right: &str,

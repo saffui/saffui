@@ -1,7 +1,6 @@
 use crypto::envelope::Envelope;
 use crypto::provider::CryptoProvider;
 use data_encoding::BASE64;
-use deadpool_postgres::Transaction;
 use models::auditable::AuditableModel;
 use models::entities::attributes::AttributeValue;
 use models::entities::authz::{IdentityProviderModel, IdentityProviderMutationModel};
@@ -9,6 +8,7 @@ use models::entities::brokering::{IdpMapperModel, IdpMapperMutationModel};
 use store::error::StoreError;
 use store::keyring::RealmKeyring;
 use store::providers::{brokering, roles};
+use store::tenancy::UnitOfWork;
 
 use crate::brokering::{
     ATTRIBUTE_IDP_MAPPER, ATTRIBUTE_NAME, ATTRIBUTE_VALUE, CLAIM, KNOWN_IDP_MAPPERS, ROLE,
@@ -41,9 +41,7 @@ pub enum Unwritable {
     Backend,
 }
 
-pub async fn providers(
-    transaction: &Transaction<'_>,
-) -> Result<Vec<IdentityProviderModel>, Unwritable> {
+pub async fn providers(transaction: &UnitOfWork) -> Result<Vec<IdentityProviderModel>, Unwritable> {
     let mut listed = brokering::list_providers(transaction)
         .await
         .map_err(|_| Unwritable::Backend)?;
@@ -54,7 +52,7 @@ pub async fn providers(
 }
 
 pub async fn get_provider(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
 ) -> Result<IdentityProviderModel, Unwritable> {
     let mut found = brokering::provider_by_alias(transaction, alias)
@@ -131,7 +129,7 @@ async fn seal_secret(
     reason = "each is a distinct fact about one registration"
 )]
 pub async fn create_provider(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     crypto: &dyn CryptoProvider,
     ring: &RealmKeyring,
     envelope: &Envelope,
@@ -166,7 +164,7 @@ pub async fn create_provider(
 }
 
 pub async fn update_provider(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     alias: &str,
@@ -263,7 +261,7 @@ fn check_configuration(provider: &IdentityProviderModel) -> Result<(), Unwritabl
     refused.map_or(Ok(()), |why| Err(Unwritable::Invalid(why)))
 }
 
-pub async fn delete_provider(transaction: &Transaction<'_>, alias: &str) -> Result<(), Unwritable> {
+pub async fn delete_provider(transaction: &UnitOfWork, alias: &str) -> Result<(), Unwritable> {
     let standing = brokering::provider_by_alias(transaction, alias)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -296,7 +294,7 @@ fn draw(crypto: &dyn CryptoProvider) -> Result<String, Unwritable> {
 
 /// The rules of one provider.
 pub async fn mappers_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
 ) -> Result<Vec<IdpMapperModel>, Unwritable> {
     provider_exists(transaction, alias).await?;
@@ -305,7 +303,7 @@ pub async fn mappers_of(
         .map_err(|_| Unwritable::Backend)
 }
 
-async fn provider_exists(transaction: &Transaction<'_>, alias: &str) -> Result<(), Unwritable> {
+async fn provider_exists(transaction: &UnitOfWork, alias: &str) -> Result<(), Unwritable> {
     brokering::provider_by_alias(transaction, alias)
         .await
         .map_err(|_| Unwritable::Backend)?
@@ -319,7 +317,7 @@ async fn provider_exists(transaction: &Transaction<'_>, alias: &str) -> Result<(
 /// Checked here, at the plane, so a broken rule is the writer's problem and
 /// never the person's at the door.
 async fn check_rule(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &IdentityProviderModel,
     asked: &IdpMapperMutationModel,
 ) -> Result<(), Unwritable> {
@@ -407,7 +405,7 @@ fn check_rule_shape(
 }
 
 pub async fn add_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &str,
     realm_id: &str,
@@ -432,7 +430,7 @@ pub async fn add_mapper(
 /// One rule of one provider: a mapper of another alias is not found here,
 /// so a path cannot read across providers.
 async fn mapper_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
     mapper_id: &str,
 ) -> Result<IdpMapperModel, Unwritable> {
@@ -445,7 +443,7 @@ async fn mapper_of(
 }
 
 pub async fn get_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
     mapper_id: &str,
 ) -> Result<IdpMapperModel, Unwritable> {
@@ -453,7 +451,7 @@ pub async fn get_mapper(
 }
 
 pub async fn rework_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
     mapper_id: &str,
     by: &str,
@@ -479,7 +477,7 @@ pub async fn rework_mapper(
 }
 
 pub async fn remove_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
     mapper_id: &str,
 ) -> Result<(), Unwritable> {

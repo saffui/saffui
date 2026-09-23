@@ -7,13 +7,13 @@ use crypto::password::StoredPassword;
 use crypto::password::migration::{burn_verification_time, verify_and_plan};
 use crypto::provider::CryptoProvider;
 use data_encoding::{BASE32_NOPAD, BASE64URL_NOPAD};
-use deadpool_postgres::Transaction;
 use models::entities::credentials::{CredentialType, OtpCredentialData, OtpParameters};
 use models::entities::mail::MailSettings;
 use models::entities::realm::RealmModel;
 use models::entities::user::UserModel;
 use secrecy::{ExposeSecret, SecretBox};
 use store::providers::{credentials, one_time_tokens, users};
+use store::tenancy::UnitOfWork;
 
 use crate::messaging::{Message, Outgoing};
 use url::Url;
@@ -202,7 +202,7 @@ pub enum Answer {
     reason = "each is a distinct fact about one step"
 )]
 pub async fn verify_answer(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
     origin: &PublicOrigin,
@@ -335,7 +335,7 @@ const MAGIC_LINK_TEMPLATE: &str = "magic_link";
 /// row is the state, and a copy in a column a challenge is built from is a copy
 /// that reaches whoever reads the challenge.
 async fn magic_link(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     origin: &PublicOrigin,
     subject: Option<&UserModel>,
@@ -506,7 +506,7 @@ const SMS_OTP_TEMPLATE: &str = "sms_otp";
 /// against this login, so one attempt cannot fan out codes, and against the
 /// realm's day, because a text is a billable action an attacker can trigger.
 async fn sms_otp(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
     subject: Option<&UserModel>,
@@ -714,7 +714,7 @@ fn of_kind(answers: &[Answer], wanted: fn(&Answer) -> bool) -> Option<&Answer> {
 }
 
 async fn password(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
     subject: Option<&UserModel>,
@@ -849,7 +849,7 @@ fn burn(
 /// `period * (2 * window + 1)`, which is exactly why the step it was
 /// accepted at has to be spent.
 async fn totp(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     subject: Option<&UserModel>,
     answers: &[Answer],
@@ -942,7 +942,7 @@ async fn totp(
 /// No decoy, for the reason the code step gives: nothing runs here until a first
 /// factor has said who this is.
 async fn recovery_code(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     subject: Option<&UserModel>,
     answers: &[Answer],
@@ -1006,7 +1006,7 @@ fn parse_code(typed: &str) -> Option<u32> {
 /// challenge verified against anything else is one an attacker can supply both
 /// halves of.
 async fn webauthn(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     origin: &PublicOrigin,
     subject: Option<&UserModel>,
     answers: &[Answer],

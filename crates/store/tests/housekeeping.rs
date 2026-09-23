@@ -1,7 +1,7 @@
 mod support;
 
 use store::providers::{realms, sessions};
-use store::tenancy::{TenantContext, resolve};
+use store::tenancy::TenantContext;
 use support::Fixture;
 
 fn seconds_ago(seconds: i64) -> i64 {
@@ -16,10 +16,7 @@ fn seconds_ago(seconds: i64) -> i64 {
 async fn every_realm_is_listed_including_the_disabled_ones() {
     let fixture = Fixture::with_user_and_client().await;
     {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::tenant_wide("acme")).await;
         let mut second = models::entities::realm::RealmCreateModel {
             name: "shut".into(),
             display_name: "Shut".into(),
@@ -34,8 +31,7 @@ async fn every_realm_is_listed_including_the_disabled_ones() {
         transaction.commit().await.unwrap();
     }
 
-    let connection = fixture.connection().await;
-    let listed = resolve::every_realm(&connection).await.unwrap();
+    let listed = fixture.tenancy().every_realm().await.unwrap();
     let named: Vec<&str> = listed.iter().map(|realm| realm.realm_id.as_str()).collect();
     assert!(named.contains(&"main"), "{named:?}");
     assert!(
@@ -54,10 +50,7 @@ async fn every_realm_is_listed_including_the_disabled_ones() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn only_the_logins_that_ran_out_are_swept() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     for (id, expiration) in [
         ("gone", Some(seconds_ago(60))),

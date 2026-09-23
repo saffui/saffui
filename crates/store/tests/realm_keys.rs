@@ -48,10 +48,7 @@ fn key(kid: &str, algorithm: SignAlg, status: KeyStatus, priority: i64) -> Realm
 async fn the_private_half_lands_sealed_and_comes_back_whole() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
@@ -106,10 +103,7 @@ async fn the_private_half_lands_sealed_and_comes_back_whole() {
 async fn one_key_signs_per_use_and_algorithm() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
@@ -178,10 +172,7 @@ async fn one_key_signs_per_use_and_algorithm() {
 async fn a_rotated_key_still_verifies_and_stops_signing() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
@@ -272,10 +263,7 @@ async fn a_rotated_key_still_verifies_and_stops_signing() {
 async fn a_disabled_key_is_not_published() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
@@ -362,10 +350,7 @@ async fn the_schema_refuses_an_algorithm_that_does_not_fit_the_use() {
     ];
 
     for (index, (values, what)) in cases.iter().enumerate() {
-        let mut connection = fixture.connection().await;
-        let transaction = fixture
-            .scoped(&mut connection, &TenantContext::new("acme", "main"))
-            .await;
+        let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
         let statement = format!(
             "INSERT INTO realm_signing_keys \
                  (tenant, realm_id, kid, algorithm, key_use, status, private_pem, \
@@ -375,7 +360,6 @@ async fn the_schema_refuses_an_algorithm_that_does_not_fit_the_use() {
         );
         let refused = transaction.execute(statement.as_str(), &[]).await.is_err();
         drop(transaction);
-        drop(connection);
         assert!(refused, "{what}");
     }
 }
@@ -386,10 +370,7 @@ async fn the_schema_refuses_an_algorithm_that_does_not_fit_the_use() {
 async fn a_key_is_not_visible_from_another_realm() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();
@@ -405,12 +386,8 @@ async fn a_key_is_not_visible_from_another_realm() {
     .await
     .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     assert!(
         realm_keys::published(&transaction, KeyUse::Sig)
             .await
@@ -427,10 +404,7 @@ async fn a_key_is_not_visible_from_another_realm() {
 async fn every_encryption_key_still_held_for_use_opens() {
     let fixture = Fixture::with_user().await;
     let envelope = envelope();
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     keyring::provision(&transaction, &envelope, "acme", "main")
         .await
         .unwrap();

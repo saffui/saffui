@@ -31,7 +31,6 @@ auth = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-deadpool-postgres = { workspace = true }
 thiserror = { workspace = true }
 secrecy = { workspace = true }
 # Hex for the code digest a redemption looks a row up by, base64url for the
@@ -44,6 +43,7 @@ tracing.workspace = true
 async-trait = { workspace = true }
 
 [dev-dependencies]
+deadpool-postgres = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 # The context tests establish a caller against a real schema, so the test side
 # reaches the migration runner and the software crypto provider directly.

@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::authz::{AdminAction, GroupModel, RoleModel};
 use models::paging::Page;
 use tokio_postgres::Row;
@@ -18,7 +18,7 @@ const GROUP_COLUMNS: &str = "tenant, realm_id, group_id, name, display_name, des
 
 /// Whether any role of the realm, its own or a client's, already answers to
 /// this name. Asked as a question, because two such roles may already stand.
-pub async fn is_role_name_taken(transaction: &Transaction<'_>, name: &str) -> StoreResult<bool> {
+pub async fn is_role_name_taken(transaction: &UnitOfWork, name: &str) -> StoreResult<bool> {
     transaction
         .query_one(
             "SELECT EXISTS (SELECT 1 FROM roles WHERE name = $1)",
@@ -31,7 +31,7 @@ pub async fn is_role_name_taken(transaction: &Transaction<'_>, name: &str) -> St
 
 /// The same for a group.
 pub async fn load_group_by_name(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     name: &str,
 ) -> StoreResult<Option<GroupModel>> {
     let statement = format!("SELECT {GROUP_COLUMNS} FROM groups WHERE name = $1");
@@ -44,7 +44,7 @@ pub async fn load_group_by_name(
 
 /// One page of this realm's roles.
 pub async fn list(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> StoreResult<Page<RoleModel>> {
@@ -75,7 +75,7 @@ pub async fn list(
 
 /// One page of this realm's groups.
 pub async fn list_groups(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> StoreResult<Page<GroupModel>> {
@@ -106,7 +106,7 @@ pub async fn list_groups(
 
 /// Rewrite what a role says about itself. The identity stays; a rename is not
 /// a new role, and everything granted keeps meaning what it meant.
-pub async fn update(transaction: &Transaction<'_>, role: &RoleModel) -> StoreResult<bool> {
+pub async fn update(transaction: &UnitOfWork, role: &RoleModel) -> StoreResult<bool> {
     let permissions = role
         .admin_actions
         .as_ref()
@@ -137,7 +137,7 @@ pub async fn update(transaction: &Transaction<'_>, role: &RoleModel) -> StoreRes
 }
 
 /// The same for a group.
-pub async fn update_group(transaction: &Transaction<'_>, group: &GroupModel) -> StoreResult<bool> {
+pub async fn update_group(transaction: &UnitOfWork, group: &GroupModel) -> StoreResult<bool> {
     let set = WriteSet::update(
         vec![
             col("name", &group.name),
@@ -165,7 +165,7 @@ pub async fn update_group(transaction: &Transaction<'_>, group: &GroupModel) -> 
 /// Asked before a deletion, because the joins cascade: the rows naming the
 /// role would go with it, and every holder would silently lose an entitlement
 /// rather than the deletion being told no.
-pub async fn role_still_held(transaction: &Transaction<'_>, role_id: &str) -> StoreResult<bool> {
+pub async fn role_still_held(transaction: &UnitOfWork, role_id: &str) -> StoreResult<bool> {
     lock_role_composites(transaction).await?;
     let row = transaction
         .query_one(
@@ -178,7 +178,7 @@ pub async fn role_still_held(transaction: &Transaction<'_>, role_id: &str) -> St
 }
 
 /// Whether anybody is still in this group.
-pub async fn group_still_held(transaction: &Transaction<'_>, group_id: &str) -> StoreResult<bool> {
+pub async fn group_still_held(transaction: &UnitOfWork, group_id: &str) -> StoreResult<bool> {
     let row = transaction
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM users_groups WHERE group_id = $1)                  OR EXISTS(SELECT 1 FROM groups_roles WHERE group_id = $1) \
@@ -191,7 +191,7 @@ pub async fn group_still_held(transaction: &Transaction<'_>, group_id: &str) -> 
 }
 
 /// Whether any group sits under this one.
-pub async fn has_children(transaction: &Transaction<'_>, group_id: &str) -> StoreResult<bool> {
+pub async fn has_children(transaction: &UnitOfWork, group_id: &str) -> StoreResult<bool> {
     let row = transaction
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM groups WHERE parent_id = $1)",
@@ -203,7 +203,7 @@ pub async fn has_children(transaction: &Transaction<'_>, group_id: &str) -> Stor
 }
 
 /// Take a group away.
-pub async fn delete_group(transaction: &Transaction<'_>, group_id: &str) -> StoreResult<bool> {
+pub async fn delete_group(transaction: &UnitOfWork, group_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM groups WHERE group_id = $1", &[&group_id])
         .await
@@ -212,7 +212,7 @@ pub async fn delete_group(transaction: &Transaction<'_>, group_id: &str) -> Stor
 }
 
 /// Record a role.
-pub async fn create(transaction: &Transaction<'_>, role: &RoleModel) -> StoreResult<()> {
+pub async fn create(transaction: &UnitOfWork, role: &RoleModel) -> StoreResult<()> {
     let permissions = role
         .admin_actions
         .as_ref()
@@ -245,7 +245,7 @@ pub async fn create(transaction: &Transaction<'_>, role: &RoleModel) -> StoreRes
 }
 
 /// One role of this realm.
-pub async fn load(transaction: &Transaction<'_>, role_id: &str) -> StoreResult<Option<RoleModel>> {
+pub async fn load(transaction: &UnitOfWork, role_id: &str) -> StoreResult<Option<RoleModel>> {
     let statement = format!("SELECT {ROLE_COLUMNS} FROM roles WHERE role_id = $1");
     Ok(transaction
         .query_opt(statement.as_str(), &[&role_id])
@@ -255,7 +255,7 @@ pub async fn load(transaction: &Transaction<'_>, role_id: &str) -> StoreResult<O
 }
 
 /// Remove a role, and say whether there was one to remove.
-pub async fn delete(transaction: &Transaction<'_>, role_id: &str) -> StoreResult<bool> {
+pub async fn delete(transaction: &UnitOfWork, role_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM roles WHERE role_id = $1", &[&role_id])
         .await
@@ -265,7 +265,7 @@ pub async fn delete(transaction: &Transaction<'_>, role_id: &str) -> StoreResult
 
 /// Serialize graph changes within one realm. Cycle checks must observe a
 /// stable graph, including when two requests add different edges concurrently.
-pub async fn lock_role_composites(transaction: &Transaction<'_>) -> StoreResult<()> {
+pub async fn lock_role_composites(transaction: &UnitOfWork) -> StoreResult<()> {
     transaction
         .query_one(
             "SELECT pg_advisory_xact_lock(hashtextextended(\
@@ -280,7 +280,7 @@ pub async fn lock_role_composites(transaction: &Transaction<'_>) -> StoreResult<
 
 /// Roles directly contained by a composite role.
 pub async fn composite_children(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     parent_role_id: &str,
 ) -> StoreResult<Vec<RoleModel>> {
     // Read through the edge's identifiers rather than joined to it: both tables
@@ -301,7 +301,7 @@ pub async fn composite_children(
 
 /// Whether the child already reaches the parent through composite edges.
 pub async fn composite_reaches(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     child_role_id: &str,
     parent_role_id: &str,
 ) -> StoreResult<bool> {
@@ -325,7 +325,7 @@ pub async fn composite_reaches(
 
 /// Add a composite edge. Repeating the same edge is idempotent.
 pub async fn add_composite(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     parent_role_id: &str,
     child_role_id: &str,
 ) -> StoreResult<()> {
@@ -345,7 +345,7 @@ pub async fn add_composite(
 
 /// Remove a composite edge, and say whether there was one.
 pub async fn remove_composite(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     parent_role_id: &str,
     child_role_id: &str,
 ) -> StoreResult<bool> {
@@ -361,7 +361,7 @@ pub async fn remove_composite(
 }
 
 /// Record a group.
-pub async fn create_group(transaction: &Transaction<'_>, group: &GroupModel) -> StoreResult<()> {
+pub async fn create_group(transaction: &UnitOfWork, group: &GroupModel) -> StoreResult<()> {
     let set = WriteSet::insert(vec![
         col("tenant", &group.metadata.tenant),
         col("realm_id", &group.realm_id),
@@ -383,7 +383,7 @@ pub async fn create_group(transaction: &Transaction<'_>, group: &GroupModel) -> 
 
 /// One group of this realm.
 pub async fn load_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
 ) -> StoreResult<Option<GroupModel>> {
     let statement = format!("SELECT {GROUP_COLUMNS} FROM groups WHERE group_id = $1");
@@ -395,7 +395,7 @@ pub async fn load_group(
 }
 
 /// The groups a new user joins without anyone adding them.
-pub async fn default_groups(transaction: &Transaction<'_>) -> StoreResult<Vec<GroupModel>> {
+pub async fn default_groups(transaction: &UnitOfWork) -> StoreResult<Vec<GroupModel>> {
     let statement =
         format!("SELECT {GROUP_COLUMNS} FROM groups WHERE is_default ORDER BY name ASC");
     Ok(transaction
@@ -412,7 +412,7 @@ pub async fn default_groups(transaction: &Transaction<'_>) -> StoreResult<Vec<Gr
 /// One door for every way a person comes to exist, an administrator's POST,
 /// a federation shadow, a SCIM push, so birthright membership does not
 /// depend on which door was used.
-pub async fn join_default_groups(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<()> {
+pub async fn join_default_groups(transaction: &UnitOfWork, user_id: &str) -> StoreResult<()> {
     for group in default_groups(transaction).await? {
         add_to_group(transaction, user_id, &group.group_id).await?;
     }
@@ -425,7 +425,7 @@ pub async fn join_default_groups(transaction: &Transaction<'_>, user_id: &str) -
 /// set of grants would otherwise have to know which it already made, and
 /// deciding that from a failure is deciding it from an error message.
 pub async fn grant_to_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     role_id: &str,
 ) -> StoreResult<()> {
@@ -444,7 +444,7 @@ pub async fn grant_to_user(
 
 /// Take a role back from a user, and say whether they held it.
 pub async fn revoke_from_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     role_id: &str,
 ) -> StoreResult<bool> {
@@ -460,7 +460,7 @@ pub async fn revoke_from_user(
 
 /// Put a user in a group.
 pub async fn add_to_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     group_id: &str,
 ) -> StoreResult<()> {
@@ -479,7 +479,7 @@ pub async fn add_to_group(
 
 /// Take a person out of a group.
 pub async fn remove_from_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     group_id: &str,
 ) -> StoreResult<bool> {
@@ -496,7 +496,7 @@ pub async fn remove_from_group(
 /// Take a role back from a group. Everyone in the group stops holding it at
 /// once, which is what granting through a group means.
 pub async fn revoke_from_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
     role_id: &str,
 ) -> StoreResult<bool> {
@@ -516,7 +516,7 @@ pub async fn revoke_from_group(
 /// granted" needs to see whom to revoke from, and a holder through a group is
 /// revoked at the group, not at the person.
 pub async fn holders_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     role_id: &str,
 ) -> StoreResult<(Vec<String>, Vec<String>)> {
     let direct = transaction
@@ -544,7 +544,7 @@ pub async fn holders_of(
 
 /// Direct holders with the stable identifier and the name shown to people.
 pub async fn named_holders_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     role_id: &str,
 ) -> StoreResult<(Vec<(String, String)>, Vec<(String, String)>)> {
     let direct = transaction
@@ -576,7 +576,7 @@ pub async fn named_holders_of(
 
 /// Who is in this group, and which roles it grants them.
 pub async fn group_membership(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
 ) -> StoreResult<(Vec<String>, Vec<String>)> {
     let people = transaction
@@ -604,7 +604,7 @@ pub async fn group_membership(
 
 /// Grant a role to a group.
 pub async fn grant_to_group(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
     role_id: &str,
 ) -> StoreResult<()> {
@@ -627,7 +627,7 @@ pub async fn grant_to_group(
 /// grants and the group ones separately would have to union them, and a role
 /// held both ways would appear twice or be dropped depending on how carefully.
 pub async fn effective_roles(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<Vec<RoleModel>> {
     // The membership test is what removes a duplicate: a role reached by both
@@ -674,7 +674,7 @@ pub async fn effective_roles(
 /// Everyone standing in this group, directly or through a group below it: the
 /// people a role given to the group reaches, and a new parent above it.
 pub async fn members_at_or_below(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
 ) -> StoreResult<Vec<String>> {
     Ok(transaction
@@ -698,10 +698,7 @@ pub async fn members_at_or_below(
 /// Everyone who holds this role, however they came to: granted it, standing in
 /// a group that carries it, or holding a role it is placed under. The mirror of
 /// `effective_roles`, read from the role's side.
-pub async fn holders_of_role(
-    transaction: &Transaction<'_>,
-    role_id: &str,
-) -> StoreResult<Vec<String>> {
+pub async fn holders_of_role(transaction: &UnitOfWork, role_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
             "WITH RECURSIVE above(role_id) AS ( \
@@ -732,7 +729,7 @@ pub async fn holders_of_role(
 /// These roles and every role placed below them: what somebody handed them
 /// comes to hold.
 pub async fn roles_reached_from(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     starting: &[String],
 ) -> StoreResult<Vec<String>> {
     Ok(transaction
@@ -755,7 +752,7 @@ pub async fn roles_reached_from(
 
 /// The roles the default groups carry, with those of every group above them:
 /// what each newcomer holds through the groups they are seated in at birth.
-pub async fn roles_of_default_groups(transaction: &Transaction<'_>) -> StoreResult<Vec<String>> {
+pub async fn roles_of_default_groups(transaction: &UnitOfWork) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
             "WITH RECURSIVE above(group_id, parent_id) AS ( \
@@ -778,7 +775,7 @@ pub async fn roles_of_default_groups(transaction: &Transaction<'_>) -> StoreResu
 /// The roles carried by this group and by every group above it: what anyone
 /// standing in it holds through its groups.
 pub async fn roles_carried_at_or_above(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     group_id: &str,
 ) -> StoreResult<Vec<String>> {
     Ok(transaction
@@ -803,10 +800,7 @@ pub async fn roles_carried_at_or_above(
 /// The role grants written against this person and no one else: the direct
 /// edges, without what a group confers. A review that offers to pull an
 /// edge has to name the edge it can pull.
-pub async fn direct_roles_of(
-    transaction: &Transaction<'_>,
-    user_id: &str,
-) -> StoreResult<Vec<String>> {
+pub async fn direct_roles_of(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
             "SELECT role_id FROM users_roles WHERE user_id = $1 ORDER BY role_id ASC",
@@ -821,10 +815,7 @@ pub async fn direct_roles_of(
 
 /// The groups this person was put in, without the ones above them: joining
 /// is the edge, standing in the parent is the consequence.
-pub async fn groups_joined_by(
-    transaction: &Transaction<'_>,
-    user_id: &str,
-) -> StoreResult<Vec<String>> {
+pub async fn groups_joined_by(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
             "SELECT group_id FROM users_groups WHERE user_id = $1 ORDER BY group_id ASC",
@@ -841,7 +832,7 @@ pub async fn groups_joined_by(
 /// group above those, since standing in a sub-group is standing in the whole.
 /// Ordered by identifier so two reads of one membership answer in one order,
 /// which a decision that records what it saw depends on.
-pub async fn groups_of(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
+pub async fn groups_of(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
             "WITH RECURSIVE standing AS ( \

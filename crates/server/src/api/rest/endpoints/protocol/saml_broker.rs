@@ -2,12 +2,12 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::{LoginUi, PublicOrigin};
-use deadpool_postgres::Pool;
 use serde::Deserialize;
 use services::saml_brokering::{
     self, SamlLogoutMessage, SamlUpstream, TakenLogout, Unheeded, Untaken,
 };
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
@@ -23,19 +23,21 @@ use crate::api::rest::endpoints::protocol::login::told;
 /// SAML, or is switched off, has none.
 pub async fn metadata(
     path: web::Path<(String, String)>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
 ) -> HttpResponse {
     let (realm, alias) = path.into_inner();
-    let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+        }
+        Err(_) => {
+            return told(StatusCode::NOT_FOUND, "no-such-provider");
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(StatusCode::NOT_FOUND, "no-such-provider");
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
 
@@ -118,7 +120,6 @@ pub async fn consume_assertion(
     request: HttpRequest,
     path: web::Path<(String, String)>,
     posted: web::Form<Posted>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -130,13 +131,16 @@ pub async fn consume_assertion(
     let Some(answer) = posted.saml_response.as_deref() else {
         return refused();
     };
-    let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+        }
+        Err(_) => {
+            return told(StatusCode::NOT_FOUND, "no-such-login");
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(StatusCode::NOT_FOUND, "no-such-login");
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
     let Ok(Some(provider)) =
@@ -278,7 +282,6 @@ pub struct PostedLogout {
 pub async fn take_redirected_logout(
     request: HttpRequest,
     path: web::Path<(String, String)>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -289,7 +292,6 @@ pub async fn take_redirected_logout(
         &realm,
         &alias,
         SamlLogoutMessage::Redirected(request.query_string()),
-        &pool,
         &tenancy,
         &sealing,
         &origin,
@@ -303,7 +305,6 @@ pub async fn take_redirected_logout(
 pub async fn take_posted_logout(
     path: web::Path<(String, String)>,
     posted: web::Form<PostedLogout>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -322,7 +323,7 @@ pub async fn take_posted_logout(
         _ => return told(StatusCode::BAD_REQUEST, "refused"),
     };
     answer_logout_message(
-        &realm, &alias, message, &pool, &tenancy, &sealing, &origin, **egress,
+        &realm, &alias, message, &tenancy, &sealing, &origin, **egress,
     )
     .await
 }
@@ -343,7 +344,6 @@ async fn answer_logout_message(
     realm: &str,
     alias: &str,
     message: SamlLogoutMessage<'_>,
-    pool: &Pool,
     tenancy: &Tenancy,
     sealing: &Sealing,
     origin: &PublicOrigin,
@@ -351,13 +351,16 @@ async fn answer_logout_message(
 ) -> HttpResponse {
     let now = Utc::now();
     let refused = || told(StatusCode::BAD_REQUEST, "refused");
-    let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    let context = match tenancy.resolve(RealmNamed::ByName(realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+        }
+        Err(_) => {
+            return refused();
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, realm).await else {
-        return refused();
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
     let Ok(Some(provider)) =

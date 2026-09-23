@@ -1,6 +1,5 @@
 use chrono::{DateTime, Utc};
 use crypto::envelope::Envelope;
-use deadpool_postgres::Transaction;
 use models::entities::attributes;
 use models::entities::brokering::UserClaimSourceModel;
 use models::entities::client::Protocol;
@@ -8,7 +7,7 @@ use models::entities::keys::RealmSigningKeyView;
 use models::entities::user::{UserModel, address, profile};
 use serde_json::{Map, Value, json};
 use store::providers::{brokering, client_scopes, clients, sessions, users};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::token;
 use crate::token::issuance::Kind;
@@ -63,7 +62,7 @@ impl Answer {
 /// never a reply in the clear: answering it with readable claims tells it
 /// nothing about what it asked for.
 pub async fn told_answer(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &crate::grant::Signing<'_>,
     issuer: &str,
     answer: &Answer,
@@ -101,7 +100,7 @@ pub async fn told_answer(
 /// The issuer and the audience join them, because a signed response that named
 /// neither could be replayed at another client as its own.
 pub async fn signed_answer(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &crate::grant::Signing<'_>,
     issuer: &str,
     answer: &Answer,
@@ -127,7 +126,7 @@ pub async fn signed_answer(
 }
 
 pub async fn claims_for(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     keys: &[RealmSigningKeyView],
     bearer: &str,
     // What the caller proved: a key it signed with, a certificate a trusted
@@ -279,7 +278,7 @@ pub fn claims_of_scope(scope: &str, held: &Map<String, Value>) -> Map<String, Va
 /// What the request named for the identity token, §5.5, of what the realm
 /// holds of this person and of what the client is entitled to be told.
 pub async fn asked_id_token_claims(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signing: &crate::grant::Signing<'_>,
     asked: Option<&Value>,
     client_id: &str,
@@ -332,10 +331,7 @@ pub async fn asked_id_token_claims(
 /// registration that bounds what it may be told by scope: §5.5.1 makes a
 /// scope shorthand for a set of claims, and naming one of the set is not a
 /// way around the registration that never granted the set.
-pub async fn entitled_scopes(
-    transaction: &Transaction<'_>,
-    client_id: &str,
-) -> Result<Vec<String>, ()> {
+pub async fn entitled_scopes(transaction: &UnitOfWork, client_id: &str) -> Result<Vec<String>, ()> {
     let attached = client_scopes::scopes_of_client_for(transaction, client_id, Protocol::OpenId)
         .await
         .map_err(|_| ())?;
@@ -503,7 +499,7 @@ pub enum TokenOpener<'a> {
 /// A person's sources as a release reads them, the one read that opens their
 /// fetch tokens.
 async fn sources_to_release(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     opener: &TokenOpener<'_>,
     user_id: &str,
 ) -> store::error::StoreResult<Vec<UserClaimSourceModel>> {

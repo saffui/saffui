@@ -2,14 +2,13 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
-use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::json;
 use services::grant::Signing;
 use services::logout::{self, EndedAt, Frame, Requested};
 use services::saml_brokering;
 use store::keyring;
-use store::tenancy::{Tenancy, resolve};
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::backchannel;
@@ -36,7 +35,6 @@ pub async fn end(
     request: HttpRequest,
     realm: web::Path<String>,
     asked: Option<web::Query<Asked>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -44,7 +42,7 @@ pub async fn end(
 ) -> HttpResponse {
     let asked = asked.map(web::Query::into_inner).unwrap_or_default();
     run(
-        &request, &realm, asked, &pool, &tenancy, &sealing, &origin, **egress,
+        &request, &realm, asked, &tenancy, &sealing, &origin, **egress,
     )
     .await
 }
@@ -57,7 +55,6 @@ pub async fn end_posted(
     request: HttpRequest,
     realm: web::Path<String>,
     asked: Option<web::Form<Asked>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -65,7 +62,7 @@ pub async fn end_posted(
 ) -> HttpResponse {
     let asked = asked.map(web::Form::into_inner).unwrap_or_default();
     run(
-        &request, &realm, asked, &pool, &tenancy, &sealing, &origin, **egress,
+        &request, &realm, asked, &tenancy, &sealing, &origin, **egress,
     )
     .await
 }
@@ -78,7 +75,6 @@ async fn run(
     request: &HttpRequest,
     realm: &str,
     asked: Asked,
-    pool: &Pool,
     tenancy: &Tenancy,
     sealing: &Sealing,
     origin: &PublicOrigin,
@@ -89,15 +85,12 @@ async fn run(
         tell(request, realm_id, &asked, ended, frames)
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return told(realm, EndedAt::Nowhere, &[]);
-    };
     // An unknown realm ends nothing and says so the same way. Which realms exist
     // is not a question this endpoint answers, and everyone links to it.
-    let Ok(context) = resolve::realm_by_name(&connection, realm).await else {
+    let Ok(context) = tenancy.resolve(RealmNamed::ByName(realm)).await else {
         return told(realm, EndedAt::Nowhere, &[]);
     };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(&context.realm_id, EndedAt::Nowhere, &[]);
     };
     let Ok(keys) = services::realm::published_keys(&transaction).await else {

@@ -93,7 +93,6 @@ async fn asked(
     use server::api::config::register;
     use server::middleware::admin_policy::AdminPolicy;
     let app = test::init_service(App::new().configure(register(&server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -255,12 +254,8 @@ async fn concurrent_imports_share_one_ceiling_count() {
         "{left:?} {right:?}"
     );
 
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &store::tenancy::TenantContext::tenant_wide(support::TENANT),
-        )
+        .scoped(&store::tenancy::TenantContext::tenant_wide(support::TENANT))
         .await;
     assert_eq!(
         store::providers::tenants::count_realms(&transaction)
@@ -323,12 +318,8 @@ async fn a_realm_crosses_as_a_document() {
     // test is the document's round trip, not who may ask for it.
     let twin = {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, "twin"),
-            )
+            .scoped(&TenantContext::new(support::TENANT, "twin"))
             .await;
         let document =
             services::admin::portability::export_realm(&transaction, "twin", chrono::Utc::now())
@@ -518,12 +509,8 @@ async fn themes_cross_with_their_realm_and_organizations() {
     assert_eq!(status, StatusCode::CREATED, "{told}");
     let (landed_realm, landed_org) = {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, "dressed"),
-            )
+            .scoped(&TenantContext::new(support::TENANT, "dressed"))
             .await;
         (
             store::providers::realms::theme_of(&transaction, "dressed")
@@ -642,12 +629,8 @@ async fn a_configuration_export_lands_beside_its_original() {
     // What landed holds the group and the organization, and nobody in them.
     let landed = {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &TenantContext::new(support::TENANT, "configured"),
-            )
+            .scoped(&TenantContext::new(support::TENANT, "configured"))
             .await;
         services::admin::portability::export_realm(&transaction, "configured", chrono::Utc::now())
             .await

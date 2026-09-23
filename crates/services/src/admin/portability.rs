@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use models::entities::authz::{PolicyModel, StoredPolicy};
 use models::entities::export::{
     EXPORT_FORMAT, ExportedClient, ExportedClientScope, ExportedGroup, ExportedOrganization,
@@ -16,6 +15,7 @@ use store::providers::{
     roles, users,
 };
 use store::query::list_query::ListQuery;
+use store::tenancy::UnitOfWork;
 
 /// Why a realm could not be carried out or written back.
 #[derive(Debug, thiserror::Error)]
@@ -98,7 +98,7 @@ enum PartialAction {
 }
 
 async fn existing(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     table: &str,
     id_column: &str,
     name_column: &str,
@@ -209,7 +209,7 @@ fn ensure_no_users(document: &ExportedRealm) -> Result<(), Unportable> {
 }
 
 async fn partial_plan(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     target: &str,
     document: &ExportedRealm,
     policy: ImportCollisionPolicy,
@@ -700,7 +700,7 @@ async fn partial_plan(
 
 /// Check a configuration document without writing the target realm.
 pub async fn preview_partial_import(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     target: &str,
     document: &ExportedRealm,
     policy: ImportCollisionPolicy,
@@ -712,7 +712,7 @@ pub async fn preview_partial_import(
 
 /// Merge a configuration document atomically into an existing realm.
 pub async fn import_partial_realm(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     target: &str,
     mut document: ExportedRealm,
@@ -1133,7 +1133,7 @@ pub async fn import_partial_realm(
 /// wrote, who hold what the group and those above it carry, and the holders of
 /// a role it placed another under. A breach refuses the whole import.
 async fn weigh_import(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     reached_groups: &[String],
     composite_edges: &[(String, String)],
 ) -> Result<(), Unportable> {
@@ -1176,7 +1176,7 @@ async fn weigh_import(
 /// The realm as a document, read whole inside one transaction so no section
 /// can come from a different state than another.
 pub async fn export_realm(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
     now: DateTime<Utc>,
 ) -> Result<ExportedRealm, Unportable> {
@@ -1397,7 +1397,7 @@ fn conditions_first(
 }
 
 async fn add_composite_checked(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     parent_role_id: &str,
     child_role_id: &str,
 ) -> Result<(), Unportable> {
@@ -1449,6 +1449,7 @@ fn describe_store_refusal(why: StoreError, item: &str) -> Unportable {
             Unportable::Invalid(format!("{item} cannot be written: {refused}"))
         }
         StoreError::Backend
+        | StoreError::Unavailable
         | StoreError::Residency { .. }
         | StoreError::NoChain
         | StoreError::NoKeyring
@@ -1613,7 +1614,7 @@ fn refuse_people_not_carried(doc: &ExportedRealm) -> Result<(), Unportable> {
 /// transaction the caller opened for the target realm. Nothing commits
 /// here: a realm is wholly present or wholly absent.
 pub async fn import_realm(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     tenant: &str,
     realm_id: &str,
     mut doc: ExportedRealm,

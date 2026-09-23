@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::oidc::AuthorizationCode;
 use tokio_postgres::Row;
 
@@ -9,7 +9,7 @@ use crate::error::{StoreError, StoreResult};
 /// The caller hashes it and keeps the raw value for the client. Nothing here
 /// ever sees the value that would be redeemed.
 pub async fn mint_code(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     code: &AuthorizationCode,
     expires_at: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<()> {
@@ -71,10 +71,7 @@ pub enum Redemption {
 /// Spent is a mark, not a deletion: a second presentation has to be told
 /// apart from a code that never was, because the first wants the tokens it
 /// bought revoked and the second has nothing to revoke.
-pub async fn redeem_code(
-    transaction: &Transaction<'_>,
-    code_hash: &str,
-) -> StoreResult<Redemption> {
+pub async fn redeem_code(transaction: &UnitOfWork, code_hash: &str) -> StoreResult<Redemption> {
     let fresh = transaction
         .query_opt(
             "UPDATE oidc_auth_codes SET redeemed_at = now() \
@@ -104,7 +101,7 @@ pub async fn redeem_code(
 
 /// What a redemption bought, so a later presentation can take it back.
 pub async fn record_issued(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     code_hash: &str,
     token_ids: &[String],
 ) -> StoreResult<()> {
@@ -125,7 +122,7 @@ const SPENT_CODE_MEMORY: &str = "30 minutes";
 
 /// Drop what nobody can spend any more: unspent codes past their expiry, and
 /// spent ones once there is nothing left to revoke.
-pub async fn drop_expired_codes(transaction: &Transaction<'_>) -> StoreResult<u64> {
+pub async fn drop_expired_codes(transaction: &UnitOfWork) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM oidc_auth_codes \
@@ -142,7 +139,7 @@ pub async fn drop_expired_codes(transaction: &Transaction<'_>) -> StoreResult<u6
 /// Recording the same one twice is not an error: a revocation is a statement
 /// about a token, and repeating it says the same thing.
 pub async fn revoke(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     token_id: &str,
     expires_at: chrono::DateTime<chrono::Utc>,
     reason: &str,
@@ -165,7 +162,7 @@ pub async fn revoke(
 /// A row past its own expiry answers no, because the token it names is refused
 /// by its expiry already and a sweep that has not run yet must not change the
 /// answer.
-pub async fn is_revoked(transaction: &Transaction<'_>, token_id: &str) -> StoreResult<bool> {
+pub async fn is_revoked(transaction: &UnitOfWork, token_id: &str) -> StoreResult<bool> {
     Ok(transaction
         .query_opt(
             "SELECT 1 FROM revoked_tokens WHERE token_id = $1 AND expires_at > now()",
@@ -177,7 +174,7 @@ pub async fn is_revoked(transaction: &Transaction<'_>, token_id: &str) -> StoreR
 }
 
 /// Forget the tokens that expired on their own.
-pub async fn drop_expired_revocations(transaction: &Transaction<'_>) -> StoreResult<u64> {
+pub async fn drop_expired_revocations(transaction: &UnitOfWork) -> StoreResult<u64> {
     transaction
         .execute("DELETE FROM revoked_tokens WHERE expires_at <= now()", &[])
         .await
@@ -190,7 +187,7 @@ pub async fn drop_expired_revocations(transaction: &Transaction<'_>) -> StoreRes
 /// statements, and two presentations of one assertion at the same moment both
 /// find nothing and both proceed.
 pub async fn claim_assertion(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     jti_hash: &str,
     expires_at: chrono::DateTime<chrono::Utc>,
@@ -210,7 +207,7 @@ pub async fn claim_assertion(
 }
 
 /// Forget assertions whose own expiry now refuses them.
-pub async fn drop_expired_assertions(transaction: &Transaction<'_>) -> StoreResult<u64> {
+pub async fn drop_expired_assertions(transaction: &UnitOfWork) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM client_assertion_jtis WHERE expires_at <= now()",

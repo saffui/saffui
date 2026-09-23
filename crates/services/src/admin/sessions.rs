@@ -1,6 +1,6 @@
-use deadpool_postgres::Transaction;
 use models::sessions::records::{ClientSessionModel, UserSessionModel};
 use store::providers::sessions;
+use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Unreachable {
@@ -14,7 +14,7 @@ pub enum Unreachable {
 
 /// What one person has open, newest first, each with what the clients got.
 pub async fn of_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> Result<Vec<(UserSessionModel, Vec<ClientSessionModel>)>, Unreachable> {
     let open = sessions::load_for_user(transaction, user_id)
@@ -37,7 +37,7 @@ pub async fn of_user(
 /// screen for a breach becomes the slowest one in the console. What a grant
 /// list is for is one session, and that listing already exists.
 pub async fn list_sessions_of_realm(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
     offset: i64,
     limit: i64,
@@ -54,7 +54,7 @@ pub async fn list_sessions_of_realm(
 /// cut is struck too. A console that offers one without the other offers a
 /// revocation that is not one.
 pub async fn end_sessions_of_realm(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
 ) -> Result<u64, Unreachable> {
     sessions::end_all_of_realm(transaction, realm_id)
@@ -67,7 +67,7 @@ pub async fn end_sessions_of_realm(
 /// Named through the person it belongs to, so an identifier from somebody
 /// else's listing reaches nothing.
 pub async fn close(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     session_id: &str,
 ) -> Result<(), Unreachable> {
@@ -81,7 +81,7 @@ pub async fn close(
 /// Take back what one client got out of one login, leaving the login and every
 /// other client alone.
 pub async fn revoke_grant(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     session_id: &str,
     client_id: &str,
@@ -94,7 +94,7 @@ pub async fn revoke_grant(
 }
 
 async fn named_session(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     session_id: &str,
 ) -> Result<UserSessionModel, Unreachable> {

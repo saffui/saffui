@@ -1,10 +1,10 @@
 use crypto::provider::SignAlg;
-use deadpool_postgres::Transaction;
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKeyView};
 use models::entities::realm::RealmModel;
 use models::paging::Page;
 use store::providers::{realm_keys, realms};
 use store::query::list_query::ListQuery;
+use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("the realm could not be read")]
@@ -14,7 +14,7 @@ pub struct Unreadable;
 /// they were tried. Signing keys: nothing verifies a token against a key the
 /// realm publishes to be encrypted to.
 pub async fn published_keys(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
 ) -> Result<Vec<RealmSigningKeyView>, Unreadable> {
     realm_keys::published(transaction, KeyUse::Sig)
         .await
@@ -25,7 +25,7 @@ pub async fn published_keys(
 /// keys. A key in retreat still verifies what it signed and signs nothing new,
 /// so a response asked for in its algorithm alone could never be sent.
 pub async fn active_signing_algorithms(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
 ) -> Result<Vec<SignAlg>, Unreadable> {
     let mut held: Vec<SignAlg> = realm_keys::published(transaction, KeyUse::Sig)
         .await
@@ -42,7 +42,7 @@ pub async fn active_signing_algorithms(
 /// The keys a caller may encrypt to, in the order the realm would rather they
 /// were used.
 pub async fn published_encryption_keys(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
 ) -> Result<Vec<models::entities::keys::RealmEncryptionKeyView>, Unreadable> {
     realm_keys::published_encryption(transaction)
         .await
@@ -51,7 +51,7 @@ pub async fn published_encryption_keys(
 
 /// One realm of this tenant, by identifier.
 pub async fn named(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
 ) -> Result<Option<RealmModel>, Unreadable> {
     realms::load(transaction, realm_id)
@@ -61,7 +61,7 @@ pub async fn named(
 
 /// One page of this tenant's realms.
 pub async fn listed(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> Result<Page<RealmModel>, Unreadable> {
@@ -75,10 +75,7 @@ pub async fn listed(
 /// False when no realm by that identity holds a row to write, which the
 /// caller reads as not found rather than as a fresh realm: reshaping is not
 /// creating.
-pub async fn reshape(
-    transaction: &Transaction<'_>,
-    realm: &RealmModel,
-) -> Result<bool, Unreadable> {
+pub async fn reshape(transaction: &UnitOfWork, realm: &RealmModel) -> Result<bool, Unreadable> {
     realms::update(transaction, realm)
         .await
         .map_err(|_| Unreadable)

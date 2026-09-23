@@ -1,6 +1,6 @@
+use crate::tenancy::UnitOfWork;
 use crypto::provider::{DigestProvider, HashAlg};
 use data_encoding::HEXLOWER;
-use deadpool_postgres::Transaction;
 use models::entities::credentials::{
     CredentialChange, CredentialModel, CredentialSecret, CredentialType, OtpCredentialData,
 };
@@ -19,10 +19,7 @@ const COLUMNS: &str = "tenant, realm_id, credential_id, user_id, credential_type
 /// A credential arriving is a security signal: a receiver is told, because a
 /// second factor appearing on an account is a thing somebody may need to know
 /// about within the minute.
-pub async fn create(
-    transaction: &Transaction<'_>,
-    credential: &CredentialModel,
-) -> StoreResult<()> {
+pub async fn create(transaction: &UnitOfWork, credential: &CredentialModel) -> StoreResult<()> {
     write(transaction, credential).await?;
     announce_credential_change(
         transaction,
@@ -40,13 +37,13 @@ pub async fn create(
 /// been enrolled by anybody, and announcing it would tell every receiver that a
 /// credential of a type nobody carries had changed, once per password change.
 pub async fn create_quietly(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     credential: &CredentialModel,
 ) -> StoreResult<()> {
     write(transaction, credential).await
 }
 
-async fn write(transaction: &Transaction<'_>, credential: &CredentialModel) -> StoreResult<()> {
+async fn write(transaction: &UnitOfWork, credential: &CredentialModel) -> StoreResult<()> {
     let secret = credential.secret.expose();
     let otp = otp_json(credential)?;
     let set = WriteSet::insert(vec![
@@ -78,7 +75,7 @@ async fn write(transaction: &Transaction<'_>, credential: &CredentialModel) -> S
 /// whatever the rows happened to come back in. Two credentials at one rank are
 /// then ordered by identifier, so the answer does not change between reads.
 pub async fn load_for_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<Vec<CredentialModel>> {
     let statement = format!(
@@ -96,7 +93,7 @@ pub async fn load_for_user(
 
 /// What a user holds of one kind, lowest priority first.
 pub async fn load_for_user_of_type(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     credential_type: CredentialType,
 ) -> StoreResult<Vec<CredentialModel>> {
@@ -115,7 +112,7 @@ pub async fn load_for_user_of_type(
 
 /// One credential by identifier.
 pub async fn load(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     credential_id: &str,
 ) -> StoreResult<Option<CredentialModel>> {
     let statement = format!("SELECT {COLUMNS} FROM user_credentials WHERE credential_id = $1");
@@ -132,7 +129,7 @@ pub async fn load(
 /// old parameters is one nothing can verify, and an OTP secret replaced without
 /// its width is one that produces codes of the wrong length.
 pub async fn replace_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     credential_id: &str,
     secret: &CredentialSecret,
     otp: Option<&OtpCredentialData>,
@@ -189,7 +186,7 @@ pub async fn replace_secret(
 /// is still inside the acceptance window, so a replay of an older code has to be
 /// refused too.
 pub async fn consume_otp_step(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     credential_id: &str,
     step: i64,
 ) -> StoreResult<bool> {
@@ -228,7 +225,7 @@ fn recovery_digest(digest: &dyn DigestProvider, code: &str) -> StoreResult<Strin
 /// once, as a create when nothing stood and an update when it replaced one,
 /// however many codes it holds.
 pub async fn replace_recovery_codes(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     realm_id: &str,
     user_id: &str,
@@ -277,7 +274,7 @@ pub async fn replace_recovery_codes(
 /// is a digest against an equal digest, so no part of the answer depends on how
 /// far down the set the match sat.
 pub async fn spend_recovery_code(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     user_id: &str,
     presented: &str,
@@ -301,10 +298,7 @@ pub async fn spend_recovery_code(
 ///
 /// A count and not the codes: nothing that reads this is entitled to the set,
 /// and an administrator watching it fall towards zero is exactly the use.
-pub async fn count_recovery_codes(
-    transaction: &Transaction<'_>,
-    user_id: &str,
-) -> StoreResult<i64> {
+pub async fn count_recovery_codes(transaction: &UnitOfWork, user_id: &str) -> StoreResult<i64> {
     let row = transaction
         .query_one(
             "SELECT count(*)::bigint AS held FROM user_credentials              WHERE user_id = $1 AND credential_type = $2",
@@ -317,10 +311,7 @@ pub async fn count_recovery_codes(
 
 /// Take a person's whole sheet of codes away, and say how many went. One
 /// announcement for the sheet, since the sheet is what the person gave up.
-pub async fn delete_recovery_codes(
-    transaction: &Transaction<'_>,
-    user_id: &str,
-) -> StoreResult<u64> {
+pub async fn delete_recovery_codes(transaction: &UnitOfWork, user_id: &str) -> StoreResult<u64> {
     let removed = transaction
         .execute(
             "DELETE FROM user_credentials WHERE user_id = $1 AND credential_type = $2",
@@ -346,7 +337,7 @@ const FACTORS: i32 = 0x4641_4354;
 ///
 /// Two removals racing would each read the other's factor as still standing,
 /// and a rule that keeps the last one would let both go.
-pub async fn hold_factors(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<()> {
+pub async fn hold_factors(transaction: &UnitOfWork, user_id: &str) -> StoreResult<()> {
     transaction
         .execute(
             "SELECT pg_advisory_xact_lock($1, \
@@ -361,10 +352,7 @@ pub async fn hold_factors(transaction: &Transaction<'_>, user_id: &str) -> Store
 /// Take a bookkeeping row away and say nothing, for the same reason
 /// [`create_quietly`] writes one that way: a retired password falling off the
 /// end of the remembered set is not a credential anybody lost.
-pub async fn delete_quietly(
-    transaction: &Transaction<'_>,
-    credential_id: &str,
-) -> StoreResult<bool> {
+pub async fn delete_quietly(transaction: &UnitOfWork, credential_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM user_credentials WHERE credential_id = $1",
@@ -376,18 +364,18 @@ pub async fn delete_quietly(
 }
 
 /// Remove a credential at its holder's hand, and say whether there was one.
-pub async fn delete(transaction: &Transaction<'_>, credential_id: &str) -> StoreResult<bool> {
+pub async fn delete(transaction: &UnitOfWork, credential_id: &str) -> StoreResult<bool> {
     remove(transaction, credential_id, CredentialChange::Delete).await
 }
 
 /// Take a credential away at an administrator's hand, and say whether there
 /// was one. Only what a receiver is told sets it apart from [`delete`].
-pub async fn revoke(transaction: &Transaction<'_>, credential_id: &str) -> StoreResult<bool> {
+pub async fn revoke(transaction: &UnitOfWork, credential_id: &str) -> StoreResult<bool> {
     remove(transaction, credential_id, CredentialChange::Revoke).await
 }
 
 async fn remove(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     credential_id: &str,
     change: CredentialChange,
 ) -> StoreResult<bool> {
@@ -419,7 +407,7 @@ async fn remove(
 /// a password does. Announcing the clearing and the writing apart would tell a
 /// receiver the password was deleted when it was only replaced.
 pub async fn replace_all_of_type(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     credential: &CredentialModel,
 ) -> StoreResult<()> {
     let replaced = transaction
@@ -445,7 +433,7 @@ pub async fn replace_all_of_type(
 
 /// Tell whoever listens that one of a person's credentials changed, and how.
 async fn announce_credential_change(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     credential_type: CredentialType,
     change: CredentialChange,
@@ -461,10 +449,7 @@ async fn announce_credential_change(
 
 /// Tell whoever listens that a person signed in with one of their recovery codes:
 /// a deletion, marked apart from a sheet given up.
-async fn announce_recovery_code_spent(
-    transaction: &Transaction<'_>,
-    user_id: &str,
-) -> StoreResult<()> {
+async fn announce_recovery_code_spent(transaction: &UnitOfWork, user_id: &str) -> StoreResult<()> {
     super::outbox::emit(
         transaction,
         super::outbox::CREDENTIAL_CHANGED,
@@ -485,7 +470,7 @@ async fn announce_recovery_code_spent(
 /// again. Guessing from an absence of rows is no substitute: a first factor that
 /// stores nothing makes every user look credential-less.
 pub async fn kinds_held(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<Vec<CredentialType>> {
     Ok(transaction

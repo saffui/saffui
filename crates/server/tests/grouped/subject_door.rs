@@ -13,7 +13,6 @@ fn mounted(plane: &Plane, postbox: Option<&Postbox>) -> Mounted {
         std::sync::Arc::new(held.clone()) as std::sync::Arc<dyn auth::messaging::Deliver>
     });
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -34,8 +33,7 @@ fn within() -> TenantContext {
 }
 
 async fn open_door(plane: &Plane, jurisdiction: Jurisdiction, days: Option<i32>) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let mut realm = store::providers::realms::load(&transaction, support::REALM)
         .await
         .expect("the realms table")
@@ -49,8 +47,7 @@ async fn open_door(plane: &Plane, jurisdiction: Jurisdiction, days: Option<i32>)
 }
 
 async fn arrange_mail(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let sealing = support::sealing();
     let ring = store::keyring::load(
         &transaction,
@@ -125,8 +122,7 @@ fn token_in(body: &str) -> String {
 }
 
 async fn register_rows(plane: &Plane) -> Vec<(String, String, i64, i64)> {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     transaction
         .query(
             "SELECT kind, stage, received_at, due_at FROM subject_requests ORDER BY received_at",

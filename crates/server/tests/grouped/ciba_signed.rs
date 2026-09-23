@@ -13,7 +13,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -33,9 +32,8 @@ fn mounted(plane: &Plane) -> server::api::config::Plane {
 /// sign its backchannel requests with the key it publishes.
 async fn opted_signing(plane: &Plane, key: &SigningKey) {
     use models::entities::attributes::AttributeValue;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await

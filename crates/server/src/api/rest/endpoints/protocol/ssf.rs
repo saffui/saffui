@@ -1,9 +1,8 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
-use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use store::tenancy::{Tenancy, resolve};
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -27,7 +26,6 @@ pub async fn poll(
     request: HttpRequest,
     realm: web::Path<String>,
     body: Option<web::Json<Asked>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
 ) -> HttpResponse {
@@ -40,13 +38,10 @@ pub async fn poll(
     };
     let asked = body.map(web::Json::into_inner).unwrap_or_default();
 
-    let Ok(mut connection) = pool.get().await else {
+    let Ok(context) = tenancy.resolve(RealmNamed::ByName(&realm)).await else {
         return refused();
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return refused();
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return refused();
     };
     let Ok(rows) = store::providers::brokering::list_providers(&transaction).await else {

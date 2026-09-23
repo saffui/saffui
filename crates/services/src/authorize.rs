@@ -2,7 +2,6 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::entities::acr::{self, AchievedAuth, AcrRequirement, AuthContextRequest, AuthDecision};
 use models::entities::attributes::AttributeValue;
 use models::entities::client::{ClientModel, Protocol};
@@ -12,7 +11,7 @@ use models::sessions::records::{UserSessionModel, UserSessionState};
 use serde_json::{Value, json};
 use store::providers::login::{self, AuthSession};
 use store::providers::{auth_flows, client_scopes, clients, realms, sessions};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::landing::{Landing, ResponseMode};
 use crate::pushed;
@@ -97,7 +96,7 @@ pub enum Refusal {
 /// `https://app.example/objects` stand for `https://app.example/objects/../..`
 /// and anything else under the host.
 pub async fn hosted_request_object(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: Option<&str>,
     uri: &str,
 ) -> Result<(), Refusal> {
@@ -127,7 +126,7 @@ fn must_push(realm: &RealmModel, client: &ClientModel) -> bool {
     reason = "each is a distinct fact about one request"
 )]
 pub async fn begin(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     issuer: &str,
@@ -496,7 +495,7 @@ const ASKABLE_ENROLMENTS: [RequiredAction; 3] = [
 /// A realm that registered the ceremony and turned it off is not overruled; a
 /// realm that never said anything offers it.
 async fn asked_enrolment(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     named: Option<&str>,
     prompt: &Prompt,
 ) -> Result<Option<RequiredAction>, Refusal> {
@@ -551,7 +550,7 @@ impl Prompt {
     reason = "each is a distinct fact about one request"
 )]
 async fn start_login(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     client: &ClientModel,
     redirect_uri: &str,
@@ -624,7 +623,7 @@ async fn start_login(
 /// open and whether it has run out, and both are checked here rather than being
 /// left to whatever reads the token minted from it.
 async fn live_login(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     signed_in: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<Option<UserSessionModel>, Refusal> {
@@ -673,7 +672,7 @@ fn drop_scope(granted: &str, dropped: &str) -> String {
 /// to nothing else, so the console carries it without asking and the plane can
 /// require it by default, rather than every admin UI having to remember to ask.
 pub async fn granted_scope(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     requested: &str,
 ) -> Result<String, Refusal> {
@@ -698,7 +697,7 @@ pub async fn granted_scope(
 
 /// The client, or nothing that may be redirected to.
 async fn named_client(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: Option<&str>,
 ) -> Result<ClientModel, Refusal> {
     let client_id = client_id
@@ -779,7 +778,7 @@ fn proof_is_registered(client: &ClientModel, requested: &Requested<'_>) -> Resul
 /// first, the realm's next, and the flow aliased `browser` when neither
 /// says.
 pub(crate) async fn browser_flow(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client: &ClientModel,
 ) -> Result<String, Refusal> {
     let realm_bound = store::providers::realms::of_context(transaction)

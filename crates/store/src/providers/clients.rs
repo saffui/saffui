@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::client::{ClientModel, ClientSecret, JweRegistration, Protocol};
 use models::entities::keys::{JweAlgorithm, JweEncryption};
 use models::paging::Page;
@@ -45,7 +45,7 @@ const COLUMNS: &str = "tenant, realm_id, client_id, name, display_name, descript
 /// Writes no bearer credential. `client.secret` is not persisted here: a secret
 /// is hashed before it is stored and this call has nothing to hash with, so
 /// minting one is [`rotate_secret`], which is the single door that sets one.
-pub async fn create(transaction: &Transaction<'_>, client: &ClientModel) -> StoreResult<()> {
+pub async fn create(transaction: &UnitOfWork, client: &ClientModel) -> StoreResult<()> {
     let set = WriteSet::insert(vec![
         col("tenant", &client.metadata.tenant),
         col("realm_id", &client.realm_id),
@@ -72,10 +72,7 @@ pub async fn create(transaction: &Transaction<'_>, client: &ClientModel) -> Stor
 }
 
 /// One client of this realm, without what authenticates it.
-pub async fn load(
-    transaction: &Transaction<'_>,
-    client_id: &str,
-) -> StoreResult<Option<ClientModel>> {
+pub async fn load(transaction: &UnitOfWork, client_id: &str) -> StoreResult<Option<ClientModel>> {
     let statement = format!("SELECT {COLUMNS} FROM clients WHERE client_id = $1");
     Ok(transaction
         .query_opt(statement.as_str(), &[&client_id])
@@ -108,7 +105,7 @@ pub enum StoredSecret {
 /// still writing the plaintext one, and preferring it would mean a rotation
 /// performed by the new binary could be undone by the old one's leftovers.
 pub async fn load_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
 ) -> StoreResult<Option<StoredSecret>> {
     Ok(transaction
@@ -133,7 +130,7 @@ pub async fn load_secret(
 /// three forms a registration, a rotation or a seal leaves behind. The
 /// value never rides; the model's own `secret` field only ever carries the
 /// legacy plaintext, so a reader that wants the fact asks here.
-pub async fn holds_secret(transaction: &Transaction<'_>, client_id: &str) -> StoreResult<bool> {
+pub async fn holds_secret(transaction: &UnitOfWork, client_id: &str) -> StoreResult<bool> {
     let row = transaction
         .query_one(
             "SELECT EXISTS (SELECT 1 FROM clients WHERE client_id = $1 \
@@ -151,7 +148,7 @@ pub async fn holds_secret(transaction: &Transaction<'_>, client_id: &str) -> Sto
 /// The hash and the plaintext column are cleared: one storage form per client,
 /// and a leftover in either would keep authenticating what a rotation replaced.
 pub async fn seal_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     sealed: &[u8],
     version: i32,
@@ -178,7 +175,7 @@ pub async fn seal_secret(
 /// Where this client publishes its keys and when they were last read, for a
 /// caller deciding whether to read them again.
 pub async fn published_keys_at(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
 ) -> StoreResult<Option<(Option<String>, Option<chrono::DateTime<chrono::Utc>>)>> {
     Ok(transaction
@@ -198,7 +195,7 @@ pub async fn published_keys_at(
 /// run any other, so a best-effort write that could not be made would take the
 /// request it was helping down with it.
 pub async fn keep_published_keys(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     jwks: &serde_json::Value,
     at: chrono::DateTime<chrono::Utc>,
@@ -227,7 +224,7 @@ pub async fn keep_published_keys(
 
 /// What a registration access token is checked against, RFC 7592 §2.
 pub async fn load_registration_token(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
 ) -> StoreResult<Option<String>> {
     Ok(transaction
@@ -242,7 +239,7 @@ pub async fn load_registration_token(
 
 /// Set the hash a registration access token is checked against.
 pub async fn rotate_registration_token(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     encoded: &str,
 ) -> StoreResult<bool> {
@@ -264,7 +261,7 @@ pub async fn rotate_registration_token(
 /// it is kept, and moving `secret_created_at` would age a secret that is exactly
 /// as old as it was a moment ago.
 pub async fn convert_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     encoded: &str,
 ) -> StoreResult<bool> {
@@ -280,7 +277,7 @@ pub async fn convert_secret(
 }
 
 /// Whether the identifier is taken in this realm.
-pub async fn exists(transaction: &Transaction<'_>, client_id: &str) -> StoreResult<bool> {
+pub async fn exists(transaction: &UnitOfWork, client_id: &str) -> StoreResult<bool> {
     let found: i64 = transaction
         .query_one(
             "SELECT count(*) FROM clients WHERE client_id = $1",
@@ -298,7 +295,7 @@ pub async fn exists(transaction: &Transaction<'_>, client_id: &str) -> StoreResu
 /// one whose age nothing can read, and an expiry set from a stale stamp expires
 /// the wrong credential.
 pub async fn rotate_secret(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     encoded: &str,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
@@ -336,7 +333,7 @@ pub async fn rotate_secret(
 /// Whether any client of this realm admits the origin for browser calls:
 /// what CORS answers with. The wildcard "*" is a registration like any
 /// other, so an operator who wrote it said it out loud.
-pub async fn origin_admitted(transaction: &Transaction<'_>, origin: &str) -> StoreResult<bool> {
+pub async fn origin_admitted(transaction: &UnitOfWork, origin: &str) -> StoreResult<bool> {
     let row = transaction
         .query_one(
             "SELECT EXISTS(SELECT 1 FROM clients \
@@ -348,7 +345,7 @@ pub async fn origin_admitted(transaction: &Transaction<'_>, origin: &str) -> Sto
     Ok(row.get::<_, bool>(0))
 }
 
-pub async fn delete(transaction: &Transaction<'_>, client_id: &str) -> StoreResult<bool> {
+pub async fn delete(transaction: &UnitOfWork, client_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM clients WHERE client_id = $1", &[&client_id])
         .await
@@ -358,7 +355,7 @@ pub async fn delete(transaction: &Transaction<'_>, client_id: &str) -> StoreResu
 
 /// One page of this realm's clients, with the total when it was asked for.
 pub async fn list(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> StoreResult<Page<ClientModel>> {
@@ -395,7 +392,7 @@ pub async fn list(
 ///
 /// The bearer credentials are not written here either. Rotating one is
 /// [`rotate_secret`], so a settings edit cannot quietly replace a credential.
-pub async fn update(transaction: &Transaction<'_>, client: &ClientModel) -> StoreResult<bool> {
+pub async fn update(transaction: &UnitOfWork, client: &ClientModel) -> StoreResult<bool> {
     // Serialised up front because the write set borrows what it binds, so a
     // value built inside the vector would not outlive it.
     let id_token_alg = alg_name(client.id_token_signed_response_alg);
@@ -646,7 +643,7 @@ const REGISTERING: i32 = 0x5246_4745_u32 as i32;
 /// Transaction scoped, so it is released at commit and never rides a pooled
 /// backend to the next caller. Counting and then creating without it lets two
 /// registrations one below the ceiling both read a count that passes.
-pub async fn hold_registrations(transaction: &Transaction<'_>, realm_id: &str) -> StoreResult<()> {
+pub async fn hold_registrations(transaction: &UnitOfWork, realm_id: &str) -> StoreResult<()> {
     transaction
         .execute(
             "SELECT pg_advisory_xact_lock($1, hashtext($2))",
@@ -660,7 +657,7 @@ pub async fn hold_registrations(transaction: &Transaction<'_>, realm_id: &str) -
 /// How many clients registration itself created here, which is not how many
 /// clients the realm has.
 pub async fn count_created_by(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
     by: &str,
 ) -> StoreResult<i64> {
@@ -675,7 +672,7 @@ pub async fn count_created_by(
 }
 
 /// How many clients this realm registers.
-pub async fn count(transaction: &Transaction<'_>) -> StoreResult<i64> {
+pub async fn count(transaction: &UnitOfWork) -> StoreResult<i64> {
     Ok(transaction
         .query_one("SELECT count(*) FROM clients", &[])
         .await

@@ -2,7 +2,6 @@ use actix_web::{HttpResponse, web};
 use chrono::{Duration, Utc};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use serde::Deserialize;
 use store::tenancy::Tenancy;
 
@@ -29,7 +28,6 @@ fn window_seconds(asked: &MetricsQuery) -> Result<i64, ApiError> {
 
 pub async fn read(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
     query: web::Query<MetricsQuery>,
@@ -38,9 +36,8 @@ pub async fn read(
     let seconds = window_seconds(&query)?;
     let now = Utc::now();
     let since = now - Duration::seconds(seconds);
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
 

@@ -1,6 +1,5 @@
 use auth::messaging::{About, Message, Outgoing, Tongue, choose_tongue};
 use chrono::{DateTime, Utc};
-use deadpool_postgres::Transaction;
 use models::entities::attributes;
 use models::entities::credentials::{CredentialChange, CredentialType};
 use models::entities::mail::MailSettings;
@@ -10,6 +9,7 @@ use serde_json::Value;
 use store::providers::notices::{self, HeldNotice, Noted, Settled};
 use store::providers::outbox::{self, OutboxEvent};
 use store::providers::{brokering, credentials, users, webauthn};
+use store::tenancy::UnitOfWork;
 
 /// What a receipt for a security notice is recorded under.
 pub const SECURITY_NOTICE: &str = "security-notice";
@@ -440,7 +440,7 @@ pub struct Unsettled;
 /// Owe a person a notice for a happening that changed how they sign in. Noting it
 /// again, as a retried telling does, adds nothing.
 pub async fn note_owed_notice(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     event: &OutboxEvent,
 ) -> Result<(), Unsettled> {
     let Some(owed) = read_notice(&event.kind, &event.payload) else {
@@ -463,7 +463,7 @@ pub async fn note_owed_notice(
 
 /// The realm's notices due now, claimed for this pass.
 pub async fn claim_due_notices(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ceiling: i64,
     backoff_seconds: i64,
 ) -> Result<Vec<HeldNotice>, Unsettled> {
@@ -485,7 +485,7 @@ pub struct DueNotice {
 /// `settings` is what the realm sends with, None where it names no mail server or
 /// the deployment sends nothing.
 pub async fn compose_due_notices(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm: &RealmModel,
     settings: Option<&MailSettings>,
     claimed: Vec<HeldNotice>,
@@ -561,7 +561,7 @@ pub struct Attempted {
 
 /// Settle every notice its attempt decided.
 pub async fn settle_attempts(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     attempted: &[Attempted],
 ) -> Result<(), Unsettled> {
     for attempt in attempted {

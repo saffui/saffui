@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use tokio_postgres::Row;
 
 use crate::error::{StoreError, StoreResult};
@@ -31,7 +31,7 @@ const WEIGHING_REALM: i32 = 0x534F_4452;
 ///
 /// The realm is held too, shared: people are weighed side by side, and a change
 /// reaching many of them at once waits for every one of those weighings to land.
-pub async fn hold_person(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<()> {
+pub async fn hold_person(transaction: &UnitOfWork, user_id: &str) -> StoreResult<()> {
     transaction
         .execute(
             "SELECT pg_advisory_xact_lock_shared($1, \
@@ -55,7 +55,7 @@ pub async fn hold_person(transaction: &Transaction<'_>, user_id: &str) -> StoreR
 /// a role given to a group, a role placed under another, a group moved. One lock
 /// however many people the change reaches, and no person is weighed alongside
 /// it, so its weighing reads a world nobody else is changing.
-pub async fn hold_realm(transaction: &Transaction<'_>) -> StoreResult<()> {
+pub async fn hold_realm(transaction: &UnitOfWork) -> StoreResult<()> {
     transaction
         .execute(
             "SELECT pg_advisory_xact_lock($1, \
@@ -67,7 +67,7 @@ pub async fn hold_realm(transaction: &Transaction<'_>) -> StoreResult<()> {
     Ok(())
 }
 
-pub async fn rules(transaction: &Transaction<'_>) -> StoreResult<Vec<SodRule>> {
+pub async fn rules(transaction: &UnitOfWork) -> StoreResult<Vec<SodRule>> {
     Ok(transaction
         .query(
             "SELECT rule_id, roles, min_conflicting, enabled FROM sod_rules \
@@ -81,7 +81,7 @@ pub async fn rules(transaction: &Transaction<'_>) -> StoreResult<Vec<SodRule>> {
         .collect())
 }
 
-pub async fn keep_rule(transaction: &Transaction<'_>, rule: &SodRule, by: &str) -> StoreResult<()> {
+pub async fn keep_rule(transaction: &UnitOfWork, rule: &SodRule, by: &str) -> StoreResult<()> {
     transaction
         .execute(
             "INSERT INTO sod_rules \
@@ -108,7 +108,7 @@ pub async fn keep_rule(transaction: &Transaction<'_>, rule: &SodRule, by: &str) 
     Ok(())
 }
 
-pub async fn drop_rule(transaction: &Transaction<'_>, rule_id: &str) -> StoreResult<bool> {
+pub async fn drop_rule(transaction: &UnitOfWork, rule_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM sod_rules WHERE rule_id = $1", &[&rule_id])
         .await
@@ -117,7 +117,7 @@ pub async fn drop_rule(transaction: &Transaction<'_>, rule_id: &str) -> StoreRes
 }
 
 pub async fn exceptions_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<Vec<SodException>> {
     Ok(transaction
@@ -133,7 +133,7 @@ pub async fn exceptions_of(
         .collect())
 }
 
-pub async fn exceptions(transaction: &Transaction<'_>) -> StoreResult<Vec<SodException>> {
+pub async fn exceptions(transaction: &UnitOfWork) -> StoreResult<Vec<SodException>> {
     Ok(transaction
         .query(
             "SELECT rule_id, user_id, covered_roles, justification, granted_by, valid_until \
@@ -147,10 +147,7 @@ pub async fn exceptions(transaction: &Transaction<'_>) -> StoreResult<Vec<SodExc
         .collect())
 }
 
-pub async fn keep_exception(
-    transaction: &Transaction<'_>,
-    exception: &SodException,
-) -> StoreResult<()> {
+pub async fn keep_exception(transaction: &UnitOfWork, exception: &SodException) -> StoreResult<()> {
     transaction
         .execute(
             "INSERT INTO sod_exceptions \
@@ -178,7 +175,7 @@ pub async fn keep_exception(
 }
 
 pub async fn drop_exception(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     rule_id: &str,
     user_id: &str,
 ) -> StoreResult<bool> {

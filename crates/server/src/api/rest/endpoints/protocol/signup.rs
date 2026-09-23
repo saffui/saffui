@@ -2,11 +2,11 @@
 
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
-use deadpool_postgres::Pool;
 use secrecy::SecretBox;
 use serde::Deserialize;
 use services::signup::{self, Unregistrable};
-use store::tenancy::{Tenancy, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -32,7 +32,6 @@ fn told(status: StatusCode) -> HttpResponse {
 pub async fn register(
     realm: web::Path<String>,
     asked: Option<web::Either<web::Json<Asking>, web::Form<Asking>>>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<config::serving::PublicOrigin>,
@@ -49,13 +48,16 @@ pub async fn register(
         return told(StatusCode::BAD_REQUEST);
     };
 
-    let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR);
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        Err(_) => {
+            return told(StatusCode::NOT_FOUND);
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(StatusCode::NOT_FOUND);
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR);
     };
     let Ok(Some(held)) = services::realm::named(&transaction, &context.realm_id).await else {
@@ -100,7 +102,7 @@ pub async fn register(
                 return told(StatusCode::INTERNAL_SERVER_ERROR);
             }
             if let Some(outgoing) = registered.sending {
-                super::mail::deliver(&sealing, &pool, &tenancy, &context, *outgoing).await;
+                super::mail::deliver(&sealing, &tenancy, &context, *outgoing).await;
             }
             uncached(&mut HttpResponseBuilder::new(StatusCode::CREATED))
                 .json(serde_json::json!({ "status": "registered", "verify": registered.verify }))

@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use crypto::envelope::Envelope;
-use deadpool_postgres::Transaction;
 use models::entities::mail::{MailCredentials, MailSettings};
 use secrecy::{ExposeSecret, SecretBox};
 
@@ -14,7 +14,7 @@ const COLUMNS: &str = "host, port, from_address, from_name, reply_to, implicit_t
 
 /// Write a realm's settings, replacing whatever was there.
 pub async fn keep(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     settings: &MailSettings,
@@ -74,7 +74,7 @@ pub async fn keep(
 
 /// A realm's settings, password opened.
 pub async fn load(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
 ) -> StoreResult<Option<MailSettings>> {
@@ -115,7 +115,7 @@ pub async fn load(
 }
 
 /// Forget how a realm sends mail, and say whether there was anything to forget.
-pub async fn forget(transaction: &Transaction<'_>) -> StoreResult<bool> {
+pub async fn forget(transaction: &UnitOfWork) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM realm_mail", &[])
         .await

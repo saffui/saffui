@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::realm::{ClientRegistration, RealmModel, RegistrationBounds, SslEnforcement};
 use models::paging::Page;
 use tokio_postgres::Row;
@@ -39,7 +39,7 @@ const COLUMNS: &str = "tenant, realm_id, name, display_name, enabled, \
 ///
 /// The tenant comes from the transaction, so a model naming another is refused
 /// by the rules rather than written under a name nobody would look for it by.
-pub async fn create(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreResult<()> {
+pub async fn create(transaction: &UnitOfWork, realm: &RealmModel) -> StoreResult<()> {
     let set = WriteSet::insert(vec![
         col("tenant", &realm.metadata.tenant),
         col("realm_id", &realm.realm_id),
@@ -58,10 +58,7 @@ pub async fn create(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreR
 }
 
 /// One realm of this tenant, by its identifier.
-pub async fn load(
-    transaction: &Transaction<'_>,
-    realm_id: &str,
-) -> StoreResult<Option<RealmModel>> {
+pub async fn load(transaction: &UnitOfWork, realm_id: &str) -> StoreResult<Option<RealmModel>> {
     let statement = format!("SELECT {COLUMNS} FROM realms WHERE realm_id = $1");
     Ok(transaction
         .query_opt(statement.as_str(), &[&realm_id])
@@ -72,7 +69,7 @@ pub async fn load(
 
 /// The realm this transaction is scoped to, read off the tenancy setting:
 /// for engine code that holds a scoped transaction and no realm name.
-pub async fn of_context(transaction: &Transaction<'_>) -> StoreResult<Option<RealmModel>> {
+pub async fn of_context(transaction: &UnitOfWork) -> StoreResult<Option<RealmModel>> {
     let statement = format!(
         "SELECT {COLUMNS} FROM realms \
          WHERE realm_id = current_setting('saffui.current_realm', true)"
@@ -86,7 +83,7 @@ pub async fn of_context(transaction: &Transaction<'_>) -> StoreResult<Option<Rea
 
 /// Take a realm away. The schema cascades: everything keyed under the
 /// realm goes with the row, which is the point of deleting one.
-pub async fn delete(transaction: &Transaction<'_>, realm_id: &str) -> StoreResult<bool> {
+pub async fn delete(transaction: &UnitOfWork, realm_id: &str) -> StoreResult<bool> {
     let gone = transaction
         .execute("DELETE FROM realms WHERE realm_id = $1", &[&realm_id])
         .await
@@ -98,7 +95,7 @@ pub async fn delete(transaction: &Transaction<'_>, realm_id: &str) -> StoreResul
 ///
 /// A realm's name is what its issuer is built from, so two realms answering to
 /// one name is two issuers nothing can tell apart.
-pub async fn name_taken(transaction: &Transaction<'_>, name: &str) -> StoreResult<bool> {
+pub async fn name_taken(transaction: &UnitOfWork, name: &str) -> StoreResult<bool> {
     let found: i64 = transaction
         .query_one("SELECT count(*) FROM realms WHERE name = $1", &[&name])
         .await
@@ -112,7 +109,7 @@ pub async fn name_taken(transaction: &Transaction<'_>, name: &str) -> StoreResul
 /// The count runs the same filters as the page. One that did not would report a
 /// total for a set the caller is not reading.
 pub async fn list(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     query: &ListQuery<'_>,
     with_total: bool,
 ) -> StoreResult<Page<RealmModel>> {
@@ -150,7 +147,7 @@ pub async fn list(
 /// The identifier and the name are not written. A realm's name is what its
 /// issuer is built from, and moving it under a settings edit would invalidate
 /// every token already issued.
-pub async fn update(transaction: &Transaction<'_>, realm: &RealmModel) -> StoreResult<bool> {
+pub async fn update(transaction: &UnitOfWork, realm: &RealmModel) -> StoreResult<bool> {
     // Serialised up front rather than inline: the write set borrows what it
     // binds, so a value built inside the vector would not outlive it.
     let password_policy = as_document(realm.password_policy.as_ref().map(serde_json::to_value))?;
@@ -372,7 +369,7 @@ fn as_document(
 
 /// The realm's theme tokens, or nothing when it wears the default.
 pub async fn theme_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
 ) -> StoreResult<Option<serde_json::Value>> {
     let row = transaction
@@ -388,7 +385,7 @@ pub async fn theme_of(
 /// Its own query, like the theme's: neither rides in the column list a realm
 /// load reads, so a request that never draws a logo never carries one.
 pub async fn logo_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
 ) -> StoreResult<Option<(Vec<u8>, String)>> {
     let row = transaction
@@ -409,7 +406,7 @@ pub async fn logo_of(
 /// because what is served has to be what was weighed, not what a later guess
 /// makes of the same bytes.
 pub async fn set_logo(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
     logo: Option<(&[u8], &str)>,
 ) -> StoreResult<bool> {
@@ -428,7 +425,7 @@ pub async fn set_logo(
 }
 
 pub async fn set_theme(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
     theme: Option<&serde_json::Value>,
 ) -> StoreResult<bool> {

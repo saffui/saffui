@@ -9,7 +9,6 @@ use store::tenancy::TenantContext;
 
 fn mounted(plane: &Plane, egress: config::serving::Egress) -> Mounted {
     Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -53,8 +52,7 @@ async fn put_settings(
 }
 
 async fn held_settings(plane: &Plane) -> Option<models::entities::sms::SmsSettings> {
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let sealing = support::sealing();
     let ring = store::keyring::load(
         &transaction,
@@ -87,8 +85,7 @@ async fn an_sms_token_is_sealed_and_never_answered_with() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT, "{told}");
 
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let held: Vec<u8> = transaction
         .query_one("SELECT sealed_token FROM realm_sms", &[])
         .await
@@ -99,7 +96,6 @@ async fn an_sms_token_is_sealed_and_never_answered_with() {
         "the token is readable in the column"
     );
     drop(transaction);
-    drop(connection);
 
     let app = test::init_service(
         App::new().configure(register(&mounted(&plane, config::serving::Egress::Outward))),
@@ -397,8 +393,7 @@ async fn a_ussd_secret_is_sealed_and_short_ones_are_refused() {
     .await;
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-    let mut connection = plane.connection().await;
-    let transaction = plane.scoped(&mut connection, &within()).await;
+    let transaction = plane.scoped(&within()).await;
     let held: Vec<u8> = transaction
         .query_one("SELECT sealed_secret FROM realm_ussd", &[])
         .await
@@ -409,7 +404,6 @@ async fn a_ussd_secret_is_sealed_and_short_ones_are_refused() {
         "the secret is readable in the column"
     );
     drop(transaction);
-    drop(connection);
 
     let response = test::call_service(&app, asked(actix_web::http::Method::GET, None)).await;
     let shown = String::from_utf8_lossy(&test::read_body(response).await).into_owned();

@@ -1,10 +1,9 @@
 use actix_web::{HttpRequest, HttpResponse};
 use chrono::{DateTime, Utc};
-use deadpool_postgres::{Object, Transaction};
 use models::entities::client::ClientModel;
 use secrecy::SecretBox;
 use services::client;
-use store::tenancy::{Tenancy, TenantContext};
+use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
 use config::serving::{Egress, PublicOrigin};
 
@@ -18,19 +17,18 @@ use crate::api::rest::endpoints::protocol::token::refused;
     clippy::too_many_arguments,
     reason = "each is a distinct fact about one request"
 )]
-pub async fn establish<'a>(
+pub async fn establish(
     request: &HttpRequest,
     form_client_id: Option<&str>,
     form_secret: Option<String>,
     signed: Option<client::Signed<'_>>,
-    connection: &'a mut Object,
     tenancy: &Tenancy,
     sealing: &Sealing,
     origin: &PublicOrigin,
     egress: Egress,
     context: &TenantContext,
     now: DateTime<Utc>,
-) -> Result<(Transaction<'a>, ClientModel), HttpResponse> {
+) -> Result<(UnitOfWork, ClientModel), HttpResponse> {
     let presented = client::read_presented(
         basic::credentials(request),
         form_client_id,
@@ -44,7 +42,7 @@ pub async fn establish<'a>(
     // assertion would be presentable again.
     let client = if matches!(presented, client::Presented::Assertion { .. }) {
         let held = {
-            let transaction = scoped(connection, tenancy, context).await?;
+            let transaction = scoped(tenancy, context).await?;
             super::hosted::refresh_client_keys(&transaction, presented.client_id(), egress, now)
                 .await;
             let client = checked(
@@ -68,7 +66,7 @@ pub async fn establish<'a>(
         None
     };
 
-    let transaction = scoped(connection, tenancy, context).await?;
+    let transaction = scoped(tenancy, context).await?;
     let client = match client {
         Some(client) => client,
         None => {
@@ -87,20 +85,16 @@ pub async fn establish<'a>(
     Ok((transaction, client))
 }
 
-async fn scoped<'a>(
-    connection: &'a mut Object,
-    tenancy: &Tenancy,
-    context: &TenantContext,
-) -> Result<Transaction<'a>, HttpResponse> {
+async fn scoped(tenancy: &Tenancy, context: &TenantContext) -> Result<UnitOfWork, HttpResponse> {
     tenancy
-        .transaction(connection, context)
+        .begin(context)
         .await
         .map_err(|_| Denied::InvalidRequest.answer("the realm could not be read"))
 }
 
 async fn checked(
     request: &HttpRequest,
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &Sealing,
     origin: &PublicOrigin,
     context: &TenantContext,

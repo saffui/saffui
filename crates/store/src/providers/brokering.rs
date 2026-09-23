@@ -1,6 +1,6 @@
+use crate::tenancy::UnitOfWork;
 use chrono::{DateTime, Utc};
 use crypto::envelope::Envelope;
-use deadpool_postgres::Transaction;
 use models::entities::authz::IdentityProviderModel;
 use models::entities::brokering::{
     BrokerLoginState, FederatedIdentityModel, IdpMapperModel, RealmSpnegoModel,
@@ -20,7 +20,7 @@ const PROVIDER_COLUMNS: &str = "tenant, realm_id, internal_id, provider_id, name
 
 /// Record a provider.
 pub async fn create_provider(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &IdentityProviderModel,
 ) -> StoreResult<()> {
     let configs = json(&provider.configs)?;
@@ -51,7 +51,7 @@ pub async fn create_provider(
 
 /// One provider by the alias a login URL names.
 pub async fn provider_by_alias(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
 ) -> StoreResult<Option<IdentityProviderModel>> {
     let statement =
@@ -64,9 +64,7 @@ pub async fn provider_by_alias(
 }
 
 /// Every provider of this realm.
-pub async fn list_providers(
-    transaction: &Transaction<'_>,
-) -> StoreResult<Vec<IdentityProviderModel>> {
+pub async fn list_providers(transaction: &UnitOfWork) -> StoreResult<Vec<IdentityProviderModel>> {
     let statement =
         format!("SELECT {PROVIDER_COLUMNS} FROM identity_providers ORDER BY provider_id ASC");
     Ok(transaction
@@ -80,7 +78,7 @@ pub async fn list_providers(
 
 /// Rewrite a provider, and say whether it was there to rewrite.
 pub async fn update_provider(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &IdentityProviderModel,
 ) -> StoreResult<bool> {
     let configs = json(&provider.configs)?;
@@ -111,10 +109,7 @@ pub async fn update_provider(
 }
 
 /// Remove a provider, and say whether it was there to remove.
-pub async fn delete_provider(
-    transaction: &Transaction<'_>,
-    internal_id: &str,
-) -> StoreResult<bool> {
+pub async fn delete_provider(transaction: &UnitOfWork, internal_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM identity_providers WHERE internal_id = $1",
@@ -126,7 +121,7 @@ pub async fn delete_provider(
 }
 
 /// Whether any local account is linked through this alias.
-pub async fn alias_still_linked(transaction: &Transaction<'_>, alias: &str) -> StoreResult<bool> {
+pub async fn alias_still_linked(transaction: &UnitOfWork, alias: &str) -> StoreResult<bool> {
     let row = transaction
         .query_one(
             "SELECT EXISTS (SELECT 1 FROM federated_identities WHERE provider_alias = $1) AS held",
@@ -140,7 +135,7 @@ pub async fn alias_still_linked(transaction: &Transaction<'_>, alias: &str) -> S
 /// Bind a local user to who they are upstream, and tell whoever listens, saying
 /// whether the account was made by this very sign-in.
 pub async fn link(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     identity: &FederatedIdentityModel,
     account_created: bool,
 ) -> StoreResult<()> {
@@ -175,7 +170,7 @@ pub async fn link(
 
 /// The provider aliases a local account is bound to, for reading a person's
 /// provenance. Ordered so the answer is stable.
-pub async fn links_of(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<Vec<String>> {
+pub async fn links_of(transaction: &UnitOfWork, user_id: &str) -> StoreResult<Vec<String>> {
     Ok(transaction
         .query(
             "SELECT provider_alias FROM federated_identities \
@@ -191,7 +186,7 @@ pub async fn links_of(transaction: &Transaction<'_>, user_id: &str) -> StoreResu
 
 /// The local user an upstream subject is bound to, if any.
 pub async fn linked_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
     external_user_id: &str,
 ) -> StoreResult<Option<String>> {
@@ -208,7 +203,7 @@ pub async fn linked_user(
 
 /// The identities a local user holds elsewhere.
 pub async fn identities_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<Vec<FederatedIdentityModel>> {
     Ok(transaction
@@ -226,10 +221,7 @@ pub async fn identities_of(
 }
 
 /// Open one brokered login: what left for the upstream, kept hashed.
-pub async fn open_state(
-    transaction: &Transaction<'_>,
-    state: &BrokerLoginState,
-) -> StoreResult<()> {
+pub async fn open_state(transaction: &UnitOfWork, state: &BrokerLoginState) -> StoreResult<()> {
     transaction
         .execute(
             "INSERT INTO broker_login_states \
@@ -257,7 +249,7 @@ pub async fn open_state(
 /// state started for one provider cannot be spent on another's endpoint. The
 /// expiry is part of the match, so a stale row cannot be spent either.
 pub async fn consume_state(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     state_hash: &str,
     alias: &str,
     now: DateTime<Utc>,
@@ -277,7 +269,7 @@ pub async fn consume_state(
 
 /// Drop what expired without being spent.
 pub async fn drop_expired_login_states(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     now: DateTime<Utc>,
 ) -> StoreResult<u64> {
     transaction
@@ -349,10 +341,7 @@ const MAPPER_COLUMNS: &str = "tenant, realm_id, mapper_id, provider_alias, name,
                               configs, created_by, created_at, updated_by, updated_at, version";
 
 /// Record a rule.
-pub async fn create_mapper(
-    transaction: &Transaction<'_>,
-    mapper: &IdpMapperModel,
-) -> StoreResult<()> {
+pub async fn create_mapper(transaction: &UnitOfWork, mapper: &IdpMapperModel) -> StoreResult<()> {
     let configs = mapper
         .configs
         .as_ref()
@@ -381,7 +370,7 @@ pub async fn create_mapper(
 
 /// The rules of one provider, in the order they were named.
 pub async fn mappers_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider_alias: &str,
 ) -> StoreResult<Vec<IdpMapperModel>> {
     let statement = format!(
@@ -399,7 +388,7 @@ pub async fn mappers_of(
 
 /// One rule, wherever it hangs.
 pub async fn load_mapper(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     mapper_id: &str,
 ) -> StoreResult<Option<IdpMapperModel>> {
     let statement = format!("SELECT {MAPPER_COLUMNS} FROM idp_mappers WHERE mapper_id = $1");
@@ -411,10 +400,7 @@ pub async fn load_mapper(
 }
 
 /// Rewrite a rule, and say whether it was there to rewrite.
-pub async fn update_mapper(
-    transaction: &Transaction<'_>,
-    mapper: &IdpMapperModel,
-) -> StoreResult<bool> {
+pub async fn update_mapper(transaction: &UnitOfWork, mapper: &IdpMapperModel) -> StoreResult<bool> {
     let configs = mapper
         .configs
         .as_ref()
@@ -442,7 +428,7 @@ pub async fn update_mapper(
 }
 
 /// Remove a rule, and say whether it was there to remove.
-pub async fn delete_mapper(transaction: &Transaction<'_>, mapper_id: &str) -> StoreResult<bool> {
+pub async fn delete_mapper(transaction: &UnitOfWork, mapper_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM idp_mappers WHERE mapper_id = $1",
@@ -480,7 +466,7 @@ const FEDERATION_COLUMNS: &str = "tenant, realm_id, alias, enabled, priority, co
                                   created_by, created_at, updated_by, updated_at, version";
 
 /// Every directory this realm federates from, first-asked first.
-pub async fn federations(transaction: &Transaction<'_>) -> StoreResult<Vec<UserFederationModel>> {
+pub async fn federations(transaction: &UnitOfWork) -> StoreResult<Vec<UserFederationModel>> {
     let statement =
         format!("SELECT {FEDERATION_COLUMNS} FROM user_federations ORDER BY priority, alias");
     Ok(transaction
@@ -493,7 +479,7 @@ pub async fn federations(transaction: &Transaction<'_>) -> StoreResult<Vec<UserF
 }
 
 pub async fn federation(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
 ) -> StoreResult<Option<UserFederationModel>> {
     let statement = format!("SELECT {FEDERATION_COLUMNS} FROM user_federations WHERE alias = $1");
@@ -506,7 +492,7 @@ pub async fn federation(
 
 /// Write one directory, whole: an alias is a name, so writing is replacing.
 pub async fn keep_federation(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     federation: &UserFederationModel,
 ) -> StoreResult<()> {
     let enabled = federation.enabled.unwrap_or(true);
@@ -543,7 +529,7 @@ pub async fn keep_federation(
 }
 
 /// Take one directory away, and say whether it was there.
-pub async fn drop_federation(transaction: &Transaction<'_>, alias: &str) -> StoreResult<bool> {
+pub async fn drop_federation(transaction: &UnitOfWork, alias: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM user_federations WHERE alias = $1", &[&alias])
         .await
@@ -552,7 +538,7 @@ pub async fn drop_federation(transaction: &Transaction<'_>, alias: &str) -> Stor
 }
 
 /// The one ticket door this realm answers, when it holds one.
-pub async fn spnego(transaction: &Transaction<'_>) -> StoreResult<Option<RealmSpnegoModel>> {
+pub async fn spnego(transaction: &UnitOfWork) -> StoreResult<Option<RealmSpnegoModel>> {
     let statement = format!("SELECT {SPNEGO_COLUMNS} FROM realm_spnego");
     Ok(transaction
         .query_opt(statement.as_str(), &[])
@@ -563,10 +549,7 @@ pub async fn spnego(transaction: &Transaction<'_>) -> StoreResult<Option<RealmSp
 
 /// Write the realm's ticket door, whole: the row is a singleton, so writing
 /// is replacing.
-pub async fn keep_spnego(
-    transaction: &Transaction<'_>,
-    spnego: &RealmSpnegoModel,
-) -> StoreResult<()> {
+pub async fn keep_spnego(transaction: &UnitOfWork, spnego: &RealmSpnegoModel) -> StoreResult<()> {
     let enabled = spnego.enabled.unwrap_or(true);
     let configs = spnego
         .configs
@@ -593,7 +576,7 @@ pub async fn keep_spnego(
 }
 
 /// Take the ticket door away, and say whether there was one.
-pub async fn drop_spnego(transaction: &Transaction<'_>) -> StoreResult<bool> {
+pub async fn drop_spnego(transaction: &UnitOfWork) -> StoreResult<bool> {
     let removed = transaction
         .execute("DELETE FROM realm_spnego", &[])
         .await
@@ -657,7 +640,7 @@ pub struct TokenToSeal<'a> {
 /// Record what another provider answers for about this person. The model's
 /// token field is never written: a fetch token arrives apart, to be sealed.
 pub async fn create_claim_source(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     source: &UserClaimSourceModel,
     token: Option<TokenToSeal<'_>>,
 ) -> StoreResult<()> {
@@ -704,7 +687,7 @@ pub async fn create_claim_source(
 /// claim points at does not move between reads. A held fetch token reads
 /// back as [`CONCEALED_TOKEN`], never as itself.
 pub async fn claim_sources_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<Vec<UserClaimSourceModel>> {
     let statement = format!(
@@ -730,7 +713,7 @@ pub async fn claim_sources_of(
 /// The same sources with their fetch tokens opened, for the one answer a
 /// token goes into: the release to a relying party.
 pub async fn released_claim_sources_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     ring: &RealmKeyring,
     envelope: &Envelope,
     user_id: &str,
@@ -765,7 +748,7 @@ pub async fn released_claim_sources_of(
 
 /// Remove one source, and say whether it was there and this person's.
 pub async fn delete_claim_source(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     source_id: &str,
 ) -> StoreResult<bool> {

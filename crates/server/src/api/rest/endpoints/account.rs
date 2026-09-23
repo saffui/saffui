@@ -4,7 +4,6 @@ use commons::error::ErrorCode;
 use commons::http::ApiError;
 use config::serving::PublicOrigin;
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Pool;
 use secrecy::SecretBox;
 use services::account::{OwnFactor, OwnFactors, Unchanged};
 use services::account_api::{
@@ -16,7 +15,7 @@ use services::account_api::{
 };
 use services::agent::read_agent;
 use services::grant::Signing;
-use store::tenancy::Tenancy;
+use store::tenancy::{Tenancy, UnitOfWork};
 
 use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
@@ -29,12 +28,10 @@ use crate::middleware::admin_policy::AdminPolicy;
 /// What the realm holds of the caller, as they read it about themselves.
 pub async fn show_me(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
 ) -> Result<HttpResponse, AccountRefusal> {
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     let claims = read_me(&transaction, &caller)
@@ -47,12 +44,10 @@ pub async fn show_me(
 /// may, and the step-up challenge when it has to sign in again first.
 pub async fn check_recent_sign_in(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
 ) -> Result<HttpResponse, AccountRefusal> {
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     match find_needed_step_up(&transaction, &caller)
@@ -68,7 +63,6 @@ pub async fn check_recent_sign_in(
 /// and strong enough. Every other login of theirs ends, and the answer says how many.
 pub async fn change_password(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     request: HttpRequest,
@@ -90,9 +84,8 @@ pub async fn change_password(
             "a new password is required",
         )));
     }
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     let from = read_provenance(&request).address;
@@ -130,12 +123,10 @@ pub async fn change_password(
 /// What the caller holds to sign in with, and why any of it has to stay.
 pub async fn list_factors(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
 ) -> Result<HttpResponse, AccountRefusal> {
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     let held = read_caller_factors(&transaction, &caller)
@@ -147,18 +138,16 @@ pub async fn list_factors(
 /// Take away one of the caller's authenticator apps.
 pub async fn remove_app(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let (_, credential_id) = path.into_inner();
-    remove(&caller, &pool, &tenancy, OwnFactor::App(&credential_id)).await
+    remove(&caller, &tenancy, OwnFactor::App(&credential_id)).await
 }
 
 /// Take away one of the caller's passkeys, named as the listing spells it.
 pub async fn remove_key(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
@@ -166,27 +155,24 @@ pub async fn remove_key(
     let credential_id = BASE64URL_NOPAD
         .decode(credential.as_bytes())
         .map_err(|_| AccountRefusal::Refused(ApiError::new(ErrorCode::BadRequest)))?;
-    remove(&caller, &pool, &tenancy, OwnFactor::Key(&credential_id)).await
+    remove(&caller, &tenancy, OwnFactor::Key(&credential_id)).await
 }
 
 /// Take away the caller's whole sheet of recovery codes.
 pub async fn remove_recovery_codes(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
 ) -> Result<HttpResponse, AccountRefusal> {
-    remove(&caller, &pool, &tenancy, OwnFactor::RecoveryCodes).await
+    remove(&caller, &tenancy, OwnFactor::RecoveryCodes).await
 }
 
 async fn remove(
     caller: &AccountCaller,
-    pool: &Pool,
     tenancy: &Tenancy,
     factor: OwnFactor<'_>,
 ) -> Result<HttpResponse, AccountRefusal> {
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     remove_caller_factor(&transaction, caller, factor)
@@ -249,12 +235,10 @@ pub(crate) fn describe_own_factors(held: &OwnFactors) -> serde_json::Value {
 /// still holds from it.
 pub async fn list_sessions(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
 ) -> Result<HttpResponse, AccountRefusal> {
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     let held = list_caller_logins(&transaction, &caller)
@@ -269,7 +253,6 @@ pub async fn list_sessions(
 /// the ending has committed.
 pub async fn end_session(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -277,9 +260,8 @@ pub async fn end_session(
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let (_, session_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     let ring = open_realm_keys(&transaction, &sealing, &caller).await;
@@ -305,15 +287,13 @@ pub async fn end_session(
 /// ended. The applications registered to hear of them are told once it committed.
 pub async fn end_other_sessions(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
     egress: web::Data<config::serving::Egress>,
 ) -> Result<HttpResponse, AccountRefusal> {
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     let ring = open_realm_keys(&transaction, &sealing, &caller).await;
@@ -339,7 +319,6 @@ pub async fn end_other_sessions(
 /// application is told, when it registered to hear of it, once the taking committed.
 pub async fn revoke_grant(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -347,9 +326,8 @@ pub async fn revoke_grant(
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let (_, session_id, client_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     let ring = open_realm_keys(&transaction, &sealing, &caller).await;
@@ -376,13 +354,11 @@ pub async fn revoke_grant(
 /// and what each holds from their logins. The realm's own consoles are left out.
 pub async fn list_applications(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     policy: web::Data<AdminPolicy>,
 ) -> Result<HttpResponse, AccountRefusal> {
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     let held =
@@ -397,15 +373,13 @@ pub async fn list_applications(
 /// keeps working.
 pub async fn withdraw_consent(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     policy: web::Data<AdminPolicy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let (_, client_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     withdraw_caller_consent(
@@ -431,7 +405,6 @@ pub async fn withdraw_consent(
 )]
 pub async fn take_back_access(
     caller: web::ReqData<AccountCaller>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -440,9 +413,8 @@ pub async fn take_back_access(
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, AccountRefusal> {
     let (_, client_id) = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| AccountRefusal::Unavailable)?;
     let transaction = tenancy
-        .transaction(&mut connection, &caller.tenant)
+        .begin(&caller.tenant)
         .await
         .map_err(|_| AccountRefusal::Unavailable)?;
     let ring = open_realm_keys(&transaction, &sealing, &caller).await;
@@ -469,7 +441,7 @@ pub async fn take_back_access(
 /// The realm's keys, opened to sign the logout notices an ending owes. None when they
 /// cannot be opened: the ending goes ahead, and nobody is told.
 async fn open_realm_keys(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &Sealing,
     caller: &AccountCaller,
 ) -> Option<store::keyring::RealmKeyring> {

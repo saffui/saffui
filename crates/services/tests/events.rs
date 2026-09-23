@@ -12,10 +12,7 @@ use support::Fixture;
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn the_sign_in_log_obeys_the_switch_and_ages_out() {
     let fixture = Fixture::with_user_and_client().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     let now = Utc::now();
 
     let mut realm = realms::load(&transaction, "main")

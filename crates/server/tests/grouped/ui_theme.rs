@@ -11,7 +11,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -341,9 +340,8 @@ async fn the_client_may_ask_the_page_tongue_for_its_login() {
 
 /// Point the planted client's home page somewhere, under a display name.
 async fn reshape_home(plane: &Plane, home: Option<&str>, named: &str) {
-    let mut connection = plane.connection().await;
     let within = store::tenancy::TenantContext::new(support::TENANT, support::REALM);
-    let transaction = plane.scoped(&mut connection, &within).await;
+    let transaction = plane.scoped(&within).await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await
         .expect("the clients table")

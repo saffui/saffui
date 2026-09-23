@@ -2,7 +2,6 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::feature::{Feature, Reach, RealmWishes};
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use serde::Deserialize;
 use serde_json::json;
 use store::tenancy::Tenancy;
@@ -47,14 +46,12 @@ pub async fn list() -> Result<HttpResponse, ApiError> {
 /// from "off because this node was not started with it".
 pub async fn list_for_realm(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
 
@@ -116,7 +113,6 @@ pub struct Wish {
 /// something that is not so.
 pub async fn set_wish(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
     asked: web::Json<Wish>,
@@ -135,9 +131,8 @@ pub async fn set_wish(
         ));
     }
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
 

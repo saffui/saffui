@@ -14,7 +14,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -85,9 +84,8 @@ async fn an_agent_is_born_whole_and_keyless_or_not_at_all() {
     );
 
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let account = store::providers::users::load_service_account(&transaction, "scribe-1")
             .await
@@ -217,12 +215,8 @@ async fn an_agent_is_born_whole_and_keyless_or_not_at_all() {
 
     // The lifecycle told the outside, in the same transactions that did it.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         let kinds: Vec<String> = transaction
             .query(
@@ -279,9 +273,8 @@ async fn a_revoked_agents_tokens_die_everywhere_at_once() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let account = {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         transaction
             .execute("UPDATE realms SET agent_exchange_enabled = TRUE", &[])
@@ -405,12 +398,8 @@ async fn a_revoked_agents_tokens_die_everywhere_at_once() {
 
     // The cut itself was told, in the transaction that cut.
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         let told: i64 = transaction
             .query_one(
@@ -497,12 +486,8 @@ async fn a_deleted_client_takes_its_service_account_with_it() {
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     {
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(
-                &mut connection,
-                &store::tenancy::TenantContext::new(support::TENANT, REALM),
-            )
+            .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
             .await;
         assert!(
             store::providers::users::load_service_account(&transaction, "scribe-3")

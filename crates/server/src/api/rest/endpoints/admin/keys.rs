@@ -2,7 +2,6 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use data_encoding::BASE64URL_NOPAD;
-use deadpool_postgres::Pool;
 use services::admin::keys::Unreachable;
 use store::tenancy::{Tenancy, TenantContext};
 
@@ -13,18 +12,13 @@ use crate::middleware::admin_guard::Admin;
 /// The keys this user may present.
 pub async fn list(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, user_id) = path.into_inner();
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
 
@@ -47,7 +41,6 @@ pub async fn list(
 /// Revoke one of this user's keys.
 pub async fn revoke(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<(String, String, String)>,
 ) -> Result<HttpResponse, ApiError> {
@@ -58,12 +51,8 @@ pub async fn revoke(
         .decode(credential.as_bytes())
         .map_err(|_| ApiError::new(ErrorCode::BadRequest))?;
 
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
 

@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::entities::auth::{
     AuthenticationExecutionModel, AuthenticationFlowModel, AuthenticatorConfigModel,
     AuthenticatorRequirement, ExecutionStep, RequiredActionModel,
@@ -28,7 +28,7 @@ const ACTION_COLUMNS: &str = "tenant, realm_id, action_id, action, provider_id, 
 
 /// Record a flow.
 pub async fn create_flow(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     flow: &AuthenticationFlowModel,
 ) -> StoreResult<()> {
     // Bound to locals: the write set holds references, and a temporary made in
@@ -60,7 +60,7 @@ pub async fn create_flow(
 
 /// Rewrite a flow without changing its identifier or built-in status.
 pub async fn update_flow(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     flow: &AuthenticationFlowModel,
 ) -> StoreResult<bool> {
     let top_level = flow.top_level.unwrap_or(false);
@@ -87,7 +87,7 @@ pub async fn update_flow(
 
 /// One flow of this realm, by the identifier it was created with.
 pub async fn load_flow(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     flow_id: &str,
 ) -> StoreResult<Option<AuthenticationFlowModel>> {
     let statement = format!("SELECT {FLOW_COLUMNS} FROM authentication_flows WHERE flow_id = $1");
@@ -100,7 +100,7 @@ pub async fn load_flow(
 
 /// One flow of this realm, by the name an admin gave it.
 pub async fn flow_by_alias(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     alias: &str,
 ) -> StoreResult<Option<AuthenticationFlowModel>> {
     let statement = format!("SELECT {FLOW_COLUMNS} FROM authentication_flows WHERE alias = $1");
@@ -113,7 +113,7 @@ pub async fn flow_by_alias(
 
 /// The flows a login may start at.
 pub async fn top_level_flows(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
 ) -> StoreResult<Vec<AuthenticationFlowModel>> {
     let statement = format!(
         "SELECT {FLOW_COLUMNS} FROM authentication_flows \
@@ -129,9 +129,7 @@ pub async fn top_level_flows(
 }
 
 /// Every flow of this realm, nested ones included.
-pub async fn list_flows(
-    transaction: &Transaction<'_>,
-) -> StoreResult<Vec<AuthenticationFlowModel>> {
+pub async fn list_flows(transaction: &UnitOfWork) -> StoreResult<Vec<AuthenticationFlowModel>> {
     let statement = format!("SELECT {FLOW_COLUMNS} FROM authentication_flows ORDER BY alias ASC");
     Ok(transaction
         .query(statement.as_str(), &[])
@@ -143,7 +141,7 @@ pub async fn list_flows(
 }
 
 /// Remove a flow, and say whether there was one to remove.
-pub async fn delete_flow(transaction: &Transaction<'_>, flow_id: &str) -> StoreResult<bool> {
+pub async fn delete_flow(transaction: &UnitOfWork, flow_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM authentication_flows WHERE flow_id = $1",
@@ -156,7 +154,7 @@ pub async fn delete_flow(transaction: &Transaction<'_>, flow_id: &str) -> StoreR
 
 /// Record a step.
 pub async fn create_execution(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     execution: &AuthenticationExecutionModel,
 ) -> StoreResult<()> {
     // Exactly one of the two is written, which is what the schema checks.
@@ -194,7 +192,7 @@ pub async fn create_execution(
 
 /// Rewrite one flow step without changing its identifier.
 pub async fn update_execution(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     execution: &AuthenticationExecutionModel,
 ) -> StoreResult<bool> {
     let (authenticator, config_id, sub_flow_id) = match &execution.step {
@@ -234,7 +232,7 @@ pub async fn update_execution(
 /// authenticator a user meets first.
 /// Change what one step costs the flow.
 pub async fn set_requirement(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     execution_id: &str,
     requirement: AuthenticatorRequirement,
 ) -> StoreResult<bool> {
@@ -249,7 +247,7 @@ pub async fn set_requirement(
 }
 
 pub async fn executions_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     flow_id: &str,
 ) -> StoreResult<Vec<AuthenticationExecutionModel>> {
     let statement = format!(
@@ -271,7 +269,7 @@ pub async fn executions_of(
 /// a swap passes through a state where two steps share one position and comes
 /// out of it in the same transaction. Checked again once every move is written,
 /// so moves leaving two steps at one position are refused here.
-pub async fn reorder(transaction: &Transaction<'_>, moves: &[(&str, i32)]) -> StoreResult<()> {
+pub async fn reorder(transaction: &UnitOfWork, moves: &[(&str, i32)]) -> StoreResult<()> {
     transaction
         .execute("SET CONSTRAINTS one_step_per_position DEFERRED", &[])
         .await
@@ -292,7 +290,7 @@ pub async fn reorder(transaction: &Transaction<'_>, moves: &[(&str, i32)]) -> St
 
 /// Check the step positions a deferred write left, now rather than at commit,
 /// so two steps placed at one position are refused where it can still be said.
-pub async fn settle_step_positions(transaction: &Transaction<'_>) -> StoreResult<()> {
+pub async fn settle_step_positions(transaction: &UnitOfWork) -> StoreResult<()> {
     transaction
         .execute("SET CONSTRAINTS one_step_per_position IMMEDIATE", &[])
         .await
@@ -303,7 +301,7 @@ pub async fn settle_step_positions(transaction: &Transaction<'_>) -> StoreResult
 /// Record a configuration.
 /// One execution, wherever it hangs.
 pub async fn load_execution(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     execution_id: &str,
 ) -> StoreResult<Option<AuthenticationExecutionModel>> {
     let statement = format!(
@@ -317,10 +315,7 @@ pub async fn load_execution(
 }
 
 /// Remove a step, and say whether it was there to remove.
-pub async fn delete_execution(
-    transaction: &Transaction<'_>,
-    execution_id: &str,
-) -> StoreResult<bool> {
+pub async fn delete_execution(transaction: &UnitOfWork, execution_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM authentication_executions WHERE execution_id = $1",
@@ -339,10 +334,7 @@ pub async fn delete_execution(
 /// bound to a missing one falls back to nothing. `/authorize` resolves the
 /// alias and refuses outright when it names no flow, so a realm that lost
 /// the flow it bound has no sign-in at all.
-pub async fn alias_bound_to_the_realm(
-    transaction: &Transaction<'_>,
-    alias: &str,
-) -> StoreResult<bool> {
+pub async fn alias_bound_to_the_realm(transaction: &UnitOfWork, alias: &str) -> StoreResult<bool> {
     let row = transaction
         .query_one(
             "SELECT EXISTS ( \
@@ -358,10 +350,7 @@ pub async fn alias_bound_to_the_realm(
     Ok(row.get("bound"))
 }
 
-pub async fn alias_bound_to_a_client(
-    transaction: &Transaction<'_>,
-    alias: &str,
-) -> StoreResult<bool> {
+pub async fn alias_bound_to_a_client(transaction: &UnitOfWork, alias: &str) -> StoreResult<bool> {
     let row = transaction
         .query_one(
             "SELECT EXISTS ( \
@@ -376,7 +365,7 @@ pub async fn alias_bound_to_a_client(
 }
 
 pub async fn create_config(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     config: &AuthenticatorConfigModel,
 ) -> StoreResult<()> {
     let configs = config
@@ -407,7 +396,7 @@ pub async fn create_config(
 
 /// One configuration of this realm.
 pub async fn load_config(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     config_id: &str,
 ) -> StoreResult<Option<AuthenticatorConfigModel>> {
     let statement =
@@ -421,7 +410,7 @@ pub async fn load_config(
 
 /// Register an action a realm may ask a user for.
 pub async fn register_action(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     action: &RequiredActionModel,
 ) -> StoreResult<()> {
     let enabled = action.enabled.unwrap_or(true);
@@ -456,9 +445,7 @@ pub async fn register_action(
 }
 
 /// The actions a new user of this realm is given, in the order they are asked.
-pub async fn default_actions(
-    transaction: &Transaction<'_>,
-) -> StoreResult<Vec<RequiredActionModel>> {
+pub async fn default_actions(transaction: &UnitOfWork) -> StoreResult<Vec<RequiredActionModel>> {
     let statement = format!(
         "SELECT {ACTION_COLUMNS} FROM required_actions \
          WHERE default_action AND enabled ORDER BY priority ASC"
@@ -473,7 +460,7 @@ pub async fn default_actions(
 }
 
 /// Every action this realm registered, in the order they are asked.
-pub async fn list_actions(transaction: &Transaction<'_>) -> StoreResult<Vec<RequiredActionModel>> {
+pub async fn list_actions(transaction: &UnitOfWork) -> StoreResult<Vec<RequiredActionModel>> {
     let statement =
         format!("SELECT {ACTION_COLUMNS} FROM required_actions ORDER BY priority ASC, action ASC");
     Ok(transaction
@@ -487,7 +474,7 @@ pub async fn list_actions(transaction: &Transaction<'_>) -> StoreResult<Vec<Requ
 
 /// The registration of one action, by the action itself.
 pub async fn load_action(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     action: RequiredAction,
 ) -> StoreResult<Option<RequiredActionModel>> {
     let statement = format!(
@@ -503,7 +490,7 @@ pub async fn load_action(
 
 /// Rewrite a registration, and say whether it was there to rewrite.
 pub async fn update_action(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     action: &RequiredActionModel,
 ) -> StoreResult<bool> {
     let enabled = action.enabled.unwrap_or(true);
@@ -536,7 +523,7 @@ pub async fn update_action(
 }
 
 /// Remove a registration, and say whether it was there to remove.
-pub async fn delete_action(transaction: &Transaction<'_>, action_id: &str) -> StoreResult<bool> {
+pub async fn delete_action(transaction: &UnitOfWork, action_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM required_actions WHERE action_id = $1",

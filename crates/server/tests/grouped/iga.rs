@@ -11,7 +11,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -50,9 +49,8 @@ async fn asked(
 
 async fn planted_role(plane: &Plane, role_id: &str) {
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let role = models::entities::authz::RoleMutationModel {
         name: role_id.into(),
@@ -74,9 +72,8 @@ async fn planted_role(plane: &Plane, role_id: &str) {
 
 async fn roles_of(plane: &Plane, user_name: &str) -> Vec<String> {
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let person = store::providers::users::load_by_name(&transaction, user_name)
         .await
@@ -91,14 +88,8 @@ async fn roles_of(plane: &Plane, user_name: &str) -> Vec<String> {
 }
 
 async fn walked(plane: &Plane) {
-    server::jobs::deliver_every_realm(
-        &plane.pool(),
-        &plane.tenancy(),
-        &support::sealing(),
-        &support::origin(),
-        1,
-    )
-    .await;
+    server::jobs::deliver_every_realm(&plane.tenancy(), &support::sealing(), &support::origin(), 1)
+        .await;
 }
 
 #[tokio::test]
@@ -175,9 +166,8 @@ async fn a_whole_working_life_converges_by_itself() {
     {
         use models::entities::attributes::AttributeValue;
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut person = store::providers::users::load_by_name(&transaction, "grace")
             .await
@@ -203,9 +193,8 @@ async fn a_whole_working_life_converges_by_itself() {
     // A hand-picked role rides along and belongs to no rule.
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let grace = store::providers::users::load_by_name(&transaction, "grace")
             .await
@@ -222,9 +211,8 @@ async fn a_whole_working_life_converges_by_itself() {
     {
         use models::entities::attributes::AttributeValue;
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let mut person = store::providers::users::load_by_name(&transaction, "grace")
             .await
@@ -391,9 +379,8 @@ async fn a_lifecycle_grant_that_breaks_a_separation_is_withheld() {
     );
     let ledger = {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let person = store::providers::users::load_by_name(&transaction, support::SUBJECT)
             .await
@@ -444,9 +431,8 @@ async fn a_standing_breach_does_not_withhold_an_unrelated_grant() {
     // such a door once did.
     {
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         let person = store::providers::users::load_by_name(&transaction, support::SUBJECT)
             .await

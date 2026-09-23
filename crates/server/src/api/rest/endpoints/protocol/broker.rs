@@ -5,14 +5,14 @@ use auth::provenance::Provenance;
 use chrono::{DateTime, Utc};
 use config::serving::Egress;
 use data_encoding::BASE64;
-use deadpool_postgres::{Pool, Transaction};
 use models::entities::authz::IdentityProviderModel;
 use serde::Deserialize;
 use serde_json::Value;
 use services::brokering::{self, Arrival, Identity, Upstream};
 use services::landing::Landing;
 use services::saml_brokering::{self, SamlUpstream};
-use store::tenancy::{Tenancy, TenantContext, resolve};
+use store::error::StoreError;
+use store::tenancy::{RealmNamed, Tenancy, TenantContext, UnitOfWork};
 
 use config::serving::{LoginUi, PublicOrigin};
 
@@ -30,7 +30,6 @@ use crate::api::rest::endpoints::protocol::login::{Spoken, hand_over, shown, tol
 pub async fn begin(
     request: HttpRequest,
     path: web::Path<(String, String)>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -40,13 +39,16 @@ pub async fn begin(
     let Some(auth_session) = binding::read(&request, binding::AUTH_SESSION) else {
         return told(StatusCode::NOT_FOUND, "no-such-login");
     };
-    let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+        }
+        Err(_) => {
+            return told(StatusCode::NOT_FOUND, "no-such-login");
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(StatusCode::NOT_FOUND, "no-such-login");
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
 
@@ -108,7 +110,7 @@ pub async fn begin(
     reason = "each is a piece of the departure the handler already holds"
 )]
 async fn leave_for_saml(
-    transaction: deadpool_postgres::Transaction<'_>,
+    transaction: UnitOfWork,
     provider: &models::entities::authz::IdentityProviderModel,
     sealing: &Sealing,
     origin: &PublicOrigin,
@@ -180,7 +182,6 @@ pub async fn conclude(
     request: HttpRequest,
     path: web::Path<(String, String)>,
     came: web::Query<CameBack>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -195,13 +196,16 @@ pub async fn conclude(
         tracing::warn!(alias, error = ?came.error, "a brokered login came back without a grant");
         return refused();
     };
-    let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+        }
+        Err(_) => {
+            return told(StatusCode::NOT_FOUND, "no-such-login");
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return told(StatusCode::NOT_FOUND, "no-such-login");
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
 
@@ -385,7 +389,7 @@ pub async fn conclude(
     reason = "each is a piece of the arrival the way back already holds"
 )]
 pub(crate) async fn link_arrival(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &Sealing,
     context: &TenantContext,
     provider: &IdentityProviderModel,
@@ -439,7 +443,7 @@ pub(crate) async fn link_arrival(
     reason = "each is a piece of the admission the way back already holds"
 )]
 pub(crate) async fn admit_arrival(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &Sealing,
     origin: &PublicOrigin,
     context: &TenantContext,
@@ -539,7 +543,7 @@ fn callback_of(origin: &PublicOrigin, realm_id: &str, alias: &str) -> String {
 /// The sealed upstream secret, opened for this exchange, or nothing when
 /// the provider keeps none.
 async fn opened_secret(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     sealing: &Sealing,
     context: &store::tenancy::TenantContext,
     provider: &models::entities::authz::IdentityProviderModel,
@@ -658,7 +662,6 @@ pub struct Dismissed {
 pub async fn dismiss(
     path: web::Path<(String, String)>,
     posted: web::Form<Dismissed>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     origin: web::Data<PublicOrigin>,
@@ -676,13 +679,16 @@ pub async fn dismiss(
         tracing::warn!(alias, "an upstream logout arrived without a token");
         return refused();
     };
-    let Ok(mut connection) = pool.get().await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+        }
+        Err(_) => {
+            return refused();
+        }
     };
-    let Ok(context) = resolve::realm_by_name(&connection, &realm).await else {
-        return refused();
-    };
-    let Ok(transaction) = tenancy.transaction(&mut connection, &context).await else {
+    let Ok(transaction) = tenancy.begin(&context).await else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
     let Ok(Some(provider)) =

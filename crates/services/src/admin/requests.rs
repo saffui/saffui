@@ -1,8 +1,8 @@
 use chrono::Utc;
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use store::providers::requests::{self, AccessRequest};
 use store::providers::{birthright, roles, sod};
+use store::tenancy::UnitOfWork;
 
 /// Why a request could not be lodged, decided or withdrawn.
 #[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]
@@ -30,7 +30,7 @@ pub enum Unaskable {
 }
 
 pub async fn lodge(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     by: &str,
     user: &str,
@@ -112,7 +112,7 @@ pub async fn lodge(
     Ok(asked)
 }
 
-pub async fn list(transaction: &Transaction<'_>) -> Result<Vec<AccessRequest>, Unaskable> {
+pub async fn list(transaction: &UnitOfWork) -> Result<Vec<AccessRequest>, Unaskable> {
     requests::list(transaction)
         .await
         .map_err(|_| Unaskable::Backend)
@@ -123,7 +123,7 @@ pub async fn list(transaction: &Transaction<'_>) -> Result<Vec<AccessRequest>, U
 /// toxic outcome drops the whole transaction, so the request stays pending
 /// and says why in the refusal.
 pub async fn approve(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     by: &str,
 ) -> Result<AccessRequest, Unaskable> {
@@ -165,7 +165,7 @@ pub async fn approve(
 }
 
 pub async fn deny(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     by: &str,
     reason: &str,
@@ -193,7 +193,7 @@ pub async fn deny(
 /// The asker's own act, not a decision: nothing is granted and no second
 /// pair of eyes is owed to stop asking.
 pub async fn withdraw(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     request_id: &str,
     by: &str,
 ) -> Result<(), Unaskable> {

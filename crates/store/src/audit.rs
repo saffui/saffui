@@ -1,5 +1,5 @@
+use crate::tenancy::UnitOfWork;
 use crypto::provider::{DigestProvider, HashAlg};
-use deadpool_postgres::Transaction;
 use serde_json::Value;
 
 use crate::error::{StoreError, StoreResult};
@@ -33,7 +33,7 @@ impl Verified {
 /// not start from the same value and an entry cannot be lifted from one chain
 /// into the other at the same position.
 pub async fn start(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
     tenant: &str,
     realm_id: &str,
@@ -68,7 +68,7 @@ pub async fn start(
 ///
 /// The realm is taken from the settings inside the function, never from the
 /// entry, so an entry cannot name a chain other than the one in scope.
-pub async fn append(transaction: &Transaction<'_>, entry: &Value) -> StoreResult<Appended> {
+pub async fn append(transaction: &UnitOfWork, entry: &Value) -> StoreResult<Appended> {
     let row = transaction
         .query_one("SELECT seq, hash FROM audit_append($1)", &[entry])
         .await
@@ -87,7 +87,7 @@ pub async fn append(transaction: &Transaction<'_>, entry: &Value) -> StoreResult
 /// It reports where the chain first breaks instead of only that it does: an
 /// auditor needs to know which entries are still worth reading.
 pub async fn verify(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     digest: &dyn DigestProvider,
 ) -> StoreResult<Verified> {
     let rows = transaction
@@ -186,7 +186,7 @@ fn link(
 
 /// Publish a head where whoever holds write access does not decide.
 pub async fn anchor(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     witness: &str,
     receipt: &str,
 ) -> StoreResult<Appended> {
@@ -228,7 +228,7 @@ pub struct JournalEntry {
 /// named. The chain is verified by [`verify`], not here: a listing is for
 /// reading, and it reads what stands.
 pub async fn list_entries(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     first: i64,
     max: i64,
     count: bool,
@@ -280,7 +280,7 @@ pub struct Anchor {
 }
 
 /// Every head this realm has published, newest first.
-pub async fn list_anchors(transaction: &Transaction<'_>) -> StoreResult<Vec<Anchor>> {
+pub async fn list_anchors(transaction: &UnitOfWork) -> StoreResult<Vec<Anchor>> {
     Ok(transaction
         .query(
             "SELECT seq, head_hash, witness, receipt, anchored_at \

@@ -19,7 +19,6 @@ fn policy() -> AdminPolicy {
 /// Ask, and get back what the caller is told.
 async fn ask(plane: &Plane, bearer: &str, body: serde_json::Value) -> (StatusCode, String) {
     let mounted = Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: policy(),
         origin: support::origin(),
@@ -45,10 +44,7 @@ async fn ask(plane: &Plane, bearer: &str, body: serde_json::Value) -> (StatusCod
 
 /// A realm with a relationship schema and one edge to the caller.
 async fn plant_relationship(plane: &Plane) {
-    let mut connection = plane.connection().await;
-    let transaction = plane
-        .scoped(&mut connection, &TenantContext::new("acme", REALM))
-        .await;
+    let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
 
     services::rebac::publish(
         &transaction,
@@ -107,10 +103,7 @@ async fn a_question_over_the_wire_reaches_an_engine_and_is_recorded() {
     assert!(body.contains("permit"), "{body}");
 
     // And the record survived the request, which is what committing is for.
-    let mut connection = plane.connection().await;
-    let transaction = plane
-        .scoped(&mut connection, &TenantContext::new("acme", REALM))
-        .await;
+    let transaction = plane.scoped(&TenantContext::new("acme", REALM)).await;
     let written = store::providers::authz_policies::recent(&transaction, 10)
         .await
         .unwrap();
@@ -190,7 +183,6 @@ async fn the_enforcement_scope_is_guarded() {
     plant_relationship(&plane).await;
 
     let mounted = Mounted {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: policy(),
         origin: support::origin(),

@@ -8,11 +8,11 @@
 
 use crypto::password::storage::StoredPassword;
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::entities::realm::{About, RealmModel};
 use models::entities::user::RequiredAction;
 use secrecy::SecretBox;
 use store::providers::{auth_flows, users};
+use store::tenancy::UnitOfWork;
 
 /// What the form posted.
 pub struct Asked<'a> {
@@ -54,7 +54,7 @@ pub enum Unregistrable {
 
 #[allow(clippy::too_many_arguments, reason = "each is a distinct fact")]
 pub async fn register_person(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm: &RealmModel,
     mail: Option<&models::entities::mail::MailSettings>,

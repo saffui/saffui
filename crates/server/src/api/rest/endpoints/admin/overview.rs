@@ -1,6 +1,5 @@
 use actix_web::{HttpResponse, web};
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use store::tenancy::Tenancy;
 
 use crate::api::rest::endpoints::within;
@@ -23,14 +22,12 @@ fn internal() -> ApiError {
 /// deliberately not built.
 pub async fn read(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(&mut connection, &within(&admin, &realm_id))
+        .begin(&within(&admin, &realm_id))
         .await
         .map_err(|_| internal())?;
 

@@ -19,7 +19,6 @@ async fn asked(
     use server::api::config::register;
     use server::middleware::admin_policy::AdminPolicy;
     let app = test::init_service(App::new().configure(register(&server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -277,9 +276,8 @@ async fn a_provider_is_kept_whole_and_its_secret_is_kept_dark() {
     {
         use models::entities::brokering::FederatedIdentityModel;
         use store::tenancy::TenantContext;
-        let mut connection = plane.connection().await;
         let transaction = plane
-            .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+            .scoped(&TenantContext::new(support::TENANT, REALM))
             .await;
         store::providers::brokering::link(
             &transaction,

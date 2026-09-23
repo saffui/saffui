@@ -5,10 +5,7 @@ use support::Fixture;
 
 /// A second realm of the same tenant, for the isolation test.
 async fn second_realm(fixture: &Fixture) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::tenant_wide("acme"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::tenant_wide("acme")).await;
     let realm = models::entities::realm::RealmCreateModel {
         name: "other".into(),
         display_name: "Other".into(),
@@ -26,10 +23,7 @@ async fn second_realm(fixture: &Fixture) {
 
 /// A realm with a schema, so tuples have something to hang from.
 async fn plant_schema(fixture: &Fixture, tenant: &str, realm: &str) {
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new(tenant, realm))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new(tenant, realm)).await;
     transaction
         .execute(
             "INSERT INTO rebac_schemas (tenant, realm_id, format, source, compiled) \
@@ -106,10 +100,7 @@ async fn two_tenants_keep_matching_relationships_apart() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_edge_needs_a_schema_to_hang_from() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     assert!(
         transaction
@@ -134,10 +125,7 @@ async fn a_named_subject_and_a_set_of_them_are_two_edges() {
     let fixture = Fixture::with_user().await;
     plant_schema(&fixture, "acme", "main").await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
     for subject_relation in ["", "member"] {
         transaction
@@ -184,10 +172,7 @@ async fn edges_are_not_visible_from_another_realm() {
     let fixture = Fixture::with_user().await;
     plant_schema(&fixture, "acme", "main").await;
 
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "main"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
     transaction
         .execute(
             "INSERT INTO rebac_tuples \
@@ -198,13 +183,9 @@ async fn edges_are_not_visible_from_another_realm() {
         .await
         .unwrap();
     transaction.commit().await.unwrap();
-    drop(connection);
 
     second_realm(&fixture).await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture
-        .scoped(&mut connection, &TenantContext::new("acme", "other"))
-        .await;
+    let transaction = fixture.scoped(&TenantContext::new("acme", "other")).await;
     let seen: i64 = transaction
         .query_one("SELECT count(*) FROM rebac_tuples", &[])
         .await

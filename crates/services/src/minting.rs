@@ -1,12 +1,11 @@
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::CryptoProvider;
 use data_encoding::HEXLOWER;
-use deadpool_postgres::Transaction;
 use models::entities::acr::{self, AchievedAuth};
 use models::entities::oidc::AuthorizationCode;
 use serde_json::Value;
 use store::providers::{login, oidc};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 
 use crate::landing::{Landing, ResponseMode};
 use crate::response_type::ResponseType;
@@ -16,7 +15,7 @@ pub use auth::login::browser::Unanswerable;
 
 /// The client a code is minted for.
 async fn client_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
 ) -> Result<models::entities::client::ClientModel, Unanswerable> {
     store::providers::clients::load(transaction, client_id)
@@ -71,7 +70,7 @@ pub struct Authorized<'a> {
 /// module mints one when a flow just finished. Two mintings would be two places
 /// for a field to be forgotten.
 pub async fn mint_code(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     authorized: &Authorized<'_>,
@@ -228,7 +227,7 @@ fn coming_back(notes: &Value) -> ResponseType {
 /// asked for out of it. Nothing here is authentication, and nothing there is
 /// protocol.
 pub async fn landed(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     tenant: &TenantContext,
     admitted: &auth::login::browser::Admission,

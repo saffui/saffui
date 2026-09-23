@@ -1,4 +1,4 @@
-use deadpool_postgres::Transaction;
+use crate::tenancy::UnitOfWork;
 use models::sessions::records::{ClientSessionModel, UserSessionModel, UserSessionState};
 use tokio_postgres::Row;
 
@@ -45,7 +45,7 @@ const CLIENT_SESSION_COLUMNS: &str = "tenant, realm_id, session_id, user_session
                                       requested_claims";
 
 /// Open a session.
-pub async fn open(transaction: &Transaction<'_>, session: &UserSessionModel) -> StoreResult<()> {
+pub async fn open(transaction: &UnitOfWork, session: &UserSessionModel) -> StoreResult<()> {
     let notes = notes_json(session.notes.as_ref())?;
     let set = WriteSet::insert(vec![
         col("tenant", &session.tenant),
@@ -82,7 +82,7 @@ pub async fn open(transaction: &Transaction<'_>, session: &UserSessionModel) -> 
 
 /// One session by identifier.
 pub async fn load(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
 ) -> StoreResult<Option<UserSessionModel>> {
     let statement = format!("SELECT {SESSION_COLUMNS} FROM user_sessions WHERE session_id = $1");
@@ -95,7 +95,7 @@ pub async fn load(
 
 /// Every session a user holds, newest first.
 pub async fn load_for_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
 ) -> StoreResult<Vec<UserSessionModel>> {
     let statement = format!(
@@ -118,7 +118,7 @@ pub async fn load_for_user(
 /// isolation already scopes this to the realm, and the tenant column is named
 /// anyway so a reader can see the scope without knowing the policy exists.
 pub async fn load_for_realm(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     realm_id: &str,
     offset: i64,
     limit: i64,
@@ -142,7 +142,7 @@ pub async fn load_for_realm(
 /// already handed out are answered by the realm's cut, and neither lever is the
 /// other's substitute: this one frees nothing already minted, and the cut ends
 /// no session that would otherwise keep renewing.
-pub async fn end_all_of_realm(transaction: &Transaction<'_>, realm_id: &str) -> StoreResult<u64> {
+pub async fn end_all_of_realm(transaction: &UnitOfWork, realm_id: &str) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM user_sessions WHERE realm_id = $1",
@@ -158,7 +158,7 @@ pub async fn end_all_of_realm(transaction: &Transaction<'_>, realm_id: &str) -> 
 /// attests to a strength reached at a time nothing recorded, and an instant
 /// moved without the level says a step up happened that did not.
 pub async fn record_authentication(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
     auth_time: i64,
     loa: Option<i32>,
@@ -180,7 +180,7 @@ pub async fn record_authentication(
 
 /// Move a session to another state.
 pub async fn set_state(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
     state: UserSessionState,
 ) -> StoreResult<bool> {
@@ -200,7 +200,7 @@ pub async fn set_state(
 }
 
 /// End a session, and everything a client got out of it.
-pub async fn close(transaction: &Transaction<'_>, session_id: &str) -> StoreResult<bool> {
+pub async fn close(transaction: &UnitOfWork, session_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .query(
             "DELETE FROM user_sessions WHERE session_id = $1 RETURNING user_id",
@@ -233,7 +233,7 @@ pub async fn close(transaction: &Transaction<'_>, session_id: &str) -> StoreResu
 /// Offline grants go too. A reset because somebody else knows the password
 /// that leaves their offline grant alive leaves them signed in through the
 /// very reset meant to shut them out.
-pub async fn end_all_of_user(transaction: &Transaction<'_>, user_id: &str) -> StoreResult<u64> {
+pub async fn end_all_of_user(transaction: &UnitOfWork, user_id: &str) -> StoreResult<u64> {
     transaction
         .execute(
             "DELETE FROM client_sessions WHERE user_id = $1",
@@ -264,7 +264,7 @@ pub async fn end_all_of_user(transaction: &Transaction<'_>, user_id: &str) -> St
 /// old one is shut out, and the login making the change keeps working. Each
 /// ended login is told the way a logout tells it.
 pub async fn end_others_of_user(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     kept_session_id: &str,
 ) -> StoreResult<usize> {
@@ -296,7 +296,7 @@ pub async fn end_others_of_user(
 /// sit unreadable until then. Every reader already treats a missing row and
 /// an expired one as the same refusal, which is what makes this safe.
 pub async fn drop_expired_client_sessions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     now: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<u64> {
     transaction
@@ -310,7 +310,7 @@ pub async fn drop_expired_client_sessions(
 }
 
 pub async fn drop_expired_sessions(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     now: chrono::DateTime<chrono::Utc>,
 ) -> StoreResult<u64> {
     transaction
@@ -333,7 +333,7 @@ pub async fn drop_expired_sessions(
 /// refresh token" ambiguous, and the renewal that found the older one would read
 /// as a replay.
 pub async fn open_client_session(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session: &ClientSessionModel,
 ) -> StoreResult<()> {
     let notes = notes_json(session.notes.as_ref())?;
@@ -380,7 +380,7 @@ pub async fn open_client_session(
 
 /// What every client got out of one login.
 pub async fn client_sessions_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_session_id: &str,
 ) -> StoreResult<Vec<ClientSessionModel>> {
     let statement = format!(
@@ -398,7 +398,7 @@ pub async fn client_sessions_of(
 
 /// Push a client session's end further out, which is what a sliding bound is.
 pub async fn extend_client_session(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
     expiration: i64,
 ) -> StoreResult<bool> {
@@ -415,7 +415,7 @@ pub async fn extend_client_session(
 /// Oldest first, and only the live ones: a grant the sweeper has not reached
 /// yet is not one a cap should count.
 pub async fn offline_grants_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_id: &str,
     now: i64,
 ) -> StoreResult<Vec<ClientSessionModel>> {
@@ -446,7 +446,7 @@ pub async fn offline_grants_of(
 /// Every open login this upstream subject stands behind, through this
 /// provider: what an upstream logout closes.
 pub async fn brokered(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider_alias: &str,
     external_user_id: &str,
 ) -> StoreResult<Vec<String>> {
@@ -462,10 +462,7 @@ pub async fn brokered(
         .collect())
 }
 
-pub async fn close_client_session(
-    transaction: &Transaction<'_>,
-    session_id: &str,
-) -> StoreResult<bool> {
+pub async fn close_client_session(transaction: &UnitOfWork, session_id: &str) -> StoreResult<bool> {
     let removed = transaction
         .execute(
             "DELETE FROM client_sessions WHERE session_id = $1",
@@ -502,7 +499,7 @@ pub async fn close_client_session(
 /// an ordinary double submit destroys the session. Outside the window the
 /// mismatch is a replay again.
 pub async fn advance_refresh_token(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     session_id: &str,
     presented: &str,
     successor: Option<&str>,
@@ -625,7 +622,7 @@ fn read_client_session(row: Row) -> ClientSessionModel {
 /// Whether this refresh token is the one the client session currently
 /// anchors on. A rotated-out token is not current, however unexpired.
 pub async fn refresh_is_current(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_session_id: &str,
     client_id: &str,
     token_id: &str,
@@ -644,7 +641,7 @@ pub async fn refresh_is_current(
 /// Close the client session a token belongs to, which ends every renewal
 /// descended from it.
 pub async fn close_client_session_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_session_id: &str,
     client_id: &str,
 ) -> StoreResult<bool> {
@@ -660,7 +657,7 @@ pub async fn close_client_session_of(
 
 /// Every client with a session in this login, each once.
 pub async fn clients_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_session_id: &str,
 ) -> StoreResult<Vec<String>> {
     Ok(transaction
@@ -677,7 +674,7 @@ pub async fn clients_of(
 }
 
 pub async fn requested_claims_of(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     user_session_id: &str,
     client_id: &str,
 ) -> StoreResult<Option<serde_json::Value>> {
@@ -696,7 +693,7 @@ pub async fn requested_claims_of(
 ///
 /// Counted on the realm's own rows, which the primary key leads with, so the
 /// work is the realm's size rather than the deployment's.
-pub async fn count_standing(transaction: &Transaction<'_>) -> StoreResult<i64> {
+pub async fn count_standing(transaction: &UnitOfWork) -> StoreResult<i64> {
     Ok(transaction
         .query_one(
             "SELECT count(*) FROM user_sessions WHERE state = 'logged-in'",

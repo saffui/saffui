@@ -1,6 +1,7 @@
 use config::serving::Egress;
 use std::net::IpAddr;
 use std::time::Duration;
+use store::tenancy::UnitOfWork;
 
 use ureq::unversioned::resolver::{DefaultResolver, ResolvedSocketAddrs, Resolver};
 use ureq::unversioned::transport::NextTimeout;
@@ -144,7 +145,7 @@ pub async fn fetch(uri: String, egress: Egress) -> Option<String> {
 /// a signature this server cannot verify yet, and re-reading only once that
 /// has failed makes the first request after every rotation fail.
 pub async fn refresh_client_keys(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     client_id: &str,
     egress: Egress,
     now: chrono::DateTime<chrono::Utc>,

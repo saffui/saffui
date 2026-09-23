@@ -14,7 +14,6 @@ const REALM: &str = support::REALM;
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -53,12 +52,8 @@ async fn drafted(plane: &Plane, bearer: &str, overrides: Value) -> (StatusCode, 
 }
 
 async fn speak_french(plane: &Plane) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     let mut realm = store::providers::realms::load(&transaction, support::REALM)
         .await
@@ -237,12 +232,8 @@ async fn a_draft_stops_being_read_once_it_has_run_out() {
 
 /// A draft whose time is already up, on the database's own clock.
 async fn plant_a_spent_draft(plane: &Plane, draft: &str) {
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(
-            &mut connection,
-            &TenantContext::new(support::TENANT, support::REALM),
-        )
+        .scoped(&TenantContext::new(support::TENANT, support::REALM))
         .await;
     transaction
         .execute(

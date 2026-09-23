@@ -13,7 +13,6 @@ const CERT_HEADER: &str = "x-ssl-client-cert";
 
 fn mounted(plane: &Plane) -> server::api::config::Plane {
     server::api::config::Plane {
-        pool: plane.pool(),
         tenancy: plane.tenancy(),
         policy: server::middleware::admin_policy::AdminPolicy {
             audiences: vec![support::AUDIENCE.to_owned()],
@@ -64,9 +63,8 @@ async fn asked(
 async fn opted_with_policy(plane: &Plane, server_id: &str) {
     use models::entities::attributes::AttributeValue;
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     let mut client = store::providers::clients::load(&transaction, support::CONFIDENTIAL)
         .await
@@ -96,9 +94,8 @@ async fn protected_by_managers(plane: &Plane) {
     use models::auditable::AuditableModel;
     use models::entities::authz::{DecisionLogic, DecisionStrategy, PolicyRule, PolicyTerms};
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     for statement in [
         "INSERT INTO resource_servers (tenant, realm_id, server_id) \
@@ -166,9 +163,8 @@ async fn protected_by_managers(plane: &Plane) {
 
 async fn granted_role(plane: &Plane, user_id: &str, role_id: &str) {
     use store::tenancy::TenantContext;
-    let mut connection = plane.connection().await;
     let transaction = plane
-        .scoped(&mut connection, &TenantContext::new(support::TENANT, REALM))
+        .scoped(&TenantContext::new(support::TENANT, REALM))
         .await;
     store::providers::roles::grant_to_user(&transaction, user_id, role_id)
         .await

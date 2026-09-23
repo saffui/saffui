@@ -1,11 +1,11 @@
 use chrono::{DateTime, Duration, Utc};
 use crypto::provider::CryptoProvider;
-use deadpool_postgres::Transaction;
 use models::entities::attributes::AttributeValue;
 use models::entities::client::ClientModel;
 use models::entities::device::{DeviceCodeModel, DeviceCodeState};
 use serde_json::json;
 use store::providers::{clients, devices, login};
+use store::tenancy::UnitOfWork;
 
 /// RFC 8628 §3.4, the grant a device polls with.
 pub const GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
@@ -59,7 +59,7 @@ pub enum Unopened {
 /// Open a device sign-in: mint the long secret the device polls with and the
 /// short code the person types, §3.1 and §3.2.
 pub async fn open(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     client: &ClientModel,
     scope: Option<&str>,
@@ -146,7 +146,7 @@ pub enum Unverifiable {
 /// digest rides the notes; the flow's completion approves the row instead of
 /// minting a browser answer.
 pub async fn begin_verification(
-    transaction: &Transaction<'_>,
+    transaction: &UnitOfWork,
     provider: &dyn CryptoProvider,
     realm_name: &str,
     typed: &str,

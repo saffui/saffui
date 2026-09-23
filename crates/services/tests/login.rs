@@ -11,7 +11,7 @@ use models::entities::auth::{
 use models::entities::credentials::{CredentialModel, CredentialSecret, CredentialType};
 use secrecy::SecretBox;
 use store::providers::{auth_flows, credentials, realms};
-use store::tenancy::TenantContext;
+use store::tenancy::{TenantContext, UnitOfWork};
 use support::{Fixture, provider};
 
 fn tenant() -> TenantContext {
@@ -24,7 +24,7 @@ fn meta() -> AuditableModel {
 
 /// A flow with one step, at the requirement asked for.
 async fn plant_flow(
-    transaction: &deadpool_postgres::Transaction<'_>,
+    transaction: &UnitOfWork,
     requirement: AuthenticatorRequirement,
     authenticator: &str,
 ) -> String {
@@ -57,7 +57,7 @@ async fn plant_flow(
 }
 
 /// A password credential for the fixture's user, hashed the way the realm asks.
-async fn plant_password(transaction: &deadpool_postgres::Transaction<'_>, password: &str) {
+async fn plant_password(transaction: &UnitOfWork, password: &str) {
     let held = crypto::password::StoredPassword::hash_argon2id(
         &provider(),
         crypto::provider::Argon2Params::default(),
@@ -88,8 +88,7 @@ async fn plant_password(transaction: &deadpool_postgres::Transaction<'_>, passwo
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_password_flow_admits_refuses_and_asks() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     let flow = plant_flow(&transaction, AuthenticatorRequirement::Required, "password").await;
     plant_password(&transaction, "correct horse").await;
@@ -180,8 +179,7 @@ async fn a_password_flow_admits_refuses_and_asks() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn an_unknown_subject_is_refused_like_a_wrong_password() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     let flow = plant_flow(&transaction, AuthenticatorRequirement::Required, "password").await;
     let realm = realms::load(&transaction, "main").await.unwrap().unwrap();
@@ -216,8 +214,7 @@ async fn an_unknown_subject_is_refused_like_a_wrong_password() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_step_this_build_cannot_run_stops_the_flow() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     let flow = plant_flow(
         &transaction,
@@ -253,8 +250,7 @@ async fn a_step_this_build_cannot_run_stops_the_flow() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_flow_that_is_not_there_is_not_a_refusal() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
     let realm = realms::load(&transaction, "main").await.unwrap().unwrap();
 
     assert_eq!(
@@ -285,8 +281,7 @@ async fn a_flow_that_is_not_there_is_not_a_refusal() {
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn a_flow_whose_only_step_is_disabled_admits_nobody() {
     let fixture = Fixture::with_user().await;
-    let mut connection = fixture.connection().await;
-    let transaction = fixture.scoped(&mut connection, &tenant()).await;
+    let transaction = fixture.scoped(&tenant()).await;
 
     let flow = plant_flow(&transaction, AuthenticatorRequirement::Disabled, "password").await;
     plant_password(&transaction, "correct horse").await;

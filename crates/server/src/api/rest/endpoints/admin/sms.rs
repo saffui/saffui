@@ -1,7 +1,6 @@
 use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
-use deadpool_postgres::Pool;
 use serde::{Deserialize, Serialize};
 use services::admin::sms::Unsettable;
 use store::keyring;
@@ -40,7 +39,6 @@ pub struct TestAsked {
 
 pub async fn send_test(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     egress: web::Data<config::serving::Egress>,
@@ -55,12 +53,8 @@ pub async fn send_test(
             "the test wants a number in international form, like +22890123456".to_owned(),
         ));
     }
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, &realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(|_| internal())?;
     let ring = keyring::load(
@@ -101,18 +95,13 @@ pub async fn send_test(
 
 pub async fn read(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
         .map_err(|_| internal())?;
     let ring = keyring::load(
@@ -137,7 +126,6 @@ pub async fn read(
 
 pub async fn write(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     sealing: web::Data<Sealing>,
     egress: web::Data<config::serving::Egress>,
@@ -156,12 +144,8 @@ pub async fn write(
         ));
     }
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
         .map_err(|_| internal())?;
     let ring = keyring::load(
@@ -191,17 +175,12 @@ pub async fn write(
 
 pub async fn forget(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
         .map_err(|_| internal())?;
     services::admin::sms::forget(&transaction)
@@ -235,17 +214,12 @@ fn internal() -> ApiError {
 /// disagree about the same day.
 pub async fn spent_today(
     admin: web::ReqData<Admin>,
-    pool: web::Data<Pool>,
     tenancy: web::Data<Tenancy>,
     path: web::Path<String>,
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.as_str();
-    let mut connection = pool.get().await.map_err(|_| internal())?;
     let transaction = tenancy
-        .transaction(
-            &mut connection,
-            &TenantContext::new(&admin.context.tenant.tenant, realm_id),
-        )
+        .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
         .map_err(|_| internal())?;
 

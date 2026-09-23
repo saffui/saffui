@@ -7,6 +7,7 @@ use serde_json::json;
 use services::rebac::{Unpublishable, Unwritable};
 use store::tenancy::Tenancy;
 
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// The schema as the realm shows it: the source and its lineage, never the
@@ -20,7 +21,7 @@ pub async fn schema(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let stored = store::providers::rebac::load_schema(&transaction)
         .await
         .map_err(|_| internal())?
@@ -50,7 +51,7 @@ pub async fn publish(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let source = body.into_inner().source;
     services::rebac::publish(&transaction, &source, Some(admin.context.principal.id()))
         .await
@@ -107,7 +108,7 @@ pub async fn relate(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let edge = body.into_inner();
     services::rebac::relate(
         &transaction,
@@ -133,7 +134,7 @@ pub async fn unrelate(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let edge = body.into_inner();
     let stood = services::rebac::unrelate(
         &transaction,
@@ -170,7 +171,7 @@ pub async fn subjects(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::providers::rebac::subjects(
         &transaction,
         &asked.object_type,
@@ -223,7 +224,7 @@ pub async fn list_tuples(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::providers::rebac::tuples(
         &transaction,
         store::providers::rebac::TupleFilter {

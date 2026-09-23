@@ -12,6 +12,7 @@ use store::tenancy::{Tenancy, UnitOfWork};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::{ClientBrief, ClientSpec};
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
@@ -27,7 +28,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let query = ListQuery::new(window).sorted_by("client_id", SortDirection::Ascending);
     let found = registry::list(&transaction, &query, paging.count.unwrap_or(false))
         .await
@@ -53,7 +54,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let found = registry::get(&transaction, &client_id)
         .await
         .map_err(refused)?;
@@ -84,7 +85,7 @@ pub async fn create(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let (client, secret) = registry::register(
         &transaction,
         sealing.provider.as_ref(),
@@ -183,7 +184,7 @@ pub async fn update(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let reshape = Reshape {
         name: asked.name.clone(),
         root_url: asked
@@ -256,7 +257,7 @@ pub async fn rotate_secret(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let secret = registry::rotate_secret(&transaction, sealing.provider.as_ref(), &client_id)
         .await
         .map_err(refused)?;
@@ -273,7 +274,7 @@ pub async fn remove(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     if !registry::remove(&transaction, &client_id)
         .await
         .map_err(refused)?

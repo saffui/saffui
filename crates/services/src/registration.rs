@@ -106,6 +106,8 @@ pub enum Refused {
     Invalid(&'static str),
     #[error("the store could not be written")]
     Unwritable,
+    #[error("no connection to the store could be had; retry later")]
+    Unavailable,
 }
 
 impl From<Unregistrable> for Refused {

@@ -8,6 +8,7 @@ use services::admin::portability::{self, Unportable};
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// The realm as a document. Read whole inside one transaction, so no
@@ -22,7 +23,7 @@ pub async fn export(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let mut document = portability::export_realm(&transaction, &realm_id, Utc::now())
         .await
         .map_err(refused)?;
@@ -83,7 +84,7 @@ pub async fn import(
     let transaction = tenancy
         .begin(&TenantContext::new(&tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     store::providers::tenants::hold_realms(&transaction, &tenant)
         .await
         .map_err(|_| internal())?;
@@ -181,7 +182,7 @@ pub async fn partial_preview(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     if store::providers::realms::load(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?
@@ -212,7 +213,7 @@ pub async fn partial_import(
     let transaction = tenancy
         .begin(&TenantContext::new(&tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     if store::providers::realms::load(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?

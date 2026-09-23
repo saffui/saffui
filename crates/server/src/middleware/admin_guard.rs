@@ -11,7 +11,7 @@ use models::entities::authz::AdminAction;
 use services::context::{self, Acting, Context};
 
 use crate::api::routes;
-use crate::error::{refused, unauthenticated};
+use crate::error::{refuse_unestablished_caller, refused, unauthenticated};
 use crate::middleware::admin_policy::{AdminPolicy, Refusal, decide};
 use crate::middleware::bearer::{bearer, unverified_issuer};
 
@@ -118,9 +118,10 @@ fn named_realm<'a>(pattern: Option<&str>, path: &'a str) -> Option<&'a str> {
 
 /// Establish the caller, then decide.
 ///
-/// Every failure before the decision answers the same way a missing token does.
-/// A caller that could tell "your token did not verify" from "no such realm"
-/// would have a probe for which realms exist.
+/// Every failure before the decision answers the same way a missing token does,
+/// but a missing connection, which comes before any realm is looked up. A caller
+/// that could tell "your token did not verify" from "no such realm" would have a
+/// probe for which realms exist.
 async fn establish(
     guard: &Guard,
     request: &ServiceRequest,
@@ -140,7 +141,7 @@ async fn establish(
         .tenancy
         .begin_in(RealmNamed::ById(named))
         .await
-        .map_err(|_| unauthenticated())?;
+        .map_err(refuse_unestablished_caller)?;
     let context = transaction.context().clone();
 
     let keys = services::realm::published_keys(&transaction)

@@ -68,6 +68,9 @@ pub enum Denied {
     /// `invalid_request`: a client that sends a proof and gets told only that
     /// its request was invalid cannot tell the proof was the part refused.
     InvalidDpopProof,
+    /// RFC 6749 §4.1.2.1, outside §5.2 on purpose: a client reading it with a
+    /// 503 retries, which is right when no connection to the database was had.
+    TemporarilyUnavailable,
 }
 
 impl Denied {
@@ -80,6 +83,7 @@ impl Denied {
             Denied::UnsupportedGrantType => "unsupported_grant_type",
             Denied::InvalidScope => "invalid_scope",
             Denied::InvalidDpopProof => "invalid_dpop_proof",
+            Denied::TemporarilyUnavailable => "temporarily_unavailable",
         }
     }
 
@@ -89,6 +93,7 @@ impl Denied {
     fn status(self) -> StatusCode {
         match self {
             Denied::InvalidClient => StatusCode::UNAUTHORIZED,
+            Denied::TemporarilyUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::BAD_REQUEST,
         }
     }
@@ -105,6 +110,11 @@ impl Denied {
             "error_description": description,
         }))
     }
+}
+
+/// What an OAuth door answers when no connection to the database was had.
+pub fn answer_unavailable() -> HttpResponse {
+    Denied::TemporarilyUnavailable.answer(commons::error::ErrorCode::ServiceUnavailable.message())
 }
 
 /// Never store this, never serve it from a cache.

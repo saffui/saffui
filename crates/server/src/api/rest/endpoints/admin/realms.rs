@@ -10,6 +10,7 @@ use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::RealmBrief;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 use crate::middleware::admin_policy::AdminPolicy;
 
@@ -27,7 +28,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&admin.context.tenant)
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let held = services::realm::named(&transaction, &admin.context.tenant.realm_id)
         .await
@@ -54,7 +55,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let found = services::realm::named(&transaction, &realm_id)
         .await
@@ -166,7 +167,7 @@ pub async fn create(
     let transaction = tenancy
         .begin(&TenantContext::new(&tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     if store::providers::realms::load(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?
@@ -346,7 +347,7 @@ pub async fn delete(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     if !store::providers::realms::delete(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?
@@ -381,7 +382,7 @@ pub async fn rotate_registration_secret(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let secret = services::registration::rotate_registration_secret(
         &transaction,
         sealing.provider.as_ref(),
@@ -404,7 +405,7 @@ pub async fn forget_registration_secret(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     services::registration::forget_registration_secret(&transaction, &realm_id)
         .await
         .map_err(|_| ApiError::new(ErrorCode::RealmNotFound))?;
@@ -473,7 +474,7 @@ pub async fn update(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let mut held = services::realm::named(&transaction, &realm_id)
         .await
@@ -780,7 +781,7 @@ pub async fn theme(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::providers::realms::theme_of(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?;
@@ -807,7 +808,7 @@ pub async fn set_theme(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     if !store::providers::realms::set_theme(&transaction, &realm_id, Some(&asked))
         .await
         .map_err(|_| internal())?
@@ -828,7 +829,7 @@ pub async fn clear_theme(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     if !store::providers::realms::set_theme(&transaction, &realm_id, None)
         .await
         .map_err(|_| internal())?

@@ -8,6 +8,7 @@ use services::admin::client_scopes::{self, Unwritable};
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
@@ -19,7 +20,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let listed = client_scopes::scopes(&transaction).await.map_err(refused)?;
     Ok(HttpResponse::Ok().json(listed))
 }
@@ -35,7 +36,7 @@ pub async fn create(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let made = client_scopes::create_scope(
         &transaction,
         sealing.provider.as_ref(),
@@ -59,7 +60,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let found = client_scopes::get_scope(&transaction, &scope_id)
         .await
         .map_err(refused)?;
@@ -76,7 +77,7 @@ pub async fn update(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let rewritten = client_scopes::update_scope(
         &transaction,
         &scope_id,
@@ -98,7 +99,7 @@ pub async fn delete(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     client_scopes::delete_scope(&transaction, &scope_id)
         .await
         .map_err(refused)?;
@@ -116,7 +117,7 @@ pub async fn of_client(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = client_scopes::scopes_of_client(&transaction, &client_id)
         .await
         .map_err(refused)?;
@@ -150,7 +151,7 @@ pub async fn attach(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     client_scopes::attach_scope(&transaction, &client_id, &scope_id, optional)
         .await
         .map_err(refused)?;
@@ -167,7 +168,7 @@ pub async fn detach(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     client_scopes::detach_scope(&transaction, &client_id, &scope_id)
         .await
         .map_err(refused)?;

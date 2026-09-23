@@ -3,6 +3,7 @@ use commons::http::ApiError;
 use store::tenancy::Tenancy;
 
 use crate::api::rest::endpoints::within;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 fn internal() -> ApiError {
@@ -29,7 +30,7 @@ pub async fn read(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let users = store::providers::users::count(&transaction)
         .await

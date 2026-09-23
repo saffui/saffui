@@ -7,6 +7,7 @@ use store::tenancy::{Tenancy, TenantContext};
 
 use super::users::named_user;
 use crate::api::rest::endpoints::admin::dto::{GrantBrief, RealmSessionBrief, SessionBrief};
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// What this user has open, newest first.
@@ -25,7 +26,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     // The user first, so an empty list means "no logins" and never "no user".
     let user_id = named_user(&transaction, &user_id).await?;
@@ -82,7 +83,7 @@ pub async fn list_realm_sessions(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let open = services::admin::sessions::list_sessions_of_realm(
         &transaction,
@@ -134,7 +135,7 @@ pub async fn end_realm_sessions(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let ended = services::admin::sessions::end_sessions_of_realm(&transaction, &realm_id)
         .await
@@ -158,7 +159,7 @@ pub async fn close(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let user_id = named_user(&transaction, &user_id).await?;
     // Named by the user it belongs to, so an identifier from another user's
@@ -182,7 +183,7 @@ pub async fn revoke(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let user_id = named_user(&transaction, &user_id).await?;
     services::admin::sessions::revoke_grant(&transaction, &user_id, &session_id, &client_id)

@@ -42,14 +42,16 @@ pub async fn callback(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
+            return plain(StatusCode::SERVICE_UNAVAILABLE, "");
         }
         Err(_) => {
             return plain(StatusCode::NOT_FOUND, "");
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return plain(StatusCode::INTERNAL_SERVER_ERROR, "");
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return plain(StatusCode::SERVICE_UNAVAILABLE, ""),
+        Err(_) => return plain(StatusCode::INTERNAL_SERVER_ERROR, ""),
     };
     let Ok(ring) = store::keyring::load(
         &transaction,

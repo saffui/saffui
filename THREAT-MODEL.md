@@ -145,7 +145,7 @@ form path and on nothing else. Sealed rather than signed: the scope is
 authenticated, so a value minted for another login opens as nothing here, and
 nothing is stored and nothing expires on its own, because it names the login it
 outlives or does not (`crates/server/src/api/rest/endpoints/protocol/forgery.rs:19`,
-`:24`, `crates/server/src/api/rest/endpoints/protocol/page.rs:464`,
+`:24`, `crates/server/src/api/rest/endpoints/protocol/page.rs:483`,
 `crates/server/src/api/rest/endpoints/protocol/ui/login.html:17`).
 
 A realm's word on plain connections is kept here too, and in the order that
@@ -153,7 +153,9 @@ matters: the transport is judged before the token. A request the proxy vouches
 for as https passes without a read, and anything else pays one realm read. Where
 a realm asks for https from outside only, the address judged is the one the
 deployment believes, and the private ranges are spelled out rather than inferred
-(`crates/server/src/middleware/transport.rs:32`, `:90`).
+(`crates/server/src/middleware/transport.rs:36`, `:93`). A rule that cannot be
+read for want of a connection is answered 503 rather than taken as leave to
+serve in the clear (`:58`).
 
 ### TB-3, keys and secrets
 
@@ -196,7 +198,9 @@ refused at startup until a mode is stated, because the driver's own default
 falls back to the clear without a word (`crates/pgcore/src/database.rs:113`).
 A full pool refuses after a bounded wait instead of holding requests for ever
 (`:144`), and a pooled transaction nobody talks to is ended by the server with
-its locks (`:158`).
+its locks (`:158`). The refusal is a 503 in each surface's own words, and the
+guards give it as such rather than as a missing token, which would sign a
+console out (`crates/server/src/error.rs:30`, `:40`).
 
 A realm pinned to a region is refused on a node that does not serve it, before
 the transaction opens, so nothing is read on the way to finding out
@@ -239,7 +243,7 @@ answers it, or the word that says nothing does.
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-LOG-1 | A form posted from another site, riding the browser's cookie, answering somebody's sign in or their consent | TA-1 | The form carries a value sealed for that login, weighed before the flow runs, so a forged form spends nothing, not even one password attempt against an account (`crates/server/src/api/rest/endpoints/protocol/login.rs:233`, `crates/server/src/api/rest/endpoints/protocol/forgery.rs:35`) |
+| T-LOG-1 | A form posted from another site, riding the browser's cookie, answering somebody's sign in or their consent | TA-1 | The form carries a value sealed for that login, weighed before the flow runs, so a forged form spends nothing, not even one password attempt against an account (`crates/server/src/api/rest/endpoints/protocol/login.rs:237`, `crates/server/src/api/rest/endpoints/protocol/forgery.rs:35`) |
 | T-LOG-2 | The same, from a browser that says where the post came from | TA-1 | Refused before anything else where the browser says another site started it; absent, the header says nothing and the sealed value is the barrier (`crates/server/src/api/rest/endpoints/protocol/login.rs:113`, `forgery.rs:58`) |
 | T-LOG-3 | A password tried against one account as fast as the caller likes | TA-1 | Lockout per person where the realm turns it on, and nothing per address. See R-1 and R-2 |
 
@@ -262,8 +266,8 @@ answers it, or the word that says nothing does.
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-ADM-1 | A token from another deployment, or for another realm | TA-3 | The issuer must be one this deployment mints, and the realm in the path is compared against the token's without ever being looked up, so an existing realm and a missing one are refused alike (`crates/server/src/middleware/admin_guard.rs:180`) |
-| T-ADM-2 | Probing which capabilities exist by the shape of a refusal | TA-3 | Audience, party, scope, declared, held, in that order, and every refusal renders as one answer (`crates/server/src/middleware/admin_policy.rs:93`, `crates/server/src/error.rs:11`) |
+| T-ADM-1 | A token from another deployment, or for another realm | TA-3 | The issuer must be one this deployment mints, and the realm in the path is compared against the token's without ever being looked up, so an existing realm and a missing one are refused alike (`crates/server/src/middleware/admin_guard.rs:181`) |
+| T-ADM-2 | Probing which capabilities exist by the shape of a refusal | TA-3 | Audience, party, scope, declared, held, in that order, and every refusal renders as one answer (`crates/server/src/middleware/admin_policy.rs:93`, `crates/server/src/error.rs:12`) |
 | T-ADM-3 | A toxic combination of roles assembled in one pair of hands | TA-3 | Everyone arriving is weighed against the realm's rules, under a lock (`crates/auth/src/sod.rs:81`) |
 | T-ADM-4 | Asking for an entitlement and granting it to yourself | TA-3 | The one who asked cannot decide (`crates/services/src/admin/requests.rs:134`, `:181`) |
 | T-ADM-5 | The record of what an administrator did, rewritten | TA-3, TA-7 | Only the database function writes entries, the chain is serialised, and the plane serves verification and anchors (`crates/store/migrations/V011__audit_chain.sql:130`) |

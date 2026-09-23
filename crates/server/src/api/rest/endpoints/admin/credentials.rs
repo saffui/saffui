@@ -6,6 +6,7 @@ use store::tenancy::Tenancy;
 
 use super::users::named_user;
 use crate::api::rest::endpoints::within;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 fn internal() -> ApiError {
@@ -27,7 +28,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
 
     let held = store::providers::credentials::load_for_user(&transaction, &user_id)
@@ -130,7 +131,7 @@ pub async fn revoke(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let user_id = named_user(&transaction, &user_id).await?;
 
     let held = store::providers::credentials::load(&transaction, &credential_id)

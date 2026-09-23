@@ -52,7 +52,10 @@ somebody wrote.
 
 A full pool refuses a request after `SAFFUI_DATABASE_POOL_WAIT_SECONDS`
 rather than holding it for ever: a saturated server then fails where it can
-be seen, and recovers once the pressure passes.
+be seen, and recovers once the pressure passes. The refusal is a 503:
+`service_unavailable` from the admin and account planes,
+`temporarily_unavailable` from the OAuth doors, and a page to come back to
+from the hosted ones.
 
 A pooled connection left inside a transaction is ended by the server after
 `SAFFUI_DATABASE_IDLE_IN_TRANSACTION_SECONDS`, and its locks go with it. The

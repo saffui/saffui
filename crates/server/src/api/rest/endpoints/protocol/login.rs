@@ -125,14 +125,18 @@ pub async fn answer(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+            return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
         }
         Err(_) => {
             return tell(StatusCode::NOT_FOUND, "no-such-login");
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => {
+            return told(StatusCode::SERVICE_UNAVAILABLE, "unavailable");
+        }
+        Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
     };
 
     // A field left blank is a field not answered. A form posts every input it

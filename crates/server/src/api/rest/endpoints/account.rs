@@ -33,10 +33,10 @@ pub async fn show_me(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     let claims = read_me(&transaction, &caller)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(|_| AccountRefusal::Failed)?;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(claims))
 }
 
@@ -49,10 +49,10 @@ pub async fn check_recent_sign_in(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     match find_needed_step_up(&transaction, &caller)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?
+        .map_err(|_| AccountRefusal::Failed)?
     {
         Some(step_up) => Err(AccountRefusal::StepUp(step_up)),
         None => Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish()),
@@ -87,7 +87,7 @@ pub async fn change_password(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     let from = read_provenance(&request).address;
     let changed = change_caller_password(
         &transaction,
@@ -103,7 +103,7 @@ pub async fn change_password(
             transaction
                 .commit()
                 .await
-                .map_err(|_| AccountRefusal::Unavailable)?;
+                .map_err(|_| AccountRefusal::Failed)?;
             Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
                 .json(serde_json::json!({ "ended_sessions": ended })))
         }
@@ -113,7 +113,7 @@ pub async fn change_password(
             transaction
                 .commit()
                 .await
-                .map_err(|_| AccountRefusal::Unavailable)?;
+                .map_err(|_| AccountRefusal::Failed)?;
             Err(refuse(Unmade::Password(Unchanged::Mismatch)))
         }
         Err(why) => Err(refuse(why)),
@@ -128,10 +128,10 @@ pub async fn list_factors(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     let held = read_caller_factors(&transaction, &caller)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(|_| AccountRefusal::Failed)?;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK)).json(describe_own_factors(&held)))
 }
 
@@ -174,14 +174,14 @@ async fn remove(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     remove_caller_factor(&transaction, caller, factor)
         .await
         .map_err(refuse)?;
     transaction
         .commit()
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(|_| AccountRefusal::Failed)?;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
 }
 
@@ -200,7 +200,7 @@ fn refuse(why: Unmade) -> AccountRefusal {
             AccountRefusal::Refused(ApiError::with_detail(ErrorCode::AccountLastFactor, said))
         }
         Unmade::NotFound => refused(ErrorCode::CredentialNotFound),
-        Unmade::Password(Unchanged::Backend) | Unmade::Backend => AccountRefusal::Unavailable,
+        Unmade::Password(Unchanged::Backend) | Unmade::Backend => AccountRefusal::Failed,
     }
 }
 
@@ -240,10 +240,10 @@ pub async fn list_sessions(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     let held = list_caller_logins(&transaction, &caller)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(|_| AccountRefusal::Failed)?;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .json(held.iter().map(describe_login).collect::<Vec<_>>()))
 }
@@ -263,7 +263,7 @@ pub async fn end_session(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     let ring = open_realm_keys(&transaction, &sealing, &caller).await;
     let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
     let notices = end_caller_login(
@@ -278,7 +278,7 @@ pub async fn end_session(
     transaction
         .commit()
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(|_| AccountRefusal::Failed)?;
     backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
 }
@@ -295,7 +295,7 @@ pub async fn end_other_sessions(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     let ring = open_realm_keys(&transaction, &sealing, &caller).await;
     let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
     let (ended, notices) = end_caller_other_logins(
@@ -309,7 +309,7 @@ pub async fn end_other_sessions(
     transaction
         .commit()
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(|_| AccountRefusal::Failed)?;
     backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .json(serde_json::json!({ "ended_sessions": ended })))
@@ -329,7 +329,7 @@ pub async fn revoke_grant(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     let ring = open_realm_keys(&transaction, &sealing, &caller).await;
     let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
     let notices = revoke_caller_grant(
@@ -345,7 +345,7 @@ pub async fn revoke_grant(
     transaction
         .commit()
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(|_| AccountRefusal::Failed)?;
     backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
 }
@@ -360,11 +360,11 @@ pub async fn list_applications(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     let held =
         list_caller_applications(&transaction, &caller, &list_realm_consoles(&policy.parties))
             .await
-            .map_err(|_| AccountRefusal::Unavailable)?;
+            .map_err(|_| AccountRefusal::Failed)?;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .json(held.iter().map(describe_application).collect::<Vec<_>>()))
 }
@@ -381,7 +381,7 @@ pub async fn withdraw_consent(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     withdraw_caller_consent(
         &transaction,
         &caller,
@@ -393,7 +393,7 @@ pub async fn withdraw_consent(
     transaction
         .commit()
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(|_| AccountRefusal::Failed)?;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::NO_CONTENT)).finish())
 }
 
@@ -416,7 +416,7 @@ pub async fn take_back_access(
     let transaction = tenancy
         .begin(&caller.tenant)
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(AccountRefusal::for_unopened_work)?;
     let ring = open_realm_keys(&transaction, &sealing, &caller).await;
     let signing = ring.as_ref().map(|ring| sign_with(&sealing, ring));
     let (taken, notices) = take_back_caller_access(
@@ -432,7 +432,7 @@ pub async fn take_back_access(
     transaction
         .commit()
         .await
-        .map_err(|_| AccountRefusal::Unavailable)?;
+        .map_err(|_| AccountRefusal::Failed)?;
     backchannel::deliver(notices, **egress).await;
     Ok(uncached(&mut HttpResponseBuilder::new(StatusCode::OK))
         .json(serde_json::json!({ "ended_grants": taken })))
@@ -471,7 +471,7 @@ fn refuse_ending(why: Unended) -> AccountRefusal {
         Unended::NoSuchConsent => {
             AccountRefusal::Refused(ApiError::new(ErrorCode::ConsentNotFound))
         }
-        Unended::Backend => AccountRefusal::Unavailable,
+        Unended::Backend => AccountRefusal::Failed,
     }
 }
 

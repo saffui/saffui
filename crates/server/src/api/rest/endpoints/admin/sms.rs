@@ -7,6 +7,7 @@ use store::keyring;
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// What a caller may see. The token is not in it, and there is no shape of
@@ -56,7 +57,7 @@ pub async fn send_test(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let ring = keyring::load(
         &transaction,
         &sealing.envelope,
@@ -103,7 +104,7 @@ pub async fn read(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let ring = keyring::load(
         &transaction,
         &sealing.envelope,
@@ -147,7 +148,7 @@ pub async fn write(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let ring = keyring::load(
         &transaction,
         &sealing.envelope,
@@ -182,7 +183,7 @@ pub async fn forget(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     services::admin::sms::forget(&transaction)
         .await
         .map_err(refused)?;
@@ -221,7 +222,7 @@ pub async fn spent_today(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let now = chrono::Utc::now().timestamp();
     let sent = store::providers::sms::spent_today(&transaction, now)

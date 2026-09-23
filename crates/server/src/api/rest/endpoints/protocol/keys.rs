@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::rest::endpoints::protocol::dto::uncached;
+use crate::api::rest::endpoints::protocol::dto::{answer_unavailable, uncached};
 
 /// The realm's key set.
 pub async fn published(realm: web::Path<String>, tenancy: web::Data<Tenancy>) -> HttpResponse {
@@ -13,14 +13,16 @@ pub async fn published(realm: web::Path<String>, tenancy: web::Data<Tenancy>) ->
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return refused(StatusCode::INTERNAL_SERVER_ERROR);
+            return answer_unavailable();
         }
         Err(_) => {
             return refused(StatusCode::NOT_FOUND);
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return refused(StatusCode::INTERNAL_SERVER_ERROR);
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return answer_unavailable(),
+        Err(_) => return refused(StatusCode::INTERNAL_SERVER_ERROR),
     };
     let Ok(keys) = services::realm::published_keys(&transaction).await else {
         return refused(StatusCode::INTERNAL_SERVER_ERROR);

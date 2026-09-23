@@ -2,10 +2,11 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::config::Sealing;
-use crate::api::rest::endpoints::protocol::dto::uncached;
+use crate::api::rest::endpoints::protocol::dto::{answer_unavailable, uncached};
 
 /// What a collector says when it comes by, RFC 8936 §2.4: how much it can
 /// take, and which of the last batch it is done with.
@@ -38,11 +39,15 @@ pub async fn poll(
     };
     let asked = body.map(web::Json::into_inner).unwrap_or_default();
 
-    let Ok(context) = tenancy.resolve(RealmNamed::ByName(&realm)).await else {
-        return refused();
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return answer_unavailable(),
+        Err(_) => return refused(),
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return refused();
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return answer_unavailable(),
+        Err(_) => return refused(),
     };
     let Ok(rows) = store::providers::brokering::list_providers(&transaction).await else {
         return refused();

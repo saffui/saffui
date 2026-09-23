@@ -7,6 +7,7 @@ use store::keyring;
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// What a caller may see. The password is not in it, and there is no shape of
@@ -66,7 +67,7 @@ pub async fn send_test(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+        .map_err(refuse_unopened_work)?;
     let ring = keyring::load(
         &transaction,
         &sealing.envelope,
@@ -118,7 +119,7 @@ pub async fn read(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let ring = keyring::load(
         &transaction,
         &sealing.envelope,
@@ -156,7 +157,7 @@ pub async fn write(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let ring = keyring::load(
         &transaction,
         &sealing.envelope,
@@ -196,7 +197,7 @@ pub async fn forget(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     services::admin::mail::forget(&transaction)
         .await
         .map_err(refused)?;
@@ -233,7 +234,7 @@ pub async fn look_at_relay(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+        .map_err(refuse_unopened_work)?;
     let ring = keyring::load(
         &transaction,
         &sealing.envelope,
@@ -265,7 +266,7 @@ pub async fn list_refusals(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+        .map_err(refuse_unopened_work)?;
 
     let since = chrono::Utc::now() - chrono::Duration::hours(24);
     let held = store::providers::deliveries::read_refusals_since(&transaction, since, 50)

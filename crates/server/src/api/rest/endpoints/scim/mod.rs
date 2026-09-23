@@ -4,8 +4,10 @@ pub mod users;
 
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder};
+use commons::error::ErrorCode;
 use serde_json::Value;
 use services::scim::Refusal;
+use store::error::StoreError;
 
 pub const CONTENT_TYPE: &str = "application/scim+json";
 
@@ -22,12 +24,23 @@ pub fn refused(refusal: &Refusal) -> HttpResponse {
     )
 }
 
-pub fn unavailable() -> HttpResponse {
+pub fn internal() -> HttpResponse {
     refused(&Refusal {
         status: 500,
         scim_type: None,
         detail: "the realm could not be read".into(),
     })
+}
+
+pub fn refuse_unopened_work(why: StoreError) -> HttpResponse {
+    match why {
+        StoreError::Unavailable => refused(&Refusal {
+            status: 503,
+            scim_type: None,
+            detail: ErrorCode::ServiceUnavailable.message().into(),
+        }),
+        _ => internal(),
+    }
 }
 
 /// Where this realm's SCIM root answers, for the location and $ref fields.
@@ -109,4 +122,26 @@ fn urlencoding_decode(encoded: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::body::MessageBody;
+
+    /// A provisioning client reads the status twice, on the response and in
+    /// the SCIM error's own member.
+    #[test]
+    fn a_missing_connection_is_a_503_in_scim_words() {
+        let answered = refuse_unopened_work(StoreError::Unavailable);
+        assert_eq!(answered.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value =
+            serde_json::from_slice(&answered.into_body().try_into_bytes().unwrap()).unwrap();
+        assert_eq!(body["status"], "503");
+
+        assert_eq!(
+            refuse_unopened_work(StoreError::Backend).status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
 }

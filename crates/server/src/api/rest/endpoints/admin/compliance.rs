@@ -9,6 +9,7 @@ use services::admin::compliance::{self, Lodging, Unactionable};
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// What the plane is asked to lodge.
@@ -64,7 +65,7 @@ pub async fn lodge(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let lodged = compliance::lodge(
         &transaction,
         sealing.provider.as_ref(),
@@ -93,7 +94,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = compliance::list(&transaction).await.map_err(refused)?;
     Ok(HttpResponse::Ok().json(held.into_iter().map(presentable).collect::<Vec<_>>()))
 }
@@ -107,7 +108,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = compliance::get(&transaction, &request_id)
         .await
         .map_err(refused)?;
@@ -123,7 +124,7 @@ pub async fn verify(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = compliance::verify(&transaction, &request_id, chrono::Utc::now().timestamp())
         .await
         .map_err(refused)?;
@@ -141,7 +142,7 @@ pub async fn refuse(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = compliance::refuse(
         &transaction,
         &request_id,
@@ -167,7 +168,7 @@ pub async fn fulfil(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let now = chrono::Utc::now().timestamp();
     let kind = compliance::get(&transaction, &request_id)
         .await
@@ -304,7 +305,7 @@ pub async fn discover_breach(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let found = compliance::record_breach_discovery(
         &transaction,
         sealing.provider.as_ref(),
@@ -334,7 +335,7 @@ pub async fn list_breaches(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = compliance::list_breaches(&transaction)
         .await
         .map_err(refused)?;
@@ -350,7 +351,7 @@ pub async fn get_breach(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = compliance::get_breach(&transaction, &breach_id)
         .await
         .map_err(refused)?;
@@ -368,7 +369,7 @@ pub async fn breach_notification_draft(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let (breach, jurisdiction) = compliance::get_breach(&transaction, &breach_id)
         .await
         .map_err(refused)?;
@@ -385,7 +386,7 @@ async fn advanced_breach(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = compliance::advance_breach(
         &transaction,
         &breach_id,
@@ -503,7 +504,7 @@ pub async fn evidence_pack(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let pack = compliance::assemble_evidence_pack(
         &transaction,
         sealing.provider.digest(),

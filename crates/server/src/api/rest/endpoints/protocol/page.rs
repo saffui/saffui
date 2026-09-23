@@ -1,6 +1,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use config::serving::PublicOrigin;
+use store::error::StoreError;
 use store::tenancy::{RealmNamed, UnitOfWork};
 
 use crate::api::rest::endpoints::protocol::dto::uncached;
@@ -41,6 +42,24 @@ pub fn wants_page(request: &actix_web::HttpRequest) -> bool {
 /// caller has already escaped, under the same style as the login page.
 pub fn notice(status: StatusCode, title: &str, inner: &str) -> HttpResponse {
     told(status, title, inner, false, None)
+}
+
+/// What a page door shows when no connection to the database was had.
+pub fn notice_unavailable() -> HttpResponse {
+    notice(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "Try again in a moment",
+        "<p>The server cannot answer for the moment. Wait a little, then try again.</p>",
+    )
+}
+
+/// The same for a door either a browser or a client may reach: a page to the
+/// one, the OAuth refusal to the other.
+pub fn answer_unavailable_to(request: &actix_web::HttpRequest) -> HttpResponse {
+    if wants_page(request) {
+        return notice_unavailable();
+    }
+    super::dto::answer_unavailable()
 }
 
 /// The same, allowing the frames a front-channel logout puts in the page and
@@ -666,11 +685,15 @@ pub async fn serve_realm_logo(
     realm: web::Path<String>,
     tenancy: web::Data<store::tenancy::Tenancy>,
 ) -> HttpResponse {
-    let Ok(context) = tenancy.resolve(RealmNamed::ByName(&realm)).await else {
-        return told_nothing(StatusCode::NOT_FOUND);
+    let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return told_nothing(StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => return told_nothing(StatusCode::NOT_FOUND),
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told_nothing(StatusCode::NOT_FOUND);
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return told_nothing(StatusCode::SERVICE_UNAVAILABLE),
+        Err(_) => return told_nothing(StatusCode::NOT_FOUND),
     };
     let Ok(Some((bytes, kind))) =
         store::providers::realms::logo_of(&transaction, &context.realm_id).await

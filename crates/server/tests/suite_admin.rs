@@ -52,6 +52,8 @@ mod iga_ttl;
 mod mesh_door;
 #[path = "grouped/mesh_routes.rs"]
 mod mesh_routes;
+#[path = "grouped/no_connection.rs"]
+mod no_connection;
 #[path = "grouped/observability.rs"]
 mod observability;
 #[path = "grouped/own_account.rs"]

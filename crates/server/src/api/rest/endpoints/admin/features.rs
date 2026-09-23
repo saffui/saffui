@@ -7,6 +7,7 @@ use serde_json::json;
 use store::tenancy::Tenancy;
 
 use crate::api::rest::endpoints::within;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 fn internal() -> ApiError {
@@ -53,7 +54,7 @@ pub async fn list_for_realm(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     let held = store::providers::realm_features::read_wishes(&transaction)
         .await
@@ -134,7 +135,7 @@ pub async fn set_wish(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
 
     match asked.enabled {
         Some(enabled) => {

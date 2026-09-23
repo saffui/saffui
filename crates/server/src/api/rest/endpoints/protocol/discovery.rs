@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::rest::endpoints::protocol::dto::uncached;
+use crate::api::rest::endpoints::protocol::dto::{answer_unavailable, uncached};
 
 /// How a client may prove it is itself, §9. One list, because one sequence
 /// establishes the caller at every endpoint that has one, and three lists
@@ -33,7 +33,7 @@ pub async fn ssf_configuration(
 ) -> HttpResponse {
     match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(_) => {}
-        Err(StoreError::Unavailable) => return refused(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(StoreError::Unavailable) => return answer_unavailable(),
         Err(_) => return refused(StatusCode::NOT_FOUND),
     }
     let issuer = origin.issuer(&realm);
@@ -56,14 +56,16 @@ pub async fn published(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return refused(StatusCode::INTERNAL_SERVER_ERROR);
+            return answer_unavailable();
         }
         Err(_) => {
             return refused(StatusCode::NOT_FOUND);
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return refused(StatusCode::INTERNAL_SERVER_ERROR);
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return answer_unavailable(),
+        Err(_) => return refused(StatusCode::INTERNAL_SERVER_ERROR),
     };
     // From the keys this realm signs with, not from the build's catalogue. A
     // realm holding one EC key advertising RS256 sends every client that reads

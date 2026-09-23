@@ -8,6 +8,7 @@ import { wroteSomething } from "@/services/writes";
 const HINTS: Record<string, string> = {
   forbidden: "toast-hint-forbidden",
   unauthorized: "toast-hint-unauthorized",
+  service_unavailable: "toast-hint-service-unavailable",
   "user.password.current_mismatch": "toast-hint-current-password",
   "user.locked_out": "toast-hint-locked-out",
   "user.password.not_held_here": "toast-hint-password-not-held",

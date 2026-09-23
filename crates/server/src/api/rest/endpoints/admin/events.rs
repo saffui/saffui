@@ -3,12 +3,13 @@
 
 use std::collections::{HashSet, VecDeque};
 
-use actix_web::{HttpRequest, HttpResponse, web};
+use actix_web::{HttpRequest, HttpResponse, ResponseError, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use models::paging::PagingParams;
 use store::tenancy::{Tenancy, TenantContext};
 
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 fn internal() -> ApiError {
@@ -58,7 +59,7 @@ pub async fn list_sign_ins(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| ApiError::new(ErrorCode::InternalError))?;
+        .map_err(refuse_unopened_work)?;
 
     let (events, total) = store::providers::login_events::list(
         &transaction,
@@ -111,7 +112,7 @@ pub async fn replay_live_events(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let stored_events =
         store::providers::outbox::list_events_after_id(&transaction, last_event_id, limit + 1)
             .await
@@ -157,8 +158,9 @@ pub async fn stream(
     let mut replay_events = VecDeque::new();
     let mut has_more_replay_events = false;
     if last_event_id > 0 {
-        let Ok(transaction) = tenancy.begin(&TenantContext::new(&tenant, &realm_id)).await else {
-            return HttpResponse::InternalServerError().finish();
+        let transaction = match tenancy.begin(&TenantContext::new(&tenant, &realm_id)).await {
+            Ok(transaction) => transaction,
+            Err(why) => return refuse_unopened_work(why).error_response(),
         };
         let Ok(stored_events) = store::providers::outbox::list_events_after_id(
             &transaction,
@@ -271,7 +273,7 @@ pub async fn dead_letters(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = store::providers::outbox::dead_list(&transaction, 200)
         .await
         .map_err(|_| internal())?;
@@ -300,7 +302,7 @@ pub async fn requeue(
     let transaction = tenancy
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let requeued = store::providers::outbox::requeue(&transaction, event_id)
         .await
         .map_err(|_| internal())?;
@@ -348,7 +350,10 @@ pub async fn redeliver_to_connector(
     let (realm_id, alias) = path.into_inner();
     let asked = body.into_inner();
     let context = TenantContext::new(&admin.context.tenant.tenant, &realm_id);
-    let transaction = tenancy.begin(&context).await.map_err(|_| internal())?;
+    let transaction = tenancy
+        .begin(&context)
+        .await
+        .map_err(refuse_unopened_work)?;
 
     let row = store::providers::brokering::provider_by_alias(&transaction, &alias)
         .await

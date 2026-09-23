@@ -9,6 +9,7 @@ use store::tenancy::Tenancy;
 use config::serving::PublicOrigin;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 pub async fn list(
@@ -20,7 +21,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let listed = protocol_mappers::mappers(&transaction)
         .await
         .map_err(refused)?;
@@ -89,7 +90,7 @@ pub async fn preview(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let scope = asked.scope.unwrap_or_else(|| "openid".to_owned());
     let user = store::providers::users::load_by_id_or_name(&transaction, &asked.user_id)
         .await
@@ -158,7 +159,7 @@ pub async fn create(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let made = protocol_mappers::create_mapper(
         &transaction,
         sealing.provider.as_ref(),
@@ -182,7 +183,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let found = protocol_mappers::get_mapper(&transaction, &mapper_id)
         .await
         .map_err(refused)?;
@@ -199,7 +200,7 @@ pub async fn update(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let rewritten = protocol_mappers::update_mapper(
         &transaction,
         &mapper_id,
@@ -221,7 +222,7 @@ pub async fn delete(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     protocol_mappers::delete_mapper(&transaction, &mapper_id)
         .await
         .map_err(refused)?;
@@ -242,7 +243,7 @@ macro_rules! carrying {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             let listed = protocol_mappers::$list_call(&transaction, &owner)
                 .await
                 .map_err(refused)?;
@@ -258,7 +259,7 @@ macro_rules! carrying {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             protocol_mappers::$attach_call(&transaction, &owner, &mapper_id)
                 .await
                 .map_err(refused)?;
@@ -275,7 +276,7 @@ macro_rules! carrying {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             protocol_mappers::$detach_call(&transaction, &owner, &mapper_id)
                 .await
                 .map_err(refused)?;

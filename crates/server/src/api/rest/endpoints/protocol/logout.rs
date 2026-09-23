@@ -7,6 +7,7 @@ use serde_json::json;
 use services::grant::Signing;
 use services::logout::{self, EndedAt, Frame, Requested};
 use services::saml_brokering;
+use store::error::StoreError;
 use store::keyring;
 use store::tenancy::{RealmNamed, Tenancy};
 
@@ -87,11 +88,15 @@ async fn run(
 
     // An unknown realm ends nothing and says so the same way. Which realms exist
     // is not a question this endpoint answers, and everyone links to it.
-    let Ok(context) = tenancy.resolve(RealmNamed::ByName(realm)).await else {
-        return told(realm, EndedAt::Nowhere, &[]);
+    let context = match tenancy.resolve(RealmNamed::ByName(realm)).await {
+        Ok(context) => context,
+        Err(StoreError::Unavailable) => return page::answer_unavailable_to(request),
+        Err(_) => return told(realm, EndedAt::Nowhere, &[]),
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told(&context.realm_id, EndedAt::Nowhere, &[]);
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return page::answer_unavailable_to(request),
+        Err(_) => return told(&context.realm_id, EndedAt::Nowhere, &[]),
     };
     let Ok(keys) = services::realm::published_keys(&transaction).await else {
         return told(&context.realm_id, EndedAt::Nowhere, &[]);

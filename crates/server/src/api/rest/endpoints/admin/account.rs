@@ -11,6 +11,7 @@ use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::account::describe_own_factors;
 use crate::api::rest::endpoints::within;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// The caller's own password, replaced on proof of the current one.
@@ -49,7 +50,7 @@ pub async fn change_own_password(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let realm = store::providers::realms::load(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?
@@ -105,7 +106,7 @@ pub async fn list_own_factors(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = account::own_factors(
         &transaction,
         admin.context.principal.id(),
@@ -160,7 +161,7 @@ async fn remove_own(
     let transaction = tenancy
         .begin(&within(admin, realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     account::remove_own_factor(
         &transaction,
         admin.context.principal.id(),

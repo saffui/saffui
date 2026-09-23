@@ -9,7 +9,7 @@ use store::tenancy::{RealmNamed, Tenancy};
 
 use crate::api::provenance::read_client_certificate;
 use crate::api::rest::endpoints::protocol::basic;
-use crate::api::rest::endpoints::protocol::dto::uncached;
+use crate::api::rest::endpoints::protocol::dto::{answer_unavailable, uncached};
 
 /// Tell what the token allows.
 ///
@@ -36,14 +36,16 @@ pub async fn tell(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return faulted();
+            return answer_unavailable();
         }
         Err(_) => {
             return challenged("the token presented is not one this realm accepts");
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return faulted();
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return answer_unavailable(),
+        Err(_) => return faulted(),
     };
     let Ok(keys) = services::realm::published_keys(&transaction).await else {
         return faulted();
@@ -97,10 +99,11 @@ pub async fn tell(
         if transaction.commit().await.is_err() {
             return challenged("the proof could not be spent");
         }
-        let Ok(fresh) = tenancy.begin(&context).await else {
-            return challenged("the realm could not be read");
-        };
-        fresh
+        match tenancy.begin(&context).await {
+            Ok(fresh) => fresh,
+            Err(StoreError::Unavailable) => return answer_unavailable(),
+            Err(_) => return challenged("the realm could not be read"),
+        }
     } else {
         transaction
     };

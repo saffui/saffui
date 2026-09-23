@@ -8,6 +8,7 @@ use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
 use crate::api::rest::endpoints::within;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 #[derive(serde::Deserialize)]
@@ -54,7 +55,7 @@ pub async fn keep(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     store::providers::page_previews::keep(&transaction, &preview_id, &asked.overrides, expires_at)
         .await
         .map_err(|_| internal())?;

@@ -12,7 +12,7 @@ use store::tenancy::{RealmNamed, Tenancy, UnitOfWork};
 use services::client;
 
 use super::caller;
-use super::dto::uncached;
+use super::dto::{answer_unavailable, uncached};
 use super::hosted::{may_dial, outward_agent};
 use crate::api::config::Sealing;
 
@@ -59,11 +59,7 @@ pub async fn open(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return told(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "the realm could not be read",
-            );
+            return answer_unavailable();
         }
         Err(_) => {
             return told(
@@ -539,11 +535,7 @@ pub async fn pending(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return told(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "the realm could not be read",
-            );
+            return answer_unavailable();
         }
         Err(_) => {
             return told(
@@ -553,12 +545,16 @@ pub async fn pending(
             );
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "the realm could not be read",
-        );
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return answer_unavailable(),
+        Err(_) => {
+            return told(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "the realm could not be read",
+            );
+        }
     };
     let person = match asking_person(&request, &transaction, now).await {
         Ok(person) => person,
@@ -629,11 +625,7 @@ pub async fn decide(
     let context = match tenancy.resolve(RealmNamed::ByName(&realm)).await {
         Ok(context) => context,
         Err(StoreError::Unavailable) => {
-            return told(
-                StatusCode::BAD_REQUEST,
-                "invalid_request",
-                "the realm could not be read",
-            );
+            return answer_unavailable();
         }
         Err(_) => {
             return told(
@@ -643,12 +635,16 @@ pub async fn decide(
             );
         }
     };
-    let Ok(transaction) = tenancy.begin(&context).await else {
-        return told(
-            StatusCode::BAD_REQUEST,
-            "invalid_request",
-            "the realm could not be read",
-        );
+    let transaction = match tenancy.begin(&context).await {
+        Ok(transaction) => transaction,
+        Err(StoreError::Unavailable) => return answer_unavailable(),
+        Err(_) => {
+            return told(
+                StatusCode::BAD_REQUEST,
+                "invalid_request",
+                "the realm could not be read",
+            );
+        }
     };
     let person = match asking_person(&request, &transaction, now).await {
         Ok(person) => person,

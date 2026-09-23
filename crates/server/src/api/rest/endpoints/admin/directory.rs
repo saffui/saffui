@@ -10,6 +10,7 @@ use store::query::list_query::{ListQuery, SortDirection};
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// The three entities share one file the way they share one manager: the
@@ -32,7 +33,7 @@ macro_rules! crud {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             let made = directory::$create_call(
                 &transaction,
                 sealing.provider.as_ref(),
@@ -60,7 +61,7 @@ macro_rules! crud {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             let query = ListQuery::new(window).sorted_by("name", SortDirection::Ascending);
             let found = directory::$list_call(&transaction, &query, paging.count.unwrap_or(false))
                 .await
@@ -77,7 +78,7 @@ macro_rules! crud {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             let found = directory::$get_call(&transaction, &id)
                 .await
                 .map_err(|why| refused(why, ErrorCode::$exists, ErrorCode::$missing))?;
@@ -94,7 +95,7 @@ macro_rules! crud {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             let changed = directory::$update_call(
                 &transaction,
                 &id,
@@ -116,7 +117,7 @@ macro_rules! crud {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             directory::$delete_call(&transaction, &id)
                 .await
                 .map_err(|why| refused(why, ErrorCode::$exists, ErrorCode::$missing))?;
@@ -210,7 +211,7 @@ macro_rules! joining {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             directory::$attach_call(&transaction, &owner, &other)
                 .await
                 .map_err(|why| refused(why, ErrorCode::$exists, ErrorCode::$missing))?;
@@ -227,7 +228,7 @@ macro_rules! joining {
             let transaction = tenancy
                 .begin(&within(&admin, &realm_id))
                 .await
-                .map_err(|_| internal())?;
+                .map_err(refuse_unopened_work)?;
             directory::$detach_call(&transaction, &owner, &other)
                 .await
                 .map_err(|why| refused(why, ErrorCode::$exists, ErrorCode::$missing))?;
@@ -273,7 +274,7 @@ pub async fn role_holders(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let holders = directory::role_holders(&transaction, &role_id)
         .await
         .map_err(|why| refused(why, ErrorCode::RoleAlreadyExists, ErrorCode::RoleNotFound))?;
@@ -290,7 +291,7 @@ pub async fn composite_roles(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let children = directory::composite_roles(&transaction, &role_id)
         .await
         .map_err(|why| refused(why, ErrorCode::RoleAlreadyExists, ErrorCode::RoleNotFound))?;
@@ -307,7 +308,7 @@ pub async fn add_composite_role(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     directory::add_composite_role(&transaction, &parent_role_id, &child_role_id)
         .await
         .map_err(|why| refused(why, ErrorCode::RoleAlreadyExists, ErrorCode::RoleNotFound))?;
@@ -325,7 +326,7 @@ pub async fn remove_composite_role(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     directory::remove_composite_role(&transaction, &parent_role_id, &child_role_id)
         .await
         .map_err(|why| refused(why, ErrorCode::RoleAlreadyExists, ErrorCode::RoleNotFound))?;
@@ -343,7 +344,7 @@ pub async fn group_membership(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let (users, roles) = directory::group_membership(&transaction, &group_id)
         .await
         .map_err(|why| refused(why, ErrorCode::GroupAlreadyExists, ErrorCode::GroupNotFound))?;
@@ -359,7 +360,7 @@ pub async fn add_organization_member(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     directory::add_organization_member(
         &transaction,
         &admin.context.tenant.tenant,
@@ -388,7 +389,7 @@ pub async fn remove_organization_member(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     directory::remove_organization_member(&transaction, &org_id, &user_id)
         .await
         .map_err(|why| {
@@ -411,7 +412,7 @@ pub async fn organization_members(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let members = directory::organization_members(&transaction, &org_id)
         .await
         .map_err(|why| {
@@ -434,7 +435,7 @@ pub async fn get_organization_theme(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     store::providers::organizations::load(&transaction, &org_id)
         .await
         .map_err(|_| internal())?
@@ -465,7 +466,7 @@ pub async fn set_organization_theme(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let worn = store::providers::organizations::set_theme(&transaction, &org_id, Some(&asked))
         .await
         .map_err(|_| internal())?;
@@ -486,7 +487,7 @@ pub async fn clear_organization_theme(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let undressed = store::providers::organizations::set_theme(&transaction, &org_id, None)
         .await
         .map_err(|_| internal())?;
@@ -536,7 +537,7 @@ pub async fn claim_organization_domain(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     directory::claim_organization_domain(&transaction, &org_id, &domain, &challenge)
         .await
         .map_err(|why| {
@@ -563,7 +564,7 @@ pub async fn verify_organization_domain(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     directory::verify_organization_domain(&transaction, &org_id, &domain)
         .await
         .map_err(|why| {
@@ -586,7 +587,7 @@ pub async fn drop_organization_domain(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     directory::drop_organization_domain(&transaction, &org_id, &domain)
         .await
         .map_err(|why| {

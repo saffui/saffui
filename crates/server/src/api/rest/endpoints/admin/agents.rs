@@ -7,6 +7,7 @@ use services::admin::agents::{self, Refused};
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 /// What a registration asks: the root out loud, nothing implied. No secret
@@ -38,7 +39,7 @@ pub async fn list(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = agents::list(&transaction).await.map_err(refused)?;
     Ok(HttpResponse::Ok().json(held))
 }
@@ -55,7 +56,7 @@ pub async fn register(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let born = agents::register(
         &transaction,
         sealing.provider.as_ref(),
@@ -81,7 +82,7 @@ pub async fn get(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = agents::get(&transaction, &client_id)
         .await
         .map_err(refused)?;
@@ -99,7 +100,7 @@ pub async fn reshape(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = agents::reshape(
         &transaction,
         &client_id,

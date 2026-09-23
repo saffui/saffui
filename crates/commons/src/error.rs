@@ -51,6 +51,7 @@ catalogue! {
     TooManyRequests = 4029, 429, "too_many_requests", "too many requests; retry later";
     InternalError = 5000, 500, "internal_error", "an internal error occurred";
     NotImplemented = 5010, 501, "not_implemented", "this feature is not implemented";
+    ServiceUnavailable = 5030, 503, "service_unavailable", "the service cannot answer for the moment; retry later";
     RealmNotFound = 100, 404, "realm.not_found", "unknown realm";
     MailSettingsNotFound = 102, 404, "realm.mail.not_found", "this realm has no mail settings";
     SmsSettingsNotFound = 103, 404, "realm.sms.not_found", "this realm has no SMS settings";
@@ -187,7 +188,7 @@ mod tests {
     /// whoever still sends it.
     #[test]
     fn the_catalogue_has_not_shrunk() {
-        assert_eq!(ErrorCode::ALL.len(), 67);
+        assert_eq!(ErrorCode::ALL.len(), 68);
     }
 
     /// A message never restates the slug, and never carries a value.

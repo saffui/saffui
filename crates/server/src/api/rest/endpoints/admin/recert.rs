@@ -8,6 +8,7 @@ use services::admin::recert::{self, Unreviewable};
 use store::tenancy::Tenancy;
 
 use crate::api::config::Sealing;
+use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 
 fn internal() -> ApiError {
@@ -47,7 +48,7 @@ pub async fn campaigns(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = recert::campaigns(&transaction).await.map_err(refused)?;
     Ok(HttpResponse::Ok().json(held.iter().map(shaped).collect::<Vec<_>>()))
 }
@@ -83,7 +84,7 @@ pub async fn open(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let opened = recert::open(
         &transaction,
         sealing.provider.as_ref(),
@@ -113,7 +114,7 @@ pub async fn activate(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let (frozen, excluded) =
         recert::activate(&transaction, sealing.provider.as_ref(), &campaign_id)
             .await
@@ -131,7 +132,7 @@ pub async fn items(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let held = recert::items(&transaction, &campaign_id)
         .await
         .map_err(refused)?;
@@ -170,7 +171,7 @@ pub async fn decide(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     recert::decide(
         &transaction,
         sealing.provider.as_ref(),
@@ -196,7 +197,7 @@ pub async fn close(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let told = recert::close(
         &transaction,
         sealing.provider.as_ref(),
@@ -229,7 +230,7 @@ pub async fn report(
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse_unopened_work)?;
     let rendered = recert::report(&transaction, &campaign_id)
         .await
         .map_err(refused)?;

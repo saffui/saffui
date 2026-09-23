@@ -76,14 +76,14 @@ pub async fn list(
     let rows = transaction
         .query(
             query.select(ORG_COLUMNS, "organizations").as_str(),
-            &query.params(),
+            &query.page_params(),
         )
         .await
         .map_err(|_| StoreError::Backend)?;
     let total = if with_total {
         Some(
             transaction
-                .query_one(query.count("organizations").as_str(), &query.params())
+                .query_one(query.count("organizations").as_str(), &query.bound())
                 .await
                 .map_err(|_| StoreError::Backend)?
                 .get::<_, i64>(0),

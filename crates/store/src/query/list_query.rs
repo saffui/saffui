@@ -133,7 +133,8 @@ impl<'a> ListQuery<'a> {
         format!(" WHERE {}", conditions.join(" AND "))
     }
 
-    /// Everything bound, in the order the placeholders name them.
+    /// Everything the `WHERE` binds, in the order its placeholders name them,
+    /// which is what a count takes.
     ///
     /// The prefix value comes last because its placeholder is numbered after
     /// the filters, and a caller that built its own list would have to know
@@ -160,18 +161,21 @@ impl<'a> ListQuery<'a> {
         format!(" ORDER BY {}", terms.join(", "))
     }
 
-    /// The window, as literals.
-    ///
-    /// Numbers rather than placeholders because they are this crate's own,
-    /// already bounded by the type that produced them, and never a caller's
-    /// string.
-    pub fn limit_clause(&self) -> String {
-        format!(" LIMIT {} OFFSET {}", self.window.max, self.window.first)
+    /// What a page takes: everything the `WHERE` binds, then the window.
+    pub fn page_params(&self) -> Vec<&(dyn ToSql + Sync)> {
+        let mut held: Vec<&(dyn ToSql + Sync)> = self.bound();
+        held.push(&self.window.max);
+        held.push(&self.window.first);
+        held
     }
 
-    /// The values the filters bind, in placeholder order.
-    pub fn params(&self) -> Vec<&'a (dyn ToSql + Sync)> {
-        self.filters.iter().map(Bind::value).collect()
+    /// The window, bound after everything the `WHERE` binds.
+    ///
+    /// Bound rather than written in, so every page of a listing is one
+    /// statement, which a connection prepares once.
+    pub fn limit_clause(&self) -> String {
+        let after = self.filters.len() + usize::from(self.prefix.is_some());
+        format!(" LIMIT ${} OFFSET ${}", after + 1, after + 2)
     }
 
     /// The whole read.
@@ -283,7 +287,7 @@ mod tests {
             .filter(vec![col("tenant", &tenant), col("enabled", &enabled)]);
 
         assert_eq!(query.where_clause(), " WHERE tenant = $1 AND enabled = $2");
-        assert_eq!(query.params().len(), 2);
+        assert_eq!(query.bound().len(), 2);
     }
 
     /// A scope goes in front and through the same list, so the count sees it.
@@ -315,11 +319,12 @@ mod tests {
     fn filtering_nothing_produces_no_clause() {
         let query = ListQuery::new(window(0, 10));
         assert!(query.where_clause().is_empty());
-        assert!(query.params().is_empty());
+        assert!(query.bound().is_empty());
         assert_eq!(
             query.select("*", "realms"),
-            "SELECT * FROM realms LIMIT 10 OFFSET 0"
+            "SELECT * FROM realms LIMIT $1 OFFSET $2"
         );
+        assert_eq!(query.page_params().len(), 2, "the window and nothing else");
     }
 
     /// The window is the one the request type already bounded, carried through
@@ -336,9 +341,14 @@ mod tests {
 
         let query = ListQuery::new(bounded);
         assert_eq!(query.window(), bounded);
+        let bound: Vec<String> = query
+            .page_params()
+            .iter()
+            .map(|value| format!("{value:?}"))
+            .collect();
         assert_eq!(
-            query.limit_clause(),
-            format!(" LIMIT {} OFFSET 0", models::paging::MAX_MAX)
+            bound,
+            vec![format!("{:?}", models::paging::MAX_MAX), "0".to_owned()]
         );
     }
 
@@ -400,7 +410,44 @@ mod tests {
         assert_eq!(
             query.select("realm_id, name", "realms"),
             "SELECT realm_id, name FROM realms WHERE tenant = $1 ORDER BY name ASC \
-             LIMIT 5 OFFSET 20"
+             LIMIT $2 OFFSET $3"
+        );
+    }
+
+    /// Two pages of one listing are one statement, so a connection that
+    /// prepared the first has already prepared the second.
+    #[test]
+    fn every_page_of_a_listing_is_the_same_statement() {
+        let tenant = "acme".to_owned();
+        let page = |first| {
+            ListQuery::new(window(first, 5))
+                .scoped_by(col("tenant", &tenant))
+                .sorted_by("name", SortDirection::Ascending)
+                .select("realm_id, name", "realms")
+        };
+        assert_eq!(page(0), page(20));
+    }
+
+    /// A prefix search puts its value after the filters and the window after
+    /// that, and hands over one value per placeholder.
+    #[test]
+    fn a_searched_page_binds_every_placeholder_it_names() {
+        let enabled = true;
+        let typed = "ada%".to_owned();
+        let query = ListQuery::new(window(0, 10))
+            .filter(vec![col("enabled", &enabled)])
+            .starting_with(&["user_name", "email"], &typed);
+
+        let page = query.select("user_id", "users");
+        assert!(
+            page.ends_with("(user_name ILIKE $2 OR email ILIKE $2) LIMIT $3 OFFSET $4"),
+            "{page}"
+        );
+        assert_eq!(query.page_params().len(), 4);
+        assert_eq!(
+            query.bound().len(),
+            2,
+            "the count binds the filter and the prefix"
         );
     }
 }

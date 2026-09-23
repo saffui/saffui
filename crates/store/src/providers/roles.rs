@@ -51,14 +51,14 @@ pub async fn list(
     let rows = transaction
         .query(
             query.select(ROLE_COLUMNS, "roles").as_str(),
-            &query.params(),
+            &query.page_params(),
         )
         .await
         .map_err(|_| StoreError::Backend)?;
     let total = if with_total {
         Some(
             transaction
-                .query_one(query.count("roles").as_str(), &query.params())
+                .query_one(query.count("roles").as_str(), &query.bound())
                 .await
                 .map_err(|_| StoreError::Backend)?
                 .get::<_, i64>(0),
@@ -82,14 +82,14 @@ pub async fn list_groups(
     let rows = transaction
         .query(
             query.select(GROUP_COLUMNS, "groups").as_str(),
-            &query.params(),
+            &query.page_params(),
         )
         .await
         .map_err(|_| StoreError::Backend)?;
     let total = if with_total {
         Some(
             transaction
-                .query_one(query.count("groups").as_str(), &query.params())
+                .query_one(query.count("groups").as_str(), &query.bound())
                 .await
                 .map_err(|_| StoreError::Backend)?
                 .get::<_, i64>(0),

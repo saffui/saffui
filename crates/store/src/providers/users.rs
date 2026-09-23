@@ -417,14 +417,17 @@ pub async fn list(
     with_total: bool,
 ) -> StoreResult<Page<UserModel>> {
     let rows = transaction
-        .query(query.select(COLUMNS, "users").as_str(), &query.params())
+        .query(
+            query.select(COLUMNS, "users").as_str(),
+            &query.page_params(),
+        )
         .await
         .map_err(|_| StoreError::Backend)?;
 
     let total = if with_total {
         Some(
             transaction
-                .query_one(query.count("users").as_str(), &query.params())
+                .query_one(query.count("users").as_str(), &query.bound())
                 .await
                 .map_err(|_| StoreError::Backend)?
                 .get::<_, i64>(0),

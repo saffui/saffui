@@ -1422,3 +1422,59 @@ async fn a_domain_claim_refuses_a_foreign_script_and_a_vanished_organization() {
     );
     assert_eq!(refused, Err(Unwritable::NotFound));
 }
+
+/// The console's search box: what a name or an address starts with, bound as
+/// a value, and a total that counts the people the page shows.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn people_are_searched_by_what_a_name_or_an_address_starts_with() {
+    let plane = Plane::with_actions(&[AdminAction::UserRead, AdminAction::UserWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let base = format!("/admin/realms/{REALM}/users");
+    for (name, address) in [
+        ("grace", "grace@acme.test"),
+        ("gregor", "gregor@acme.test"),
+        ("linus", "hopper@acme.test"),
+    ] {
+        let (status, made) = asked(
+            &plane,
+            Method::POST,
+            &base,
+            &bearer,
+            Some(serde_json::json!({ "user_name": name, "email": address })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+    }
+    let names = |found: &Value| -> Vec<String> {
+        found["items"]
+            .as_array()
+            .expect("a page of people")
+            .iter()
+            .map(|person| person["user_name"].as_str().unwrap_or_default().to_owned())
+            .collect()
+    };
+
+    let (status, found) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}?search=gr&count=true"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(names(&found), vec!["grace", "gregor"]);
+    assert_eq!(found["total"], 2, "the total counted other people: {found}");
+
+    let (status, found) = asked(
+        &plane,
+        Method::GET,
+        &format!("{base}?search=hopper"),
+        &bearer,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{found}");
+    assert_eq!(names(&found), vec!["linus"], "an address is searched too");
+}

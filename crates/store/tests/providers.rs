@@ -1464,3 +1464,38 @@ async fn a_required_action_is_struck_alone() {
     );
     transaction.commit().await.unwrap();
 }
+
+/// A search by what a name starts with binds its value, on the page and on the
+/// count, and the two agree on what they found.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn people_are_found_by_what_their_name_starts_with() {
+    let _turn = DATABASE.lock().await;
+    let pool = pool().await;
+    let tenancy = Tenancy::unpinned(pool.clone());
+    realm_with_user(&tenancy, "acme", "main").await;
+    let transaction = tenancy
+        .begin(&TenantContext::new("acme", "main"))
+        .await
+        .unwrap();
+    users::create(&transaction, &user("acme", "main", "grace"))
+        .await
+        .unwrap();
+
+    let typed = "ad%".to_owned();
+    let query = ListQuery::new(PagingParams::default().window().unwrap())
+        .starting_with(&["user_name", "email"], &typed);
+    let found = users::list(&transaction, &query, true)
+        .await
+        .expect("a search the database accepts");
+
+    assert_eq!(
+        found
+            .items
+            .iter()
+            .map(|person| person.user_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ada"]
+    );
+    assert_eq!(found.total, Some(1), "the count saw something else");
+}

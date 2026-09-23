@@ -386,9 +386,9 @@ async fn a_statement_is_prepared_once_per_connection() {
     assert_eq!(kept, 1, "the statement was not kept between the two units");
 }
 
-/// What a connection keeps has a ceiling. A paging window is written into its
-/// statement, so every page is a new text, and a long lived connection would
-/// otherwise keep one of each on both sides of the wire.
+/// What a connection keeps has a ceiling. A statement built at run time is a
+/// new text for every shape, and a long lived connection would otherwise keep
+/// one of each on both sides of the wire.
 #[tokio::test]
 #[ignore = "needs a database (SAFFUI_TEST_PG)"]
 async fn kept_statements_stay_under_a_ceiling() {
@@ -400,8 +400,8 @@ async fn kept_statements_stay_under_a_ceiling() {
         .begin(&TenantContext::tenant_wide("acme"))
         .await
         .unwrap();
-    for page in 0..600 {
-        unit.query_one(format!("SELECT {page}::int").as_str(), &[])
+    for shape in 0..600 {
+        unit.query_one(format!("SELECT {shape}::int").as_str(), &[])
             .await
             .unwrap();
     }

@@ -14,9 +14,9 @@ const SCOPE: &str = "SELECT set_config('saffui.current_tenant', $1, true), \
 
 /// How many prepared statements one connection keeps before starting over.
 ///
-/// A paging window is written into its statement as literals, so every page
-/// is a new text; without a ceiling a long lived connection would keep one of
-/// each, on both sides of the wire.
+/// A statement whose text is built at run time, an update naming the columns
+/// it was handed, is a new text for every shape; without a ceiling a long
+/// lived connection would keep one of each, on both sides of the wire.
 const PREPARED_CEILING: usize = 512;
 
 /// The pair that scopes every statement.

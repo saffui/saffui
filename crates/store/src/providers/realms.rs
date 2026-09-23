@@ -114,14 +114,17 @@ pub async fn list(
     with_total: bool,
 ) -> StoreResult<Page<RealmModel>> {
     let rows = transaction
-        .query(query.select(COLUMNS, "realms").as_str(), &query.params())
+        .query(
+            query.select(COLUMNS, "realms").as_str(),
+            &query.page_params(),
+        )
         .await
         .map_err(|_| StoreError::Backend)?;
 
     let total = if with_total {
         Some(
             transaction
-                .query_one(query.count("realms").as_str(), &query.params())
+                .query_one(query.count("realms").as_str(), &query.bound())
                 .await
                 .map_err(|_| StoreError::Backend)?
                 .get::<_, i64>(0),

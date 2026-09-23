@@ -360,14 +360,17 @@ pub async fn list(
     with_total: bool,
 ) -> StoreResult<Page<ClientModel>> {
     let rows = transaction
-        .query(query.select(COLUMNS, "clients").as_str(), &query.params())
+        .query(
+            query.select(COLUMNS, "clients").as_str(),
+            &query.page_params(),
+        )
         .await
         .map_err(|_| StoreError::Backend)?;
 
     let total = if with_total {
         Some(
             transaction
-                .query_one(query.count("clients").as_str(), &query.params())
+                .query_one(query.count("clients").as_str(), &query.bound())
                 .await
                 .map_err(|_| StoreError::Backend)?
                 .get::<_, i64>(0),

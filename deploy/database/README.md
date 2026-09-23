@@ -60,6 +60,12 @@ bound is set on the pool only. The migrations hold one transaction for as
 long as they need, and ending one part way is worse than the leak the bound
 closes.
 
+When no connection can be had, `/readyz` says which way it failed: every one
+in use, the database not answering in time, the TLS handshake, the database
+refusing it, or nothing answering at its address. The driver's own account,
+the certificate check or the password it refused, is in the log line where
+the live feed loses its connection.
+
 Statements are prepared once per connection and kept. Behind PgBouncer in
 transaction mode that needs 1.21 or later with `max_prepared_statements` set,
 or session mode.

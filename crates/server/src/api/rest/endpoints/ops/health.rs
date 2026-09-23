@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use actix_web::{HttpResponse, web};
 use serde::Serialize;
-use store::tenancy::{Reached, Tenancy};
+use store::tenancy::{Reached, Tenancy, Unreached};
 
 /// How long a readiness probe waits on the database before calling it out.
 ///
@@ -80,7 +80,7 @@ pub async fn ready(vitals: web::Data<Vitals>) -> HttpResponse {
     }
 
     match vitals.tenancy.reach(REACH).await {
-        Reached::NoConnection => not_ready("no connection"),
+        Reached::NoConnection(why) => not_ready(describe_unreached(why)),
         Reached::NotAnswering => not_ready("database not answering"),
         Reached::Schema(Some(applied)) if applied <= vitals.schema => {
             HttpResponse::Ok().json(Answer {
@@ -106,6 +106,20 @@ pub async fn started(vitals: web::Data<Vitals>) -> HttpResponse {
         HttpResponse::Ok().finish()
     } else {
         not_ready("starting")
+    }
+}
+
+/// Which way the connection failed, for the operator reading the probe. The
+/// driver's own account, the certificate or the password it refused, is in
+/// the live feed's log line, which dials the same way.
+fn describe_unreached(why: Unreached) -> &'static str {
+    match why {
+        Unreached::Busy => "no connection: every one is in use",
+        Unreached::TimedOut => "no connection: the database did not answer in time",
+        Unreached::Tls => "no connection: the TLS handshake failed",
+        Unreached::Refused => "no connection: the database refused it",
+        Unreached::Unreachable => "no connection: nothing answers at the database's address",
+        Unreached::Other => "no connection",
     }
 }
 

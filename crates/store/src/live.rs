@@ -23,7 +23,8 @@ pub fn listen(config: Config, tls: PgConnector) -> tokio::sync::broadcast::Sende
     let out = feed.clone();
     tokio::spawn(async move {
         loop {
-            if let Err(why) = pump(&config, &tls, &out).await {
+            if let Err(failure) = pump(&config, &tls, &out).await {
+                let why = pgcore::database::describe_connection_failure(&failure);
                 tracing::warn!(%why, "the live feed lost its ear; listening again shortly");
             }
             tokio::time::sleep(Duration::from_secs(5)).await;

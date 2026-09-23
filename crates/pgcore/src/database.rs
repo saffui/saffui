@@ -1,7 +1,9 @@
+use std::error::Error as _;
+use std::io;
 use std::net::IpAddr;
 use std::time::Duration;
 
-use deadpool_postgres::{Manager, Pool, Runtime, Timeouts};
+use deadpool_postgres::{Manager, Pool, PoolError, Runtime, TimeoutType, Timeouts};
 use tokio_postgres::Config;
 use tokio_postgres::config::{Host, SslMode};
 
@@ -166,6 +168,80 @@ impl Database {
         config.options(options);
         config
     }
+}
+
+/// Why the pool handed out no connection, in the terms an operator acts on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unreached {
+    /// Every connection is in use, and none came back inside the wait.
+    Busy,
+    /// Opening a connection took longer than it may.
+    TimedOut,
+    /// The handshake failed: a certificate this side does not trust, one
+    /// naming another host, or a server that does not speak TLS.
+    Tls,
+    /// The server answered and turned the connection away: the role, its
+    /// password, an access rule, a database it does not hold, no slot left.
+    Refused,
+    /// Nothing answered at the address.
+    Unreachable,
+    /// The pool is closed, or a failure none of these names.
+    Other,
+}
+
+/// The names the driver gives two of its kinds. The kinds are private, and
+/// the message is the one trace of them it makes public.
+const TLS_FAILED: &str = "error performing TLS handshake";
+const AUTHENTICATION_FAILED: &str = "authentication error";
+
+impl Unreached {
+    pub fn of(error: &PoolError) -> Self {
+        match error {
+            PoolError::Timeout(TimeoutType::Wait) => Self::Busy,
+            PoolError::Timeout(_) => Self::TimedOut,
+            PoolError::Backend(failure) => Self::of_connecting(failure),
+            _ => Self::Other,
+        }
+    }
+
+    /// A refusal the server sent comes typed. The rest is told apart by the
+    /// driver's message, or by the socket failure underneath it.
+    fn of_connecting(failure: &tokio_postgres::Error) -> Self {
+        if failure.as_db_error().is_some() {
+            return Self::Refused;
+        }
+        match failure.to_string().as_str() {
+            TLS_FAILED => return Self::Tls,
+            AUTHENTICATION_FAILED => return Self::Refused,
+            _ => {}
+        }
+        let mut cause = failure.source();
+        while let Some(held) = cause {
+            if held.is::<io::Error>() {
+                return Self::Unreachable;
+            }
+            cause = held.source();
+        }
+        Self::Other
+    }
+}
+
+/// A failure to connect with every cause beneath it, the driver's own words
+/// naming only its kind. Not for a statement's refusal, which can carry the
+/// values it was bound.
+pub fn describe_connection_failure(failure: &tokio_postgres::Error) -> String {
+    let mut told = failure.to_string();
+    let mut cause = failure.source();
+    while let Some(held) = cause {
+        let said = held.to_string();
+        // The TLS layer repeats the error it wraps.
+        if !told.contains(&said) {
+            told.push_str(": ");
+            told.push_str(&said);
+        }
+        cause = held.source();
+    }
+    told
 }
 
 /// The first host a connection could reach that is not this machine.
@@ -375,9 +451,154 @@ mod tests {
         );
     }
 
+    /// A pool timing out cannot say more than which phase ran out.
+    #[test]
+    fn a_timed_out_phase_says_which() {
+        assert_eq!(
+            Unreached::of(&PoolError::Timeout(TimeoutType::Wait)),
+            Unreached::Busy
+        );
+        assert_eq!(
+            Unreached::of(&PoolError::Timeout(TimeoutType::Create)),
+            Unreached::TimedOut
+        );
+        assert_eq!(Unreached::of(&PoolError::Closed), Unreached::Other);
+    }
+
+    /// An address on this machine where every connection is handed to `answer`.
+    async fn served_by<F, Answered>(answer: F) -> String
+    where
+        F: Fn(tokio::net::TcpStream) -> Answered + Send + 'static,
+        Answered: Future<Output = ()> + Send + 'static,
+    {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                tokio::spawn(answer(socket));
+            }
+        });
+        format!("host=127.0.0.1 port={port} user=saffui dbname=saffui")
+    }
+
+    async fn refusal_from(address: &str, mode: Option<&str>) -> PoolError {
+        let bounds = Bounds {
+            connect: Duration::from_millis(300),
+            ..Bounds::default()
+        };
+        Database::new(address, mode, None, bounds)
+            .unwrap()
+            .pool()
+            .unwrap()
+            .get()
+            .await
+            .expect_err("a connection was handed out")
+    }
+
+    #[tokio::test]
+    async fn a_port_nobody_listens_on_is_unreachable() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let refused = refusal_from(&format!("host=127.0.0.1 port={port} user=saffui"), None).await;
+        assert_eq!(Unreached::of(&refused), Unreached::Unreachable);
+    }
+
+    #[tokio::test]
+    async fn a_server_that_never_answers_runs_out_the_time() {
+        let address = served_by(|socket| async move {
+            let _held = socket;
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        })
+        .await;
+        let refused = refusal_from(&address, None).await;
+        assert_eq!(Unreached::of(&refused), Unreached::TimedOut);
+    }
+
+    /// A server that does not speak TLS, asked for it: the handshake is what
+    /// failed, and the log line says why.
+    #[tokio::test]
+    async fn a_server_without_tls_fails_the_handshake() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let address = served_by(|mut socket| async move {
+            let mut request = [0u8; 8];
+            if socket.read_exact(&mut request).await.is_ok() {
+                let _ = socket.write_all(b"N").await;
+            }
+        })
+        .await;
+        let refused = refusal_from(&address, Some("require")).await;
+        assert_eq!(Unreached::of(&refused), Unreached::Tls);
+        let PoolError::Backend(failure) = &refused else {
+            panic!("{refused:?}");
+        };
+        let told = describe_connection_failure(failure);
+        assert!(told.contains("server does not support TLS"), "{told}");
+    }
+
+    /// A server that reads the startup and answers with a refusal, as one
+    /// turning away a password does.
+    #[tokio::test]
+    async fn a_server_that_turns_the_role_away_refuses() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let address = served_by(|mut socket| async move {
+            let mut length = [0u8; 4];
+            if socket.read_exact(&mut length).await.is_err() {
+                return;
+            }
+            let mut startup = vec![0u8; u32::from_be_bytes(length) as usize - 4];
+            if socket.read_exact(&mut startup).await.is_err() {
+                return;
+            }
+            let mut fields = Vec::new();
+            for (kind, value) in [
+                (b'S', "FATAL"),
+                (b'V', "FATAL"),
+                (b'C', "28P01"),
+                (b'M', "password authentication failed for user \"saffui\""),
+            ] {
+                fields.push(kind);
+                fields.extend_from_slice(value.as_bytes());
+                fields.push(0);
+            }
+            fields.push(0);
+            let mut refusal = vec![b'E'];
+            refusal.extend_from_slice(&(fields.len() as u32 + 4).to_be_bytes());
+            refusal.extend_from_slice(&fields);
+            let _ = socket.write_all(&refusal).await;
+        })
+        .await;
+        let refused = refusal_from(&address, None).await;
+        assert_eq!(Unreached::of(&refused), Unreached::Refused);
+        let PoolError::Backend(failure) = &refused else {
+            panic!("{refused:?}");
+        };
+        let told = describe_connection_failure(failure);
+        assert!(told.contains("password authentication failed"), "{told}");
+    }
+
     fn test_address() -> String {
         std::env::var("SAFFUI_TEST_PG")
             .unwrap_or_else(|_| panic!("these tests need a database: set SAFFUI_TEST_PG"))
+    }
+
+    #[tokio::test]
+    #[ignore = "needs a database (SAFFUI_TEST_PG)"]
+    async fn a_role_the_server_does_not_hold_is_refused() {
+        let mut config: Config = test_address().parse().unwrap();
+        config.user("saffui_no_such_role").password("nothing");
+        let refused = Pool::builder(Manager::new(config, tokio_postgres::NoTls))
+            .runtime(Runtime::Tokio1)
+            .build()
+            .unwrap()
+            .get()
+            .await
+            .expect_err("a role nobody created signed in");
+        assert_eq!(Unreached::of(&refused), Unreached::Refused);
     }
 
     /// A full pool refuses inside its wait instead of holding the request for
@@ -399,13 +620,14 @@ mod tests {
         let asked = std::time::Instant::now();
         let refused = tokio::time::timeout(Duration::from_secs(5), pool.get())
             .await
-            .expect("the pool waited past its bound");
-        assert!(refused.is_err(), "a full pool handed out a connection");
+            .expect("the pool waited past its bound")
+            .expect_err("a full pool handed out a connection");
         assert!(
             asked.elapsed() < Duration::from_secs(2),
             "{:?}",
             asked.elapsed()
         );
+        assert_eq!(Unreached::of(&refused), Unreached::Busy);
     }
 
     /// A transaction left open on a pooled connection is ended by the server,
@@ -464,5 +686,36 @@ mod tests {
             .unwrap()
             .get(0);
         assert!(encrypted, "the server saw a session in the clear");
+    }
+
+    /// Another authority's bundle: the handshake is refused, and the log line
+    /// names the check that refused it rather than only the handshake.
+    #[tokio::test]
+    #[ignore = "needs a TLS-enabled server (SAFFUI_TEST_PG_TLS)"]
+    async fn a_certificate_from_another_authority_fails_the_handshake() {
+        let address = std::env::var("SAFFUI_TEST_PG_TLS")
+            .unwrap_or_else(|_| panic!("set SAFFUI_TEST_PG_TLS"));
+        let certs = std::path::PathBuf::from(
+            std::env::var("SAFFUI_TEST_PG_TLS_CERTS")
+                .unwrap_or_else(|_| panic!("set SAFFUI_TEST_PG_TLS_CERTS")),
+        );
+        let refused = Database::new(
+            &address,
+            Some("verify-full"),
+            certs.join("other.crt").to_str(),
+            Bounds::default(),
+        )
+        .unwrap()
+        .pool()
+        .unwrap()
+        .get()
+        .await
+        .expect_err("a server signed by another authority was trusted");
+        assert_eq!(Unreached::of(&refused), Unreached::Tls);
+        let PoolError::Backend(failure) = &refused else {
+            panic!("{refused:?}");
+        };
+        let told = describe_connection_failure(failure);
+        assert!(told.contains("certificate verify failed"), "{told}");
     }
 }

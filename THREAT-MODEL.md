@@ -177,7 +177,7 @@ realm, against settings placed for the life of one transaction, and 99 tables
 carry row level security forced, which is what makes it apply to the table's
 owner as well. Ninety five of those policies name both keys in their read rule;
 the rest name the tenant alone, as the table of realms does, because a realm is
-not divided by itself (`crates/store/src/tenancy.rs:12`,
+not divided by itself (`crates/store/src/tenancy.rs:14`,
 `crates/store/migrations/V002__users_and_clients.sql:147`,
 `crates/store/migrations/V001__tenancy.sql:114`).
 
@@ -189,18 +189,18 @@ most like success (`crates/store/migrations/V001__tenancy.sql:141`).
 The link to it carries every query and every answer, sessions and personal
 data alike. Every connection the process opens is built from one policy, the
 served pool, the migrations and the notification listener alike
-(`crates/pgcore/src/database.rs:85`): `verify-full` checks the server's
+(`crates/pgcore/src/database.rs:87`): `verify-full` checks the server's
 certificate against a named bundle and the host it was dialled by
 (`crates/pgcore/src/tls.rs:101`), and a database that is not on this machine is
 refused at startup until a mode is stated, because the driver's own default
-falls back to the clear without a word (`crates/pgcore/src/database.rs:111`).
+falls back to the clear without a word (`crates/pgcore/src/database.rs:113`).
 A full pool refuses after a bounded wait instead of holding requests for ever
-(`:142`), and a pooled transaction nobody talks to is ended by the server with
-its locks (`:156`).
+(`:144`), and a pooled transaction nobody talks to is ended by the server with
+its locks (`:158`).
 
 A realm pinned to a region is refused on a node that does not serve it, before
 the transaction opens, so nothing is read on the way to finding out
-(`crates/store/src/tenancy.rs:218`).
+(`crates/store/src/tenancy.rs:229`).
 
 ### TB-5, nodes and scheduled work
 
@@ -273,7 +273,7 @@ answers it, or the word that says nothing does.
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-TEN-1 | A query that forgets its filter reading another realm | TA-3 | Policies on two keys, forced, on 99 tables (`crates/store/src/tenancy.rs:12`) |
+| T-TEN-1 | A query that forgets its filter reading another realm | TA-3 | Policies on two keys, forced, on 99 tables (`crates/store/src/tenancy.rs:14`) |
 | T-TEN-2 | Connecting as a role that bypasses the rules | TA-7 | Not defensible inside the product: A.DATABASE, with the role's attributes rewritten on every migration run (`crates/store/migrations/V001__tenancy.sql:141`) |
 | T-TEN-3 | Learning which realms neighbour yours | TA-3 | The tenant level chain the application may append to and may not read (`crates/store/migrations/V094__tenant_chain.sql:13`) |
 
@@ -289,8 +289,8 @@ answers it, or the word that says nothing does.
 
 | Id | Threat | Agent | What answers it |
 |---|---|---|---|
-| T-DB-1 | Queries and answers read or rewritten between a node and the database | TA-6 | `verify-full` on every connection the process opens (`crates/pgcore/src/database.rs:85`); `require` encrypts without judging the certificate, and the operator's guide says so |
-| T-DB-2 | A deployment running in the clear without anyone having chosen it | TA-6 | A database off this machine with no stated mode refuses to start, and an address and a setting that disagree about encrypting refuse too (`crates/pgcore/src/database.rs:111`, `:103`) |
+| T-DB-1 | Queries and answers read or rewritten between a node and the database | TA-6 | `verify-full` on every connection the process opens (`crates/pgcore/src/database.rs:87`); `require` encrypts without judging the certificate, and the operator's guide says so |
+| T-DB-2 | A deployment running in the clear without anyone having chosen it | TA-6 | A database off this machine with no stated mode refuses to start, and an address and a setting that disagree about encrypting refuse too (`crates/pgcore/src/database.rs:113`, `:105`) |
 | T-DB-3 | The application role's password read on its way to the server or out of its statement log | TA-6 | Sent as a SCRAM verifier and never as itself (`crates/pgcore/src/password.rs:5`) |
 
 ### Nodes and scheduled work, TB-5

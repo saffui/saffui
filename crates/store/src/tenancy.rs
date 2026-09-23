@@ -338,12 +338,17 @@ impl UnitOfWork {
     }
 
     /// Make everything written visible together, and give the connection back.
+    ///
+    /// COMMIT on a transaction a failed statement aborted rolls back without an
+    /// error, so a probe rides in the same round trip: refused, nothing was written.
     pub async fn commit(mut self) -> StoreResult<()> {
         let connection = self.connection.take().expect("a unit of work ends once");
-        connection
-            .batch_execute("COMMIT")
-            .await
-            .map_err(|_| StoreError::Backend)
+        let (probed, committed) = tokio::join!(
+            connection.batch_execute("SELECT 1"),
+            connection.batch_execute("COMMIT"),
+        );
+        committed.map_err(|_| StoreError::Backend)?;
+        probed.map_err(|_| StoreError::Backend)
     }
 
     /// Discard the work and wait for the discarding to have happened.

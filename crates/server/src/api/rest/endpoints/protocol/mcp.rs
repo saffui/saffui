@@ -21,7 +21,7 @@ use store::error::StoreError;
 use store::keyring;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
+use outbound::Sealing;
 
 /// The protocol revision this door speaks.
 const PROTOCOL: &str = "2025-06-18";

@@ -6,9 +6,9 @@ use services::oidc::revocation::{self, Unrevokable};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::caller;
 use crate::api::rest::endpoints::protocol::dto::{Denied, answer_unavailable, uncached};
+use outbound::Sealing;
 
 #[derive(Debug, Deserialize)]
 pub struct Asked {

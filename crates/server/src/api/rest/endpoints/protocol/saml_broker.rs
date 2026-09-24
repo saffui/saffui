@@ -10,12 +10,12 @@ use services::federation::saml_brokering::{
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::protocol::answering::posted_page;
 use crate::api::rest::endpoints::protocol::binding;
 use crate::api::rest::endpoints::protocol::broker::{admit_arrival, answer_admitted, link_arrival};
 use crate::api::rest::endpoints::protocol::login::told;
+use outbound::Sealing;
 
 /// The realm as one SAML provider's service provider, for that provider to import.
 ///

@@ -395,7 +395,7 @@ fn federated_doors(rows: &[models::entities::authz::IdentityProviderModel]) -> S
 async fn read_live_login(
     request: &actix_web::HttpRequest,
     tenancy: &store::tenancy::Tenancy,
-    sealing: &crate::api::config::Sealing,
+    sealing: &outbound::Sealing,
     realm: &str,
 ) -> LiveLogin {
     let Some(binding) = super::binding::read(request, super::binding::AUTH_SESSION) else {
@@ -722,7 +722,7 @@ pub async fn magic_link(
     request: actix_web::HttpRequest,
     realm: web::Path<String>,
     tenancy: web::Data<store::tenancy::Tenancy>,
-    sealing: web::Data<crate::api::config::Sealing>,
+    sealing: web::Data<outbound::Sealing>,
     asked: web::Query<Followed>,
 ) -> HttpResponse {
     let asked = asked.into_inner();

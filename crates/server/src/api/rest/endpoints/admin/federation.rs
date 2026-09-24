@@ -6,9 +6,9 @@ use models::entities::brokering::UserFederationMutationModel;
 use services::admin::federation::{self, Unwritable};
 use store::tenancy::Tenancy;
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 pub async fn list(
     admin: web::ReqData<Admin>,
@@ -121,7 +121,7 @@ pub async fn import(
     let settings = services::federation::ldap::LdapSettings::parse(&held)
         .map_err(|why| ApiError::with_detail(ErrorCode::ValidationError, why.to_string()))?;
     let directory =
-        crate::federation::directory_for(&transaction, &sealing, &context, &held, settings).await;
+        outbound::directory::directory_for(&transaction, &sealing, &context, &held, settings).await;
     let told = services::federation::shadows::import_everyone(
         &transaction,
         sealing.provider.as_ref(),

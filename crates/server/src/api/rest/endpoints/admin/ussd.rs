@@ -6,9 +6,9 @@ use services::admin::ussd::Unsettable;
 use store::keyring;
 use store::tenancy::{Tenancy, TenantContext};
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// What a caller may see: that a gateway is named. Never the secret, and
 /// there is no shape of this endpoint that answers with one.

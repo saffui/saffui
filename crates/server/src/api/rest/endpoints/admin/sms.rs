@@ -6,9 +6,9 @@ use services::admin::sms::Unsettable;
 use store::keyring;
 use store::tenancy::{Tenancy, TenantContext};
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// What a caller may see. The token is not in it, and there is no shape of
 /// this endpoint that answers with one.

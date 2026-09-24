@@ -8,8 +8,8 @@ use services::account::signup::{self, Unregistrable};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::dto::uncached;
+use outbound::Sealing;
 
 #[derive(Debug, Deserialize)]
 pub struct Asking {
@@ -97,7 +97,7 @@ pub async fn register(
                 return told(StatusCode::INTERNAL_SERVER_ERROR);
             }
             if let Some(outgoing) = registered.sending {
-                super::mail::deliver(&sealing, &tenancy, &context, *outgoing).await;
+                outbound::delivery::deliver(&sealing, &tenancy, &context, *outgoing).await;
             }
             uncached(&mut HttpResponseBuilder::new(StatusCode::CREATED))
                 .json(serde_json::json!({ "status": "registered", "verify": registered.verify }))

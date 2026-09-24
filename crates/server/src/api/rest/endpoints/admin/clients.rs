@@ -10,10 +10,10 @@ use services::admin::clients::{
 use store::query::list_query::{ListQuery, SortDirection};
 use store::tenancy::{Tenancy, UnitOfWork};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::{ClientBrief, ClientSpec};
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 pub async fn list(
     admin: web::ReqData<Admin>,

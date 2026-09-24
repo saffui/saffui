@@ -7,12 +7,12 @@ use services::account::{self, Changing, OwnFactor, Unchanged, Unremoved};
 use store::tenancy::Tenancy;
 
 use super::dto::PasswordChange;
-use crate::api::config::Sealing;
 use crate::api::provenance::read_provenance;
 use crate::api::rest::endpoints::account::describe_own_factors;
 use crate::api::rest::endpoints::within;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// The caller's own password, replaced on proof of the current one.
 ///

@@ -342,7 +342,7 @@ const REPLAY_CEILING: i64 = 500;
 pub async fn redeliver_to_connector(
     admin: web::ReqData<Admin>,
     tenancy: web::Data<Tenancy>,
-    sealing: web::Data<crate::api::config::Sealing>,
+    sealing: web::Data<outbound::Sealing>,
     egress: web::Data<config::serving::Egress>,
     path: web::Path<(String, String)>,
     body: web::Json<RedeliveryAsk>,
@@ -381,7 +381,7 @@ pub async fn redeliver_to_connector(
         })));
     }
 
-    let secret = crate::federation::opened_webhook_secret(&transaction, &sealing, &context, &row)
+    let secret = outbound::pushes::opened_webhook_secret(&transaction, &sealing, &context, &row)
         .await
         .ok_or_else(|| {
             ApiError::with_detail(
@@ -408,7 +408,7 @@ pub async fn redeliver_to_connector(
             failed += 1;
             continue;
         };
-        if crate::federation::push_json(
+        if outbound::pushes::push_json(
             &hook,
             &signature,
             &event.kind,

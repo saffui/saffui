@@ -2291,6 +2291,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "outbound"
+version = "0.1.0"
+dependencies = [
+ "auth",
+ "chrono",
+ "config",
+ "crypto",
+ "data-encoding",
+ "ldap3",
+ "models",
+ "serde_json",
+ "services",
+ "store",
+ "tokio",
+ "tracing",
+ "ureq",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3010,6 +3029,7 @@ dependencies = [
  "ldapfront",
  "models",
  "openssl",
+ "outbound",
  "pgcore",
  "secrecy",
  "serde",
@@ -3195,6 +3215,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "outbound",
  "pgcore",
  "prometheus",
  "prost",
@@ -3219,7 +3240,6 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "unic-langid",
- "ureq",
  "webauthn-rs",
 ]
 

@@ -109,7 +109,7 @@ const OUTBOX: i32 = 0x4F55_5442;
 
 pub fn deliver_outbox_events(
     tenancy: store::tenancy::Tenancy,
-    sealing: std::sync::Arc<crate::api::config::Sealing>,
+    sealing: std::sync::Arc<outbound::Sealing>,
     origin: config::serving::PublicOrigin,
     every: Option<std::time::Duration>,
 ) -> Option<tokio::task::JoinHandle<()>> {
@@ -133,7 +133,7 @@ pub fn deliver_outbox_events(
 
 pub async fn deliver_every_realm(
     tenancy: &store::tenancy::Tenancy,
-    sealing: &crate::api::config::Sealing,
+    sealing: &outbound::Sealing,
     origin: &config::serving::PublicOrigin,
     backoff_seconds: i64,
 ) {
@@ -149,7 +149,7 @@ pub async fn deliver_every_realm(
 
 pub async fn deliver_every_realm_with_egress(
     tenancy: &store::tenancy::Tenancy,
-    sealing: &crate::api::config::Sealing,
+    sealing: &outbound::Sealing,
     origin: &config::serving::PublicOrigin,
     backoff_seconds: i64,
     egress: config::serving::Egress,
@@ -219,7 +219,7 @@ const FEDERATE: i32 = 0x4C44_4150_u32 as i32;
 /// deployment says so before this server does.
 pub fn sync_federated_shadows(
     tenancy: Tenancy,
-    sealing: std::sync::Arc<crate::api::config::Sealing>,
+    sealing: std::sync::Arc<outbound::Sealing>,
     every: Option<Duration>,
 ) -> Option<JoinHandle<()>> {
     let Some(every) = every else {
@@ -249,10 +249,7 @@ pub fn sync_federated_shadows(
 /// One visit to every federating realm, or nothing when they could not be
 /// listed. A realm whose directory is unreachable is left exactly as it
 /// stands: an outage is not a departure.
-pub async fn sync_every_realm(
-    tenancy: &Tenancy,
-    sealing: &crate::api::config::Sealing,
-) -> Option<Synced> {
+pub async fn sync_every_realm(tenancy: &Tenancy, sealing: &outbound::Sealing) -> Option<Synced> {
     let realms = tenancy.every_realm().await.ok()?;
 
     let mut total = Synced::default();
@@ -292,7 +289,7 @@ pub async fn sync_every_realm(
                 );
                 continue;
             };
-            let directory = crate::federation::directory_for(
+            let directory = outbound::directory::directory_for(
                 &transaction,
                 sealing,
                 &realm,

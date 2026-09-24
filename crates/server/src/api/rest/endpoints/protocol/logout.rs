@@ -11,10 +11,10 @@ use store::error::StoreError;
 use store::keyring;
 use store::tenancy::{RealmNamed, Tenancy};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::protocol::backchannel;
 use crate::api::rest::endpoints::protocol::dto::uncached;
 use crate::api::rest::endpoints::protocol::{binding, page};
+use outbound::Sealing;
 
 /// What the request carried, by either verb. §2 allows both: a browser
 /// arriving by link uses one, a form posting a hint too long for a URL the

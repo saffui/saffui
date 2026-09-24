@@ -6,9 +6,9 @@ use serde::Deserialize;
 use services::admin::agents::{self, Refused};
 use store::tenancy::Tenancy;
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// What a registration asks: the root out loud, nothing implied. No secret
 /// rides in or out of this door; an agent's platform is its credential,

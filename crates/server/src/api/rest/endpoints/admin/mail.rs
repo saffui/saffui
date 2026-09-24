@@ -6,9 +6,9 @@ use services::admin::mail::Unsettable;
 use store::keyring;
 use store::tenancy::{Tenancy, TenantContext};
 
-use crate::api::config::Sealing;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
+use outbound::Sealing;
 
 /// What a caller may see. The password is not in it, and there is no shape of
 /// this endpoint that answers with one.
@@ -52,7 +52,7 @@ pub struct TestAsked {
 pub async fn send_test(
     admin: web::ReqData<Admin>,
     tenancy: web::Data<Tenancy>,
-    sealing: web::Data<crate::api::config::Sealing>,
+    sealing: web::Data<outbound::Sealing>,
     path: web::Path<String>,
     body: web::Json<TestAsked>,
 ) -> Result<HttpResponse, ApiError> {

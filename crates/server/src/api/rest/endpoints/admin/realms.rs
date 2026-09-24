@@ -9,11 +9,11 @@ use services::admin::realms::{self, RealmBirth, Unrealmed, Witness};
 use services::realm::provisioning;
 use store::tenancy::{Tenancy, TenantContext};
 
-use crate::api::config::Sealing;
 use crate::api::rest::endpoints::admin::dto::RealmBrief;
 use crate::error::refuse_unopened_work;
 use crate::middleware::admin_guard::Admin;
 use crate::middleware::admin_policy::AdminPolicy;
+use outbound::Sealing;
 
 /// The realms this caller administers, which is the one that minted its
 /// token and no other.

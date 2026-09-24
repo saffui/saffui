@@ -3,7 +3,6 @@ use std::time::Duration;
 use auth::messaging::{Deliver, Message, Text, Texter, Undelivered};
 use config::serving::Egress;
 
-use crate::api::rest::endpoints::protocol::hosted::{may_dial, outward_agent};
 use lettre::message::Mailbox;
 use lettre::message::{MultiPart, SinglePart};
 use lettre::transport::smtp::authentication::Credentials;
@@ -11,6 +10,7 @@ use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Message as Letter, SmtpTransport, Transport};
 use models::entities::mail::MailSettings;
 use models::entities::sms::SmsSettings;
+use outbound::egress::{may_dial, outward_agent};
 use secrecy::ExposeSecret;
 
 /// How long a server gets to take a message.

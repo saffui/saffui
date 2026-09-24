@@ -1,7 +1,10 @@
+use std::borrow::Cow;
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use deadpool_postgres::{Object, Pool, Timeouts};
+use tokio_postgres::error::SqlState;
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{Error, Row};
 
@@ -72,6 +75,57 @@ pub enum RealmNamed<'a> {
     BySession(&'a str),
 }
 
+/// Whose connections the pool holds: the database's own, or a pooler's that
+/// lends each transaction whichever server connection is free.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Behind {
+    Nothing,
+    /// A pooler in transaction mode. It refuses at startup the bound on an
+    /// idle transaction, so the bound rides inside each transaction; and it
+    /// has to keep prepared statements itself, as PgBouncer does from 1.21
+    /// with `max_prepared_statements` set, because the driver prepares and
+    /// keeps them, its own type lookups included.
+    Pooler {
+        idle_in_transaction: Duration,
+    },
+}
+
+/// Whether the pooler has been named as keeping no prepared statement yet:
+/// once per process is enough for the operator, every failure after it is
+/// the same one.
+static TOLD_STATEMENTS_NOT_KEPT: AtomicBool = AtomicBool::new(false);
+
+/// Whether a refusal says the pooler keeps no prepared statement: one this
+/// connection prepared is missing, or one another process prepared is there.
+fn says_statements_are_not_kept(code: Option<&SqlState>) -> bool {
+    code.is_some_and(|code| {
+        *code == SqlState::INVALID_SQL_STATEMENT_NAME || *code == SqlState::DUPLICATE_PSTATEMENT
+    })
+}
+
+/// Say, once and in the operator's terms, why statements behind the pooler
+/// keep failing.
+fn notice_statements_not_kept(behind: Behind, failure: &Error) {
+    if matches!(behind, Behind::Pooler { .. })
+        && says_statements_are_not_kept(failure.code())
+        && !TOLD_STATEMENTS_NOT_KEPT.swap(true, Ordering::Relaxed)
+    {
+        tracing::error!(
+            "the pooler in front of the database keeps no prepared statement: \
+             PgBouncer needs 1.21 or later with max_prepared_statements above zero"
+        );
+    }
+}
+
+/// The role the served connections log in as, as the database sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServedRole {
+    pub name: String,
+    /// A superuser, or a role holding BYPASSRLS: it reads every realm's rows
+    /// whatever the policies say.
+    pub above_the_rules: bool,
+}
+
 /// What a readiness probe learned about the database.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reached {
@@ -94,6 +148,7 @@ pub enum Reached {
 pub struct Tenancy {
     pool: Pool,
     node_region: Option<String>,
+    behind: Behind,
 }
 
 impl fmt::Debug for Tenancy {
@@ -101,6 +156,7 @@ impl fmt::Debug for Tenancy {
         formatter
             .debug_struct("Tenancy")
             .field("node_region", &self.node_region)
+            .field("behind", &self.behind)
             .finish_non_exhaustive()
     }
 }
@@ -112,6 +168,7 @@ impl Tenancy {
         Self {
             pool,
             node_region: None,
+            behind: Behind::Nothing,
         }
     }
 
@@ -121,7 +178,18 @@ impl Tenancy {
         Self {
             pool,
             node_region: Some(region).filter(|region| !region.trim().is_empty()),
+            behind: Behind::Nothing,
         }
+    }
+
+    /// The pool reaches the database through a pooler in transaction mode,
+    /// and `idle_in_transaction` is set inside each transaction rather than
+    /// at startup.
+    pub fn behind_a_pooler(mut self, idle_in_transaction: Duration) -> Self {
+        self.behind = Behind::Pooler {
+            idle_in_transaction,
+        };
+        self
     }
 
     pub fn node_region(&self) -> Option<&str> {
@@ -144,7 +212,13 @@ impl Tenancy {
     /// Open a unit of work that says who it is for.
     pub async fn begin(&self, context: &TenantContext) -> StoreResult<UnitOfWork> {
         self.check_residency(context)?;
-        UnitOfWork::open(self.connection().await?, context.clone(), Isolation::Moving).await
+        UnitOfWork::open(
+            self.connection().await?,
+            context.clone(),
+            Isolation::Moving,
+            self.behind,
+        )
+        .await
     }
 
     /// The same, on a snapshot that does not move.
@@ -165,7 +239,13 @@ impl Tenancy {
     /// minutes. Declared read only so the server knows it will never write.
     pub async fn begin_snapshot(&self, context: &TenantContext) -> StoreResult<UnitOfWork> {
         self.check_residency(context)?;
-        UnitOfWork::open(self.connection().await?, context.clone(), Isolation::Frozen).await
+        UnitOfWork::open(
+            self.connection().await?,
+            context.clone(),
+            Isolation::Frozen,
+            self.behind,
+        )
+        .await
     }
 
     /// Resolve a realm and open a unit of work in it, on one connection.
@@ -173,7 +253,7 @@ impl Tenancy {
         let connection = self.connection().await?;
         let context = resolve::on(&connection, realm).await?;
         self.check_residency(&context)?;
-        UnitOfWork::open(connection, context, Isolation::Moving).await
+        UnitOfWork::open(connection, context, Isolation::Moving, self.behind).await
     }
 
     /// Whose realm this is, answered before anything is scoped.
@@ -185,6 +265,26 @@ impl Tenancy {
     /// carrying its residency so a node still refuses one pinned elsewhere.
     pub async fn every_realm(&self) -> StoreResult<Vec<TenantContext>> {
         resolve::every_realm(&self.connection().await?).await
+    }
+
+    /// Who the served connections log in as, and whether that role answers to
+    /// row security. Through a pooler it is whichever role the pooler logs in
+    /// with, which only the database can say.
+    pub async fn read_served_role(&self) -> StoreResult<ServedRole> {
+        let row = self
+            .connection()
+            .await?
+            .query_typed_one(
+                "SELECT current_user::text, rolsuper OR rolbypassrls \
+                 FROM pg_roles WHERE rolname = current_user",
+                &[],
+            )
+            .await
+            .map_err(|_| StoreError::Backend)?;
+        Ok(ServedRole {
+            name: row.get(0),
+            above_the_rules: row.get(1),
+        })
     }
 
     /// Whether the database can be reached and answers inside `within`, and
@@ -256,6 +356,7 @@ pub struct UnitOfWork {
     /// Empty once committed or rolled back, so dropping has nothing to undo.
     connection: Option<Object>,
     context: TenantContext,
+    behind: Behind,
 }
 
 impl UnitOfWork {
@@ -263,29 +364,44 @@ impl UnitOfWork {
         connection: Object,
         context: TenantContext,
         isolation: Isolation,
+        behind: Behind,
     ) -> StoreResult<Self> {
         // Built before anything is sent, so a failure from here on drops a unit
         // that rolls itself back.
         let unit = Self {
             connection: Some(connection),
             context,
+            behind,
         };
         let held = unit.held();
-        let scope = held
-            .prepare_cached(SCOPE)
-            .await
-            .map_err(|_| StoreError::Backend)?;
+        let scope = held.prepare_cached(SCOPE).await.map_err(|why| {
+            notice_statements_not_kept(behind, &why);
+            StoreError::Backend
+        })?;
         let begin = match isolation {
             Isolation::Moving => "BEGIN",
             Isolation::Frozen => "BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY",
+        };
+        // The bound a pooler refused at startup, riding in the same request.
+        let begin: Cow<'_, str> = match behind {
+            Behind::Nothing => Cow::Borrowed(begin),
+            Behind::Pooler {
+                idle_in_transaction,
+            } => Cow::Owned(format!(
+                "{begin}; SET LOCAL idle_in_transaction_session_timeout = {}",
+                idle_in_transaction.as_millis()
+            )),
         };
         let settings: [&(dyn ToSql + Sync); 2] = [&unit.context.tenant, &unit.context.realm_id];
         // Pipelined: the driver sends requests in the order they are first
         // polled, so both leave together and the unit opens in one round trip.
         let (begun, scoped) =
-            tokio::join!(held.batch_execute(begin), held.execute(&scope, &settings),);
+            tokio::join!(held.batch_execute(&begin), held.execute(&scope, &settings),);
         begun.map_err(|_| StoreError::Backend)?;
-        scoped.map_err(|_| StoreError::Backend)?;
+        scoped.map_err(|why| {
+            notice_statements_not_kept(behind, &why);
+            StoreError::Backend
+        })?;
         Ok(unit)
     }
 
@@ -301,7 +417,10 @@ impl UnitOfWork {
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Vec<Row>, Error> {
         let prepared = self.prepared(statement).await?;
-        self.held().query(&prepared, params).await
+        self.held()
+            .query(&prepared, params)
+            .await
+            .inspect_err(|why| notice_statements_not_kept(self.behind, why))
     }
 
     pub async fn query_one(
@@ -310,7 +429,10 @@ impl UnitOfWork {
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Row, Error> {
         let prepared = self.prepared(statement).await?;
-        self.held().query_one(&prepared, params).await
+        self.held()
+            .query_one(&prepared, params)
+            .await
+            .inspect_err(|why| notice_statements_not_kept(self.behind, why))
     }
 
     pub async fn query_opt(
@@ -319,7 +441,10 @@ impl UnitOfWork {
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<Option<Row>, Error> {
         let prepared = self.prepared(statement).await?;
-        self.held().query_opt(&prepared, params).await
+        self.held()
+            .query_opt(&prepared, params)
+            .await
+            .inspect_err(|why| notice_statements_not_kept(self.behind, why))
     }
 
     pub async fn execute(
@@ -328,7 +453,10 @@ impl UnitOfWork {
         params: &[&(dyn ToSql + Sync)],
     ) -> Result<u64, Error> {
         let prepared = self.prepared(statement).await?;
-        self.held().execute(&prepared, params).await
+        self.held()
+            .execute(&prepared, params)
+            .await
+            .inspect_err(|why| notice_statements_not_kept(self.behind, why))
     }
 
     /// Statements that bind nothing, sent together as written: a `SET LOCAL`,
@@ -369,7 +497,10 @@ impl UnitOfWork {
 
     async fn prepared(&self, statement: &str) -> Result<tokio_postgres::Statement, Error> {
         let held = self.held();
-        let prepared = held.prepare_cached(statement).await?;
+        let prepared = held
+            .prepare_cached(statement)
+            .await
+            .inspect_err(|why| notice_statements_not_kept(self.behind, why))?;
         if held.statement_cache.size() > PREPARED_CEILING {
             held.statement_cache.clear();
         }
@@ -630,6 +761,22 @@ mod tests {
             runtime_dependencies(manifest),
             vec!["serde", "libc", "tokio-postgres"]
         );
+    }
+
+    /// Only the two refusals a pooler keeping no prepared statement causes are
+    /// read as that.
+    #[test]
+    fn a_pooler_keeping_no_statement_is_told_apart() {
+        assert!(says_statements_are_not_kept(Some(
+            &SqlState::INVALID_SQL_STATEMENT_NAME
+        )));
+        assert!(says_statements_are_not_kept(Some(
+            &SqlState::DUPLICATE_PSTATEMENT
+        )));
+        assert!(!says_statements_are_not_kept(Some(
+            &SqlState::UNIQUE_VIOLATION
+        )));
+        assert!(!says_statements_are_not_kept(None));
     }
 
     /// The refusal names both sides, since an operator seeing it has to know

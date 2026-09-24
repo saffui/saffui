@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use chrono::Utc;
+use services::federation::shadows::{Synced, sync_shadows};
 use services::realm::housekeeping::{self, Swept};
 use store::tenancy::Tenancy;
 use tokio::task::JoinHandle;
@@ -251,10 +252,10 @@ pub fn sync_federated_shadows(
 pub async fn sync_every_realm(
     tenancy: &Tenancy,
     sealing: &crate::api::config::Sealing,
-) -> Option<crate::federation::Synced> {
+) -> Option<Synced> {
     let realms = tenancy.every_realm().await.ok()?;
 
-    let mut total = crate::federation::Synced::default();
+    let mut total = Synced::default();
     for realm in realms {
         let Ok(transaction) = tenancy.begin(&realm).await else {
             continue;
@@ -270,14 +271,13 @@ pub async fn sync_every_realm(
             continue;
         }
 
-        let Ok(rows) = store::providers::federation::brokering::federations(&transaction).await
-        else {
+        let Ok(rows) = services::federation::ldap::read_directories(&transaction).await else {
             continue;
         };
         // All-or-nothing per realm still: every directory's pass rides one
         // transaction, so one unreachable directory rolls the realm back
         // whole and an outage never decides who may log in.
-        let mut landed = crate::federation::Synced::default();
+        let mut landed = Synced::default();
         let mut whole = true;
         for (place, federation) in rows.iter().enumerate() {
             if federation.enabled == Some(false) {
@@ -300,16 +300,9 @@ pub async fn sync_every_realm(
                 settings,
             )
             .await;
-            match crate::federation::sync_shadows(
-                &transaction,
-                &federation.alias,
-                place == 0,
-                &directory,
-            )
-            .await
-            {
+            match sync_shadows(&transaction, &federation.alias, place == 0, &directory).await {
                 Ok(synced) => landed.add(synced),
-                Err(()) => {
+                Err(_) => {
                     tracing::warn!(
                         tenant = realm.tenant,
                         realm = realm.realm_id,

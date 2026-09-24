@@ -505,10 +505,9 @@ async fn the_sync_walks_the_shadows_and_an_outage_walks_away() {
             .expect("the shadow stands");
         assert!(!shadow.enabled);
         assert!(
-            shadow
-                .attributes
-                .as_ref()
-                .is_some_and(|held| held.contains_key(server::federation::SUSPENDED_BY_SYNC)),
+            shadow.attributes.as_ref().is_some_and(
+                |held| held.contains_key(services::federation::shadows::SUSPENDED_BY_SYNC)
+            ),
             "the suspension carries no marker: {:?}",
             shadow.attributes
         );

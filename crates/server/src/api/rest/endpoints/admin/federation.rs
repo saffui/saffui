@@ -122,7 +122,7 @@ pub async fn import(
         .map_err(|why| ApiError::with_detail(ErrorCode::ValidationError, why.to_string()))?;
     let directory =
         crate::federation::directory_for(&transaction, &sealing, &context, &held, settings).await;
-    let told = crate::federation::import_everyone(
+    let told = services::federation::shadows::import_everyone(
         &transaction,
         sealing.provider.as_ref(),
         &context,
@@ -131,11 +131,11 @@ pub async fn import(
     )
     .await
     .map_err(|why| match why {
-        crate::federation::Unimported::Unwalked => ApiError::with_detail(
+        services::federation::shadows::Unimported::Unwalked => ApiError::with_detail(
             ErrorCode::ValidationError,
             "the directory could not be walked".to_owned(),
         ),
-        crate::federation::Unimported::Unwritten => internal(),
+        services::federation::shadows::Unimported::Unwritten => internal(),
     })?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({

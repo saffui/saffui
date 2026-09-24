@@ -122,6 +122,15 @@ fn escaped(value: &str) -> String {
     out
 }
 
+/// The realm's directory rows, first-asked first, whatever their state.
+pub async fn read_directories(
+    transaction: &UnitOfWork,
+) -> Result<Vec<UserFederationModel>, crate::realm::Unreadable> {
+    brokering::federations(transaction)
+        .await
+        .map_err(|_| crate::realm::Unreadable)
+}
+
 /// The realm's directories a login asks, first-asked first, each with how it
 /// is spoken to. A switched-off row is left out, and a row that stopped reading
 /// is skipped with a line for the operator: the plane refuses to write one, so

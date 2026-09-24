@@ -229,7 +229,7 @@ pub async fn converge(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let (walked, told) = crate::lifecycle::converge_realm(&transaction)
+    let (walked, told) = services::governance::lifecycle::converge_realm(&transaction)
         .await
         .map_err(|_| internal())?;
     transaction.commit().await.map_err(|_| internal())?;

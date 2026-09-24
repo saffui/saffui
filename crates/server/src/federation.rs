@@ -583,7 +583,7 @@ pub async fn deliver_outbox(
         // The lifecycle converges before anything leaves the house: the
         // provisioned apps should see the person as the rules already made
         // them.
-        if crate::lifecycle::converge_event(transaction, &event)
+        if services::governance::lifecycle::converge_event(transaction, &event)
             .await
             .is_err()
         {

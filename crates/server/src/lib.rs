@@ -6,7 +6,6 @@ pub mod federation;
 #[cfg(feature = "mesh")]
 pub mod grpc;
 pub mod jobs;
-pub mod lifecycle;
 pub mod mesh;
 pub mod messaging;
 pub mod metrics;

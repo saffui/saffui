@@ -1,6 +1,13 @@
 use models::entities::attributes::AttributeValue;
 use models::entities::user::UserModel;
-use store::providers::governance::birthright::BirthrightRule;
+use store::providers::directory::{roles, users};
+use store::providers::events::outbox::{self, OutboxEvent};
+use store::providers::governance::birthright::{self, BirthrightRule};
+use store::providers::protocol::sessions;
+use store::query::list_query::ListQuery;
+use store::tenancy::UnitOfWork;
+
+use crate::governance::sod::{Toxic, weigh_grant};
 
 /// The roles this person should hold under the rules: the union of every
 /// enabled rule whose predicate matches. Pure, and the whole of joiner,
@@ -113,6 +120,151 @@ pub fn diff(desired: &[(String, String)], governed: &[(String, String)]) -> Diff
             .map(|(role, _)| role.clone())
             .collect(),
     }
+}
+
+pub struct Converged {
+    pub granted: u64,
+    pub revoked: u64,
+    pub sessions_closed: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the person's governed grants could not be read or written")]
+pub struct Unconverged;
+
+/// Make this person's governed grants match what the rules say they are
+/// due. The ledger is the boundary: a role the engine did not grant is a
+/// role the engine will not touch.
+pub async fn converge_person(
+    transaction: &UnitOfWork,
+    person: &UserModel,
+) -> Result<Converged, Unconverged> {
+    let rules = birthright::rules(transaction)
+        .await
+        .map_err(|_| Unconverged)?;
+    let due = desired(&rules, person);
+    let governed = birthright::governed_of(transaction, &person.user_id)
+        .await
+        .map_err(|_| Unconverged)?;
+    let change = diff(&due, &governed);
+
+    let mut told = Converged {
+        granted: 0,
+        revoked: 0,
+        sessions_closed: 0,
+    };
+    for (role, rule) in &change.grant {
+        // A rule-born role that would put the person in breach of a separation
+        // is withheld and kept off the ledger, so the next convergence weighs
+        // it again instead of taking it as granted.
+        match weigh_grant(transaction, &person.user_id, role).await {
+            Ok(()) => {}
+            Err(Toxic::Refused(said)) => {
+                tracing::warn!(user = %person.user_id, %role, %rule, %said, "a lifecycle grant was withheld: separation of duties");
+                continue;
+            }
+            Err(Toxic::Backend) => return Err(Unconverged),
+        }
+        roles::grant_to_user(transaction, &person.user_id, role)
+            .await
+            .map_err(|_| Unconverged)?;
+        birthright::record_grant(transaction, &person.user_id, role, rule)
+            .await
+            .map_err(|_| Unconverged)?;
+        told.granted += 1;
+    }
+    for role in &change.revoke {
+        roles::revoke_from_user(transaction, &person.user_id, role)
+            .await
+            .map_err(|_| Unconverged)?;
+        birthright::erase_grant(transaction, &person.user_id, role)
+            .await
+            .map_err(|_| Unconverged)?;
+        told.revoked += 1;
+    }
+    // Time-bound access ends by the clock, whatever wrote it: a grant past
+    // its own end is taken back the way a rule's verdict is.
+    for role in birthright::expired_grants(transaction, &person.user_id, chrono::Utc::now())
+        .await
+        .map_err(|_| Unconverged)?
+    {
+        roles::revoke_from_user(transaction, &person.user_id, &role)
+            .await
+            .map_err(|_| Unconverged)?;
+        birthright::erase_grant(transaction, &person.user_id, &role)
+            .await
+            .map_err(|_| Unconverged)?;
+        told.revoked += 1;
+    }
+    // The leaver's other half: due-nothing because switched off means no
+    // standing session should keep working either.
+    if !person.enabled && (told.revoked > 0 || !governed.is_empty()) {
+        told.sessions_closed = sessions::end_all_of_user(transaction, &person.user_id)
+            .await
+            .map_err(|_| Unconverged)?;
+    }
+    Ok(told)
+}
+
+/// One outbox happening, folded into a convergence. Deletion needs no work
+/// of ours: the ledger and the roles go with the person by cascade.
+pub async fn converge_event(
+    transaction: &UnitOfWork,
+    event: &OutboxEvent,
+) -> Result<(), Unconverged> {
+    if !event.kind.starts_with("user.") || event.kind == outbox::USER_DELETED {
+        return Ok(());
+    }
+    let Some(person) = users::load(transaction, &event.user_id)
+        .await
+        .map_err(|_| Unconverged)?
+    else {
+        return Ok(());
+    };
+    let told = converge_person(transaction, &person).await?;
+    if told.granted + told.revoked > 0 {
+        tracing::info!(
+            user = person.user_id,
+            granted = told.granted,
+            revoked = told.revoked,
+            sessions_closed = told.sessions_closed,
+            "a person was converged"
+        );
+    }
+    Ok(())
+}
+
+/// Every person of the realm, for the first fill and for drift repair.
+pub async fn converge_realm(transaction: &UnitOfWork) -> Result<(u64, Converged), Unconverged> {
+    let mut walked = 0;
+    let mut totals = Converged {
+        granted: 0,
+        revoked: 0,
+        sessions_closed: 0,
+    };
+    let mut first: i64 = 0;
+    loop {
+        let query = ListQuery::new(models::paging::Window {
+            first,
+            max: 200,
+            clamped: false,
+        });
+        let page = users::list(transaction, &query, false)
+            .await
+            .map_err(|_| Unconverged)?;
+        if page.items.is_empty() {
+            break;
+        }
+        first += page.items.len() as i64;
+        for person in &page.items {
+            walked += 1;
+            let told = converge_person(transaction, person).await?;
+            totals.granted += told.granted;
+            totals.revoked += told.revoked;
+            totals.sessions_closed += told.sessions_closed;
+        }
+    }
+    Ok((walked, totals))
 }
 
 #[cfg(test)]

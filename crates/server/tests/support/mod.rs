@@ -227,6 +227,34 @@ async fn one_run_of_this_binary_at_a_time() -> tokio_postgres::Client {
 /// clones from it while it is being replaced, and both processes carry the
 /// same code, so either's build serves the other. What differs per process,
 /// the signing keys, is deliberately not in here.
+/// The application role's way to this plane's database: straight there, or
+/// through the pooler in transaction mode `SAFFUI_TEST_PG_POOLER` names, which
+/// is how a lane proves every door crosses one.
+fn served_config() -> Config {
+    let mut app = owner_config();
+    app.user("saffui_app").password("saffui_app_test");
+    let Ok(pooler) = std::env::var("SAFFUI_TEST_PG_POOLER") else {
+        return app;
+    };
+    let mut through: Config = pooler
+        .parse()
+        .expect("SAFFUI_TEST_PG_POOLER is a connection string");
+    through
+        .dbname(app.get_dbname().expect("a database name"))
+        .user("saffui_app")
+        .password("saffui_app_test");
+    through
+}
+
+/// The served tenancy over `pool`, told when the pool crosses a pooler.
+fn served_tenancy(pool: Pool) -> Tenancy {
+    let tenancy = Tenancy::unpinned(pool);
+    if std::env::var("SAFFUI_TEST_PG_POOLER").is_ok() {
+        return tenancy.behind_a_pooler(Duration::from_secs(30));
+    }
+    tenancy
+}
+
 async fn the_template_stands() {
     static BUILT: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
     BUILT
@@ -1719,11 +1747,9 @@ impl Plane {
             .await
             .expect("the world clones");
 
-        let mut app = owner_config();
-        app.user("saffui_app").password("saffui_app_test");
         // Carried by the served pool too: without it no phase of taking a
         // connection can be bounded, and the readiness probe bounds each.
-        let pool = Pool::builder(Manager::new(app, NoTls))
+        let pool = Pool::builder(Manager::new(served_config(), NoTls))
             .max_size(4)
             .runtime(Runtime::Tokio1)
             .build()
@@ -1733,7 +1759,7 @@ impl Plane {
             pool: pool.clone(),
             _turn: turn,
             _across_processes: across_processes,
-            tenancy: Tenancy::unpinned(pool.clone()),
+            tenancy: served_tenancy(pool.clone()),
             key: shared_signing_key(),
             second: shared_second_key(),
             encrypting: shared_encryption_key(),
@@ -1760,15 +1786,13 @@ impl Plane {
     /// `wait` for a free one, for a test that has to fill it.
     #[allow(dead_code, reason = "only the suites that fill a pool ask")]
     pub fn build_tenancy_of(&self, size: usize, wait: Duration) -> Tenancy {
-        let mut app = owner_config();
-        app.user("saffui_app").password("saffui_app_test");
-        let pool = Pool::builder(Manager::new(app, NoTls))
+        let pool = Pool::builder(Manager::new(served_config(), NoTls))
             .max_size(size)
             .wait_timeout(Some(wait))
             .runtime(Runtime::Tokio1)
             .build()
             .expect("a narrow pool");
-        Tenancy::unpinned(pool)
+        served_tenancy(pool)
     }
 
     /// A second realm of the same tenant, for work that has to visit more than

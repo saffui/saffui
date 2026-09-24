@@ -402,6 +402,106 @@ jobs:
             exit 1
           fi
 
+  # The served pool through a pooler in transaction mode, the way a cloud
+  # deployment often reaches its database: PgBouncer with its defaults, lending
+  # each transaction the least recently used server connection. Every door the
+  # plane has crosses it here, so a door that leans on a session fails here
+  # first.
+  pooler:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SAFFUI_TEST_PG: "host=localhost port=5432 user=postgres password=saffui dbname=saffui_test"
+      SAFFUI_TEST_PG_POOLER: "host=localhost port=6432"
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: saffui
+          POSTGRES_DB: saffui_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v5.0.1
+      - uses: Swatinem/rust-cache@v2
+      - name: gssapi headers
+        run: |
+          sudo find /etc/apt/sources.list.d -type f ! -name 'ubuntu.sources' -delete
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libkrb5-dev
+
+      # Not a service: its configuration has to exist before it starts. On the
+      # host's network, so it reaches the service at the address the tests do.
+      - name: start PgBouncer in front of the server
+        run: |
+          mkdir -p "$RUNNER_TEMP/pgbouncer"
+          cat > "$RUNNER_TEMP/pgbouncer/pgbouncer.ini" <<'INI'
+          [databases]
+          * = host=127.0.0.1 port=5432
+
+          [pgbouncer]
+          listen_addr = 127.0.0.1
+          listen_port = 6432
+          auth_type = scram-sha-256
+          auth_file = /etc/pgbouncer/userlist.txt
+          pool_mode = transaction
+          server_round_robin = 1
+          default_pool_size = 4
+          max_client_conn = 400
+          INI
+          printf '"saffui_app" "saffui_app_test"\n"postgres" "saffui"\n' \
+            > "$RUNNER_TEMP/pgbouncer/userlist.txt"
+          docker run -d --name saffui-pgbouncer --network host \
+            -v "$RUNNER_TEMP/pgbouncer:/etc/pgbouncer" edoburu/pgbouncer:v1.25.2-p0
+          ready=""
+          for _ in $(seq 1 30); do
+            if PGPASSWORD=saffui psql "host=127.0.0.1 port=6432 user=postgres dbname=saffui_test" \
+              -tAc 'SELECT 1' >/dev/null 2>&1; then
+              ready=yes
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$ready" ]; then
+            echo "PgBouncer did not come up:" >&2
+            docker logs saffui-pgbouncer >&2 || true
+            exit 1
+          fi
+
+      # Counted, as everywhere else: a pooler test that found no pooler returns
+      # early and reads as a pass.
+      - name: test the store behind the pooler
+        run: |
+          set -o pipefail
+          cargo test -p store --test pooler -- --include-ignored --test-threads=1 --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/pooler.log"
+          if grep -q "there is no pooler to cross" "$RUNNER_TEMP/pooler.log"; then
+            echo "the pooler tests found no pooler; the job proved nothing." >&2
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: console packages
+        run: pnpm install --frozen-lockfile
+
+      - name: test both planes through the pooler
+        run: |
+          set -o pipefail
+          cargo test -p server --features mesh -- --include-ignored --test-threads=1 2>&1 \
+            | tee "$RUNNER_TEMP/server.log"
+          if [ "$(grep -cE "^test result: ok\. [1-9][0-9]* passed" "$RUNNER_TEMP/server.log")" -lt 5 ]; then
+            echo "the end to end plane tests did not run; the job proved nothing." >&2
+            exit 1
+          fi
+
   deny:
     runs-on: ubuntu-latest
     timeout-minutes: 10

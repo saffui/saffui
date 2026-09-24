@@ -35,25 +35,16 @@ pub async fn send_due_notices(
             return;
         }
     };
-    let Ok(Some(realm)) = store::providers::realms::load(&transaction, &context.realm_id).await
-    else {
+    let Ok(Some(realm)) = services::realm::named(&transaction, &context.realm_id).await else {
         return;
     };
-    let ring = store::keyring::load(
+    let settings = services::messaging::delivery::read_mail_settings(
         &transaction,
         &sealing.envelope,
         &context.tenant,
         &context.realm_id,
     )
-    .await
-    .ok();
-    let settings = match ring {
-        Some(ring) => store::providers::realms::mail::load(&transaction, &ring, &sealing.envelope)
-            .await
-            .ok()
-            .flatten(),
-        None => None,
-    };
+    .await;
     let composed = compose_due_notices(
         &transaction,
         &realm,

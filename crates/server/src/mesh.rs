@@ -60,8 +60,7 @@ pub async fn weigh(tenancy: &Tenancy, origin: &PublicOrigin, asked: Asked<'_>) -
         return Weighed::Unauthenticated;
     };
 
-    let Ok(routes) = store::providers::authorization::authz_routes::routes(&transaction).await
-    else {
+    let Ok(routes) = services::authorization::routes::read_routes(&transaction).await else {
         return Weighed::Unavailable;
     };
     let Some(route) = services::authorization::routes::matched(&routes, asked.method, asked.path)

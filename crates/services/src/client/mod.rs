@@ -193,6 +193,17 @@ pub async fn read_client(
         .map_err(|_| crate::realm::Unreadable)
 }
 
+/// Whether some client of this realm registered this origin for browser
+/// calls, the wildcard counting as a registration like any other.
+pub async fn admits_origin(
+    transaction: &UnitOfWork,
+    origin: &str,
+) -> Result<bool, crate::realm::Unreadable> {
+    clients::origin_admitted(transaction, origin)
+        .await
+        .map_err(|_| crate::realm::Unreadable)
+}
+
 /// Where this client publishes its keys, when they are due to be read again.
 ///
 /// Nothing when the client hands its keys over rather than publishing them,

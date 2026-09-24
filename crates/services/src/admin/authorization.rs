@@ -7,14 +7,14 @@ use models::entities::authz::{
 };
 use models::entities::user::UserModel;
 use store::error::StoreError;
-use store::providers::authorization::rebac::{self, StoredSchema, Subject, Tuple};
+use store::providers::authorization::rebac::{self, StoredSchema, Tuple};
 use store::providers::authorization::{authz_policies, authz_routes, authz_surface};
 use store::providers::clients;
 use store::providers::directory::{organizations, users};
 use store::tenancy::UnitOfWork;
 
 pub use store::providers::authorization::authz_routes::AuthzRoute;
-pub use store::providers::authorization::rebac::TupleFilter;
+pub use store::providers::authorization::rebac::{Subject, TupleFilter};
 
 /// Why the authorization surface could not be written.
 ///

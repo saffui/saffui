@@ -153,9 +153,9 @@ matters: the transport is judged before the token. A request the proxy vouches
 for as https passes without a read, and anything else pays one realm read. Where
 a realm asks for https from outside only, the address judged is the one the
 deployment believes, and the private ranges are spelled out rather than inferred
-(`crates/server/src/middleware/transport.rs:36`, `:94`). A rule the database
+(`crates/server/src/middleware/transport.rs:36`, `:93`). A rule the database
 fails to hand over, for want of a connection or on the way to the row, is
-answered 503 rather than taken as leave to serve in the clear (`:58`, `:65`).
+answered 503 rather than taken as leave to serve in the clear (`:58`, `:64`).
 
 ### TB-3, keys and secrets
 
@@ -274,7 +274,7 @@ answers it, or the word that says nothing does.
 | T-ADM-1 | A token from another deployment, or for another realm | TA-3 | The issuer must be one this deployment mints, and the realm in the path is compared against the token's without ever being looked up, so an existing realm and a missing one are refused alike (`crates/server/src/middleware/admin_guard.rs:184`) |
 | T-ADM-2 | Probing which capabilities exist by the shape of a refusal | TA-3 | Audience, party, scope, declared, held, in that order, and every refusal renders as one answer (`crates/server/src/middleware/admin_policy.rs:93`, `crates/server/src/error.rs:12`) |
 | T-ADM-3 | A toxic combination of roles assembled in one pair of hands | TA-3 | Everyone arriving is weighed against the realm's rules, under a lock (`crates/auth/src/sod.rs:81`) |
-| T-ADM-4 | Asking for an entitlement and granting it to yourself | TA-3 | The one who asked cannot decide (`crates/services/src/admin/requests.rs:135`, `:182`) |
+| T-ADM-4 | Asking for an entitlement and granting it to yourself | TA-3 | The one who asked cannot decide (`crates/services/src/admin/requests.rs:136`, `:183`) |
 | T-ADM-5 | The record of what an administrator did, rewritten | TA-3, TA-7 | Only the database function writes entries, the chain is serialised, and the plane serves verification and anchors (`crates/store/migrations/V011__audit_chain.sql:130`) |
 | T-ADM-6 | Refused attempts leaving no trace | TA-3 | **Nothing.** A knock the guard turns away is not journalled; it is a log line only (`crates/server/src/middleware/admin_audit.rs:92`) |
 

@@ -26,7 +26,7 @@ async fn admitted(request: &ServiceRequest, origin: &str) -> bool {
     let Ok(transaction) = tenancy.begin_in(RealmNamed::ByName(realm)).await else {
         return false;
     };
-    store::providers::clients::origin_admitted(&transaction, origin)
+    services::client::admits_origin(&transaction, origin)
         .await
         .unwrap_or(false)
 }

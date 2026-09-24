@@ -3,7 +3,8 @@ use crypto::provider::{CryptoProvider, HashAlg};
 use serde_json::{Value, json};
 use store::providers::directory::{roles, users};
 use store::providers::governance::birthright;
-use store::providers::governance::recert::{self, Campaign, Item};
+pub use store::providers::governance::recert::Campaign;
+use store::providers::governance::recert::{self, Item};
 use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Eq, PartialEq, thiserror::Error)]

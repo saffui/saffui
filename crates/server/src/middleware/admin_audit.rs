@@ -144,7 +144,7 @@ async fn reads_are_journalled(tenancy: &Tenancy, request: &actix_web::HttpReques
         return false;
     };
     matches!(
-        store::providers::realms::load(&transaction, &realm).await,
+        services::realm::named(&transaction, &realm).await,
         Ok(Some(held)) if held.admin_events_enabled == Some(true)
     )
 }

@@ -23,7 +23,7 @@ fn refused(why: Unaskable) -> ApiError {
     }
 }
 
-fn shaped(asked: &store::providers::governance::requests::AccessRequest) -> serde_json::Value {
+fn shaped(asked: &requests::AccessRequest) -> serde_json::Value {
     json!({
         "request_id": asked.request_id,
         "user_id": asked.user_id,

@@ -51,7 +51,7 @@ pub async fn change_own_password(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let realm = store::providers::realms::load(&transaction, &realm_id)
+    let realm = services::realm::named(&transaction, &realm_id)
         .await
         .map_err(|_| internal())?
         .ok_or_else(internal)?;

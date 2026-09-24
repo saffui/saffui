@@ -4,6 +4,7 @@ use commons::error::ErrorCode;
 use commons::http::ApiError;
 use serde::Deserialize;
 use serde_json::json;
+use services::admin::authorization::Subject;
 use services::authorization::rebac::{Unpublishable, Unwritable};
 use store::tenancy::Tenancy;
 
@@ -86,8 +87,8 @@ pub struct EdgeBody {
     pub subject_relation: String,
 }
 
-fn subject_of(edge: &EdgeBody) -> store::providers::authorization::rebac::Subject {
-    store::providers::authorization::rebac::Subject {
+fn subject_of(edge: &EdgeBody) -> Subject {
+    Subject {
         subject_type: edge.subject_type.clone(),
         subject_id: edge.subject_id.clone(),
         subject_relation: edge.subject_relation.clone(),

@@ -23,3 +23,4 @@ pub mod response_type;
 pub mod revocation;
 pub mod sign_in;
 pub mod userinfo;
+pub mod ussd;

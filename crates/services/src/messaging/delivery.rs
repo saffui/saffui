@@ -3,9 +3,10 @@
 
 use crypto::envelope::Envelope;
 use models::entities::mail::MailSettings;
+use models::entities::sms::SmsSettings;
 use models::messaging::Delivery;
 use store::providers::events::deliveries;
-use store::providers::realms::mail;
+use store::providers::realms::{mail, sms};
 use store::tenancy::UnitOfWork;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -28,6 +29,20 @@ pub async fn read_mail_settings(
         .await
         .ok()
         .flatten()
+}
+
+/// How the realm sends texts, opened with its own key, on the same terms as
+/// its mail settings.
+pub async fn read_sms_settings(
+    transaction: &UnitOfWork,
+    envelope: &Envelope,
+    tenant: &str,
+    realm_id: &str,
+) -> Option<SmsSettings> {
+    let ring = store::keyring::load(transaction, envelope, tenant, realm_id)
+        .await
+        .ok()?;
+    sms::load(transaction, &ring, envelope).await.ok().flatten()
 }
 
 /// Keep the receipt of one attempt to send, delivered or not.

@@ -5,7 +5,7 @@ use config::serving::{Egress, PublicOrigin};
 use models::entities::backchannel::{BackchannelRequestModel, BackchannelState};
 use serde::Deserialize;
 use serde_json::json;
-use services::oidc::ciba::{self, Hint};
+use services::oidc::ciba;
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy, UnitOfWork};
 
@@ -180,7 +180,7 @@ pub async fn open(
     // The realm's pacing where it set one; like the device flow, the row
     // keeps its birth interval, so a later retune never reshapes a request
     // already in someone's hand.
-    let realm_row = store::providers::realms::of_context(&transaction)
+    let realm_row = services::realm::read_current_realm(&transaction)
         .await
         .ok()
         .flatten();
@@ -206,105 +206,9 @@ pub async fn open(
 
     // Resolve the person the hint names. An unknown hint opens a ghost, a
     // request nobody can ever approve, so which names exist stays unsaid.
-    let named = match &asked.hint {
-        Hint::Named(hint) => {
-            let found = if hint.contains('@') {
-                store::providers::directory::users::load_by_email(&transaction, hint).await
-            } else {
-                store::providers::directory::users::load_by_name(&transaction, hint).await
-            };
-            match found {
-                Ok(person) => person.filter(|held| held.enabled),
-                Err(_) => {
-                    return told(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        "the realm could not be read",
-                    );
-                }
-            }
-        }
-        // The client vouched for the hint by signing it; a hint it cannot
-        // sign is a protocol fault, and a verified hint naming nobody is the
-        // same ghost an unknown login_hint opens.
-        Hint::HintToken(token) => {
-            let Some(algorithm) = ciba::signing_alg_of(&presented) else {
-                return told(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request",
-                    "this client did not register request signing",
-                );
-            };
-            let hinted = match ciba::read_hint_token(&presented, algorithm, token) {
-                Ok(hinted) => hinted,
-                Err(refused) => {
-                    return told(StatusCode::BAD_REQUEST, refused.error, refused.detail);
-                }
-            };
-            let found = match &hinted {
-                ciba::Hinted::Subject(subject) => {
-                    store::providers::directory::users::load(&transaction, subject).await
-                }
-                ciba::Hinted::Email(address) => {
-                    store::providers::directory::users::load_by_email(&transaction, address).await
-                }
-            };
-            match found {
-                Ok(person) => person.filter(|held| held.enabled),
-                Err(_) => {
-                    return told(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        "the realm could not be read",
-                    );
-                }
-            }
-        }
-        Hint::IdToken(token) => {
-            let Ok(keys) = services::realm::published_keys(&transaction).await else {
-                return told(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request",
-                    "the realm could not be read",
-                );
-            };
-            match services::token::verify_presented(
-                &transaction,
-                &keys,
-                token,
-                services::token::Binding::Reported,
-                now,
-            )
-            .await
-            {
-                Ok(verified) => {
-                    let account = services::oidc::pairwise::account_for(
-                        &transaction,
-                        Some(&presented),
-                        &verified.subject,
-                    )
-                    .await
-                    .ok();
-                    match account {
-                        Some(account) => {
-                            store::providers::directory::users::load(&transaction, &account)
-                                .await
-                                .ok()
-                                .flatten()
-                                .filter(|held| held.enabled)
-                        }
-                        None => None,
-                    }
-                }
-                Err(_) => {
-                    return told(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_request",
-                        "id_token_hint does not verify",
-                    );
-                }
-            }
-        }
+    let named = match ciba::read_hinted_person(&transaction, &presented, &asked.hint, now).await {
+        Ok(named) => named,
+        Err(refused) => return told(StatusCode::BAD_REQUEST, refused.error, refused.detail),
     };
 
     // The person's own code, when they set one: a miss opens a ghost, so
@@ -389,7 +293,7 @@ pub async fn open(
     )
     .await;
 
-    let opened = store::providers::protocol::backchannel::open(
+    let opened = ciba::open_request(
         &transaction,
         sealing.provider.digest(),
         &auth_req_id,
@@ -457,39 +361,8 @@ async fn bearer_person(
         .and_then(|held| held.to_str().ok())
         .and_then(|held| held.strip_prefix("Bearer "))
         .ok_or_else(refused)?;
-    let keys = services::realm::published_keys(transaction)
+    ciba::read_person_behind_bearer(transaction, bearer, now)
         .await
-        .map_err(|_| refused())?;
-    let verified = services::token::verify_presented(
-        transaction,
-        &keys,
-        bearer,
-        services::token::Binding::Reported,
-        now,
-    )
-    .await
-    .map_err(|_| refused())?;
-    if verified.subject.is_empty() {
-        return Err(refused());
-    }
-    let presenting = match verified
-        .claims
-        .get("azp")
-        .and_then(serde_json::Value::as_str)
-    {
-        Some(azp) => store::providers::clients::load(transaction, azp)
-            .await
-            .map_err(|_| refused())?,
-        None => None,
-    };
-    let account =
-        services::oidc::pairwise::account_for(transaction, presenting.as_ref(), &verified.subject)
-            .await
-            .map_err(|_| refused())?;
-    store::providers::directory::users::load(transaction, &account)
-        .await
-        .map_err(|_| refused())?
-        .filter(|held| held.enabled)
         .ok_or_else(refused)
 }
 
@@ -515,16 +388,8 @@ async fn asking_person(
     };
     let session_id =
         super::binding::read(request, super::binding::SSO_SESSION).ok_or_else(refused)?;
-    let login = store::providers::protocol::sessions::load(transaction, &session_id)
+    ciba::read_signed_in_person(transaction, &session_id, now)
         .await
-        .map_err(|_| refused())?
-        .filter(|held| held.state == models::sessions::records::UserSessionState::LoggedIn)
-        .filter(|held| held.expiration.is_none_or(|until| now.timestamp() < until))
-        .ok_or_else(refused)?;
-    store::providers::directory::users::load(transaction, &login.user_id)
-        .await
-        .map_err(|_| refused())?
-        .filter(|held| held.enabled)
         .ok_or_else(refused)
 }
 
@@ -562,10 +427,7 @@ pub async fn pending(
         Ok(person) => person,
         Err(response) => return response,
     };
-    let Ok(standing) =
-        store::providers::protocol::backchannel::pending_for(&transaction, &person.user_id, now)
-            .await
-    else {
+    let Ok(standing) = ciba::read_pending_requests(&transaction, &person.user_id, now).await else {
         return told(
             StatusCode::BAD_REQUEST,
             "invalid_request",
@@ -653,14 +515,7 @@ pub async fn decide(
         Ok(person) => person,
         Err(response) => return response,
     };
-    let landed = store::providers::protocol::backchannel::decide(
-        &transaction,
-        &digest,
-        &person.user_id,
-        approved,
-        now,
-    )
-    .await;
+    let landed = ciba::decide_request(&transaction, &digest, &person.user_id, approved, now).await;
     match landed {
         Ok(Some(decided)) => {
             // Opened before the commit so a sealed id is never left behind
@@ -707,7 +562,7 @@ pub(crate) async fn ping_of(
     }
     let bearer = decided.notification_token.clone()?;
     let sealed = decided.sealed_request.as_deref()?;
-    let client = store::providers::clients::load(transaction, &decided.client_id)
+    let client = services::client::read_client(transaction, &decided.client_id)
         .await
         .ok()
         .flatten()?;
@@ -826,18 +681,13 @@ async fn doorbell_text(
     if phone.is_empty() || person.phone_number_verified != Some(true) || sealing.texter.is_none() {
         return None;
     }
-    let ring = store::keyring::load(
+    let settings = services::messaging::delivery::read_sms_settings(
         transaction,
         &sealing.envelope,
         &context.tenant,
         &context.realm_id,
     )
-    .await
-    .ok()?;
-    let settings = store::providers::realms::sms::load(transaction, &ring, &sealing.envelope)
-        .await
-        .ok()
-        .flatten()?;
+    .await?;
     match auth::messaging::text_brakes(transaction, realm, &person.user_id, phone, now).await {
         Ok(None) => {}
         Ok(Some(_)) | Err(()) => return None,

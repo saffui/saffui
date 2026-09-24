@@ -3,7 +3,7 @@ use actix_web::{HttpResponse, web};
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use serde::Deserialize;
-use store::providers::governance::birthright::{self, BirthrightRule};
+use services::admin::iga::{self, Unruled};
 use store::tenancy::Tenancy;
 
 use crate::error::refuse_unopened_work;
@@ -11,6 +11,15 @@ use crate::middleware::admin_guard::Admin;
 
 fn internal() -> ApiError {
     ApiError::new(ErrorCode::InternalError)
+}
+
+fn refuse(why: Unruled) -> ApiError {
+    match why {
+        Unruled::Invalid(said) => ApiError::with_detail(ErrorCode::ValidationError, said),
+        Unruled::NoSuchUser => ApiError::new(ErrorCode::UserNotFound),
+        Unruled::NoSuchRule => ApiError::new(ErrorCode::RoleNotFound),
+        Unruled::Backend => internal(),
+    }
 }
 
 pub async fn rules(
@@ -23,9 +32,7 @@ pub async fn rules(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = birthright::rules(&transaction)
-        .await
-        .map_err(|_| internal())?;
+    let held = iga::birthright_rules(&transaction).await.map_err(refuse)?;
     Ok(HttpResponse::Ok().json(
         held.iter()
             .map(|rule| {
@@ -64,88 +71,24 @@ pub async fn put_rule(
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, rule_id) = path.into_inner();
     let asked = body.into_inner();
-    let when_expr = asked
-        .when_expr
-        .as_deref()
-        .map(str::trim)
-        .filter(|held| !held.is_empty())
-        .map(str::to_owned);
-    if let Some(expr) = when_expr.as_deref()
-        && !services::governance::lifecycle::expr_parses(expr)
-    {
-        return Err(ApiError::with_detail(
-            ErrorCode::ValidationError,
-            "when_expr is name=value or name!=value terms joined by &&".to_owned(),
-        ));
-    }
-    let when_attribute = match (
-        when_expr.is_some(),
-        asked
-            .when_attribute
-            .as_deref()
-            .map(str::trim)
-            .filter(|held| !held.is_empty()),
-    ) {
-        // The expression is the whole condition; the pair beside it is
-        // decoration nothing reads, so it is refused rather than kept.
-        (true, Some(_)) => {
-            return Err(ApiError::with_detail(
-                ErrorCode::ValidationError,
-                "when_expr is the whole condition: drop when_attribute".to_owned(),
-            ));
-        }
-        (true, None) => "*",
-        (false, Some(named)) => named,
-        (false, None) => {
-            return Err(ApiError::with_detail(
-                ErrorCode::ValidationError,
-                "when_attribute names an attribute, or * for everybody".to_owned(),
-            ));
-        }
-    };
-    if when_expr.is_none() && when_attribute != "*" && asked.when_value.trim().is_empty() {
-        return Err(ApiError::with_detail(
-            ErrorCode::ValidationError,
-            "when_value names what the attribute must equal".to_owned(),
-        ));
-    }
-    let Some(roles) = asked
-        .roles
-        .filter(|held| !held.is_empty() && held.iter().all(|role| !role.trim().is_empty()))
-    else {
-        return Err(ApiError::with_detail(
-            ErrorCode::ValidationError,
-            "roles names what the rule grants".to_owned(),
-        ));
-    };
+    let rule = iga::shaped_birthright_rule(
+        &rule_id,
+        asked.when_attribute.as_deref(),
+        &asked.when_value,
+        asked.when_expr.as_deref(),
+        asked.roles,
+        asked.priority,
+        asked.enabled,
+    )
+    .map_err(refuse)?;
 
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    for role in &roles {
-        let held = store::providers::directory::roles::load(&transaction, role)
-            .await
-            .map_err(|_| internal())?;
-        if held.is_none() {
-            return Err(ApiError::with_detail(
-                ErrorCode::ValidationError,
-                format!("no role answers to {role}"),
-            ));
-        }
-    }
-    let rule = BirthrightRule {
-        rule_id: rule_id.clone(),
-        when_attribute: when_attribute.to_owned(),
-        when_value: asked.when_value.trim().to_owned(),
-        when_expr,
-        roles,
-        priority: asked.priority,
-        enabled: asked.enabled.unwrap_or(true),
-    };
-    birthright::keep_rule(&transaction, &rule, admin.context.principal.id())
+    iga::keep_birthright_rule(&transaction, &rule, admin.context.principal.id())
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({ "rule_id": rule_id })))
 }
@@ -193,31 +136,7 @@ pub async fn put_grant(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let user_id = &services::admin::users::identified(&transaction, user_id)
-        .await
-        .map(|held| held.user_id)
-        .map_err(|_| refused("no user answers to that name"))?;
-    if store::providers::directory::roles::load(&transaction, role_id)
-        .await
-        .map_err(|_| internal())?
-        .is_none()
-    {
-        return Err(refused("no role answers to that name"));
-    }
-    store::providers::governance::sod::hold_person(&transaction, user_id)
-        .await
-        .map_err(|_| internal())?;
-    store::providers::directory::roles::grant_to_user(&transaction, user_id, role_id)
-        .await
-        .map_err(|_| internal())?;
-    match services::governance::sod::weigh(&transaction, user_id).await {
-        Ok(()) => {}
-        Err(services::governance::sod::Toxic::Refused(said)) => {
-            return Err(ApiError::with_detail(ErrorCode::ValidationError, said));
-        }
-        Err(services::governance::sod::Toxic::Backend) => return Err(internal()),
-    }
-    birthright::record_timed_grant(
+    let user_id = iga::grant_until(
         &transaction,
         user_id,
         role_id,
@@ -225,7 +144,7 @@ pub async fn put_grant(
         expires_at,
     )
     .await
-    .map_err(|_| internal())?;
+    .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Created().json(serde_json::json!({
         "user_id": user_id,
@@ -246,9 +165,9 @@ pub async fn grants_of(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = super::users::named_user(&transaction, &user_id).await?;
-    let held = birthright::ledger_of(&transaction, &user_id)
+    let held = iga::ledger_of(&transaction, &user_id)
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse)?;
     Ok(HttpResponse::Ok().json(
         held.iter()
             .map(|(role, rule, ends)| {
@@ -274,12 +193,9 @@ pub async fn delete_grant(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = super::users::named_user(&transaction, &user_id).await?;
-    store::providers::directory::roles::revoke_from_user(&transaction, &user_id, &role_id)
+    iga::take_back_grant(&transaction, &user_id, &role_id)
         .await
-        .map_err(|_| internal())?;
-    birthright::erase_grant(&transaction, &user_id, &role_id)
-        .await
-        .map_err(|_| internal())?;
+        .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -294,12 +210,9 @@ pub async fn delete_rule(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let removed = birthright::drop_rule(&transaction, &rule_id)
+    iga::drop_birthright_rule(&transaction, &rule_id)
         .await
-        .map_err(|_| internal())?;
-    if !removed {
-        return Err(ApiError::new(ErrorCode::RoleNotFound));
-    }
+        .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -338,9 +251,7 @@ pub async fn sod_rules(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::governance::sod::rules(&transaction)
-        .await
-        .map_err(|_| internal())?;
+    let held = iga::sod_rules(&transaction).await.map_err(refuse)?;
     Ok(HttpResponse::Ok().json(
         held.iter()
             .map(|rule| {
@@ -371,55 +282,16 @@ pub async fn put_sod_rule(
 ) -> Result<HttpResponse, ApiError> {
     let (realm_id, rule_id) = path.into_inner();
     let asked = body.into_inner();
-    let refused =
-        |detail: &str| ApiError::with_detail(ErrorCode::ValidationError, detail.to_owned());
-
-    let roles: Vec<String> = asked
-        .roles
-        .unwrap_or_default()
-        .iter()
-        .map(|role| role.trim().to_owned())
-        .filter(|role| !role.is_empty())
-        .collect();
-    if roles.len() < 2 {
-        return Err(refused("a separation needs at least two roles to separate"));
-    }
-    if roles
-        .iter()
-        .enumerate()
-        .any(|(at, role)| roles[..at].contains(role))
-    {
-        return Err(refused("each role is named once"));
-    }
-    let min_conflicting = asked.min_conflicting.unwrap_or(roles.len() as i32);
-    if min_conflicting < 2 || min_conflicting as usize > roles.len() {
-        return Err(refused(
-            "min_conflicting is between 2 and the number of roles named",
-        ));
-    }
+    let rule = iga::shaped_sod_rule(&rule_id, asked.roles, asked.min_conflicting, asked.enabled)
+        .map_err(refuse)?;
 
     let transaction = tenancy
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    for role in &roles {
-        if store::providers::directory::roles::load(&transaction, role)
-            .await
-            .map_err(|_| internal())?
-            .is_none()
-        {
-            return Err(refused(&format!("no role answers to {role}")));
-        }
-    }
-    let rule = store::providers::governance::sod::SodRule {
-        rule_id: rule_id.clone(),
-        roles,
-        min_conflicting,
-        enabled: asked.enabled.unwrap_or(true),
-    };
-    store::providers::governance::sod::keep_rule(&transaction, &rule, admin.context.principal.id())
+    iga::keep_sod_rule(&transaction, &rule, admin.context.principal.id())
         .await
-        .map_err(|_| internal())?;
+        .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "rule_id": rule_id,
@@ -439,12 +311,9 @@ pub async fn delete_sod_rule(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let removed = store::providers::governance::sod::drop_rule(&transaction, &rule_id)
+    iga::drop_sod_rule(&transaction, &rule_id)
         .await
-        .map_err(|_| internal())?;
-    if !removed {
-        return Err(ApiError::new(ErrorCode::RoleNotFound));
-    }
+        .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }
@@ -463,57 +332,23 @@ pub async fn sod_violations(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let rules = store::providers::governance::sod::rules(&transaction)
+    let found = iga::standing_violations(&transaction, chrono::Utc::now())
         .await
-        .map_err(|_| internal())?;
-    let mut told = Vec::new();
-    if rules.iter().any(|rule| rule.enabled) {
-        let now = chrono::Utc::now();
-        let mut first: i64 = 0;
-        loop {
-            let query = store::query::list_query::ListQuery::new(models::paging::Window {
-                first,
-                max: 200,
-                clamped: false,
-            });
-            let page = store::providers::directory::users::list(&transaction, &query, false)
-                .await
-                .map_err(|_| internal())?;
-            if page.items.is_empty() {
-                break;
-            }
-            first += page.items.len() as i64;
-            for person in &page.items {
-                let effective: Vec<String> = store::providers::directory::roles::effective_roles(
-                    &transaction,
-                    &person.user_id,
-                )
-                .await
-                .map_err(|_| internal())?
-                .into_iter()
-                .map(|role| role.role_id)
-                .collect();
-                let reached = services::governance::sod::offences(&rules, &effective);
-                if reached.is_empty() {
-                    continue;
-                }
-                let standing =
-                    store::providers::governance::sod::exceptions_of(&transaction, &person.user_id)
-                        .await
-                        .map_err(|_| internal())?;
-                for offence in reached {
-                    told.push(serde_json::json!({
-                        "user_id": person.user_id,
-                        "user_name": person.user_name,
-                        "rule_id": offence.rule_id,
-                        "roles": offence.held,
-                        "excused": services::governance::sod::excused(&offence, &standing, now),
-                    }));
-                }
-            }
-        }
-    }
-    Ok(HttpResponse::Ok().json(told))
+        .map_err(refuse)?;
+    Ok(HttpResponse::Ok().json(
+        found
+            .iter()
+            .map(|violation| {
+                serde_json::json!({
+                    "user_id": violation.user_id,
+                    "user_name": violation.user_name,
+                    "rule_id": violation.rule_id,
+                    "roles": violation.roles,
+                    "excused": violation.excused,
+                })
+            })
+            .collect::<Vec<_>>(),
+    ))
 }
 
 pub async fn sod_exceptions(
@@ -526,9 +361,7 @@ pub async fn sod_exceptions(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let held = store::providers::governance::sod::exceptions(&transaction)
-        .await
-        .map_err(|_| internal())?;
+    let held = iga::sod_exceptions(&transaction).await.map_err(refuse)?;
     Ok(HttpResponse::Ok().json(
         held.iter()
             .map(|exception| {
@@ -583,44 +416,17 @@ pub async fn put_sod_exception(
         .begin(&within(&admin, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let rule = store::providers::governance::sod::rules(&transaction)
-        .await
-        .map_err(|_| internal())?
-        .into_iter()
-        .find(|rule| rule.rule_id == rule_id)
-        .ok_or_else(|| refused("no separation rule answers to that name"))?;
-    let user_id = super::users::named_user(&transaction, &user_id).await?;
-
-    let covered: Vec<String> = asked
-        .covered_roles
-        .unwrap_or_default()
-        .iter()
-        .map(|role| role.trim().to_owned())
-        .filter(|role| !role.is_empty())
-        .collect();
-    if covered.iter().any(|role| !rule.roles.contains(role)) {
-        return Err(refused("covered_roles only names roles the rule separates"));
-    }
-    if (covered.len() as i32) < rule.min_conflicting {
-        return Err(refused(
-            "covered_roles names a combination the rule would refuse: fewer roles than \
-             min_conflicting excuse nothing",
-        ));
-    }
-
-    store::providers::governance::sod::keep_exception(
+    let (user_id, covered) = iga::keep_sod_exception(
         &transaction,
-        &store::providers::governance::sod::SodException {
-            rule_id: rule_id.clone(),
-            user_id: user_id.clone(),
-            covered_roles: covered.clone(),
-            justification: justification.to_owned(),
-            granted_by: admin.context.principal.id().to_owned(),
-            valid_until,
-        },
+        &rule_id,
+        &user_id,
+        asked.covered_roles,
+        justification,
+        valid_until,
+        admin.context.principal.id(),
     )
     .await
-    .map_err(|_| internal())?;
+    .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "rule_id": rule_id,
@@ -641,13 +447,9 @@ pub async fn delete_sod_exception(
         .await
         .map_err(refuse_unopened_work)?;
     let user_id = super::users::named_user(&transaction, &user_id).await?;
-    let removed =
-        store::providers::governance::sod::drop_exception(&transaction, &rule_id, &user_id)
-            .await
-            .map_err(|_| internal())?;
-    if !removed {
-        return Err(ApiError::new(ErrorCode::RoleNotFound));
-    }
+    iga::drop_sod_exception(&transaction, &rule_id, &user_id)
+        .await
+        .map_err(refuse)?;
     transaction.commit().await.map_err(|_| internal())?;
     Ok(HttpResponse::NoContent().finish())
 }

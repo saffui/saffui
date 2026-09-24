@@ -187,7 +187,7 @@ test("a throttled sign-in is named apart from a locked one, and the password is 
   });
   await page.signIn();
 
-  assert.match(page.element("notice").textContent, /from your network/i);
+  assert.match(page.element("notice").textContent, /from this browser or network/i);
   assert.equal(page.element("notice").hidden, false);
   assert.equal(page.element("credentials").hidden, false, "there was nothing to try again with");
 

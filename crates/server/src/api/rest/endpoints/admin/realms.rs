@@ -536,11 +536,18 @@ pub async fn update(
         ));
     }
     // Bounds the table holds as well, said in words rather than as a write
-    // that fails: a threshold of nothing would turn every address away.
+    // that fails: a threshold of nothing would lock every person out, or turn
+    // every address away.
     if let Some(refusal) = asked
-        .source_throttle
+        .brute_force
         .as_ref()
-        .and_then(models::entities::realm::SourceThrottle::refuse_out_of_bounds)
+        .and_then(models::entities::realm::BruteForce::refuse_out_of_bounds)
+        .or_else(|| {
+            asked
+                .source_throttle
+                .as_ref()
+                .and_then(models::entities::realm::SourceThrottle::refuse_out_of_bounds)
+        })
     {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,

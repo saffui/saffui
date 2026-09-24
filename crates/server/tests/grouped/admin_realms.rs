@@ -1524,3 +1524,56 @@ async fn the_address_throttle_holds_its_shapes() {
     assert_eq!(held["source_throttle"]["throttled"], false, "{held}");
     assert_eq!(held["source_throttle"]["window_seconds"], 600, "{held}");
 }
+
+/// The lockout only takes values the table holds, refused in words naming
+/// the field rather than as a failed write.
+#[tokio::test]
+#[ignore = "needs a database (SAFFUI_TEST_PG)"]
+async fn the_lockout_holds_its_shapes() {
+    let plane = Plane::with_actions(&[AdminAction::RealmRead, AdminAction::RealmWrite]).await;
+    let bearer = plane.token(&support::claims());
+    let at = format!("/admin/realms/{}", support::REALM);
+
+    let shaped = |max_failures: i32, lockout: i32, ceiling: i32, reset: i32| {
+        serde_json::json!({ "brute_force": {
+            "protected": true,
+            "max_failures": max_failures,
+            "lockout_seconds": lockout,
+            "max_lockout_seconds": ceiling,
+            "reset_seconds": reset,
+        }})
+    };
+    for (refused, named) in [
+        (shaped(0, 60, 900, 900), "max_failures"),
+        (shaped(10, 0, 900, 900), "lockout_seconds"),
+        (shaped(10, 60, 900, 0), "reset_seconds"),
+        (shaped(10, 60, 30, 900), "max_lockout_seconds"),
+    ] {
+        let (status, told) = asked(&plane, Method::PUT, &at, &bearer, Some(refused.clone())).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "not refused in words: {refused} -> {told}"
+        );
+        assert!(
+            told["message"]
+                .as_str()
+                .is_some_and(|said| said.contains(named)),
+            "{refused} was not refused naming {named}: {told}"
+        );
+    }
+
+    let (status, told) = asked(
+        &plane,
+        Method::PUT,
+        &at,
+        &bearer,
+        Some(shaped(5, 60, 60, 900)),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a ceiling equal to the first lockout: {told}"
+    );
+}

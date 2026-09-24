@@ -60,6 +60,22 @@ impl BruteForce {
         (i64::from(self.lockout_seconds).saturating_mul(over))
             .min(i64::from(self.max_lockout_seconds))
     }
+
+    /// What is wrong with these values, in words, or nothing when the table
+    /// would take them.
+    pub fn refuse_out_of_bounds(&self) -> Option<&'static str> {
+        if self.max_failures < 1 {
+            return Some("brute_force.max_failures must be at least 1");
+        }
+        if self.lockout_seconds < 1 {
+            return Some("brute_force.lockout_seconds must be at least 1");
+        }
+        if self.reset_seconds < 1 {
+            return Some("brute_force.reset_seconds must be at least 1");
+        }
+        (self.max_lockout_seconds < self.lockout_seconds)
+            .then_some("brute_force.max_lockout_seconds must not be shorter than lockout_seconds")
+    }
 }
 
 /// When failures from one address turn that address away.

@@ -544,7 +544,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
             "email",
             "offline_access",
             support::SCOPE,
-            services::account_api::ACCOUNT_SCOPE,
+            services::account::api::ACCOUNT_SCOPE,
         ] {
             assert!(names.contains(&wanted), "{wanted} missing from {names:?}");
         }
@@ -556,7 +556,7 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
             "the console was not registered in the new realm"
         );
         let account_console =
-            store::providers::clients::load(&transaction, services::account_api::ACCOUNT_CONSOLE)
+            store::providers::clients::load(&transaction, services::account::api::ACCOUNT_CONSOLE)
                 .await
                 .expect("a client read")
                 .expect("the account console was not registered in the new realm");
@@ -568,14 +568,14 @@ async fn a_realm_is_created_ready_and_reshaped_in_place() {
             "the account console signs in somewhere other than under the new realm"
         );
         assert_eq!(
-            services::authorize::granted_scope(
+            services::oidc::authorize::granted_scope(
                 &transaction,
-                services::account_api::ACCOUNT_CONSOLE,
+                services::account::api::ACCOUNT_CONSOLE,
                 "openid"
             )
             .await
             .expect("a grant"),
-            format!("openid {}", services::account_api::ACCOUNT_SCOPE),
+            format!("openid {}", services::account::api::ACCOUNT_SCOPE),
             "the account console does not carry the account scope"
         );
     }

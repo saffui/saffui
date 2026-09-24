@@ -40,7 +40,7 @@ async fn allow_device(plane: &Plane) {
         .expect("a planted client");
     let mut bag = client.configs.take().unwrap_or_default();
     bag.insert(
-        services::device::GRANT_FLAG.to_owned(),
+        services::oidc::device::GRANT_FLAG.to_owned(),
         models::entities::attributes::AttributeValue::Str("enabled".to_owned()),
     );
     client.configs = Some(bag);
@@ -69,7 +69,7 @@ async fn polled(plane: &Plane, device_code: &str) -> (StatusCode, Value) {
         plane,
         "/token",
         &[
-            ("grant_type", services::device::GRANT),
+            ("grant_type", services::oidc::device::GRANT),
             ("device_code", device_code),
         ],
     )
@@ -288,7 +288,7 @@ async fn the_device_doors_refuse_the_unregistered_and_the_expired() {
 
     // The sweep takes what ran out.
     let transaction = plane.scoped(&within()).await;
-    let swept = services::housekeeping::drop_expired_rows(&transaction, chrono::Utc::now())
+    let swept = services::realm::housekeeping::drop_expired_rows(&transaction, chrono::Utc::now())
         .await
         .expect("a sweep");
     assert!(swept.device_codes >= 1, "{}", swept.device_codes);

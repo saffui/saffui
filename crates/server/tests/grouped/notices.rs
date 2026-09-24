@@ -11,7 +11,7 @@ use models::entities::mail::{MailCredentials, MailSettings};
 use secrecy::SecretBox;
 use serde_json::{Value, json};
 use server::api::config::{Plane as Mounted, register};
-use services::notices::NOTICE_ATTEMPTS;
+use services::messaging::notices::NOTICE_ATTEMPTS;
 use store::tenancy::TenantContext;
 
 const REALM: &str = support::REALM;
@@ -392,7 +392,7 @@ async fn a_notice_refused_every_time_is_given_up_on_the_record() {
             .await
             .expect("the deliveries table")
             .into_iter()
-            .filter(|receipt| receipt.purpose == services::notices::SECURITY_NOTICE)
+            .filter(|receipt| receipt.purpose == services::messaging::notices::SECURITY_NOTICE)
             .collect();
     assert_eq!(
         receipts.len(),
@@ -455,7 +455,7 @@ async fn settled_notices_age_out_and_owed_ones_stay() {
         )
         .await
         .expect("the notices aged");
-    let swept = services::housekeeping::drop_expired_rows(&transaction, chrono::Utc::now())
+    let swept = services::realm::housekeeping::drop_expired_rows(&transaction, chrono::Utc::now())
         .await
         .expect("a sweep");
     transaction.commit().await.expect("the sweep kept");
@@ -590,13 +590,13 @@ async fn a_provider_linked_to_an_existing_account_is_told() {
             ("upstream-ada", support::SUBJECT_EMAIL),
             ("upstream-newcomer", "newcomer@example.test"),
         ] {
-            services::brokering::decide_link(
+            services::federation::brokering::decide_link(
                 &transaction,
                 &support::provider(),
                 support::TENANT,
                 REALM,
                 &provider,
-                &services::brokering::Arrival {
+                &services::federation::brokering::Arrival {
                     external_user_id: upstream.to_owned(),
                     username: None,
                     email: Some(email.to_owned()),

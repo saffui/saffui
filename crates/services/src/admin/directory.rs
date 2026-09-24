@@ -619,10 +619,10 @@ pub async fn add_user_to_group(
 /// make: a combination the rules forbid aborts the transaction instead of
 /// landing. The per-person hold above serializes rival weighers.
 async fn weighed(transaction: &UnitOfWork, user_id: &str) -> Result<(), Unwritable> {
-    match crate::sod::weigh(transaction, user_id).await {
+    match crate::governance::sod::weigh(transaction, user_id).await {
         Ok(()) => Ok(()),
-        Err(crate::sod::Toxic::Refused(said)) => Err(Unwritable::Toxic(said)),
-        Err(crate::sod::Toxic::Backend) => Err(Unwritable::Backend),
+        Err(crate::governance::sod::Toxic::Refused(said)) => Err(Unwritable::Toxic(said)),
+        Err(crate::governance::sod::Toxic::Backend) => Err(Unwritable::Backend),
     }
 }
 
@@ -634,10 +634,10 @@ async fn weighed_everyone(
     people: &[String],
     arriving: &[String],
 ) -> Result<(), Unwritable> {
-    match crate::sod::weigh_everyone(transaction, people, arriving).await {
+    match crate::governance::sod::weigh_everyone(transaction, people, arriving).await {
         Ok(()) => Ok(()),
-        Err(crate::sod::Toxic::Refused(said)) => Err(Unwritable::Toxic(said)),
-        Err(crate::sod::Toxic::Backend) => Err(Unwritable::Backend),
+        Err(crate::governance::sod::Toxic::Refused(said)) => Err(Unwritable::Toxic(said)),
+        Err(crate::governance::sod::Toxic::Backend) => Err(Unwritable::Backend),
     }
 }
 

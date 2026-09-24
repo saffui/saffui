@@ -3,9 +3,9 @@ mod support;
 use models::auditable::AuditableModel;
 use models::entities::authz::AdminAction;
 use models::entities::client::{ClientScopeModel, Protocol};
-use services::account_api::{ACCOUNT_CONSOLE, ACCOUNT_SCOPE};
-use services::authorize::granted_scope;
-use services::provisioning::{
+use services::account::api::{ACCOUNT_CONSOLE, ACCOUNT_SCOPE};
+use services::oidc::authorize::granted_scope;
+use services::realm::provisioning::{
     ADMIN_SCOPE, ADMINISTRATOR_ROLE, AccountConsole, AdminConsole, provision_account_console,
     provision_admin_console, provision_offered_flows, provision_realm_administration,
 };
@@ -266,7 +266,7 @@ async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
 
     let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
 
-    services::provisioning::provision_realm(&transaction, &realm(), &console())
+    services::realm::provisioning::provision_realm(&transaction, &realm(), &console())
         .await
         .unwrap();
 
@@ -294,7 +294,7 @@ async fn provisioning_a_realm_gives_it_the_scopes_it_cannot_work_without() {
 
     // Run again. An operator who added a redirect or renamed a console must be
     // able to, and what already exists is left as it stands.
-    services::provisioning::provision_realm(&transaction, &realm(), &console())
+    services::realm::provisioning::provision_realm(&transaction, &realm(), &console())
         .await
         .expect("provisioning is idempotent");
     transaction.commit().await.unwrap();
@@ -311,7 +311,7 @@ async fn a_late_failure_rolls_back_the_whole_realm_birth() {
     transaction.commit().await.unwrap();
 
     let transaction = fixture.scoped(&TenantContext::new("acme", "main")).await;
-    services::provisioning::provision_realm(&transaction, &realm(), &console())
+    services::realm::provisioning::provision_realm(&transaction, &realm(), &console())
         .await
         .unwrap();
     assert!(transaction.query_one("SELECT 1 / 0", &[]).await.is_err());
@@ -363,7 +363,7 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
     use models::entities::credentials::CredentialType;
     use models::entities::keys::KeyUse;
     use secrecy::SecretBox;
-    use services::provisioning::{
+    use services::realm::provisioning::{
         Person, Registration, provision_browser_flow, provision_client,
         provision_realm_administration, provision_signing_key, provision_tenant, provision_user,
     };
@@ -516,14 +516,14 @@ async fn a_deployment_is_provisioned_once_and_left_alone_after() {
         "where a logout may land was not registered"
     );
     assert_eq!(
-        services::authorize::granted_scope(&transaction, "app", "openid profile email phone")
+        services::oidc::authorize::granted_scope(&transaction, "app", "openid profile email phone")
             .await
             .unwrap(),
         "openid profile email phone",
         "a standard scope asked for was not granted"
     );
     assert_eq!(
-        services::authorize::granted_scope(&transaction, "app", "openid email")
+        services::oidc::authorize::granted_scope(&transaction, "app", "openid email")
             .await
             .unwrap(),
         "openid email",

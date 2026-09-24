@@ -352,7 +352,7 @@ fn federated_doors(rows: &[models::entities::authz::IdentityProviderModel]) -> S
         if held.enabled == Some(false) {
             continue;
         }
-        let browsable = services::saml_brokering::is_saml(held)
+        let browsable = services::federation::saml_brokering::is_saml(held)
             || held
                 .configs
                 .as_ref()
@@ -653,7 +653,7 @@ pub async fn style(
             && org.enabled
             && let Ok(Some(theme)) =
                 store::providers::organizations::theme_of(&transaction, &org.org_id).await
-            && let Ok(overrides) = services::theme::css_of(&theme)
+            && let Ok(overrides) = services::realm::theme::css_of(&theme)
         {
             sheet.push('\n');
             sheet.push_str(&overrides);
@@ -737,7 +737,7 @@ async fn read_realm_overrides(transaction: &UnitOfWork, realm_id: &str) -> Optio
     let theme = store::providers::realms::theme_of(transaction, realm_id)
         .await
         .ok()??;
-    services::theme::css_of(&theme).ok()
+    services::realm::theme::css_of(&theme).ok()
 }
 
 /// The same, for the one page whose job is to be inside somebody else's.
@@ -1143,15 +1143,15 @@ mod tests {
             }
         }
         assert!(
-            declared.len() >= services::theme::TOKENS.len(),
+            declared.len() >= services::realm::theme::TOKENS.len(),
             "the sheet no longer declares the contract: {declared:?}"
         );
         for name in &declared {
             assert!(
-                services::theme::TOKENS.contains(&name.as_str()),
+                services::realm::theme::TOKENS.contains(&name.as_str()),
                 "the sheet declares `--{name}`, which the theme door does not admit: \
                  a realm can never override it. Derive it from the fifteen, or widen \
-                 the contract in services::theme deliberately."
+                 the contract in services::realm::theme deliberately."
             );
         }
     }

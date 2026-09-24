@@ -365,7 +365,7 @@ pub async fn redeliver_to_connector(
             "the connector is disabled".to_owned(),
         ));
     }
-    let hook = services::webhook::Webhook::parse(&row).map_err(|_| {
+    let hook = services::messaging::webhook::Webhook::parse(&row).map_err(|_| {
         ApiError::with_detail(
             ErrorCode::ValidationError,
             "only a webhook takes a replay".to_owned(),
@@ -416,9 +416,11 @@ pub async fn redeliver_to_connector(
             "payload": event.payload,
         })
         .to_string();
-        let Some(signature) =
-            services::webhook::signature(sealing.provider.as_ref(), &secret, body.as_bytes())
-        else {
+        let Some(signature) = services::messaging::webhook::signature(
+            sealing.provider.as_ref(),
+            &secret,
+            body.as_bytes(),
+        ) else {
             failed += 1;
             continue;
         };

@@ -6,9 +6,9 @@ use serde_json::{Map, Value};
 use store::providers::{sessions, users};
 use store::tenancy::{TenantContext, UnitOfWork};
 
-use crate::detached::half_hash;
-use crate::grant::{Signing, identity_key_for};
-use crate::response_type::ResponseType;
+use crate::oidc::detached::half_hash;
+use crate::oidc::grant::{Signing, identity_key_for};
+use crate::oidc::response_type::ResponseType;
 use crate::token::issuance::{Kind, Minting, mint_token};
 
 /// Short: nothing here proves the client was the one asking.
@@ -61,7 +61,7 @@ pub async fn issue(
         .await
         .map_err(|_| Unmintable)?;
 
-    let told = crate::pairwise::subject_for(
+    let told = crate::oidc::pairwise::subject_for(
         transaction,
         signing.provider,
         established.client,
@@ -69,7 +69,7 @@ pub async fn issue(
     )
     .await
     .map_err(|_| Unmintable)?;
-    let overlay = crate::mappers::overlay_for(
+    let overlay = crate::oidc::mappers::overlay_for(
         transaction,
         &established.client.client_id,
         established.user_id,
@@ -97,8 +97,8 @@ pub async fn issue(
         .token
         .then(|| {
             let mut minting = minting(Kind::Access, Map::new());
-            crate::mappers::widen(&mut minting.audiences, &overlay.access_audiences);
-            crate::mappers::fill(&mut minting.extra, overlay.access.clone());
+            crate::oidc::mappers::widen(&mut minting.audiences, &overlay.access_audiences);
+            crate::oidc::mappers::fill(&mut minting.extra, overlay.access.clone());
             mint_token(signing.provider, &key, minting)
         })
         .transpose()
@@ -129,11 +129,11 @@ pub async fn issue(
             extra.insert("c_hash".into(), Value::from(hashed));
         }
         let mut minting = minting(Kind::Identity, extra);
-        crate::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
-        crate::mappers::fill(&mut minting.extra, overlay.identity.clone());
+        crate::oidc::mappers::widen(&mut minting.audiences, &overlay.identity_audiences);
+        crate::oidc::mappers::fill(&mut minting.extra, overlay.identity.clone());
         let minted = mint_token(signing.provider, &key, minting).map_err(|_| Unmintable)?;
         anchor.get_or_insert(minted.token_id);
-        let delivered = crate::encryption::identity_for(established.client, minted.token)
+        let delivered = crate::oidc::encryption::identity_for(established.client, minted.token)
             .map_err(|_| Unmintable)?;
         handed.push(("id_token", delivered));
     }
@@ -161,7 +161,7 @@ async fn identity_claims(
     established: &Established<'_>,
 ) -> Result<Map<String, Value>, Unmintable> {
     let client_id = &established.client.client_id;
-    let mut claims = crate::userinfo::asked_id_token_claims(
+    let mut claims = crate::oidc::userinfo::asked_id_token_claims(
         transaction,
         signing,
         established.claims,
@@ -177,8 +177,11 @@ async fn identity_claims(
         .await
         .map_err(|_| Unmintable)?
         .ok_or(Unmintable)?;
-    let held = crate::userinfo::held_claims(&person);
-    claims.extend(crate::userinfo::claims_of_scope(established.scope, &held));
+    let held = crate::oidc::userinfo::held_claims(&person);
+    claims.extend(crate::oidc::userinfo::claims_of_scope(
+        established.scope,
+        &held,
+    ));
     Ok(claims)
 }
 

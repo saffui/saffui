@@ -3,7 +3,7 @@ use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::{LoginUi, PublicOrigin};
 use serde::Deserialize;
-use services::saml_brokering::{
+use services::federation::saml_brokering::{
     self, SamlLogoutMessage, SamlUpstream, TakenLogout, Unheeded, Untaken,
 };
 use store::error::StoreError;
@@ -68,7 +68,7 @@ pub async fn metadata(
     else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
-    let signing = services::grant::Signing {
+    let signing = services::oidc::grant::Signing {
         provider: sealing.provider.as_ref(),
         ring: &ring,
         envelope: &sealing.envelope,
@@ -197,7 +197,7 @@ pub async fn consume_assertion(
     else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
-    let signing = services::grant::Signing {
+    let signing = services::oidc::grant::Signing {
         provider: sealing.provider.as_ref(),
         ring: &ring,
         envelope: &sealing.envelope,
@@ -397,7 +397,7 @@ async fn answer_logout_message(
     else {
         return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable");
     };
-    let signing = services::grant::Signing {
+    let signing = services::oidc::grant::Signing {
         provider: sealing.provider.as_ref(),
         ring: &ring,
         envelope: &sealing.envelope,
@@ -446,7 +446,7 @@ async fn answer_logout_message(
         }
     };
 
-    let notices = services::logout::end_brokered_sessions(
+    let notices = services::oidc::logout::end_brokered_sessions(
         &transaction,
         Some(&signing),
         &issuer,

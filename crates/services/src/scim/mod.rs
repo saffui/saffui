@@ -1,3 +1,8 @@
+//! Provisioning in the SCIM shape: what this realm answers, and the
+//! applications it provisions into.
+
+pub mod outbound;
+
 use models::entities::attributes::{AttributeValue, AttributesMap};
 use models::entities::authz::GroupModel;
 use models::entities::user::{UserModel, profile};

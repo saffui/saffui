@@ -3,7 +3,7 @@ use actix_web::{HttpRequest, HttpResponse, web};
 use chrono::Utc;
 use models::entities::client::ClientModel;
 use serde_json::{Value, json};
-use services::registration::{self, Metadata, Refused};
+use services::oidc::registration::{self, Metadata, Refused};
 use store::error::StoreError;
 use store::providers::realms;
 use store::tenancy::{RealmNamed, Tenancy};

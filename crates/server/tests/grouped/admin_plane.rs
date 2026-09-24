@@ -2257,7 +2257,7 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
             )
             .await
             .unwrap();
-        services::rebac::publish(
+        services::authorization::rebac::publish(
             &transaction,
             "definition user {
                  relation manager: user
@@ -2274,7 +2274,7 @@ async fn an_erasure_erases_and_tells_the_world_on_its_way_out() {
             ("user", "grace", "manager", support::SUBJECT),
             ("document", "ada-notes", "owner", support::SUBJECT),
         ] {
-            services::rebac::relate(
+            services::authorization::rebac::relate(
                 &transaction,
                 object_type,
                 object_id,

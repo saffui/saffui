@@ -5,7 +5,7 @@ use serde_json::Value;
 use store::providers::form_post;
 use store::tenancy::UnitOfWork;
 
-use crate::landing::Landing;
+use crate::oidc::landing::Landing;
 
 /// A response taken back out of the store, its names no longer static.
 #[derive(Debug, Clone)]

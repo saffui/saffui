@@ -2,7 +2,7 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use serde::Deserialize;
-use services::revocation::{self, Unrevokable};
+use services::oidc::revocation::{self, Unrevokable};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 

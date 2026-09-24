@@ -4,7 +4,7 @@ use models::entities::client::{ProtocolMapperModel, ProtocolMapperMutationModel}
 use store::providers::{client_scopes, clients};
 use store::tenancy::UnitOfWork;
 
-use crate::mappers::KNOWN_TYPES;
+use crate::oidc::mappers::KNOWN_TYPES;
 
 /// Why a mapper could not be written. Verified before writing, like the
 /// directory: the store underneath flattens every refusal into a backend
@@ -27,7 +27,7 @@ pub enum Unwritable {
     /// lacks one it cannot work without. Either way the row would sit in the
     /// store reading as configured while writing nothing.
     #[error("{0}")]
-    BadRule(#[from] crate::mappers::BadConfig),
+    BadRule(#[from] crate::oidc::mappers::BadConfig),
     /// Deletion refused while a client holds the mapper or a scope carries
     /// it. Both joins cascade, so deleting anyway would strip the rule from
     /// every token silently rather than the deletion being told no.
@@ -45,7 +45,7 @@ fn check_rule(asked: &ProtocolMapperMutationModel) -> Result<(), Unwritable> {
     if !KNOWN_TYPES.contains(&asked.mapper_type.as_str()) {
         return Err(Unwritable::UnknownRule(KNOWN_TYPES.join(", ")));
     }
-    crate::mappers::check_configs(&asked.mapper_type, &asked.configs)?;
+    crate::oidc::mappers::check_configs(&asked.mapper_type, &asked.configs)?;
     Ok(())
 }
 

@@ -432,14 +432,14 @@ async fn a_new_client_carries_the_catalogue_defaults() {
         .scoped(&store::tenancy::TenantContext::new(support::TENANT, REALM))
         .await;
     assert_eq!(
-        services::authorize::granted_scope(&transaction, &newcomer, "openid email")
+        services::oidc::authorize::granted_scope(&transaction, &newcomer, "openid email")
             .await
             .unwrap(),
         "openid email",
         "a scope merely offered was granted unasked"
     );
     assert_eq!(
-        services::authorize::granted_scope(&transaction, &newcomer, "openid employment")
+        services::oidc::authorize::granted_scope(&transaction, &newcomer, "openid employment")
             .await
             .unwrap(),
         "openid employment"

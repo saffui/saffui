@@ -16,11 +16,11 @@ pub async fn converge_person(
     person: &UserModel,
 ) -> Result<Converged, ()> {
     let rules = birthright::rules(transaction).await.map_err(|_| ())?;
-    let due = services::lifecycle::desired(&rules, person);
+    let due = services::governance::lifecycle::desired(&rules, person);
     let governed = birthright::governed_of(transaction, &person.user_id)
         .await
         .map_err(|_| ())?;
-    let change = services::lifecycle::diff(&due, &governed);
+    let change = services::governance::lifecycle::diff(&due, &governed);
 
     let mut told = Converged {
         granted: 0,
@@ -31,13 +31,13 @@ pub async fn converge_person(
         // A rule-born role that would put the person in breach of a separation
         // is withheld and kept off the ledger, so the next convergence weighs
         // it again instead of taking it as granted.
-        match services::sod::weigh_grant(transaction, &person.user_id, role).await {
+        match services::governance::sod::weigh_grant(transaction, &person.user_id, role).await {
             Ok(()) => {}
-            Err(services::sod::Toxic::Refused(said)) => {
+            Err(services::governance::sod::Toxic::Refused(said)) => {
                 tracing::warn!(user = %person.user_id, %role, %rule, %said, "a lifecycle grant was withheld: separation of duties");
                 continue;
             }
-            Err(services::sod::Toxic::Backend) => return Err(()),
+            Err(services::governance::sod::Toxic::Backend) => return Err(()),
         }
         roles::grant_to_user(transaction, &person.user_id, role)
             .await

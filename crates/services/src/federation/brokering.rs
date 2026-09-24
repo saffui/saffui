@@ -9,7 +9,7 @@ use serde_json::{Map, Value};
 use store::providers::{brokering, users};
 use store::tenancy::UnitOfWork;
 
-use crate::mappers::{MULTIVALUED, config_bool};
+use crate::oidc::mappers::{MULTIVALUED, config_bool};
 
 /// How long what left for the upstream is honoured on the way back.
 pub const STATE_LIFESPAN: Duration = Duration::minutes(10);
@@ -321,7 +321,7 @@ pub fn arrived(
     let Identity::Signed(signed) = &upstream.identity else {
         return Err(Unbrokered::Refused);
     };
-    let claims = crate::assertion::read_against(keys, id_token, &signed.allowed_algs)
+    let claims = crate::client::assertion::read_against(keys, id_token, &signed.allowed_algs)
         .map_err(|_| Unbrokered::Refused)?;
 
     let text = |name: &str| claims.get(name).and_then(Value::as_str);
@@ -626,9 +626,9 @@ fn forced(mapper: &IdpMapperModel) -> bool {
 pub fn rule_fits_provider(mapper_type: &str, provider: &IdentityProviderModel) -> bool {
     match mapper_type {
         ROLE_IDP_MAPPER => true,
-        ATTRIBUTE_IDP_MAPPER => !crate::saml_brokering::is_saml(provider),
+        ATTRIBUTE_IDP_MAPPER => !crate::federation::saml_brokering::is_saml(provider),
         SAML_ATTRIBUTE_IDP_MAPPER | SAML_ROLE_IDP_MAPPER => {
-            crate::saml_brokering::is_saml(provider)
+            crate::federation::saml_brokering::is_saml(provider)
         }
         _ => false,
     }
@@ -830,13 +830,13 @@ async fn grant_mapped_role(
     // A role that would put the person in breach of a separation
     // is withheld and the sign-in goes on: the rule is the
     // operator's to mend, as a role deleted since is.
-    match crate::sod::weigh_grant(transaction, user_id, role_id).await {
+    match crate::governance::sod::weigh_grant(transaction, user_id, role_id).await {
         Ok(()) => {}
-        Err(crate::sod::Toxic::Refused(said)) => {
+        Err(crate::governance::sod::Toxic::Refused(said)) => {
             tracing::warn!(rule = %rule.name, role_id, %said, "an idp mapper's role was withheld: separation of duties");
             return Ok(());
         }
-        Err(crate::sod::Toxic::Backend) => return Err(Unbrokered::Backend),
+        Err(crate::governance::sod::Toxic::Backend) => return Err(Unbrokered::Backend),
     }
     store::providers::roles::grant_to_user(transaction, user_id, role_id)
         .await
@@ -977,7 +977,7 @@ pub fn dismissed(
     let Identity::Signed(signed) = &upstream.identity else {
         return Err(Unbrokered::Refused);
     };
-    let claims = crate::assertion::read_against(keys, logout_token, &signed.allowed_algs)
+    let claims = crate::client::assertion::read_against(keys, logout_token, &signed.allowed_algs)
         .map_err(|_| Unbrokered::Refused)?;
 
     let text = |name: &str| claims.get(name).and_then(Value::as_str);

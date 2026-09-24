@@ -13,10 +13,10 @@ use store::providers::login::{self, AuthSession};
 use store::providers::{auth_flows, client_scopes, clients, realms, sessions};
 use store::tenancy::{TenantContext, UnitOfWork};
 
-use crate::landing::{Landing, ResponseMode};
-use crate::pushed;
-use crate::request_object;
-use crate::response_type::ResponseType;
+use crate::oidc::landing::{Landing, ResponseMode};
+use crate::oidc::pushed;
+use crate::oidc::request_object;
+use crate::oidc::response_type::ResponseType;
 use models::claims_request::ClaimsRequest;
 
 /// How long a login may sit half finished.
@@ -133,7 +133,7 @@ pub async fn begin(
     asked: &Requested<'_>,
     signed_in: Option<&str>,
     // What it takes to sign. A code needs none of it.
-    signing: Option<&crate::grant::Signing<'_>>,
+    signing: Option<&crate::oidc::grant::Signing<'_>>,
     now: DateTime<Utc>,
 ) -> Result<Begun, Refusal> {
     // Read before it is spent. Inside here a `request_uri` is always a
@@ -316,8 +316,8 @@ pub async fn begin(
     // strips the options the profile forbids whatever the realm tolerates.
     // A client provisioned against its own profile is refused whole rather
     // than served under it.
-    if crate::fapi::is_fapi2(&client) {
-        if crate::fapi::conformant(&client).is_err() {
+    if crate::oidc::fapi::is_fapi2(&client) {
+        if crate::oidc::fapi::conformant(&client).is_err() {
             return Err(Refusal::Redirect("unauthorized_client"));
         }
         if !asked_for.code || asked_for.mints_here() {
@@ -420,11 +420,11 @@ pub async fn begin(
             auth::organization::Unresolved::Refused => Refusal::Redirect("access_denied"),
             auth::organization::Unresolved::Unreadable => Refusal::Unshowable("unavailable"),
         })?;
-        let landing = crate::minting::mint_code(
+        let landing = crate::oidc::minting::mint_code(
             transaction,
             provider,
             tenant,
-            &crate::minting::Authorized {
+            &crate::oidc::minting::Authorized {
                 client_id: &client.client_id,
                 user_id: &login.user_id,
                 session_id: &login.session_id,

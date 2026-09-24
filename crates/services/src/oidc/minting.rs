@@ -7,8 +7,8 @@ use serde_json::Value;
 use store::providers::{login, oidc};
 use store::tenancy::{TenantContext, UnitOfWork};
 
-use crate::landing::{Landing, ResponseMode};
-use crate::response_type::ResponseType;
+use crate::oidc::landing::{Landing, ResponseMode};
+use crate::oidc::response_type::ResponseType;
 
 /// Why a login could not be turned into an answer for the client.
 pub use auth::login::browser::Unanswerable;
@@ -40,7 +40,7 @@ pub struct Authorized<'a> {
     /// What comes back.
     pub asked_for: ResponseType,
     /// Both needed only when something is minted here.
-    pub signing: Option<&'a crate::grant::Signing<'a>>,
+    pub signing: Option<&'a crate::oidc::grant::Signing<'a>>,
     pub realm: Option<&'a models::entities::realm::RealmModel>,
     pub issuer: &'a str,
     pub nonce: Option<&'a str>,
@@ -127,12 +127,12 @@ pub async fn mint_code(
         let (Some(signing), Some(realm)) = (authorized.signing, authorized.realm) else {
             return Err(Unanswerable::Unrunnable);
         };
-        let handed = crate::implicit::issue(
+        let handed = crate::oidc::implicit::issue(
             transaction,
             signing,
             tenant,
             authorized.asked_for,
-            &crate::implicit::Established {
+            &crate::oidc::implicit::Established {
                 client: &client_of(transaction, authorized.client_id).await?,
                 realm,
                 issuer: authorized.issuer,

@@ -630,12 +630,12 @@ async fn a_logout_names_the_person_the_client_was_told_about() {
         )
         .await
         .expect("the realm's ring");
-        let signing = services::grant::Signing {
+        let signing = services::oidc::grant::Signing {
             provider: sealing.provider.as_ref(),
             ring: &ring,
             envelope: &sealing.envelope,
         };
-        let notices = services::logout::notices_for(
+        let notices = services::oidc::logout::notices_for(
             &transaction,
             &signing,
             &support::origin().issuer(support::REALM),

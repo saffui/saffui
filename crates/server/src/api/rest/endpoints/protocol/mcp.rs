@@ -16,7 +16,7 @@ use actix_web::{HttpRequest, HttpResponse, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
 use serde_json::{Value, json};
-use services::grant::{self, Ungranted};
+use services::oidc::grant::{self, Ungranted};
 use store::error::StoreError;
 use store::keyring;
 use store::tenancy::{RealmNamed, Tenancy};
@@ -263,7 +263,7 @@ pub async fn serve(
                     trace_id: trace.as_deref(),
                 },
                 request
-                    .app_data::<web::Data<services::pdp::Journal>>()
+                    .app_data::<web::Data<services::authorization::pdp::Journal>>()
                     .map(|held| held.get_ref()),
                 now,
             )

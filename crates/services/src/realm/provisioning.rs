@@ -219,10 +219,10 @@ pub async fn provision_account_console(
         tenant,
         realm_id,
         &Console {
-            client_id: crate::account_api::ACCOUNT_CONSOLE,
+            client_id: crate::account::api::ACCOUNT_CONSOLE,
             display_name: "Account Console",
             description: "Where a person manages their own account",
-            scope: crate::account_api::ACCOUNT_SCOPE,
+            scope: crate::account::api::ACCOUNT_SCOPE,
             scope_description: "Access to one's own account",
             redirect_uris: &console.redirect_uris,
         },

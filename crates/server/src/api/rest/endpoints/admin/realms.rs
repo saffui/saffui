@@ -5,7 +5,7 @@ use config::serving::PublicOrigin;
 use models::compliance::subject_request::Jurisdiction;
 use models::entities::realm::{RealmCreateModel, RealmUpdateModel};
 use models::representation::RepresentationParams;
-use services::provisioning;
+use services::realm::provisioning;
 use store::tenancy::{Tenancy, TenantContext, UnitOfWork};
 
 use crate::api::config::Sealing;
@@ -229,7 +229,7 @@ pub async fn create(
         &tenant,
         &realm_id,
         &provisioning::AccountConsole {
-            redirect_uris: vec![services::account_api::compose_account_console_redirect(
+            redirect_uris: vec![services::account::api::compose_account_console_redirect(
                 &origin.issuer(&realm_id),
             )],
         },
@@ -383,7 +383,7 @@ pub async fn rotate_registration_secret(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    let secret = services::registration::rotate_registration_secret(
+    let secret = services::oidc::registration::rotate_registration_secret(
         &transaction,
         sealing.provider.as_ref(),
         &realm_id,
@@ -406,7 +406,7 @@ pub async fn forget_registration_secret(
         .begin(&TenantContext::new(&admin.context.tenant.tenant, &realm_id))
         .await
         .map_err(refuse_unopened_work)?;
-    services::registration::forget_registration_secret(&transaction, &realm_id)
+    services::oidc::registration::forget_registration_secret(&transaction, &realm_id)
         .await
         .map_err(|_| ApiError::new(ErrorCode::RealmNotFound))?;
     transaction.commit().await.map_err(|_| internal())?;
@@ -560,7 +560,7 @@ pub async fn update(
     // which is the table's to say, not this door's.
     if let Some(templates) = &asked.mail_templates {
         for (kind, tongues) in templates {
-            let Some(owed) = services::wording::rewordable(kind) else {
+            let Some(owed) = services::messaging::wording::rewordable(kind) else {
                 return Err(ApiError::with_detail(
                     ErrorCode::ValidationError,
                     format!("{kind} is not a message this server sends"),
@@ -818,7 +818,7 @@ pub async fn set_theme(
 ) -> Result<HttpResponse, ApiError> {
     let realm_id = path.into_inner();
     let asked = body.into_inner();
-    if let Err(why) = services::theme::css_of(&asked) {
+    if let Err(why) = services::realm::theme::css_of(&asked) {
         return Err(ApiError::with_detail(
             ErrorCode::ValidationError,
             why.to_owned(),

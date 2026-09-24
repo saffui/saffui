@@ -1,4 +1,6 @@
-use services::notices::{Attempted, claim_due_notices, compose_due_notices, settle_attempts};
+use services::messaging::notices::{
+    Attempted, claim_due_notices, compose_due_notices, settle_attempts,
+};
 use store::tenancy::{Tenancy, TenantContext};
 
 use crate::api::config::Sealing;

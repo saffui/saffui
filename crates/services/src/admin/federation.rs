@@ -7,7 +7,9 @@ use store::keyring::RealmKeyring;
 use store::providers::brokering;
 use store::tenancy::UnitOfWork;
 
-use crate::federation::{CLEAR_BIND, LdapSettings, PURPOSE, SEALED_BIND, check_bag, presentable};
+use crate::federation::ldap::{
+    CLEAR_BIND, LdapSettings, PURPOSE, SEALED_BIND, check_bag, presentable,
+};
 
 /// Why the directory could not be written.
 #[derive(Debug, thiserror::Error)]

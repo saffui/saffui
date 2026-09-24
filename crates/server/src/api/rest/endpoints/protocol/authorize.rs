@@ -4,9 +4,9 @@ use chrono::Utc;
 use config::serving::Egress;
 use config::serving::{LoginUi, PublicOrigin};
 use serde::Deserialize;
-use services::authorize::{self, Begun, Refusal, Requested};
-use services::landing::{Landing, ResponseMode};
-use services::response_type::ResponseType;
+use services::oidc::authorize::{self, Begun, Refusal, Requested};
+use services::oidc::landing::{Landing, ResponseMode};
+use services::oidc::response_type::ResponseType;
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
@@ -136,7 +136,7 @@ async fn start(
     if let Some(uri) = asked
         .request_uri
         .as_deref()
-        .filter(|named| !named.starts_with(services::pushed::HANDLE))
+        .filter(|named| !named.starts_with(services::oidc::pushed::HANDLE))
         .map(str::to_owned)
     {
         if authorize::hosted_request_object(&transaction, asked.client_id.as_deref(), &uri)
@@ -174,7 +174,7 @@ async fn start(
         else {
             return shown("invalid_request_object", "no login can start here");
         };
-        match services::encryption::opened_request_object(
+        match services::oidc::encryption::opened_request_object(
             &transaction,
             &ring,
             &sealing.envelope,
@@ -211,7 +211,7 @@ async fn start(
     )
     .await
     .ok();
-    let signing = ring.as_ref().map(|ring| services::grant::Signing {
+    let signing = ring.as_ref().map(|ring| services::oidc::grant::Signing {
         provider: sealing.provider.as_ref(),
         ring,
         envelope: &sealing.envelope,

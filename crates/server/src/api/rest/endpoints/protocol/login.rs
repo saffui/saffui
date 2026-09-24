@@ -6,8 +6,8 @@ use chrono::Utc;
 use config::serving::PublicOrigin;
 use secrecy::SecretBox;
 use serde::Deserialize;
-use services::form_post;
-use services::landing::{Landing, ResponseMode};
+use services::oidc::form_post;
+use services::oidc::landing::{Landing, ResponseMode};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
@@ -181,7 +181,7 @@ pub async fn answer(
     if let Ok(Some(door)) = store::providers::brokering::spnego(&transaction).await
         && door.enabled != Some(false)
     {
-        match services::negotiation::SpnegoSettings::parse(&door) {
+        match services::federation::negotiation::SpnegoSettings::parse(&door) {
             Err(why) => {
                 tracing::warn!(%why, "the realm's ticket door no longer reads");
             }
@@ -252,7 +252,7 @@ pub async fn answer(
         }
     }
 
-    let signing = ring.as_ref().map(|ring| services::grant::Signing {
+    let signing = ring.as_ref().map(|ring| services::oidc::grant::Signing {
         provider: sealing.provider.as_ref(),
         ring,
         envelope: &sealing.envelope,
@@ -271,7 +271,7 @@ pub async fn answer(
         if held.enabled == Some(false) {
             continue;
         }
-        match services::federation::LdapSettings::parse(held) {
+        match services::federation::ldap::LdapSettings::parse(held) {
             Ok(settings) => federated.push((
                 held.alias.clone(),
                 crate::federation::directory_for(&transaction, &sealing, &context, held, settings)
@@ -355,7 +355,7 @@ pub async fn answer(
                         ring,
                         envelope: &sealing.envelope,
                     });
-                    match services::minting::landed(
+                    match services::oidc::minting::landed(
                         &transaction,
                         sealing.provider.as_ref(),
                         &context,
@@ -370,7 +370,7 @@ pub async fn answer(
                         Err(_) => return told(StatusCode::INTERNAL_SERVER_ERROR, "unavailable"),
                     }
                 }
-                Step::SentBack { error, login } => Some(services::minting::refused(
+                Step::SentBack { error, login } => Some(services::oidc::minting::refused(
                     login,
                     error,
                     &origin.issuer(&context.realm_id),

@@ -1,6 +1,6 @@
 use chrono::Utc;
 use config::serving::PublicOrigin;
-use services::pdp::{Journal, Question, Resource, decide};
+use services::authorization::pdp::{Journal, Question, Resource, decide};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 
@@ -63,7 +63,8 @@ pub async fn weigh(tenancy: &Tenancy, origin: &PublicOrigin, asked: Asked<'_>) -
     let Ok(routes) = store::providers::authz_routes::routes(&transaction).await else {
         return Weighed::Unavailable;
     };
-    let Some(route) = services::mesh::matched(&routes, asked.method, asked.path) else {
+    let Some(route) = services::authorization::routes::matched(&routes, asked.method, asked.path)
+    else {
         return Weighed::Deny;
     };
     // A token presented to an application it was not minted for is not this

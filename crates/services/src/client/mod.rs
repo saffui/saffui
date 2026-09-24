@@ -1,3 +1,10 @@
+//! How a client proves who it is, and binds the tokens it holds to that
+//! proof.
+
+pub mod assertion;
+pub mod dpop;
+pub mod mtls;
+
 use chrono::{DateTime, Utc};
 use crypto::constant_time;
 use crypto::envelope::Envelope;
@@ -92,13 +99,13 @@ pub fn read_presented(
         if header.is_some() || form_secret.is_some() {
             return Err(Unauthenticated::Ambiguous);
         }
-        if signed.kind != crate::assertion::JWT_BEARER {
+        if signed.kind != crate::client::assertion::JWT_BEARER {
             return Err(Unauthenticated::Unperformable);
         }
         // §9 lets the assertion be the only thing naming the client, so the
         // subject stands in. Read but never trusted: it selects whose keys the
         // signature is checked against, and that check is what decides.
-        let named = crate::assertion::subject_of(signed.assertion);
+        let named = crate::client::assertion::subject_of(signed.assertion);
         let client_id = match (form_client_id, named.as_deref()) {
             // Two names for one caller. Refused rather than called malformed:
             // which client is asking is a fact about the credential.
@@ -366,8 +373,8 @@ async fn by_assertion(
     // as one string. The endpoint URLs stop being names of this server, and
     // an array is refused even when the issuer is in it.
     let issuer_alone;
-    let accepted: &[String] = if crate::fapi::is_fapi2(client) {
-        let aud = crate::assertion::peeked_aud(assertion);
+    let accepted: &[String] = if crate::oidc::fapi::is_fapi2(client) {
+        let aud = crate::client::assertion::peeked_aud(assertion);
         if !matches!(aud, Some(serde_json::Value::String(_))) {
             return Err(Unauthenticated::Refused);
         }
@@ -381,7 +388,7 @@ async fn by_assertion(
     } else {
         within.audiences
     };
-    crate::assertion::verify(
+    crate::client::assertion::verify(
         transaction,
         within.provider,
         client,
@@ -392,7 +399,7 @@ async fn by_assertion(
     )
     .await
     .map_err(|why| match why {
-        crate::assertion::Unverifiable::Unreadable => Unauthenticated::Unreadable,
+        crate::client::assertion::Unverifiable::Unreadable => Unauthenticated::Unreadable,
         _ => Unauthenticated::Refused,
     })?;
     Ok(client.clone())

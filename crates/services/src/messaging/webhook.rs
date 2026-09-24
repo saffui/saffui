@@ -73,7 +73,7 @@ impl Webhook {
     pub fn wants(&self, kind: &str) -> bool {
         self.filter
             .iter()
-            .any(|held| crate::capability::admits(held, kind))
+            .any(|held| crate::authorization::capability::admits(held, kind))
     }
 }
 

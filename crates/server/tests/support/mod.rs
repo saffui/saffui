@@ -1444,8 +1444,9 @@ impl Plane {
             requires_consent: false,
             ..models::entities::realm::RegistrationBounds::default()
         };
-        realm.registration_secret = secret
-            .map(|held| services::registration::hashed(&provider(), held).expect("a hashed token"));
+        realm.registration_secret = secret.map(|held| {
+            services::oidc::registration::hashed(&provider(), held).expect("a hashed token")
+        });
         store::providers::realms::update(&transaction, &realm)
             .await
             .expect("the realms table");
@@ -2135,7 +2136,7 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
     // The scopes a realm gets, planted the way a deployment plants them. Only
     // `profile` is attached below: the gate is exercised only when a client
     // asks for something nothing attached to it.
-    services::provisioning::provision_standard_scopes(&transaction, TENANT, REALM)
+    services::realm::provisioning::provision_standard_scopes(&transaction, TENANT, REALM)
         .await
         .unwrap();
     for client_id in [CONFIDENTIAL, OTHER, PUBLIC] {
@@ -2162,11 +2163,11 @@ async fn plant_the_common_world(tenancy: &Tenancy) {
     // plane then reaches it the way a console does, and a change that made
     // the scope unobtainable would fail here instead of passing against a
     // token no protocol could have minted.
-    services::provisioning::provision_admin_console(
+    services::realm::provisioning::provision_admin_console(
         &transaction,
         TENANT,
         REALM,
-        &services::provisioning::AdminConsole {
+        &services::realm::provisioning::AdminConsole {
             client_id: PARTY,
             scope: SCOPE,
             redirect_uris: vec![CONSOLE_REDIRECT.to_owned()],

@@ -609,7 +609,7 @@ async fn the_realms_own_words_ride_the_text() {
 async fn offer_texted_login(plane: &Plane) {
     let transaction = plane.scoped(&within()).await;
     assert!(
-        services::provisioning::provision_texted_login(
+        services::realm::provisioning::provision_texted_login(
             &transaction,
             support::TENANT,
             support::REALM

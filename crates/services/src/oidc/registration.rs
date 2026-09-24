@@ -19,7 +19,7 @@ use store::tenancy::UnitOfWork;
 use url::Url;
 
 use crate::admin::clients::{self as admin_clients, Registered, Secret, Spec, Unregistrable};
-use crate::response_type::ResponseType;
+use crate::oidc::response_type::ResponseType;
 
 /// What a client this endpoint created is written down as having been created
 /// by. The ceiling is counted over these and over nothing else, so a realm

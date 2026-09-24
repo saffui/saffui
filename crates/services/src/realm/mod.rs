@@ -1,3 +1,11 @@
+//! A realm's configuration and upkeep: its keys, provisioning, theme,
+//! features and sweeping.
+
+pub mod feature;
+pub mod housekeeping;
+pub mod provisioning;
+pub mod theme;
+
 use crypto::provider::SignAlg;
 use models::entities::keys::{KeyStatus, KeyUse, RealmSigningKeyView};
 use models::entities::realm::RealmModel;

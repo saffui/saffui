@@ -99,13 +99,13 @@ pub async fn create(
     store::providers::sod::hold_person(transaction, &user.user_id)
         .await
         .map_err(|_| Uncreatable::Unwritable)?;
-    match crate::sod::weigh_newcomer(transaction).await {
+    match crate::governance::sod::weigh_newcomer(transaction).await {
         Ok(()) => {}
-        Err(crate::sod::Toxic::Refused(said)) => {
+        Err(crate::governance::sod::Toxic::Refused(said)) => {
             tracing::warn!(user = %user.user_name, %said, "a person was not created: separation of duties");
             return Err(Uncreatable::Toxic(said));
         }
-        Err(crate::sod::Toxic::Backend) => return Err(Uncreatable::Unwritable),
+        Err(crate::governance::sod::Toxic::Backend) => return Err(Uncreatable::Unwritable),
     }
     users::create(transaction, &user)
         .await

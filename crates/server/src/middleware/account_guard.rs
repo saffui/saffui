@@ -11,7 +11,7 @@ use chrono::Utc;
 use commons::error::ErrorCode;
 use commons::http::ApiError;
 use config::serving::PublicOrigin;
-use services::account_api::{
+use services::account::api::{
     ACCOUNT_SCOPE, AccountCaller, NotAdmitted, StepUp, establish_account_caller,
 };
 use services::token::{Binding, Proofs};

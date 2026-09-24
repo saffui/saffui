@@ -68,10 +68,13 @@ pub async fn open(
     if !allows_device(client) {
         return Err(Unopened::Unauthorized);
     }
-    let scope =
-        crate::authorize::granted_scope(transaction, &client.client_id, scope.unwrap_or_default())
-            .await
-            .map_err(|_| Unopened::Unreadable)?;
+    let scope = crate::oidc::authorize::granted_scope(
+        transaction,
+        &client.client_id,
+        scope.unwrap_or_default(),
+    )
+    .await
+    .map_err(|_| Unopened::Unreadable)?;
 
     // The realm's pacing where it set one; the row keeps its birth interval,
     // so a later retune never reshapes a code already in someone's hand.
@@ -164,12 +167,12 @@ pub async fn begin_verification(
         .await
         .map_err(|_| Unverifiable::Unreadable)?
         .ok_or(Unverifiable::NoSuchCode)?;
-    let flow = crate::authorize::browser_flow(transaction, &client)
+    let flow = crate::oidc::authorize::browser_flow(transaction, &client)
         .await
         .map_err(|_| Unverifiable::Unreadable)?;
 
     let auth_session_id =
-        crate::authorize::draw_id(provider).map_err(|_| Unverifiable::Unreadable)?;
+        crate::oidc::authorize::draw_id(provider).map_err(|_| Unverifiable::Unreadable)?;
     login::start(
         transaction,
         &login::AuthSession {

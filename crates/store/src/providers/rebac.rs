@@ -84,7 +84,7 @@ pub async fn load_schema(transaction: &UnitOfWork) -> StoreResult<Option<StoredS
 /// that this writes edges the schema does not describe, which are stored, never
 /// matched, and a grant somebody thought they made and did not.
 ///
-/// The door edges should come in by is `services::rebac::relate`, which asks
+/// The door edges should come in by is `services::authorization::rebac::relate`, which asks
 /// the schema first. This one is for a caller replaying edges that were already
 /// validated, an import being the case that exists.
 ///

@@ -3,7 +3,7 @@ use actix_web::{HttpResponse, HttpResponseBuilder, web};
 use chrono::Utc;
 use config::serving::PublicOrigin;
 use models::compliance::subject_request::DsarKind;
-use services::privacy::{self, Undoored};
+use services::account::privacy::{self, Undoored};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 

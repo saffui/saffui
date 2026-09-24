@@ -50,7 +50,7 @@ pub fn read_client_certificate(
     let peer = request.peer_addr().map(|address| address.ip().to_string());
 
     let carried = proxying.client_certificate(peer.as_deref(), Some(carried))?;
-    services::mtls::thumbprint(provider, carried).ok()
+    services::client::mtls::thumbprint(provider, carried).ok()
 }
 
 #[cfg(test)]

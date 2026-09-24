@@ -5,16 +5,16 @@ use commons::http::ApiError;
 use config::serving::PublicOrigin;
 use data_encoding::BASE64URL_NOPAD;
 use secrecy::SecretBox;
-use services::account::{OwnFactor, OwnFactors, Unchanged};
-use services::account_api::{
+use services::account::api::{
     AccountCaller, HeldApplication, HeldLogin, LoginStanding, Unended, Unmade,
     change_caller_password, end_caller_login, end_caller_other_logins, find_needed_step_up,
     list_caller_applications, list_caller_logins, list_realm_consoles, read_caller_factors,
     read_me, remove_caller_factor, revoke_caller_grant, take_back_caller_access,
     withdraw_caller_consent,
 };
-use services::agent::read_agent;
-use services::grant::Signing;
+use services::account::{OwnFactor, OwnFactors, Unchanged};
+use services::oidc::grant::Signing;
+use services::user_agent::read_agent;
 use store::tenancy::{Tenancy, UnitOfWork};
 
 use crate::api::config::Sealing;

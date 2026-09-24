@@ -1,7 +1,7 @@
 use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, HttpResponseBuilder, web};
-use services::form_post;
-use services::landing::{Landing, ResponseMode};
+use services::oidc::form_post;
+use services::oidc::landing::{Landing, ResponseMode};
 use store::error::StoreError;
 use store::tenancy::{RealmNamed, Tenancy};
 

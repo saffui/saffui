@@ -8,7 +8,7 @@ use models::sessions::records::{UserSessionModel, UserSessionState};
 use secrecy::SecretBox;
 use serde_json::{Value, json};
 use server::api::config::{Plane as Mounted, register};
-use services::account_api::{ACCOUNT_CONSOLE, compose_account_console_redirect};
+use services::account::api::{ACCOUNT_CONSOLE, compose_account_console_redirect};
 use std::path::Path;
 use std::process::Command;
 use std::time::SystemTime;
@@ -77,11 +77,11 @@ fn with_claim(mut payload: JwtPayload, name: &str, value: Option<Value>) -> JwtP
 /// The realm's account console, provisioned the way a realm's birth provisions it.
 async fn provision_account_console(plane: &Plane) {
     let transaction = plane.scoped(&within()).await;
-    services::provisioning::provision_account_console(
+    services::realm::provisioning::provision_account_console(
         &transaction,
         support::TENANT,
         REALM,
-        &services::provisioning::AccountConsole {
+        &services::realm::provisioning::AccountConsole {
             redirect_uris: vec![compose_account_console_redirect(
                 &support::origin().issuer(REALM),
             )],
